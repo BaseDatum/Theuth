@@ -69,6 +69,36 @@ All on the final tree (feature commit 51347b9d).
 
 ## Left
 - Nothing in rows 3–6 / D4h.
-- Hired agents' `effort:`-only edits re-apply at the next desk open, not at once (see decisions).
+- ~~Hired agents' `effort:`-only edits re-apply at the next desk open~~ — live since R1 (fix 3).
 - Merge notes for Z: `frame::baseline` / `baseline_dated` gained `subagent_effort` right after `subagent_model`, and `agent::SetDeskModel` gained `effort`. A call or struct literal added on another branch needs the extra `None`.
 - No change was needed in ModelCombobox or ModelPicker.
+
+## R1
+Review `review-194-a.md` (r194a). Fresh worker, on top of 298ac48e.
+
+1. **MAJOR subagent effort, persist before publish — fixed.** `Agents::store_subagent_effort` returns `Result<(), String>`: it writes `agent.subagents.effort` first and swaps the live slot only after success. `SetSubagentEffort` propagates the `Err`; `SetSubagentModel` now drops/clears the effort *before* it swaps the model, so a failed write refuses the whole change. Same rule:
+   - `roster.theuth_effort`: `Roster::store_theuth_effort` returns `Result`, propagated by `SetTheuthEffort` and by the D4c/d drop in `SetTheuthModel` (before the model moves).
+   - Advisor default model and effort (`SetAdvisorDefaults`): new `persist_advisor_key` (fallible; `write_advisor_key` keeps the best-effort path for the tuning keys and the manual pick). Each key is written before it goes live; the dropped effort is written first, so a failure at any step leaves live == disk.
+   - Test: `supervisor::tests::a_failed_config_write_changes_no_effort_setting` (config.yaml read-only: `SetSubagentEffort`, `SetSubagentModel` blind / none, advisor model blind, advisor effort all `Err`; live values and the file bytes unchanged). Theuth: in `theuth_effort_reaches_a_desk_that_is_not_open`.
+2. **MAJOR cleared theuth effort vs. an unopened desk — fixed. Mechanism: update the persisted row on change** (no provenance store).
+   - New agent message `SetDeskEffort { session, model, effort }`: like `SetDeskModel`'s effort half but always puts the row on the setting (`None` = `agent.effort` filtered by the model). `SetDeskModel` keeps its guard, so a desk-local `/effort` survives every open that follows no change.
+   - The roster sends it from `Roster::put_unopened_desk_effort` after every explicit theuth effort change (`SetTheuthEffort`, the drop/clear in `SetTheuthModel`) when the theuth desk is not in `desks`; the persisted desk comes from `DeskSession`. An open desk keeps getting it through `SetDeskModel`.
+   - Limit (`ponytail`): an effort removed by hand from config.yaml (or a hired file) *while the engine is stopped* is not seen as a change, so that row keeps its old value until the next change or `/effort`. Durable provenance would close it; not built.
+   - Hired desks open eagerly, so the unopened path is theuth-only.
+   - Test: `roster tests::theuth_effort_reaches_a_desk_that_is_not_open` (three boots with fresh engine + roster: `high` on the open desk; restart, clear before the lazy reopen → row and reopen Default; desk-local `/effort low`; restart with the setting unchanged → reopen keeps `low`).
+3. **MAJOR hired-agent effort-only edits live — fixed.** `PutAgent` compares `(model, effort)` instead of `model`; the reconcile's `remodelled` check adds `o.effort != f.effort`. Both go through `apply_desk_model`, which sends `SetDeskModel` with the file's effort (desk row live + the children's `desk_efforts` entry). Edits kept inside the comparison lines (B2's `memory_effort` hunk untouched).
+   - Test: `roster tests::a_hired_agents_effort_only_edit_is_live` (`PutAgent` with only `effort: high`, then an on-disk `effort: low` + `Reconcile`; after each the desk row and a new `SpawnChild` child carry it, no reopen).
+4. **MAJOR `/advisor on` sees the live default — fixed engine-side.** No engine event announces advisor-default changes (`SetAdvisorDefaults` emits nothing; `AdvisorChanged` is per advised session), so: new agent message `AdvisorOnDefault { session }` and RPC `advisor_on(session) -> AdvisorStatus` (settings.rs, next to `set_advisor`; api.ts declaration + `METHODS` entry beside `advisor_status`). The engine reads `advisor.model` / `advisor.effort` when the call lands; with no model it refuses with the TUI's own words ("no remembered advisor model — pick one with /advisor").
+   - The TUI is unchanged (crates/tui is off limits): its `/advisor on` still sends its cached pick until T / the wire orchestrator points it at `advisor_on(session)`.
+   - Test: `advisor::tests::advisor_on_uses_the_live_default` (refused with no default; Settings moves the default to `fake/m2`, then `fake/m`: each `AdvisorOnDefault` starts on the new one). The rig gained `Rig::keyed` (and `Agents::set_test_keyed`) so the default-model setter accepts the fake provider.
+5. **MINOR RPC placement — declined.** The grouped pairs are self-contained, which is what the wire orchestrator asked for.
+6. **MINOR `Advisor.test.ts` — fixed.** The connection mock is a real zustand store (`refreshInfo` writes into it), and the setter mocks change simulated server state (the model setter applies D4c). New test: Sonnet · low → pick Opus (takes only `high`) → trigger reads `Claude Opus 4.8`, chips `Default, high`, Default checked.
+
+- **Test isolation (found while gating):** `SetAdvisorDefaults` tells the process-global `Advisors`, so the row-6 test and the new failed-write test, run beside `advisor::tests::advisors_contract`, reset that rig's `max_notes_per_update` (its `guard_and_batched_nits` then saw "Accepted for delivery"). Both now run under `crate::with_test_registry`, like the advisor rigs.
+
+### R1 gates
+On the final tree; DISK RULE: compile-only plus filtered tests, one test-binary set `-p agent -p roster -p rpc`.
+- `cargo fmt -p agent -p roster -p rpc`; rpc's unrelated rustfmt churn reverted (only my hunks remain).
+- `mbx check -p agent -p roster -p rpc` and `--tests`: 0 errors, 0 warnings. `mbx clippy -p agent -p roster -p rpc --tests --no-deps -- -D warnings`: clean.
+- Filtered `mbx test -p agent -p roster -p rpc --no-fail-fast` (new and changed tests plus the existing tests of the edited functions: `subagent_effort_is_live_validated_and_persisted`, `a_desk_and_its_children_start_on_the_agents_effort`, `the_advisor_default_model_is_persisted_live_and_owns_its_effort`, `a_failed_config_write_changes_no_effort_setting`, `advisor_on_uses_the_live_default`, `advisors_contract`, `desk_models_leave_with_the_desk`; roster `theuth_effort_is_validated_persisted_and_reaches_its_desk`, `theuth_effort_reaches_a_desk_that_is_not_open`, `a_hired_agents_effort_only_edit_is_live`, `desks_follow_configured_and_default_models_on_a_live_engine`, `put_agent_model_change_is_in_the_read_model_before_reconcile`, `put_round_trip_and_theuth_refused`, `theuth_model_is_live_persisted_and_listed`, `put_agent_keeps_stored_paused`, `put_agent_new_file_honours_paused`, `scan_valid_invalid_and_theuth`): 17/17, twice.
+- Bindings regenerated (`export_bindings`, 1037 files; `methods.json` lists `advisor_on`) and copied. `bunx tsc -b --noEmit`: 0 errors. `bunx vitest run` Advisor.test.ts, ModelDefaults.test.ts, rpc/api.test.ts: 13/13, twice.
