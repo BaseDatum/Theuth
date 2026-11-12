@@ -196,7 +196,7 @@ pub mod documents;
 /// Notebooks RPC server and client traits.
 pub mod notebooks;
 /// Codemap RPC server and client traits.
-pub mod codemap;
+pub use ::codeindex::rpc as codemap;
 /// Messaging RPC server and client traits.
 pub mod messaging;
 /// Network RPC server and client traits.

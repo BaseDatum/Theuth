@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use crate as codeindex;
 use codeindex::{
     ChangeLens, FitLens, HereLens, IndexStats, LensMeta, LocateAnchor, Located,
     MapElement, MapExport, MapHit, MapIndex, MapJob,
