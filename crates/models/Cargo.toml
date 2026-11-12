@@ -9,6 +9,7 @@ description = "Bundled models.dev catalog: context limits, capabilities, provide
 platform = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { workspace = true }
 tracing = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 ort = { workspace = true }  # the process-wide ONNX Runtime initialiser (`onnx::ort_lib`, 57 §6 step 1)

@@ -12560,6 +12560,7 @@ version = "2.19.5"
 dependencies = [
  "ort",
  "platform",
+ "schemars 1.2.3",
  "serde",
  "serde_json",
  "tracing",
