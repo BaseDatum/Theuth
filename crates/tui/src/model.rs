@@ -458,7 +458,7 @@ pub use shake::{ShakeCategory, ShakeStage, Shake, ReviewRow, kind_name, expand, 
 pub use slash::{COMMANDS, slash_matches, SlashRow};
 pub use speech::{voice_cmd, voice_line};
 pub(crate) use status::{now_ms, when};
-pub use status::{Level, k, computer_line};
+pub use status::{Level, k};
 use status::{elapsed, ago};
 pub use terminal::{TERMINAL_POLL_MS, TERMINAL_INTERACTIVE_POLL_MS, TerminalView, terminal_row};
 #[cfg(test)]
