@@ -320,7 +320,7 @@ This library earns its boundary because three existing owners need the same
 query/highlight policy and cannot depend on one another in that direction.
 Putting product search policy in `runtime`, copying it three times, or adding a
 search plugin with another authoritative store is worse. A shared
-`rpc::search::run` function holds the closed four-category composition; the
+`rpc_compose::search::run` function holds the closed four-category composition; the
 RPC method and registered tool both call it. No frontend/provider registry.
 
 | Owner | Command (as built) | Reply |
@@ -536,9 +536,9 @@ second tool-only truncation format. The textual receipt must not hide failures
 or present a clipped list as an exhaustive search.
 
 **Registration and dependency direction.** Put `SearchTool` and the shared
-composition in `crates/rpc/src/search.rs`, alongside the facade that already
-depends downward on all three owners. Add `rpc::SearchToolsPlugin`, a thin
-registration-only `Plugin` implementation exported by the existing rpc crate.
+composition in `crates/rpc-compose/src/search.rs`, alongside the facade that already
+depends downward on all three owners. Add `rpc_compose::SearchToolsPlugin`, a thin
+registration-only `Plugin` implementation exported by the rpc-compose library.
 Its `start` waits for the existing tool registry in a spawned task, registers
 the tool and its static usage guidance, and returns promptly. It owns no actor,
 database, service, optional-provider registry, or config section. This is a
@@ -553,7 +553,7 @@ does not construct owner handles or register the tool itself. Pairing-only modes
 without an agent do not need it. The pure `crates/search` library stays below
 all owners and does not depend on rpc/tools/agent.
 
-The tool calls `rpc::search::run` directly in-process; never dial loopback HTTP/
+The tool calls `rpc_compose::search::run` directly in-process; never dial loopback HTTP/
 WebSocket, require a token, or add an `agent -> rpc` dependency. Public RPC search
 is another adapter around that same function. Check tool availability through
 the normal registry/runtime inventory in TUI, headless, print and ACP modes,
@@ -1003,7 +1003,7 @@ Implementation can proceed in these dependent slices, each ending in the
 relevant runnable checks above:
 
 1. Pure shared primitives, owner-local sources/caches/readers, fixture RPC check.
-2. Shared `rpc::search::run`, RPC composition/partial states and `SearchTool`;
+2. Shared `rpc_compose::search::run`, RPC composition/partial states and `SearchTool`;
    register `SearchToolsPlugin` in every agent-bearing launch mode, independent
    of the socket listener. Verify real tool/runtime invocation and the agent
    smoke. Remove public `search_sessions`; regenerate bindings with
@@ -1060,12 +1060,12 @@ claims a measurement or check that §11 does not list.
 | Design term | Built as |
 |---|---|
 | Pure library (§4.1) | `crates/search`: `validate_query`, `limit`, `categories`, `SearchCategory`, `PageState`, `Coverage`, `SearchNotice`, `SearchPage<T>`, `MatchRange`, `TextMatch`, `SearchText` (candidate text segmented once per scalar), `FuzzyMatcher`, `snippet`. Depends on nucleo/serde/schemars only. |
-| Shared operation (§4.1) | `rpc::search::run(rt, query, categories, limit) -> Result<SearchResponse, String>`; `Err` only for an invalid request. `rpc::search::refresh` behind `search_refresh`. |
+| Shared operation (§4.1) | `rpc_compose::search::run(rt, query, categories, limit) -> Result<SearchResponse, String>`; `Err` only for an invalid request. `rpc_compose::search::refresh` behind `search_refresh`. |
 | Owner commands (§4.1) | `agent::SearchSessionPage`, `agent::SearchRefresh`; `artifact::search::{SearchArtifacts, Get, ReadSearchMatch, RefreshSearch}`; `knowledge::search::{SearchConcepts, SearchHistory, ReadRevision, RefreshSearch}`. |
 | Session hit | `agent::search::SearchHit` (26's shape, `context_removed` kept), inside `SearchPage<SearchHit>`. The design's `SessionSearchHit` name was not introduced. 2026-09-22: `archived: bool` added (the root's flag, 51 §3); archived sessions stay in the index, the desktop `SearchDialog` shows a muted **Archived** marker after the title (hits and the recent list), the tool's text says `(archived)` after the title. |
 | Other hits | `artifact::search::ArtifactSearchHit { artifact, match, content_coverage }`, `ArtifactMatchContext`; `knowledge::search::ConceptSearchHit { meta, match }`, `HistorySearchHit`, `HistoricalConcept`. |
 | Public RPC | `search`, `search_refresh`, `get_artifact`, `artifact_search_match`, `knowledge_read_revision`. `search_sessions` removed from `Api`, `METHODS`, export list and bindings. `knowledge_search` untouched. |
-| Tool (§4.4) | `rpc::search::SearchTool`: `NAME = "search"`, `Risk::ReadOnly`, `RETURNS = "dict"`, `Args = SearchArgs { query, categories?, limit? }`; static `PROMPT` via `RegisterPrompt`. Registered by `rpc::SearchToolsPlugin` (name `search`), listed in both agent-bearing plugin vectors of `theuth/src/main.rs`, independent of `RpcPlugin`. |
+| Tool (§4.4) | `rpc_compose::search::SearchTool`: `NAME = "search"`, `Risk::ReadOnly`, `RETURNS = "dict"`, `Args = SearchArgs { query, categories?, limit? }`; static `PROMPT` via `RegisterPrompt`. Registered by `rpc_compose::SearchToolsPlugin` (name `search`), listed in both agent-bearing plugin vectors of `theuth/src/main.rs`, independent of `RpcPlugin`. |
 | Frontends | App: root-mounted `SearchDialog` with `ToggleGroup` chips, header magnifier beside the sidebar toggle, `SearchReturn` (Back to results), `lib/search.ts` per-harness view state. TUI: `tui::search::{State, Request, Inspect}`, `Menu::Search`. |
 | Destinations (§7) | App `/c/$session?seq=` renders `SearchSession` — the read-only **Earlier messages** page (`before = seq + 1`, no composer, **Jump to latest**); artifact `Viewer` and knowledge `Document` each show a **Matched text** panel fed by `artifact_search_match` / the hit's `TextMatch`; `Document` reads `knowledge_read_revision` in historical mode. TUI: `Inspect` replaces the transcript with the page ending at the match; artifact preview carries the matched-text panel; `Historical`/`Revision` requests open the reader. |
 
@@ -1121,7 +1121,7 @@ claims a measurement or check that §11 does not list.
 Numbers are what was observed; nothing here is a target restated.
 
 - **Rust unit tests, run per crate, all green:** `search` 6; owner tests 17
-  (agent, artifact, knowledge search modules); `rpc::search` 5, plus the
+  (agent, artifact, knowledge search modules); `rpc_compose::search` 5, plus the
   registered-tool test (`SearchToolsPlugin` with real knowledge/artifact
   owners, no listener, no agent) and the literal-args test in `tools`; one
   knowledge index-mutation test; `tui` 14. The workspace-wide suite was

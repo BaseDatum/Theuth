@@ -189,6 +189,8 @@ pub struct CoreView<'a> {
     pub members: &'a dyn SessionMembers,
     /// Identity of the shown core approval, otherwise the first ask.
     pub prompt: Option<uuid::Uuid>,
+    /// Membership in accepted core prompt queues, independent of shown identity.
+    pub prompts: &'a dyn PromptIds,
 
 
     // Step-11 group t3 CoreView fields: add below, in this block only.
@@ -204,6 +206,11 @@ pub struct SessionMember<'a> {
 pub trait SessionMembers: Sync {
     /// Find one known identity, independent of board visibility.
     fn member(&self, id: SessionId) -> Option<SessionMember<'_>>;
+}
+/// Borrowed identity lookup for accepted core prompts, never their feature data.
+pub trait PromptIds: Sync {
+    /// Whether an identity is pending in either accepted queue.
+    fn contains(&self, id: &str) -> bool;
 }
 impl CoreView<'_> {
     /// Whether this view owns the session's private export capability.
@@ -592,6 +599,8 @@ pub enum CoreAction {
     // Step-11 group t1 CoreAction variants: add below, in this block only.
     /// Insert an owner-rendered card above a still-streaming tail without splitting it.
     InterjectCard(TranscriptCard),
+    /// Navigate through the existing core session/ownership policy.
+    ResumeSession(SessionId),
 
     // Step-11 group t2 CoreAction variants: add below, in this block only.
 

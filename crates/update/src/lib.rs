@@ -6,6 +6,16 @@
 //! - events: [`UpdateReady`]
 //! - [`run_once`] for `t --update`
 
+/// Settings RPC methods and typed clients.
+pub mod rpc_settings;
+
+/// Assemble this plugin's RPC methods.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_core::merge([
+        rpc_settings::rpc_module(server),
+    ])
+}
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

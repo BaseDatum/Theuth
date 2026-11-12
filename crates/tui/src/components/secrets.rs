@@ -2,7 +2,7 @@
 use super::*;
 use std::collections::VecDeque;
 use serde::Deserialize;
-use rpc::api::clients::*;
+use rpc_compose::api::clients::*;
 use iocraft::prelude::{element, View as BoxView, Text, BorderStyle, FlexDirection, Weight, TextWrap};
 use crate::model::when;
 use crate::ui::{FAIENCE, BONE_DIM};

@@ -22,6 +22,19 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+/// Tooling RPC methods and typed clients.
+pub mod rpc_tooling;
+/// Settings RPC methods and typed clients.
+pub mod rpc_settings;
+
+/// Assemble this plugin's RPC methods.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_core::merge([
+        rpc_tooling::rpc_module(server.clone()),
+        rpc_settings::rpc_module(server),
+    ])
+}
+
 pub mod activity;
 pub mod approval;
 pub mod ask;

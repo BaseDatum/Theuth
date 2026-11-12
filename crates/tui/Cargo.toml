@@ -17,6 +17,7 @@ uuid = { workspace = true }
 search = { workspace = true }
 knowledge = { workspace = true }
 rpc = { workspace = true }
+rpc-compose = { workspace = true }
 double = { workspace = true }
 acp = { workspace = true }
 computer = { workspace = true }

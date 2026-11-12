@@ -19,6 +19,19 @@ use replica::{ALPN_SESSIONS, PeerEvent, PeerId, Transport};
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 
+/// Sessions RPC methods and typed clients.
+pub mod rpc_sessions;
+/// Hub RPC methods and typed clients.
+pub mod rpc_hub;
+
+/// Assemble this plugin's RPC methods.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_core::merge([
+        rpc_sessions::rpc_module(server.clone()),
+        rpc_hub::rpc_module(server),
+    ])
+}
+
 pub mod rpc_session_state;
 /// Provider-owned RPC extension contracts.
 pub mod rpc_support;

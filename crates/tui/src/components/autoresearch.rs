@@ -1,5 +1,5 @@
 //! Direct study text controls; goals use the existing skill invocation path.
-use rpc::api::clients::ResearchApiClient;
+use rpc_compose::api::clients::ResearchApiClient;
 use super::*;
 
 /// Direct study controls and goal handoff.

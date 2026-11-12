@@ -31,8 +31,8 @@ use rmcp::model::{
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData, ServerHandler, ServiceExt};
-use rpc::api::SESSION_TOOLS;
-use rpc::api::clients::{AgentToolingApiClient, ToolingApiClient};
+use agent::rpc_tooling::SESSION_TOOLS;
+use rpc_compose::api::clients::{AgentToolingApiClient, ToolsToolingApiClient};
 use serde::Deserialize;
 use tokio::sync::watch;
 
@@ -180,7 +180,7 @@ impl ServerHandler for Shim {
         let client = self.client.borrow().clone();
         // A failed or timed-out `list_tools` still lists the shim's own three tools, never an error.
         let listed =
-            tokio::time::timeout(LIST_TOOLS_TIMEOUT, ToolingApiClient::list_tools(&*client))
+            tokio::time::timeout(LIST_TOOLS_TIMEOUT, ToolsToolingApiClient::list_tools(&*client))
                 .await
                 .map_err(|_| format!("no answer in {}s", LIST_TOOLS_TIMEOUT.as_secs()))
                 .and_then(Self::mapped);

@@ -52,7 +52,7 @@ durability-mesh *ARGS:
     cargo test -p sessionsync --lib -- owner:: harness_ types::
     cargo test -p agent --lib -- supervisor::transfer supervisor::resume supervisor::drain supervisor::waits supervisor::child_waits durability::jobs loop_::durability_tests::drain_suspends loop_::resume_calls store::durability store::harness
     cargo test -p tools --lib -- --test-threads=1 cancel_reminders_stops
-    cargo test -p rpc --lib -- forward routed_methods answers_follow durability_wire_shapes
+    cargo test -p rpc-compose --lib -- forward routed_methods answers_follow durability_wire_shapes
     if [ "${1:-}" = "smoke" ]; then shift; scripts/durability-mesh-smoke.sh "$@"; fi
 
 # 146 RESTART-CLARITY proof (P1–P6): one real engine on a scratch data dir, the real `omp`
@@ -111,10 +111,10 @@ documents-helper:
     echo "built $DOC_HELPER_SRC ($DOC_HELPER)"
 
 # Export TypeScript bindings for the RPC wire types. `--lib`: every ts-rs export test lives in the
-# library; without it cargo also links tests/prompts.rs, a second multi-GB debug link that thrashed
+# library; without it cargo also links crates/rpc-compose/tests/prompts.rs, a second multi-GB debug link that thrashed
 # the 8 GiB linux-x86_64 host (two rust-lld at 3.6 GB each, 2026-10-03).
 ts:
-    cargo test -p rpc --features ts --lib --quiet export_bindings
+    cargo test -p rpc-compose --features ts --lib --quiet export_bindings
 
 # Bindings for the desktop UI: `just ts` plus a copy into the Vite tree (25 §5).
 ts-desktop: ts

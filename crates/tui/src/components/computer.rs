@@ -1,6 +1,6 @@
 //! Computer permissions and display inventory; no live screen-control surface.
 use super::*;
-use rpc::api::clients::ScreensApiClient;
+use rpc_compose::api::clients::ScreensApiClient;
 
 /// Stateless request/reply panel.
 #[derive(Default)]

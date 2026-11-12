@@ -1,7 +1,7 @@
 //! Node inventory, local aliases and shared node/mesh invite countdowns.
 use super::*;
 use serde::Deserialize;
-use rpc::api::clients::NetworkApiClient;
+use rpc_compose::api::clients::NetworkApiClient;
 use crate::model::{ago, now_ms};
 use super::link::{Countdown, platform_name};
 

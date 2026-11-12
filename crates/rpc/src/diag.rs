@@ -117,7 +117,7 @@ pub(crate) fn client_log(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::hub::rpc_module;
+    use crate::rpc_module;
     use runtime::Runtime;
 
     #[test]
@@ -181,7 +181,7 @@ mod tests {
     #[tokio::test]
     async fn ping_answers_null_without_actors() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let methods: jsonrpsee::Methods = rpc_module(crate::new_server(rt)).into();
+        let methods: jsonrpsee::Methods = rpc_module(rpc_core::Server::new(rt)).into();
         let v = call(
             &methods,
             r#"{"jsonrpc":"2.0","method":"ping","params":[],"id":1}"#,
@@ -194,7 +194,7 @@ mod tests {
     #[tokio::test]
     async fn client_log_answers_null_on_a_connection() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let mut methods: jsonrpsee::Methods = rpc_module(crate::new_server(rt)).into();
+        let mut methods: jsonrpsee::Methods = rpc_module(rpc_core::Server::new(rt)).into();
         let anon = call(
             &methods,
             r#"{"jsonrpc":"2.0","method":"client_log","params":["info","island","x"],"id":1}"#,

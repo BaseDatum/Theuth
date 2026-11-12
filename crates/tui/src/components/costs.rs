@@ -1,6 +1,6 @@
 //! Authoritative owner cost summaries; no local usage summation.
 use agent::{SessionCost, CostBucket, CostScope, Coverage, Money};
-use rpc::api::clients::SessionsApiClient;
+use rpc_compose::api::clients::AgentSessionsApiClient;
 use crate::model::{k, short};
 use super::*;
 
