@@ -102,7 +102,7 @@ impl runtime::Plugin for TuiPlugin {
         // (82 §3, 83 §3; config.yaml as read at launch is the fallback when `info` fails).
         let engine = api.read().clone();
         let info = engine.info().await.ok();
-        let app_enabled = info.as_ref().is_some_and(|i| i.app_enabled);
+        let components = components::builtin(info.as_ref().is_some_and(|i| i.app_enabled));
         tokio::spawn(run_commands(api, commands_rx, events_tx));
 
         let (default_model, default_effort, advisor, favorite_models) = info.map_or_else(
@@ -142,7 +142,7 @@ impl runtime::Plugin for TuiPlugin {
                     advisor,
                     favorite_models,
                     approvals,
-                    app_enabled,
+                    components: Some(components),
                     catalog,
                     resume,
                     data_dir,
@@ -164,7 +164,7 @@ impl runtime::Plugin for TuiPlugin {
                     commands_tx,
                     resume,
                     approvals,
-                    app_enabled,
+                    components,
                     prompt,
                 )
                 .await;
@@ -726,36 +726,7 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 .await)?;
             UiEvent::Info(format!("{provider}/{}", m.line()))
         }
-        Command::ListArtifacts {
-            session,
-            pick,
-            apps,
-        } => {
-            let mut items = msg(api.list_artifacts(Some(session), Some(true)).await)?;
-            if apps {
-                items.retain(|a| a.kind == artifact::Kind::App);
-            }
-            // The picker groups by the owners' project (51 §3); cards need no join.
-            let sessions = if pick && !items.is_empty() {
-                msg(api.list_sessions().await)?
-            } else {
-                Vec::new()
-            };
-            UiEvent::Artifacts {
-                items,
-                pick,
-                apps,
-                sessions,
-            }
-        }
-        Command::ExportArtifact { id, name, session } => {
-            UiEvent::Info(components::artifacts_apps::export_artifact(api, id, name, session).await.map_err(anyhow::Error::msg)?)
-        }
-        // Detached, like `computer_open`: the TUI runs on the harness host, so the path is local.
-        Command::OpenPath(path) => {
-            components::artifacts_apps::open_path(&path).map_err(anyhow::Error::msg)?;
-            return Ok(());
-        }
+
         // The reply carries the state even when `DictationModel` was published before this bridge subscribed.
         Command::DictationPrewarm => UiEvent::Voice(voice::VoiceEvent::DictationModel {
             state: msg(api.dictation_prewarm().await)?,
@@ -919,12 +890,11 @@ async fn line_printer(
     commands: UnboundedSender<Command>,
     resume: Option<SessionId>,
     approvals: bool,
-    app_enabled: bool,
+    mut components: components::Registry,
     prompt: Option<String>,
 ) {
-    let mut model = Model::new(String::new(), approvals);
-    model.components.set_interactive(false);
-    model.app_enabled = app_enabled;
+    components.set_interactive(false);
+    let mut model = Model::with_components(String::new(), approvals, components);
     model.mount_components(&commands);
     if let Some(id) = resume {
         model.resume(id, &commands);
@@ -1241,26 +1211,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             model::vision_line(*stage, model, sources.len())
         ),
         UiEvent::Agent(_) => Ok(()),
-        // An app is a pointer to its source here: it runs on desktop/web (46 §8.2).
-        UiEvent::ArtifactShown(ev) if ev.artifact.kind == artifact::Kind::App => writeln!(
-            out,
-            "[app: {} · {} → source {}]",
-            ev.artifact.name,
-            components::artifacts_apps::APP_WHERE,
-            ev.artifact.path.display()
-        ),
-        UiEvent::ArtifactShown(ev) => writeln!(
-            out,
-            "[artifact: {} → {}]",
-            ev.artifact.name,
-            ev.artifact.path.display()
-        ),
-        UiEvent::Artifacts { items, apps, .. } if items.is_empty() => {
-            writeln!(out, "{}", if *apps { "no apps" } else { "no artifacts" })
-        }
-        UiEvent::Artifacts { items, .. } => items
-            .iter()
-            .try_for_each(|a| writeln!(out, "{}", components::artifacts_apps::artifact_row(a))),
         UiEvent::ModelSet(info) => writeln!(out, "model → {}", info.id),
         UiEvent::EffortSet(Some(e)) => writeln!(out, "effort: {e}"),
         UiEvent::EffortSet(None) => writeln!(out, "effort cleared"),

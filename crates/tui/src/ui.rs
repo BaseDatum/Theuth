@@ -10,7 +10,6 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tools::{Decision, Risk};
 
 use crate::clip;
-use crate::components::artifacts_apps::{APP_WHERE, artifact_size, artifact_row};
 use crate::components::search_attach::state as search;
 use crate::dictation::{self, Dictating, Phase};
 use crate::components::{FocusClass, Lifecycle, Surface};
@@ -21,7 +20,7 @@ use crate::model::{
 use crate::model::{
     AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt,
     TurnAction, UiEvent, describe,
-    k, now_ms, progress_line, result_line, window,
+    k, now_ms, result_line, window,
 };
 use crate::pathac;
 use crate::talk::{self, Look, Talking};
@@ -43,8 +42,8 @@ pub struct Links {
     pub favorite_models: Vec<String>,
     /// `tools.approvals` from config.
     pub approvals: bool,
-    /// `Info.app_enabled`: offer `/apps`.
-    pub app_enabled: bool,
+    /// Boot-configured owners, taken by the first state initializer.
+    pub components: Option<crate::components::Registry>,
     /// Context limits for the header.
     pub catalog: Arc<models::Catalog>,
     /// Session to `/resume` on first render.
@@ -84,7 +83,7 @@ pub(crate) const CARNELIAN: Color = rgb(0xC45A48);
 /// Human turn cards.
 const USER: Color = OCHRE;
 /// Tool call cards.
-const TOOL: Color = FAIENCE;
+pub(crate) const TOOL: Color = FAIENCE;
 /// Peer (subagent / parent) message cards.
 const PEER: Color = FAIENCE;
 /// Markdown headings in assistant text.
@@ -121,18 +120,17 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let advisor = links.advisor.clone();
     let favorite_models = links.favorite_models.clone();
     let approvals = links.approvals;
-    let app_enabled = links.app_enabled;
     let catalog = links.catalog.clone();
     let component_commands = links.commands.clone();
     let mut model = hooks.use_state({
         let catalog = catalog.clone();
+        let components = links.components.take();
         move || {
-            let mut m = Model::new(default_model, approvals);
+            let mut m = Model::with_components(default_model, approvals, components.expect("first render owns the registry"));
             m.effort = default_effort.clone();
             m.default_effort = default_effort;
             m.advisor_default = advisor;
             m.favorite_models = favorite_models;
-            m.app_enabled = app_enabled;
             m.catalog = Some(catalog);
             m.mount_components(&component_commands);
             m.entries.push(Entry::Info(
@@ -243,15 +241,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     m.submit(&text, &commands);
                     input.set(String::new());
                 }
-                if std::mem::take(&mut m.refresh_artifacts)
-                    && let Some(session) = m.session
-                {
-                    let _ = commands.send(Command::ListArtifacts {
-                        session,
-                        pick: false,
-                        apps: false,
-                    });
-                }
                 // A context edit or rewind landed (48 §5): the settled transcript.
                 if std::mem::take(&mut m.refresh_context)
                     && let Some(session) = m.session
@@ -283,13 +272,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     match (&m.menu, m.session) {
                         (Some(Menu::Sessions { .. }), _) => {
                             let _ = commands.send(Command::ListSessions);
-                        }
-                        (Some(Menu::Artifacts { apps, .. }), Some(session)) => {
-                            let _ = commands.send(Command::ListArtifacts {
-                                session,
-                                pick: true,
-                                apps: *apps,
-                            });
                         }
                         _ => {}
                     }
@@ -559,17 +541,13 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     _ => {}
                 }
             }
-            // `o` on an empty editor opens the newest artifact card's file with the OS (35 §6.1).
+            // Owners open the newest available entry at the existing empty-editor shortcut.
             if code == KeyCode::Char('o')
                 && modifiers.is_empty()
                 && m.prompt.is_none()
                 && input.read().is_empty()
             {
                 if m.component_open_latest_entry() { return; }
-                if let Some(path) = m.artifact_path() {
-                    let _ = commands.send(Command::OpenPath(path.to_owned()));
-                    return;
-                }
             }
             // Transcript scrolling. ↑/↓ are the editor's while it spans
             // lines; terminals without mouse capture send them for the wheel.
@@ -1256,25 +1234,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 .collect(),
             *cursor,
         ),
-        Menu::Artifacts {
-            items,
-            cursor,
-            apps,
-        } => (
-            if *apps {
-                format!("apps · {APP_WHERE}  ⏎ open  s show source  e export to ~/Downloads  esc close")
-            } else {
-                "artifacts  ⏎ open  s show inline  e export to ~/Downloads  esc close".to_owned()
-            },
-            items
-                .iter()
-                .map(|r| match r {
-                    Grouped::Heading(h) => h.clone(),
-                    Grouped::Item(a) => format!("    {}", artifact_row(a)),
-                })
-                .collect(),
-            *cursor,
-        ),
     };
     Some(menu_view(title, rows, cursor, width, height, false))
 }
@@ -1526,7 +1485,6 @@ fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<cr
                 CardKind::Prompt => PROMPT,
                 CardKind::Job | CardKind::Schedule => JOB,
                 CardKind::Component { color, .. } => *color,
-                CardKind::Artifact => TOOL,
                 CardKind::Removed => PROMPT,
                 CardKind::Vision => JOB,
                 // 152 D6: a restart note is harness bookkeeping, muted like the prompt.
@@ -1574,70 +1532,11 @@ fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<cr
             };
             plain(&shown, TextWrap::Wrap, |c| c.color(SAND).italic())
         }
-        Entry::Pending { name, progress, .. } => {
-            let row = summary.unwrap_or_else(|| match progress {
-                Some(p) => progress_line(name, p),
-                None => format!("preparing {name}…"),
-            });
+        Entry::Pending { name, .. } => {
+            let row = summary.unwrap_or_else(|| format!("preparing {name}…"));
             element! {
                 View(margin_top: 1) {
                     Text(content: format!("{spinner} {row}"), color: SAND, italic: true)
-                }
-            }
-            .into_any()
-        }
-        // Artifact card (35 §6.1): `▣ name · vN · size`, the title when it
-        // differs, the path as a `file://` link; a failed show keeps its ✗ line.
-        // An app card (46 §8.2) says where it runs: the terminal has its source only.
-        Entry::Tool {
-            artifact: Some(a),
-            result,
-            expanded,
-            ..
-        } => {
-            let mut header = format!("{} {}", CardKind::Artifact.glyph(), a.name);
-            if a.version > 1 {
-                header.push_str(&format!(" · v{}", a.version));
-            }
-            // `name · N files · size` for an archive (35 §3.2): the count rides in
-            // the receipt (`shown a.zip (v1 · 42 files · 3 MB)`), so the header
-            // still touches no file.
-            if a.kind == artifact::Kind::Archive
-                && let Some((output, false)) = result
-                && let Some(files) = output.split(" · ").map(|p| p.trim_end_matches(')')).find(|p| p.ends_with(" files"))
-            {
-                header.push_str(&format!(" · {files}"));
-            }
-            header.push_str(&format!(" · {}", artifact_size(a)));
-            if a.kind == artifact::Kind::App {
-                header.push_str(&format!(" · {APP_WHERE}"));
-            }
-            let error = match result {
-                Some((output, true)) => Some(format!("✗ {}", result_line(output))),
-                _ => None,
-            };
-            let hint = if expanded.is_some() {
-                "ctrl+o collapses"
-            } else {
-                "o open · ctrl+o"
-            };
-            let path = a.path.display().to_string();
-            let link = vec![
-                MixedTextContent::new(&path)
-                    .color(SAND)
-                    .decoration(TextDecoration::Underline)
-                    .hyperlink(format!("file://{path}")),
-                MixedTextContent::new(format!("   {hint}")).color(SAND),
-            ];
-            element! {
-                View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: TOOL, padding_left: 1, padding_right: 1, margin_top: 1, margin_bottom: 1) {
-                    Text(content: header, color: TOOL, weight: Weight::Bold)
-                    #((a.title != a.name).then(|| element!(Text(content: a.title.clone(), wrap: TextWrap::Wrap))))
-                    #(error.map(|e| element!(Text(content: e, color: CARNELIAN, wrap: TextWrap::Wrap))))
-                    MixedText(contents: link, wrap: TextWrap::Wrap)
-                    #(expanded.as_ref().map(|t| element!(View(flex_direction: FlexDirection::Column, margin_top: 1) {
-                        #(t.view().lines().map(line))
-                    })))
                 }
             }
             .into_any()
@@ -1867,6 +1766,89 @@ mod tests {
     use agent::ModelInfo;
     use runtime::SessionId;
     use crate::components::search_attach::{SearchAttach, Msg as SearchMsg, state::{self as search, Focus}};
+
+    #[test]
+    fn entry_summary_replaces_the_spinner_text_without_adding_rows() {
+        use crate::components::web_progress::WebProgress;
+        for (raw, rows, fallback) in [
+            (Entry::Pending { call_id: "crawl".into(), name: "crawl".into() }, 2, "preparing crawl…"),
+            (Entry::Tool { call_id: "crawl".into(), name: "crawl".into(), args: vec!["https://example.com".into()], result: None, expanded: None }, 7, "running…"),
+        ] {
+            let mut model = Model::new(String::new(), false);
+            model.entries.push(raw);
+            let render = |model: &Model| {
+                let raw = &model.entries[0];
+                entry(raw, "·", 0, 80, Vec::new(), model.entry_summary(raw))
+            };
+            assert_eq!(render(&model).render(Some(80)).height(), rows);
+            assert!(render(&model).to_string().contains(fallback));
+            model.components.get_mut::<WebProgress>().unwrap().progress.insert("crawl".into(), "crawling… 2/50 · example.com".into());
+            let mut frame = render(&model);
+            assert_eq!(frame.render(Some(80)).height(), rows);
+            assert_eq!(model.entry_height(&model.entries[0], 80), rows);
+            let text = frame.to_string();
+            assert!(text.contains("· crawling… 2/50 · example.com"), "{text}");
+            assert_eq!(text.matches("crawling…").count(), 1);
+            assert!(!text.contains(fallback), "{text}");
+            assert_eq!(model.activity().as_deref(), Some("crawling… 2/50 · example.com"));
+        }
+    }
+
+    #[test]
+    fn missing_and_late_artifact_hydration_keeps_raw_fallback_heights_and_links() {
+        use crate::components::{LocalReply, Surface, View as OwnerView};
+        use crate::components::artifacts_apps::{ArtifactsApps, Msg};
+        use agent::{HistoryEntry, Loaded};
+        let session = SessionId::new();
+        let loaded = || Loaded {
+            history: vec![HistoryEntry::Tool {
+                call_id: "hydrated".into(), name: "show".into(),
+                args: serde_json::json!({"name":"note.md", "title":"Note", "content":"hello"}),
+                result: Some(("shown note.md".into(), false)), files: Vec::new(), context: None,
+            }],
+            ..Loaded::default()
+        };
+        let mut model = Model::new(String::new(), false);
+        model.session = Some(session);
+        model.apply(UiEvent::History(session, loaded()));
+        let old_generation = model.components.get::<ArtifactsApps>().unwrap().generation;
+        model.apply(UiEvent::History(session, loaded()));
+        let current_generation = model.components.get::<ArtifactsApps>().unwrap().generation;
+        let artifact = artifact::Artifact {
+            id: "late".into(), session, call_id: "hydrated".into(),
+            name: "note.md".into(), title: "Note".into(), kind: artifact::Kind::Markdown,
+            mime: "text/markdown".into(), bytes: 5, version: 1,
+            path: PathBuf::from("/missing-theuth-wire-artifact.md"),
+            source: None, preview: None, pages: None, origin: None, created_at: 0,
+        };
+        let hydrate = |model: &mut Model, generation| {
+            model.apply(UiEvent::Component(LocalReply {
+                to: model.components.token("artifacts-apps"), engine_epoch: 0,
+                body: Box::new(Msg::Listed { session, generation, pick: false, apps: false,
+                    result: Ok((vec![artifact.clone()], Vec::new())) }),
+            }));
+        };
+        let surface = Surface::Entry { key: "hydrated", skipped: 0 };
+        assert_eq!(model.entry_height(&model.entries[0], 80), 8);
+        assert!(model.component_views(surface, 80, 24).is_empty());
+        hydrate(&mut model, old_generation);
+        assert_eq!(model.entry_height(&model.entries[0], 80), 8);
+        let raw = entry(&model.entries[0], "·", 0, 80, model.component_views(surface, 80, 24), None).to_string();
+        assert!(raw.contains("▸ show") && raw.contains("✓ shown note.md"), "{raw}");
+        assert!(!raw.contains("file://"));
+        hydrate(&mut model, current_generation);
+        let decorations = model.component_views(surface, 80, 24);
+        assert!(matches!(decorations.as_slice(), [OwnerView::Element { rows: 7, replace: true, .. }]));
+        assert_eq!(model.entry_height(&model.entries[0], 80), 7);
+        let canvas = entry(&model.entries[0], "·", 0, 80, decorations, None).render(Some(80));
+        assert_eq!(canvas.height(), 7);
+        let mut bytes = Vec::new();
+        canvas.write_ansi(&mut bytes).unwrap();
+        let rendered = String::from_utf8(bytes).unwrap();
+        assert!(rendered.contains("▣ note.md"), "{rendered}");
+        assert!(rendered.contains("\x1b]8;;file:///missing-theuth-wire-artifact.md\x1b\\"), "{rendered}");
+        // The deliberately absent source was not read to join, measure or draw the card.
+    }
 
     /// A search view with wide-character titles and snippets, one hit per
     /// category plus a `show more` row, as the menu would show it.

@@ -1,6 +1,63 @@
 use super::*;
 use crate::components::{Wrapper, WrapperView};
 
+impl Model {
+
+    /// Add an entry that did not come from the model's stream (a peer message,
+    /// a spawn notice). It goes above a still-streaming tail so the text keeps
+    /// accumulating in one `markdown::Text`: pushing it last would split the
+    /// response mid-block and render both halves as broken markdown.
+    pub(super) fn interject(&mut self, e: Entry) {
+        let streaming = match self.entries.last() {
+            Some(Entry::Assistant(t)) => !t.is_done(),
+            Some(Entry::Reasoning { done, .. }) => !done,
+            _ => false,
+        };
+        let at = self.entries.len() - usize::from(streaming);
+        self.entries.insert(at, e);
+    }
+
+    /// Expand or collapse the most recent card or finished tool call (Ctrl+O).
+    pub fn toggle_card(&mut self) {
+        let Some(index) = self.entries.iter().rposition(|e| {
+            matches!(
+                e,
+                Entry::Card { .. }
+                    | Entry::Tool {
+                        result: Some(_),
+                        ..
+                    }
+                    | Entry::Compacted {
+                        summary: Some(_),
+                        ..
+                    }
+            ) || matches!(e, Entry::Advisory { advisory, .. } if advisory_row_count(advisory) > ADVISORY_COLLAPSED)
+        }) else {
+            return;
+        };
+        if self.component_entry_action(index, crate::components::EntryOperation::Toggle) { return; }
+        let e = &mut self.entries[index];
+        match e {
+            Entry::Card { expanded, .. }
+            | Entry::Compacted { expanded, .. }
+            | Entry::Advisory { expanded, .. } => {
+                *expanded = !*expanded;
+            }
+            Entry::Tool {
+                result: Some((output, _)),
+                expanded,
+                ..
+            } => {
+                *expanded = match expanded.take() {
+                    Some(_) => None,
+                    None => Some(Box::new(markdown::Text::complete(&output_markdown(output)))),
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// One transcript row.
 #[derive(Debug)]
 pub enum Entry {
@@ -39,9 +96,6 @@ pub enum Entry {
         call_id: String,
         /// Tool name.
         name: String,
-        /// `ToolCallProgress` so far: what a `show` call is doing and the
-        /// argument bytes streamed (design doc 35 §6.1).
-        progress: Option<Progress>,
     },
     /// A tool call and, once finished, its result.
     Tool {
@@ -55,9 +109,6 @@ pub enum Entry {
         result: Option<(String, bool)>,
         /// Full output shown (Ctrl+O); built on first expand.
         expanded: Option<Box<markdown::Text>>,
-        /// The file a `show` call produced (`ArtifactShown`, design doc 35);
-        /// the card renders as an artifact card once set.
-        artifact: Option<Box<artifact::Artifact>>,
     },
     /// A compaction boundary (design doc 07 §8.4): a divider, expandable with
     /// Ctrl+O to the summary when loaded from history (the live event has none).
@@ -99,8 +150,6 @@ pub enum CardKind {
     Job,
     /// A `<schedule>` fire the harness injected (34 §1.5).
     Schedule,
-    /// An artifact shown inline from `/artifacts` (`s`), or the `show` card header (35 §6.1).
-    Artifact,
     /// A message the user removed from the model's context (48 §2.2): the
     /// original stays in the archive, shown only when expanded.
     Removed,
@@ -141,7 +190,6 @@ impl CardKind {
             CardKind::Prompt => "§",
             CardKind::Job => "▸",
             CardKind::Schedule => "◷",
-            CardKind::Artifact => "▣",
             CardKind::Removed => "⊘",
             CardKind::Vision => "◉",
             CardKind::Restart => "↻",
@@ -257,13 +305,6 @@ impl Entry {
                 text_rows(text, width)
             }
             Entry::Pending { .. } => 2,
-            // Artifact card: header, title (when it differs), path row; the
-            // arguments are not drawn (35 §6.1).
-            Entry::Tool {
-                artifact: Some(a),
-                expanded,
-                ..
-            } => 6 + usize::from(a.title != a.name) + expanded.as_ref().map_or(0, |t| md(t, inner)),
             Entry::Tool {
                 args,
                 expanded,

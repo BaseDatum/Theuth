@@ -311,7 +311,6 @@ impl Model {
                 if let (Some(session), Some(commands)) = (self.session, &self.component_commands) {
                     let _ = commands.send(Command::ListAgents(session));
                 }
-                self.refresh_artifacts = self.session.is_some();
                 self.refresh_advisor = self.session.is_some();
                 self.component_notify(Lifecycle::Resync);
             }

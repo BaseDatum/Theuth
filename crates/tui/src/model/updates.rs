@@ -289,38 +289,7 @@ impl Model {
                     None => self.entries.push(Entry::Info(note)),
                 }
             }
-            UiEvent::ArtifactShown(ev) => {
-                if self.session == Some(ev.session) {
-                    self.attach_artifact(ev.artifact);
-                }
-            }
-            UiEvent::Artifacts {
-                items,
-                pick,
-                apps,
-                sessions,
-            } => {
-                if !pick {
-                    for a in items {
-                        self.attach_artifact(a);
-                    }
-                } else if items.is_empty() {
-                    self.entries.push(Entry::Info(
-                        if apps { "no apps" } else { "no artifacts" }.into(),
-                    ));
-                } else {
-                    let items = artifact_rows(items, |id| self.owner(&sessions, id));
-                    let cursor = match &self.menu {
-                        Some(Menu::Artifacts { cursor, .. }) => *cursor,
-                        _ => grouped_first(&items),
-                    };
-                    self.menu = Some(Menu::Artifacts {
-                        items,
-                        cursor,
-                        apps,
-                    });
-                }
-            }
+
             UiEvent::CompactStyle(s) => self.entries.push(Entry::Info(format!(
                 "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
             ))),
