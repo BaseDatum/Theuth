@@ -49,7 +49,6 @@ impl Model {
             || self.streaming
             || self.mcp_connecting()
             || self.compacting
-            || self.harvesting
             || self.vision.is_some()
             || self.advisor.state == AdvisorState::Reviewing
             || self.agents.values().any(AgentRow::live)
@@ -75,8 +74,7 @@ impl Model {
         }
         if !self.streaming {
             let activity = self.component_text(crate::components::Surface::Activity);
-            if !activity.is_empty() { return Some(activity); }
-            return self.harvesting.then(|| "harvesting…".into());
+            return (!activity.is_empty()).then_some(activity);
         }
         // Parallel calls: a running card need not be the last entry.
         let busy = self.entries.iter().rev().find_map(|e| match e {

@@ -26,7 +26,8 @@ use rpc::search::{SearchGroup, SearchResponse};
 use runtime::SessionId;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::model::{revision_rows, short, when};
+use crate::components::knowledge::revision_rows;
+use crate::model::{short, when};
 
 /// Text edits wait this long before a request (49 §2.2).
 pub const DEBOUNCE_MS: u64 = 150;

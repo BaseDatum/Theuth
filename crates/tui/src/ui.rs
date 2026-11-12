@@ -21,7 +21,7 @@ use crate::model::{
 use crate::model::{
     AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch,
     TodoCard, TurnAction, UiEvent, action_name, describe, gate_name,
-    k, meta_line, now_ms, progress_line, result_line, short, window,
+    k, now_ms, progress_line, result_line, short, window,
 };
 use crate::pathac;
 use crate::search::{self, Focus, Preview};
@@ -1396,28 +1396,8 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             m.peers_rows().iter().map(|r| r.line()).collect(),
             *cursor,
         ),
-        Menu::Knowledge { items, cursor } => (
-            "knowledge  ⏎/h history of concept  H history of all  esc close".to_owned(),
-            if items.is_empty() {
-                vec!["no concepts · H shows the history of all (deleted ones too)".to_owned()]
-            } else {
-                items.iter().map(meta_line).collect()
-            },
-            *cursor,
-        ),
-        Menu::KnowledgeHistory { .. } => m.knowledge_history_menu(),
     };
-    // Diffs get the screen minus the frame around the box; lists stay short.
-    let tall = matches!(
-        m.menu,
-        Some(
-            Menu::KnowledgeHistory {
-                revision: Some(_),
-                ..
-            }
-        )
-    );
-    Some(menu_view(title, rows, cursor, width, height, tall))
+    Some(menu_view(title, rows, cursor, width, height, false))
 }
 
 /// Shared modal frame, selection window and clipping for component-owned rows.

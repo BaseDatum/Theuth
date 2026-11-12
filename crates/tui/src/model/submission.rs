@@ -176,7 +176,6 @@ impl Model {
             },
             "/skills" => self.skills_cmd(arg, tx),
             "/prompt" => send(tx, Command::ShowPrompt(self.session)),
-            "/knowledge" => self.knowledge_cmd(arg, tx),
             "/login" if arg.is_empty() => send(tx, Command::ListLogins),
             "/login" => send(tx, Command::Login(arg.to_owned())),
             "/logout" if arg.is_empty() => self

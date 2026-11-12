@@ -44,11 +44,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "skills: picker (⏎ hands one to the model, s shows it); `/<skill> [words]` does the same",
     ),
     (
-        "/knowledge",
-        "[query | history [id] | show <commit> [id] | restore <id> [commit] | harvest]",
-        "knowledge base: list, search, history, show a commit, restore, harvest",
-    ),
-    (
         "/login",
         "[name]",
         "log in to a provider or MCP server (picker without name)",
