@@ -1,3 +1,7 @@
+import { readyConnection } from '@/components/settings/test-engine'
+import type * as ConnectionModule from '@/store/connection'
+import type * as SessionsModule from '@/store/sessions'
+import type * as RpcModule from '@/lib/rpc'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -17,8 +21,12 @@ vi.mock('@/lib/popout', async (original) => ({
   canPopout: () => env.canPopout,
   openPopout: env.openPopout,
 }))
-vi.mock('@/store/connection', () => ({ useConnection: (pick: (s: unknown) => unknown) => pick({ client: { call: vi.fn() }, discovery: { phase: 'legacy' } }) }))
-vi.mock('@/store/sessions', () => ({ on: () => () => {} }))
+vi.mock('@/store/connection', async (original) => {
+  const m = await original<typeof ConnectionModule>()
+  return { ...m, useConnection: readyConnection(m.createConnection()) }
+})
+vi.mock('@/store/sessions', async (original) => ({ ...(await original<typeof SessionsModule>()), on: () => () => {} }))
+vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof RpcModule>()), useApi: () => ({}) }))
 vi.mock('@/components/notebooks/AskDialog', () => ({ AskDialog: ({ open }: { open: boolean }) => (open ? createElement('div', { 'data-ask': true }) : null) }))
 
 const NB = 'nb1'

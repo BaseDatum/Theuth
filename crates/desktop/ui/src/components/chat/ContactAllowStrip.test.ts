@@ -1,3 +1,5 @@
+import { readyConnection } from '@/components/settings/test-engine'
+import type * as ConnectionModule from '@/store/connection'
 import { receiveComponent } from '@/rpc/bindings/receive'
 import '../settings/test-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -17,6 +19,10 @@ const api = {
   contact_first_answer: vi.fn(async (_c: string, _e: string, _a: string) => null),
 }
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))
+vi.mock('@/store/connection', async (original) => {
+  const m = await original<typeof ConnectionModule>()
+  return { ...m, useConnection: readyConnection(m.createConnection()) }
+})
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0))
 const run = (fn: () => unknown) =>

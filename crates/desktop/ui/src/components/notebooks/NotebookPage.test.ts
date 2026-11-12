@@ -1,3 +1,5 @@
+import { readyConnection } from '@/components/settings/test-engine'
+import type * as ConnectionModule from '@/store/connection'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -32,6 +34,10 @@ vi.mock('@/components/sources/SourcesColumn', () => ({ SourcesColumn: () => crea
 vi.mock('@/components/notebooks/NotebookHeaderActions', () => ({ NotebookHeaderActions: () => createElement('div', { 'data-actions': true }) }))
 vi.mock('@/components/share/ShareDialog', () => ({ ShareAction: () => null }))
 vi.mock('@/lib/notebooks-rpc', () => ({ useNotebooksApi: () => ({}), notebookKeys: { all: ['notebooks'] } }))
+vi.mock('@/store/connection', async (original) => {
+  const m = await original<typeof ConnectionModule>()
+  return { ...m, useConnection: readyConnection(m.createConnection()) }
+})
 
 const render = () => renderToStaticMarkup(createElement(QueryClientProvider, { client: new QueryClient(), children: createElement(NotebookPage) }))
 

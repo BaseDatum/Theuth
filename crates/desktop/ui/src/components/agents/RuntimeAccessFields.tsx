@@ -61,12 +61,12 @@ export function RuntimeFields({ d, set }: { d: Draft; set: Setter }) {
           value={d.memory_model}
           none={{ label: 'Use default' }}
           onChange={(v) => {
-            set('memory_model', v ?? null)
+            set('memory_model', v ?? undefined)
             // 194 D4c/D4d: the effort goes with a cleared model, and with one that does not take it.
             const next = models.data?.find((m) => m.id === v)
-            if (d.memory_effort && !next?.efforts.includes(d.memory_effort)) set('memory_effort', null)
+            if (d.memory_effort && !next?.efforts.includes(d.memory_effort)) set('memory_effort', undefined)
           }}
-          effort={memory && memory.efforts.length > 0 ? { levels: memory.efforts, current: d.memory_effort, onSelect: (level) => set('memory_effort', level ?? null) } : undefined}
+          effort={memory && memory.efforts.length > 0 ? { levels: memory.efforts, current: d.memory_effort, onSelect: (level) => set('memory_effort', level ?? undefined) } : undefined}
         />
       </Field>
       <Field label="Tools ceiling" id="rt-tools" hint="The riskiest tool class it and its children may call; inherited downwards.">

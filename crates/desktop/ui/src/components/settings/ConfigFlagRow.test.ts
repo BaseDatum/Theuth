@@ -1,3 +1,5 @@
+import { readyConnection } from '@/components/settings/test-engine'
+import type * as ConnectionModule from '@/store/connection'
 import './test-dom'
 import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query'
 import { Fragment, act, createElement } from 'react'
@@ -14,6 +16,10 @@ vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
   useApi: () => ({ config_flag_get: async (key: ConfigFlagKey) => ({ key, enabled: true, running: false, restart_required: true }) }),
 }))
+vi.mock('@/store/connection', async (original) => {
+  const m = await original<typeof ConnectionModule>()
+  return { ...m, useConnection: readyConnection(m.createConnection()) }
+})
 // React Query notifies observers on a macrotask by default; on a microtask they settle inside one `act`.
 notifyManager.setScheduler(queueMicrotask)
 

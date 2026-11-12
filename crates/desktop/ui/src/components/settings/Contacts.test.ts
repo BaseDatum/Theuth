@@ -1,3 +1,5 @@
+import { readyConnection } from '@/components/settings/test-engine'
+import type * as ConnectionModule from '@/store/connection'
 import { receiveComponent } from '@/rpc/bindings/receive'
 import './test-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -122,6 +124,10 @@ const api = {
   config_flag_get: vi.fn(async () => ({ key: 'a2a.enabled', enabled: false, running: false, restart_required: false })),
 }
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))
+vi.mock('@/store/connection', async (original) => {
+  const m = await original<typeof ConnectionModule>()
+  return { ...m, useConnection: readyConnection(m.createConnection()) }
+})
 
 const qcNew = () => new QueryClient({ defaultOptions: { queries: { retry: false } } })
 const roots: (() => Promise<void>)[] = []
@@ -357,7 +363,7 @@ test('ceremony: the code and the check line, Cancel focused (never Accept); Acce
   expect(api.contact_answer).toHaveBeenCalledWith('c1', true)
   expect(body()).toContain('Waiting for Bob to press Accept…')
   expect(button('Accept')?.disabled).toBe(true)
-  await run(() => dispatch([{ type: 'contact_pair', data: { ...CER, state: 'paired' } }] as never))
+  await run(() => dispatch([{ key: 'a2a.contacts@1', event: { type: 'contact_pair', data: { ...CER, state: 'paired' } } }]))
   await run(() => void qc.setQueryData(queryKeys.contactPair, { c1: { ...CER, state: 'paired' } }))
   expect(body()).toContain('Bob is now a contact. It reaches nothing until you share an agent or a chat with it.')
   await click('Done')
@@ -597,9 +603,9 @@ function Listeners() {
 test('the contact_nearby and contact_pair events write the cache; paired refetches contacts', async () => {
   const { qc } = await mount(createElement(Listeners))
   const spy = vi.spyOn(qc, 'invalidateQueries')
-  await run(() => dispatch([{ type: 'contact_nearby', data: NEARBY }] as never))
+  await run(() => dispatch([{ key: 'a2a.contacts@1', event: { type: 'contact_nearby', data: NEARBY } }]))
   expect(qc.getQueryData(queryKeys.contactNearby)).toEqual(NEARBY)
-  await run(() => dispatch([{ type: 'contact_pair', data: CER }, { type: 'contact_pair', data: { ...CER, id: 'c2', state: 'paired' } }] as never))
+  await run(() => dispatch([{ key: 'a2a.contacts@1', event: { type: 'contact_pair', data: CER } }, { key: 'a2a.contacts@1', event: { type: 'contact_pair', data: { ...CER, id: 'c2', state: 'paired' } } }]))
   expect(Object.keys(qc.getQueryData(queryKeys.contactPair) as object)).toEqual(['c1', 'c2'])
   expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.contacts })
 })

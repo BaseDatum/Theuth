@@ -1,3 +1,5 @@
+import { readyConnection } from '@/components/settings/test-engine'
+import type * as ConnectionModule from '@/store/connection'
 import '@/components/settings/test-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, createElement } from 'react'
@@ -72,6 +74,10 @@ vi.mock('@/lib/rpc', async (original) => ({
     },
   }),
 }))
+vi.mock('@/store/connection', async (original) => {
+  const m = await original<typeof ConnectionModule>()
+  return { ...m, useConnection: readyConnection(m.createConnection()) }
+})
 
 const client = () => new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
 

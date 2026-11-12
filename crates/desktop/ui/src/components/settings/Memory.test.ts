@@ -64,16 +64,16 @@ test('137F: the compactor model applies live — next summary call, old calls ca
   expect(html).toMatch(/<button[^>]*id="compactor-model"[^>]*aria-label="Compactor model"/)
 })
 
-test('137F Advanced: the four compactor keys carry the engine ranges; absent (older engine) they stay editable with the default as placeholder', async () => {
+test('137F Advanced: the four compactor keys carry the engine ranges; absent received fields use declared serde defaults and stay editable', async () => {
   const field = (html: string, label: string) => html.match(new RegExp(`<input[^>]*aria-label="${label}"[^>]*>`))?.[0] ?? ''
   const absent = await render()
   expect(field(absent, 'Attempt seconds')).toMatch(/min="10" max="3600"[^>]*placeholder="120"/)
   expect(field(absent, 'Local attempt seconds')).toMatch(/min="30" max="7200"[^>]*placeholder="600"/)
   expect(field(absent, 'Local context bytes')).toMatch(/min="4000" max="256000"[^>]*placeholder="24000"/)
   expect(field(absent, 'Local jobs')).toMatch(/min="1" max="16"[^>]*placeholder="1"/)
-  for (const label of ['Attempt seconds', 'Local attempt seconds', 'Local context bytes', 'Local jobs']) {
+  for (const [label, value] of [['Attempt seconds', 120], ['Local attempt seconds', 600], ['Local context bytes', 24_000], ['Local jobs', 1]] as const) {
     expect(field(absent, label)).not.toMatch(/ disabled=""/)
-    expect(field(absent, label)).not.toMatch(/ value="/)
+    expect(field(absent, label)).toContain(`value="${value}"`)
   }
   served = { ...config, attempt_secs: 90, local_attempt_secs: 1200, local_ctx_bytes: 32_000, local_jobs: 2 } as EndlessConfig
   const present = await render()

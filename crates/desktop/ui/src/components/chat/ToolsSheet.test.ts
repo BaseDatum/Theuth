@@ -1,3 +1,5 @@
+import { readyConnection } from '@/components/settings/test-engine'
+import type * as ConnectionModule from '@/store/connection'
 import '@/components/settings/test-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, createElement as h, Fragment } from 'react'
@@ -31,6 +33,10 @@ vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
   useApi: () => new Proxy({}, { get: (_, k: string) => async (...a: never[]) => (answers[k] ?? (() => []))(...a) }),
 }))
+vi.mock('@/store/connection', async (original) => {
+  const m = await original<typeof ConnectionModule>()
+  return { ...m, useConnection: readyConnection(m.createConnection()) }
+})
 
 test('⋯ › Tools… opens the Tools sheet of that chat only, listing the servers for that chat', async () => {
   const host = document.body.appendChild(document.createElement('div'))

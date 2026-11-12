@@ -1,3 +1,6 @@
+import { readyConnection } from '@/components/settings/test-engine'
+import type * as ConnectionModule from '@/store/connection'
+import type * as SessionsModule from '@/store/sessions'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -13,7 +16,11 @@ const navigate = vi.fn()
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@/lib/platform', async (original) => ({ ...(await original<typeof Platform>()), isDesktop: () => true }))
-vi.mock('@/store/sessions', () => ({ on: () => () => {} }))
+vi.mock('@/store/sessions', async (original) => ({ ...(await original<typeof SessionsModule>()), on: () => () => {} }))
+vi.mock('@/store/connection', async (original) => {
+  const m = await original<typeof ConnectionModule>()
+  return { ...m, useConnection: readyConnection(m.createConnection()) }
+})
 vi.mock('@/components/sidebar/ProjectStyle', () => ({ ProjectIcon: () => null }))
 // The switcher has its own suite (EventSwitcher.test.ts); here it is a marker.
 vi.mock('@/components/meeting/EventSwitcher', () => ({ EventSwitcher: () => createElement('span', { 'data-switcher': '' }) }))

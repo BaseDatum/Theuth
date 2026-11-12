@@ -36,7 +36,6 @@ import { useIsMobile } from '@/hooks/use-mobile'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { RunInfo } from "@/rpc/bindings/method.schedule.output"
-import type { ScheduleFile } from "@/rpc/bindings/method.schedule.output"
 import type { ScheduleInfo } from "@/rpc/bindings/method.schedule.output"
 import type { SensorInfo } from "@/rpc/bindings/method.schedule.output"
 import type { Verdict } from "@/rpc/bindings/method.schedule.output"
@@ -44,7 +43,7 @@ import { useConnection } from '@/store/connection'
 import { useSessions } from '@/store/sessions'
 import { RoutineChat } from './RoutineChat'
 import { KindBadge, RESULT_CLASS, RoutineChips, sensorArgs } from './RoutinesView'
-import { type Draft, NEW, draftToFile, fileText, latestDraft } from './draft'
+import { type Draft, type Form, NEW, draftToFile, fileText, latestDraft } from './draft'
 import { type Kind, SECTIONS, type Section, cronWords, fromFile, fromInfo, kindOf, lastCheckText, parseWhen, plainError, relative, resultKind, resultLabel, runCount, sentence, took, verdictText } from './helpers'
 import { KEY, useNotHub, useRoutineFile, useRoutineHistory, useRoutines, useRoutinesApi, useSensors } from './queries'
 
@@ -388,7 +387,7 @@ function Editor({
   draft,
   focusForm,
 }: {
-  initial: ScheduleFile
+  initial: Form
   info: ScheduleInfo | null
   section: Section
   isNew: boolean
@@ -405,8 +404,8 @@ function Editor({
   const projects = useBoardProjects()
   const models = useModels()
   const runTimeoutDefault = shortDuration(Number(useConnection((s) => s.info)?.schedule_run_timeout_secs ?? 0))
-  const [f, setF] = useState<ScheduleFile>(initial)
-  const [applied, setApplied] = useState<{ callId: string; at: number; file: ScheduleFile } | null>(null)
+  const [f, setF] = useState<Form>(initial)
+  const [applied, setApplied] = useState<{ callId: string; at: number; file: Form } | null>(null)
   useEffect(() => setF(initial), [initial])
   const dirty = isNew ? JSON.stringify(f) !== JSON.stringify(applied?.file ?? NEW) : JSON.stringify(f) !== JSON.stringify(initial)
   // §6.4: every revision of the card follows into the form; the user's own edits are kept unless they agree.
@@ -425,7 +424,7 @@ function Editor({
     if (focusForm) nameRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }, [focusForm])
 
-  const set = <K extends keyof ScheduleFile>(k: K, v: ScheduleFile[K]) => setF((x) => ({ ...x, [k]: v }))
+  const set = <K extends keyof Form>(k: K, v: Form[K]) => setF((x) => ({ ...x, [k]: v }))
   // 194 row 18: `effort:` beside `model:`; a model change keeps it only when the new model takes it.
   const runModel = models.data?.find((m) => m.id === f.model)
   const trigger: Trigger = f.when !== null ? 'when' : f.every !== null ? 'every' : f.at !== null ? 'at' : 'cron'
@@ -765,9 +764,9 @@ function Radio({ id, label, value, options, onChange }: { id: string; label: str
   )
 }
 
-type Set = <K extends keyof ScheduleFile>(k: K, v: ScheduleFile[K]) => void
+type Set = <K extends keyof Form>(k: K, v: Form[K]) => void
 
-function ExpiresField({ f, set, error, required }: { f: ScheduleFile; set: Set; error?: string; required?: boolean }) {
+function ExpiresField({ f, set, error, required }: { f: Form; set: Set; error?: string; required?: boolean }) {
   return (
     <Field label={`Expires after${required ? ' *' : ''}`} id="rt-expires" hint="14d, 90d; longer than the interval" error={error}>
       <Input id="rt-expires" className="font-mono" value={f.expires ?? ''} placeholder="14d" onChange={(e) => set('expires', e.target.value.trim() || null)} />
@@ -775,7 +774,7 @@ function ExpiresField({ f, set, error, required }: { f: ScheduleFile; set: Set; 
   )
 }
 
-function PromptField({ f, set, rows, error }: { f: ScheduleFile; set: Set; rows: number; error?: string }) {
+function PromptField({ f, set, rows, error }: { f: Form; set: Set; rows: number; error?: string }) {
   return (
     <Field label="Prompt" id="rt-prompt" hint="markdown; what the run does, written for nobody being there" error={error}>
       <Textarea id="rt-prompt" rows={rows} className="font-mono text-[13px]" value={f.prompt} onChange={(e) => set('prompt', e.target.value)} />

@@ -1,3 +1,5 @@
+import { readyConnection } from '@/components/settings/test-engine'
+import type * as ConnectionModule from '@/store/connection'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { Contact, Monitor } from 'lucide-react'
@@ -16,6 +18,10 @@ vi.mock('@/components/ui/sidebar', () => ({
 vi.mock('@/components/sidebar/SearchTrigger', () => ({ SearchTrigger: () => null }))
 vi.mock('@/lib/popout', () => ({ isPopout: () => env.popped }))
 vi.mock('@/lib/hotkeys', () => ({ isMacDesktop: () => env.mac }))
+vi.mock('@/store/connection', async (original) => {
+  const m = await original<typeof ConnectionModule>()
+  return { ...m, useConnection: readyConnection(m.createConnection()) }
+})
 
 const render = (group: 'agents' | 'library') => renderToStaticMarkup(createElement(SectionBand, { group }))
 const active = (html: string) => [...html.matchAll(/<button[^>]*data-state="active"[^>]*aria-label="([^"]+)"/g)].map((m) => m[1])

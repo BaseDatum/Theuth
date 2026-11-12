@@ -1,6 +1,5 @@
-import { receiveComponent } from '@/rpc/bindings/receive'
 import { THEUTH } from '@/components/tasks/helpers'
-import type { AgentFile } from "@/rpc/bindings/method.roster.output"
+import type { AgentFile } from "@/rpc/bindings/method.roster.input"
 
 /** `/agents/new` in paperclip's order: who → where in the org → how it runs → what it may reach → what it may spend → its charter → review. */
 export const STEPS = ['identity', 'role', 'runtime', 'access', 'budget', 'charter', 'review'] as const
@@ -16,14 +15,14 @@ export const STEP_TITLE: Record<Step, string> = {
 }
 
 /** The file minus `paused` / `proposed_by`, which the Hire buttons decide. */
-export type Draft = Omit<AgentFile, 'paused' | 'proposed_by'>
+export type Draft = Omit<AgentFile, 'paused' | 'proposed_by'> & Required<Pick<AgentFile, 'runs_in' | 'capabilities' | 'mcp'>>
 
 export const NAME_RE = /^[a-z0-9-]{1,32}$/
 export const TOOLS = ['read_only', 'mutating', 'destructive'] as const
 export const EFFORTS = ['low', 'medium', 'high', 'max'] as const
 
 export function emptyDraft(): Draft {
-  return { name: '', title: '', reports_to: THEUTH, model: null, effort: null, memory: null, memory_model: null, memory_effort: null, view_bytes: null, tools: null, mcp: null, budget: { type: 'none' }, capabilities: null, runs_in: 'any', body: '' }
+  return { name: '', title: '', reports_to: THEUTH, model: null, effort: null, tools: null, mcp: null, budget: { type: 'none' }, capabilities: null, runs_in: 'any', body: '' }
 }
 
 /** The charter the editor opens with; the agent fills in the blanks. */
@@ -90,7 +89,7 @@ export function firstInvalid(d: Draft, taken: readonly string[]): Step | null {
 }
 
 export function toFile(d: Draft, paused: boolean): AgentFile {
-  return receiveComponent("method.roster.output.AgentFile", {
+  return {
     ...d,
     title: d.title.trim(),
     capabilities: d.capabilities?.trim() || null,
@@ -99,7 +98,7 @@ export function toFile(d: Draft, paused: boolean): AgentFile {
     tools: d.tools || null,
     paused,
     proposed_by: null,
-  })
+  }
 }
 
 /**
