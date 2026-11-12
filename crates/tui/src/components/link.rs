@@ -265,7 +265,7 @@ impl Component for Link {
             _ => None,
         }
     }
-    fn wake(&self) -> Option<u64> { self.pairing.as_ref().map(|card| card.wake) }
+    fn wake(&self) -> Option<u64> { self.pairing.as_ref().map(Countdown::wake) }
 }
 
 /// A stable, owner-local countdown for one named transcript replacement group.
