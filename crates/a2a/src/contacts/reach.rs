@@ -444,10 +444,15 @@ impl IrohTransport {
         let req = req
             .body(http_body_util::Full::new(bytes::Bytes::from(body)))
             .map_err(|e| after(A2AError::internal(e.to_string())))?;
-        let resp = sender
-            .send_request(req)
-            .await
-            .map_err(|e| after(A2AError::internal(format!("contact request: {e}"))))?;
+        // 191 (D3, S4): the member's gate closed the connection as `not a contact`: the
+        // request never reached its router (nothing admitted there), so the next is tried.
+        let resp = sender.send_request(req).await.map_err(|e| {
+            if gate_refused(&e) {
+                (true, refused("not a contact there"))
+            } else {
+                after(A2AError::internal(format!("contact request: {e}")))
+            }
+        })?;
         match resp.status() {
             s if s.is_success() => {}
             // Refused at that member's gate or router: nothing was admitted there (a member
@@ -495,6 +500,31 @@ impl IrohTransport {
         a2a_pb::protojson_conv::from_value(v)
             .map_err(|e| A2AError::internal(format!("result as ProtoJSON: {e}")))
     }
+}
+
+/// The connection under `e` was closed by the remote's gate ([`mesh::net::A2A_NOT_A_CONTACT`]);
+/// an error that only says the stream broke (a reset, a timeout, our own close) is not.
+fn gate_refused(e: &(dyn std::error::Error + 'static)) -> bool {
+    use iroh::endpoint::{ConnectionError, ReadError, WriteError};
+    let lost = e
+        .downcast_ref::<ConnectionError>()
+        .or_else(|| match e.downcast_ref::<WriteError>() {
+            Some(WriteError::ConnectionLost(c)) => Some(c),
+            _ => None,
+        })
+        .or_else(|| match e.downcast_ref::<ReadError>() {
+            Some(ReadError::ConnectionLost(c)) => Some(c),
+            _ => None,
+        });
+    if let Some(ConnectionError::ApplicationClosed(c)) = lost {
+        return c.reason[..] == *mesh::net::A2A_NOT_A_CONTACT;
+    }
+    // `io::Error::source` skips the error it wraps: look inside it first.
+    let wrapped = e
+        .downcast_ref::<std::io::Error>()
+        .and_then(std::io::Error::get_ref)
+        .map(|w| w as &(dyn std::error::Error + 'static));
+    wrapped.or_else(|| e.source()).is_some_and(gate_refused)
 }
 
 fn no_streams() -> A2AError {

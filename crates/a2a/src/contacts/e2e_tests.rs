@@ -2225,4 +2225,5 @@ async fn a_broken_peers_yaml_never_stops_a_block() {
     assert!(n1.ctx.contact_list().is_empty(), "the RPC applied");
 }
 
+mod owners;
 mod rosters;

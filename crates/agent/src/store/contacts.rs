@@ -458,7 +458,7 @@ impl Store {
 
     /// Tests: `session` is owned by `owner`, as the session log applies another machine's
     /// take (off the capture connection).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) async fn owned_elsewhere(&self, session: SessionId, owner: &str) {
         sqlx::query("UPDATE sessions SET owner = ? WHERE id = ?")
             .bind(owner)
