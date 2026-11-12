@@ -1390,7 +1390,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 .collect(),
             *cursor,
         ),
-        Menu::Shake(s) => (s.title(), s.rows(), s.cursor),
     };
     Some(menu_view(title, rows, cursor, width, height, false))
 }

@@ -26,6 +26,7 @@ pub fn builtin() -> Registry {
     registry.register(web_progress::WebProgress::default()).expect("built-in component registration");
     registry.register(double::Double::default()).expect("built-in component registration");
     registry.register(todos::Todos::default()).expect("built-in component registration");
+    registry.register(shake::ShakePanel::default()).expect("built-in component registration");
 
     // Step-11 group t3 (jobs, terminals, speech and search): register below, in this block only.
     registry.register(jobs::Jobs::default()).expect("built-in component registration");
