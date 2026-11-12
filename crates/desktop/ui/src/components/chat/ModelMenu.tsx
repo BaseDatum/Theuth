@@ -251,8 +251,6 @@ export function HarnessPicker({ m, className, listClassName }: { m: Model; class
           onSelect: (v) => v !== null && void m.setHarnessOption(effort.id, v),
         }
       }
-      favorites={m.favorites}
-      onToggleFavorite={(id) => void m.toggleFavorite(id)}
       className={className}
       listClassName={listClassName}
     />
