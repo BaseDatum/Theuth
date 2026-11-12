@@ -55,6 +55,7 @@ vi.mock('@/lib/rpc', async (original) => ({
     }),
     list_models: async () => [{ id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5' }],
     polish_model: async () => null,
+    polish_effort: async () => null,
     dictation_history: record('dictation_history', [row, polishedRow]),
     dictation_status: async () => ({
       model: { state: 'ready' },

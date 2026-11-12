@@ -663,6 +663,8 @@ pub struct VoiceConfig {
     pub duck_media: Duck,
     /// Polish model id; `None` = title model, then the session's model (153 §9.2).
     pub polish_model: Option<String>,
+    /// 194: the polish call's reasoning effort when `polish_model` answers; `None` = no setting.
+    pub polish_effort: Option<String>,
     /// Per-destination polish instruction overrides, keyed by destination kind (153 §9.1).
     pub polish_profiles: BTreeMap<String, String>,
     /// System-prompt template for rewrite-on-selection (153 §13.6); `None` = the built-in.
@@ -689,6 +691,7 @@ impl Default for VoiceConfig {
             standby_secs: 8,
             duck_media: Duck::Off,
             polish_model: None,
+            polish_effort: None,
             polish_profiles: BTreeMap::new(),
             rewrite_template: None,
             history: HistoryConfig::default(),

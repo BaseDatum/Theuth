@@ -29,12 +29,26 @@ pub trait SettingsApi {
     /// Persist `agent.title_model`; `None` clears it (titles use the session's model).
     #[method(name = "set_title_model")]
     async fn set_title_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>>;
+    /// 194: the live title-call effort (`agent.title_effort`); `None` = no reasoning setting.
+    #[method(name = "title_effort")]
+    async fn title_effort(&self) -> RpcResult<Option<String>>;
+    /// Persist `agent.title_effort`; refused when the title model does not take it; `None`
+    /// clears it. Returns the stored value. A title-model change drops an effort it does not take.
+    #[method(name = "set_title_effort")]
+    async fn set_title_effort(&self, effort: Option<String>) -> RpcResult<Option<String>>;
     /// The live polish model (`voice.polish_model`, 153 §9.2), if set.
     #[method(name = "polish_model")]
     async fn polish_model(&self) -> RpcResult<Option<ModelInfo>>;
     /// Persist `voice.polish_model`; `None` clears it (polish uses the title model, then the session's).
     #[method(name = "set_polish_model")]
     async fn set_polish_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>>;
+    /// 194: the live polish effort (`voice.polish_effort`), sent when the polish model answers.
+    #[method(name = "polish_effort")]
+    async fn polish_effort(&self) -> RpcResult<Option<String>>;
+    /// Persist `voice.polish_effort`; refused when the model polish resolves to does not take
+    /// it; `None` clears it. Returns the stored value.
+    #[method(name = "set_polish_effort")]
+    async fn set_polish_effort(&self, effort: Option<String>) -> RpcResult<Option<String>>;
     /// The live vision fallback model (`agent.vision_model`), if set (52 §3.1).
     #[method(name = "vision_model")]
     async fn vision_model(&self) -> RpcResult<Option<ModelInfo>>;
@@ -43,6 +57,13 @@ pub trait SettingsApi {
     /// provider; a failed config write is an error and changes nothing.
     #[method(name = "set_vision_model")]
     async fn set_vision_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>>;
+    /// 194: the live vision-fallback effort (`agent.vision_effort`); `None` = the model's default.
+    #[method(name = "vision_effort")]
+    async fn vision_effort(&self) -> RpcResult<Option<String>>;
+    /// Persist `agent.vision_effort`; refused when the fallback model does not take it; `None`
+    /// clears it. Returns the stored value. Vision Off clears it too.
+    #[method(name = "set_vision_effort")]
+    async fn set_vision_effort(&self, effort: Option<String>) -> RpcResult<Option<String>>;
     /// The escalation model (`agent.escalate_model`, 57 §0.9: tier 2 of the
     /// local decision oracle) and what a tier-2 call resolves to today.
     #[method(name = "escalate_model")]
@@ -52,6 +73,14 @@ pub trait SettingsApi {
     /// entry; a failed config write is an error and changes nothing.
     #[method(name = "set_escalate_model")]
     async fn set_escalate_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>>;
+    /// 194: the live escalation effort (`agent.escalate_effort`), sent when the escalation
+    /// model answers a tier-2 call.
+    #[method(name = "escalate_effort")]
+    async fn escalate_effort(&self) -> RpcResult<Option<String>>;
+    /// Persist `agent.escalate_effort`; refused when the effective escalation model does not
+    /// take it; `None` clears it. Returns the stored value. Escalation Off clears it too.
+    #[method(name = "set_escalate_effort")]
+    async fn set_escalate_effort(&self, effort: Option<String>) -> RpcResult<Option<String>>;
     /// The live subagent default model (`agent.subagents.model`), if set.
     #[method(name = "subagent_model")]
     async fn subagent_model(&self) -> RpcResult<Option<ModelInfo>>;
@@ -306,12 +335,28 @@ impl SettingsApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetTitleModel { model }).await
     }
 
+    async fn title_effort(&self) -> RpcResult<Option<String>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetTitleEffort).await
+    }
+
+    async fn set_title_effort(&self, effort: Option<String>) -> RpcResult<Option<String>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::SetTitleEffort { effort }).await
+    }
+
     async fn polish_model(&self) -> RpcResult<Option<ModelInfo>> {
         ask::<Agents, _>(agent::AGENT_ACTOR, GetPolishModel).await
     }
 
     async fn set_polish_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetPolishModel { model }).await
+    }
+
+    async fn polish_effort(&self) -> RpcResult<Option<String>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetPolishEffort).await
+    }
+
+    async fn set_polish_effort(&self, effort: Option<String>) -> RpcResult<Option<String>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::SetPolishEffort { effort }).await
     }
 
     async fn vision_model(&self) -> RpcResult<Option<ModelInfo>> {
@@ -322,12 +367,28 @@ impl SettingsApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetVisionModel { model }).await
     }
 
+    async fn vision_effort(&self) -> RpcResult<Option<String>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetVisionEffort).await
+    }
+
+    async fn set_vision_effort(&self, effort: Option<String>) -> RpcResult<Option<String>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::SetVisionEffort { effort }).await
+    }
+
     async fn escalate_model(&self) -> RpcResult<EscalateModel> {
         ask::<Agents, _>(agent::AGENT_ACTOR, GetEscalateModel).await
     }
 
     async fn set_escalate_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetEscalateModel { model }).await
+    }
+
+    async fn escalate_effort(&self) -> RpcResult<Option<String>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetEscalateEffort).await
+    }
+
+    async fn set_escalate_effort(&self, effort: Option<String>) -> RpcResult<Option<String>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::SetEscalateEffort { effort }).await
     }
 
     async fn subagent_model(&self) -> RpcResult<Option<ModelInfo>> {
