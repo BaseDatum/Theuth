@@ -1,4 +1,9 @@
-use super::*;
+use crate as meeting;
+use crate::rpc_support::{client_of, meeting};
+use jsonrpsee::Extensions;
+use jsonrpsee::core::{RpcResult, async_trait};
+use jsonrpsee::proc_macros::rpc;
+use rpc_core::{Server, send, stub_err};
 
 #[rpc(server, client)]
 pub trait MeetingsApi {
@@ -660,4 +665,9 @@ impl MeetingsApiServer for Server {
     async fn brief_delete(&self, id: meeting::BriefId) -> RpcResult<()> {
         send(&meeting()?, meeting::BriefDelete { id }).await
     }
+}
+
+/// Build this domain's RPC module.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    MeetingsApiServer::into_rpc(server)
 }

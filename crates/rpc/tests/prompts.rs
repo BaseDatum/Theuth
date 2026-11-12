@@ -6,11 +6,12 @@ use std::time::Duration;
 
 use jsonrpsee::core::server::Subscription;
 use kameo::actor::Spawn;
-use rpc::into_rpc_module;
+use rpc::api::{hub, tooling};
 use rpc::api::PendingPrompts;
 use rpc_core::Server;
 use runtime::{Runtime, SessionId};
 use tools::{Approval, AskUser, Decision};
+use wire::RuntimeWire as _;
 
 /// The next `subscribe_events` item, decoded.
 async fn next(sub: &mut Subscription) -> serde_json::Value {
@@ -45,12 +46,13 @@ fn snapshot(v: &serde_json::Value) -> PendingPrompts {
 #[tokio::test]
 async fn prompts_resolve_everywhere_and_replay_only_while_pending() {
     let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-    let events = rpc::bridge::start(&rt).await;
+    tools::declare_wire(&rt).await.unwrap();
+    let events = rt.wire_feed();
     let ask = AskUser::spawn(AskUser::new(rt.clone(), Duration::from_secs(30)));
     ask.register(tools::ASK_ACTOR).unwrap();
     let approval = Approval::spawn(Approval::new(rt.clone(), Duration::from_secs(30)));
     approval.register(tools::APPROVAL_ACTOR).unwrap();
-    let mut methods: jsonrpsee::Methods = into_rpc_module(Server {
+    let mut methods: jsonrpsee::Methods = rpc_module(Server {
         events,
         rt: rt.clone(),
         private: Default::default(),
@@ -160,4 +162,11 @@ async fn prompts_resolve_everywhere_and_replay_only_while_pending() {
     let mut c = subscribe().await.unwrap();
     let after = snapshot(&next(&mut c).await);
     assert!(after.asks.is_empty() && after.approvals.is_empty());
+}
+
+fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_core::merge([
+        hub::rpc_module(server.clone()),
+        tooling::rpc_module(server),
+    ])
 }

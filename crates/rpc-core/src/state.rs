@@ -4,11 +4,10 @@ use std::sync::{Arc, LazyLock};
 use parking_lot::{Mutex, RwLock};
 use runtime::{Runtime, SessionId};
 use tokio::sync::broadcast;
+use wire::{RuntimeWire as _, WireFrame};
 
 use crate::{Following, RpcPeer};
 
-/// Single feed-item seam; the wire-frame cutover changes this payload.
-pub type Event = Arc<serde_json::Value>;
 /// Insert-only private-tree membership, shared across local and socket servers.
 pub type PrivateMap = Arc<RwLock<HashMap<SessionId, (SessionId, u64)>>>;
 /// Per-connection delta focus, absent for an unrestricted connection.
@@ -23,7 +22,7 @@ static PRIVATE: LazyLock<PrivateMap> = LazyLock::new(Default::default);
 #[derive(Clone)]
 pub struct Server {
     /// Shared event feed supplied by the transport owner.
-    pub events: broadcast::Sender<Event>,
+    pub events: broadcast::Sender<Arc<WireFrame>>,
     /// Runtime and shutdown handle.
     pub rt: Runtime,
     /// Process-wide insert-only private-tree membership.
@@ -37,10 +36,10 @@ pub struct Server {
 }
 
 impl Server {
-    /// Local/no-feed server. Plugin registration belongs to the startup owner.
+    /// Shared wire feed. Plugin registration belongs to the startup owner.
     pub fn new(rt: Runtime) -> Self {
         Self {
-            events: broadcast::channel(1).0,
+            events: rt.wire_feed(),
             rt,
             private: PRIVATE.clone(),
             focus: Default::default(),

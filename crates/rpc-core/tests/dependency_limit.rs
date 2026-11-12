@@ -4,7 +4,7 @@
 use std::{collections::BTreeSet, fs, path::Path};
 use toml::Value;
 
-const ALLOWED: &[&str] = &["runtime"];
+const ALLOWED: &[&str] = &["runtime", "wire"];
 const ALLOWED_DEV: &[&str] = &[];
 
 #[test]

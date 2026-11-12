@@ -1,4 +1,15 @@
-use super::*;
+use std::path::PathBuf;
+use crate as talk;
+use crate::rpc_support::{dictation, history_store, talk, transcriber, voice};
+use agent::{Agents, Polish, PolishReply, Rewrite};
+use agent::rpc_support::RpcServerExt;
+use base64::Engine as _;
+use jsonrpsee::Extensions;
+use jsonrpsee::core::{RpcResult, async_trait};
+use jsonrpsee::proc_macros::rpc;
+use rpc_core::{Server, ask, failed, peer, send};
+use runtime::SessionId;
+use ::voice::{SpeechId, VoiceStatus};
 
 #[rpc(server, client)]
 pub trait SpeechApi {
@@ -535,4 +546,9 @@ impl SpeechConfigExt for Server {
         .map_err(|e| failed(format!("config.yaml: {e}")))
     }
 
+}
+
+/// Build this domain's RPC module.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    SpeechApiServer::into_rpc(server)
 }

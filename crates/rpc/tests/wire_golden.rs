@@ -8,6 +8,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, value::RawValue};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use wire::{RuntimeWire as _, WireEvent, WireFrame};
 
 struct Stream {
     id: Value,
@@ -44,7 +45,7 @@ impl Stream {
 }
 
 async fn methods(rt: Runtime) -> (jsonrpsee::Methods, rpc_core::RpcPeerGuard) {
-    let mut methods = rpc::methods(rt, rpc::api::into_rpc_module).await;
+    let mut methods = rpc::methods(rt, rpc::api::hub::rpc_module).await;
     let (peer, guard) = rpc_core::RpcPeer::open();
     methods.extensions_mut().insert(peer);
     (methods, guard)
@@ -59,8 +60,9 @@ fn load(name: &str) -> Vec<Value> {
 
 async fn family<E>(rt: &Runtime, stream: &mut Stream, name: &str)
 where
-    E: DeserializeOwned + Clone + Send + 'static,
+    E: DeserializeOwned + WireEvent,
 {
+    rt.register_wire_event::<E>().await.unwrap();
     for (i, sample) in load(name).into_iter().enumerate() {
         let input = &sample["input"];
         let event: E = serde_json::from_value(input.clone())
@@ -77,7 +79,9 @@ fn golden(name: &str, output: &[Value]) {
 #[tokio::test]
 async fn legacy_event_families() {
     let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-    let events = rpc::bridge::start(&rt).await;
+    tools::declare_wire(&rt).await.unwrap();
+    sessionsync::declare_wire(&rt).await.unwrap();
+    let events = rt.wire_feed();
     let (methods, _guard) = methods(rt.clone()).await;
     let mut stream = Stream::open(&methods).await;
     golden("rpc.stream.initial", &[stream.next().await]);
@@ -235,19 +239,22 @@ async fn relay(rt: &Runtime, stream: &mut Stream) {
 }
 
 /// Synchronous sends on this current-thread runtime overrun the real 1024-slot
-/// bridge ring by exactly two frames, without timing a stalled network client.
+/// wire ring by exactly two frames, without timing a stalled network client.
 async fn lagged_then_pending_snapshot(
     methods: &jsonrpsee::Methods,
-    events: &tokio::sync::broadcast::Sender<rpc_core::Event>,
+    events: &tokio::sync::broadcast::Sender<std::sync::Arc<WireFrame>>,
 ) {
     let mut stream = Stream::open(methods).await;
     let initial = stream.next().await;
     tokio::task::yield_now().await;
     for _ in 0..1026 {
+        let event = serde_json::json!({ "type": "TitleChanged", "title": "2" });
         events
-            .send(std::sync::Arc::new(serde_json::json!({
-                "type": "TitleChanged", "title": "2",
-            })))
+            .send(std::sync::Arc::new(WireFrame {
+                policy: wire::EventPolicy::legacy_fields(&event),
+                descriptor: None,
+                event,
+            }))
             .unwrap();
     }
     let lagged = stream.next().await;

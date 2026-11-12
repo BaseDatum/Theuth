@@ -189,14 +189,15 @@ its 400-line ceiling and puts each contract next to the code that enforces
 it. (Earlier draft put the tool contract in `runtime`; dropped once the
 agent needed `tools` anyway for the registry actor type.)
 
-The wire-layer extraction adds `rpc-core` below method owners: its only normal
-workspace dependency is `runtime`. It owns `Server`, connection identity
-(`RpcPeer`, `Guest`, `Client`, `ConnId`), original-actor follow leases, the
-shared event-feed item and unchanged stream backlog, and actor/error helpers.
-It contains no plugin registration, domain RPC traits, sessions registry calls
-or artifact operations. Every domain implements its server trait on this one
-`Server`; clones share all six handles. New servers share only process-wide,
-insert-only private-tree membership; focus, seen and follow maps remain local.
+The wire-layer extraction adds `rpc-core` below method owners: its normal
+workspace dependencies are `runtime` and plugin-neutral `wire`. It owns `Server`,
+connection identity (`RpcPeer`, `Guest`, `Client`, `ConnId`), original-actor follow
+leases, the `Arc<wire::WireFrame>` feed seam and policy-driven stream backlog,
+and actor/error helpers. It contains no plugin registration, domain RPC traits,
+sessions registry calls or artifact operations. Every domain implements its
+server trait on this one `Server`; clones share all six handles. New servers use
+the Runtime's one wire feed and process-wide insert-only private membership;
+focus, seen and follow maps remain local.
 
 `rpc::new_server` installs plugin hooks before constructing the pure state.
 `agent::rpc_forward` owns forwarding; five immutable hooks read current
@@ -210,6 +211,13 @@ Authorization belongs to `agent::rpc_support::RpcServerExt`, not inherent
 `sessionsync::rpc_support::RpcSessionMoveExt` expose the real owner operations;
 cross-domain callers use those contracts rather than generated wire traits.
 Configuration and private-session tracking/wait extensions stay domain-local.
+The `meeting` crate owns the meeting, calendar and brief wire methods and
+their actor/client helpers; main registers `meeting::rpc_module` directly.
+The `talk` crate owns speech, dictation and live-conversation RPC methods,
+the voice config extension and their actor/history helpers. Hub imports the
+shared dictation lookup from `talk::rpc_support`; main registers
+`talk::rpc_module`. Generated clients remain available through
+`rpc::api::clients` without adding consumer dependencies on the owners.
 
 Events: a plugin may publish one struct per event or one `#[serde(tag =
 "type")]` enum per event *stream* — `agent::AgentEvent` is the latter because
@@ -574,6 +582,18 @@ The RPC layer is generic glue, not a second protocol:
   `#[serde(tag = "type")]`; `descendants: true` widens the filter to the
   session's subtree, including `SubagentSpawned` whose parent is inside it
   (19 §2.2).
+- **Topic subscriptions** = `subscribe_topics(topics?, session?, descendants?)`
+  yields `{topic, version, event}` over that same single owner-declared feed.
+  Topics are exact strings: null selects all declared topics, [] no event data;
+  unknown topics select nothing. `rpc.stream` version 1 controls always arrive:
+  PendingPrompts first, then Lagged followed by a fresh snapshot after loss.
+  Snapshots contain only selected prompt families admitted to the connection.
+  Child enrollment and privacy run before topic selection, then focus and backlog.
+  The legacy sink remains indefinitely and emits only unchanged inner JSON.
+  Unknown old-peer payloads remain legacy-only; paired-engine bytes are unchanged.
+  Both streams remain live-only and lossy (1024 ring, 8192 non-delta backlog,
+  40 ms delta flush), not durable replay or bounded producer backpressure.
+  Artifact/update count external RPC stream leases, never local feed receivers.
 - Method params/results and event payloads are the plugins' own types; the
   RPC crate defines none. TypeScript bindings for Tauri are generated with
   `ts-rs` 12 from the same types (`#[derive(TS)]` behind a feature).
@@ -627,8 +647,8 @@ logins (its own subscription, so `TextDelta` never serializes), and for
 everything else calls the harness commands. The 25 domain RPC traits in
 `rpc::api` implement their generated server contracts on `rpc_core::Server`,
 using actor lookup plus `ask`/`tell`. They are assembled by the explicit
-`rpc_core::ModuleFactory` supplied by `main` (temporarily
-`rpc::api::into_rpc_module`). The TUI uses the generated typed clients over
+`rpc_core::ModuleFactory` supplied by `main`: its `rpc_module` function
+merges the 25 domain factories with `rpc_core::merge`. The TUI uses the generated typed clients over
 `rpc::client::Local::new(rt, module)` or a remote WebSocket. Local dispatch
 uses jsonrpsee `Methods` in-process: no loopback socket or bearer token.
 Events still use the TUI's own bus subscription. A command is added once to

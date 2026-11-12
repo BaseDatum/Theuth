@@ -1,6 +1,5 @@
 //! The JSON-RPC surface. Every method is a lazy registry lookup plus one
-//! `ask`; the subscription drains a `broadcast::Receiver` fed by
-//! [`crate::bridge`].
+//! `ask`; event subscriptions drain the owner-declared `wire` feed.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -44,7 +43,7 @@ use agent::{
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use agent::{EndlessConfig, MemoryMode, SessionMemory, ViewLine};
-use agent::{GetPolishModel, Polish, PolishReply, Rewrite, SetPolishModel};
+use agent::{GetPolishModel, SetPolishModel};
 use app::{
     AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi,
 };
@@ -96,10 +95,9 @@ use tools::{
 };
 use tools::{LiveCounts, LiveCountsRow};
 use uuid::Uuid;
-use voice::{SpeechId, VoiceStatus};
 
 #[cfg(test)]
-use rpc_core::{Event, FocusMap, BACKLOG};
+use rpc_core::{FocusMap, BACKLOG};
 use agent::rpc_forward as forward;
 use crate::pathac::PathCompletion;
 use crate::search::SearchResponse;
@@ -110,6 +108,7 @@ use mesh::rpc_support::mesh_actor;
 use roster::rpc_support::{roster_actor, attention_actor, mask_alerts};
 use schedule::rpc_support::schedule;
 use secrets::rpc_support::secrets;
+use wire::{RuntimeWire as _, WireEvent as _, WireFrame, EventPolicy};
 
 /// 191: `a2a_forward` from a machine `mesh.messaging_off` lists: the words the contact hears
 /// (through the receiving machine), naming no machine.
@@ -178,33 +177,53 @@ pub struct Info {
 }
 
 /// The wire API is split into domain server and client traits.
-/// [`into_rpc_module`] merges the server traits; [`clients`] exports the typed client methods
+/// Each domain exports its own server module; [`clients`] exports the typed client methods
 /// for the in-process [`crate::client::Local`] or a WebSocket (63 §2.3).
-mod hub;
-mod sessions;
-mod turns;
-mod settings;
-mod jobs;
-mod tooling;
-mod skills;
-mod screens;
-mod mcp;
-mod concepts;
-mod documents;
-mod notebooks;
-mod codemap;
-mod messaging;
-mod network;
-mod routines;
-mod boards;
-mod artifacts;
-mod credentials;
-mod speech;
-mod meetings;
-mod kernels;
-mod dreams;
-mod research;
-mod sandboxes;
+pub mod hub;
+/// Sessions RPC server and client traits.
+pub mod sessions;
+/// Turns RPC server and client traits.
+pub mod turns;
+/// Settings RPC server and client traits.
+pub mod settings;
+/// Jobs RPC server and client traits.
+pub mod jobs;
+/// Tooling RPC server and client traits.
+pub mod tooling;
+/// Skills RPC server and client traits.
+pub mod skills;
+/// Screens RPC server and client traits.
+pub mod screens;
+/// Mcp RPC server and client traits.
+pub mod mcp;
+/// Concepts RPC server and client traits.
+pub mod concepts;
+/// Documents RPC server and client traits.
+pub mod documents;
+/// Notebooks RPC server and client traits.
+pub mod notebooks;
+/// Codemap RPC server and client traits.
+pub mod codemap;
+/// Messaging RPC server and client traits.
+pub mod messaging;
+/// Network RPC server and client traits.
+pub mod network;
+/// Routines RPC server and client traits.
+pub mod routines;
+/// Boards RPC server and client traits.
+pub mod boards;
+/// Artifacts RPC server and client traits.
+pub mod artifacts;
+/// Credentials RPC server and client traits.
+pub mod credentials;
+/// Kernels RPC server and client traits.
+pub mod kernels;
+/// Dreams RPC server and client traits.
+pub mod dreams;
+/// Research RPC server and client traits.
+pub mod research;
+/// Sandboxes RPC server and client traits.
+pub mod sandboxes;
 
 pub use hub::{CoreApiClient, CoreApiServer};
 pub use sessions::{SessionsApiClient, SessionsApiServer};
@@ -225,8 +244,6 @@ pub use routines::{RoutinesApiClient, RoutinesApiServer};
 pub use boards::{BoardsApiClient, BoardsApiServer};
 pub use artifacts::{ArtifactsApiClient, ArtifactsApiServer};
 pub use credentials::{CredentialsApiClient, CredentialsApiServer};
-pub use speech::{SpeechApiClient, SpeechApiServer};
-pub use meetings::{MeetingsApiClient, MeetingsApiServer};
 pub use kernels::{KernelsApiClient, KernelsApiServer};
 pub use dreams::{DreamsApiClient, DreamsApiServer};
 pub use research::{ResearchApiClient, ResearchApiServer};
@@ -253,66 +270,44 @@ pub mod clients {
     pub use super::boards::BoardsApiClient;
     pub use super::artifacts::ArtifactsApiClient;
     pub use super::credentials::CredentialsApiClient;
-    pub use super::speech::SpeechApiClient;
-    pub use super::meetings::MeetingsApiClient;
+    pub use talk::SpeechApiClient;
+    pub use meeting::MeetingsApiClient;
     pub use super::kernels::KernelsApiClient;
     pub use super::dreams::DreamsApiClient;
     pub use super::research::ResearchApiClient;
     pub use super::sandboxes::SandboxesApiClient;
 }
 
-/// Merge every domain, rejecting duplicate wire method names.
-pub fn into_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
-    let mut module = CoreApiServer::into_rpc(server.clone());
-    module.merge(SessionsApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(TurnsApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(SettingsApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(JobsApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(ToolingApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(SkillsApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(ScreensApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(McpApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(ConceptsApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(DocumentsApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(NotebooksApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(CodemapApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(MessagingApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(NetworkApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(RoutinesApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(BoardsApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(ArtifactsApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(CredentialsApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(SpeechApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(MeetingsApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(KernelsApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(DreamsApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(ResearchApiServer::into_rpc(server.clone()))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(SandboxesApiServer::into_rpc(server))
-        .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module
+/// Unit-test/export composition only; production assembly belongs to main.
+#[cfg(test)]
+pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
+    rpc_core::merge([
+        hub::rpc_module(server.clone()),
+        sessions::rpc_module(server.clone()),
+        turns::rpc_module(server.clone()),
+        jobs::rpc_module(server.clone()),
+        skills::rpc_module(server.clone()),
+        tooling::rpc_module(server.clone()),
+        screens::rpc_module(server.clone()),
+        mcp::rpc_module(server.clone()),
+        concepts::rpc_module(server.clone()),
+        documents::rpc_module(server.clone()),
+        notebooks::rpc_module(server.clone()),
+        codemap::rpc_module(server.clone()),
+        messaging::rpc_module(server.clone()),
+        network::rpc_module(server.clone()),
+        routines::rpc_module(server.clone()),
+        boards::rpc_module(server.clone()),
+        artifacts::rpc_module(server.clone()),
+        credentials::rpc_module(server.clone()),
+        talk::rpc_module(server.clone()),
+        meeting::rpc_module(server.clone()),
+        dreams::rpc_module(server.clone()),
+        research::rpc_module(server.clone()),
+        kernels::rpc_module(server.clone()),
+        sandboxes::rpc_module(server.clone()),
+        settings::rpc_module(server),
+    ])
 }
 
 
@@ -370,6 +365,28 @@ impl PendingPrompts {
         out.asks.extend(admit(relayed.asks, &mut keep));
         out
     }
+}
+
+/// Always-delivered per-subscription controls, never published on the bus.
+#[derive(Clone, Debug, Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum StreamControl {
+    /// Initial pending state and refresh after loss.
+    PendingPrompts(PendingPrompts),
+    /// Number of discarded frames.
+    Lagged(Lagged),
+}
+
+/// The legacy loss notification body.
+#[derive(Clone, Debug, Serialize, schemars::JsonSchema)]
+#[serde(tag = "type")]
+pub struct Lagged {
+    /// Frames discarded by the ring or this subscription's backlog.
+    pub count: u64,
+}
+
+impl wire::WireEvent for StreamControl {
+    const TOPIC: &'static str = "rpc.stream";
 }
 
 /// 188: the flags Settings had no write path for: four `<section>.enabled` and
@@ -644,61 +661,10 @@ fn update_actor() -> RpcResult<ActorRef<update::UpdateActor>> {
     })
 }
 
-/// The voice actor; absent when `voice.enabled: false` or the plugin is not loaded.
-fn voice() -> RpcResult<ActorRef<voice::Voice>> {
-    lookup::<voice::Voice>(voice::VOICE_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "voice is disabled", None::<()>),
-        _ => e,
-    })
-}
-
-/// The STT actor; absent when `voice.enabled: false` or the plugin is not loaded.
-fn transcriber() -> RpcResult<ActorRef<voice::Transcriber>> {
-    lookup::<voice::Transcriber>(voice::TRANSCRIBER_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "voice is disabled", None::<()>),
-        _ => e,
-    })
-}
-
-/// The dictation actor; absent when `voice.enabled: false` or the plugin is not loaded.
-fn dictation() -> RpcResult<ActorRef<voice::Dictation>> {
-    lookup::<voice::Dictation>(voice::DICTATION_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "voice is disabled", None::<()>),
-        _ => e,
-    })
-}
-
-/// The 153 history store (§6.5): local peers only, like the daemon mic
-/// (`dictation_start`); `ASK_FAILED` "history disabled" when it is off.
-async fn history_store(ext: &Extensions) -> RpcResult<voice::Store> {
-    if peer(ext)?.remote() {
-        return Err(failed("dictation history is on the harness host"));
-    }
-    send(&dictation()?, voice::HistoryStore)
-        .await?
-        .ok_or_else(|| failed("history disabled"))
-}
-
-/// The talk actor; absent when `talk.enabled: false` or the plugin is not loaded.
-fn talk() -> RpcResult<ActorRef<talk::Talk>> {
-    lookup::<talk::Talk>(talk::TALK_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "talk is disabled", None::<()>),
-        _ => e,
-    })
-}
-
 /// The telegram actor; absent when `telegram.enabled: false` or the plugin is not loaded.
 fn telegram() -> RpcResult<ActorRef<telegram::Telegram>> {
     lookup::<telegram::Telegram>(telegram::TELEGRAM_ACTOR).map_err(|e| match e.code() {
         NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "telegram is disabled", None::<()>),
-        _ => e,
-    })
-}
-
-/// The meeting actor; absent when `meeting.enabled: false`, off macOS, or the plugin is not loaded.
-fn meeting() -> RpcResult<ActorRef<meeting::Meeting>> {
-    lookup::<meeting::Meeting>(meeting::MEETING_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "meetings are disabled", None::<()>),
         _ => e,
     })
 }
@@ -1187,12 +1153,6 @@ fn cost_service() -> RpcResult<&'static agent::CostService> {
 }
 
 
-/// 158 §7.2: the connection's `x-theuth-client` value for companion-only methods; `None` when
-/// the call did not come over the socket (the in-process TUI).
-fn client_of(ext: &Extensions) -> Option<&'static str> {
-    ext.get::<rpc_core::Client>().map(|c| c.0)
-}
-
 /// Largest decoded image `put_attachment` accepts (17 §1: Anthropic's 5 MB); an
 /// `.svg` (a saved diagram) shares the cap.
 const MAX_IMAGE: usize = 5 * 1024 * 1024;
@@ -1256,14 +1216,11 @@ async fn attach_pty(
 /// owner; a `SubagentSpawned` (or 141 `ObservedChildChanged`) under a private
 /// parent enrols `child` first so its own later events are filtered too.
 /// Events naming no known member pass: durable trees are not tracked.
-fn admitted(ev: &serde_json::Value, peer: u64, private: &PrivateMap) -> bool {
-    let id = |k: &str| {
-        ev.get(k)
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<SessionId>().ok())
-    };
-    if announces_child(ev)
-        && let (Some(parent), Some(child)) = (id("parent"), id("child"))
+fn admitted(policy: &EventPolicy, peer: u64, private: &PrivateMap) -> bool {
+    let id = |s: Option<&str>| s.and_then(|s| s.parse::<SessionId>().ok());
+    if policy.announces_child
+        && let (Some(parent), Some(child)) =
+            (id(policy.parent.as_deref()), id(policy.child.as_deref()))
     {
         let known = private.read().get(&parent).copied();
         if let Some((root, owner)) = known {
@@ -1272,21 +1229,12 @@ fn admitted(ev: &serde_json::Value, peer: u64, private: &PrivateMap) -> bool {
         }
     }
     let map = private.read();
-    ["session", "parent", "child"]
+    [policy.session.as_deref(), policy.parent.as_deref(), policy.child.as_deref()]
         .into_iter()
         .filter_map(id)
         .all(|s| map.get(&s).is_none_or(|&(_, owner)| owner == peer))
 }
 
-/// `SubagentSpawned` or 141 `ObservedChildChanged`: the two events that
-/// introduce a `child` under a `parent` (the latter repeats on every change,
-/// which the enrolments below tolerate).
-fn announces_child(ev: &serde_json::Value) -> bool {
-    matches!(
-        ev.get("type").and_then(|t| t.as_str()),
-        Some("SubagentSpawned" | "ObservedChildChanged")
-    )
-}
 
 /// Does a subscription on `session` forward `ev`? With `tree` (descendants
 /// mode) an event passes when its `session` is in the tree, or it is a
@@ -1297,26 +1245,25 @@ fn announces_child(ev: &serde_json::Value) -> bool {
 /// cannot see ancestry, and the event carries only a session id and a
 /// revision (50 §10).
 fn wanted(
-    ev: &serde_json::Value,
+    policy: &EventPolicy,
     session: Option<&str>,
     tree: Option<&mut HashSet<String>>,
 ) -> bool {
-    let field = |k: &str| ev.get(k).and_then(|v| v.as_str());
-    if field("type") == Some("CommunicationChanged") {
+    if policy.always_wanted {
         return true;
     }
     let Some(tree) = tree else {
-        return match (session, field("session")) {
+        return match (session, policy.session.as_deref()) {
             (Some(want), Some(have)) => want == have,
             _ => true,
         };
     };
-    if field("session").is_some_and(|s| tree.contains(s)) {
+    if policy.session.as_deref().is_some_and(|s| tree.contains(s)) {
         return true;
     }
-    if announces_child(ev)
-        && field("parent").is_some_and(|p| tree.contains(p))
-        && let Some(child) = field("child")
+    if policy.announces_child
+        && policy.parent.as_deref().is_some_and(|p| tree.contains(p))
+        && let Some(child) = policy.child.as_deref()
     {
         tree.insert(child.to_owned());
         return true;
@@ -1327,6 +1274,27 @@ fn wanted(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Bind legacy JSON fixtures to owner policies without changing assertions.
+    fn policy(ev: &serde_json::Value) -> EventPolicy {
+        if ev["type"] == "CommunicationChanged" {
+            agent::CommunicationChanged::policy(ev)
+        } else {
+            agent::AgentEvent::policy(ev)
+        }
+    }
+
+    fn admitted(ev: &serde_json::Value, peer: u64, private: &PrivateMap) -> bool {
+        super::admitted(&policy(ev), peer, private)
+    }
+
+    fn wanted(ev: &serde_json::Value, session: Option<&str>, tree: Option<&mut HashSet<String>>) -> bool {
+        super::wanted(&policy(ev), session, tree)
+    }
+
+    fn is_delta(ev: &serde_json::Value) -> bool {
+        policy(ev).delta != wire::Delta::Control
+    }
 
     /// A diagram's "Save SVG…" goes through `put_attachment` on the desktop shell:
     /// `.svg` must be accepted (image cap), unknown extensions still refused.
@@ -1460,7 +1428,7 @@ mod tests {
             "resume"
         );
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let names: Vec<&str> = into_rpc_module(crate::new_server(rt)).method_names().collect();
+        let names: Vec<&str> = test_rpc_module(crate::new_server(rt)).method_names().collect();
         assert!(names.contains(&"resume_turn"), "{names:?}");
     }
 
@@ -1468,7 +1436,7 @@ mod tests {
     #[tokio::test]
     async fn dreaming_methods_are_registered() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let names: Vec<&str> = into_rpc_module(crate::new_server(rt)).method_names().collect();
+        let names: Vec<&str> = test_rpc_module(crate::new_server(rt)).method_names().collect();
         for m in dreaming::rpc::METHODS {
             assert!(names.contains(&m), "{m} missing from {names:?}");
         }
@@ -1478,7 +1446,7 @@ mod tests {
     #[tokio::test]
     async fn autoresearch_methods_are_registered() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let names: Vec<&str> = into_rpc_module(crate::new_server(rt)).method_names().collect();
+        let names: Vec<&str> = test_rpc_module(crate::new_server(rt)).method_names().collect();
         for m in autoresearch::rpc_impl::METHODS {
             assert!(names.contains(&m), "{m} missing from {names:?}");
         }
@@ -1489,7 +1457,7 @@ mod tests {
     #[tokio::test]
     async fn slack_manifest_answers_the_compiled_manifest_without_slack() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
+        let methods: jsonrpsee::Methods = test_rpc_module(crate::new_server(rt)).into();
         let req = r#"{"jsonrpc":"2.0","method":"slack_manifest","params":[],"id":1}"#;
         let (resp, _) = methods.raw_json_request(req, 1).await.unwrap();
         let v: serde_json::Value = serde_json::from_str(resp.get()).unwrap();
@@ -1515,7 +1483,7 @@ mod tests {
             figment::Figment::from(Yaml::string(boot)),
             dir.path().to_path_buf(),
         );
-        let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
+        let methods: jsonrpsee::Methods = test_rpc_module(crate::new_server(rt)).into();
         let req = format!(r#"{{"jsonrpc":"2.0","method":"{method}","params":{params},"id":1}}"#);
         let (resp, _) = methods.raw_json_request(&req, 1).await.unwrap();
         (serde_json::from_str(resp.get()).unwrap(), dir)
@@ -1674,7 +1642,7 @@ mod tests {
     #[tokio::test]
     async fn routed_methods_dispatch_on_the_owner_with_the_forwarders_params() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let mut methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
+        let mut methods: jsonrpsee::Methods = test_rpc_module(crate::new_server(rt)).into();
         methods.extensions_mut().insert(rpc_core::RpcPeer::internal());
         methods
             .extensions_mut()
@@ -1720,7 +1688,7 @@ mod tests {
     async fn a2a_forward_needs_the_forwarded_marker_and_messaging_on() {
         let call = |forwarder: Option<&str>| {
             let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-            let mut methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
+            let mut methods: jsonrpsee::Methods = test_rpc_module(crate::new_server(rt)).into();
             methods.extensions_mut().insert(rpc_core::RpcPeer::internal());
             if let Some(f) = forwarder {
                 methods
@@ -1761,7 +1729,7 @@ mod tests {
     #[tokio::test]
     async fn a_forwarded_dream_now_runs_on_the_hub_with_the_forwarders_params() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let mut methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
+        let mut methods: jsonrpsee::Methods = test_rpc_module(crate::new_server(rt)).into();
         methods.extensions_mut().insert(rpc_core::RpcPeer::internal());
         methods
             .extensions_mut()
@@ -1789,7 +1757,7 @@ mod tests {
     #[tokio::test]
     async fn session_call_tool_allowlist_precedes_authorize() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
+        let methods: jsonrpsee::Methods = test_rpc_module(crate::new_server(rt)).into();
         let call = |name: &str| {
             let methods = methods.clone();
             let req = format!(
@@ -2075,7 +2043,7 @@ use std::time::Duration;
 
         struct Harness {
             methods: jsonrpsee::Methods,
-            tx: broadcast::Sender<Event>,
+            tx: broadcast::Sender<Arc<WireFrame>>,
             focus: FocusMap,
             peer: rpc_core::RpcPeer,
             guard: Option<rpc_core::RpcPeerGuard>,
@@ -2089,7 +2057,7 @@ use std::time::Duration;
                 let tx = broadcast::channel(ring).0;
                 server.events = tx.clone();
                 let focus = server.focus.clone();
-                let mut methods: jsonrpsee::Methods = into_rpc_module(server).into();
+                let mut methods: jsonrpsee::Methods = test_rpc_module(server).into();
                 let (peer, guard) = rpc_core::RpcPeer::open();
                 methods.extensions_mut().insert(peer.clone());
                 Self {
@@ -2124,7 +2092,9 @@ use std::time::Duration;
             }
 
             fn publish(&self, ev: serde_json::Value) {
-                self.tx.send(Arc::new(ev)).unwrap();
+                self.tx.send(Arc::new(WireFrame {
+                    policy: policy(&ev), descriptor: None, event: ev,
+                })).unwrap();
             }
         }
 
@@ -2273,7 +2243,7 @@ use std::time::Duration;
     #[tokio::test]
     async fn session_calls_need_an_authenticated_peer() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
+        let methods: jsonrpsee::Methods = test_rpc_module(crate::new_server(rt)).into();
         let id = SessionId::new();
         for req in [
             format!(r#"{{"jsonrpc":"2.0","method":"get_todos","params":["{id}"],"id":1}}"#),
@@ -2314,7 +2284,7 @@ use std::time::Duration;
     #[tokio::test]
     async fn app_calls_need_an_authenticated_peer() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let base: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
+        let base: jsonrpsee::Methods = test_rpc_module(crate::new_server(rt)).into();
         assert_eq!(app_close_code(&base).await, i64::from(UNAUTHORIZED));
 
         let (peer, _guard) = rpc_core::RpcPeer::open();
@@ -2327,7 +2297,7 @@ use std::time::Duration;
     /// Dispatch a raw dictation request as a remote (relay) peer on a fresh server.
     async fn remote_dictation_call(method: &str, params: &str) -> serde_json::Value {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let mut methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
+        let mut methods: jsonrpsee::Methods = test_rpc_module(crate::new_server(rt)).into();
         let (peer, _guard) = rpc_core::RpcPeer::open_remote();
         methods.extensions_mut().insert(peer);
         let req = format!(r#"{{"jsonrpc":"2.0","method":"{method}","params":{params},"id":1}}"#);
@@ -2362,7 +2332,7 @@ use std::time::Duration;
     #[tokio::test]
     async fn spend_report_is_registered_and_round_trips() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
+        let methods: jsonrpsee::Methods = test_rpc_module(crate::new_server(rt)).into();
         assert!(methods.method_names().any(|m| m == "spend_report"));
         let (resp, _) = methods
             .raw_json_request(
@@ -2407,7 +2377,7 @@ use std::time::Duration;
     #[tokio::test]
     async fn cost_methods_are_registered_with_their_wire_shapes() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
+        let methods: jsonrpsee::Methods = test_rpc_module(crate::new_server(rt)).into();
         let call = |body: String| {
             let methods = methods.clone();
             async move {
@@ -2541,7 +2511,7 @@ use std::time::Duration;
                     .unwrap();
                 tokio::time::pause();
                 let stores = Arc::new(artifact::Stores::new(Arc::new(state)));
-                let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt.clone())).into();
+                let methods: jsonrpsee::Methods = test_rpc_module(crate::new_server(rt.clone())).into();
                 let (tx, events) = mpsc::unbounded_channel();
                 let cap = Capture::spawn(Capture(tx));
                 rt.subscribe::<Capture, PagePreviewRequested>(&cap).await;
@@ -2719,7 +2689,7 @@ use std::time::Duration;
         };
         use kameo::actor::Spawn;
         use kameo::message::Context;
-        use tokio::sync::{broadcast, mpsc};
+        use tokio::sync::mpsc;
 
         /// Bus subscriber: `(resolved, id)` of every request and resolution, in order.
         #[derive(kameo::Actor)]
@@ -2742,15 +2712,7 @@ use std::time::Duration;
         /// A runtime with a capture on its bus and a live event feed (no subscriber at all
         /// short-circuits to "no renderer").
         async fn harness() -> (Runtime, mpsc::UnboundedReceiver<(bool, FenceSnapshotId)>) {
-            let (tx, rx) = broadcast::channel::<rpc_core::Event>(4);
-            artifact::preview::watch_feed(tx);
-            std::mem::forget(rx);
-            if let Ok(Some(b)) =
-                ActorRef::<crate::bridge::Bridge>::lookup(crate::bridge::BRIDGE_ACTOR)
-                && let Ok(tx) = b.ask(crate::bridge::Feed).await
-            {
-                std::mem::forget(tx.subscribe());
-            }
+            artifact::preview::watch_feed(Arc::new(|| 1));
             let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
             let (tx, events) = mpsc::unbounded_channel();
             let cap = Capture::spawn(Capture(tx));
@@ -2812,7 +2774,7 @@ use std::time::Duration;
         #[tokio::test(start_paused = true)]
         async fn first_done_wins_and_late_answers_are_refused() {
             let (rt, mut events) = harness().await;
-            let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt.clone())).into();
+            let methods: jsonrpsee::Methods = test_rpc_module(crate::new_server(rt.clone())).into();
             let call = render(&rt, "{\"a\":1}");
             let (resolved, id) = events.recv().await.unwrap();
             assert!(!resolved);
@@ -2854,7 +2816,7 @@ use std::time::Duration;
             let (rt, mut events) = harness().await;
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
-            let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt.clone())).into();
+            let methods: jsonrpsee::Methods = test_rpc_module(crate::new_server(rt.clone())).into();
             tokio::spawn(crate::accept(
                 listener,
                 methods,
@@ -2904,7 +2866,7 @@ use std::time::Duration;
 
         /// `rt`'s methods behind `peer`.
         fn methods(rt: &Runtime, peer: rpc_core::RpcPeer) -> jsonrpsee::Methods {
-            let mut m: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt.clone())).into();
+            let mut m: jsonrpsee::Methods = test_rpc_module(crate::new_server(rt.clone())).into();
             m.extensions_mut().insert(peer);
             m
         }
@@ -3025,7 +2987,7 @@ use std::time::Duration;
                 Some(i64::from(UNAUTHORIZED)),
                 "{v}"
             );
-            let bare: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt.clone())).into();
+            let bare: jsonrpsee::Methods = test_rpc_module(crate::new_server(rt.clone())).into();
             let v = snapshot(&bare, params).await.unwrap();
             assert_eq!(
                 v["error"]["code"].as_i64(),

@@ -115,3 +115,8 @@ impl SkillsApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, SyncSkills).await
     }
 }
+
+/// Build this domain's RPC module.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    SkillsApiServer::into_rpc(server)
+}

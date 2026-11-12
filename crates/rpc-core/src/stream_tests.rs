@@ -4,6 +4,16 @@ use crate::stream::{Backlog, Next, BACKLOG, FLUSH_MS};
 use std::{sync::Arc, time::Duration};
 use tokio::time::Instant;
 
+fn frame(event: serde_json::Value) -> Arc<wire::WireFrame> {
+    let mut policy = wire::EventPolicy::legacy_fields(&event);
+    policy.delta = match event["type"].as_str() {
+        Some("TextDelta" | "ReasoningDelta") => wire::Delta::AppendText,
+        Some("ToolCallProgress" | "VisionProgress") => wire::Delta::Replace,
+        _ => wire::Delta::Control,
+    };
+    Arc::new(wire::WireFrame { descriptor: None, event, policy })
+}
+
 /// A delta frame of the given session and turn.
 pub fn delta(kind: &str, session: SessionId, turn: &str, text: &str) -> serde_json::Value {
     serde_json::json!({"type": kind, "session": session, "turn": turn, "text": text})
@@ -24,7 +34,7 @@ pub fn title(session: SessionId, title: impl std::fmt::Display) -> serde_json::V
             let mut out = Vec::new();
             loop {
                 match b.next(now) {
-                    Next::Frame(ev) => out.push(serde_json::Value::clone(&ev)),
+                    Next::Frame(ev) => out.push(ev.event.clone()),
                     Next::Lagged(n) => {
                         out.push(serde_json::json!({ "type": "Lagged", "count": n }))
                     }
@@ -43,19 +53,19 @@ pub fn title(session: SessionId, title: impl std::fmt::Display) -> serde_json::V
             let (s, r) = (SessionId::new(), SessionId::new());
             let mut b = Backlog::default();
             for i in 0..10 {
-                b.push(Arc::new(delta("TextDelta", s, "t", &i.to_string())), now);
+                b.push(frame(delta("TextDelta", s, "t", &i.to_string())), now);
             }
-            b.push(Arc::new(delta("ReasoningDelta", s, "t", "think")), now);
+            b.push(frame(delta("ReasoningDelta", s, "t", "think")), now);
             let started =
                 serde_json::json!({ "type": "ToolCallStarted", "session": s, "turn": "t" });
-            b.push(Arc::new(started.clone()), now);
-            b.push(Arc::new(progress(s, "c", "{\"a")), now);
-            b.push(Arc::new(progress(s, "c", "{\"a\":1}")), now);
-            b.push(Arc::new(progress(s, "d", "{}")), now);
-            b.push(Arc::new(delta("TextDelta", r, "u", "p")), now);
-            b.push(Arc::new(title(s, "x")), now);
-            b.push(Arc::new(delta("TextDelta", r, "u", "q")), now);
-            b.push(Arc::new(delta("TextDelta", s, "t", "z")), now);
+            b.push(frame(started.clone()), now);
+            b.push(frame(progress(s, "c", "{\"a")), now);
+            b.push(frame(progress(s, "c", "{\"a\":1}")), now);
+            b.push(frame(progress(s, "d", "{}")), now);
+            b.push(frame(delta("TextDelta", r, "u", "p")), now);
+            b.push(frame(title(s, "x")), now);
+            b.push(frame(delta("TextDelta", r, "u", "q")), now);
+            b.push(frame(delta("TextDelta", s, "t", "z")), now);
             let out = drain(&mut b, now);
             assert_eq!(out[0], delta("TextDelta", s, "t", "0123456789"));
             assert_eq!(out[1], delta("ReasoningDelta", s, "t", "think"));
@@ -81,12 +91,12 @@ pub fn title(session: SessionId, title: impl std::fmt::Display) -> serde_json::V
             let now = Instant::now();
             let s = SessionId::new();
             let mut b = Backlog::default();
-            b.push(Arc::new(delta("TextDelta", s, "t", "a")), now);
+            b.push(frame(delta("TextDelta", s, "t", "a")), now);
             for i in 0..BACKLOG + 5 {
-                b.push(Arc::new(title(s, i)), now);
+                b.push(frame(title(s, i)), now);
             }
             for _ in 0..100 {
-                b.push(Arc::new(delta("TextDelta", s, "t", "b")), now);
+                b.push(frame(delta("TextDelta", s, "t", "b")), now);
             }
             // Past the flush deadline so the trailing delta batch goes too.
             let out = drain(&mut b, now + Duration::from_millis(FLUSH_MS));

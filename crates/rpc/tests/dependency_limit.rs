@@ -46,9 +46,9 @@ const ALLOWED: &[&str] = &[
     "update",
     "voice",
     "web",
+    "wire",
 ];
-// `wire` is the plugin-neutral event contract (step 8 design §2).
-const ALLOWED_DEV: &[&str] = &["agent", "wire"];
+const ALLOWED_DEV: &[&str] = &["agent"];
 
 #[test]
 fn workspace_dependencies_only_shrink() {

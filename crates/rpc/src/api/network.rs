@@ -282,3 +282,8 @@ impl NetworkApiServer for Server {
         send(&mesh_actor()?, mesh::RotateVault).await
     }
 }
+
+/// Build this domain's RPC module.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    NetworkApiServer::into_rpc(server)
+}
