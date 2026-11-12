@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use agent::{CreateSessionOptions, DurableStore, PinTitle, SessionOpen, UnloadSession};
 use kameo::actor::ActorRef;
-use rpc::into_rpc_module;
+use rpc::api::{hub, tooling};
 
 use runtime::{Runtime, SessionId};
 use tools::{HiddenTools, ListTools, RestoreHidden, ToolRegistry};
@@ -58,7 +58,7 @@ async fn hides_survive_an_actor_restart_and_unhide_clears_them() {
     .unwrap();
 
     let (peer, _guard) = rpc_core::RpcPeer::open();
-    let mut api: jsonrpsee::Methods = into_rpc_module(rpc::new_server(rt)).into();
+    let mut api: jsonrpsee::Methods = rpc_module(rpc::new_server(rt)).into();
     api.extensions_mut().insert(peer);
     let open: SessionOpen = api
         .call("create_session", (CreateSessionOptions::default(),))
@@ -117,4 +117,11 @@ async fn hides_survive_an_actor_restart_and_unhide_clears_them() {
     restart(&agents, &reg, s, &[a.to_string()]).await;
     assert!(reg.ask(HiddenTools(s)).await.unwrap().is_empty());
     assert!(visible(reg.clone()).await.contains(a));
+}
+
+fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_core::merge([
+        hub::rpc_module(server.clone()),
+        tooling::rpc_module(server),
+    ])
 }

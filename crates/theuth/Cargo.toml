@@ -25,6 +25,7 @@ search-providers = { workspace = true }
 agent = { workspace = true }
 surface = { workspace = true }
 rpc = { workspace = true }
+rpc-core = { workspace = true }
 link = { workspace = true }
 nodes = { workspace = true }
 schedule = { workspace = true }
