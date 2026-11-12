@@ -184,12 +184,6 @@ pub enum UiEvent {
         /// group under (51 §3); empty otherwise.
         sessions: Vec<SessionSummary>,
     },
-    /// Reply to [`Command::ListSecrets`]: names, notes, versions. Never values.
-    Secrets(secrets::SecretsList),
-    /// Reply to [`Command::SetSecret`] / [`Command::RestoreSecret`]: the new version.
-    SecretSet(secrets::SecretInfo),
-    /// Secrets plugin traffic (bus event): a change, a `secret_request`, its resolution.
-    SecretsEvent(secrets::SecretsEvent),
     /// Reply to [`Command::GetCommunication`], [`Command::SetCommunication`]
     /// and [`Command::SetPeerScope`]: the authoritative switches (50 §10);
     /// `state.session` says whose, so a reply for a session left behind is dropped.
@@ -624,33 +618,6 @@ pub enum Command {
     },
     /// Open a local file with the OS default handler ([`platform::open::open_path`], detached).
     OpenPath(PathBuf),
-    /// `list_secrets`.
-    ListSecrets,
-    /// `set_secret(name, value, note)`. The value transits once and is never shown again.
-    SetSecret {
-        /// Name.
-        name: String,
-        /// The value (source `user`).
-        value: String,
-        /// `None` keeps the old note.
-        note: Option<String>,
-    },
-    /// `restore_secret(name, back)`: version `-back` becomes current, as a new version.
-    RestoreSecret {
-        /// Name.
-        name: String,
-        /// Versions back, 1..=4.
-        back: u8,
-    },
-    /// `delete_secret`: the name and every version.
-    DeleteSecret(String),
-    /// `answer_secret`: `None` declines a `secret_request`.
-    AnswerSecret {
-        /// The request.
-        id: secrets::RequestId,
-        /// The typed value.
-        value: Option<String>,
-    },
     /// `get_communication`; `None` reads the global default alone.
     GetCommunication(Option<SessionId>),
     /// `set_communication`, then `get_communication(view)`: the reply is the

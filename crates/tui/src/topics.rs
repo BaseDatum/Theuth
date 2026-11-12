@@ -137,7 +137,6 @@ pub fn residual(event: &TopicEvent) -> Option<UiEvent> {
         Some("tools.mcp-progress") => decode!(tools::McpProgress, McpProgress),
         Some("agent.login") => decode!(agent::LoginFinished, LoginFinished),
         Some("artifact.shown") => decode!(artifact::ArtifactShown, ArtifactShown),
-        Some("secrets.events") => decode!(secrets::SecretsEvent, SecretsEvent),
         Some("knowledge.changed") => decode!(knowledge::KnowledgeChanged, KnowledgeChanged),
         Some("agent.communication") => decode!(agent::CommunicationChanged, CommunicationChanged),
         Some("agent.peer-message") => decode!(agent::PeerMessageChanged, PeerMessageChanged),
@@ -181,7 +180,7 @@ fn legacy(value: &Value, _local: bool) -> Option<UiEvent> {
         };
     }
     owner!(agent::AgentEvent, Agent);
-    owner!(secrets::SecretsEvent, SecretsEvent);
+
     owner!(voice::VoiceEvent, Voice);
     owner!(talk::TalkEvent, Talk);
     None

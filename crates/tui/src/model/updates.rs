@@ -631,26 +631,11 @@ impl Model {
             // The transcript reload that follows pushes the notice (`History`).
             UiEvent::Undone(t) => self.notice = Some(format!("undone: {t} — /redo restores")),
             UiEvent::Redone(t) => self.notice = Some(format!("restored: {t}")),
-            UiEvent::Secrets(list) => {
-                if self.awaiting_secrets && !matches!(self.menu, Some(Menu::Secrets { .. })) {
-                    self.menu = Some(Menu::Secrets {
-                        cursor: 0,
-                        history: None,
-                    });
-                }
-                self.awaiting_secrets = false;
-                self.secrets = Some(list);
-            }
-            UiEvent::SecretSet(info) => self
-                .entries
-                .push(Entry::Info(format!("{}: v{} set", info.name, info.current))),
-            UiEvent::SecretsEvent(ev) => self.apply_secrets(ev),
             UiEvent::Error(e) => {
                 // A failed `/compact` answers here, not with an agent event.
                 self.compacting = false;
                 self.awaiting_effort = false;
                 self.awaiting_vision = false;
-                self.awaiting_secrets = false;
 
                 self.notice = None;
                 // A knowledge request that was in flight failed: the menu

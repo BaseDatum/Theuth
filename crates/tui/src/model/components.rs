@@ -197,7 +197,6 @@ impl Model {
         match value["type"].as_str() {
             Some("PendingPrompts") => {
                 // Replace even empty sets; repeat live Requested messages are idempotent.
-                // Secrets remain in the residual owner until its own migration.
                 if let Some(rows) = value["approvals"].as_array() {
                     self.approvals.clear();
                     for row in rows {
@@ -218,20 +217,12 @@ impl Model {
                         }
                     }
                 }
-                if let Some(rows) = value["secrets"].as_array() {
-                    self.secret_requests.clear();
-                    for row in rows {
-                        if let Ok(request) = <secrets::SecretsEvent as serde::Deserialize>::deserialize(row) {
-                            let event = UiEvent::SecretsEvent(request);
-                            emit(Output::Event(self, &event));
-                            self.reduce(event);
-                        }
-                    }
-                }
                 let approvals = &self.approvals;
                 let asks = &self.asks;
                 self.double.retain(|id, _| approvals.iter().any(|a| a.id.0.to_string() == *id) || asks.iter().any(|a| a.req.id.0.to_string() == *id));
-                self.component_notify(Lifecycle::Prompts(value));
+                let out = self.component_lifecycle(Lifecycle::Prompts(value));
+                for plain in &out.plain { emit(Output::Plain(plain)); }
+                self.component_finish(out, emit);
             }
             Some("Lagged") => {
                 // Never overwrite an inspected historical page or clear the draft.
@@ -242,7 +233,6 @@ impl Model {
                 self.refresh_artifacts = self.session.is_some();
                 self.refresh_advisor = self.session.is_some();
                 self.refresh_communication = true;
-                self.refresh_secrets = self.secrets.is_some();
                 self.component_notify(Lifecycle::Resync);
             }
             _ => {}
