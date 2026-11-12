@@ -195,6 +195,8 @@ pub struct CoreView<'a> {
 
 
     // Step-11 group t3 CoreView fields: add below, in this block only.
+    /// Measured transcript row budget at the current key dispatch boundary.
+    pub viewport: usize,
 }
 /// Read-only identity metadata shared by core session membership.
 pub struct SessionMember<'a> {
@@ -608,6 +610,17 @@ pub enum CoreAction {
     // Step-11 group t3 CoreAction variants: add below, in this block only.
     /// Move the shell-owned separate editor cursor without touching the chat draft.
     EditorCursor(usize),
+    /// Hold a core reference and prepend its token to the composer.
+    HoldReference(agent::attach::AttachRef),
+    /// Scroll the core transcript at the caller's measured geometry.
+    Scroll {
+        /// Signed row displacement.
+        delta: isize,
+        /// Visible transcript row budget.
+        rows: usize,
+        /// Measured terminal columns.
+        width: usize,
+    },
 }
 
 /// Owned effects and actions emitted during one deterministic dispatch.
