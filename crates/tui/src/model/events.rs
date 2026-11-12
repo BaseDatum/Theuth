@@ -47,14 +47,6 @@ pub enum UiEvent {
     CompactStyle(CompactStyle),
     /// A command failed (actor missing, ask error).
     Error(String),
-    /// Reply to [`Command::ListLogins`]: providers and OAuth MCP servers.
-    Logins(Vec<LoginRow>),
-    /// A provider login started by [`Command::Login`] ended (bus event).
-    LoginFinished(agent::LoginFinished),
-    /// Reply to [`Command::ListProviders`].
-    Providers(Vec<ProviderInfo>),
-    /// Reply to [`Command::AddProvider`].
-    ProviderAdded(ProviderInfo),
     /// Reply to [`Command::Withdraw`]: the steer left the queue; its text goes back to the editor.
     Withdrawn {
         /// The withdrawn steer.
@@ -244,40 +236,6 @@ pub enum Command {
         /// On or off.
         enabled: bool,
     },
-    /// `list_logins` plus OAuth servers from `list_mcp`.
-    ListLogins,
-    /// `login` (provider name) or `mcp_login` (server name).
-    Login(String),
-    /// `logout` (provider name) or `mcp_logout` (server name).
-    Logout(String),
-    /// `add_provider`.
-    AddProvider {
-        /// Custom provider name.
-        name: String,
-        /// OpenAI-compatible base URL.
-        base_url: String,
-        /// API key.
-        key: String,
-    },
-    /// `remove_provider`.
-    RemoveProvider(String),
-    /// `refresh_provider_models` (162 D8).
-    RefreshProvider(String),
-    /// `local_servers_probe` (177 E8).
-    FindLocalServers,
-    /// `set_model_limits` (177 E6).
-    SetModelLimits {
-        /// Provider name.
-        provider: String,
-        /// Model id within the provider.
-        model: String,
-        /// Context window; `None` = unknown.
-        context: Option<u32>,
-        /// Max output; `None` = keep the stored one, `Some(0)` = unknown (R2-8).
-        output: Option<u32>,
-    },
-    /// `list_providers`.
-    ListProviders,
 
     /// `set_session_project`: label or clear the root's project (51 §3).
     SetSessionProject {

@@ -3,12 +3,6 @@ use super::*;
 /// Slash commands: name, argument hint (`<x>` required, `[x]` optional, `""` none), description.
 pub const COMMANDS: &[(&str, &str, &str)] = &[
     (
-        "/login",
-        "[name]",
-        "log in to a provider or MCP server (picker without name)",
-    ),
-    ("/logout", "<name>", "forget a login"),
-    (
         "/agents",
         "",
         "subagents of this session (picker: ⏎ opens one)",
@@ -78,11 +72,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "new session with the conversation through turn n (picker without n)",
     ),
     ("/quit", "", "exit"),
-    (
-        "/provider",
-        "[add [name [url [key]]] | refresh <name> | rm <name> | limits <provider> <model> <context> [output] | find]",
-        "providers: built-in opencode (Zen) / openrouter keyed via /secrets add; add prompts for a custom provider's name, url, key (no key for a local server); refresh lists a provider's models again; limits sets a model's context/output (0 = unknown); find probes local model servers",
-    ),
 
     ("/exit", "", "same as /quit"),
 ];
@@ -106,7 +95,7 @@ impl Model {
 
     /// Open or close the slash popup to match what the input box holds.
     pub fn sync_slash(&mut self, input: &str) {
-        if self.prompt.is_some() || self.ask().is_some() || self.components.editor().is_some() {
+        if self.ask().is_some() || self.components.editor().is_some() {
             return;
         }
         // 141 §10.1: the watch-only editor lets go once the slash command is gone.

@@ -8,6 +8,51 @@
     use crate::components::skills_prompt::{SkillsPrompt, Msg as SkillsMsg, Request as SkillsRequest};
     use crate::components::acp::{Acp, Menu as AcpMenu, Msg as AcpMsg, Request as AcpRequest};
     use acp::{EntryInfo, registry::RegistryAgent};
+    use crate::components::providers_login::{ProvidersLogin, Prompt as ProviderPrompt, Request as ProviderRequest};
+
+    fn providers_login(m: &Model) -> &ProvidersLogin { m.components.get::<ProvidersLogin>().unwrap() }
+
+    #[test]
+    fn late_login_picker_keeps_masked_wizard_and_menu_key_precedence() {
+        use crate::components::providers_login::{LoginRow, Msg, Reply};
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::new(String::new(), false);
+        m.submit("/login", &tx);
+        assert!(matches!(component_request::<ProviderRequest>(&mut rx), Ok(ProviderRequest::ListLogins)));
+        m.submit("/provider add cloud https://cloud.example/v1", &tx);
+        component_reply(&mut m, "providers-login", Msg::Reply(Ok(Reply::Logins(vec![LoginRow {
+            name: "openai".into(), mcp: false, status: "not logged in".into(),
+        }]))));
+        assert!(m.modal_menu() && !m.input_focused());
+        assert!(m.components.editor().is_some_and(|(_, editor)| editor.masked));
+        component_menu_key(&mut m, "providers-login", KeyCode::Esc);
+        assert!(providers_login(&m).menu.is_none());
+        assert!(matches!(providers_login(&m).prompt, Some(ProviderPrompt::ProviderKey { .. })));
+        assert!(m.input_focused());
+        m.submit("private-key", &tx);
+        assert!(matches!(component_request::<ProviderRequest>(&mut rx),
+            Ok(ProviderRequest::AddProvider { name, key, .. }) if name == "cloud" && key == "private-key"));
+        assert!(!leaked(&m, "private-key"));
+    }
+
+    #[test]
+    fn late_login_completion_keeps_canceled_wizard_closed_and_other_editor_intact() {
+        use crate::components::{FocusClass, secrets::{Secrets, Prompt as SecretPrompt}};
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::new(String::new(), false);
+        m.submit("/provider add cloud https://cloud.example/v1", &tx);
+        assert!(m.components.editor().is_some_and(|(_, editor)| editor.masked));
+        component_menu_key(&mut m, "providers-login", KeyCode::Esc);
+        m.submit("/secrets add github", &tx);
+        m.apply(wire_event("agent.login", agent::LoginFinished { provider: "openai".into(), error: None }));
+        assert!(providers_login(&m).prompt.is_none());
+        assert!(m.components.editor().is_some_and(|(class, editor)| class == FocusClass::Secret && editor.masked));
+        m.submit("private-value", &tx);
+        assert!(matches!(&m.components.get::<Secrets>().unwrap().prompt,
+            Some(SecretPrompt::SecretNote { name, value }) if name == "github" && value == "private-value"));
+        assert!(rx.try_recv().is_err());
+        assert!(!leaked(&m, "private-value"));
+    }
 
     fn acp(m: &Model) -> &Acp { m.components.get::<Acp>().unwrap() }
 
@@ -2482,21 +2527,21 @@
     #[test]
     fn provider_add_wizard_then_one_shot() {
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         m.submit("/provider add", &tx);
-        assert!(matches!(m.prompt, Some(Prompt::ProviderName)));
+        assert!(matches!(providers_login(&m).prompt, Some(ProviderPrompt::ProviderName)));
         assert!(rx.try_recv().is_err());
         m.submit("rwx", &tx);
-        assert!(matches!(m.prompt, Some(Prompt::ProviderUrl { .. })));
+        assert!(matches!(providers_login(&m).prompt, Some(ProviderPrompt::ProviderUrl { .. })));
         m.submit("https://api.ai.rwx.dev/v1", &tx);
-        assert!(matches!(m.prompt, Some(Prompt::ProviderKey { .. })));
+        assert!(matches!(providers_login(&m).prompt, Some(ProviderPrompt::ProviderKey { .. })));
         m.submit("sk-secret", &tx);
-        assert!(m.prompt.is_none());
-        let Ok(Command::AddProvider {
+        assert!(providers_login(&m).prompt.is_none());
+        let Ok(ProviderRequest::AddProvider {
             name,
             base_url,
             key,
-        }) = rx.try_recv()
+        }) = component_request::<ProviderRequest>(&mut rx)
         else {
             panic!("wizard did not send AddProvider");
         };
@@ -2513,15 +2558,15 @@
         assert!(!leaked, "api key must not land in the transcript");
         m.submit("/provider add rwx https://x/v1 sk-one", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::AddProvider { key, .. }) if key == "sk-one"
+            component_request::<ProviderRequest>(&mut rx),
+            Ok(ProviderRequest::AddProvider { key, .. }) if key == "sk-one"
         ));
         m.submit("/provider", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListProviders)));
+        assert!(matches!(component_request::<ProviderRequest>(&mut rx), Ok(ProviderRequest::ListProviders)));
         m.submit("/provider rm rwx", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::RemoveProvider(n)) if n == "rwx"));
+        assert!(matches!(component_request::<ProviderRequest>(&mut rx), Ok(ProviderRequest::RemoveProvider(n)) if n == "rwx"));
         m.submit("/provider refresh rwx", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::RefreshProvider(n)) if n == "rwx"));
+        assert!(matches!(component_request::<ProviderRequest>(&mut rx), Ok(ProviderRequest::RefreshProvider(n)) if n == "rwx"));
         m.submit("/provider refresh", &tx);
         assert!(rx.try_recv().is_err(), "refresh needs a name");
         assert!(matches!(
@@ -2529,8 +2574,8 @@
             Some(Entry::Error(e)) if e.starts_with("usage: /provider")
         ));
         m.submit("/provider add", &tx);
-        m.cancel_prompt();
-        assert!(m.prompt.is_none());
+        component_menu_key(&mut m, "providers-login", KeyCode::Esc);
+        assert!(providers_login(&m).prompt.is_none());
     }
 
     /// 177 E10: a local URL needs no key (one-shot and wizard), `limits`
@@ -2538,29 +2583,29 @@
     #[test]
     fn provider_local_add_limits_and_find() {
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         m.submit("/provider add omlx http://127.0.0.1:8000/v1", &tx);
-        assert!(m.prompt.is_none());
+        assert!(providers_login(&m).prompt.is_none());
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::AddProvider { name, key, .. }) if name == "omlx" && key.is_empty()
+            component_request::<ProviderRequest>(&mut rx),
+            Ok(ProviderRequest::AddProvider { name, key, .. }) if name == "omlx" && key.is_empty()
         ));
         m.submit("/provider add", &tx);
         m.submit("lms", &tx);
         m.submit("http://localhost:1234/v1", &tx);
-        assert!(m.prompt.is_none(), "no key step for a local URL");
-        assert!(matches!(rx.try_recv(), Ok(Command::AddProvider { key, .. }) if key.is_empty()));
+        assert!(providers_login(&m).prompt.is_none(), "no key step for a local URL");
+        assert!(matches!(component_request::<ProviderRequest>(&mut rx), Ok(ProviderRequest::AddProvider { key, .. }) if key.is_empty()));
         m.submit("/provider limits omlx LFM3 32768 4096", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetModelLimits { provider, model, context: Some(32768), output: Some(4096) })
+            component_request::<ProviderRequest>(&mut rx),
+            Ok(ProviderRequest::SetModelLimits { provider, model, context: Some(32768), output: Some(4096) })
                 if provider == "omlx" && model == "LFM3"
         ));
         // R2-8: no output keeps the stored one (None); 0 clears it (Some(0)).
         m.submit("/provider limits omlx LFM3 8192 0", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetModelLimits {
+            component_request::<ProviderRequest>(&mut rx),
+            Ok(ProviderRequest::SetModelLimits {
                 context: Some(8192),
                 output: Some(0),
                 ..
@@ -2568,8 +2613,8 @@
         ));
         m.submit("/provider limits omlx LFM3 0", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetModelLimits {
+            component_request::<ProviderRequest>(&mut rx),
+            Ok(ProviderRequest::SetModelLimits {
                 context: None,
                 output: None,
                 ..
@@ -2581,7 +2626,7 @@
             matches!(m.entries.last(), Some(Entry::Error(e)) if e.starts_with("usage: /provider limits"))
         );
         m.submit("/provider find", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::FindLocalServers)));
+        assert!(matches!(component_request::<ProviderRequest>(&mut rx), Ok(ProviderRequest::FindLocalServers)));
     }
 
     /// A vault listing with one two-version secret.

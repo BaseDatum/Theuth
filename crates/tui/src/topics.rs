@@ -132,7 +132,6 @@ pub fn residual(event: &TopicEvent) -> Option<UiEvent> {
         Some("tools.approval-resolved") => decode!(tools::ApprovalResolved, Resolved),
         Some("tools.ask-requested") => decode!(tools::AskRequested, Ask),
         Some("tools.ask-resolved") => decode!(tools::AskResolved, AskResolved),
-        Some("agent.login") => decode!(agent::LoginFinished, LoginFinished),
         None => legacy(value, matches!(event, TopicEvent::Local(_))),
         _ => None,
     }
@@ -152,7 +151,6 @@ fn legacy(value: &Value, _local: bool) -> Option<UiEvent> {
         tools::ApprovalResolved => "ApprovalResolved", Resolved,
         tools::AskRequested => "AskRequested", Ask,
         tools::AskResolved => "AskResolved", AskResolved,
-        agent::LoginFinished => "LoginFinished", LoginFinished,
     );
     macro_rules! owner {
         ($ty:ty, $variant:ident) => {

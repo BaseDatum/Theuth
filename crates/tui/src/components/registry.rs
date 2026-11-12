@@ -57,6 +57,7 @@ fn compose(app_enabled: bool, interactive: bool, models: models::Models, advisor
     registry.register(advisor).expect("built-in component registration");
     registry.register(skills_prompt::SkillsPrompt::default()).expect("built-in component registration");
     registry.register(acp::Acp::default()).expect("built-in component registration");
+    registry.register(providers_login::ProvidersLogin::default()).expect("built-in component registration");
     registry
 }
 
