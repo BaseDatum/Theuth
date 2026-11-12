@@ -26,7 +26,6 @@ pub mod components;
 pub mod topics;
 pub mod model;
 pub mod pathac;
-pub mod talk;
 mod ui;
 
 use model::{Command, LoginRow, Model, UiEvent};
@@ -726,15 +725,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 .await)?;
             UiEvent::Info(format!("{provider}/{}", m.line()))
         }
-        Command::TalkStart { session, draft } => start_talk(api, session, draft, tx).await,
-        Command::TalkStop(id) if talk_sim() => UiEvent::Talk(::talk::TalkEvent::TalkFinished {
-            id,
-            reason: ::talk::EndReason::Stopped,
-        }),
-        Command::TalkStop(id) => {
-            msg(api.talk_stop(id).await)?;
-            return Ok(());
-        }
     };
     let _ = tx.send(reply);
     Ok(())
@@ -753,53 +743,6 @@ async fn open_draft(
     Ok(s)
 }
 
-/// `/talk` (76 §5.1): with no session, create one first (on the draft's
-/// picks, 148 R1) — the model adopts it through `SessionOpened` before the
-/// talk id arrives — then `talk_start` with `sink: device`. `THEUTH_TALK_SIM`
-/// set: the scripted [`talk::sim`] stands in for the engine (the brief's
-/// development source).
-async fn start_talk(
-    api: &Engine,
-    session: Option<SessionId>,
-    draft: Option<agent::CreateSessionOptions>,
-    tx: &UnboundedSender<UiEvent>,
-) -> UiEvent {
-    let session = match session {
-        Some(s) => s,
-        None => match api.create_session(draft.unwrap_or_default()).await {
-            Ok(open) => {
-                let s = open.session;
-                let _ = tx.send(UiEvent::SessionOpened(open));
-                s
-            }
-            Err(e) => return UiEvent::TalkFailed(reason(e)),
-        },
-    };
-    if talk_sim() {
-        let id = ::talk::TalkId::new();
-        tokio::spawn(run_talk_sim(id, session, tx.clone()));
-        return UiEvent::TalkStarting(id);
-    }
-    match api.talk_start(session, ::talk::Sink::Device, None).await {
-        Ok(id) => UiEvent::TalkStarting(id),
-        Err(e) => UiEvent::TalkFailed(reason(e)),
-    }
-}
-
-/// `THEUTH_TALK_SIM` set: `/talk` plays [`talk::sim`] instead of calling the engine.
-fn talk_sim() -> bool {
-    std::env::var_os("THEUTH_TALK_SIM").is_some()
-}
-
-/// Feed the scripted talk into the UI at its own pace; stops when the UI is gone.
-async fn run_talk_sim(id: ::talk::TalkId, session: SessionId, tx: UnboundedSender<UiEvent>) {
-    for (ms, ev) in talk::sim(id, session) {
-        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
-        if tx.send(ev).is_err() {
-            return;
-        }
-    }
-}
 
 
 /// Keep only the message: the JSON-RPC code is not user-facing.
@@ -1323,11 +1266,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 agent::CleanupStatus::Incomplete => " (cleanup incomplete)",
             }
         ),
-        // No editor in print mode: nothing to dictate into.
-        UiEvent::Voice(_)
-        | UiEvent::Talk(_)
-        | UiEvent::TalkStarting(_) => Ok(()),
-        UiEvent::TalkFailed(m) => writeln!(out, "talk: {m}"),
         // Stderr: `-p` output stays the reply alone.
         UiEvent::Engine(Some(label)) => {
             eprintln!("{label}");

@@ -156,6 +156,23 @@
         model.component_commands = previous;
         component_request(&mut rx).ok()
     }
+    use crate::components::talk::{Talk, Request as TalkRequest, Msg as TalkMsg};
+    fn talk(model: &Model) -> &Talk { model.components.get::<Talk>().unwrap() }
+    fn talk_event(event: ::talk::TalkEvent) -> UiEvent { wire_event("talk.events", event) }
+    fn talk_reply(model: &Model, body: TalkMsg) -> UiEvent {
+        UiEvent::Component(crate::components::LocalReply { to: model.components.token("talk"), engine_epoch: 0, body: Box::new(body) })
+    }
+    fn talk_action(model: &mut Model, action: TalkMsg) -> Option<Command> {
+        let (tx, mut rx) = unbounded_channel();
+        let previous = model.component_commands.replace(tx);
+        component_reply(model, "talk", action);
+        model.component_commands = previous;
+        rx.try_recv().ok()
+    }
+    fn talk_toggle(model: &mut Model, stop: bool) -> Option<TalkRequest> {
+        match talk_action(model, TalkMsg::Toggle(stop)) { Some(Command::Component(effect)) => effect.request::<TalkRequest>().cloned(), _ => None }
+    }
+    fn talk_escape(model: &mut Model) -> Option<Command> { talk_action(model, TalkMsg::Escape) }
     fn dictation_toggle(model: &mut Model, before: String, after: String) -> Option<DictationRequest> {
         dictation_action(model, DictationMsg::Toggle { before, after })
     }
@@ -575,16 +592,16 @@
     fn talk_lifecycle() {
         use talk::{EndReason, State, TalkEvent, TalkId};
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), true);
         m.submit("/talk", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::TalkStart {
+            component_request::<TalkRequest>(&mut rx),
+            Ok(TalkRequest::TalkStart {
                 session: None,
                 draft: None
             })
         ));
-        assert!(m.toggle_talk(false).is_none());
+        assert!(talk_toggle(&mut m, false).is_none());
         let root = SessionId::new();
         m.apply(UiEvent::SessionOpened(SessionOpen {
             session: root,
@@ -593,46 +610,46 @@
             lease_secret: None,
         }));
         let id = TalkId::new();
-        m.apply(UiEvent::TalkStarting(id));
-        assert!(m.talk_view && !m.input_focused() && m.animating());
-        assert_eq!(m.talk.as_ref().map(|t| t.session), Some(root));
-        m.apply(UiEvent::Talk(TalkEvent::TalkState {
+        m.apply(talk_reply(&m, TalkMsg::Starting(id)));
+        assert!(talk(&m).talk_view && !m.input_focused() && m.animating());
+        assert_eq!(talk(&m).talk.as_ref().map(|t| t.session), Some(root));
+        m.apply(talk_event(TalkEvent::TalkState {
             id,
             state: State::Speaking,
         }));
         assert!(!m.status().contains("talk:"));
         // Esc while speaking cancels the turn and keeps the pane; in Listening it leaves.
-        assert!(matches!(m.talk_escape(), Some(Command::Cancel(s)) if s == root) && m.talk_view);
-        m.apply(UiEvent::Talk(TalkEvent::TalkState {
+        assert!(matches!(talk_escape(&mut m), Some(Command::Cancel(s)) if s == root) && talk(&m).talk_view);
+        m.apply(talk_event(TalkEvent::TalkState {
             id,
             state: State::Listening,
         }));
-        assert!(m.talk_escape().is_none() && !m.talk_view);
-        m.apply(UiEvent::Talk(TalkEvent::TalkState {
+        assert!(talk_escape(&mut m).is_none() && !talk(&m).talk_view);
+        m.apply(talk_event(TalkEvent::TalkState {
             id,
             state: State::Speaking,
         }));
         assert!(m.status().contains("● talk: speaking (/talk)"));
-        assert!(m.toggle_talk(false).is_none() && m.talk_view);
-        assert!(matches!(m.toggle_talk(true), Some(Command::TalkStop(i)) if i == id));
-        assert!(!m.talk_view && m.talk.is_some());
-        m.apply(UiEvent::Talk(TalkEvent::TalkFinished {
+        assert!(talk_toggle(&mut m, false).is_none() && talk(&m).talk_view);
+        assert!(matches!(talk_toggle(&mut m, true), Some(TalkRequest::TalkStop(i)) if i == id));
+        assert!(!talk(&m).talk_view && talk(&m).talk.is_some());
+        m.apply(talk_event(TalkEvent::TalkFinished {
             id: TalkId::new(),
             reason: EndReason::Stopped,
         }));
-        assert!(m.talk.is_some());
-        m.apply(UiEvent::Talk(TalkEvent::TalkFinished {
+        assert!(talk(&m).talk.is_some());
+        m.apply(talk_event(TalkEvent::TalkFinished {
             id,
             reason: EndReason::Error {
                 message: "mic".into(),
             },
         }));
-        assert!(m.talk.is_none() && !m.talk_view);
+        assert!(talk(&m).talk.is_none() && !talk(&m).talk_view);
         assert!(matches!(m.entries.last(), Some(Entry::Error(s)) if s == "talk: mic"));
-        m.apply(UiEvent::TalkFailed("talk is disabled".into()));
-        assert!(!m.talk_pending);
+        m.apply(talk_reply(&m, TalkMsg::Failed("talk is disabled".into())));
+        assert!(!talk(&m).talk_pending);
         assert!(
-            matches!(m.toggle_talk(false), Some(Command::TalkStart { session: Some(s), .. }) if s == root)
+            matches!(talk_toggle(&mut m, false), Some(TalkRequest::TalkStart { session: Some(s), .. }) if s == root)
         );
     }
 
@@ -4310,8 +4327,8 @@
         // `/talk` with no session: the created session starts on the picks.
         m.submit("/talk", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::TalkStart { session: None, draft }) if picked(&draft)
+            component_request::<TalkRequest>(&mut rx),
+            Ok(TalkRequest::TalkStart { session: None, draft }) if picked(&draft)
         ));
         // MCP menu, ⏎ then `s` with no session: the hide creates it on the picks.
         m.submit("/mcp", &tx);
@@ -4339,8 +4356,8 @@
         assert!(m.draft.is_none());
         m.submit("/talk", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::TalkStart {
+            component_request::<TalkRequest>(&mut rx),
+            Ok(TalkRequest::TalkStart {
                 session: None,
                 draft: None
             })

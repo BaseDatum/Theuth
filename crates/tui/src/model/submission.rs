@@ -159,11 +159,6 @@ impl Model {
                 .entries
                 .push(Entry::Error("usage: /logout <name>".into())),
             "/logout" => send(tx, Command::Logout(arg.to_owned())),
-            "/talk" => {
-                if let Some(cmd) = self.toggle_talk(false) {
-                    send(tx, cmd);
-                }
-            }
             "/agents" => match self.session {
                 Some(session) => {
                     self.agents_picker_pending = true;

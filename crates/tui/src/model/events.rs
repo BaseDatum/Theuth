@@ -120,14 +120,6 @@ pub enum UiEvent {
     SessionOpened(SessionOpen),
     /// Reply to [`Command::LeaveSession`]: the root left and how far its cleanup got.
     SessionLeft(SessionId, CloseResult),
-    /// Voice completion still consumed by the not-yet-migrated talk owner.
-    Voice(voice::VoiceEvent),
-    /// Talk plugin bus event (76 §5.2): the `/talk` view.
-    Talk(talk::TalkEvent),
-    /// Reply to [`Command::TalkStart`]: the daemon opened a talk for us.
-    TalkStarting(talk::TalkId),
-    /// [`Command::TalkStart`] was refused (already talking, talk disabled, model missing).
-    TalkFailed(String),
 }
 
 /// Everything the UI can ask of the rest of the process. One task turns
@@ -443,18 +435,6 @@ pub enum Command {
         /// Its lease secret.
         secret: String,
     },
-    /// `talk_start(session, "device", null)`: a live spoken conversation (76 §5.1);
-    /// `session: None` = no session yet: one is created first (`SessionOpened`), as the desktop's
-    /// Talk entry does, on the draft's pending model/effort when there is one (148 R1).
-    /// The reply is [`UiEvent::TalkStarting`] or [`UiEvent::TalkFailed`].
-    TalkStart {
-        /// The shown session.
-        session: Option<SessionId>,
-        /// `session: None` only: the draft's options.
-        draft: Option<CreateSessionOptions>,
-    },
-    /// `talk_stop(id)`; `TalkFinished` follows on the bus.
-    TalkStop(talk::TalkId),
     /// `cancel(session, "tree")`: the turn and every running descendant (133 §5).
     CancelTree(SessionId),
 }

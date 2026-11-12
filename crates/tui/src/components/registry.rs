@@ -41,6 +41,7 @@ pub fn builtin_with(app_enabled: bool, interactive: bool) -> Registry {
     registry.register(mcp::Mcp::default()).expect("built-in component registration");
     registry.register(search_attach::SearchAttach::default()).expect("built-in component registration");
     registry.register(dictation_voice::DictationVoice::default()).expect("built-in component registration");
+    registry.register(talk::Talk::default()).expect("built-in component registration");
 
     // Model-picker panels (after design 194): register below, in this block only.
     registry

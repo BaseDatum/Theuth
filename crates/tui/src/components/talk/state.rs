@@ -1,12 +1,10 @@
-//! The `/talk` view (design doc 76 §0.12, §5.2): the per-talk state, the
-//! subtitle reducer and the orb frames. Pure; the keys and the render live
-//! in `ui.rs`, the events in `model.rs`, the scripted source in `lib.rs`.
+//! Pure talk state, subtitle reduction, orb frames and owner-local simulation.
 
 use runtime::SessionId;
-use talk::{EndReason, State, TalkEvent, TalkId};
+use ::talk::{EndReason, State, TalkEvent, TalkId};
 use voice::{SpeechId, VoiceEvent};
 
-use crate::model::UiEvent;
+use super::Msg;
 
 /// Three looks for six states: the orb *is* the state (76 §0.12).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,8 +213,8 @@ fn speaking(d: f32, t: f32, level: f32) -> char {
 /// A scripted talk for development without the engine (`THEUTH_TALK_SIM`):
 /// `(delay ms before it, event)`, three rounds of listen → think → speak →
 /// hold → interrupt → speak, Degraded on. The finish comes from `TalkStop`.
-pub fn sim(id: TalkId, session: SessionId) -> Vec<(u64, UiEvent)> {
-    let talk = |ev: TalkEvent| UiEvent::Talk(ev);
+pub fn sim(id: TalkId, session: SessionId) -> Vec<(u64, Msg)> {
+    let talk = |ev: TalkEvent| Msg::Talk(ev);
     let state = |s: State| talk(TalkEvent::TalkState { id, state: s });
     let heard = |text: &str, is_final: bool| {
         talk(TalkEvent::Heard {
@@ -234,7 +232,7 @@ pub fn sim(id: TalkId, session: SessionId) -> Vec<(u64, UiEvent)> {
         })
     };
     let finished = |speech: SpeechId| {
-        UiEvent::Voice(VoiceEvent::SpeechFinished {
+        Msg::Voice(VoiceEvent::SpeechFinished {
             id: speech,
             session,
             reason: voice::FinishReason::Done,
@@ -242,7 +240,7 @@ pub fn sim(id: TalkId, session: SessionId) -> Vec<(u64, UiEvent)> {
         })
     };
     // `seconds` of `TalkLevel` events, one per 160 ms, a slow swell.
-    let levels = |out: &mut Vec<(u64, UiEvent)>, seconds: u64| {
+    let levels = |out: &mut Vec<(u64, Msg)>, seconds: u64| {
         for i in 0..seconds * 6 {
             let base = (i as f32 * 0.7).sin().abs() * 0.7 + 0.15;
             let rms =
