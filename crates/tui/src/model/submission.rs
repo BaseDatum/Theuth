@@ -320,7 +320,6 @@ impl Model {
             },
             "/tasks" => send(tx, Command::ListTasks(self.project.clone())),
             "/roster" => send(tx, Command::ListRoster),
-            "/computer" => send(tx, Command::ComputerStatus),
             "/compact" => self.compact_cmd(arg, tx),
             "/endless" => self.endless_cmd(arg, tx),
             "/shake" => self.shake_cmd(arg, tx),
