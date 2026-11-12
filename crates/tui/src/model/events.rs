@@ -175,10 +175,6 @@ pub enum UiEvent {
     Jobs(Vec<JobView>),
     /// A background job started, wrote output or ended (bus event).
     Job(JobEvent),
-    /// Reply to [`Command::MeshDevicesList`] (and the commands that change it): the mesh's replicated registry (69 §3).
-    MeshDevices(Vec<link::DeviceInfo>),
-    /// Reply to [`Command::MeshDevicesAdd`]: the 4-part string a device scans and its pending id (69 decision 4).
-    MeshDevicePairing(link::PairingPayload),
     /// A `show` call produced a file (bus event, design doc 35).
     ArtifactShown(artifact::ArtifactShown),
     /// Reply to [`Command::ListArtifacts`]: the session subtree's artifacts, newest first;
@@ -643,14 +639,6 @@ pub enum Command {
     },
     /// `list_providers`.
     ListProviders,
-    /// `devices_list` (69 §3).
-    MeshDevicesList,
-    /// `device_pair_start(name)`: the mesh pairing QR.
-    MeshDevicesAdd(Option<String>),
-    /// `device_revoke(id)`, then `devices_list`.
-    MeshDevicesRevoke(String),
-    /// `device_rename(id, name)`, then `devices_list`.
-    MeshDevicesRename(String, String),
     /// `list_artifacts(session, descendants: true)`; `pick` opens the `/artifacts`
     /// menu, `apps` keeps only [`artifact::Kind::App`] records (`/apps`).
     ListArtifacts {
