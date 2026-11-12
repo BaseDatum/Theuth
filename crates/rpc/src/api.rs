@@ -197,8 +197,6 @@ pub mod tooling;
 pub mod skills;
 /// Screens RPC server and client traits.
 pub mod screens;
-/// Mcp RPC server and client traits.
-pub use mcp_server::rpc as mcp;
 /// Concepts RPC server and client traits.
 pub mod concepts;
 /// Documents RPC server and client traits.
@@ -238,7 +236,6 @@ pub use jobs::{JobsApiClient, JobsApiServer};
 pub use tooling::{SESSION_TOOLS, ToolingApiClient, ToolingApiServer};
 pub use skills::{SkillsApiClient, SkillsApiServer};
 pub use screens::{ScreensApiClient, ScreensApiServer};
-pub use mcp::{McpApiClient, McpApiServer};
 pub use concepts::{ConceptsApiClient, ConceptsApiServer};
 pub use documents::{DocumentsApiClient, DocumentsApiServer};
 pub use notebooks::{NotebooksApiClient, NotebooksApiServer};
@@ -265,7 +262,7 @@ pub mod clients {
     pub use super::tooling::ToolingApiClient;
     pub use super::skills::SkillsApiClient;
     pub use super::screens::ScreensApiClient;
-    pub use super::mcp::McpApiClient;
+    pub use mcp_server::rpc::McpApiClient;
     pub use super::concepts::ConceptsApiClient;
     pub use super::documents::DocumentsApiClient;
     pub use super::notebooks::NotebooksApiClient;
@@ -295,7 +292,7 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         skills::rpc_module(server.clone()),
         tooling::rpc_module(server.clone()),
         screens::rpc_module(server.clone()),
-        mcp::rpc_module(server.clone()),
+        mcp_server::rpc_module(server.clone()),
         concepts::rpc_module(server.clone()),
         documents::rpc_module(server.clone()),
         notebooks::rpc_module(server.clone()),
