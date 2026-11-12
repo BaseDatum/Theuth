@@ -13,8 +13,10 @@ export const Route = createFileRoute('/meetings/briefs')({
     if (typeof s.id === 'string' && s.id !== '') out.id = s.id
     return out
   },
-  component: withCapability(() => {
-    const { q, id } = Route.useSearch()
-    return <BriefSearch initial={q ?? ''} focus={id ?? null} />
-  }, requirements),
+  component: withCapability(BriefsRoute, requirements),
 })
+
+function BriefsRoute() {
+  const { q, id } = Route.useSearch()
+  return <BriefSearch initial={q ?? ''} focus={id ?? null} />
+}

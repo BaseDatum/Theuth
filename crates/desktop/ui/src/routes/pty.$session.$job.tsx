@@ -5,8 +5,10 @@ import { PoppedTerminal } from '@/components/chat/TerminalViewer'
 
 /** One agent-started terminal, full window (`lib/popout.ts` kind `pty`). Under the `Popped` root when opened with `?window=`. */
 export const Route = createFileRoute('/pty/$session/$job')({
-  component: withCapability(() => {
-    const { session, job } = Route.useParams()
-    return <PoppedTerminal session={session} job={job} />
-  }, terminalRequirements),
+  component: withCapability(PtyRoute, terminalRequirements),
 })
+
+function PtyRoute() {
+  const { session, job } = Route.useParams()
+  return <PoppedTerminal session={session} job={job} />
+}
