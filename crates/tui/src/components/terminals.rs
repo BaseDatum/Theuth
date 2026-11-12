@@ -467,9 +467,9 @@ impl Component for Terminals {
                         body.push(terminal_line(row, view.col, inner, cursor));
                     },
                 }
-                if let Some(status) = view.status() { body.push(element!(Text(content: crate::search::fit(&status, inner), color: crate::ui::OCHRE, wrap: TextWrap::NoWrap)).into_any()); }
+                if let Some(status) = view.status() { body.push(element!(Text(content: crate::components::search_attach::state::fit(&status, inner), color: crate::ui::OCHRE, wrap: TextWrap::NoWrap)).into_any()); }
                 let rows = body.len() + 3;
-                (crate::search::fit(&view.title(), inner), body, rows)
+                (crate::components::search_attach::state::fit(&view.title(), inner), body, rows)
             }
         };
         Some(super::View::Element { rows, replace: false, element: element! {

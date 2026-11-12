@@ -34,6 +34,7 @@ pub fn builtin() -> Registry {
     registry.register(broadcast::BroadcastPanel::default()).expect("built-in component registration");
     registry.register(knowledge::Knowledge::default()).expect("built-in component registration");
     registry.register(mcp::Mcp::default()).expect("built-in component registration");
+    registry.register(search_attach::SearchAttach::default()).expect("built-in component registration");
 
     // Model-picker panels (after design 194): register below, in this block only.
     registry

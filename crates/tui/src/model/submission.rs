@@ -68,8 +68,6 @@ impl Model {
                 Some(s) => send(tx, Command::TakeSession(s)),
                 None => self.entries.push(Entry::Error("no session open".into())),
             },
-            "/search" => self.open_search(arg, tx),
-            "/attach" => self.open_attach(arg, tx),
             // 75 §10: on an ACP child, `/resume` alone restarts its harness.
             "/resume" if arg.is_empty() && self.agent.is_some() => {
                 if let Some(s) = self.session {

@@ -277,7 +277,6 @@ impl Model {
             // The sidebar of another frontend; nothing on screen changes and
             // a mid-stream arrival must not finish the streaming tail below.
             AgentEvent::TitleChanged { .. } | AgentEvent::SessionDeleted { .. } => {
-                self.search_invalidate(SearchCategory::Sessions);
                 return;
             }
             // Another client (or our own removal, whose reload is already on
@@ -330,7 +329,6 @@ impl Model {
                 self.streaming = true;
             }
             AgentEvent::TurnFinished { session, .. } => {
-                self.search_invalidate(SearchCategory::Sessions);
                 if self.session == Some(*session) {
                     self.streaming = false;
                 } else {
@@ -342,7 +340,7 @@ impl Model {
         // A subagent's stream is not rendered here; open it to read it. An
         // inspected page (49 §7) is not the live tail: arriving events must
         // not stitch across the missing middle or move the match offscreen.
-        if ev.session().is_none_or(|s| self.session != Some(s)) || self.historical || self.inspect.is_some() {
+        if ev.session().is_none_or(|s| self.session != Some(s)) || self.historical {
             return;
         }
         if !matches!(ev, AgentEvent::ReasoningDelta { .. })
@@ -898,7 +896,7 @@ pub fn agent_row(a: &AgentRow, spinner: &str, width: u16) -> String {
     // Glyph, name, state and their gaps take 27 columns, the picker frame 7; the detail gets
     // what is left after the measured tail (141 R4 T13b: an estimate let long ages overflow).
     let room = usize::from(width)
-        .saturating_sub(34 + crate::search::cells(&tail))
+        .saturating_sub(34 + crate::components::search_attach::state::cells(&tail))
         .max(16);
     let detail = match (&a.info.observed, &a.info.state) {
         (Some(o), _) => {
@@ -922,7 +920,7 @@ pub fn agent_row(a: &AgentRow, spinner: &str, width: u16) -> String {
         (None, AgentState::Error) => a.error.clone().unwrap_or_else(|| a.info.last.clone()),
         (None, AgentState::Cancelled | AgentState::Idle) => a.info.last.clone(),
     };
-    let detail = crate::search::fit(&detail, room);
+    let detail = crate::components::search_attach::state::fit(&detail, room);
     format!("{glyph} {name:<14} {word:<9} {detail:<room$}{tail}")
 }
 

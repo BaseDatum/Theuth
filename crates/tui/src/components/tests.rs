@@ -241,16 +241,18 @@ fn empty_pending_replaces_categories_and_loss_resync_preserves_inspection() {
     assert_eq!(model.asks.front().unwrap().req.id, ask.id);
     model.apply(UiEvent::Wire(TopicEvent::control(json!({"type":"PendingPrompts","approvals":[],"asks":[],"secrets":[]}))));
     assert!(model.asks.is_empty() && model.components.get::<super::secrets::Secrets>().unwrap().requests.is_empty());
-    model.inspect = Some(crate::search::Inspect { session, seq: 12, found: true });
+    model.historical = true;
+    model.components.get_mut::<super::search_attach::SearchAttach>().unwrap().inspect = Some(super::search_attach::state::Inspect { session, seq: 12, found: true });
     model.pending_input = Some(("unsent draft".into(), 12));
     model.entries.push(Entry::Info("historical page".into()));
     model.apply(UiEvent::Wire(TopicEvent::control(rpc_compose::topics::lagged(5))));
     assert!(!model.refresh_context);
-    assert_eq!(model.inspect.as_ref().unwrap().seq, 12);
+    assert_eq!(model.components.get::<super::search_attach::SearchAttach>().unwrap().inspect.as_ref().unwrap().seq, 12);
     assert_eq!(model.pending_input, Some(("unsent draft".into(), 12)));
     assert!(matches!(&model.entries[..], [Entry::Info(text)] if text == "historical page"));
     assert!(shown(&model.components).contains(&"counter=-1".into()));
-    model.inspect = None;
+    model.historical = false;
+    model.components.get_mut::<super::search_attach::SearchAttach>().unwrap().inspect = None;
     model.apply(UiEvent::Wire(TopicEvent::control(rpc_compose::topics::lagged(1))));
     assert!(model.refresh_context);
 }

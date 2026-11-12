@@ -134,7 +134,6 @@ pub fn residual(event: &TopicEvent) -> Option<UiEvent> {
         Some("tools.ask-resolved") => decode!(tools::AskResolved, AskResolved),
         Some("agent.login") => decode!(agent::LoginFinished, LoginFinished),
         Some("artifact.shown") => decode!(artifact::ArtifactShown, ArtifactShown),
-        Some("knowledge.changed") => decode!(knowledge::KnowledgeChanged, KnowledgeChanged),
         Some("voice.events") => decode!(voice::VoiceEvent, Voice),
         Some("talk.events") => decode!(talk::TalkEvent, Talk),
         None => legacy(value, matches!(event, TopicEvent::Local(_))),
@@ -158,7 +157,6 @@ fn legacy(value: &Value, _local: bool) -> Option<UiEvent> {
         tools::AskResolved => "AskResolved", AskResolved,
         agent::LoginFinished => "LoginFinished", LoginFinished,
         artifact::ArtifactShown => "ArtifactShown", ArtifactShown,
-        knowledge::KnowledgeChanged => "KnowledgeChanged", KnowledgeChanged,
     );
     macro_rules! owner {
         ($ty:ty, $variant:ident) => {
