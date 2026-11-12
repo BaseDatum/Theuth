@@ -64,17 +64,6 @@ pub enum Menu {
         /// Highlighted row.
         cursor: usize,
     },
-    /// `/mcp` switches and risk lines.
-    Mcp {
-        /// Latest `ListServers` reply.
-        servers: Vec<McpServer>,
-        /// Highlighted row of [`Model::mcp_rows`].
-        cursor: usize,
-        /// Servers whose tools are listed.
-        expanded: BTreeSet<String>,
-        /// ⏎ on an `on` row: waiting for the scope (`s` session / `a` always).
-        pending: Option<Target>,
-    },
     /// `/skills` picker.
     Skills {
         /// Every skill, as indexed.
@@ -189,7 +178,6 @@ impl Model {
             Some(Menu::Sessions { .. }) => self.sessions_key(code, tx),
             Some(Menu::Search | Menu::Attach) => MenuKey::Consumed,
             Some(Menu::Agents { .. }) => self.agents_key(code, tx),
-            Some(Menu::Mcp { .. }) => self.mcp_key(code, tx),
             Some(Menu::Acp { .. }) => self.acp_key(code, tx),
             Some(Menu::Skills { .. }) => self.skills_key(code, tx),
             Some(Menu::Logins { .. }) => self.logins_key(code, tx),

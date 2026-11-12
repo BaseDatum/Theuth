@@ -145,11 +145,6 @@ impl Model {
             "/approvals" => self.approvals_cmd(arg, tx),
             "/advisor" => self.advisor_cmd(arg, tx),
 
-            "/mcp" | "/tools" if arg.is_empty() => {
-                self.awaiting_mcp = true;
-                send(tx, Command::ListMcp(self.session));
-            }
-            "/mcp" | "/tools" => self.mcp_cmd(arg, tx),
             "/acp" if arg.is_empty() => {
                 self.awaiting_acp = true;
                 send(tx, Command::ListAcp { probe: false });

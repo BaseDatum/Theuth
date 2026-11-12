@@ -32,8 +32,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tools::git::SyncResult;
 use tools::{
     Answer, ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, AskId, AskRequested,
-    AskResolved, Decision, Gate, McpAuth, McpProgress, McpServer, McpToolInfo,
-    PolicyAction, RepoInfo,
+    AskResolved, Decision,
 };
 use uuid::Uuid;
 
@@ -69,10 +68,7 @@ pub struct Model {
     /// before `SessionCreated` named the session: shown once it does, if the
     /// ids agree; another session's error is dropped.
     send_error: Option<(SessionId, String)>,
-    /// `/mcp` was typed; the next `UiEvent::Mcp` opens the menu. Refreshes
-    /// after `SetGate` only update an open menu, never reopen a closed one.
-    awaiting_mcp: bool,
-    /// `/acp` was typed; the next `UiEvent::Acp` opens the menu (same rule as `awaiting_mcp`).
+    /// `/acp` was typed; the next reply opens the menu rather than only refreshing it.
     awaiting_acp: bool,
     /// Transcript of the shown session.
     pub entries: Vec<Entry>,
@@ -155,11 +151,6 @@ pub struct Model {
     /// `/vision` was typed: the next reply prints its line (the startup
     /// fetch is silent).
     awaiting_vision: bool,
-    /// Latest MCP reconcile snapshot; `None` before the first.
-    pub mcp: Option<McpProgress>,
-    /// A reconcile settled while the `/mcp` menu is open: the event loop
-    /// re-lists so the rows show the servers that just (dis)connected.
-    pub refresh_mcp: bool,
     /// Large pastes and attached images held out of the input box; the box
     /// shows one [`paste_token`] each, expanded back on submit.
     pub pastes: Vec<Paste>,
@@ -349,7 +340,6 @@ mod speech;
 mod status;
 mod submission;
 mod todos;
-mod tooling;
 mod transcript;
 mod updates;
 
@@ -385,7 +375,6 @@ pub use status::{Level, k};
 pub(crate) use status::elapsed;
 
 pub use todos::{TODO_ROWS, TodoCard, status_label};
-pub use tooling::{Row, Target, Switch, action_name, gate_name, git_url, mcp_entry};
 pub(crate) use transcript::{markdown_rows, clean, attr, unescape};
 pub use transcript::{Entry, CardKind, moved_title, injected, describe, output_markdown, result_line, Window, vision_line, note_title, attachment_label};
 use transcript::{split_engine_restart, card, attachment_labels, first_arg, wrapper_kind};

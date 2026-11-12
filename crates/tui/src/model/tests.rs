@@ -17,6 +17,8 @@
     use crate::components::nodes::{NodesArg, parse_nodes_arg, find_node};
     use ::knowledge::{Change, ChangeStatus, History, Meta, Revision};
     use crate::components::knowledge::{Knowledge, Menu as KnowledgeMenu, Request as KnowledgeRequest, Msg as KnowledgeMsg, HISTORY_PAGE};
+    use tools::{Gate, McpAuth, McpServer, McpToolInfo, PolicyAction};
+    use crate::components::mcp::{Mcp, Menu as McpMenu, Request as McpRequest, Msg as McpMsg, Switch};
     fn knowledge_reply(model: &Model, body: KnowledgeMsg) -> UiEvent {
         UiEvent::Component(crate::components::LocalReply {
             to: model.components.token("knowledge"), engine_epoch: 0, body: Box::new(body),
@@ -2492,7 +2494,7 @@
     #[test]
     fn mcp_enter_switches_space_cycles_risk_only() {
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), true);
         let sid = SessionId::new();
         m.session = Some(sid);
         let fresh = |gate: Option<Gate>, tool_gate: Option<Gate>, hidden: bool| McpServer {
@@ -2522,70 +2524,70 @@
             }],
         };
         // A refresh with no menu open and no `/mcp` typed must not open one.
-        m.apply(UiEvent::Mcp(vec![fresh(None, None, false)]));
-        assert!(m.menu.is_none());
+        component_reply(&mut m, "mcp", McpMsg::Mcp(Ok(vec![fresh(None, None, false)])));
+        assert!(m.components.get::<Mcp>().unwrap().menu.is_none());
         // `/tools` is `/mcp` (the other tests type `/mcp`).
         m.submit("/tools", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListMcp(Some(s))) if s == sid));
-        m.apply(UiEvent::Mcp(vec![fresh(
+        assert!(matches!(component_request::<McpRequest>(&mut rx), Ok(McpRequest::ListMcp(Some(s))) if s == sid));
+        component_reply(&mut m, "mcp", McpMsg::Mcp(Ok(vec![fresh(
             Some(Gate::Destructive),
             None,
             false,
-        )]));
+        )])));
 
         // Space never reaches `off`: destructive wraps to annotations.
-        m.menu_key(KeyCode::Char(' '), "", &tx);
+        component_menu_key(&mut m, "mcp", KeyCode::Char(' '));
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetGate { server, tool: None, gate: None, .. }) if server == "fs"
+            component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetGate { server, tool: None, gate: None, .. }) if server == "fs"
         ));
 
         // ⏎ on an `on` server asks for the scope; `s` hides its tools for the session.
-        m.menu_key(KeyCode::Enter, "", &tx);
-        assert!(matches!(&m.menu, Some(Menu::Mcp { pending: Some(t), .. }) if t.server == "fs"));
+        component_menu_key(&mut m, "mcp", KeyCode::Enter);
+        assert!(matches!(&m.components.get::<Mcp>().unwrap().menu, Some(McpMenu { pending: Some(t), .. }) if t.server == "fs"));
         assert!(
-            rx.try_recv().is_err(),
+            component_request::<McpRequest>(&mut rx).is_err(),
             "nothing sent until the scope is chosen"
         );
-        m.menu_key(KeyCode::Char('s'), "", &tx);
+        component_menu_key(&mut m, "mcp", KeyCode::Char('s'));
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetHidden { session, tools, hidden: true, .. }) if session == Some(sid) && tools == ["read"]
+            component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetHidden { session, tools, hidden: true, .. }) if session == Some(sid) && tools == ["read"]
         ));
-        assert!(matches!(&m.menu, Some(Menu::Mcp { pending: None, .. })));
+        assert!(matches!(&m.components.get::<Mcp>().unwrap().menu, Some(McpMenu { pending: None, .. })));
 
         // Every tool hidden = server `off · this session`; ⏎ turns it back on.
-        m.apply(UiEvent::Mcp(vec![fresh(None, None, true)]));
-        assert_eq!(m.mcp_rows()[0].switch(), Switch::OffSession);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        component_reply(&mut m, "mcp", McpMsg::Mcp(Ok(vec![fresh(None, None, true)])));
+        assert_eq!(m.components.get::<Mcp>().unwrap().mcp_rows()[0].switch(), Switch::OffSession);
+        component_menu_key(&mut m, "mcp", KeyCode::Enter);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetHidden { hidden: false, .. })
+            component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetHidden { hidden: false, .. })
         ));
 
         // `a` writes `off` to config.yaml; ⏎ on it clears the line; space is inert.
-        m.apply(UiEvent::Mcp(vec![fresh(None, None, false)]));
-        m.menu_key(KeyCode::Enter, "", &tx);
-        m.menu_key(KeyCode::Char('a'), "", &tx);
+        component_reply(&mut m, "mcp", McpMsg::Mcp(Ok(vec![fresh(None, None, false)])));
+        component_menu_key(&mut m, "mcp", KeyCode::Enter);
+        component_menu_key(&mut m, "mcp", KeyCode::Char('a'));
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetGate {
+            component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetGate {
                 tool: None,
                 gate: Some(Gate::Off),
                 ..
             })
         ));
-        m.apply(UiEvent::Mcp(vec![fresh(Some(Gate::Off), None, false)]));
-        assert_eq!(m.mcp_rows()[0].switch(), Switch::OffAlways);
-        m.menu_key(KeyCode::Char(' '), "", &tx);
+        component_reply(&mut m, "mcp", McpMsg::Mcp(Ok(vec![fresh(Some(Gate::Off), None, false)])));
+        assert_eq!(m.components.get::<Mcp>().unwrap().mcp_rows()[0].switch(), Switch::OffAlways);
+        component_menu_key(&mut m, "mcp", KeyCode::Char(' '));
         assert!(
-            rx.try_recv().is_err(),
+            component_request::<McpRequest>(&mut rx).is_err(),
             "risk cycling on an off server does nothing"
         );
-        m.menu_key(KeyCode::Enter, "", &tx);
+        component_menu_key(&mut m, "mcp", KeyCode::Enter);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetGate {
+            component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetGate {
                 tool: None,
                 gate: None,
                 ..
@@ -2593,54 +2595,56 @@
         ));
 
         // Esc in the scope prompt cancels the prompt, not the menu.
-        m.apply(UiEvent::Mcp(vec![fresh(None, None, false)]));
-        m.menu_key(KeyCode::Enter, "", &tx);
-        m.menu_key(KeyCode::Esc, "", &tx);
-        assert!(matches!(&m.menu, Some(Menu::Mcp { pending: None, .. })));
-        assert!(rx.try_recv().is_err());
+        component_reply(&mut m, "mcp", McpMsg::Mcp(Ok(vec![fresh(None, None, false)])));
+        component_menu_key(&mut m, "mcp", KeyCode::Enter);
+        component_menu_key(&mut m, "mcp", KeyCode::Esc);
+        assert!(matches!(&m.components.get::<Mcp>().unwrap().menu, Some(McpMenu { pending: None, .. })));
+        assert!(component_request::<McpRequest>(&mut rx).is_err());
 
         // Tool rows: space cycles the tool line, ⌫ clears it, ⏎ + a turns it off.
-        m.menu_key(KeyCode::Right, "", &tx);
-        m.menu_key(KeyCode::Down, "", &tx);
-        assert_eq!(m.mcp_rows().len(), 2);
-        m.menu_key(KeyCode::Char(' '), "", &tx);
+        component_menu_key(&mut m, "mcp", KeyCode::Right);
+        component_menu_key(&mut m, "mcp", KeyCode::Down);
+        assert_eq!(m.components.get::<Mcp>().unwrap().mcp_rows().len(), 2);
+        component_menu_key(&mut m, "mcp", KeyCode::Char(' '));
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetGate { tool: Some(t), gate: Some(Gate::ReadOnly), .. }) if t == "read"
+            component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetGate { tool: Some(t), gate: Some(Gate::ReadOnly), .. }) if t == "read"
         ));
-        m.menu_key(KeyCode::Backspace, "", &tx);
+        component_menu_key(&mut m, "mcp", KeyCode::Backspace);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetGate {
+            component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetGate {
                 tool: Some(_),
                 gate: None,
                 ..
             })
         ));
-        m.menu_key(KeyCode::Enter, "", &tx);
-        m.menu_key(KeyCode::Char('a'), "", &tx);
+        component_menu_key(&mut m, "mcp", KeyCode::Enter);
+        component_menu_key(&mut m, "mcp", KeyCode::Char('a'));
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetGate { tool: Some(t), gate: Some(Gate::Off), .. }) if t == "read"
+            component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetGate { tool: Some(t), gate: Some(Gate::Off), .. }) if t == "read"
         ));
-        m.menu_key(KeyCode::Left, "", &tx);
-        assert!(matches!(m.menu, Some(Menu::Mcp { cursor: 0, .. })));
-        assert_eq!(m.mcp_rows().len(), 1);
+        component_menu_key(&mut m, "mcp", KeyCode::Left);
+        assert!(matches!(m.components.get::<Mcp>().unwrap().menu, Some(McpMenu { cursor: 0, .. })));
+        assert_eq!(m.components.get::<Mcp>().unwrap().mcp_rows().len(), 1);
 
         // Without a session the prompt still shows; `s` asks for one to be created.
         m.session = None;
-        m.menu_key(KeyCode::Enter, "", &tx);
+        component_menu_key(&mut m, "mcp", KeyCode::Enter);
         assert!(matches!(
-            &m.menu,
-            Some(Menu::Mcp {
+            &m.components.get::<Mcp>().unwrap().menu,
+            Some(McpMenu {
                 pending: Some(_),
                 ..
             })
         ));
-        m.menu_key(KeyCode::Char('s'), "", &tx);
+        component_menu_key(&mut m, "mcp", KeyCode::Char('s'));
+        assert!(matches!(rx.try_recv(), Ok(Command::CreateDraft(_))));
+        m.apply(UiEvent::SessionCreated(SessionId::new()));
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetHidden {
+            component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetHidden {
                 session: None,
                 hidden: true,
                 ..
@@ -2651,16 +2655,16 @@
     #[test]
     fn mcp_add_routes_urls_and_json_shapes() {
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), true);
         m.submit("/mcp add https://github.com/o/r", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::AddMcpRepo(u)) if u.ends_with("/o/r")));
+        assert!(matches!(component_request::<McpRequest>(&mut rx), Ok(McpRequest::AddMcpRepo(u)) if u.ends_with("/o/r")));
         for json in [
             r#"{"name":"fs","command":"npx","args":["-y","x"]}"#,
             r#"{"fs":{"command":"npx","args":["-y","x"]}}"#,
             r#"{"mcpServers":{"fs":{"command":"npx","args":["-y","x"]}}}"#,
         ] {
             m.submit(&format!("/mcp add {json}"), &tx);
-            let Ok(Command::AddMcp { name, entry }) = rx.try_recv() else {
+            let Ok(McpRequest::AddMcp { name, entry }) = component_request::<McpRequest>(&mut rx) else {
                 panic!("{json}");
             };
             assert_eq!(name, "fs");
@@ -2668,10 +2672,10 @@
             assert!(entry.get("name").is_none());
         }
         m.submit(r#"/mcp add {"command":"npx"}"#, &tx);
-        assert!(rx.try_recv().is_err());
+        assert!(component_request::<McpRequest>(&mut rx).is_err());
         assert!(matches!(m.entries.last(), Some(Entry::Error(_))));
         m.submit("/mcp sync", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::SyncMcp)));
+        assert!(matches!(component_request::<McpRequest>(&mut rx), Ok(McpRequest::SyncMcp)));
     }
 
     #[test]
@@ -4159,13 +4163,13 @@
         ));
         // MCP menu, ⏎ then `s` with no session: the hide creates it on the picks.
         m.submit("/mcp", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListMcp(None))));
-        m.apply(UiEvent::Mcp(vec![server()]));
-        m.menu_key(KeyCode::Enter, "", &tx);
-        m.menu_key(KeyCode::Char('s'), "", &tx);
+        assert!(matches!(component_request::<McpRequest>(&mut rx), Ok(McpRequest::ListMcp(None))));
+        component_reply(&mut m, "mcp", McpMsg::Mcp(Ok(vec![server()])));
+        component_menu_key(&mut m, "mcp", KeyCode::Enter);
+        component_menu_key(&mut m, "mcp", KeyCode::Char('s'));
         assert!(matches!(
             rx.try_recv(),
-            Ok(Command::SetHidden { session: None, hidden: true, draft, .. }) if picked(&draft)
+            Ok(Command::CreateDraft(draft)) if picked(&Some(draft.clone()))
         ));
         // `/<skill>` with no session.
         m.submit("/caveman lite", &tx);
@@ -4177,6 +4181,8 @@
         m.apply(UiEvent::SessionCreated(s));
         assert_eq!(m.session, Some(s));
         assert!(m.draft.is_none());
+        assert!(matches!(component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetHidden { session: None, hidden: true, .. })));
 
         // A fresh draft with no pick: the same entries create on the engine side.
         m.submit("/new", &tx);
@@ -4190,18 +4196,13 @@
             })
         ));
         m.submit("/mcp", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListMcp(None))));
-        m.apply(UiEvent::Mcp(vec![server()]));
-        m.menu_key(KeyCode::Enter, "", &tx);
-        m.menu_key(KeyCode::Char('s'), "", &tx);
+        assert!(matches!(component_request::<McpRequest>(&mut rx), Ok(McpRequest::ListMcp(None))));
+        component_reply(&mut m, "mcp", McpMsg::Mcp(Ok(vec![server()])));
+        component_menu_key(&mut m, "mcp", KeyCode::Enter);
+        component_menu_key(&mut m, "mcp", KeyCode::Char('s'));
         assert!(matches!(
             rx.try_recv(),
-            Ok(Command::SetHidden {
-                session: None,
-                hidden: true,
-                draft: None,
-                ..
-            })
+            Ok(Command::CreateDraft(CreateSessionOptions { model: None, effort: None, .. }))
         ));
         m.submit("/caveman lite", &tx);
         assert!(matches!(
@@ -4212,6 +4213,9 @@
                 ..
             })
         ));
+        m.apply(UiEvent::SessionCreated(SessionId::new()));
+        assert!(matches!(component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetHidden { session: None, hidden: true, .. })));
     }
 
     /// 75 §8: on an ACP session `/model` lists the harness's options,

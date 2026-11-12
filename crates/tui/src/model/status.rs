@@ -47,7 +47,6 @@ impl Model {
     pub fn animating(&self) -> bool {
         self.revealing()
             || self.streaming
-            || self.mcp_connecting()
             || self.compacting
             || self.vision.is_some()
             || self.advisor.state == AdvisorState::Reviewing
