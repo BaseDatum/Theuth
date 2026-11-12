@@ -1027,6 +1027,22 @@ pub struct SetDeskModel {
     pub effort: Option<String>,
 }
 
+/// `ask` → `()` (194 R1): the agent's configured effort was explicitly changed
+/// (`roster.theuth_effort` set or cleared) while its desk is not open. The
+/// persisted desk row is put on it now — `None` = `agent.effort`, each
+/// filtered by `model` (else `agent.model`) as [`SetDeskModel`] does — so the
+/// next open starts on the setting. A desk-local `/effort` survives every
+/// open that follows no such change.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetDeskEffort {
+    /// The desk session.
+    pub session: SessionId,
+    /// The agent's configured model, or `None` for the default.
+    pub model: Option<String>,
+    /// The agent's configured effort, or `None` for the default.
+    pub effort: Option<String>,
+}
+
 /// `ask` → `Option<String>`: the model id stored on `session`'s row (148 R1
 /// F4: the roster compares it with a desk's effective model before switching);
 /// `None` for an unknown session.
@@ -2132,6 +2148,16 @@ pub struct SetAdvisor {
     pub model: Option<String>,
     /// Effort for the advisor; `None` = provider default.
     pub effort: Option<String>,
+}
+
+/// `ask` → `Result<AdvisorStatus, String>` (194 R1, `/advisor on`): turn the
+/// advisor of `session` on with the live default — `advisor.model` /
+/// `advisor.effort` as read when this lands, so a client's cached
+/// `Info.advisor` cannot be stale. `Err` when no default model is set.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct AdvisorOnDefault {
+    /// The advised session.
+    pub session: SessionId,
 }
 
 /// `ask` → `AdvisorStatus` of `session` (`state: Off` when it has none).

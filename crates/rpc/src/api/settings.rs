@@ -116,6 +116,12 @@ pub trait SettingsApi {
         model: Option<String>,
         effort: Option<String>,
     ) -> RpcResult<AdvisorStatus>;
+    /// 194 R1: `/advisor on` — turn the advisor of `session` on with the live default
+    /// (`advisor.model` / `advisor.effort`, read by the engine at the call, so a client's
+    /// cached `Info.advisor` cannot be stale). Errors when no default model is set;
+    /// `AdvisorChanged` follows on the stream.
+    #[method(name = "advisor_on", with_extensions)]
+    async fn advisor_on(&self, session: SessionId) -> RpcResult<AdvisorStatus>;
     /// 125 §6.3: the advisor status of `session` (`state: off` when it has none).
     #[method(name = "advisor_status", with_extensions)]
     async fn advisor_status(&self, session: SessionId) -> RpcResult<AdvisorStatus>;
@@ -452,6 +458,11 @@ impl SettingsApiServer for Server {
             },
         )
         .await
+    }
+
+    async fn advisor_on(&self, ext: &Extensions, session: SessionId) -> RpcResult<AdvisorStatus> {
+        self.authorize(ext, session).await?;
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::AdvisorOnDefault { session }).await
     }
 
     async fn advisor_status(

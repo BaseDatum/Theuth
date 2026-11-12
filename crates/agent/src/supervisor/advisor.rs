@@ -14,9 +14,9 @@ use crate::advisor::{
 use crate::continuation::InputOrigin;
 use crate::loop_::{SetToolsetOverride, SteerAdvisory};
 use crate::{
-    AdvisorDefaults, AdvisorLink, AdvisorState, AdvisorStatus, AdvisorStatusOf, AppendAdvisory,
-    GetAdvisorDefaults, SessionKind, SetAdvisor, SetAdvisorDefaults, SetAdvisorOn, SetEffort,
-    SetModel, SyncBacklog, Toolset,
+    AdvisorDefaults, AdvisorLink, AdvisorOnDefault, AdvisorState, AdvisorStatus, AdvisorStatusOf,
+    AppendAdvisory, GetAdvisorDefaults, SessionKind, SetAdvisor, SetAdvisorDefaults, SetAdvisorOn,
+    SetEffort, SetModel, SyncBacklog, Toolset,
 };
 
 /// D2: the advisor's fixed read-only direct toolset — no runtime, no hints.
@@ -73,10 +73,16 @@ pub const PAIRING_WARNING: &str = "advisor model prices below the session model 
 
 impl Agents {
     fn write_advisor_key(&self, key: &str, value: &str) {
-        let path = self.rt.data_dir.join("config.yaml");
-        if let Err(e) = runtime::write_config_value(&path, "advisor", key, value) {
-            tracing::warn!("config.yaml: {e}");
+        if let Err(e) = self.persist_advisor_key(key, value) {
+            tracing::warn!("{e}");
         }
+    }
+
+    /// 194 R1: `advisor.key: value`, the caller's `Err` when the write fails.
+    fn persist_advisor_key(&self, key: &str, value: &str) -> Result<(), String> {
+        let path = self.rt.data_dir.join("config.yaml");
+        runtime::write_config_value(&path, "advisor", key, value)
+            .map_err(|e| format!("config.yaml: {e}"))
     }
 
     /// 125 §4.1 items 1–3: turn the advisor of `session` on with `model`.
@@ -239,6 +245,22 @@ impl Message<SetAdvisor> for Agents {
     }
 }
 
+impl Message<AdvisorOnDefault> for Agents {
+    type Reply = Result<AdvisorStatus, String>;
+
+    async fn handle(
+        &mut self,
+        m: AdvisorOnDefault,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<AdvisorStatus, String> {
+        let model = self.advisor_cfg.model.clone().ok_or_else(|| {
+            "/advisor on: no remembered advisor model — pick one with /advisor".to_owned()
+        })?;
+        let effort = self.advisor_cfg.effort.clone();
+        self.advisor_on(m.session, model, effort).await
+    }
+}
+
 impl Message<AdvisorStatusOf> for Agents {
     type Reply = AdvisorStatus;
 
@@ -296,8 +318,9 @@ impl Message<SetAdvisorDefaults> for Agents {
             let target = model.as_ref().unwrap_or(&self.advisor_cfg.model);
             self.check_effort(target.as_deref(), e)?;
         }
+        // 194 R1: each key is persisted before it goes live, so a failed write
+        // (`Err`) leaves live and disk equal; the dropped effort goes first.
         if let Some(id) = model {
-            self.write_advisor_key("model", id.as_deref().unwrap_or("~"));
             // 194 D4c/d: `None` clears the effort; a model that does not take it drops it.
             let stale = m.effort.is_none()
                 && self.advisor_cfg.effort.as_deref().is_some_and(|e| {
@@ -305,18 +328,19 @@ impl Message<SetAdvisorDefaults> for Agents {
                         .is_none_or(|i| self.check_effort(Some(i), e).is_err())
                 });
             if stale {
-                self.write_advisor_key("effort", "~");
+                self.persist_advisor_key("effort", "~")?;
                 self.advisor_cfg.effort = None;
             }
+            self.persist_advisor_key("model", id.as_deref().unwrap_or("~"))?;
             self.advisor_cfg.model = id;
         }
         if let Some(effort) = m.effort {
-            self.write_advisor_key(
+            self.persist_advisor_key(
                 "effort",
                 &effort
                     .as_deref()
                     .map_or("~".to_owned(), |e| format!("\"{e}\"")),
-            );
+            )?;
             self.advisor_cfg.effort = effort;
         }
         if let Some(n) = m.max_notes_per_update {
