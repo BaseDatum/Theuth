@@ -1,0 +1,83 @@
+[package]
+name = "rpc-compose"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Cross-plugin RPC composition and application adapters"
+
+[dependencies]
+rpc = { workspace = true }
+rpc-core = { workspace = true }
+runtime = { workspace = true }
+wire = { workspace = true }
+platform = { workspace = true }
+tools = { workspace = true }
+agent = { workspace = true }
+document = { workspace = true }
+knowledge = { workspace = true }
+codeindex = { workspace = true }
+search = { workspace = true }
+signal = { workspace = true }
+slack = { workspace = true }
+telegram = { workspace = true }
+acp = { workspace = true }
+browser = { workspace = true }
+computer = { workspace = true }
+link = { workspace = true }
+nodes = { workspace = true }
+a2a = { workspace = true }
+schedule = { workspace = true }
+mesh = { workspace = true }
+sessionsync = { workspace = true }
+replica = { workspace = true }
+roster = { workspace = true }
+tasks = { workspace = true }
+sandbox = { workspace = true }
+artifact = { workspace = true }
+app = { workspace = true }
+secrets = { workspace = true }
+web = { workspace = true }
+search-providers = { workspace = true }
+update = { workspace = true }
+voice = { workspace = true }
+talk = { workspace = true }
+meeting = { workspace = true }
+mcp-server = { workspace = true }
+decision = { workspace = true }
+double = { workspace = true }
+dreaming = { workspace = true }
+autoresearch = { workspace = true }
+cells = { workspace = true }
+agent-client-protocol = { workspace = true }
+figment = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }
+kameo = { workspace = true }
+jsonrpsee = { workspace = true, features = ["ws-client"] }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+parking_lot = { workspace = true }
+chrono = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+surface = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber = { workspace = true }
+tempfile = "3"
+serde_yaml = { workspace = true }
+agent = { workspace = true, features = ["test-support"] }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "document/ts", "knowledge/ts", "codeindex/ts", "search/ts", "agent/ts", "signal/ts", "slack/ts", "telegram/ts", "acp/ts", "browser/ts", "computer/ts", "surface/ts", "link/ts", "nodes/ts", "a2a/ts", "schedule/ts", "mesh/ts", "sessionsync/ts", "roster/ts", "tasks/ts", "sandbox/ts", "artifact/ts", "app/ts", "secrets/ts", "web/ts", "search-providers/ts", "update/ts", "voice/ts", "talk/ts", "meeting/ts", "mcp-server/ts", "decision/ts", "double/ts", "dreaming/ts", "autoresearch/ts", "cells/ts"]
+
+[lints]
+workspace = true
