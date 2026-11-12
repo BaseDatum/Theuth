@@ -43,6 +43,34 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
+/// Reverse-plugin operations installed once before RPC dispatch.
+pub struct ForwardHooks {
+    /// Whether the sessions plugin is registered now.
+    pub sessions_running: fn() -> bool,
+    /// Expected owner, looked up at call time.
+    pub expected: fn(SessionId) -> Option<PeerId>,
+    /// Preserve the artifact owner's attachment validation/naming.
+    pub attachment_name: for<'a> fn(&'a Path) -> Option<&'a str>,
+    /// Attachment directory for this request's data directory.
+    pub attachments_dir: fn(&Path) -> PathBuf,
+    /// Fetch an actual attachment marker, preferring the forwarder.
+    pub fetch_attachment: for<'a> fn(
+        &'a dyn Transport, &'a Path, &'a str, Option<&'a PeerId>,
+    ) -> futures::future::BoxFuture<'a, anyhow::Result<PathBuf>>,
+}
+
+static HOOKS: std::sync::OnceLock<ForwardHooks> = std::sync::OnceLock::new();
+
+/// Install the same immutable registry-reading operations for every runtime.
+pub fn install_forward_hooks(hooks: ForwardHooks) {
+    HOOKS.get_or_init(|| hooks);
+}
+
+fn hooks() -> &'static ForwardHooks {
+    HOOKS.get().expect("rpc forwarding hooks must be installed before dispatch")
+}
+
+
 /// JSON-RPC error code: the session's owner cannot be reached (or taken from).
 /// `data` is a [`FrontDoorError`] in serde's external enum form:
 /// `{"OwnerUnreachable": {"owner": "<engine id>", "last_seen": <ms epoch | null>}}`
@@ -137,7 +165,7 @@ impl Serialize for ByName<'_> {
         s.collect_seq(
             self.0
                 .iter()
-                .map(|f| match artifact::mesh::attachment_name(f) {
+                .map(|f| match (hooks().attachment_name)(f) {
                     Some(name) => Path::new("attachments").join(name),
                     None => f.clone(),
                 }),
@@ -181,10 +209,10 @@ pub async fn resolve_files_via(
     mut files: Vec<PathBuf>,
 ) -> RpcResult<Vec<PathBuf>> {
     let prefer = ext.get::<Forwarded>().map(|f| &f.0);
-    let dir = artifact::mesh::attachments_dir(data_dir);
+    let dir = (hooks().attachments_dir)(data_dir);
     for f in &mut files {
         let Some(name) = marker(f) else { continue };
-        *f = artifact::mesh::fetch_attachment_via(t, &dir, name, prefer)
+        *f = (hooks().fetch_attachment)(t, &dir, name, prefer)
             .await
             .map_err(|e| rpc_core::failed(format!("{}: {e:#}", f.display())))?;
     }
@@ -194,7 +222,9 @@ pub async fn resolve_files_via(
 /// The mesh peer owning `session`, when it is another engine and the
 /// sessions plugin is running: the first peer to ask for its files.
 pub async fn owner_peer(session: SessionId) -> Option<PeerId> {
-    sessionsync::actor()?;
+    if !(hooks().sessions_running)() {
+        return None;
+    }
     let store = rpc_core::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore)
         .await
         .ok()?;
@@ -213,7 +243,7 @@ pub async fn classify(
     connected: &[PeerId],
 ) -> anyhow::Result<Route> {
     let owner = match store.session(session).await? {
-        None => match sessionsync::owner::expected(session) {
+        None => match (hooks().expected)(session) {
             Some(engine) => engine,
             None => return Ok(Route::Here),
         },
@@ -244,10 +274,10 @@ pub struct Expected {
 /// unused for [`sessionsync::owner::EXPECT_FOR`]), or when its row here names
 /// another owner (it moved: normal routing applies).
 pub async fn expected(ext: &Extensions, session: SessionId) -> RpcResult<Option<Expected>> {
-    if ext.get::<Forwarded>().is_some() || sessionsync::actor().is_none() {
+    if ext.get::<Forwarded>().is_some() || !(hooks().sessions_running)() {
         return Ok(None);
     }
-    let Some(engine) = sessionsync::owner::expected(session) else {
+    let Some(engine) = (hooks().expected)(session) else {
         return Ok(None);
     };
     let store = rpc_core::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
@@ -320,7 +350,7 @@ pub async fn route<T: DeserializeOwned>(
     params: impl Serialize,
 ) -> RpcResult<Option<T>> {
     // Lone engine (no sessions plugin): local.
-    if sessionsync::actor().is_none() {
+    if !(hooks().sessions_running)() {
         return Ok(None);
     }
     let store = rpc_core::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
@@ -598,6 +628,7 @@ mod tests {
     }
 
     fn pair() -> (Arc<Loop>, Arc<Loop>) {
+        crate::install_forward_hooks();
         let inboxes = Arc::new(parking_lot::Mutex::new(HashMap::new()));
         let mk = |name: &str| {
             let me = PeerId(name.to_owned());
@@ -846,6 +877,7 @@ mod tests {
     /// and desks alike; nothing classifies as a take any more.
     #[tokio::test]
     async fn classify_forwards_to_a_connected_owner_and_is_offline_otherwise() {
+        crate::install_forward_hooks();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sessions.sqlite");
         let (user, desk, roster, mine) = (

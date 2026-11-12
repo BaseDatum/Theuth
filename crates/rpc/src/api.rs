@@ -511,6 +511,7 @@ impl Server {
     /// A server with no event feed: for in-process callers (the TUI), which
     /// subscribe to the bus themselves. `serve` builds the real one.
     pub fn new(rt: Runtime) -> Self {
+        crate::install_forward_hooks();
         install_insight_hooks(&rt);
         Self {
             events: broadcast::channel(1).0,

@@ -11,19 +11,28 @@ use crate::{Following, RpcPeer};
 pub type Event = Arc<serde_json::Value>;
 /// Insert-only private-tree membership, shared across local and socket servers.
 pub type PrivateMap = Arc<RwLock<HashMap<SessionId, (SessionId, u64)>>>;
+/// Per-connection delta focus, absent for an unrestricted connection.
 pub type FocusMap = Arc<RwLock<HashMap<u64, Arc<HashSet<String>>>>>;
+/// Finished alert identifiers already seen by each connection.
 pub type SeenMap = Arc<RwLock<HashMap<u64, HashSet<String>>>>;
+/// Focused-session leases, released with their connection.
 pub type FollowMap = Arc<Mutex<HashMap<u64, HashMap<SessionId, Following>>>>;
 static PRIVATE: LazyLock<PrivateMap> = LazyLock::new(Default::default);
 
 /// All six fields are shared handles; module composition must only clone them.
 #[derive(Clone)]
 pub struct Server {
+    /// Shared event feed supplied by the transport owner.
     pub events: broadcast::Sender<Event>,
+    /// Runtime and shutdown handle.
     pub rt: Runtime,
+    /// Process-wide insert-only private-tree membership.
     pub private: PrivateMap,
+    /// Connection-local delta focus.
     pub focus: FocusMap,
+    /// Connection-local finished alerts.
     pub seen: SeenMap,
+    /// Connection-local focused-session leases.
     pub follows: FollowMap,
 }
 
@@ -40,6 +49,7 @@ impl Server {
         }
     }
 
+    /// Remove only this connection's state once its original peer closes.
     pub fn forget_on_close(&self, peer: RpcPeer) {
         let (focus, seen, follows) = (self.focus.clone(), self.seen.clone(), self.follows.clone());
         tokio::spawn(async move {

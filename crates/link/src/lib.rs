@@ -31,6 +31,7 @@ use runtime::Runtime;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+/// Provider-owned helpers used by RPC method owners.
 pub mod rpc_support;
 pub mod conn;
 pub mod devices;

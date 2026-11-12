@@ -11,6 +11,7 @@ pub const NOT_RUNNING: i32 = -32001;
 /// The call reached the method without an authenticated connection behind it.
 pub const UNAUTHORIZED: i32 = -32002;
 
+/// Resolve a registered actor, preserving not-running versus registry errors.
 pub fn lookup<A: Actor>(name: &str) -> RpcResult<ActorRef<A>> {
     match ActorRef::<A>::lookup(name) {
         Ok(Some(a)) => Ok(a),

@@ -6,6 +6,9 @@ mod helpers;
 mod state;
 mod peer;
 
+#[cfg(test)]
+pub mod stream_tests;
+
 pub use client::{Client, ConnId};
 pub use peer::{Guest, RpcPeer, RpcPeerGuard};
 pub use follow::{Following, Unfollow};

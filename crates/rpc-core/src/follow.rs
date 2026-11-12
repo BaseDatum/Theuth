@@ -12,6 +12,7 @@ pub struct Following {
 }
 
 impl Following {
+    /// Hold the original actor recipient until the lease is dropped.
     pub fn new(session: SessionId, actor: Recipient<Unfollow>) -> Self {
         Self { session, actor }
     }

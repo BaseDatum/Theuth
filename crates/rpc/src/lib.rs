@@ -19,6 +19,20 @@ use jsonrpsee::server::{
     stop_channel,
 };
 use runtime::Runtime;
+
+/// Install immutable forwarding hooks that keep reading the current registries.
+fn install_forward_hooks() {
+    forward::install_forward_hooks(forward::ForwardHooks {
+        sessions_running: || sessionsync::actor().is_some(),
+        expected: sessionsync::owner::expected,
+        attachment_name: artifact::mesh::attachment_name,
+        attachments_dir: artifact::mesh::attachments_dir,
+        fetch_attachment: |t, dir, name, prefer| {
+            Box::pin(artifact::mesh::fetch_attachment_via(t, dir, name, prefer))
+        },
+    });
+}
+
 use rpc_core::{Client, ConnId};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;

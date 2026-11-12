@@ -14,6 +14,7 @@
 //! vault-key frames, keyring and rotation hooks in `keys.rs`; `net.rs` and this file only
 //! call into them.
 
+/// Provider-owned helpers used by RPC method owners.
 pub mod rpc_support;
 pub mod config;
 pub mod identity;
