@@ -104,6 +104,14 @@ pub enum ModelRole {
     Session,
     /// An explicit `provider/model` or bare id.
     Named(String),
+    /// An explicit `provider/model` (or bare id) with that setting's own effort (194 D4e).
+    /// `effort: None` behaves exactly like `Named`.
+    NamedWithEffort {
+        /// As in `Named`.
+        model: String,
+        /// The setting's effort keyword or token budget; `None` = no reasoning setting.
+        effort: Option<String>,
+    },
     /// `voice.polish_model` → `agent.title_model` → the session's model (153 §9.3).
     Polish,
 }
