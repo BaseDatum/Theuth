@@ -14,9 +14,10 @@ vi.mock('@/components/sidebar/ProjectStyle', () => ({ ProjectIcon: () => null })
 // Static markup drops handlers: the model comboboxes and switches register theirs by label so a test can "use" them.
 const handlers: Record<string, ((v: never) => void) | undefined> = {}
 vi.mock('@/components/chat/ModelCombobox', () => ({
-  ModelCombobox: ({ value, none, onChange, 'aria-label': label }: { value: string | null | undefined; none?: { label: string }; onChange(id: string | null): void; 'aria-label': string }) => {
+  ModelCombobox: ({ value, none, onChange, effort, 'aria-label': label }: { value: string | null | undefined; none?: { label: string }; onChange(id: string | null): void; effort?: { levels: string[]; current: string | null | undefined; onSelect(l: string | null): void }; 'aria-label': string }) => {
     handlers[label] = onChange
-    return createElement('span', { 'aria-label': label }, value ?? none?.label)
+    handlers[`${label} effort`] = effort?.onSelect
+    return createElement('span', { 'aria-label': label, 'data-levels': effort?.levels.join(','), 'data-effort': effort?.current ?? undefined }, value ?? none?.label)
   },
 }))
 vi.mock('@/components/ui/switch', () => ({
@@ -36,6 +37,7 @@ vi.mock('@/components/ui/button', () => ({
 const haiku = { id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5', efforts: [] as string[] } as ModelInfo
 const block: MeetingSettings = {
   model: null,
+  effort: null,
   summary_model: null,
   template: 'meeting',
   language: 'en',
@@ -106,6 +108,23 @@ test('round-trip: each control writes the whole block with one field changed (§
   await render(MeetingDetection)
   handlers['Detect meetings']?.(false as never)
   expect(await write(3)).toEqual({ ...block, detect: { ...block.detect, enabled: false } })
+})
+
+test('194 row 16: the meeting model carries `meeting.effort` as its chips; a chip writes the whole block with the level, Default with null', async () => {
+  const sonnet = { id: 'anthropic/claude-sonnet-4-5', name: 'Claude Sonnet 4.5', efforts: ['low', 'high'] } as ModelInfo
+  api.list_models.mockResolvedValue([haiku, sonnet])
+  api.meeting_settings_get.mockResolvedValue({ ...block, model: sonnet.id, effort: 'high' })
+  const html = await render(MeetingDefaults)
+  expect(html).toContain(`aria-label="Meeting model" data-levels="low,high" data-effort="high">${sonnet.id}<`)
+  handlers['Meeting model effort']?.('low' as never)
+  expect(await write(1)).toEqual({ ...block, model: sonnet.id, effort: 'low' })
+  handlers['Meeting model effort']?.(null as never)
+  expect(await write(2)).toEqual({ ...block, model: sonnet.id, effort: null })
+  // A model without levels has no chips (the engine drops a stored effort it does not take).
+  api.meeting_settings_get.mockResolvedValue({ ...block, model: haiku.id })
+  expect(await render(MeetingDefaults)).toContain(`aria-label="Meeting model">${haiku.id}<`)
+  api.list_models.mockResolvedValue([haiku])
+  api.meeting_settings_get.mockResolvedValue(block)
 })
 
 test('the ignore list and live tools: Reset writes the default list; added() trims, drops blanks and repeats', async () => {

@@ -42,6 +42,8 @@ type Saved = {
   sizes: Record<string, [number, number]>
   /** `StartMeeting.session_model`; `null` = the engine default. */
   model: string | null
+  /** 194: `StartMeeting.session_effort`, the effort of `model`; `null` = Default. */
+  effort: string | null
   /** Transcript share of the left column on `/meetings/$id`, 0.15–0.85 (the divider's range). */
   split: number
   /** 156 D3: brief column width in px (`MIN_BRIEF_WIDTH`–`MAX_BRIEF_WIDTH`) and whether it is shown. */
@@ -58,7 +60,9 @@ type MeetingSettings = Saved & {
   /** Forget the saved spot for `key`: the next `island_place` uses the notch default. */
   clearPosition(key: string): void
   setSize(key: string, size: [number, number]): void
-  setModel(model: string | null): void
+  /** The model, with the effort it keeps (194 D4c: `null` unless the new model takes the old one). */
+  setModel(model: string | null, effort?: string | null): void
+  setEffort(effort: string | null): void
   setSplit(split: number): void
   setBriefWidth(width: number): void
   setBriefsOpen(open: boolean): void
@@ -67,7 +71,7 @@ type MeetingSettings = Saved & {
 
 /** `split`/`noteSplit` outside the handle range (a hand-edited or older value) fall back to the default; `briefWidth` is clamped the same way. */
 function load(): Saved {
-  const base: Saved = { hidden: true, ptt: DEFAULT_PTT, eye: DEFAULT_EYE, positions: {}, sizes: {}, model: null, split: DEFAULT_SPLIT, briefWidth: DEFAULT_BRIEF_WIDTH, briefsOpen: true, noteSplit: DEFAULT_NOTE_SPLIT }
+  const base: Saved = { hidden: true, ptt: DEFAULT_PTT, eye: DEFAULT_EYE, positions: {}, sizes: {}, model: null, effort: null, split: DEFAULT_SPLIT, briefWidth: DEFAULT_BRIEF_WIDTH, briefsOpen: true, noteSplit: DEFAULT_NOTE_SPLIT }
   try {
     const saved = { ...base, ...(JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<Saved>) }
     saved.split = validRatio(saved.split, DEFAULT_SPLIT)
@@ -82,8 +86,8 @@ function load(): Saved {
 
 export const useMeetingSettings = create<MeetingSettings>()((set, get) => {
   const save = (patch: Partial<Saved>) => {
-    const { hidden, ptt, eye, positions, sizes, model, split, briefWidth, briefsOpen, noteSplit } = { ...get(), ...patch }
-    localStorage.setItem(KEY, JSON.stringify({ hidden, ptt, eye, positions, sizes, model, split, briefWidth, briefsOpen, noteSplit }))
+    const { hidden, ptt, eye, positions, sizes, model, effort, split, briefWidth, briefsOpen, noteSplit } = { ...get(), ...patch }
+    localStorage.setItem(KEY, JSON.stringify({ hidden, ptt, eye, positions, sizes, model, effort, split, briefWidth, briefsOpen, noteSplit }))
     set(patch)
   }
   return {
@@ -96,7 +100,8 @@ export const useMeetingSettings = create<MeetingSettings>()((set, get) => {
       save({ positions })
     },
     setSize: (key, size) => save({ sizes: { ...get().sizes, [key]: size } }),
-    setModel: (model) => save({ model }),
+    setModel: (model, effort = null) => save({ model, effort: model ? effort : null }),
+    setEffort: (effort) => save({ effort }),
     setSplit: (split) => save({ split }),
     setBriefWidth: (width) => save({ briefWidth: clampBriefWidth(width) }),
     setBriefsOpen: (briefsOpen) => save({ briefsOpen }),

@@ -47,6 +47,8 @@ pub struct RoutineDraft {
     pub quiet: bool,
     /// Model for the run.
     pub model: Option<String>,
+    /// Reasoning effort for that model (`low`/`high`, a level it takes); needs `model`.
+    pub effort: Option<String>,
     /// Stop command (exit 0 = done).
     pub until: Option<String>,
     /// Stop after this many runs.
@@ -91,6 +93,7 @@ impl RoutineDraft {
             prompt: self.prompt.clone(),
             quiet: self.quiet,
             model: self.model.clone(),
+            effort: self.effort.clone(),
             until: self.until.clone(),
             max_runs: self.max_runs,
             run_timeout: self.run_timeout.clone(),
@@ -152,7 +155,7 @@ impl Tool for RoutineDraftTool {
     fn description(&self) -> String {
         "Propose a routine (a schedules/<name>.md file) for the user's approval before anything is written. \
          After the `routines` skill's questions, call this with 1..n drafts {name, sentence, cron|every|at, \
-         prompt, …the schedule keys}. Each renders as a card (sentence, Trigger · Stop · Run · Concurrency, \
+         prompt, …the schedule keys, `effort` beside `model`}. Each renders as a card (sentence, Trigger · Stop · Run · Concurrency, \
          prompt) with three buttons: Create paused, Create and start, Open in form. Then STOP and wait: the \
          press arrives as the user's next message (it begins `[app routine-drafts …]`) naming the draft id and \
          the choice; the receipt says what to call. The draft is validated as `schedule` would (name, parse, \
@@ -312,6 +315,9 @@ fn parts(d: &RoutineDraft) -> String {
     if let Some(m) = &d.model {
         run.push(format!("model {m}"));
     }
+    if let Some(e) = &d.effort {
+        run.push(format!("effort {e}"));
+    }
     if let Some(c) = &d.cwd {
         run.push(format!("cwd {c}"));
     }
@@ -442,6 +448,7 @@ mod tests {
             prompt: "Brief me on \"today\".\nKeep it short.".into(),
             quiet: false,
             model: None,
+            effort: None,
             until: None,
             max_runs: None,
             run_timeout: None,
@@ -607,6 +614,34 @@ mod tests {
                 &sensors
             )
             .is_err()
+        );
+    }
+
+    /// 194 row 18: a draft's `effort` is on the card's Run line beside `model`, reaches the
+    /// `schedule` call the press leads to, and is validated as `schedule` would.
+    #[test]
+    fn effort_rides_with_the_model() {
+        let d = RoutineDraft {
+            model: Some("a/b".into()),
+            effort: Some("high".into()),
+            ..draft("brief")
+        };
+        let (src, _) = source(std::slice::from_ref(&d), &BTreeSet::new(), "");
+        assert!(src.contains("Run `model a/b, effort high`"), "{src}");
+        let text = schedule::tools::render_args(&d.schedule_args());
+        assert!(text.contains("model: a/b\neffort: high\n"), "{text}");
+        let tmp = tempfile::tempdir().unwrap();
+        let sensors = agent::sensor::SensorRunner::new(
+            tmp.path().to_path_buf(),
+            None,
+            None,
+            Default::default(),
+        );
+        assert!(validate(&d, &sensors).is_ok());
+        let bare = RoutineDraft { model: None, ..d };
+        assert_eq!(
+            validate(&bare, &sensors).unwrap_err(),
+            "effort: needs model:"
         );
     }
 }

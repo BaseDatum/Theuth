@@ -681,6 +681,8 @@ pub struct MeetingConfig {
     /// 158 §6.1 (W1): the meeting session's model (`provider/model`); `None` → `agent.model`.
     /// Carried, not yet read — W1 resolves `StartMeeting.session_model.or(cfg.model)`.
     pub model: Option<String>,
+    /// 194 D2: the meeting session's effort beside `model`; `None` → `agent.effort` (D4a).
+    pub effort: Option<String>,
     /// 158 §6.1 (W1): the summary turn's model; `None` → `model`. Carried, not yet read.
     pub summary_model: Option<String>,
     /// 158 §6.1 (W4): default note template slug when the start picks none and nothing is remembered.
@@ -703,6 +705,8 @@ pub struct MeetingConfig {
 pub struct MeetingSettings {
     /// `meeting.model`.
     pub model: Option<String>,
+    /// `meeting.effort` (194): the meeting session's effort; cleared with `model`.
+    pub effort: Option<String>,
     /// `meeting.summary_model`.
     pub summary_model: Option<String>,
     /// `meeting.template`.
@@ -731,6 +735,7 @@ impl From<&MeetingConfig> for MeetingSettings {
     fn from(c: &MeetingConfig) -> Self {
         Self {
             model: c.model.clone(),
+            effort: c.effort.clone(),
             summary_model: c.summary_model.clone(),
             template: c.template.clone(),
             language: c.language.clone(),
@@ -771,6 +776,7 @@ impl MeetingSettings {
         }
         for (k, v) in [
             ("model", j(&self.model)),
+            ("effort", j(&self.effort)),
             ("summary_model", j(&self.summary_model)),
             ("template", j(&self.template)),
             ("language", j(&self.language)),
@@ -800,6 +806,7 @@ impl MeetingSettings {
     /// Into the live config (the `meeting_settings_set` subset only).
     fn apply_to(self, c: &mut MeetingConfig) {
         c.model = self.model;
+        c.effort = self.effort;
         c.summary_model = self.summary_model;
         c.template = self.template;
         c.language = self.language;
@@ -836,6 +843,15 @@ impl Message<SetSettings> for Meeting {
         m: SetSettings,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        // 194 D4b–d: `meeting.effort` against the model it goes with.
+        let mut m = m;
+        let info = agent::lifecycle::effort_model(m.0.model.as_deref()).await;
+        m.0.effort = agent::lifecycle::settle_effort(
+            m.0.model.as_deref(),
+            info.as_ref(),
+            m.0.effort.as_deref(),
+            m.0.model != self.cfg.model,
+        )?;
         m.0.persist(&self.rt.data_dir.join("config.yaml"))
             .map_err(|e| format!("config.yaml: {e}"))?;
         m.0.apply_to(&mut self.cfg);
@@ -912,6 +928,7 @@ impl Default for MeetingConfig {
             live_prompts: ["meeting", "knowledge", "web"].map(String::from).to_vec(),
             live_hint_limit: 2,
             model: None,
+            effort: None,
             summary_model: None,
             template: templates::DEFAULT.to_owned(),
             language: "en".to_owned(),
@@ -951,6 +968,11 @@ pub struct StartMeeting {
     /// Model for the meeting session (phase 2); stored in the manifest.
     #[serde(default)]
     pub session_model: Option<String>,
+    /// 194 D2: the effort for that session; read only with `session_model` (D4d), else
+    /// `meeting.effort` goes with `meeting.model`. `None` = `agent.effort`.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub session_effort: Option<String>,
     /// 137 R1-D6: the session's memory mode; `None` = `agent.endless.default_meeting`.
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
@@ -2214,7 +2236,9 @@ impl Message<StartMeeting> for Meeting {
         manifest.title = m.title;
         manifest.context = m.context;
         // 158 §6.1: the start's pick, else `meeting.model`; `None` still falls to `agent.model`.
-        manifest.session_model = m.session_model.or_else(|| self.cfg.model.clone());
+        // 194 D4a/d: each model brings its own effort; `None` still falls to `agent.effort`.
+        (manifest.session_model, manifest.session_effort) =
+            session_pick(m.session_model, m.session_effort, &self.cfg);
         // 158 §8.3 (W2): the picked calendar event seeds title, context and `manifest.event`.
         let picked = m.event.as_ref().or(match &m.source {
             Some(detect::Source::Calendar { event }) => Some(event),
@@ -2314,6 +2338,20 @@ impl Message<StartMeeting> for Meeting {
     }
 }
 
+/// 158 §6.1 + 194 D4a/d: the meeting session's `(model, effort)`: the start's model with the
+/// start's effort, else `meeting.model` with `meeting.effort` (a start effort without a model
+/// is not read).
+fn session_pick(
+    model: Option<String>,
+    effort: Option<String>,
+    cfg: &MeetingConfig,
+) -> (Option<String>, Option<String>) {
+    match model {
+        Some(model) => (Some(model), effort),
+        None => (cfg.model.clone(), cfg.effort.clone()),
+    }
+}
+
 /// What `start_task` needs from config.
 struct Setup {
     title: String,
@@ -2342,6 +2380,7 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
                 // 158 §9.2 W-c: the meeting's project, else the `meetings` pseudo-project.
                 project: manifest.project.clone().or_else(|| Some("meetings".into())),
                 model: manifest.session_model.clone(),
+                effort: manifest.session_effort.clone(),
                 // 137 R1-D6: never the chat default — the meeting's mode is set below with
                 // the meeting filter, so the agent never starts an unfiltered tree here.
                 memory: Some(agent::MemoryMode::Epochs),
@@ -5263,6 +5302,88 @@ mod tests {
         assert_eq!(MeetingSettings::from(&cfg), s);
         assert_eq!(cfg.max_minutes, 90);
         assert!(!b.actor.ask(LiveDiarization).await.unwrap());
+    }
+
+    /// 194 rows 16/17: `meeting.effort` is written beside `meeting.model` and applied live; an
+    /// old block without it loads as Default; no model clears it (D4d); a word no model takes
+    /// is refused (D4b) unless the model changed with it, which drops it (D4c).
+    #[tokio::test]
+    async fn meeting_effort_persists_with_its_model() {
+        let b = bench().await;
+        let path = b._dir.path().join("config.yaml");
+        std::fs::write(&path, "meeting:\n  model: \"openai/gpt-5\"\n").unwrap();
+        use figment::providers::Format as _;
+        let read = || -> MeetingConfig {
+            figment::Figment::new()
+                .merge(figment::providers::Yaml::file(&path))
+                .extract_inner("meeting")
+                .unwrap()
+        };
+        assert_eq!(read().effort, None, "an old block is Default");
+        let s = MeetingSettings {
+            model: Some("openai/gpt-5".into()),
+            effort: Some("high".into()),
+            ..MeetingSettings::default()
+        };
+        let got = b.actor.ask(SetSettings(s.clone())).await.unwrap();
+        assert_eq!(got.effort.as_deref(), Some("high"));
+        assert_eq!(read().effort.as_deref(), Some("high"));
+        let (model, effort) = session_pick(None, None, &read());
+        assert_eq!(
+            (model.as_deref(), effort.as_deref()),
+            (Some("openai/gpt-5"), Some("high"))
+        );
+
+        let bad = MeetingSettings {
+            effort: Some("loud".into()),
+            ..s.clone()
+        };
+        let err = b.actor.ask(SetSettings(bad.clone())).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("unknown effort loud"),
+            "{err:?}"
+        );
+        assert_eq!(
+            read().effort.as_deref(),
+            Some("high"),
+            "a refusal writes nothing"
+        );
+        let moved = MeetingSettings {
+            model: Some("anthropic/claude".into()),
+            ..bad
+        };
+        assert_eq!(b.actor.ask(SetSettings(moved)).await.unwrap().effort, None);
+
+        let none = MeetingSettings {
+            model: None,
+            effort: Some("high".into()),
+            ..s
+        };
+        assert_eq!(b.actor.ask(SetSettings(none)).await.unwrap().effort, None);
+        assert_eq!(read().effort, None);
+    }
+
+    /// 194 D4a/d/e: the start's model brings the start's effort into `create_session`;
+    /// without a start model, `meeting.model` brings `meeting.effort`; neither is `agent.*`.
+    #[test]
+    fn the_session_starts_on_the_picked_effort() {
+        let cfg = MeetingConfig {
+            model: Some("cfg/m".into()),
+            effort: Some("low".into()),
+            ..MeetingConfig::default()
+        };
+        let pick = |m: Option<&str>, e: Option<&str>| {
+            let (m, e) = session_pick(m.map(Into::into), e.map(Into::into), &cfg);
+            (m.unwrap_or_default(), e.unwrap_or_default())
+        };
+        assert_eq!(
+            pick(Some("a/b"), Some("high")),
+            ("a/b".into(), "high".into())
+        );
+        assert_eq!(pick(Some("a/b"), None), ("a/b".into(), String::new()));
+        assert_eq!(pick(None, Some("high")), ("cfg/m".into(), "low".into()));
+        let bare = session_pick(None, None, &MeetingConfig::default());
+        assert_eq!(bare, (None, None), "today: agent.model at agent.effort");
     }
 
     /// 158 D13: a manifest the last run left `Recording` with a track on disk is `Stopping`

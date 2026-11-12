@@ -421,7 +421,7 @@ impl Tool for StudyDraftTool {
          Shows a draft card; the user's Start press creates the study — this call writes nothing. Benchmark scripts \
          written during setup belong under the autoresearch drafts directory, never in the user's checkout. \
          `partial: true` (setup in the Autoresearch tab) relaxes validation to slug + repo and shows a compact card; \
-         `confirmed` lists the rows the user agreed to."
+         `confirmed` lists the rows the user agreed to; `models.<role>_effort` sets a role's reasoning effort beside its model."
             .into()
     }
 

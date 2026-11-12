@@ -784,8 +784,15 @@ fn inner_spec(
                 .executor
                 .clone()
                 .or_else(|| outer.models.executor.clone()),
+            // 194: the outer executor's effort only rides with the outer executor.
+            executor_effort: match suite.executor {
+                Some(_) => None,
+                None => outer.models.executor_effort.clone(),
+            },
             review: outer.models.review.clone(),
+            review_effort: outer.models.review_effort.clone(),
             advisor: outer.models.advisor.clone(),
+            advisor_effort: outer.models.advisor_effort.clone(),
             ..ModelsSpec::default()
         },
         ..StudySpec::default()
@@ -2210,6 +2217,7 @@ mod tests {
             _: &StudyRecord,
             _: u32,
             _: &str,
+            _: Option<&str>,
             _: &runtime::Runtime,
         ) -> Result<ReviewVerdict> {
             Ok(ReviewVerdict::Clean {
@@ -2220,6 +2228,7 @@ mod tests {
             &self,
             _: &Store,
             _: &StudyRecord,
+            _: Option<&str>,
             _: Option<&str>,
             _: &runtime::Runtime,
         ) -> Result<Vec<IdeaDraft>> {

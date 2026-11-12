@@ -122,6 +122,10 @@ pub struct Manifest {
     /// Model for the session (phase 2).
     #[serde(default)]
     pub session_model: Option<String>,
+    /// 194: the session's effort beside `session_model`; absent = `agent.effort`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub session_effort: Option<String>,
     /// 137 R1-D6: the session's memory mode (`epochs` for meetings recorded before it).
     #[serde(default)]
     pub memory: agent::MemoryMode,
@@ -181,6 +185,7 @@ impl Manifest {
             state: MeetingState::Starting,
             failure: None,
             session_model: None,
+            session_effort: None,
             memory: agent::MemoryMode::Epochs,
             tracks: [Stem::Mic, Stem::System, Stem::Mix]
                 .into_iter()

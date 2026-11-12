@@ -1268,6 +1268,7 @@ impl Schedule {
         let spec = entry.spec.as_ref().map_err(Clone::clone)?;
         let session = entry.session;
         let (quiet, model, prompt) = (spec.quiet, spec.model.clone(), spec.prompt.clone());
+        let effort = spec.effort.clone();
         let (until, max_runs, cwd, approvals) = (
             spec.until.clone(),
             spec.max_runs,
@@ -1487,7 +1488,10 @@ impl Schedule {
                 }
                 s
             }
-            None => new_session(&agents, name, cwd.clone(), model, subject.as_deref()).await?,
+            None => {
+                let pick = (model, effort);
+                new_session(&agents, name, cwd.clone(), pick, subject.as_deref()).await?
+            }
         };
         // 140 F4E: the file's `cwd:` seats the session — relative file-tool
         // paths and the session shell follow it (in memory, re-sent per fire).
@@ -2090,12 +2094,12 @@ async fn apply_approvals(
 
 /// 34 §4 step 2, shared by [`Schedule::fire`] and `BindSession` (40 §1.12):
 /// the schedule's session, titled `<name>` or `<name> · <subject>`, with
-/// `model:` applied.
+/// `model:` and (194) `effort:` applied.
 async fn new_session(
     agents: &ActorRef<agent::Agents>,
     name: &str,
     cwd: Option<PathBuf>,
-    model: Option<String>,
+    (model, effort): (Option<String>, Option<String>),
     subject: Option<&str>,
 ) -> Result<SessionId, String> {
     // Unattended automation roots are `isolated` (50 §2.3): `NewSession` is
@@ -2127,6 +2131,18 @@ async fn new_session(
             .await
     {
         tracing::warn!(%name, "model not set: {e}");
+    }
+    // 194 D4e: the model's effort, for that session only; `None` keeps `agent.effort` (D4a).
+    if let Some(effort) = effort
+        && let Err(e) = agents
+            .ask(agent::SetEffort {
+                session: Some(s),
+                effort: Some(effort),
+                manual: false,
+            })
+            .await
+    {
+        tracing::warn!(%name, "effort not set: {e}");
     }
     Ok(s)
 }
@@ -2518,12 +2534,13 @@ impl Schedule {
         if let Some(s) = e.session {
             return Ok(s);
         }
-        let (cwd, model) = (spec.cwd.clone(), spec.model.clone());
+        let pick = (spec.model.clone(), spec.effort.clone());
+        let cwd = spec.cwd.clone();
         let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
             .ok()
             .flatten()
             .ok_or("agent is not running")?;
-        let s = new_session(&agents, name, cwd, model, subject).await?;
+        let s = new_session(&agents, name, cwd, pick, subject).await?;
         if let Err(err) = self.store.watch_bind(name, s).await {
             tracing::error!(%name, "bound session not recorded: {err:#}");
         }
@@ -3047,6 +3064,15 @@ impl Message<Put> for Schedule {
         if f.engine.is_none() && !self.entries.contains_key(&name) {
             f.engine = mesh::self_id();
         }
+        // 194 D4b–d: `effort:` against the model it goes with; an edit that changes the model
+        // drops one the new model does not take, no model clears it.
+        let model = f.model.as_deref().map(str::trim).filter(|m| !m.is_empty());
+        let old = self.entries.get(&name).and_then(|e| e.spec.as_ref().ok());
+        let changed = old.is_some_and(|s| s.model.as_deref() != model);
+        let info = agent::lifecycle::effort_model(model).await;
+        f.effort =
+            agent::lifecycle::settle_effort(model, info.as_ref(), f.effort.as_deref(), changed)
+                .map_err(|e| format!("effort: {e}"))?;
         let text = file::render(&f.args());
         file::parse(&name, &text)?;
         file::write_atomic(&self.dir, &name, &text).map_err(|e| e.to_string())?;
@@ -3274,7 +3300,7 @@ impl runtime::Plugin for SchedulePlugin {
         let timeout = Duration::from_secs(cfg.run_timeout_secs);
         // 40 §4.2: the sensor-profile pool; the worker is this binary (`t subprocess`,
         // 08 §9) as for the main runtime. Without it Monty sensors are `Unavailable`.
-        let profile = agent::sensor::SensorProfile::for_runtime(&rt);
+        let profile = agent::sensor::SensorProfile::for_runtime(rt);
         let pool = match std::env::current_exe() {
             Ok(exe) => agent::repl::open_pool(&exe, profile.max_concurrent).await,
             Err(e) => {
@@ -3714,6 +3740,151 @@ mod fire_tests {
         assert_eq!(actor.ask(GetRunTimeout).await.unwrap(), 90);
         let cfg = std::fs::read_to_string(dir.path().join("config.yaml")).unwrap();
         assert_eq!(cfg, "schedule:\n  run_timeout_secs: 90\n");
+    }
+
+    /// 194 row 18: the editor's `Put` writes `effort:` beside `model:` and `Get` reads it back;
+    /// no model clears it (D4d); a word no model takes is refused on the same model (D4b) and
+    /// dropped when the model changes with it (D4c).
+    #[tokio::test]
+    async fn put_keeps_effort_with_its_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, _) = actor(dir.path(), &[]).await;
+        let actor = Schedule::spawn(s);
+        let file = |model: Option<&str>, effort: &str| file::ScheduleFile {
+            name: "brief".into(),
+            every: Some("1h".into()),
+            model: model.map(Into::into),
+            effort: Some(effort.into()),
+            enabled: true,
+            approvals: true,
+            prompt: "Brief me.".into(),
+            ..file::ScheduleFile::default()
+        };
+        let get = || async {
+            actor
+                .ask(Get {
+                    name: "brief".into(),
+                })
+                .await
+                .unwrap()
+        };
+        actor.ask(Put(file(Some("a/b"), "high"))).await.unwrap();
+        let text = std::fs::read_to_string(dir.path().join(DIR).join("brief.md")).unwrap();
+        assert!(text.contains("model: a/b\neffort: high\n"), "{text}");
+        assert_eq!(get().await.effort.as_deref(), Some("high"));
+        use kameo::error::SendError;
+        assert!(matches!(
+            actor.ask(Put(file(Some("a/b"), "loud"))).await,
+            Err(SendError::HandlerError(e)) if e == "effort: unknown effort loud"
+        ));
+        assert_eq!(
+            get().await.effort.as_deref(),
+            Some("high"),
+            "refused: unchanged"
+        );
+        actor.ask(Put(file(Some("c/d"), "loud"))).await.unwrap();
+        assert_eq!(get().await.effort, None, "the model changed: dropped");
+        actor.ask(Put(file(None, "high"))).await.unwrap();
+        let back = get().await;
+        assert_eq!((back.model, back.effort), (None, None));
+    }
+
+    /// A model-less engine with one reasoning model (`low|high`) and one plain model.
+    async fn effort_engine(dir: &Path) -> ActorRef<agent::Agents> {
+        std::fs::write(
+            dir.join("models.json"),
+            r#"{"testp":{"id":"testp","name":"T","models":{
+                "thinker":{"id":"thinker","name":"thinker","limit":{"context":100000,"output":4096},
+                    "reasoning":true,"reasoning_options":[{"type":"effort","values":["low","high"]}]},
+                "plain":{"id":"plain","name":"plain","limit":{"context":100000,"output":4096}}}}}"#,
+        )
+        .unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.to_path_buf());
+        agent::spawn_engine_agents(rt, Default::default()).await
+    }
+
+    /// 194 D4e/D4a: a run's session starts on the routine's model at its effort; without
+    /// `effort:` it keeps the engine's (`agent.effort`, unset here).
+    #[tokio::test]
+    async fn the_run_session_starts_on_the_effort() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = effort_engine(dir.path()).await;
+        let effort_of = |s: SessionId| {
+            let agents = agents.clone();
+            async move {
+                let l = agents
+                    .ask(agent::LoadSession {
+                        session: s,
+                        before: None,
+                        limit: Some(1),
+                        settled_only: false,
+                    })
+                    .await
+                    .unwrap();
+                (l.model, l.effort)
+            }
+        };
+        let pick = (Some("testp/thinker".into()), Some("high".into()));
+        let s = new_session(&agents, "nightly", None, pick, None)
+            .await
+            .unwrap();
+        let want = ("testp/thinker".to_owned(), Some("high".to_owned()));
+        assert_eq!(effort_of(s).await, want);
+        let pick = (Some("testp/thinker".into()), None);
+        let s = new_session(&agents, "nightly", None, pick, None)
+            .await
+            .unwrap();
+        assert_eq!(effort_of(s).await, ("testp/thinker".to_owned(), None));
+    }
+
+    /// 194 D4b/D4c against the catalog: the model's own levels pass, anything else is refused
+    /// with `validate_effort`'s message, or dropped when the model changed.
+    #[tokio::test]
+    async fn settle_effort_checks_the_catalog_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = effort_engine(dir.path()).await;
+        // The catalog row `effort_model` gets from `ResolveModel`; `SetModel` answers the same
+        // `ModelInfo` without the credentials check this keyless test provider would fail.
+        let s = agents
+            .ask(agent::NewSession {
+                cwd: None,
+                unattended: true,
+            })
+            .await
+            .unwrap();
+        let info = |m: &str| {
+            let agents = agents.clone();
+            let model = m.to_owned();
+            async move {
+                let set = agent::SetModel {
+                    session: Some(s),
+                    model,
+                    manual: false,
+                };
+                agents.ask(set).await.ok()
+            }
+        };
+        let settle = agent::lifecycle::settle_effort;
+        let (thinker, plain) = (info("testp/thinker").await, info("testp/plain").await);
+        let m = Some("testp/thinker");
+        assert_eq!(
+            settle(m, thinker.as_ref(), Some("high"), false),
+            Ok(Some("high".into()))
+        );
+        assert_eq!(
+            settle(m, thinker.as_ref(), Some("medium"), false),
+            Err("testp/thinker accepts off|low|high".into())
+        );
+        assert_eq!(settle(m, thinker.as_ref(), Some("medium"), true), Ok(None));
+        let p = Some("testp/plain");
+        assert_eq!(
+            settle(p, plain.as_ref(), Some("high"), false),
+            Err("testp/plain accepts no reasoning effort".into())
+        );
+        assert_eq!(
+            settle(m, thinker.as_ref(), Some("default"), false),
+            Ok(None)
+        );
     }
 
     /// 140-P: a plugin that writes a file asks `Reconcile` itself; the file is

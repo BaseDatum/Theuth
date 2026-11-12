@@ -347,6 +347,7 @@ impl Backend for Fake {
         _: &StudyRecord,
         _: u32,
         _: &str,
+        _: Option<&str>,
         _: &runtime::Runtime,
     ) -> Result<ReviewVerdict> {
         Ok(self.review.lock().clone().unwrap_or(ReviewVerdict::Clean {
@@ -357,6 +358,7 @@ impl Backend for Fake {
         &self,
         _: &Store,
         _: &StudyRecord,
+        _: Option<&str>,
         _: Option<&str>,
         _: &runtime::Runtime,
     ) -> Result<Vec<IdeaDraft>> {
@@ -418,6 +420,7 @@ impl Backend for Fake {
         &self,
         _: &StudyRecord,
         _: &str,
+        _: Option<&str>,
         _: &str,
         user: String,
     ) -> Result<String> {

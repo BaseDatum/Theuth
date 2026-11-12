@@ -1261,9 +1261,10 @@ async fn review(
     let slug = study.slug.as_str();
     let n = exp.n;
     actor::progress(env, slug, n, &exp.started_at, Phase::Review, 0, 1).await;
+    let effort = env.cfg.reviewer_effort(&study.spec.models);
     let rv = match env
         .backend
-        .review(&env.store, study, n, &model, &env.rt)
+        .review(&env.store, study, n, &model, effort.as_deref(), &env.rt)
         .await
     {
         Ok(v) => v,

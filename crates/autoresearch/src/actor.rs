@@ -357,26 +357,28 @@ pub trait Backend: Send + Sync {
     async fn mark_tried(&self, store: &Store, slug: &str, idea: &str, n: u32) -> Result<Vec<i64>> {
         crate::novelty::mark_tried(store, slug, idea, n).await
     }
-    /// The reviewer's word on a keep.
+    /// The reviewer's word on a keep; `effort` is the reviewer's (194 D4e).
     async fn review(
         &self,
         store: &Store,
         study: &StudyRecord,
         n: u32,
         model: &str,
+        effort: Option<&str>,
         rt: &runtime::Runtime,
     ) -> Result<ReviewVerdict> {
-        crate::review::review(store, study, n, model, rt).await
+        crate::review::review(store, study, n, model, effort, rt).await
     }
-    /// The plateau consult.
+    /// The plateau consult; `effort` rides with a picked `model` (194 D4e).
     async fn advise(
         &self,
         store: &Store,
         study: &StudyRecord,
         model: Option<&str>,
+        effort: Option<&str>,
         rt: &runtime::Runtime,
     ) -> Result<Vec<IdeaDraft>> {
-        crate::review::advise(store, study, model, rt).await
+        crate::review::advise(store, study, model, effort, rt).await
     }
     // ── W2 finalize / record ──
     /// Every §11 step; the headline and the report document id. `cfg`/`root` are the
@@ -404,6 +406,7 @@ pub trait Backend: Send + Sync {
         &self,
         study: &StudyRecord,
         model: &str,
+        effort: Option<&str>,
         system: &str,
         user: String,
     ) -> Result<String> {
@@ -414,7 +417,10 @@ pub trait Backend: Send + Sync {
         agents
             .ask(runtime::SideCall {
                 session,
-                role: runtime::ModelRole::Named(model.to_owned()),
+                role: runtime::ModelRole::NamedWithEffort {
+                    model: model.to_owned(),
+                    effort: effort.map(str::to_owned),
+                },
                 system: system.to_owned(),
                 user,
                 budget: REPORT_CALL_BUDGET,
@@ -3695,9 +3701,10 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
         // §9.1: review inside the call, before the next fire can build on it.
         if let Some(model) = env.cfg.reviewer(&study.spec.models, &env.agent) {
             progress(env, &slug, n, &exp.started_at, Phase::Review, 0, 1).await;
+            let effort = env.cfg.reviewer_effort(&study.spec.models);
             let rv = match env
                 .backend
-                .review(&env.store, &study, n, &model, &env.rt)
+                .review(&env.store, &study, n, &model, effort.as_deref(), &env.rt)
                 .await
             {
                 Ok(v) => v,
@@ -4080,9 +4087,16 @@ async fn apply_rules_from_turn(
             }
             // §9.2: one advisor consult; its ideas enter the backlog as `advisor`, priority 2.
             let model = env.cfg.advisor(&study.spec.models);
+            let effort = env.cfg.advisor_effort(&study.spec.models);
             match env
                 .backend
-                .advise(&env.store, &study, model.as_deref(), &env.rt)
+                .advise(
+                    &env.store,
+                    &study,
+                    model.as_deref(),
+                    effort.as_deref(),
+                    &env.rt,
+                )
                 .await
             {
                 Ok(ideas) => {
@@ -4486,9 +4500,10 @@ async fn report_turn(env: &Env, study: &StudyRecord, doc: &str) -> Result<()> {
         study.slug, brief.text, tables
     );
     let model = env.cfg.executor(&study.spec.models, &env.agent);
+    let effort = env.cfg.executor_effort(&study.spec.models);
     let prose = env
         .backend
-        .report_prose(study, &model, REPORT_SYSTEM, user)
+        .report_prose(study, &model, effort.as_deref(), REPORT_SYSTEM, user)
         .await?;
     let prose = prose.trim();
     if prose.is_empty() {
