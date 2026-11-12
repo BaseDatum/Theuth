@@ -2,12 +2,12 @@
 //! (`cases.source: dreaming`, `cases.artefact: skills/learned/<skill>.md`) lands the text
 //! through dreaming's write path — backup under tonight's night, atomic write, an
 //! `edits.jsonl` record with origin `study:<slug>` — and makes sure that night has a ledger
-//! record, so `dreaming_undo <night>` reverts it like any night's edits. `autoresearch`
-//! cannot depend on `dreaming`; the `rpc` crate sees both, so the call sits here.
+//! record, so `dreaming_undo <night>` reverts it like any night's edits. This support
+//! travels with research under the approved autoresearch → dreaming dependency.
 
 use std::path::Path;
 
-use autoresearch::{CaseSource, ControlOp, StudyState};
+use autoresearch::{self, CaseSource, ControlOp, StudyState};
 use dreaming::night::{NightRecord, read_record, write_record};
 use dreaming::types::{NightCounts, NightId, NightSummary};
 
