@@ -676,6 +676,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             View(height: 1, padding_left: 1, padding_right: 1, justify_content: JustifyContent::SpaceBetween) {
                 View() {
                     Text(content: m.status(), color: SAND)
+                    #(component_slot(&m, Surface::Status(crate::components::StatusSlot::AfterCore), width, 1, None).elements)
                     #(m.advisor_segment().map(|(text, state)| element!(Text(content: text, color: advisor_color(state)))))
                 }
                 Text(content: m.component_text(Surface::Status(crate::components::StatusSlot::Right)), color: SAND)

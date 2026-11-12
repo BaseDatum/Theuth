@@ -461,6 +461,8 @@ pub enum StatusSlot {
     Spoken,
     /// Right-aligned status text, separate from the left status contributions.
     Right,
+    /// Inline colored contributions immediately after the retained core status.
+    AfterCore,
 }
 
 /// Fixed layout locations, never feature names.
