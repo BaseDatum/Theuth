@@ -435,6 +435,8 @@ fn default_effort_is_medium_for_anthropic_thinking_models_only() {
         "google/gemini-2.5-pro",
         "opencode/gpt-5.6-sol",
         "openrouter/openai/gpt-5.6-sol",
+        // 194: Cursor's thinking is its id's; an effort on it is an explicit pick.
+        "cursor/claude-4.6-sonnet-medium-thinking",
     ] {
         assert!(default_effort(&r(id)).is_none(), "{id}");
     }

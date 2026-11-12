@@ -4594,16 +4594,19 @@ impl Message<SetTitleModel> for Agents {
             None => None,
         };
         let info = resolved.as_ref().map(ModelInfo::from);
+        // 194: every write first (the model, then a dropped effort), then publish.
+        let path = self.rt.data_dir.join("config.yaml");
+        let value = info.as_ref().map(|i| i.id.as_str()).unwrap_or_default();
+        runtime::write_config_value(&path, "agent", "title_model", value)
+            .map_err(|e| format!("config.yaml: {e}"))?;
+        let cleared = self.follow_role_model(resolved.as_ref(), TITLE_EFFORT)?;
         *self.title_model.write().unwrap_or_else(|p| p.into_inner()) = resolved;
         // 137F E1: the compactor chain's second link, live.
         self.endless
             .set_title_model(info.as_ref().map(|i| i.id.clone()));
-        let path = self.rt.data_dir.join("config.yaml");
-        let value = info.as_ref().map(|i| i.id.as_str()).unwrap_or_default();
-        if let Err(e) = runtime::write_config_value(&path, "agent", "title_model", value) {
-            tracing::warn!("config.yaml: {e}");
+        if cleared {
+            self.clear_role_effort(TITLE_EFFORT);
         }
-        self.follow_role_model(resolved_effort_model(&self.title_model), TITLE_EFFORT);
         Ok(info)
     }
 }
@@ -4674,24 +4677,37 @@ impl Agents {
         Ok(effort)
     }
 
-    /// 194 D4c/D4d, after the role's model changed to `model`: `None` (its
-    /// fallback row) clears the effort; a model that does not take the stored
-    /// one drops it. Persisted as `~`.
-    fn follow_role_model(&mut self, model: Option<Resolved>, (section, key, field): RoleEffortKey) {
-        {
-            let mut efforts = self.role_efforts.write();
-            let slot = field(&mut efforts);
-            let Some(e) = slot.as_deref() else { return };
-            let keeps = model.is_some_and(|r| r.model.is_none_or(|m| m.validate_effort(e).is_ok()));
-            if keeps {
-                return;
-            }
-            *slot = None;
+    /// 194 D4c/D4d, before the role's model becomes `model`: `None` (its
+    /// fallback row) clears the stored effort; a model that does not take it
+    /// drops it. Persists `~` and replies whether the live slot must clear —
+    /// the caller publishes that ([`Agents::clear_role_effort`]) with its
+    /// model, once every write landed; a failed write changes nothing live.
+    fn follow_role_model(
+        &self,
+        model: Option<&Resolved>,
+        (section, key, field): RoleEffortKey,
+    ) -> Result<bool, String> {
+        let mut efforts = self.role_efforts.read().clone();
+        let Some(e) = field(&mut efforts).take() else {
+            return Ok(false);
+        };
+        let keeps = model.is_some_and(|r| {
+            r.model
+                .as_ref()
+                .is_none_or(|m| m.validate_effort(&e).is_ok())
+        });
+        if keeps {
+            return Ok(false);
         }
         let path = self.rt.data_dir.join("config.yaml");
-        if let Err(e) = runtime::write_config_value(&path, section, key, "~") {
-            tracing::warn!("config.yaml: {e}");
-        }
+        runtime::write_config_value(&path, section, key, "~")
+            .map_err(|e| format!("config.yaml: {e}"))?;
+        Ok(true)
+    }
+
+    /// Publish a role effort [`Agents::follow_role_model`] cleared.
+    fn clear_role_effort(&self, (_, _, field): RoleEffortKey) {
+        *field(&mut self.role_efforts.write()) = None;
     }
 
     /// The live value of one role effort.
@@ -4739,13 +4755,16 @@ impl Message<SetPolishModel> for Agents {
             None => None,
         };
         let info = resolved.as_ref().map(ModelInfo::from);
-        *self.polish_model.write().unwrap_or_else(|p| p.into_inner()) = resolved;
+        // 194: every write first (the model, then a dropped effort), then publish.
         let path = self.rt.data_dir.join("config.yaml");
         let value = info.as_ref().map(|i| i.id.as_str()).unwrap_or_default();
-        if let Err(e) = runtime::write_config_value(&path, "voice", "polish_model", value) {
-            tracing::warn!("config.yaml: {e}");
+        runtime::write_config_value(&path, "voice", "polish_model", value)
+            .map_err(|e| format!("config.yaml: {e}"))?;
+        let cleared = self.follow_role_model(resolved.as_ref(), POLISH_EFFORT)?;
+        *self.polish_model.write().unwrap_or_else(|p| p.into_inner()) = resolved;
+        if cleared {
+            self.clear_role_effort(POLISH_EFFORT);
         }
-        self.follow_role_model(resolved_effort_model(&self.polish_model), POLISH_EFFORT);
         Ok(info)
     }
 }
@@ -4951,11 +4970,14 @@ impl Agents {
         let value = info.as_ref().map(|i| i.id.as_str()).unwrap_or_default();
         runtime::write_config_value(&path, "agent", "escalate_model", value)
             .map_err(|e| format!("config.yaml: {e}"))?;
+        let cleared = self.follow_role_model(resolved.as_ref(), ESCALATE_EFFORT)?;
         *self
             .escalate_model
             .write()
             .unwrap_or_else(|p| p.into_inner()) = resolved;
-        self.follow_role_model(resolved_effort_model(&self.escalate_model), ESCALATE_EFFORT);
+        if cleared {
+            self.clear_role_effort(ESCALATE_EFFORT);
+        }
         Ok(info)
     }
 
@@ -5171,11 +5193,14 @@ impl Agents {
         let value = info.as_ref().map(|i| i.id.as_str()).unwrap_or_default();
         runtime::write_config_value(&path, "agent", "vision_model", value)
             .map_err(|e| format!("config.yaml: {e}"))?;
+        let cleared = self.follow_role_model(resolved.as_ref(), VISION_EFFORT)?;
         *self.vision_model.write().unwrap_or_else(|p| p.into_inner()) = resolved;
         // read-file-images §3: a (re)chosen fallback gets a fresh chance everywhere.
         crate::vision::fallback_changed();
         self.vision_error = None;
-        self.follow_role_model(resolved_effort_model(&self.vision_model), VISION_EFFORT);
+        if cleared {
+            self.clear_role_effort(VISION_EFFORT);
+        }
         Ok(info)
     }
 }
@@ -9423,24 +9448,11 @@ impl Message<ListModels> for Agents {
         if self.auth.login("cursor") {
             match self.auth.oauth.access(&oauth::CURSOR).await {
                 Ok(t) => match crate::backend::cursor_models(&t.access_token).await {
-                    Ok(models) => out.extend(models.into_iter().map(|m| {
-                        let id = format!("cursor/{}", m.id);
-                        let near = self.catalog.closest(&id);
-                        ModelInfo {
-                            context: near.map_or(0, |n| n.limit.context),
-                            reasoning: near.is_some_and(|n| n.reasoning),
-                            // Cursor's backend is text-only whatever the sibling says
-                            // (`backend::supports_images`).
-                            image: false,
-                            efforts: near.map(|n| n.efforts()).unwrap_or_default(),
-                            budget_min: near.and_then(|n| n.budget()).map(|b| b.0),
-                            budget_max: near.and_then(|n| n.budget()).and_then(|b| b.1),
-                            id,
-                            name: m.name,
-                            provider: "cursor".into(),
-                            local: false,
-                        }
-                    })),
+                    Ok(models) => out.extend(
+                        models
+                            .into_iter()
+                            .map(|m| cursor_model_info(&self.catalog, m)),
+                    ),
                     Err(e) => tracing::warn!("cursor models: {e}"),
                 },
                 Err(e) => tracing::warn!("{e}"),
@@ -9448,6 +9460,30 @@ impl Message<ListModels> for Agents {
         }
         out.sort_by(|a, b| (&a.provider, &a.id).cmp(&(&b.provider, &b.id)));
         out
+    }
+}
+
+/// A Cursor listing row, its limits borrowed from the closest catalog
+/// sibling. 194: only a family whose wire takes a `reasoning` parameter
+/// (`cursor::takes_reasoning`) offers the sibling's efforts — the rest carry
+/// their thinking in the id, so the picker shows no chips it cannot honour.
+fn cursor_model_info(catalog: &Catalog, m: cursor::Model) -> ModelInfo {
+    let id = format!("cursor/{}", m.id);
+    let near = catalog.closest(&id);
+    let tunable = near.filter(|_| cursor::takes_reasoning(&m.id));
+    ModelInfo {
+        context: near.map_or(0, |n| n.limit.context),
+        reasoning: near.is_some_and(|n| n.reasoning),
+        // Cursor's backend is text-only whatever the sibling says
+        // (`backend::supports_images`).
+        image: false,
+        efforts: tunable.map(|n| n.efforts()).unwrap_or_default(),
+        budget_min: tunable.and_then(|n| n.budget()).map(|b| b.0),
+        budget_max: tunable.and_then(|n| n.budget()).and_then(|b| b.1),
+        id,
+        name: m.name,
+        provider: "cursor".into(),
+        local: false,
     }
 }
 
@@ -13927,14 +13963,9 @@ pub(crate) mod tests {
         assert!(!yaml.contains("testvis/blind"), "{yaml}");
     }
 
-    /// 194 rows 7–10, per setting: the effort persists beside its model key
-    /// (D4g) and swaps the slot every session reads per call (D4f); a value the
-    /// setting's model does not take is refused with `validate_effort`'s message
-    /// (D4b), an unknown word when no model resolves; a model change that does
-    /// not take the stored effort drops it (D4c); the `none` row clears it (D4d).
-    #[tokio::test]
-    async fn role_efforts_follow_their_models() {
-        let (_scratch, mut a) = agents().await;
+    /// 194: `testfx/think` (takes off|low|high) and `testfx/plain` (no
+    /// effort) as `a`'s catalog, `testfx` configured.
+    fn role_effort_models(a: &mut Agents) {
         let dir = a.rt.data_dir.clone();
         let model = |id: &str, efforts: Option<&[&str]>| {
             let mut m = serde_json::json!({
@@ -13954,6 +13985,18 @@ pub(crate) mod tests {
         std::fs::write(dir.join("models.json"), user.to_string()).unwrap();
         a.catalog = Arc::new(Catalog::load(&dir));
         a.configured = Arc::new(|ns: &str| ns == "testfx");
+    }
+
+    /// 194 rows 7–10, per setting: the effort persists beside its model key
+    /// (D4g) and swaps the slot every session reads per call (D4f); a value the
+    /// setting's model does not take is refused with `validate_effort`'s message
+    /// (D4b), an unknown word when no model resolves; a model change that does
+    /// not take the stored effort drops it (D4c); the `none` row clears it (D4d).
+    #[tokio::test]
+    async fn role_efforts_follow_their_models() {
+        let (_scratch, mut a) = agents().await;
+        let dir = a.rt.data_dir.clone();
+        role_effort_models(&mut a);
         let live = a.role_efforts.clone();
         let agents = Agents::spawn(a);
         let stored = |section: &str, key: &str| {
@@ -14031,6 +14074,144 @@ pub(crate) mod tests {
             "voice",
             "polish_effort",
             polish
+        );
+    }
+
+    /// 194 R1: a role's model change persists every key before it publishes.
+    /// With config.yaml unwritable, an incompatible model and the none row
+    /// both reply `Err` and leave the live model, the live effort and the
+    /// file as they were.
+    #[tokio::test]
+    async fn role_model_change_persists_before_it_publishes() {
+        let (_scratch, mut a) = agents().await;
+        let config = a.rt.data_dir.join("config.yaml");
+        role_effort_models(&mut a);
+        let live = a.role_efforts.clone();
+        let slots = [
+            a.title_model.clone(),
+            a.vision_model.clone(),
+            a.escalate_model.clone(),
+            a.polish_model.clone(),
+        ];
+        let agents = Agents::spawn(a);
+        let read_only = |on: bool| {
+            let mut p = std::fs::metadata(&config).unwrap().permissions();
+            p.set_readonly(on);
+            std::fs::set_permissions(&config, p).unwrap();
+        };
+        macro_rules! role {
+            ($set_model:ident, $set:ident, $slot:expr, $field:ident) => {{
+                let set_model = |m: Option<&str>| $set_model {
+                    model: m.map(str::to_owned),
+                };
+                agents.ask(set_model(Some("testfx/think"))).await.unwrap();
+                agents
+                    .ask(crate::$set {
+                        effort: Some("high".into()),
+                    })
+                    .await
+                    .unwrap();
+                let before = std::fs::read_to_string(&config).unwrap();
+                read_only(true);
+                for to in [Some("testfx/plain"), None] {
+                    let e = agents.ask(set_model(to)).await.unwrap_err().to_string();
+                    assert!(e.contains("config.yaml: "), "{to:?}: {e}");
+                    assert_eq!(live.read().$field.as_deref(), Some("high"), "{to:?}");
+                    let model = $slot.read().unwrap().as_ref().map(|r| r.id.clone());
+                    assert_eq!(model.as_deref(), Some("testfx/think"), "{to:?}");
+                    assert_eq!(std::fs::read_to_string(&config).unwrap(), before, "{to:?}");
+                }
+                read_only(false);
+            }};
+        }
+        role!(SetTitleModel, SetTitleEffort, slots[0], title);
+        role!(SetVisionModel, SetVisionEffort, slots[1], vision);
+        role!(SetEscalateModel, SetEscalateEffort, slots[2], escalate);
+        role!(SetPolishModel, SetPolishEffort, slots[3], polish);
+    }
+
+    /// 194 D4e/D4f through the production handoff: an effort set after a
+    /// session exists rides that session's next `SideCall` — supervisor →
+    /// session actor → its `SideCall` handler → the wire — with no restart.
+    #[tokio::test]
+    async fn a_set_role_effort_reaches_an_existing_sessions_next_side_call() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let (_scratch, mut a) = agents().await;
+        role_effort_models(&mut a);
+        let server = MockServer::start().await;
+        let sse = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n\
+                   data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
+                   data: [DONE]\n\n";
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .mount(&server)
+            .await;
+        a.auth.gateways.write().unwrap().insert(
+            "testfx".into(),
+            crate::providers::Gateway {
+                base_url: format!("{}/v1/", server.uri()),
+                ..Default::default()
+            },
+        );
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let agents = Agents::spawn(a);
+        agents
+            .ask(SetTitleModel {
+                model: Some("testfx/think".into()),
+            })
+            .await
+            .unwrap();
+        let call = || SideCall {
+            session: root,
+            role: crate::ModelRole::Title,
+            system: "s".into(),
+            user: "q".into(),
+            budget: Duration::from_secs(5),
+            kind: crate::cost::CallKind::Title,
+        };
+        agents.ask(call()).await.unwrap();
+        agents
+            .ask(crate::SetTitleEffort {
+                effort: Some("high".into()),
+            })
+            .await
+            .unwrap();
+        agents.ask(call()).await.unwrap();
+        let reqs = server.received_requests().await.unwrap();
+        let body = |i: usize| -> serde_json::Value { reqs[i].body_json().unwrap() };
+        assert_eq!(reqs.len(), 2);
+        assert!(body(0).get("reasoning_effort").is_none(), "{}", body(0));
+        assert_eq!(body(1)["reasoning_effort"], "high", "{}", body(1));
+    }
+
+    /// 194 R1: a Cursor row offers its sibling's efforts only where the wire
+    /// takes a `reasoning` parameter (the OpenAI family); a Claude row — its
+    /// thinking in the id — offers none, so the picker shows no chips for it.
+    #[test]
+    fn cursor_rows_offer_only_efforts_the_wire_takes() {
+        let cat = Catalog::load(Path::new("/nonexistent"));
+        let row = |id: &str| {
+            cursor_model_info(
+                &cat,
+                cursor::Model {
+                    id: id.into(),
+                    name: id.into(),
+                    max_mode: false,
+                },
+            )
+        };
+        let sibling = |id: &str| cat.closest(&format!("cursor/{id}")).unwrap().efforts();
+        let gpt = row("gpt-5.4-mini-low");
+        assert!(!gpt.efforts.is_empty(), "{gpt:?}");
+        assert_eq!(gpt.efforts, sibling("gpt-5.4-mini-low"));
+        let claude = row("claude-4.6-sonnet-medium-thinking");
+        assert!(!sibling("claude-4.6-sonnet-medium-thinking").is_empty());
+        assert!(claude.reasoning && claude.context > 0, "{claude:?}");
+        assert!(
+            claude.efforts.is_empty() && claude.budget_min.is_none(),
+            "{claude:?}"
         );
     }
 
