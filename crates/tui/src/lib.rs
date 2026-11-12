@@ -588,7 +588,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 "steer #{id} queued: the next experiment of `{slug}` reads it; the loop does not pause"
             ))
         }
-        Command::ComputerStatus => UiEvent::Computer(msg(api.computer_permissions().await)?),
         Command::CancelJob { session, id } => {
             msg(api.cancel_job(session, tools::JobId(id.clone())).await)?;
             UiEvent::Info(format!("killed {id}"))
@@ -1788,7 +1787,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 model::schedule_history_table(name, info.as_ref(), rows)
             )
         }
-        UiEvent::Computer(status) => writeln!(out, "{}", model::computer_line(status)),
         UiEvent::Job(_) => Ok(()),
         UiEvent::Withdrawn { text, .. } => writeln!(out, "withdrawn: {text}"),
         // The `Error` line that follows names the failure; there is no editor to refill.
