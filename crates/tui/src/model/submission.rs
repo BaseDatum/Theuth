@@ -86,33 +86,6 @@ impl Model {
                 self.reset();
                 self.entries.push(Entry::Info("new session".into()));
             }
-            // 75 §8: an ACP session picks from its harness's options; bare
-            // `/effort` opens the same picker on its chip row (194 D6).
-            "/model" | "/effort" if self.agent.is_some() && arg.is_empty() => {
-                if let Some(s) = self.session {
-                    self.pick_effort = cmd == "/effort";
-                    send(tx, Command::HarnessOptions(s));
-                }
-            }
-            "/model" | "/effort" if self.agent.is_some() => {
-                if let Some(s) = self.session {
-                    send(
-                        tx,
-                        Command::SetHarnessOption {
-                            session: s,
-                            config_id: cmd[1..].to_owned(),
-                            value: arg.to_owned(),
-                        },
-                    );
-                }
-            }
-            "/model" if arg.is_empty() => send(tx, Command::ListModels),
-            "/model" => self.pick_model(arg.to_owned(), tx),
-            "/title" if arg.is_empty() => send(tx, Command::GetTitleModel),
-            "/title" => send(
-                tx,
-                Command::SetTitleModel((arg != "off" && arg != "clear").then(|| arg.to_owned())),
-            ),
             "/vision" => {
                 self.awaiting_vision = true;
                 send(
@@ -126,9 +99,6 @@ impl Model {
                     },
                 );
             }
-            // 194 D6: the `/model` picker with the cursor on the current model's chips.
-            "/effort" if arg.is_empty() => self.effort_picker(tx),
-            "/effort" => self.set_effort((arg != "clear").then(|| arg.to_owned()), tx),
             "/aws" if arg.is_empty() => send(tx, Command::ListAwsProfiles),
             "/aws" => send(
                 tx,

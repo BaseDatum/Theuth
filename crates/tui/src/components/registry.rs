@@ -8,6 +8,13 @@ pub fn builtin() -> Registry { builtin_with(false, true) }
 /// The sole built-in composition list. Add a panel here only after deleting its
 /// residual enum/reducer/executor/render/print hooks.
 pub fn builtin_with(app_enabled: bool, interactive: bool) -> Registry {
+    compose(app_enabled, interactive, models::Models::default())
+}
+/// Configure owner defaults from the single startup info read.
+pub fn configured(info: Option<&rpc_compose::api::Info>, runtime: &runtime::Runtime, interactive: bool) -> Registry {
+    compose(info.is_some_and(|i| i.app_enabled), interactive, models::Models::configured(info, runtime))
+}
+fn compose(app_enabled: bool, interactive: bool, models: models::Models) -> Registry {
     let mut registry = Registry::empty();
     registry.set_interactive(interactive);
     registry.register(update::Update::default()).expect("built-in component registration");
@@ -44,6 +51,7 @@ pub fn builtin_with(app_enabled: bool, interactive: bool) -> Registry {
     registry.register(talk::Talk::default()).expect("built-in component registration");
 
     // Model-picker panels (after design 194): register below, in this block only.
+    registry.register(models).expect("built-in component registration");
     registry
 }
 
