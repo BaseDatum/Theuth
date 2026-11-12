@@ -26,6 +26,7 @@ macro_rules! core_view {
             prompt: $model.prompt_id(),
             prompts: &(&$model.approvals, &$model.asks),
             viewport: $model.viewport,
+            terminal_height: $model.terminal_height,
         }
     };
 }

@@ -212,6 +212,8 @@ pub struct Model {
     /// (tests, line printer) = unbounded. Assistant text renders at this
     /// width when constructed; resize does not re-render (design doc 30 §7).
     pub width: usize,
+    /// Full terminal height for component key paging, independent of transcript rows.
+    pub(crate) terminal_height: usize,
     /// Measured transcript rows for component key handling.
     pub(crate) viewport: usize,
     /// A read-only historical frame, independent of its feature-owned navigation intent.

@@ -211,7 +211,9 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 let mut m = model.write();
                 // Assistant text renders at the width current when it starts (30 §7).
-                m.width = crossterm::terminal::size().map_or(0, |(w, _)| usize::from(w));
+                let (width, height) = crossterm::terminal::size().unwrap_or((0, 0));
+                m.width = usize::from(width);
+                m.terminal_height = usize::from(height);
                 for ev in pending.drain(..) {
                     m.apply(ev);
                 }
@@ -311,6 +313,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         let commands = commands.clone();
         move |event| {
             let mut m = model.write();
+            m.width = usize::from(terminal_size.0);
+            m.terminal_height = usize::from(terminal_size.1);
             // At the cursor; `TextInput` sees an insertion there and moves
             // its cursor past it. `State`/`Ref` are `Copy`: `move` leaves
             // `input` free for the key handling below.

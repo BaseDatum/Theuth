@@ -195,6 +195,9 @@ pub struct CoreView<'a> {
     pub prompts: &'a dyn PromptIds,
 
 
+    /// Full terminal height; distinct from the transcript row budget.
+    pub terminal_height: usize,
+
     // Step-11 group t3 CoreView fields: add below, in this block only.
     /// Measured transcript row budget at the current key dispatch boundary.
     pub viewport: usize,
