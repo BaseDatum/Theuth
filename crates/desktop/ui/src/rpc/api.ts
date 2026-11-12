@@ -4,6 +4,7 @@ import type { ConfigOption } from '@/rpc/bindings/ConfigOption'
 import type { SetOptionResult } from '@/rpc/bindings/SetOptionResult'
 import type { ChildResumed } from '@/rpc/bindings/ChildResumed'
 import type { EntryInfo } from '@/rpc/bindings/EntryInfo'
+import type { A2aAnswer } from '@/rpc/bindings/A2aAnswer'
 import type { A2aStatus } from '@/rpc/bindings/A2aStatus'
 import type { Answer } from '@/rpc/bindings/Answer'
 import type { ApprovalId } from '@/rpc/bindings/ApprovalId'
@@ -270,7 +271,6 @@ import type { NearbyAgent } from '@/rpc/bindings/NearbyAgent'
 import type { Export } from '@/rpc/bindings/Export'
 import type { FirstContact } from '@/rpc/bindings/FirstContact'
 import type { FirstWaiting } from '@/rpc/bindings/FirstWaiting'
-import type { ContactEnvelope } from '@/rpc/bindings/ContactEnvelope'
 import type { DesktopAccess } from '@/rpc/bindings/DesktopAccess'
 import type { Handoff } from '@/rpc/bindings/Handoff'
 import type { LogLine } from '@/rpc/bindings/LogLine'
@@ -1083,10 +1083,10 @@ export interface Api {
   new_session(): Promise<SessionId>
   /** PATH-AC: candidates for the path token under `cursor` (a UTF-8 byte offset) in `input`, listed by `session`'s engine (183 W-12: else `engine`'s); empty, never an error, when nothing applies. */
   path_complete(session: SessionId | null, input: string, cursor: number, engine?: string | null): Promise<PathCompletion>
+  /** Mesh-internal (191 D3): a contact's unary call carried to the machine that owns its session; anything but a mesh peer is `UNAUTHORIZED`. */
+  a2a_forward(caller: string, path: string, body: string): Promise<A2aAnswer>
   /** Mesh-internal (62 §0.1): a peer's envelope delivered to `session`; anything but a mesh peer is `UNAUTHORIZED`. */
   peer_deliver(session: SessionId, envelope: PeerEnvelope): Promise<PeerReceipt>
-  /** Mesh-internal (183 W-40): a contact's message for an exported chat owned here; anything but a mesh peer is `UNAUTHORIZED`. */
-  contact_deliver(envelope: ContactEnvelope): Promise<PeerReceipt>
   /** One exchange as `session` recorded it (50 §5.2); never another session's history. */
   peer_message(session: SessionId, id: string): Promise<PeerRecord>
   /** Write base64 `bytes` to `<data_dir>/attachments/<sha256[..16]>.<ext>`; returns the path for `send_input.files`. */
@@ -1426,6 +1426,7 @@ export const METHODS = [
   'a2a_export_put',
   'a2a_export_remove',
   'a2a_exports',
+  'a2a_forward',
   'a2a_status',
   'activity_list',
   'add_acp',
@@ -1534,7 +1535,6 @@ export const METHODS = [
   'config_flag_get',
   'config_flag_set',
   'contact_answer',
-  'contact_deliver',
   'contact_first_answer',
   'contact_first_waiting',
   'contact_list',

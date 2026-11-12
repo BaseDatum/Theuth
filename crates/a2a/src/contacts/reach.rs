@@ -182,12 +182,12 @@ pub(crate) async fn serve_http(
         let (shared, remote, ctx) = (shared.clone(), remote.clone(), ctx.clone());
         async move {
             let mut req = req;
-            if let Some(c) = &ctx
-                && let Some(route) = Route::of(&req)
-            {
-                return Ok::<_, std::convert::Infallible>(
-                    contact_route(c, &remote, route, req).await,
-                );
+            if let Some(c) = &ctx {
+                return Ok::<_, std::convert::Infallible>(match Route::of(&req) {
+                    Some(route) => contact_route(c, &remote, route, req).await,
+                    // 191 (D3): served here, or carried to the machine that owns it.
+                    None => super::forward::route(c, &remote, req).await,
+                });
             }
             req.extensions_mut().insert(ContactCaller(remote));
             crate::server::app(shared)
@@ -332,6 +332,11 @@ fn refused(e: impl std::fmt::Display) -> A2AError {
     A2AError::new(error_code::UNSUPPORTED_OPERATION, e.to_string())
 }
 
+/// 191 (D3): a member's gate refused this machine ("not a contact" there): its roster of us
+/// does not list this machine yet (or it blocked or removed us). The sender's receipt reads
+/// "<contact> has not accepted this machine yet".
+pub const NOT_ACCEPTED: &str = "the contact has not accepted this machine yet";
+
 /// A call's failure, and whether nothing was admitted by that member (another may be tried).
 type Failed = (bool, A2AError);
 
@@ -370,7 +375,7 @@ impl IrohTransport {
     ) -> Result<serde_json::Value, A2AError> {
         let not_owner = parking_lot::Mutex::new(None::<A2AError>);
         let go = async {
-            let mut last = None;
+            let (mut last, mut not_accepted) = (None, false);
             for eid in self.order() {
                 match self.call_on(&eid, params, method, payload.clone()).await {
                     Ok(v) => {
@@ -382,13 +387,16 @@ impl IrohTransport {
                         if e.code == agent::communication::network::NOT_OWNER_CODE {
                             *not_owner.lock() = Some(e.clone());
                         }
+                        not_accepted |= e.message == NOT_ACCEPTED;
                         last = Some(e);
                     }
                     Err((false, e)) => return Err(e),
                 }
             }
+            // A `not owner` first, then a member that has not accepted this machine yet.
             let seen = not_owner.lock().take();
             Err(seen
+                .or(not_accepted.then(|| refused(NOT_ACCEPTED)))
                 .or(last)
                 .unwrap_or_else(|| refused("contact unreachable")))
         };
@@ -414,13 +422,27 @@ impl IrohTransport {
         } else {
             Vec::new()
         };
+        // 191 (D3): a gate that refused this machine closed the connection "not a contact"
+        // ([`gate_refused`], read from this call's own error, never from another connection);
+        // nothing was served on it, so another member may be tried.
+        let gone = |at_gate: bool, e: String| {
+            (
+                true,
+                refused(if at_gate { NOT_ACCEPTED.to_owned() } else { e }),
+            )
+        };
         let stream = net
             .a2a_stream(eid, &hints, self.hints.relay.as_deref())
             .await
-            .map_err(|e| (true, refused(format!("contact unreachable: {e:#}"))))?;
+            .map_err(|e| {
+                gone(
+                    e.chain().any(gate_refused),
+                    format!("contact unreachable: {e:#}"),
+                )
+            })?;
         let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
             .await
-            .map_err(|e| (true, refused(e)))?;
+            .map_err(|e| gone(gate_refused(&e), e.to_string()))?;
         tokio::spawn(async move {
             let _ = conn.await;
         });
@@ -443,11 +465,12 @@ impl IrohTransport {
         let req = req
             .body(http_body_util::Full::new(bytes::Bytes::from(body)))
             .map_err(|e| after(A2AError::internal(e.to_string())))?;
-        // 191 (D3, S4): the member's gate closed the connection as `not a contact`: the
-        // request never reached its router (nothing admitted there), so the next is tried.
+        // 191 (D3, S4): the member's gate closed the connection as `not a contact` (its roster
+        // of us does not list this machine yet, or it blocked or removed us): the request never
+        // reached its router (nothing admitted there), so the next is tried.
         let resp = sender.send_request(req).await.map_err(|e| {
             if gate_refused(&e) {
-                (true, refused("not a contact there"))
+                (true, refused(NOT_ACCEPTED))
             } else {
                 after(A2AError::internal(format!("contact request: {e}")))
             }

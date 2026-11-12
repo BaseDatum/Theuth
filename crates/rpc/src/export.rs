@@ -84,7 +84,7 @@ async fn export_bindings() {
         agent::PeerReceipt,
         agent::PeerRecord,
         agent::PeerEnvelope,
-        agent::ContactEnvelope,
+        agent::communication::mesh::A2aAnswer,
         agent::ContactOrigin,
         agent::PeerInfo,
         agent::communication::PeerKind,

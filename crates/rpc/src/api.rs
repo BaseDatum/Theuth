@@ -43,7 +43,6 @@ use agent::{
     SpendReportQuery,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
-use agent::{ContactDeliver, ContactEnvelope};
 use agent::{EndlessConfig, MemoryMode, SessionMemory, ViewLine};
 use agent::{GetPolishModel, Polish, PolishReply, Rewrite, SetPolishModel};
 use app::{
@@ -114,6 +113,9 @@ pub(crate) const ASK_FAILED: i32 = -32000;
 pub(crate) const NOT_RUNNING: i32 = -32001;
 /// The call reached the method without an authenticated connection behind it.
 pub(crate) const UNAUTHORIZED: i32 = -32002;
+/// 191: `a2a_forward` from a machine `mesh.messaging_off` lists: the words the contact hears
+/// (through the receiving machine), naming no machine.
+const A2A_FORWARD_MESSAGING_OFF: &str = "export unavailable: messages are off between our machines";
 
 /// Reply to `info`: what a client needs before its first session (25 §7);
 /// the in-process TUI reads the same things off the [`Runtime`] directly.
@@ -244,11 +246,19 @@ pub trait Api {
         session: SessionId,
         envelope: PeerEnvelope,
     ) -> RpcResult<PeerReceipt>;
-    /// 183 §7.10 (W-40): a contact's message for an exported chat owned here, forwarded by
-    /// the engine that holds the contact. Mesh-internal like `peer_deliver`: a call without
-    /// the `Forwarded` marker is `-32002`. Returns the owner's receipt.
-    #[method(name = "contact_deliver", with_extensions)]
-    async fn contact_deliver(&self, envelope: ContactEnvelope) -> RpcResult<PeerReceipt>;
+    /// 191 (D3): a contact's unary call (`POST path` with the JSON-RPC `body`) that another
+    /// machine of the mesh received for a session owned here: this machine checks `caller`
+    /// itself and answers it in its own a2a router. Mesh-internal like `peer_deliver`: a call
+    /// without the `Forwarded` marker is `-32002`. `NOT_OWNER` (-32013) when the session is
+    /// not owned here either, `OWNER_UNREACHABLE` (-32010) before `contacts_ready`; every
+    /// outcome of the router is `{status, body}`.
+    #[method(name = "a2a_forward", with_extensions)]
+    async fn a2a_forward(
+        &self,
+        caller: String,
+        path: String,
+        body: String,
+    ) -> RpcResult<agent::communication::mesh::A2aAnswer>;
     /// One message to many sessions (62 §0.1): the selector is resolved on
     /// the harness, each row is authorized like `send_input`, and the reply
     /// carries one outcome per session. `dry_run: true` previews the rows.
@@ -4543,37 +4553,47 @@ impl ApiServer for Server {
             })
     }
 
-    async fn contact_deliver(
+    async fn a2a_forward(
         &self,
         ext: &Extensions,
-        envelope: ContactEnvelope,
-    ) -> RpcResult<PeerReceipt> {
+        caller: String,
+        path: String,
+        body: String,
+    ) -> RpcResult<agent::communication::mesh::A2aAnswer> {
+        use agent::communication::mesh::ForwardFailure;
         let Some(forward::Forwarded(peer)) = ext.get::<forward::Forwarded>() else {
             return Err(ErrorObjectOwned::owned(
                 UNAUTHORIZED,
-                "contact_deliver is mesh-internal",
+                "a2a_forward is mesh-internal",
                 None::<()>,
             ));
         };
-        let forwarder = Some(peer.0.clone());
-        ask::<Agents, _>(
-            agent::AGENT_ACTOR,
-            ContactDeliver {
-                envelope,
-                forwarder,
-            },
-        )
-        .await
-        .map_err(|e| {
-            // 183 §13 row 53: the chat moved; the holder retries once on the new owner.
-            if e.message()
-                .starts_with(agent::communication::network::CONTACT_NOT_OWNER)
-            {
-                ErrorObjectOwned::owned(forward::NOT_OWNER, e.message().to_owned(), None::<()>)
-            } else {
-                e
-            }
-        })
+        // 183 §6.2 (W-14), 191: `mesh.messaging_off` refuses the forwarder's carried calls as
+        // it refused its deliveries; the contact hears words that name no machine.
+        if mesh::messaging_off(&peer.0) {
+            tracing::info!(forwarder = %peer.0, "191: a2a_forward refused: messaging with this machine is off");
+            return Err(ErrorObjectOwned::owned(
+                ASK_FAILED,
+                A2A_FORWARD_MESSAGING_OFF,
+                None::<()>,
+            ));
+        }
+        // Off the a2a mailbox: the plugin's published context, never an actor ask.
+        a2a::contacts::forward::serve(&peer.0, &caller, &path, body)
+            .await
+            .map_err(|e| match e {
+                ForwardFailure::NotOwner => ErrorObjectOwned::owned(
+                    forward::NOT_OWNER,
+                    agent::communication::network::NOT_OWNER_TEXT,
+                    None::<()>,
+                ),
+                ForwardFailure::Offline(why) => {
+                    ErrorObjectOwned::owned(forward::OWNER_UNREACHABLE, why, None::<()>)
+                }
+                ForwardFailure::Refused(why) => {
+                    ErrorObjectOwned::owned(ASK_FAILED, why, None::<()>)
+                }
+            })
     }
 
     async fn broadcast(
@@ -11303,6 +11323,49 @@ mod tests {
                 "{req} → {v}"
             );
         }
+    }
+
+    /// 191 (D3): `a2a_forward` is mesh-internal (no `Forwarded` marker: `UNAUTHORIZED`, even
+    /// on an internal connection); a forwarder `mesh.messaging_off` lists is refused in words
+    /// that name no machine; any other forwarder reaches the owner side (no a2a plugin here:
+    /// `OWNER_UNREACHABLE`, which the receiving machine reads as offline).
+    #[tokio::test]
+    async fn a2a_forward_needs_the_forwarded_marker_and_messaging_on() {
+        let call = |forwarder: Option<&str>| {
+            let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+            let mut methods: jsonrpsee::Methods = Server::new(rt).into_rpc().into();
+            methods.extensions_mut().insert(link::RpcPeer::internal());
+            if let Some(f) = forwarder {
+                methods
+                    .extensions_mut()
+                    .insert(forward::Forwarded(replica::PeerId(f.into())));
+            }
+            async move {
+                let req = r#"{"jsonrpc":"2.0","method":"a2a_forward","params":["caller-eid","/agents/x/rpc","{}"],"id":1}"#;
+                let (resp, _) = methods.raw_json_request(req, 1).await.unwrap();
+                let v: serde_json::Value = serde_json::from_str(resp.get()).unwrap();
+                (
+                    v["error"]["code"].as_i64(),
+                    v["error"]["message"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                )
+            }
+        };
+        assert_eq!(call(None).await.0, Some(i64::from(UNAUTHORIZED)));
+        mesh::set_messaging_off(vec!["fwd-off-engine".into()]);
+        let off = call(Some("fwd-off-engine")).await;
+        let on = call(Some("fwd-on-engine")).await;
+        mesh::set_messaging_off(Vec::new());
+        assert_eq!(
+            off,
+            (
+                Some(i64::from(ASK_FAILED)),
+                A2A_FORWARD_MESSAGING_OFF.to_owned()
+            )
+        );
+        assert_eq!(on.0, Some(i64::from(forward::OWNER_UNREACHABLE)), "{on:?}");
     }
 
     /// 185 R1 A5: the hub side of a forwarded Dream now — the positional

@@ -206,7 +206,7 @@ pub struct Agents {
     /// 139 D16: sessions mid-release-drain → the drain's reason; `route`
     /// refuses their inputs (`transfer::draining_error`) until the demote
     /// lands or the hold expires (`transfer::ClearDraining`).
-    draining_sessions: HashMap<SessionId, &'static str>,
+    pub(crate) draining_sessions: HashMap<SessionId, &'static str>,
     /// 139 §6.3 (D5): sessions a system takeover left `ResumePending` →
     /// the engine taken from; the user's `resume_turn` (boot-rule cause,
     /// no `suspended` row) resumes them as `Takeover{from}` and runs the
@@ -2297,7 +2297,6 @@ impl Agents {
             self.ledger.release(to, ticket);
             return Err("canceled: the request scope is closed".into());
         }
-        let contact = self.network_contact_frame(&record);
         let input = PeerInput {
             record,
             generation,
@@ -2305,7 +2304,6 @@ impl Agents {
             request_scope: scope,
             isolated,
             reply_expected,
-            contact,
         };
         // The recipient's brief waits for a permit (01 §2.6): held, so the
         // brief stays its first input and no bounded turn races the permit.
@@ -5842,7 +5840,6 @@ impl Message<ForwardOutcome> for Agents {
     }
 }
 
-// 183 P3: E — `ContactDeliver` (W-39/W-40) queues like this intake, then opens a `SetTurnCap` turn.
 impl Message<PeerDeliver> for Agents {
     type Reply = Result<PeerReceipt, PeerDeliverError>;
 
@@ -5950,20 +5947,15 @@ impl Agents {
 
     /// `(owner engine id)` when `session`'s replicated row is owned by
     /// another engine (69 P); `None` for ours, unowned or unknown — today's
-    /// local path. 183 W-40: also where a contact's message for an exported chat goes.
+    /// local path.
     pub(crate) async fn remote_owner(&self, session: SessionId) -> Option<String> {
-        self.session_owner(session).await.ok().flatten()
-    }
-
-    /// [`Self::remote_owner`], a store error kept: a contact's message must not take an
-    /// unreadable row for a local chat (190 review 1).
-    pub(crate) async fn session_owner(&self, session: SessionId) -> anyhow::Result<Option<String>> {
-        Ok(self
-            .store
+        self.store
             .session(session)
-            .await?
+            .await
+            .ok()
+            .flatten()
             .filter(|row| !row.here && !row.owner.is_empty())
-            .map(|row| row.owner))
+            .map(|row| row.owner)
     }
 
     /// The mesh transport, fetched once from the replica actor (tests inject it).
@@ -16326,294 +16318,6 @@ pub(crate) mod tests {
         });
     }
 
-    /// 183 W-40: the `theuth/rpc/1` side of `contact_deliver` for one engine, as
-    /// `api::contact_deliver` serves it: the dialer is the forwarder; a moved chat is
-    /// `-32013`.
-    fn serve_contact_deliver(
-        t: Arc<peer_mesh::loopback::Loop>,
-        agents: Arc<tokio::sync::Mutex<Agents>>,
-    ) {
-        use replica::Transport;
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        tokio::spawn(async move {
-            while let Ok((peer, stream)) = t.accept(replica::ALPN_RPC).await {
-                let agents = agents.clone();
-                tokio::spawn(async move {
-                    let (read, mut write) = tokio::io::split(stream);
-                    let mut line = String::new();
-                    BufReader::new(read).read_line(&mut line).await.unwrap();
-                    let req: serde_json::Value = serde_json::from_str(&line).unwrap();
-                    assert_eq!(req["method"], peer_mesh::CONTACT_METHOD);
-                    let envelope: crate::communication::ContactEnvelope =
-                        serde_json::from_value(req["params"][0].clone()).unwrap();
-                    let rp = match agents
-                        .lock()
-                        .await
-                        .contact_deliver(envelope, Some(peer.0))
-                        .await
-                    {
-                        Ok(r) => serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": r}),
-                        Err(e) => {
-                            let code = if e.starts_with(network::CONTACT_NOT_OWNER) {
-                                peer_mesh::NOT_OWNER
-                            } else {
-                                -32000
-                            };
-                            serde_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": code, "message": e}})
-                        }
-                    };
-                    write.write_all(format!("{rp}\n").as_bytes()).await.unwrap();
-                    write.flush().await.unwrap();
-                });
-            }
-        });
-    }
-
-    /// 183 W-39/W-40, §13 rows 49–54: bob's message for an exported chat that engine `b`
-    /// owns is admitted on `a` (which holds bob and the A2A task), forwarded to `b` as
-    /// `contact_deliver`, queued there for its own turn at bob's cap (clamped to
-    /// `mutating`); that turn's answer, and only it, goes back and completes bob's task.
-    /// An archived chat is paused, a moved one is not-the-owner, a deleted one is unknown,
-    /// and only the holder may forward for its contact.
-    #[tokio::test]
-    async fn an_exported_chat_elsewhere_runs_one_capped_turn_and_answers_only_it() {
-        use crate::store::communication::{A2aScope, A2aTaskStatus};
-        let TwoEngines {
-            _scratch,
-            a,
-            b,
-            b_root: chat,
-            net,
-            ..
-        } = two_engines().await;
-        let (a, b) = (
-            Arc::new(tokio::sync::Mutex::new(a)),
-            Arc::new(tokio::sync::Mutex::new(b)),
-        );
-        serve_contact_deliver(net[0].clone(), a.clone());
-        serve_contact_deliver(net[1].clone(), b.clone());
-        let binding = a
-            .lock()
-            .await
-            .store
-            .bind_peer("bob", "iroh:bob-endpoint")
-            .await
-            .unwrap();
-        let origin = crate::communication::ContactOrigin {
-            contact: "bob".into(),
-            machine: "Bob's MacBook".into(),
-            export: "ops-chat".into(),
-            cap: Risk::Destructive,
-            holder: "a".into(),
-            tools: Vec::new(),
-            // 186 (D11): sent full; the owner serves it cautiously.
-            mode: crate::communication::ShareMode::Full,
-        };
-        let p = network::A2aPrincipal {
-            binding: binding.id,
-            export: "ops-chat".into(),
-            session: chat,
-            route: CancellationToken::new(),
-            contact: Some(origin.clone()),
-            ask_first: false,
-        };
-        let mut m = a2a_types::Message::new(
-            a2a_types::Role::User,
-            vec![a2a_types::Part::text("did the build pass?")],
-        );
-        m.message_id = "m-1".into();
-        let req = a2a_types::SendMessageRequest {
-            message: m,
-            configuration: None,
-            metadata: None,
-            tenant: None,
-        };
-        let task = a.lock().await.admit_send(&p, &req).await.unwrap().task;
-        assert_eq!(task.status, A2aTaskStatus::Working);
-
-        // On b: queued for its own turn, capped at `mutating` at most.
-        let env = {
-            let mut found = None;
-            for _ in 0..100 {
-                if let Some(e) = b.lock().await.network.contact_replies_for_test(chat) {
-                    found = Some(e);
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            found.expect("b queued bob's message")
-        };
-        assert_eq!(
-            env.origin.cap,
-            Risk::Mutating,
-            "the owner never raises a cap"
-        );
-        assert_eq!(
-            env.origin.mode,
-            crate::communication::ShareMode::Cautious,
-            "the owner lowers full (no return route from here)"
-        );
-        assert_eq!(env.text, "did the build pass?");
-        let record = b
-            .lock()
-            .await
-            .store
-            .peer_record(chat, env.id)
-            .await
-            .unwrap()
-            .unwrap();
-        match b.lock().await.network_contact_frame(&record) {
-            Some(crate::loop_::ContactFrame::Chat { origin, scope }) => {
-                assert_eq!(origin.cap, Risk::Mutating);
-                assert_eq!(scope, Some(env.id), "its own turn, never shared");
-            }
-            other => panic!("a chat frame, got {other:?}"),
-        }
-
-        // b's turn ends: its text, and nothing else, completes bob's task on a.
-        b.lock()
-            .await
-            .network_turn_finished(&PeerTurnFinished {
-                session: chat,
-                turn: TurnId::new(),
-                scope: Some(env.id),
-                text: "yes, green".into(),
-                stop_reason: "end_turn".into(),
-            })
-            .await;
-        let scope = A2aScope {
-            principal: &task.principal,
-            export: "ops-chat",
-        };
-        let done = {
-            let mut done = None;
-            for _ in 0..100 {
-                let t = a
-                    .lock()
-                    .await
-                    .store
-                    .a2a_task(scope, &task.id)
-                    .await
-                    .unwrap()
-                    .unwrap();
-                if t.status.is_terminal() {
-                    done = Some(t);
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            done.expect("bob's task settled")
-        };
-        assert_eq!(done.status, A2aTaskStatus::Completed);
-        let snap: a2a_types::Task = serde_json::from_value(done.snapshot).unwrap();
-        let texts: Vec<&str> = snap
-            .artifacts
-            .iter()
-            .flatten()
-            .flat_map(|a| a.parts.iter().filter_map(a2a_types::Part::as_text))
-            .collect();
-        assert_eq!(texts, ["yes, green"]);
-
-        // Z3-R3: b restarts mid-turn (its envelope is gone); the resumed turn still answers.
-        let mut m = a2a_types::Message::new(
-            a2a_types::Role::User,
-            vec![a2a_types::Part::text("and now?")],
-        );
-        m.message_id = "m-2".into();
-        let req = a2a_types::SendMessageRequest {
-            message: m,
-            configuration: None,
-            metadata: None,
-            tenant: None,
-        };
-        let task = a.lock().await.admit_send(&p, &req).await.unwrap().task;
-        let env = {
-            let mut found = None;
-            for _ in 0..100 {
-                if let Some(e) = b.lock().await.network.contact_replies_for_test(chat) {
-                    found = Some(e);
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            found.expect("b queued bob's second message")
-        };
-        b.lock().await.network.forget_contact_replies_for_test();
-        b.lock()
-            .await
-            .network_turn_finished(&PeerTurnFinished {
-                session: chat,
-                turn: TurnId::new(),
-                scope: Some(env.id),
-                text: "still green".into(),
-                stop_reason: "end_turn".into(),
-            })
-            .await;
-        let done = {
-            let mut done = None;
-            for _ in 0..100 {
-                let t = a
-                    .lock()
-                    .await
-                    .store
-                    .a2a_task(scope, &task.id)
-                    .await
-                    .unwrap()
-                    .unwrap();
-                if t.status.is_terminal() {
-                    done = Some(t);
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            done.expect("bob's second task settled")
-        };
-        assert_eq!(done.status, A2aTaskStatus::Completed);
-        assert!(done.snapshot.to_string().contains("still green"));
-
-        // Only the holder forwards for its contact.
-        let again = |id: &str| crate::communication::ContactEnvelope {
-            id: Uuid::now_v7(),
-            to: chat,
-            text: "again".into(),
-            origin: origin.clone(),
-            reply_to: None,
-            request_id: Some(id.into()),
-        };
-        let e = b
-            .lock()
-            .await
-            .contact_deliver(again("r-1"), Some("c".into()))
-            .await
-            .unwrap_err();
-        assert!(e.contains("does not hold this contact"), "{e}");
-        // a does not own the chat: a forward that lands there is not-the-owner (moved).
-        let e = a
-            .lock()
-            .await
-            .contact_deliver(again("r-2"), Some("a".into()))
-            .await
-            .unwrap_err();
-        assert!(e.starts_with(network::CONTACT_NOT_OWNER), "{e}");
-        // Archived: paused.
-        b.lock().await.store.set_archived(chat, true).await.unwrap();
-        let e = b
-            .lock()
-            .await
-            .contact_deliver(again("r-3"), Some("a".into()))
-            .await
-            .unwrap_err();
-        assert_eq!(e, "export paused: chat archived");
-        // Deleted: unknown (the a2a plugin drops the export on it).
-        let gone = b
-            .lock()
-            .await
-            .chat_paused(SessionId::new())
-            .await
-            .unwrap_err();
-        assert!(gone.starts_with(network::UNKNOWN_SESSION), "{gone}");
-    }
-
     fn deliver(
         from: SessionId,
         to: SessionId,
@@ -17814,9 +17518,6 @@ pub(crate) mod tests {
                 contact: "bob".into(),
                 machine: "b".into(),
                 export: "hi-there".into(),
-                cap: tools::Risk::ReadOnly,
-                holder: "me".into(),
-                tools: Vec::new(),
                 mode: crate::communication::ShareMode::Cautious,
             }),
             ask_first: true,

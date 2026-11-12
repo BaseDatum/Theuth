@@ -41,7 +41,7 @@ import type { FirstWaiting } from '@/rpc/bindings/FirstWaiting'
 import type { PairCeremony } from '@/rpc/bindings/PairCeremony'
 import type { PeerPath } from '@/rpc/bindings/PeerPath'
 
-const NO_PATCH: ContactPatch = { name: null, cap: null, exports: null, blocked: null, modes: null }
+const NO_PATCH: ContactPatch = { name: null, exports: null, blocked: null }
 const PATH: Record<PeerPath, [string, string]> = { lan: ['LAN', 'bg-success'], relay: ['Relay', 'bg-warning'], offline: ['offline', 'ring-1 ring-fg-tertiary ring-inset'] }
 const CHIP = 'inline-flex items-center gap-1 rounded-full border border-border-subtle px-2 py-0.5 text-xs text-fg-secondary'
 const FIRST: [FirstContact, string][] = [
@@ -132,8 +132,12 @@ export function useFirstAnswer() {
   })
 }
 
-/** Allow once · Always · Block for `contact`'s held first message to `exp`; one answer per row (a second click would only set the standing default). */
-export function FirstButtons({ contact, exp }: { contact: string; exp: string }) {
+/**
+ * Allow once · Always · Block for `contact`'s held first message to `exp`; one answer per row (a second click would only
+ * set the standing default). 191: a message another machine holds (`elsewhere`) offers no Allow once (that is the
+ * holder's); Always and Block reach it from any machine.
+ */
+export function FirstButtons({ contact, exp, elsewhere = false }: { contact: string; exp: string; elsewhere?: boolean }) {
   const answer = useFirstAnswer()
   return (
     <span className="flex shrink-0 items-center gap-2">
@@ -143,28 +147,30 @@ export function FirstButtons({ contact, exp }: { contact: string; exp: string })
           ['allow', 'Always'],
           ['block', 'Block'],
         ] as const
-      ).map(([v, label]) => (
-        <Button
-          key={v}
-          variant={v === 'block' ? 'ghost' : 'outline'}
-          size="sm"
-          className="pointer-coarse:min-h-11"
-          disabled={answer.isPending || answer.isSuccess}
-          onClick={() => answer.mutate({ contact, exp, answer: v })}
-        >
-          {label}
-        </Button>
-      ))}
+      )
+        .filter(([v]) => !(elsewhere && v === 'ask'))
+        .map(([v, label]) => (
+          <Button
+            key={v}
+            variant={v === 'block' ? 'ghost' : 'outline'}
+            size="sm"
+            className="pointer-coarse:min-h-11"
+            disabled={answer.isPending || answer.isSuccess}
+            onClick={() => answer.mutate({ contact, exp, answer: v })}
+          >
+            {label}
+          </Button>
+        ))}
     </span>
   )
 }
 
-/** One held first message: its line and the three answers. */
+/** One held first message: its line and its answers. */
 export function WaitingRow({ w }: { w: FirstWaiting }) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg bg-layer-2 px-2.5 py-1.5 text-[13px]">
       <span className="min-w-0 flex-1 basis-56 break-words">{waitingLine(w)}</span>
-      <FirstButtons contact={w.contact} exp={w.export} />
+      <FirstButtons contact={w.contact} exp={w.export} elsewhere={w.elsewhere} />
     </div>
   )
 }
@@ -691,8 +697,7 @@ export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { 
 }
 
 /** Grant `target` to `contact`: its export when one exists, else a new one named from `title` (`a2a_export_put`), then
- * `contact_update(exports, modes)`. 190 D2: every share is full; `modes` names the new export only (the engine keeps
- * `ContactPatch.modes` until 191 and ignores `full`). */
+ * `contact_update(exports)`. Every share is full (190 D2), so the patch names no mode. */
 export function useGrant() {
   const api = useApi()
   return useAction(
@@ -704,7 +709,7 @@ export function useGrant() {
           exp = { name: exportName(title, all.map((x) => x.name)), target, description: title, paused: null }
           await api.a2a_export_put(exp)
         }
-        if (!contact.exports.includes(exp.name)) await api.contact_update(contact.name, { ...NO_PATCH, exports: [...contact.exports, exp.name], modes: { [exp.name]: 'full' } })
+        if (!contact.exports.includes(exp.name)) await api.contact_update(contact.name, { ...NO_PATCH, exports: [...contact.exports, exp.name] })
       })(),
     { keys: [queryKeys.contacts, queryKeys.exports] },
   )

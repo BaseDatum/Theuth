@@ -122,19 +122,33 @@ fn gone() -> A2AError {
 
 /// 191 (D3, S4): [`super::NOT_OWNER_CODE`] "not owner": the session is not this engine's
 /// (another machine owns it, its owner is empty on a mesh engine, its row is unknown or
-/// unreadable here). The contact's client tries its next member (P3 forwards instead).
+/// unreadable here). With no owner named, the contact's client tries its next member.
 pub(crate) fn not_owner() -> A2AError {
     A2AError::new(super::NOT_OWNER_CODE, super::NOT_OWNER_TEXT)
+}
+
+/// 191 (D3, P3): [`not_owner`] naming `owner`, another machine of the mesh, in its
+/// [`super::OWNER_DETAIL`]: the receiving machine forwards the request there.
+pub(crate) fn not_owner_at(owner: &str) -> A2AError {
+    not_owner().with_details(vec![a2a_types::errordetails::TypedDetail::new(
+        super::OWNER_DETAIL,
+        HashMap::from([("owner".to_owned(), serde_json::Value::from(owner))]),
+    )])
 }
 
 impl Agents {
     /// 191 (D3, S4): the strict owner predicate of every contact path: the row exists and
     /// reads here and this engine owns it (never "unknown or empty reads as local"); else
-    /// [`not_owner`].
+    /// [`not_owner`], naming the owner when the row names another machine.
     pub(crate) async fn contact_owned(&self, session: SessionId) -> Result<(), A2AError> {
-        match self.store.owned_here(session).await {
-            Ok(true) => return Ok(()),
-            Ok(false) => {}
+        use crate::store::contacts::Owner;
+        match self.store.owner_strict(session).await {
+            Ok(Owner::Here) => return Ok(()),
+            Ok(Owner::Elsewhere(owner)) => {
+                tracing::info!(%session, owner = %owner.get(..8).unwrap_or(&owner), "191: contact path: owned elsewhere");
+                return Err(not_owner_at(&owner));
+            }
+            Ok(Owner::Unknown) => {}
             Err(e) => tracing::warn!(%session, "a2a: session row unreadable: {e:#}"),
         }
         tracing::info!(%session, "191: contact path refused: not owner");

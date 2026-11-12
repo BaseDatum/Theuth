@@ -160,11 +160,11 @@ pub use activity::{
 pub use aws::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 pub use communication::{
     AnswerPeerRequest, ChannelChat, ChannelOrigin, ChannelVia, CommunicationChanged,
-    CommunicationState, ContactDeliver, ContactEnvelope, ContactOrigin, ContactRefusal,
-    GetCommunication, GetPeerMessage, ListPeerMessages, ListPeers, MeshRefusal, PeerConsumed,
-    PeerDeliver, PeerDeliverError, PeerDelivered, PeerEnvelope, PeerInfo, PeerIntakeFailed,
-    PeerMessageChanged, PeerMessagePage, PeerMessageState, PeerOrigin, PeerPage, PeerReceipt,
-    PeerRecord, PeerScope, PeerTurnFinished, PeerUplink, SetCommunication, SetPeerScope, ShareMode,
+    CommunicationState, ContactOrigin, ContactRefusal, GetCommunication, GetPeerMessage,
+    ListPeerMessages, ListPeers, MeshRefusal, PeerConsumed, PeerDeliver, PeerDeliverError,
+    PeerDelivered, PeerEnvelope, PeerInfo, PeerIntakeFailed, PeerMessageChanged, PeerMessagePage,
+    PeerMessageState, PeerOrigin, PeerPage, PeerReceipt, PeerRecord, PeerScope, PeerTurnFinished,
+    PeerUplink, SetCommunication, SetPeerScope, ShareMode,
 };
 pub use compact::CompactStyle;
 pub use context::{

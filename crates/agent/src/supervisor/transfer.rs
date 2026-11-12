@@ -224,9 +224,7 @@ impl Message<SessionDrained> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: SessionDrained, ctx: &mut Context<Self, Self::Reply>) {
-        self.drop_queued(m.session).await;
-        self.sessions.remove(&m.session);
-        self.running.remove(&m.session);
+        self.session_drained(m.session, m.hold.is_some()).await;
         match m.hold {
             None => {
                 self.draining_sessions.remove(&m.session);
@@ -239,6 +237,21 @@ impl Message<SessionDrained> for Agents {
                 });
             }
         }
+    }
+}
+
+impl Agents {
+    /// [`SessionDrained`] without its timer: the live entry and the queue go. 191 (D3):
+    /// only a `release` drain moves the session: its first-contact holds and its waiting full
+    /// contact messages fail ("the chat moved; send again"), never released or carried.
+    /// A desk pause drains too, and keeps its holds.
+    pub(crate) async fn session_drained(&mut self, session: SessionId, release: bool) {
+        if release {
+            self.network_session_drained(session).await;
+        }
+        self.drop_queued(session).await;
+        self.sessions.remove(&session);
+        self.running.remove(&session);
     }
 }
 

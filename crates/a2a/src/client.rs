@@ -862,6 +862,14 @@ impl PeerClient {
                     agent::communication::network::NOT_OWNER_TEXT
                 )))
             }
+            // 191 (D3): the contact's gate refused this machine on every member that answered:
+            // its roster of us does not list it yet. No relay, no retry beyond its members.
+            Ok(Err(e)) if e.message == crate::contacts::reach::NOT_ACCEPTED => {
+                Err(RemoteSendError::Refused(format!(
+                    "{} has not accepted this machine yet",
+                    self.name
+                )))
+            }
             Ok(Err(e)) => Err(RemoteSendError::Refused(format!(
                 "peer {} refused: {} ({})",
                 self.name,

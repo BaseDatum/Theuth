@@ -10,6 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use agent::communication::network::InboxHome;
 use agent::store::contacts::{
     Cell, ContactRow, EndpointRow, GrantRow, RecordTable, RecordWrite, Records,
 };
@@ -738,12 +739,7 @@ fn effective(rows: &[&GrantRow]) -> (Option<bool>, Option<FirstContact>) {
 /// included, without a route), and every record that cannot be proven sound quarantined
 /// with its endpoints denied. `family` is this mesh's own machines' endpoint ids, `expired`
 /// the other machines' conflict flags [`age_flags`] expired.
-pub fn stage_records(
-    r: &Records,
-    family: &BTreeSet<String>,
-    expired: &BTreeSet<String>,
-    contact_cap: tools::Risk,
-) -> Staged {
+pub fn stage_records(r: &Records, family: &BTreeSet<String>, expired: &BTreeSet<String>) -> Staged {
     let mut staged = Staged {
         addrs: r
             .addrs
@@ -785,6 +781,13 @@ pub fn stage_records(
                         agent: agent.trim().to_owned(),
                         title,
                         description,
+                        // 191 (D4): its home: this machine, a live one of the mesh, or one
+                        // that left (or none), which opens no new inbox.
+                        home: match e.home.as_deref() {
+                            Some(h) if h == r.me => InboxHome::Here,
+                            Some(h) if family.contains(h) => InboxHome::At(h.to_owned()),
+                            _ => InboxHome::Left,
+                        },
                     },
                 );
             }
@@ -1070,7 +1073,6 @@ pub fn stage_records(
                 eids: order,
                 display: c.name.clone().unwrap_or_else(|| alias.clone()),
                 machine: c.machine.clone().unwrap_or_default(),
-                cap: contact_cap.min(tools::Risk::Mutating),
                 first_contact,
                 blocked,
                 paired_ms: c.paired_ms.unwrap_or_default().max(0) as u64,
@@ -1358,7 +1360,7 @@ mod tests {
     }
 
     fn stage(r: &Records) -> Staged {
-        stage_records(r, &BTreeSet::new(), &BTreeSet::new(), tools::Risk::ReadOnly)
+        stage_records(r, &BTreeSet::new(), &BTreeSet::new())
     }
 
     /// Apply `writes` to `r` as the store would (column by column, inserting new rows).
@@ -1599,12 +1601,7 @@ mod tests {
         assert!(s.contacts["carol"].blocked && s.deny.contains(&eid(2)));
         assert!(s.peers.contains_key("dave") && !s.deny.contains(&eid(3)));
         // One of our own machines is never a contact.
-        let s = stage_records(
-            &r,
-            &BTreeSet::from([eid(3)]),
-            &BTreeSet::new(),
-            tools::Risk::ReadOnly,
-        );
+        let s = stage_records(&r, &BTreeSet::from([eid(3)]), &BTreeSet::new());
         assert!(!s.contacts.contains_key("dave") && s.deny.contains(&eid(3)));
     }
 
@@ -1677,7 +1674,7 @@ mod tests {
             eid(5)
         ))
         .unwrap();
-        let staged = crate::config::stage(&file, &|_| None, None, tools::Risk::ReadOnly).unwrap();
+        let staged = crate::config::stage(&file, &|_| None, None).unwrap();
         let proj = chat(
             "xp",
             "proj",
@@ -1951,9 +1948,7 @@ mod tests {
         let (me, c2, gone) = (eid(40), eid(41), eid(42));
         let family = BTreeSet::from([me.clone(), c2.clone()]);
         let none = BTreeSet::new();
-        let stage = |r: &Records, expired: &BTreeSet<String>| {
-            stage_records(r, &family, expired, tools::Risk::ReadOnly)
-        };
+        let stage = |r: &Records, expired: &BTreeSet<String>| stage_records(r, &family, expired);
         let mut r = Records {
             me: me.clone(),
             contacts: vec![contact("c", "bob", 1)],
@@ -2188,7 +2183,7 @@ mod tests {
         let (me, c2) = (eid(40), eid(41));
         let family = BTreeSet::from([me.clone(), c2.clone()]);
         let none = BTreeSet::new();
-        let staged = |r: &Records| stage_records(r, &family, &none, tools::Risk::ReadOnly);
+        let staged = |r: &Records| stage_records(r, &family, &none);
         let mut r = Records {
             me: me.clone(),
             contacts: vec![ContactRow {

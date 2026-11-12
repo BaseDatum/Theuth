@@ -136,6 +136,12 @@ pub type Shared = Arc<RwLock<Arc<Live>>>;
 #[derive(Clone, Debug)]
 pub struct ContactCaller(pub String);
 
+/// 191 (D3): `forward::route` charged this contact call already (`Live::admit_contact`: one
+/// rate token, and the concurrency permit it holds across its router run and every forward);
+/// [`dispatch`] charges it nothing again. A request extension, so no HTTP client can set it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Charged;
+
 /// 183 §7.6: what a contact principal carries into admission.
 #[derive(Clone, Debug)]
 struct ContactGrant {
@@ -242,7 +248,7 @@ impl Live {
             .chain(staged.agents.values().map(|a| {
                 (
                     &a.name,
-                    Target::Agent(a.agent.clone()),
+                    Target::Agent(a.agent.clone(), a.home.clone()),
                     &a.title,
                     &a.description,
                 )
@@ -324,6 +330,12 @@ impl Live {
             .clone()
             .try_acquire_owned()
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
+    }
+
+    /// 183 §7.7: the export a contact's `POST /rpc` reaches: the first one granted to the
+    /// contact pinned to `eid` (as [`dispatch`] maps it).
+    pub(crate) fn first_export(&self, eid: &str) -> Option<String> {
+        self.contacts.get(eid)?.exports.iter().min().cloned()
     }
 
     /// The export exists and its session is effectively enabled right now; an agent export
@@ -413,15 +425,20 @@ async fn dispatch(State(shared): State<Shared>, mut req: Request) -> Response {
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    if !principal.admit_rate() {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
-    }
-    let Ok(_permit) = principal.concurrent.clone().try_acquire_owned() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            [(header::RETRY_AFTER, HeaderValue::from_static("1"))],
-        )
-            .into_response();
+    let _permit = if req.extensions().get::<Charged>().is_some() {
+        None
+    } else {
+        if !principal.admit_rate() {
+            return StatusCode::TOO_MANY_REQUESTS.into_response();
+        }
+        let Ok(permit) = principal.concurrent.clone().try_acquire_owned() else {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(header::RETRY_AFTER, HeaderValue::from_static("1"))],
+            )
+                .into_response();
+        };
+        Some(permit)
     };
     let Ok(v) = HeaderValue::from_str(&principal.binding.to_string()) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -493,6 +510,19 @@ fn card(rpc_url: &str, title: &str, description: &str) -> AgentCard {
         security_requirements: Some(vec![HashMap::from([("bearer".to_owned(), Vec::new())])]),
         signatures: None,
     }
+}
+
+/// [`check_version`] of a request by its headers (191: the receiving machine checks it before
+/// it forwards a call the owner then serves as this version).
+pub(crate) fn check_version_of(headers: &axum::http::HeaderMap) -> Result<(), A2AError> {
+    let v = headers
+        .get(VERSION_PARAM)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    check_version(&ServiceParams::from([(
+        VERSION_PARAM.to_owned(),
+        v.into_iter().collect(),
+    )]))
 }
 
 /// Version negotiation (§3.3), the handler's duty on every method: the
@@ -577,8 +607,9 @@ fn accepts_text(mode: &str) -> bool {
 enum Target {
     /// One exact session (an HTTP peer's export, or an exported chat, D9).
     Chat(SessionId),
-    /// 183 §7.6: an agent: each contact gets its own inbox.
-    Agent(String),
+    /// 183 §7.6: an agent: each contact gets its own inbox. 191 (D4): and its home, the only
+    /// machine that opens one.
+    Agent(String, agent::communication::network::InboxHome),
     /// 186 (D5): the return route: a contact's answers in conversations this engine opened.
     Return,
 }
@@ -593,7 +624,7 @@ struct Handler {
     subscribers: Arc<Semaphore>,
     /// Binding → grant epoch of the configuration these routes belong to.
     epochs: Arc<HashMap<Uuid, CancellationToken>>,
-    /// 183 §7.6: contact binding → its alias and facts (cap, machine, first contact).
+    /// 183 §7.6: contact binding → its alias and facts (machine, first contact).
     grants: Arc<HashMap<Uuid, ContactGrant>>,
 }
 
@@ -623,19 +654,13 @@ impl Handler {
     /// `send`: a `SendMessage` or the streaming send (191 S4: a read never opens an inbox).
     async fn admit(&self, params: &ServiceParams, send: bool) -> Result<A2aPrincipal, A2AError> {
         let (binding, route) = self.caller(params)?;
-        // 183 §7.6: a contact's origin rides with every admission: the first-contact hold, and
-        // (W-40) what a chat owned by another engine of the mesh caps the contact's turn at.
+        // 183 §7.6: a contact's origin rides with every admission (the first-contact hold).
         // 190 (D1): every share is full.
         let grant = self.grants.get(&binding);
         let contact = grant.map(|g| agent::communication::ContactOrigin {
             contact: g.alias.clone(),
             machine: g.facts.machine.clone(),
             export: self.export.clone(),
-            // W-40 only; removed by design 191 (contacts are mesh-wide)
-            cap: g.facts.cap,
-            holder: mesh::self_id().unwrap_or_default(),
-            // W-40 only; removed by design 191 (contacts are mesh-wide)
-            tools: crate::config::default_contact_tools(),
             mode: agent::ShareMode::Full,
         });
         let ask_first = match grant.map(|g| g.facts.first_contact.get(&self.export)) {
@@ -651,17 +676,18 @@ impl Handler {
         };
         let session = match (&self.target, &contact) {
             (Target::Chat(s), _) => *s,
-            (Target::Agent(agent), Some(origin)) => {
+            (Target::Agent(agent, home), Some(origin)) => {
                 self.ask(agent::communication::network::ContactInbox {
                     binding,
                     agent: agent.clone(),
                     origin: origin.clone(),
                     export_id: self.export_id.clone(),
+                    home: home.clone(),
                     send,
                 })
                 .await?
             }
-            (Target::Agent(_), None) => {
+            (Target::Agent(..), None) => {
                 return Err(A2AError::unsupported_operation(
                     "export unavailable: only contacts reach agent exports",
                 ));
@@ -1488,7 +1514,6 @@ mod tests {
                     eids: vec![b.id.0.clone()],
                     display: "bob".into(),
                     machine: "Bob's MacBook".into(),
-                    cap: tools::Risk::ReadOnly,
                     first_contact: BTreeMap::new(),
                     blocked,
                     paired_ms: 1,
@@ -1561,7 +1586,6 @@ mod tests {
                 eids: vec!["bob-eid".into()],
                 display: "bob".into(),
                 machine: String::new(),
-                cap: tools::Risk::ReadOnly,
                 first_contact: BTreeMap::new(),
                 blocked: false,
                 paired_ms: 1,

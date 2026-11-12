@@ -116,3 +116,13 @@ test('190: beside a held row a queued one adds nothing: one row, its own three a
   for (const gone of ['kim', 'is the build green?', 'wait for this turn', 'waits for this turn']) expect(body()).not.toContain(gone)
   expect([...document.querySelectorAll('button')].filter((b) => b.textContent === 'Allow once')).toHaveLength(1)
 })
+
+test('191: a message another machine holds offers Always and Block, never Allow once (the holder answers that)', async () => {
+  api.contact_first_waiting.mockImplementation(async () => [{ ...W, elsewhere: true }])
+  await mount()
+  const labels = [...document.querySelectorAll('button')].map((b) => b.textContent)
+  expect(labels).not.toContain('Allow once')
+  expect(labels).toEqual(expect.arrayContaining(['Always', 'Block']))
+  await click('Always')
+  expect(api.contact_first_answer).toHaveBeenCalledWith('sky', 'ops', 'allow')
+})

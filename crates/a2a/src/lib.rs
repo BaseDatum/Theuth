@@ -175,7 +175,7 @@ struct Ctx {
     listener_lock: tokio::sync::Mutex<()>,
     /// 183 §7.8: one `peers.yaml` rewrite (and its reload) at a time.
     edit_lock: tokio::sync::Mutex<()>,
-    /// 183 §9.3: `a2a.contact_cap`, `.contact_window_secs`, `.mdns_types`.
+    /// 183 §9.3: `a2a.contact_window_secs`, `.mdns_types`.
     cfg: A2aConfig,
     state: Mutex<State>,
     /// 183 §7.2: the mesh endpoint `theuth/a2a/1` rides on, once bound.
@@ -243,6 +243,9 @@ struct State {
     retry_at: Option<std::time::Instant>,
     /// 191 (D1): the `peers_gen` the last reconcile saw (a mesh membership change signs).
     peers_gen: Option<u64>,
+    /// 191 (D4): the content hash of `contact_holds` last seen (a change refreshes every
+    /// surface, whoever wrote the rows).
+    holds_hash: Option<u64>,
     /// 191 (D1): the contacts (record ids) this process pushed our chains to since the last
     /// signing: one newly admitted (at boot, after a bootstrap) gets them once too.
     pushed_to: std::collections::BTreeSet<String>,
@@ -475,7 +478,7 @@ impl Ctx {
             only.peers.retain(|_, p| p.is_contact());
             let staged = {
                 let resolve = |name: &str| vault.and_then(|v| v.get(name, 0));
-                config::stage(&only, &resolve, console, self.cfg.contact_cap)
+                config::stage(&only, &resolve, console)
             };
             let outcome = match staged {
                 Ok(staged) => self.import(&only, &staged).await,
@@ -556,8 +559,7 @@ impl Ctx {
         let peers_gen = self.net().map(|n| *n.peers_gen.borrow());
         let family = contacts::members::family(self.net().as_deref());
         let expired = self.rosters.lock().expired.clone();
-        let base =
-            contacts::records::stage_records(&records, &family, &expired, self.cfg.contact_cap);
+        let base = contacts::records::stage_records(&records, &family, &expired);
         // The hash of what is staged, never a later read: a write landing during the rest
         // of this pass is not in it, so the next tick reconciles it.
         let staged_hash = records.content_hash();
@@ -579,14 +581,8 @@ impl Ctx {
             tracing::warn!(contact = %q.alias, id = %q.id, problem = %q.problem, "a2a: contact record quarantined");
         }
         let hold: Vec<Uuid> = base.quarantined.iter().filter_map(|q| q.hold).collect();
-        let mut staged = config::stage_on(
-            base,
-            &file,
-            &resolve,
-            console.as_deref(),
-            self.cfg.contact_cap,
-        )
-        .map_err(|e| e.join("; "))?;
+        let mut staged = config::stage_on(base, &file, &resolve, console.as_deref())
+            .map_err(|e| e.join("; "))?;
         // Sessions are the agent's to validate (§6.3: native, existing). 191: a replicated
         // export whose chat this machine cannot publish (not here yet, an external harness)
         // is left out of this machine's routes, and so are its grants; nothing else is.
@@ -747,7 +743,7 @@ impl Ctx {
             .filter(|(a, b)| !staged.peers.contains_key(*a) && !rebound.contains(*b))
             .map(|(a, _)| a.clone())
             .collect();
-        // 183 F4: a contact whose grant epoch rotates, or whose cap changes, keeps a held
+        // 183 F4: a contact whose grant epoch rotates keeps a held
         // first message only for an export whose definition is unchanged (it moves to the new
         // epoch); every other held message fails now, before an Allow could run it under
         // authority that is gone.
@@ -755,10 +751,9 @@ impl Ctx {
             .contacts
             .iter()
             .filter(|(alias, f)| {
-                let cap_changed = prev.staged.contacts.get(*alias).map(|c| c.cap) != Some(f.cap);
                 !f.blocked
                     && prev.staged.peers.contains_key(*alias)
-                    && (cap_changed || !prev.staged.same_grant(&staged, alias))
+                    && !prev.staged.same_grant(&staged, alias)
             })
             .filter_map(|(alias, _)| {
                 Some(agent::communication::network::RebindHeld {
@@ -898,6 +893,9 @@ impl Ctx {
                 tracing::warn!("a2a: held first messages across a grant change: {e}");
             }
         }
+        // 191 (D2 step 5): a held first message whose answer is now a grant (Always, or a
+        // block for its export), wherever it was written, is released or failed by its owner.
+        self.release_answered(&agents).await;
         let to = agents.clone();
         tokio::spawn(async move {
             for m in limits {
@@ -1025,6 +1023,8 @@ impl Ctx {
             self.remember_addrs().await;
             let was = self.ready.load(std::sync::atomic::Ordering::SeqCst);
             self.tick().await;
+            // 191 (D4): another machine's hold row arrived, changed or went.
+            self.holds_tick().await;
             // 183 F1: what each contact shares with us is memory; fetch it once admitted (191:
             // from every machine of it that is admitted).
             if !was && self.ready.load(std::sync::atomic::Ordering::SeqCst) {
@@ -1389,6 +1389,8 @@ impl runtime::Plugin for A2aPlugin {
             #[cfg(test)]
             mid_pass: Mutex::default(),
         });
+        // 191 (D3): `rpc`'s `a2a_forward` reaches the owner side through this, off the mailbox.
+        contacts::forward::publish(&ctx);
         let actor = A2aActor::spawn_with_mailbox(
             A2aActor { ctx: ctx.clone() },
             runtime::subscriber_mailbox(),

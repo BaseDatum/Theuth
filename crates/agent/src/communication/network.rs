@@ -91,8 +91,8 @@ pub struct A2aPrincipal {
     /// exports and roots as configured then); cancelled when any of them
     /// changes, which ends every task and stream admitted under it.
     pub route: CancellationToken,
-    /// 183 §7.6: set when the caller is a contact on `theuth/a2a/1`: its name, machine, the
-    /// export and its cap (the inbox's `SetCap`, or the exported chat's `SetTurnCap`).
+    /// 183 §7.6: set when the caller is a contact on `theuth/a2a/1`: its name, machine and
+    /// the export.
     /// `None` for an HTTP A2A peer (bearer), which keeps today's admission.
     pub contact: Option<super::ContactOrigin>,
     /// 183 §7.6 (W-27): the contact's first-contact answer for this export is `ask`: a new
@@ -107,6 +107,20 @@ pub struct A2aPrincipal {
 pub const NOT_OWNER_CODE: i32 = -32030;
 /// [`NOT_OWNER_CODE`]'s message.
 pub const NOT_OWNER_TEXT: &str = "not owner";
+/// 191 (D3, P3): the `@type` of the detail a [`NOT_OWNER_CODE`] error carries when the owner is
+/// another machine of the mesh: `{"@type": OWNER_DETAIL, "owner": <engine id>}`. The receiving
+/// machine forwards to that owner (`a2a_forward`) and never passes the detail to the contact.
+pub const OWNER_DETAIL: &str = "theuth.io/a2a/owner/v1";
+
+/// 191 (D3): a new A2A task id that names the machine admitting it, `<first 16 hex of its
+/// engine id>-<uuidv7>`, so `GetTask` and `CancelTask` reach it from any machine of the mesh. A
+/// lone engine (no mesh id) mints a bare UUIDv7, as before 191.
+pub fn task_id(engine: &str) -> String {
+    match engine.get(..16) {
+        Some(prefix) => format!("{prefix}-{}", new_task_id()),
+        None => new_task_id(),
+    }
+}
 
 /// `ask` → `Result<(), A2AError>` (191 D3, S4): the a2a router's strict session resolve for a
 /// contact's request, before any task exists: `Err` ([`NOT_OWNER_CODE`]) unless the session's
@@ -139,22 +153,35 @@ impl Message<OwnedElsewhereForTest> for Agents {
 
 /// `ask` → `Result<SessionId, A2AError>` (183 §7.6): the capped inbox of (contact
 /// `binding`, `origin.export`), an agent export: created on the first send (an isolated
-/// root titled `<contact> · <export>`, recorded in `a2a_contexts`), reused after, and its cap
-/// (`origin.cap`) installed on every resolve so it holds after a restart and a lowered cap
-/// applies at once.
+/// root titled `<contact> · <export>`, recorded in `a2a_contexts`), reused after, and its
+/// limits installed on every resolve so they hold after a restart.
 #[derive(Clone, Debug)]
 pub struct ContactInbox {
     /// The contact's live binding.
     pub binding: Uuid,
     /// The exported agent (`<agent>@<engine>` or `theuth`).
     pub agent: String,
-    /// Who asks, the export and the cap.
+    /// Who asks and the export.
     pub origin: super::ContactOrigin,
     /// 191 (D4): the export's replicated id, for the session's `contact_inbox` marker.
     pub export_id: Option<String>,
+    /// 191 (D4): the export's home (`a2a_exports.home`), the only machine that opens a new
+    /// inbox.
+    pub home: InboxHome,
     /// 191 (S4): a send (`SendMessage`, the streaming send); else a read (a task's get, list,
     /// cancel or subscribe), which never opens an inbox.
     pub send: bool,
+}
+
+/// 191 (D4): an agent export's home as the a2a plugin staged it from `a2a_exports.home`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InboxHome {
+    /// This machine.
+    Here,
+    /// Another live machine of the mesh: its engine id.
+    At(String),
+    /// It left the mesh (or the row names none): no new inbox.
+    Left,
 }
 
 impl A2aPrincipal {
@@ -666,8 +693,8 @@ pub struct NetworkState {
     outbound: HashMap<Uuid, Outbound>,
     /// 183 §7.6: inbox sessions resolved this run.
     inboxes: HashSet<SessionId>,
-    /// 183 §7.6: request scope → the contact behind it (its first-contact hold; W-40: what
-    /// another engine's chat caps its turn at); gone with the scope.
+    /// 183 §7.6: request scope → the contact behind it (its first-contact hold); gone with the
+    /// scope.
     contact_scopes: HashMap<Uuid, super::ContactOrigin>,
     /// 183 W-27, F11: tasks waiting for a first-contact answer, by (contact, export), oldest
     /// first, with the admission each waits under. A held task waits aside: it is neither the
@@ -677,13 +704,6 @@ pub struct NetworkState {
     offers: BTreeMap<String, Vec<ContactOffer>>,
     /// 183 F1: when `discover_peers` last asked for a refresh (unix ms; 0 = never).
     offers_asked_ms: std::sync::atomic::AtomicU64,
-    /// 183 W-40: contact message id → the request scope of the A2A task on this (holding)
-    /// engine whose exported chat lives on another engine; its answer comes back as a
-    /// `contact_deliver` with `reply_to`.
-    contact_waits: HashMap<Uuid, Uuid>,
-    /// 183 W-40: on a chat's owner, the contact turns it runs for another engine: the
-    /// pseudo-scope its input opened the turn under (the message id) → where the answer goes.
-    contact_replies: HashMap<Uuid, super::ContactEnvelope>,
     /// 183 §7.6, W-25: inbox session → the exported agent's persona, recorded on every
     /// resolve (so after a restart too, before the contact's turn runs).
     inbox_personas: HashMap<SessionId, crate::supervisor::InboxPersona>,
@@ -695,6 +715,12 @@ pub struct NetworkState {
     /// 186 (D4): a full contact's message id → its task, completed when the message is
     /// consumed.
     full_inbound: HashMap<Uuid, TaskRef>,
+    /// 191 (D4): the `contact_holds` rows last written for [`Self::held`], by id.
+    holds_mirrored: BTreeMap<String, crate::store::contacts::HoldRow>,
+    /// 191 (P3 review S1): `holds_mirrored` is what the table holds of ours. False at start
+    /// (a failed boot cleanup leaves rows) and after a failed write: the next mirror reads
+    /// this engine's rows back first, and `ContactHolds` (every 2 s) retries it.
+    holds_synced: bool,
 }
 
 /// 186 (D8): what a contact reads when the owner stopped the turn its message opened.
@@ -710,6 +736,13 @@ pub const HOLD_EXPIRED: &str = "the owner did not answer";
 /// chat or agent, other tools, another cap) while it waited.
 pub const HOLD_CHANGED: &str = "the shared chat or agent changed while this waited; send it again";
 
+/// 191 (D3): what a held task fails with when its chat left this machine (a drain, or a
+/// release finding another machine owns it): it never ran, and the resend reaches the owner.
+pub const HOLD_MOVED: &str = "the chat moved; send again";
+
+/// 191 (D3): what a held task fails with when its chat's owner could not be read.
+pub const HOLD_UNCHECKED: &str = "the chat's machine could not be checked; send again";
+
 /// 183 W-27: one task held for a first-contact answer.
 struct HeldTask {
     task: A2aTask,
@@ -719,6 +752,8 @@ struct HeldTask {
     since_ms: u64,
     /// 183 F11: the first line of its message.
     preview: String,
+    /// 191 (D4): the contact's machine, from its card (for the mirrored row).
+    machine: String,
 }
 
 /// `ask` → `Result<usize, String>` (183 W-27): the owner answered the first-contact item of
@@ -748,12 +783,17 @@ pub struct HeldContact {
     pub export: String,
     /// The session the first task would run in.
     pub session: SessionId,
+    /// 191 (D4): the oldest waiting task's id (its `contact_holds` row's id).
+    pub task: String,
     /// When the oldest waiting task arrived (ms since epoch).
     pub since_ms: u64,
     /// How many tasks wait.
     pub waiting: usize,
     /// 183 F11: the first line of the oldest waiting message.
     pub preview: String,
+    /// 191 (P3 review N3): the contact's machine that sent the oldest one, from its card
+    /// (cleaned and cut as its `contact_holds` row).
+    pub machine: String,
 }
 
 impl NetworkState {
@@ -942,24 +982,6 @@ impl NetworkState {
                     && (p.name == name || (p.contact && contact == Some(p.name.as_str())))
             })
             .map(|(id, p)| (*id, p))
-    }
-
-    /// Tests: the contact message queued for `session` on its owner (W-40).
-    #[cfg(test)]
-    pub(crate) fn contact_replies_for_test(
-        &self,
-        session: SessionId,
-    ) -> Option<super::ContactEnvelope> {
-        self.contact_replies
-            .values()
-            .find(|e| e.to == session)
-            .cloned()
-    }
-
-    /// Tests: a restart lost every contact envelope (Z3-R3).
-    #[cfg(test)]
-    pub(crate) fn forget_contact_replies_for_test(&mut self) {
-        self.contact_replies.clear();
     }
 
     fn feed(&mut self, task: &str) -> &Feed {
@@ -1438,14 +1460,9 @@ impl Agents {
         let generation = self.admit_principal(p).await?;
         // 191 (D3, S4): a contact's message into a session that is not strictly this engine's
         // (an unknown row, an empty owner, another machine's) is `NOT_OWNER` before anything is
-        // accepted here: the contact's client tries its next member. The one exception until
-        // P3: a chat export another engine of the mesh owns still takes W-40 (never an inbox).
-        if p.contact.is_some()
-            && let Err(e) = self.contact_owned(p.session).await
-            && (self.network.inboxes.contains(&p.session)
-                || self.remote_owner(p.session).await.is_none())
-        {
-            return Err(e);
+        // accepted here: the contact's client tries its next member.
+        if p.contact.is_some() {
+            self.contact_owned(p.session).await?;
         }
         if req
             .configuration
@@ -1612,7 +1629,7 @@ impl Agents {
             .flatten();
         let reply_to = self.answered(re.as_deref(), &recipient, &key).await?;
         let minted = message.context_id.is_none();
-        let id = new_task_id();
+        let id = task_id(self.store.engine());
         message.context_id = Some(context_id.clone());
         message.task_id = Some(id.clone());
         let snap = Task {
@@ -1713,27 +1730,13 @@ impl Agents {
         route: CancellationToken,
     ) -> A2aTask {
         // 186 (D4): a contact's message takes no slot: it goes in as a mesh peer's at once.
-        // W-40 (D11): a chat another engine owns gets it there (that owner lowers it). 190
-        // review 1: an owner that cannot be read is no local chat: the message is refused.
+        // `deliver_full`'s owner predicate decides where it lands (191 D3).
         if self
             .network
             .contact_scopes
             .contains_key(&task.request_scope)
         {
-            let local = self.network.inboxes.contains(&task.session)
-                || match self.session_owner(task.session).await {
-                    Ok(owner) => owner.is_none(),
-                    Err(e) => {
-                        tracing::error!(task = %task.id, session = %task.session, "a2a: exported chat's owner unreadable, contact message refused: {e:#}");
-                        return self
-                            .fail_task(&task, "export unavailable: the chat could not be read")
-                            .await
-                            .unwrap_or(task);
-                    }
-                };
-            if local {
-                return self.deliver_full(task, generation).await;
-            }
+            return self.deliver_full(task, generation).await;
         }
         match self.store.active_a2a_task(task.session).await {
             Ok(None) => {
@@ -1809,28 +1812,6 @@ impl Agents {
             }
         };
         self.register_scope(&task, route);
-        // 183 W-40: a contact's message for an exported chat another engine of the mesh
-        // owns goes to that owner; its answer comes back as a `contact_deliver` reply.
-        if let Some(origin) = self
-            .network
-            .contact_scopes
-            .get(&task.request_scope)
-            .cloned()
-            && !self.network.inboxes.contains(&task.session)
-            && let Some(owner) = self.remote_owner(task.session).await
-        {
-            let envelope = super::ContactEnvelope {
-                id: record.receipt.id,
-                to: task.session,
-                text: record.text,
-                origin,
-                reply_to: None,
-                request_id: Some(task.id.clone()),
-            };
-            self.forward_contact(task.request_scope, owner, envelope, true)
-                .await;
-            return task;
-        }
         if let Err(e) = self.enqueue_peer(record, generation, true, false).await {
             return self
                 .fail_task(&task, &format!("intake refused: {e}"))
@@ -2044,7 +2025,7 @@ impl Agents {
         // 183 review 1: a hold that ends here (a cancel, a revoke) leaves no stale strip,
         // row or Attention item.
         if status.is_terminal() && self.network.retire(task.request_scope) {
-            self.rt.publish(ContactsHeldChanged).await;
+            self.held_changed().await;
         }
         Ok(updated)
     }
@@ -2390,20 +2371,6 @@ impl Agents {
         {
             self.network.turns.remove(&m.session);
         }
-        // 183 W-40: a turn this owner ran for another engine's contact: its answer goes back.
-        if let Some(scope) = m.scope {
-            let env = match self.network.contact_replies.remove(&scope) {
-                Some(env) => Some(env),
-                None if !self.network.scopes.contains_key(&scope) => {
-                    self.resumed_contact_envelope(m.session, scope).await
-                }
-                None => None,
-            };
-            if let Some(env) = env {
-                self.contact_turn_finished(env, m).await;
-                return;
-            }
-        }
         let Some(scope) = m.scope.filter(|s| self.network.scopes.contains_key(s)) else {
             return;
         };
@@ -2424,40 +2391,6 @@ impl Agents {
         }
         self.network_settle_work(scope, &format!("turn:{}", m.turn))
             .await;
-    }
-
-    /// Z3-R3: the contact message that opened `session`'s resumed turn, rebuilt from its
-    /// exchange (`contact:<holder>:<contact>`) after a restart lost the envelope, so the
-    /// answer still reaches the holder (which only needs the message id it waits on).
-    async fn resumed_contact_envelope(
-        &self,
-        session: SessionId,
-        id: Uuid,
-    ) -> Option<super::ContactEnvelope> {
-        let record = match self.store.peer_record(session, id).await {
-            Ok(r) => r?,
-            Err(e) => {
-                tracing::warn!(%session, "resumed contact turn: {e:#}");
-                return None;
-            }
-        };
-        let (holder, contact) = record.from.strip_prefix("contact:")?.split_once(':')?;
-        Some(super::ContactEnvelope {
-            id,
-            to: session,
-            text: String::new(),
-            origin: super::ContactOrigin {
-                contact: contact.to_owned(),
-                machine: String::new(),
-                export: String::new(),
-                cap: tools::Risk::ReadOnly,
-                holder: holder.to_owned(),
-                tools: Vec::new(),
-                mode: crate::communication::ShareMode::Cautious,
-            },
-            reply_to: None,
-            request_id: None,
-        })
     }
 
     /// A local approval is pending / resolved in `session` (§6.3 `AUTH_REQUIRED`).
@@ -3226,19 +3159,43 @@ impl Agents {
         };
         // 191 (S4, P2 review SHOULD 1): the strict owner check, before any side effect (an
         // inbox opened, its row marked, its limits installed): an inbox here whose session is
-        // not strictly this engine's (moved, unknown, unreadable) is `not owner` to a send and
-        // TASK_NOT_FOUND to a read, as an unknown task is; a read never opens an inbox.
-        let existing = self.store.a2a_inbox(scope).await.map_err(internal)?;
+        // not strictly this engine's (moved, unknown, unreadable) is `not owner` to a send (191
+        // P3: naming its owner when that is another machine, which the receiving machine
+        // forwards to) and TASK_NOT_FOUND to a read, as an unknown task is; a read never opens
+        // or adopts an inbox. P3 (D4): the resolve is [`Agents::inbox_of`] (the marker, then
+        // the local row, then the marker's session, then the home). P3 integration: an inbox
+        // that moved away (its local row strictly another machine's) keeps its tasks here, and
+        // their ids carry this engine's prefix, so the forwarder routes their reads here: a
+        // read resolves to that session to read this machine's own rows (the receipt a drain
+        // completed, a hold it failed) and writes nothing. An unknown owner is still refused.
         let read_refused = || A2AError::task_not_found("task");
-        match existing {
-            Some(id) => {
-                if let Err(e) = self.contact_owned(id).await {
-                    return Err(if m.send { e } else { read_refused() });
-                }
+        let inbox = match self.inbox_of(&m, scope).await {
+            Ok(Inbox::Here(id)) => Inbox::Here(id),
+            Ok(_) | Err(_) if !m.send => {
+                // Read-only: the local row, then the strict owner of its session. Nothing
+                // below this match runs for a read that is not owned here.
+                let local = match self.store.inbox_rows(scope.principal, scope.export).await {
+                    Ok(rows) => rows.into_iter().next().map(|(s, _, _)| s),
+                    Err(e) => {
+                        tracing::warn!(export = %m.origin.export, "a2a: inbox read: {e:#}");
+                        None
+                    }
+                };
+                let Some(s) = local else {
+                    return Err(read_refused());
+                };
+                return match self.store.owner_strict(s).await {
+                    Ok(crate::store::contacts::Owner::Elsewhere(_)) => Ok(s),
+                    Ok(_) => Err(read_refused()),
+                    Err(e) => {
+                        tracing::warn!(session = %s, "a2a: inbox read: session row unreadable: {e:#}");
+                        Err(read_refused())
+                    }
+                };
             }
-            None if !m.send => return Err(read_refused()),
-            None => {}
-        }
+            Ok(other) => other,
+            Err(e) => return Err(e),
+        };
         // W-25: the exported agent's persona, charter, model and ceiling (`<agent>@<engine>`
         // names the agent of this engine).
         let bare = m.agent.split('@').next().unwrap_or(&m.agent);
@@ -3267,9 +3224,26 @@ impl Agents {
             full::Live::Known(p) => Some(p.clone()),
             _ => None,
         };
-        let id = match existing {
-            Some(id) => id,
-            None => {
+        let id = match inbox {
+            Inbox::Here(id) => id,
+            // 191 (D4): a marked inbox owned here with no local row (it moved here): the
+            // local row is the whole re-admission; the inbox runs full from here on.
+            Inbox::Adopt(id) => {
+                if persona.is_none() {
+                    tracing::warn!(session = %id, agent = bare, "191: inbox not adopted: the agent has no live persona");
+                    return Err(A2AError::unsupported_operation(format!(
+                        "export unavailable: {} is not available",
+                        m.origin.export
+                    )));
+                }
+                self.store
+                    .create_a2a_context(scope, &new_context_id(), id)
+                    .await
+                    .map_err(internal)?;
+                tracing::info!(session = %id, contact = %m.origin.contact, export = %m.origin.export, "191: contact inbox adopted by its marker");
+                id
+            }
+            Inbox::Mint => {
                 // §7.6: isolated, so the contact-driven model reaches no other root.
                 let model = persona.as_ref().and_then(|p| p.model.as_deref());
                 let id = match self
@@ -3346,6 +3320,90 @@ impl Agents {
             .await
             .map_err(|e| internal(anyhow::anyhow!(e)))?;
         Ok(id)
+    }
+}
+
+/// 191 (D4): where a contact's inbox for an agent export is, on this machine's view.
+enum Inbox {
+    /// Its local row names a session this machine owns.
+    Here(SessionId),
+    /// No local row; the one session carrying its marker is owned here: adopt it.
+    Adopt(SessionId),
+    /// None anywhere, and this machine is the export's home: open one.
+    Mint,
+}
+
+impl Agents {
+    /// 191 (D4): [`Inbox`] for `m`, or the refusal. Two or more sessions carrying the marker
+    /// are refused (`export unavailable`), never chosen between, and capped here. Then the
+    /// strict owner check of the local row (P2 review, before any side effect): owned here is
+    /// the inbox; owned elsewhere is `NOT_OWNER` naming its owner (the inbox moved; the
+    /// receiving machine forwards there); an empty owner (a mesh engine's unknown) is neither
+    /// here nor elsewhere: refused. Then the marker (a name-valued marker never matches: the
+    /// lookup is by export id): owned here is adopted, elsewhere is `NOT_OWNER` naming the
+    /// owner. With none, only the export's home opens an inbox; any other machine answers
+    /// `NOT_OWNER` naming the home.
+    async fn inbox_of(&mut self, m: &ContactInbox, scope: A2aScope<'_>) -> Result<Inbox, A2AError> {
+        let me = self.store.engine().to_owned();
+        let marker = m
+            .export_id
+            .as_ref()
+            .map(|x| format!("{}|{x}", scope.principal));
+        let marked = match &marker {
+            Some(k) => self.store.marked_inboxes(k).await.map_err(internal)?,
+            None => Vec::new(),
+        };
+        if marked.len() > 1 {
+            tracing::warn!(sessions = ?marked.iter().map(|(s, _)| s.to_string()).collect::<Vec<_>>(), export = %m.origin.export, "191: two sessions carry one inbox marker; refused, never chosen between");
+            // A read refuses too, but writes nothing (no unmark, no cap): only a send does.
+            for (s, _) in marked.iter().filter(|(_, o)| m.send && *o == me) {
+                if let Err(e) = self.store.unmark_a2a_inbox_full(*s).await {
+                    tracing::error!(session = %s, "a2a: inbox mode not reset: {e:#}");
+                }
+                if let Err(e) = self
+                    .install_contact_limits(*s, INBOX_FAIL_CLOSED, Vec::new())
+                    .await
+                {
+                    tracing::error!(session = %s, "{e}");
+                }
+            }
+            return Err(A2AError::unsupported_operation(format!(
+                "export unavailable: {} has more than one inbox; delete the extra one",
+                m.origin.export
+            )));
+        }
+        let rows = self
+            .store
+            .inbox_rows(scope.principal, scope.export)
+            .await
+            .map_err(internal)?;
+        if let Some((s, owner, _)) = rows.into_iter().next() {
+            return if owner == me {
+                Ok(Inbox::Here(s))
+            } else if owner.is_empty() {
+                tracing::info!(session = %s, "191: contact inbox refused: its owner is unknown here");
+                Err(full::not_owner())
+            } else {
+                Err(full::not_owner_at(&owner))
+            };
+        }
+        if let Some((s, owner)) = marked.first() {
+            return if *owner == me {
+                Ok(Inbox::Adopt(*s))
+            } else if owner.is_empty() {
+                Err(full::not_owner())
+            } else {
+                Err(full::not_owner_at(owner))
+            };
+        }
+        match &m.home {
+            InboxHome::Here => Ok(Inbox::Mint),
+            InboxHome::At(h) => Err(full::not_owner_at(h)),
+            InboxHome::Left => Err(A2AError::unsupported_operation(format!(
+                "export unavailable: {}: its machine left the mesh",
+                m.origin.export
+            ))),
+        }
     }
 }
 
@@ -3556,34 +3614,6 @@ impl Agents {
     }
 }
 
-impl Agents {
-    /// 183 §11.6: how `record` reaches its session when a contact's message runs a capped
-    /// turn: the `<contact_message>` turn of an exported chat this engine owns for another
-    /// engine's contact (W-40), or for a task of this engine whose chat's remote owner was
-    /// gone by the time it started (fail closed). Every other contact message arrives full.
-    // W-40 only; removed by design 191 (contacts are mesh-wide)
-    pub(crate) fn network_contact_frame(
-        &self,
-        record: &PeerRecord,
-    ) -> Option<crate::loop_::ContactFrame> {
-        if let Some(env) = self.network.contact_replies.get(&record.receipt.id) {
-            return Some(crate::loop_::ContactFrame::Chat {
-                origin: env.origin.clone(),
-                scope: Some(record.receipt.id),
-            });
-        }
-        let origin = self
-            .network
-            .contact_scopes
-            .get(&record.request_scope?)?
-            .clone();
-        Some(crate::loop_::ContactFrame::Chat {
-            origin,
-            scope: None,
-        })
-    }
-}
-
 /// `tell` (internal, 183 W-27, F5): a held task's wait ended without the owner's answer:
 /// its grant epoch ended (`expired: false`) or [`HOLD_TTL`] passed (`expired: true`).
 struct HeldEnded {
@@ -3643,6 +3673,12 @@ impl Agents {
         origin: &super::ContactOrigin,
         route: CancellationToken,
     ) -> A2aTask {
+        // 191 (P3 review N3): a chat mid-release-drain or no longer ours holds nothing: the
+        // drain would fail it anyway, and a hold admitted after it would outlive its chat.
+        if let Some(why) = self.hold_moved(&task).await {
+            tracing::info!(task = %task.id, session = %task.session, "191: hold refused: the chat is leaving or not ours");
+            return self.fail_task(&task, why).await.unwrap_or(task);
+        }
         let why = format!(
             "waiting: {}",
             super::ContactRefusal::NotAllowed {
@@ -3666,8 +3702,8 @@ impl Agents {
             Ok(t) => t,
             Err(e) => {
                 tracing::error!(task = %task.id, "a2a: hold for first contact: {e:#}");
-                let why = format!("could not wait for the owner's answer: {e}");
-                return self.fail_task(&task, &why).await.unwrap_or(task);
+                let why = "could not wait for the owner's answer; send again";
+                return self.fail_task(&task, why).await.unwrap_or(task);
             }
         };
         let watch = held_watch(held.request_scope, route.clone(), HOLD_TTL);
@@ -3682,9 +3718,179 @@ impl Agents {
                 watch,
                 since_ms: Utc::now().timestamp_millis().max(0) as u64,
                 preview,
+                machine: origin.machine.clone(),
             });
-        self.rt.publish(ContactsHeldChanged).await;
+        self.held_changed().await;
         held
+    }
+
+    /// 191 (D4): mirror [`NetworkState::held`] into `contact_holds` (one row per (contact,
+    /// export), keyed by its oldest task), then tell the surfaces (`ContactsHeldChanged`).
+    /// Only changed rows are written; a failed write is retried at the next change or the
+    /// next `ContactHolds` read, whichever comes first, from the rows this engine really has
+    /// in the table. The holds themselves stay memory: a missing row only hides one from
+    /// other machines.
+    async fn held_changed(&mut self) {
+        use crate::store::contacts::{Cell, HoldRow, RecordTable, RecordWrite};
+        let owner = self.store.engine().to_owned();
+        if !self.network.holds_synced {
+            match self.store.contact_holds().await {
+                Ok(rows) => {
+                    self.network.holds_mirrored = rows
+                        .into_iter()
+                        .filter(|r| r.owner.as_deref() == Some(owner.as_str()))
+                        .map(|r| (r.id.clone(), HoldRow { inbox: None, ..r }))
+                        .collect();
+                }
+                Err(e) => {
+                    tracing::warn!("191: read back first-contact hold rows: {e:#}");
+                    self.rt.publish(ContactsHeldChanged).await;
+                    return;
+                }
+            }
+        }
+        let ttl = HOLD_TTL.as_millis() as u64;
+        let want: BTreeMap<String, HoldRow> = self
+            .network
+            .held
+            .iter()
+            .filter_map(|((contact, export), tasks)| {
+                let first = tasks.first()?;
+                let newest = tasks.iter().map(|h| h.since_ms).max()?;
+                let row = HoldRow {
+                    id: first.task.id.clone(),
+                    contact: Some(contact.clone()),
+                    machine: Some(
+                        first
+                            .machine
+                            .chars()
+                            .filter(|c| !c.is_control())
+                            .take(64)
+                            .collect(),
+                    ),
+                    export: Some(export.clone()),
+                    session: Some(first.task.session.to_string()),
+                    owner: Some(owner.clone()),
+                    since_ms: Some(first.since_ms as i64),
+                    waiting: Some(tasks.len() as i64),
+                    preview: Some(first.preview.chars().filter(|c| !c.is_control()).collect()),
+                    until_ms: Some(newest.saturating_add(ttl) as i64),
+                    inbox: None,
+                };
+                Some((row.id.clone(), row))
+            })
+            .collect();
+        let mut writes: Vec<RecordWrite> = self
+            .network
+            .holds_mirrored
+            .keys()
+            .filter(|id| !want.contains_key(*id))
+            .map(|id| RecordWrite::delete(RecordTable::Holds, id.clone()))
+            .collect();
+        let text = |v: &Option<String>| v.clone().map_or(Cell::Null, Cell::Text);
+        let int = |v: Option<i64>| v.map_or(Cell::Null, Cell::Int);
+        for (id, r) in &want {
+            if self.network.holds_mirrored.get(id) == Some(r) {
+                continue;
+            }
+            writes.push(RecordWrite::new(
+                RecordTable::Holds,
+                id.clone(),
+                vec![
+                    ("contact", text(&r.contact)),
+                    ("machine", text(&r.machine)),
+                    ("export", text(&r.export)),
+                    ("session", text(&r.session)),
+                    ("owner", text(&r.owner)),
+                    ("since_ms", int(r.since_ms)),
+                    ("waiting", int(r.waiting)),
+                    ("preview", text(&r.preview)),
+                    ("until_ms", int(r.until_ms)),
+                ],
+            ));
+        }
+        if writes.is_empty() {
+            self.network.holds_synced = true;
+        } else {
+            match self.store.write_contact_records(&writes).await {
+                Ok(()) => {
+                    self.network.holds_mirrored = want;
+                    self.network.holds_synced = true;
+                }
+                Err(e) => {
+                    tracing::warn!("191: mirror first-contact holds: {e:#}");
+                    self.network.holds_synced = false;
+                }
+            }
+        }
+        self.rt.publish(ContactsHeldChanged).await;
+    }
+
+    /// 191 (D3): `session` was drained for a release (another machine takes it). Its held
+    /// first messages fail [`HOLD_MOVED`]: never started and never carried anywhere (the Allow
+    /// they wait for was never given; the contact's resend reaches the new owner, which holds
+    /// it afresh). P3 integration: a full contact message still in `full_inbound` completes as
+    /// a receipt only when its exchange reads consumed (linked into the history, which moves
+    /// with the session); one still waiting has its exchange row and steer on this machine
+    /// alone, so nothing carries it to the taker: it fails [`HOLD_MOVED`] too (so does one
+    /// whose exchange does not read), never a receipt for a message no turn will read.
+    pub(crate) async fn network_session_drained(&mut self, session: SessionId) {
+        let mut gone = Vec::new();
+        for tasks in self.network.held.values_mut() {
+            let (moved, keep): (Vec<HeldTask>, Vec<HeldTask>) = std::mem::take(tasks)
+                .into_iter()
+                .partition(|h| h.task.session == session);
+            *tasks = keep;
+            gone.extend(moved);
+        }
+        self.network.held.retain(|_, v| !v.is_empty());
+        for h in &gone {
+            h.watch.abort();
+            tracing::info!(task = %h.task.id, %session, "191: drained: a held first message fails");
+            if let Err(e) = self.fail_task(&h.task, HOLD_MOVED).await {
+                tracing::warn!(task = %h.task.id, "a2a: fail held task: {e:#}");
+            }
+        }
+        let inbound: Vec<(Uuid, TaskRef)> = self
+            .network
+            .full_inbound
+            .iter()
+            .map(|(x, r)| (*x, r.clone()))
+            .collect();
+        for (exchange, r) in inbound {
+            match r.load(&self.store).await {
+                Ok(t) if t.session == session => {
+                    let consumed = match self.store.exchange_receipt(exchange).await {
+                        Ok(Some(r)) => matches!(
+                            r.state,
+                            PeerMessageState::Consumed | PeerMessageState::Replied
+                        ),
+                        Ok(None) => false,
+                        Err(e) => {
+                            tracing::warn!(%exchange, "a2a: drained: exchange unreadable: {e:#}");
+                            false
+                        }
+                    };
+                    if consumed {
+                        self.full_consumed(exchange).await;
+                        continue;
+                    }
+                    self.network.full_inbound.remove(&exchange);
+                    if t.status.is_terminal() {
+                        continue;
+                    }
+                    tracing::info!(task = %t.id, %session, "191: drained: a waiting full message fails");
+                    if let Err(e) = self.fail_task(&t, HOLD_MOVED).await {
+                        tracing::warn!(task = %t.id, "a2a: fail full task: {e:#}");
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(%exchange, "a2a: drained: full task: {}", e.message),
+            }
+        }
+        if !gone.is_empty() {
+            self.held_changed().await;
+        }
     }
 
     /// [`RebindHeld`].
@@ -3723,7 +3929,7 @@ impl Agents {
             }
         }
         if !changed.is_empty() {
-            self.rt.publish(ContactsHeldChanged).await;
+            self.held_changed().await;
         }
     }
 
@@ -3755,14 +3961,40 @@ impl Agents {
             }
         }
         if n > 0 {
-            self.rt.publish(ContactsHeldChanged).await;
+            self.held_changed().await;
         }
         n
     }
 
+    /// 191 (D3, P3 review N3): why a held task cannot run or wait here, if it cannot: its
+    /// chat is mid-release-drain or another machine owns it ([`HOLD_MOVED`]), or its row does
+    /// not read ([`HOLD_UNCHECKED`]; the store's error is logged, never shown the contact).
+    async fn hold_moved(&self, task: &A2aTask) -> Option<&'static str> {
+        if self.draining_sessions.contains_key(&task.session) {
+            return Some(HOLD_MOVED);
+        }
+        match self.store.owner_strict(task.session).await {
+            Ok(crate::store::contacts::Owner::Here) => None,
+            Ok(_) => Some(HOLD_MOVED),
+            Err(e) => {
+                tracing::warn!(task = %task.id, "a2a: held task: session row unreadable: {e:#}");
+                Some(HOLD_UNCHECKED)
+            }
+        }
+    }
+
     /// A released task starts as a fresh admission would: under today's policy and the
-    /// grant it was accepted with.
+    /// grant it was accepted with. 191 (D3): only on the chat's owner, strictly
+    /// ([`Self::hold_moved`]): it is never started here nor carried to the owner.
     async fn start_held(&mut self, h: HeldTask) {
+        let refused = self.hold_moved(&h.task).await;
+        if let Some(why) = refused {
+            tracing::info!(task = %h.task.id, session = %h.task.session, "191: release refused: not the chat's owner");
+            if let Err(e) = self.fail_task(&h.task, why).await {
+                tracing::warn!(task = %h.task.id, "a2a: fail held task: {e:#}");
+            }
+            return;
+        }
         let binding = h
             .task
             .principal
@@ -3854,14 +4086,65 @@ impl Message<ContactsHeld> for Agents {
                     contact: contact.clone(),
                     export: export.clone(),
                     session: first.task.session,
+                    task: first.task.id.clone(),
                     since_ms: first.since_ms,
                     waiting: tasks.len(),
                     preview: first.preview.clone(),
+                    machine: first
+                        .machine
+                        .chars()
+                        .filter(|c| !c.is_control())
+                        .take(64)
+                        .collect(),
                 })
             })
             .collect();
         out.sort_by(|a, b| (&a.contact, &a.export).cmp(&(&b.contact, &b.export)));
         out
+    }
+}
+
+/// `ask` → `Result<Vec<HoldRow>, String>` (191 D4): the other machines' `contact_holds`
+/// rows, as stored (the reader cleans them). This engine's own holds are its memory
+/// ([`ContactsHeld`]), so its own rows (a stale one too) are never listed. P3 review S1: a
+/// mirror that failed is retried here first.
+#[derive(Clone, Copy, Debug)]
+pub struct ContactHolds;
+
+impl Message<ContactHolds> for Agents {
+    type Reply = Result<Vec<crate::store::contacts::HoldRow>, String>;
+
+    async fn handle(&mut self, _: ContactHolds, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if !self.network.holds_synced {
+            self.held_changed().await;
+        }
+        let me = self.store.engine();
+        let mut rows = self
+            .store
+            .contact_holds()
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        rows.retain(|r| r.owner.as_deref() != Some(me));
+        Ok(rows)
+    }
+}
+
+/// Tests (`test-support`): every `contact_holds` row, this engine's own included, as the
+/// record replica would carry them.
+#[cfg(feature = "test-support")]
+#[derive(Clone, Copy, Debug)]
+pub struct ContactHoldRowsForTest;
+
+#[cfg(feature = "test-support")]
+impl Message<ContactHoldRowsForTest> for Agents {
+    type Reply = Vec<crate::store::contacts::HoldRow>;
+
+    async fn handle(
+        &mut self,
+        _: ContactHoldRowsForTest,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store.contact_holds().await.unwrap()
     }
 }
 
@@ -3899,7 +4182,7 @@ impl Agents {
         if let Err(e) = self.fail_task(&h.task, why).await {
             tracing::warn!(task = %h.task.id, "a2a: fail held task: {e:#}");
         }
-        self.rt.publish(ContactsHeldChanged).await;
+        self.held_changed().await;
     }
 }
 
@@ -3908,293 +4191,6 @@ impl Message<HeldEnded> for Agents {
 
     async fn handle(&mut self, m: HeldEnded, _: &mut Context<Self, Self::Reply>) {
         self.held_ended(m.scope, m.expired).await;
-    }
-}
-
-/// 183 W-40: how [`super::ContactDeliver`] refuses a message for a chat this engine no
-/// longer owns; the RPC answers it `-32013 NotOwner` (the holder retries once).
-pub const CONTACT_NOT_OWNER: &str = "contact_deliver: not the owner of";
-
-/// `tell` (internal, 183 W-40): a forwarded contact message came back from its owner.
-struct ContactForwarded {
-    scope: Uuid,
-    owner: String,
-    envelope: super::ContactEnvelope,
-    retry: bool,
-    outcome: Result<PeerReceipt, super::mesh::ContactFailure>,
-}
-
-impl Message<super::ContactDeliver> for Agents {
-    type Reply = Result<PeerReceipt, String>;
-
-    async fn handle(
-        &mut self,
-        m: super::ContactDeliver,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        self.contact_deliver(m.envelope, m.forwarder).await
-    }
-}
-
-impl Message<ContactForwarded> for Agents {
-    type Reply = ();
-
-    async fn handle(&mut self, m: ContactForwarded, _: &mut Context<Self, Self::Reply>) {
-        let why = match m.outcome {
-            Ok(_) => return,
-            // §13 row 53: the chat moved mid-message: once more, on its new owner.
-            Err(super::mesh::ContactFailure::NotOwner) if m.retry => {
-                match self.remote_owner(m.envelope.to).await {
-                    Some(owner) if owner != m.owner => {
-                        self.forward_contact(m.scope, owner, m.envelope, false)
-                            .await;
-                        return;
-                    }
-                    _ => "the chat moved; its new owner is not known here".to_owned(),
-                }
-            }
-            Err(super::mesh::ContactFailure::NotOwner) => {
-                "the chat moved; its new owner is not known here".to_owned()
-            }
-            // Z3-R2: what a contact reads never names a machine of this mesh; the log does.
-            Err(super::mesh::ContactFailure::Offline) => {
-                let owner = engine_name(&m.owner).await;
-                tracing::info!(%owner, "a2a: exported chat's owner offline");
-                super::ContactRefusal::OwnerOffline.to_string()
-            }
-            Err(super::mesh::ContactFailure::Old) => {
-                let owner = engine_name(&m.owner).await;
-                tracing::info!(%owner, "a2a: exported chat's owner needs an update");
-                super::ContactRefusal::OwnerOld.to_string()
-            }
-            Err(super::mesh::ContactFailure::Refused(why)) => {
-                tracing::info!(%why, "a2a: exported chat's owner refused a contact message");
-                "the chat is not taking messages right now".to_owned()
-            }
-        };
-        self.network.contact_waits.remove(&m.envelope.id);
-        self.abort_scope(m.scope, &why).await;
-    }
-}
-
-/// A machine as a contact refusal names it: its mesh name, else a short id.
-async fn engine_name(id: &str) -> String {
-    super::mesh::engine_name(&super::mesh::engine_names().await.1, id)
-}
-
-impl Agents {
-    /// W-40 on the holder: send `envelope` to `owner` off the mailbox; the answer arrives
-    /// as a `contact_deliver` with `reply_to` (or the failure as [`ContactForwarded`]).
-    async fn forward_contact(
-        &mut self,
-        scope: Uuid,
-        owner: String,
-        envelope: super::ContactEnvelope,
-        retry: bool,
-    ) {
-        self.network.contact_waits.insert(envelope.id, scope);
-        let transport = self.transport().await;
-        tokio::spawn(async move {
-            let outcome = match &transport {
-                Some(t) => {
-                    super::mesh::contact_forward(
-                        t.as_ref(),
-                        &replica::PeerId(owner.clone()),
-                        &envelope,
-                    )
-                    .await
-                }
-                None => Err(super::mesh::ContactFailure::Offline),
-            };
-            crate::continuation::notify(ContactForwarded {
-                scope,
-                owner,
-                envelope,
-                retry,
-                outcome,
-            })
-            .await;
-        });
-    }
-
-    /// `contact_deliver` (W-40): on the chat's owner, one contact message queued for its
-    /// own capped turn (W-39); on the holder, the owner's answer to one it forwarded, which
-    /// completes the contact's A2A task. `forwarder`: the engine that sent the call.
-    pub(crate) async fn contact_deliver(
-        &mut self,
-        env: super::ContactEnvelope,
-        forwarder: Option<String>,
-    ) -> Result<PeerReceipt, String> {
-        let row = self
-            .store
-            .session(env.to)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "export unavailable: export session missing".to_owned())?;
-        // The holder side: the owner's answer to a message this engine forwarded.
-        if let Some(reply_to) = env.reply_to {
-            let owner = if row.here {
-                mesh::self_id().unwrap_or_default()
-            } else {
-                row.owner.clone()
-            };
-            if forwarder.as_deref() != Some(owner.as_str()) {
-                return Err("contact_deliver: only the chat's owner answers for it".into());
-            }
-            let Some(scope) = self.network.contact_waits.remove(&reply_to) else {
-                return Err("contact_deliver: no contact message waits for this answer".into());
-            };
-            let text = self.redact(&env.text).into_owned();
-            if let Some(sc) = self.network.scopes.get_mut(&scope) {
-                sc.result = Some(Ok(text));
-                let session = sc.session;
-                self.try_settle(session).await;
-            }
-            return Ok(PeerReceipt {
-                id: env.id,
-                to: format!("session:{}", env.to),
-                state: PeerMessageState::Consumed,
-                reply_to: env.reply_to,
-                reply: None,
-                task_id: None,
-                error: None,
-                answered_by: None,
-            });
-        }
-        // The owner side.
-        if !row.here {
-            return Err(format!("{CONTACT_NOT_OWNER} session:{}", env.to));
-        }
-        if let Some(fwd) = forwarder.as_deref() {
-            // The family forwarder vouches for its contact: it must be the holder.
-            if env.origin.holder != fwd {
-                return Err("contact_deliver: the forwarder does not hold this contact".into());
-            }
-            if mesh::messaging_off(fwd) {
-                let me = mesh::self_name();
-                return Err(format!(
-                    "send_message: {}: {}",
-                    tools::communication::DISABLED,
-                    super::MeshRefusal::Messaging {
-                        from: engine_name(fwd).await,
-                        to: me.clone(),
-                        on: me,
-                    }
-                ));
-            }
-        }
-        match self.chat_paused(env.to).await? {
-            None => {}
-            Some(reason) if reason == PAUSED_MESSAGING => {
-                return Err(super::ContactRefusal::NoAgentMessages.to_string());
-            }
-            Some(reason) => return Err(super::ContactRefusal::Paused { reason }.to_string()),
-        }
-        let generation = self.communication.0.write().contact(env.to).map_err(|_| {
-            format!(
-                "send_message: {}: {}",
-                tools::communication::DISABLED,
-                super::MeshRefusal::Off {
-                    engine: mesh::self_name()
-                }
-            )
-        })?;
-        let body = self.redact(&env.text).into_owned();
-        let sender = format!("contact:{}:{}", env.origin.holder, env.origin.contact);
-        let recipient = format!("session:{}", env.to);
-        let accepted = self
-            .store
-            .accept_exchange_as(
-                env.id,
-                &AcceptExchange {
-                    sender: &sender,
-                    recipient: &recipient,
-                    sender_session: None,
-                    recipient_session: Some(env.to),
-                    request_id: env.request_id.as_deref(),
-                    reply_to: None,
-                    request_scope: None,
-                    generation: generation.revision() as i64,
-                    body: &body,
-                },
-            )
-            .await
-            .map_err(|e| format!("{e:#}"))?;
-        if accepted.state != PeerMessageState::Accepted
-            || !self.network.enqueued.insert(accepted.id)
-        {
-            return Ok(accepted);
-        }
-        // The owner may lower the cap, never raise it above `mutating`. 186 (D11): and the
-        // mode, never raise it: in full a contact's answers travel the holder's return route,
-        // which a turn here cannot reach, so this engine serves it cautiously.
-        let mut env = env;
-        env.origin.cap = env.origin.cap.min(tools::Risk::Mutating);
-        env.origin.mode = super::ShareMode::Cautious;
-        self.network.contact_replies.insert(env.id, env.clone());
-        if let Err(e) = self
-            .store
-            .set_exchange_contact(accepted.id, env.origin.mode, None)
-            .await
-        {
-            tracing::warn!(id = %accepted.id, "contact_deliver: contact mode not recorded: {e:#}");
-        }
-        let record = self
-            .store
-            .peer_record(env.to, accepted.id)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "accepted contact message missing".to_owned())?;
-        if let Err(why) = self.enqueue_peer(record, generation, true, false).await {
-            self.network.contact_replies.remove(&env.id);
-            if let Err(e) = self.store.fail_exchange(accepted.id, &why).await {
-                tracing::warn!(id = %accepted.id, "contact_deliver: fail exchange: {e:#}");
-            }
-            return Err(why);
-        }
-        tracing::info!(session = %env.to, contact = %env.origin.contact, holder = %env.origin.holder, "contact message queued for its own turn");
-        Ok(accepted)
-    }
-
-    /// W-40 on the owner: the turn a forwarded contact message opened ended; its answer
-    /// (only that turn's) goes back to the holder.
-    async fn contact_turn_finished(&mut self, env: super::ContactEnvelope, m: &PeerTurnFinished) {
-        let text = match m.stop_reason.as_str() {
-            // 186 (D8): the owner's Stop says so.
-            "cancelled" => STOPPED_BY_OWNER.to_owned(),
-            "timed_out" | "interrupted" => {
-                format!("the turn in this chat was stopped ({})", m.stop_reason)
-            }
-            "error" => "the turn in this chat stopped with an error".to_owned(),
-            _ => self.redact(&m.text).into_owned(),
-        };
-        let reply = super::ContactEnvelope {
-            id: Uuid::now_v7(),
-            to: env.to,
-            text,
-            origin: env.origin.clone(),
-            reply_to: Some(env.id),
-            request_id: None,
-        };
-        let holder = env.origin.holder.clone();
-        if mesh::self_id().as_deref() == Some(holder.as_str()) {
-            if let Err(e) = self.contact_deliver(reply, Some(holder)).await {
-                tracing::warn!(session = %env.to, "contact answer: {e}");
-            }
-            return;
-        }
-        let transport = self.transport().await;
-        tokio::spawn(async move {
-            let outcome = match &transport {
-                Some(t) => {
-                    super::mesh::contact_forward(t.as_ref(), &replica::PeerId(holder), &reply).await
-                }
-                None => Err(super::mesh::ContactFailure::Offline),
-            };
-            if let Err(e) = outcome {
-                tracing::warn!(session = %reply.to, "contact answer not delivered: {e:?}");
-            }
-        });
     }
 }
 
@@ -5538,14 +5534,11 @@ mod tests {
         assert!(a.network.outbound.is_empty(), "nothing left over HTTP");
     }
 
-    fn bob(export: &str, cap: tools::Risk) -> super::super::ContactOrigin {
+    fn bob(export: &str) -> super::super::ContactOrigin {
         super::super::ContactOrigin {
             contact: "bob".into(),
             machine: "Bob's MacBook".into(),
             export: export.into(),
-            cap,
-            holder: "me".into(),
-            tools: vec!["search_web".into(), "read_url".into()],
             mode: super::super::ShareMode::Cautious,
         }
     }
@@ -5581,7 +5574,7 @@ mod tests {
             export: "research".into(),
             session,
             route: route.clone(),
-            contact: Some(bob("research", tools::Risk::ReadOnly)),
+            contact: Some(bob("research")),
             ask_first,
         };
         let s = A2aScope {
@@ -5658,6 +5651,64 @@ mod tests {
         assert_eq!(now.error.as_deref(), Some("peer:bob: not a contact"));
     }
 
+    /// 183 W-41, §13 row 55, 191: a contact's message into an exported chat that is archived,
+    /// takes no agent messages, or is gone is refused at admission (`admit_principal`, which
+    /// every chat owned on this machine relies on, whichever machine received the message).
+    #[tokio::test]
+    async fn a_contacts_message_into_an_archived_silenced_or_deleted_chat_is_refused() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let principal = format!("peer:{}", binding.id);
+        let (session, _, _) = exported_task(&mut a, &principal).await;
+        let p = A2aPrincipal {
+            binding: binding.id,
+            export: "research".into(),
+            session,
+            route: CancellationToken::new(),
+            contact: Some(bob("research")),
+            ask_first: false,
+        };
+        let refused = |r: Result<Admitted, A2AError>| {
+            let e = r.err().expect("refused");
+            assert_eq!(e.code, a2a_types::error_code::UNSUPPORTED_OPERATION);
+            e.message
+        };
+        a.store.set_archived(session, true).await.unwrap();
+        assert_eq!(
+            refused(a.admit_send(&p, &send("m-archived")).await),
+            super::super::ContactRefusal::Paused {
+                reason: PAUSED_ARCHIVED.into()
+            }
+            .to_string()
+        );
+        a.store.set_archived(session, false).await.unwrap();
+        a.store
+            .set_session_communication(session, Some(false))
+            .await
+            .unwrap();
+        assert_eq!(
+            refused(a.admit_send(&p, &send("m-silenced")).await),
+            super::super::ContactRefusal::NoAgentMessages.to_string()
+        );
+        a.store
+            .set_session_communication(session, None)
+            .await
+            .unwrap();
+        assert!(
+            a.admit_send(&p, &send("m-open")).await.is_ok(),
+            "admitted once neither holds"
+        );
+        a.store.delete_session(session).await.unwrap();
+        assert_eq!(
+            refused(a.admit_send(&p, &send("m-deleted")).await),
+            "export unavailable: export session missing"
+        );
+    }
+
     /// 183 F5: a held first message the owner never answers fails "the owner did not
     /// answer" (and no longer shows as waiting); the session's own work is untouched.
     #[tokio::test]
@@ -5675,7 +5726,7 @@ mod tests {
             export: "research".into(),
             session,
             route: CancellationToken::new(),
-            contact: Some(bob("research", tools::Risk::ReadOnly)),
+            contact: Some(bob("research")),
             ask_first: true,
         };
         let s = A2aScope {
@@ -5750,7 +5801,7 @@ mod tests {
             export: "research".into(),
             session,
             route: CancellationToken::new(),
-            contact: Some(bob("research", tools::Risk::ReadOnly)),
+            contact: Some(bob("research")),
             ask_first: true,
         };
         let held = a.admit_send(&p, &send("m-a")).await.unwrap().task;
@@ -5788,6 +5839,294 @@ mod tests {
             })
             .await;
         assert_eq!(n, 0, "Allow finds nothing to run");
+    }
+
+    /// 191 (D3, D4): the owner mirrors a hold as a `contact_holds` row (its machine cleaned
+    /// and cut); a drain for a release fails the hold "the chat moved; send again", never
+    /// starting it, deletes the row, and fails the chat's waiting full contact task the same
+    /// way (P3 integration: never consumed, nothing carries it), its exchange failed with it;
+    /// a full task whose message its turn consumed completes as a receipt.
+    #[tokio::test]
+    async fn a_drain_fails_a_hold_and_a_waiting_full_task() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        a.communication.0.write().set_network(true, true);
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let principal = format!("peer:{}", binding.id);
+        let (session, _, _) = exported_task(&mut a, &principal).await;
+        a.network.peers.insert(
+            binding.id,
+            RemotePeer {
+                name: "bob".into(),
+                roots: Vec::new(),
+                sender: None,
+                generation: CancellationToken::new(),
+                contact: true,
+                full: vec!["research".into()],
+            },
+        );
+        let origin = super::super::ContactOrigin {
+            machine: format!("33\n3\u{1b}[31m{}", "x".repeat(4096)),
+            ..bob("research")
+        };
+        let p = |ask_first| A2aPrincipal {
+            binding: binding.id,
+            export: "research".into(),
+            session,
+            route: CancellationToken::new(),
+            contact: Some(origin.clone()),
+            ask_first,
+        };
+        let s = A2aScope {
+            principal: &principal,
+            export: "research",
+        };
+        // The intake barrier keeps its turn from consuming the message: it waits, as behind a
+        // busy turn, until after the drain.
+        let barrier = crate::loop_::PEER_INTAKE.write().await;
+        let full = a
+            .admit_send(
+                &p(false),
+                &full_send("m-1", "bob-ctx", &FullWire::default()),
+            )
+            .await
+            .unwrap()
+            .task;
+        assert_eq!(full.status, A2aTaskStatus::Working, "{:?}", full.error);
+        let held = a.admit_send(&p(true), &send("m-2")).await.unwrap().task;
+        assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+        let rows = a.store.contact_holds().await.unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let r = &rows[0];
+        assert_eq!(r.id, held.id, "keyed by the oldest held task");
+        assert_eq!(
+            (r.contact.as_deref(), r.export.as_deref(), r.session.clone()),
+            (Some("bob"), Some("research"), Some(session.to_string()))
+        );
+        assert_eq!(r.owner.as_deref(), Some(a.store.engine()));
+        assert_eq!(
+            (r.waiting, r.preview.as_deref()),
+            (Some(1), Some("do research"))
+        );
+        let machine = r.machine.clone().unwrap();
+        assert!(!machine.chars().any(char::is_control), "{machine:?}");
+        assert_eq!(machine.chars().count(), 64);
+        assert_eq!(
+            r.until_ms.unwrap() - r.since_ms.unwrap(),
+            HOLD_TTL.as_millis() as i64
+        );
+
+        a.network_session_drained(session).await;
+        drop(barrier);
+        let now = a.store.a2a_task(s, &held.id).await.unwrap().unwrap();
+        assert_eq!(now.status, A2aTaskStatus::Failed, "never released");
+        assert_eq!(now.error.as_deref(), Some(HOLD_MOVED));
+        assert!(a.network.held.is_empty());
+        assert!(
+            a.store.contact_holds().await.unwrap().is_empty(),
+            "its row went"
+        );
+        let gone = a.store.a2a_task(s, &full.id).await.unwrap().unwrap();
+        assert_eq!(gone.status, A2aTaskStatus::Failed, "never a receipt");
+        assert_eq!(gone.error.as_deref(), Some(HOLD_MOVED));
+        let receipt = a
+            .store
+            .exchange_receipt(full.dedup_exchange.unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            receipt.state,
+            PeerMessageState::Failed,
+            "not left to a turn"
+        );
+        assert!(a.network.full_inbound.is_empty());
+
+        // A message its turn consumed (linked into the history, which moves) is a receipt.
+        let read = a
+            .admit_send(
+                &p(false),
+                &full_send("m-3", "bob-ctx", &FullWire::default()),
+            )
+            .await
+            .unwrap()
+            .task;
+        let exchange = read.dedup_exchange.unwrap();
+        let mut consumed = false;
+        for _ in 0..200 {
+            let r = a.store.exchange_receipt(exchange).await.unwrap();
+            if r.is_some_and(|r| r.state == PeerMessageState::Consumed) {
+                consumed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(consumed, "its turn consumed it");
+        a.network_session_drained(session).await;
+        let done = a.store.a2a_task(s, &read.id).await.unwrap().unwrap();
+        assert_eq!(done.status, A2aTaskStatus::Completed);
+        assert!(full::task_is_receipt(&snapshot(&done)), "a receipt");
+        assert!(a.network.full_inbound.is_empty());
+    }
+
+    /// 191 (D3): a release checks the owner first. A chat another machine took meanwhile (a
+    /// Write take: no drain) fails the task "the chat moved; send again", and an unreadable
+    /// row fails it too; neither is started, and the row goes.
+    #[tokio::test]
+    async fn a_release_after_the_chat_moved_fails_the_task() {
+        for unreadable in [false, true] {
+            let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+            let binding = a
+                .store
+                .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+                .await
+                .unwrap();
+            let principal = format!("peer:{}", binding.id);
+            let (session, busy, _) = exported_task(&mut a, &principal).await;
+            let p = A2aPrincipal {
+                binding: binding.id,
+                export: "research".into(),
+                session,
+                route: CancellationToken::new(),
+                contact: Some(bob("research")),
+                ask_first: true,
+            };
+            let held = a.admit_send(&p, &send("m-a")).await.unwrap().task;
+            assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+            if unreadable {
+                a.store.break_session_for_test(session).await;
+            } else {
+                a.store.owned_elsewhere(session, "another-engine").await;
+            }
+            let n = a
+                .release_held(ContactRelease {
+                    contact: "bob".into(),
+                    export: Some("research".into()),
+                    allow: true,
+                })
+                .await;
+            assert_eq!(n, 1);
+            let s = A2aScope {
+                principal: &principal,
+                export: "research",
+            };
+            let now = a.store.a2a_task(s, &held.id).await.unwrap().unwrap();
+            assert_eq!(now.status, A2aTaskStatus::Failed, "never started here");
+            let why = now.error.unwrap_or_default();
+            if unreadable {
+                assert_eq!(why, HOLD_UNCHECKED, "a fixed sentence, never the store's");
+            } else {
+                assert_eq!(why, HOLD_MOVED);
+            }
+            let busy = a.store.a2a_task(s, &busy.id).await.unwrap().unwrap();
+            assert_eq!(busy.status, A2aTaskStatus::Working, "nothing else moved");
+            assert!(a.network.held.is_empty());
+            assert!(a.store.contact_holds().await.unwrap().is_empty());
+        }
+    }
+
+    /// A contact `bob` granted `research` in full, its exported chat, and the principal of
+    /// a first message to it (`ask_first`).
+    async fn held_chat(a: &mut Agents) -> (SessionId, String, A2aPrincipal) {
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let principal = format!("peer:{}", binding.id);
+        let (session, _, _) = exported_task(a, &principal).await;
+        let p = A2aPrincipal {
+            binding: binding.id,
+            export: "research".into(),
+            session,
+            route: CancellationToken::new(),
+            contact: Some(bob("research")),
+            ask_first: true,
+        };
+        (session, principal, p)
+    }
+
+    /// 191 (D3, P3 review S4): only a release drain moves the chat. A desk pause drains it
+    /// too and keeps its holds and their rows; a release drain fails them "the chat moved".
+    #[tokio::test]
+    async fn only_a_release_drain_fails_holds() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let (session, principal, p) = held_chat(&mut a).await;
+        let held = a.admit_send(&p, &send("m-a")).await.unwrap().task;
+        assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+        a.session_drained(session, false).await;
+        assert_eq!(a.network.held.len(), 1, "a pause keeps its holds");
+        assert_eq!(a.store.contact_holds().await.unwrap().len(), 1);
+        a.session_drained(session, true).await;
+        let s = A2aScope {
+            principal: &principal,
+            export: "research",
+        };
+        let now = a.store.a2a_task(s, &held.id).await.unwrap().unwrap();
+        assert_eq!(now.status, A2aTaskStatus::Failed);
+        assert_eq!(now.error.as_deref(), Some(HOLD_MOVED));
+        assert!(a.network.held.is_empty());
+        assert!(a.store.contact_holds().await.unwrap().is_empty());
+    }
+
+    /// 191 (P3 review N3): a first message admitted while its chat is mid-release-drain is
+    /// not held (the drain is past: the hold and its row would outlive the chat here): it
+    /// fails "the chat moved; send again" at once.
+    #[tokio::test]
+    async fn a_first_message_into_a_draining_chat_is_not_held() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let (session, _, p) = held_chat(&mut a).await;
+        a.draining_sessions
+            .insert(session, crate::supervisor::transfer::RELEASE);
+        let t = a.admit_send(&p, &send("m-a")).await.unwrap().task;
+        assert_eq!(t.status, A2aTaskStatus::Failed);
+        assert_eq!(t.error.as_deref(), Some(HOLD_MOVED));
+        assert!(a.network.held.is_empty());
+        assert!(a.store.contact_holds().await.unwrap().is_empty());
+    }
+
+    /// 191 (P3 review S1): after a failed write (or a failed boot cleanup) the mirror reads
+    /// this engine's rows back: a stale own row goes at the next mirror, another machine's
+    /// stays, and the hold this engine has is written.
+    #[tokio::test]
+    async fn a_stale_own_hold_row_goes_at_the_next_mirror() {
+        use crate::store::contacts::{Cell, RecordTable, RecordWrite};
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let (_, _, p) = held_chat(&mut a).await;
+        let held = a.admit_send(&p, &send("m-a")).await.unwrap().task;
+        let row = |id: &str, owner: &str| {
+            RecordWrite::new(
+                RecordTable::Holds,
+                id,
+                vec![("owner", Cell::Text(owner.into()))],
+            )
+        };
+        let me = a.store.engine().to_owned();
+        a.store
+            .write_contact_records(&[
+                row("stale", &me),
+                row("theirs", "other-engine"),
+                RecordWrite::delete(RecordTable::Holds, held.id.clone()),
+            ])
+            .await
+            .unwrap();
+        a.network.holds_synced = false;
+        a.held_changed().await;
+        assert!(a.network.holds_synced);
+        let ids: Vec<String> = a
+            .store
+            .contact_holds()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        let mut want = vec![held.id.clone(), "theirs".to_owned()];
+        want.sort();
+        assert_eq!(ids, want);
     }
 
     /// 183 review 1: the held line takes the holder's machine text cut to 64 characters
@@ -5841,7 +6180,7 @@ mod tests {
             export: "research".into(),
             session,
             route: CancellationToken::new(),
-            contact: Some(bob("research", tools::Risk::ReadOnly)),
+            contact: Some(bob("research")),
             ask_first: false,
         };
         for i in 0..70 {
@@ -5872,7 +6211,7 @@ mod tests {
             export: "research".into(),
             session,
             route: CancellationToken::new(),
-            contact: Some(bob("research", tools::Risk::ReadOnly)),
+            contact: Some(bob("research")),
             ask_first: false,
         };
         let s = A2aScope {
@@ -5909,19 +6248,19 @@ mod tests {
     }
 
     /// Z3-R4: an inbox, and any session under it, spawns no subagent at all (a child is no
-    /// contact session of its own, so it would carry the owner's tools back to the contact),
-    /// whatever the export's allowlist says; an owner root still spawns.
+    /// contact session of its own, so it would carry the owner's tools back to the contact);
+    /// an owner root still spawns.
     #[tokio::test]
     async fn a_contact_session_spawns_nothing() {
         let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
-        let mut origin = bob("research", tools::Risk::Mutating);
-        origin.tools.push("spawn_subagent".into());
+        let origin = bob("research");
         let inbox = a
             .handle_inbox(ContactInbox {
                 binding: Uuid::now_v7(),
                 agent: "theuth".into(),
                 origin,
                 export_id: None,
+                home: InboxHome::Here,
                 send: true,
             })
             .await
@@ -6019,8 +6358,9 @@ mod tests {
             .handle_inbox(ContactInbox {
                 binding: Uuid::now_v7(),
                 agent: "theuth".into(),
-                origin: bob("research", tools::Risk::ReadOnly),
+                origin: bob("research"),
                 export_id: None,
+                home: InboxHome::Here,
                 send: true,
             })
             .await
@@ -6238,7 +6578,7 @@ mod tests {
             export: export.into(),
             session,
             route: old.clone(),
-            contact: Some(bob(export, tools::Risk::ReadOnly)),
+            contact: Some(bob(export)),
             ask_first: true,
         };
         let kept = a
@@ -6305,8 +6645,9 @@ mod tests {
             .handle_inbox(ContactInbox {
                 binding: Uuid::now_v7(),
                 agent: "theuth".into(),
-                origin: bob("research", tools::Risk::Mutating),
+                origin: bob("research"),
                 export_id: None,
+                home: InboxHome::Here,
                 send: true,
             })
             .await
@@ -6374,8 +6715,9 @@ mod tests {
             .handle_inbox(ContactInbox {
                 binding: Uuid::now_v7(),
                 agent: "research@c".into(),
-                origin: bob("research", tools::Risk::Mutating),
+                origin: bob("research"),
                 export_id: None,
+                home: InboxHome::Here,
                 send: true,
             })
             .await
@@ -6405,8 +6747,9 @@ mod tests {
         let ask = |export: &str| ContactInbox {
             binding,
             agent: "theuth".into(),
-            origin: bob(export, tools::Risk::ReadOnly),
+            origin: bob(export),
             export_id: None,
+            home: InboxHome::Here,
             send: true,
         };
         let first = a.handle_inbox(ask("research")).await.unwrap();
@@ -6489,8 +6832,9 @@ mod tests {
             .handle_inbox(ContactInbox {
                 binding,
                 agent: "research@sky-mac".into(),
-                origin: bob("research", tools::Risk::Mutating),
+                origin: bob("research"),
                 export_id: None,
+                home: InboxHome::Here,
                 send: true,
             })
             .await
@@ -6511,8 +6855,9 @@ mod tests {
             .handle_inbox(ContactInbox {
                 binding,
                 agent: "theuth".into(),
-                origin: bob("ops", tools::Risk::Mutating),
+                origin: bob("ops"),
                 export_id: None,
+                home: InboxHome::Here,
                 send: true,
             })
             .await
@@ -6524,7 +6869,7 @@ mod tests {
     fn full_bob(export: &str) -> super::super::ContactOrigin {
         super::super::ContactOrigin {
             mode: super::super::ShareMode::Full,
-            ..bob(export, tools::Risk::ReadOnly)
+            ..bob(export)
         }
     }
 
@@ -6678,7 +7023,7 @@ mod tests {
             export: "research".into(),
             session,
             route: CancellationToken::new(),
-            contact: Some(bob("research", tools::Risk::ReadOnly)),
+            contact: Some(bob("research")),
             ask_first: false,
         };
         let task = a
@@ -6742,7 +7087,7 @@ mod tests {
             export: "research".into(),
             session,
             route: CancellationToken::new(),
-            contact: Some(bob("research", tools::Risk::ReadOnly)),
+            contact: Some(bob("research")),
             ask_first,
         };
         // Held first, so it reaches delivery only after the row broke.
@@ -6763,10 +7108,8 @@ mod tests {
         );
         let task = a.start_or_queue(h.task, generation, h.route).await;
         assert_eq!(task.status, A2aTaskStatus::Failed);
-        assert_eq!(
-            task.error.as_deref(),
-            Some("export unavailable: the chat could not be read")
-        );
+        // 191 (D3): `deliver_full`'s strict owner predicate refuses an unreadable row.
+        assert_eq!(task.error.as_deref(), Some(NOT_OWNER_TEXT));
         assert!(a.network.full_inbound.is_empty(), "never delivered full");
     }
 
@@ -7098,8 +7441,8 @@ mod tests {
         assert_eq!(r.err().map(|e| e.code), Some(NOT_OWNER_CODE));
     }
 
-    /// 191 (D3, S4): a contact's message into a chat whose owner is empty (not this engine's,
-    /// and no other engine to take it: no W-40) is `NOT_OWNER` at admission, before anything is
+    /// 191 (D3, S4): a contact's message into a chat whose owner is empty (not this engine's)
+    /// is `NOT_OWNER` at admission, before anything is
     /// accepted; one held before the owner went empty is never delivered full. A drained inbox
     /// still in the insert-only `inboxes` set never short-circuits the check.
     #[tokio::test]
@@ -7119,7 +7462,7 @@ mod tests {
             export: "research".into(),
             session,
             route: CancellationToken::new(),
-            contact: Some(bob("research", tools::Risk::ReadOnly)),
+            contact: Some(bob("research")),
             ask_first,
         };
         // Two held first, so they reach delivery only after the owner changed.
@@ -7179,7 +7522,7 @@ mod tests {
             export: "research".into(),
             session,
             route: CancellationToken::new(),
-            contact: Some(bob("research", tools::Risk::ReadOnly)),
+            contact: Some(bob("research")),
             ask_first,
         };
         let held = a.admit_send(&p(true), &send("m-1")).await.unwrap().task;
@@ -7262,9 +7605,6 @@ mod full_inbox_tests {
             contact: "bob".into(),
             machine: "b".into(),
             export: "research".into(),
-            cap: tools::Risk::ReadOnly,
-            holder: "me".into(),
-            tools: vec!["search_web".into()],
             mode: crate::communication::ShareMode::Full,
         }
     }
@@ -7275,6 +7615,7 @@ mod full_inbox_tests {
             agent: "research@sky-mac".into(),
             origin: full_bob(),
             export_id: None,
+            home: InboxHome::Here,
             send: true,
         })
         .await
@@ -7329,6 +7670,7 @@ mod full_inbox_tests {
                     ..full_bob()
                 },
                 export_id: None,
+                home: InboxHome::Here,
                 send: true,
             })
             .await
@@ -7497,10 +7839,11 @@ mod full_inbox_tests {
     }
 
     /// 191 (S4, P2 review SHOULD 1): at a machine whose inbox's session is no longer its own
-    /// (moved), the router's resolve answers a read (`GetTask`, `CancelTask`: `send` unset)
-    /// TASK_NOT_FOUND and a send `not owner`, before any side effect: no inbox opened, the row
-    /// not marked (its stored ceiling kept though the live one is higher), no limits installed
-    /// (no cap lifted). A read from a contact with no inbox here opens none.
+    /// (moved), the router's resolve answers a send `not owner` and a read (`GetTask`,
+    /// `CancelTask`: `send` unset) with that session, to read this machine's own task rows
+    /// (P3 integration: the tasks its drain failed), before any side effect: no inbox
+    /// opened, the row not marked (its stored ceiling kept though the live one is higher), no
+    /// limits installed (no cap lifted). A read from a contact with no inbox here opens none.
     #[tokio::test]
     async fn a_non_owner_inbox_resolve_changes_nothing() {
         use a2a_types::error_code::TASK_NOT_FOUND;
@@ -7522,6 +7865,7 @@ mod full_inbox_tests {
             agent: "research@sky-mac".into(),
             origin: full_bob(),
             export_id: Some("x-research".into()),
+            home: InboxHome::Here,
             send,
         };
         let key = format!("peer:{}", binding.id);
@@ -7530,13 +7874,14 @@ mod full_inbox_tests {
             export: "research",
         };
         let sessions = a.store.list_sessions().await.unwrap().len();
-        for (what, send, code) in [
-            ("GetTask", false, TASK_NOT_FOUND),
-            ("CancelTask", false, TASK_NOT_FOUND),
-            ("SendMessage", true, NOT_OWNER_CODE),
+        let marker = a.store.contact_inbox(inbox).await.unwrap();
+        for (what, send, want) in [
+            ("GetTask", false, Ok(inbox)),
+            ("CancelTask", false, Ok(inbox)),
+            ("SendMessage", true, Err(NOT_OWNER_CODE)),
         ] {
             let r = a.handle_inbox(ask(binding.id, send)).await;
-            assert_eq!(r.err().map(|e| e.code), Some(code), "{what}");
+            assert_eq!(r.map_err(|e| e.code), want, "{what}");
             assert_eq!(a.store.a2a_context_count_for_test(scope).await, 1, "{what}");
             assert_eq!(a.store.list_sessions().await.unwrap().len(), sessions);
             assert_eq!(
@@ -7549,8 +7894,20 @@ mod full_inbox_tests {
                 "{what}: not marked"
             );
             assert!(
-                !a.caps.contains_key(&inbox) && !a.network.inbox_personas.contains_key(&inbox),
+                !a.caps.contains_key(&inbox)
+                    && !a.network.inbox_personas.contains_key(&inbox)
+                    && !a.network.inbox_limits.contains_key(&inbox),
                 "{what}: no limits installed"
+            );
+            assert_eq!(
+                a.store.contact_inbox(inbox).await.unwrap(),
+                marker,
+                "{what}: marker untouched"
+            );
+            assert_eq!(
+                a.store.owner_strict(inbox).await.unwrap(),
+                crate::store::contacts::Owner::Elsewhere("other-engine".into()),
+                "{what}: still another machine's"
             );
         }
         // A read from a contact with no inbox here: none opened.
@@ -7571,6 +7928,8 @@ mod full_inbox_tests {
         assert_eq!(a.store.list_sessions().await.unwrap().len(), sessions);
         // An unreadable row proves nothing either.
         a.store.break_session_for_test(inbox).await;
+        let r = a.handle_inbox(ask(binding.id, false)).await;
+        assert_eq!(r.err().map(|e| e.code), Some(TASK_NOT_FOUND), "a read");
         let r = a.handle_inbox(ask(binding.id, true)).await;
         assert_eq!(r.err().map(|e| e.code), Some(NOT_OWNER_CODE));
         assert!(!a.caps.contains_key(&inbox));
@@ -7599,13 +7958,12 @@ mod full_inbox_tests {
             "{}",
             refused.message
         );
-        let scope = A2aScope {
-            principal: &format!("peer:{}", binding.id),
-            export: "research",
-        };
-        assert_eq!(
-            a.store.a2a_inbox(scope).await.unwrap(),
-            None,
+        assert!(
+            a.store
+                .inbox_rows(&format!("peer:{}", binding.id), "research")
+                .await
+                .unwrap()
+                .is_empty(),
             "no inbox made"
         );
         assert_eq!(
@@ -7768,5 +8126,302 @@ mod full_inbox_tests {
         assert!(capped(&a, taken));
         a.reinstall_contact_limits(plain).await.unwrap();
         assert!(!a.network.is_inbox(plain) && !a.caps.contains_key(&plain));
+    }
+
+    /// The owner a `not owner` names (its [`OWNER_DETAIL`]).
+    fn named(e: &A2AError) -> Option<String> {
+        e.details.iter().flatten().find_map(|d| {
+            (d.type_url == OWNER_DETAIL)
+                .then(|| d.value.get("owner")?.as_str().map(str::to_owned))
+                .flatten()
+        })
+    }
+
+    /// 191 (D4): an agent export's inbox. With none anywhere only the home opens one (another
+    /// machine answers `not owner` naming the home; a home that left opens none). A marked
+    /// inbox owned here with no local row (it moved here) runs capped until a contact message
+    /// adopts it, then full, at once and at the next actor start. Owned elsewhere, it is `not
+    /// owner` naming its owner. Two sessions carrying one marker are refused, never chosen
+    /// between, and both run capped.
+    #[tokio::test]
+    async fn an_inbox_is_adopted_by_its_marker_and_never_chosen_between() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        a.identity = Some(Arc::new(Roster::research(Some(tools::Risk::Mutating))));
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        route(&mut a, binding.id);
+        let ask = |home: InboxHome| ContactInbox {
+            binding: binding.id,
+            agent: "research@sky-mac".into(),
+            origin: full_bob(),
+            export_id: Some("x1".into()),
+            home,
+            send: true,
+        };
+        let marker = format!("peer:{}|x1", binding.id);
+        let e = a
+            .handle_inbox(ask(InboxHome::At("home-engine".into())))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (e.code, named(&e).as_deref()),
+            (NOT_OWNER_CODE, Some("home-engine")),
+            "not the home: forwarded there"
+        );
+        let e = a.handle_inbox(ask(InboxHome::Left)).await.unwrap_err();
+        assert!(e.message.contains("left the mesh"), "{}", e.message);
+        assert!(a.store.marked_inboxes(&marker).await.unwrap().is_empty());
+
+        // A marked inbox that moved here: no local row, capped from its marker.
+        let moved = SessionId::new();
+        a.store
+            .create_session(moved, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store.set_contact_inbox(moved, &marker).await.unwrap();
+        a.reinstall_contact_limits(moved).await.unwrap();
+        assert!(capped(&a, moved), "capped before the adoption");
+        assert_eq!(
+            a.handle_inbox(ask(InboxHome::At("home-engine".into())))
+                .await
+                .unwrap(),
+            moved,
+            "adopted, though this machine is not the home"
+        );
+        assert_eq!(a.caps.get(&moved), Some(&tools::Risk::Mutating), "full");
+        forget(&mut a, moved);
+        a.reinstall_contact_limits(moved).await.unwrap();
+        assert_eq!(
+            a.caps.get(&moved),
+            Some(&tools::Risk::Mutating),
+            "full at the next actor start"
+        );
+
+        // It moves on: its local row here names a session another machine owns.
+        a.store.owned_elsewhere(moved, "n2-engine").await;
+        let e = a.handle_inbox(ask(InboxHome::Here)).await.unwrap_err();
+        assert_eq!(
+            (e.code, named(&e).as_deref()),
+            (NOT_OWNER_CODE, Some("n2-engine"))
+        );
+        a.store.owned_elsewhere(moved, "").await;
+
+        // A second session carrying the marker: refused, both capped.
+        let extra = SessionId::new();
+        a.store
+            .create_session(extra, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store.set_contact_inbox(extra, &marker).await.unwrap();
+        let e = a.handle_inbox(ask(InboxHome::Here)).await.unwrap_err();
+        assert!(e.message.contains("more than one inbox"), "{}", e.message);
+        assert!(named(&e).is_none());
+        assert!(capped(&a, moved) && capped(&a, extra), "both capped");
+        assert!(a.store.a2a_inbox_full(moved).await.unwrap().is_none());
+    }
+
+    /// 191 (D4): a name-valued marker is never adopted (the home opens a new, marked inbox and
+    /// the named one stays capped). After the P2 review's owner check, a local row whose
+    /// session another machine owns refuses before anything happens here, marked or not (an
+    /// inbox that moved before it was marked included): `not owner` naming that machine.
+    #[tokio::test]
+    async fn a_name_valued_or_unmarked_moved_inbox_is_never_reached_again() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        a.identity = Some(Arc::new(Roster::research(Some(tools::Risk::Mutating))));
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        route(&mut a, binding.id);
+        let ask = |export_id: Option<&str>| ContactInbox {
+            binding: binding.id,
+            agent: "research@sky-mac".into(),
+            origin: full_bob(),
+            export_id: export_id.map(str::to_owned),
+            home: InboxHome::Here,
+            send: true,
+        };
+        let marker = format!("peer:{}|x1", binding.id);
+        // A name-valued marker (an export no longer known by name) on a session owned here.
+        let named_one = SessionId::new();
+        a.store
+            .create_session(named_one, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store
+            .set_contact_inbox(named_one, &format!("peer:{}|research", binding.id))
+            .await
+            .unwrap();
+        // Not the home: nothing to mint, so only an adoption could serve it; there is none.
+        let sessions = a.store.list_sessions().await.unwrap().len();
+        let e = a
+            .handle_inbox(ContactInbox {
+                home: InboxHome::At("home-engine".into()),
+                ..ask(Some("x1"))
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (e.code, named(&e).as_deref()),
+            (NOT_OWNER_CODE, Some("home-engine")),
+            "a name-valued marker is never adopted"
+        );
+        assert!(
+            a.store
+                .a2a_inbox_identity(named_one)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(a.store.list_sessions().await.unwrap().len(), sessions);
+        let fresh = a.handle_inbox(ask(Some("x1"))).await.unwrap();
+        assert_ne!(fresh, named_one, "the home opens a new one");
+        assert_eq!(
+            a.store.contact_inbox(fresh).await.unwrap().as_deref(),
+            Some(marker.as_str())
+        );
+        a.reinstall_contact_limits(named_one).await.unwrap();
+        assert!(capped(&a, named_one), "and it still caps");
+        // Before 191: an unmarked inbox (no export id at its admission) that moved away.
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        a.identity = Some(Arc::new(Roster::research(Some(tools::Risk::Mutating))));
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        route(&mut a, binding.id);
+        let ask = |export_id: Option<&str>| ContactInbox {
+            binding: binding.id,
+            agent: "research@sky-mac".into(),
+            origin: full_bob(),
+            export_id: export_id.map(str::to_owned),
+            home: InboxHome::Here,
+            send: true,
+        };
+        let old = a.handle_inbox(ask(None)).await.unwrap();
+        a.store.owned_elsewhere(old, "n2-engine").await;
+        let sessions = a.store.list_sessions().await.unwrap().len();
+        let e = a.handle_inbox(ask(Some("x1"))).await.unwrap_err();
+        assert_eq!(
+            (e.code, named(&e).as_deref()),
+            (NOT_OWNER_CODE, Some("n2-engine"))
+        );
+        assert_eq!(
+            a.store.list_sessions().await.unwrap().len(),
+            sessions,
+            "none opened"
+        );
+    }
+
+    /// 191 (D4): a marked inbox that moved here is adopted only under the agent's live persona:
+    /// `theuth` before the roster joins (no persona) is refused, nothing is adopted and it
+    /// stays capped.
+    #[tokio::test]
+    async fn a_moved_inbox_is_never_adopted_without_a_live_persona() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        assert!(a.identity.is_none(), "the roster has not joined");
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        route(&mut a, binding.id);
+        let moved = SessionId::new();
+        a.store
+            .create_session(moved, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store
+            .set_contact_inbox(moved, &format!("peer:{}|x1", binding.id))
+            .await
+            .unwrap();
+        a.reinstall_contact_limits(moved).await.unwrap();
+        let e = a
+            .handle_inbox(ContactInbox {
+                binding: binding.id,
+                agent: "theuth@sky-mac".into(),
+                origin: full_bob(),
+                export_id: Some("x1".into()),
+                home: InboxHome::At("home-engine".into()),
+                send: true,
+            })
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("is not available"), "{}", e.message);
+        assert!(a.store.a2a_inbox_identity(moved).await.unwrap().is_none());
+        assert!(capped(&a, moved), "still capped");
+    }
+
+    /// 191 (D4, S4): on a mesh engine an empty owner is unknown, never this engine: a local
+    /// inbox row, or the one session carrying the marker, whose owner reads `''` is a plain
+    /// `not owner` (naming no one), and nothing is opened or adopted. (A lone engine reads its
+    /// own rows as `''`, so this needs a mesh engine.)
+    #[tokio::test]
+    async fn an_empty_owner_on_a_mesh_engine_is_never_here() {
+        let setup = || async {
+            let scratch = crate::TestDir::new("agents");
+            let mut a =
+                crate::supervisor::tests::agents_on(scratch.0.clone(), Some("me-engine"), true)
+                    .await;
+            assert_eq!(a.store.engine(), "me-engine");
+            a.identity = Some(Arc::new(Roster::research(Some(tools::Risk::Mutating))));
+            let binding = a
+                .store
+                .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+                .await
+                .unwrap();
+            route(&mut a, binding.id);
+            (scratch, a, binding.id)
+        };
+        let ask = |binding: Uuid, export_id: Option<&str>| ContactInbox {
+            binding,
+            agent: "research@sky-mac".into(),
+            origin: full_bob(),
+            export_id: export_id.map(str::to_owned),
+            home: InboxHome::Here,
+            send: true,
+        };
+        // The local row.
+        let (_scratch, mut a, binding) = setup().await;
+        let opened = a.handle_inbox(ask(binding, None)).await.unwrap();
+        a.store.owned_elsewhere(opened, "").await;
+        let sessions = a.store.list_sessions().await.unwrap().len();
+        let e = a.handle_inbox(ask(binding, None)).await.unwrap_err();
+        assert_eq!((e.code, named(&e)), (NOT_OWNER_CODE, None), "local row");
+        let read = a
+            .handle_inbox(ContactInbox {
+                send: false,
+                ..ask(binding, None)
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            read.code,
+            a2a_types::error_code::TASK_NOT_FOUND,
+            "a read of an unknown owner's row is refused too"
+        );
+        assert_eq!(a.store.list_sessions().await.unwrap().len(), sessions);
+        // The marker, with no local row.
+        let (_scratch, mut a, binding) = setup().await;
+        let moved = SessionId::new();
+        a.store
+            .create_session(moved, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store
+            .set_contact_inbox(moved, &format!("peer:{binding}|x1"))
+            .await
+            .unwrap();
+        a.store.owned_elsewhere(moved, "").await;
+        let sessions = a.store.list_sessions().await.unwrap().len();
+        let e = a.handle_inbox(ask(binding, Some("x1"))).await.unwrap_err();
+        assert_eq!((e.code, named(&e)), (NOT_OWNER_CODE, None), "marker");
+        assert!(a.store.a2a_inbox_identity(moved).await.unwrap().is_none());
+        assert_eq!(a.store.list_sessions().await.unwrap().len(), sessions);
     }
 }

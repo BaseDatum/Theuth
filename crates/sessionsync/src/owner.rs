@@ -553,11 +553,15 @@ pub async fn move_to(
             "this is {agent}'s desk: a desk stays on the engine that runs its agent, so it cannot move"
         ));
     }
+    // 191 (D4): a contact's inbox moves only when it is marked (its marker set, readable and
+    // naming a live export by id): the marker travels with the row, so its taker runs it capped
+    // until a contact message adopts it. Any other inbox keeps its limits here only.
     if store
         .a2a_inbox_identity(id)
         .await
         .map_err(|e| format!("{e:#}"))?
         .is_some()
+        && !store.inbox_marked(id).await.map_err(|e| format!("{e:#}"))?
     {
         return Err(INBOX_STAYS.to_owned());
     }
@@ -673,10 +677,17 @@ pub(crate) async fn answer_release(
         return Ok(());
     }
     let id: SessionId = session.parse()?;
-    // A contact's inbox keeps its limits here only: refuse before anything drains.
+    // A contact's inbox keeps its limits here only, unless it is marked (191, D4): refuse
+    // before anything drains.
     let refused = match store.a2a_inbox_identity(id).await {
         Ok(None) => None,
-        Ok(Some(_)) => Some(INBOX_STAYS.to_owned()),
+        Ok(Some(_)) => match store.inbox_marked(id).await {
+            Ok(true) => None,
+            Ok(false) => Some(INBOX_STAYS.to_owned()),
+            Err(e) => Some(format!(
+                "could not tell whether this contact's inbox is marked, so it stays here: {e:#}"
+            )),
+        },
         Err(e) => Some(format!(
             "could not tell whether this chat is a contact's inbox, so it stays here: {e:#}"
         )),
@@ -1402,6 +1413,64 @@ mod tests {
             .unwrap();
     }
 
+    /// 191 (D4): `id`'s inbox marker is `peer:bob|<export>`; the exports `x-live` (live) and
+    /// `x-gone` (tombstoned) exist.
+    async fn set_marker(store: &Store, id: SessionId, export: &str) {
+        use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+        store
+            .write_contact_records(&[
+                RecordWrite::new(
+                    RecordTable::Exports,
+                    "x-live",
+                    vec![("name", Cell::Text("ops".into()))],
+                ),
+                RecordWrite::new(
+                    RecordTable::Exports,
+                    "x-gone",
+                    vec![("removed_ms", Cell::Int(1))],
+                ),
+            ])
+            .await
+            .unwrap();
+        store
+            .set_contact_inbox(id, &format!("peer:bob|{export}"))
+            .await
+            .unwrap();
+    }
+
+    /// 191 (D4, the `INBOX_STAYS` lift): a marked inbox (its marker names a live export by
+    /// id) moves; an unmarked one, a name-valued marker and a tombstoned export's stay.
+    #[tokio::test]
+    async fn only_a_marked_contact_inbox_moves() {
+        let a = engine("a").await;
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        mark_inbox(&a.store, id).await;
+        let xeus = PeerId("x".into());
+        let mv = || {
+            move_to(
+                &a.store,
+                id,
+                &xeus,
+                "xeus",
+                std::slice::from_ref(&xeus),
+                &[],
+                async { Ok(Some(("x".to_owned(), 2))) },
+            )
+        };
+        assert_eq!(mv().await, Err(INBOX_STAYS.to_owned()), "unmarked");
+        for export in ["ops", "x-gone", "x-unknown"] {
+            set_marker(&a.store, id, export).await;
+            assert_eq!(mv().await, Err(INBOX_STAYS.to_owned()), "{export}");
+        }
+        set_marker(&a.store, id, "x-live").await;
+        assert_eq!(mv().await, Ok(("x".to_owned(), 2)), "marked: it moves");
+        a.close().await;
+    }
+
     /// A contact's inbox never moves: `move_to` refuses it before asking the
     /// target, and the session stays owned here, unchanged.
     #[tokio::test]
@@ -1438,9 +1507,9 @@ mod tests {
         a.close().await;
     }
 
-    /// "Continue here" (and any take) of a contact's inbox from its reachable
-    /// owner: the owner answers `Refused` before draining, the taker returns
-    /// its words, and neither side changed owner, epoch or log.
+    /// "Continue here" (and any take) of an unmarked contact's inbox from its reachable
+    /// owner: the owner answers `Refused` before draining, the taker returns its words, and
+    /// neither side changed owner, epoch or log. 191 (D4): once marked, it is released.
     #[tokio::test]
     async fn take_of_a_contact_inbox_is_refused_by_its_owner() {
         let (a, b) = (engine("a").await, engine("b").await);
@@ -1489,6 +1558,55 @@ mod tests {
                 "the turn stays open on the owner"
             );
         }
+        // 191 (D4): a name-valued marker (`peer:bob|ops`, the export's name) or an unreadable
+        // one (no `|`) is not a marked inbox: the owner refuses a Write take too, nothing drained.
+        set_marker(&a.store, id, "ops").await;
+        for marker in [None, Some("unreadable")] {
+            if let Some(m) = marker {
+                assert!(a.store.set_contact_inbox(id, m).await.unwrap());
+            }
+            let shipper =
+                crate::ship::Shipper::new(a.store.clone(), None, &SessionsConfig::default());
+            let la2 = la.clone();
+            let served = tokio::spawn(async move {
+                let (peer, stream) = la2.accept(ALPN_SESSIONS).await.unwrap();
+                crate::SessionSync::serve(shipper, peer, stream)
+                    .await
+                    .unwrap();
+            });
+            let e = b
+                .take(Some(lb.clone()), vec![a.id()], vec![])
+                .run(id, TakeReason::Write)
+                .await
+                .unwrap_err();
+            served.await.unwrap();
+            assert_eq!(e, INBOX_STAYS, "{marker:?}");
+            assert_eq!(a.store.owner(id).await.unwrap(), Some(("a".into(), 1)));
+            assert_eq!(
+                a.store.open_turn(id).await.unwrap().map(|(t, _)| t),
+                Some(turn),
+                "{marker:?}: the turn stays open on the owner"
+            );
+        }
+        // 191 (D4): marked, it is released to the taker.
+        set_marker(&a.store, id, "x-live").await;
+        let shipper = crate::ship::Shipper::new(a.store.clone(), None, &SessionsConfig::default());
+        let la2 = la.clone();
+        let served = tokio::spawn(async move {
+            let (peer, stream) = la2.accept(ALPN_SESSIONS).await.unwrap();
+            crate::SessionSync::serve(shipper, peer, stream)
+                .await
+                .unwrap();
+        });
+        b.take(Some(lb.clone()), vec![a.id()], vec![])
+            .run(id, TakeReason::User)
+            .await
+            .unwrap();
+        served.await.unwrap();
+        assert_eq!(
+            b.store.owner(id).await.unwrap().map(|(o, _)| o).as_deref(),
+            Some("b")
+        );
         a.close().await;
         b.close().await;
     }

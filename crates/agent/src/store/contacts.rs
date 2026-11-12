@@ -1,10 +1,10 @@
 //! 191 (D2): the mesh-wide contact records — `contacts`, `contact_endpoints`, `contact_grants`
-//! and `a2a_exports` (plus, from P2, `contact_rosters` and `contact_roster_heads`, and
-//! `contact_threads`) — ride the record replica beside `projects`. Only the a2a plugin
-//! interprets them (its reconcile stages them row by row and quarantines a bad one); this
-//! module reads them whole and writes single columns, so a write never rolls back a column
-//! another machine changed since the read. `contact_addrs` and `contact_roster_local` are
-//! local. `sessions.contact_inbox` (D4) is a session-log column.
+//! and `a2a_exports` (plus, from P2, `contact_rosters` and `contact_roster_heads`, from P3
+//! `contact_holds`, and `contact_threads`) — ride the record replica beside `projects`. Only
+//! the a2a plugin interprets them (its reconcile stages them row by row and quarantines a bad
+//! one); this module reads them whole and writes single columns, so a write never rolls back
+//! a column another machine changed since the read. `contact_addrs` and
+//! `contact_roster_local` are local. `sessions.contact_inbox` (D4) is a session-log column.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
@@ -15,7 +15,7 @@ use sqlx::FromRow;
 use super::Store;
 
 /// The replicated 191 tables, attached by [`Store::replicate_records`].
-pub const RECORD_TABLES: [&str; 7] = [
+pub const RECORD_TABLES: [&str; 8] = [
     "contacts",
     "contact_endpoints",
     "contact_grants",
@@ -23,7 +23,19 @@ pub const RECORD_TABLES: [&str; 7] = [
     "contact_threads",
     "contact_rosters",
     "contact_roster_heads",
+    "contact_holds",
 ];
+
+/// 191 (D3): whose a session is, as the contact paths read it ([`Store::owner_strict`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Owner {
+    /// This engine.
+    Here,
+    /// Another machine of the mesh: its engine id.
+    Elsewhere(String),
+    /// Neither: no row here, or an empty owner on a mesh engine.
+    Unknown,
+}
 
 /// One `contacts` row. Every column may be NULL: a replicated row can arrive a column at a
 /// time, and validity is the reconcile's.
@@ -156,6 +168,33 @@ pub struct LocalRow {
     pub history: String,
 }
 
+/// 191 (D4, P3): one `contact_holds` row: `id` = the oldest held task's id of one (contact,
+/// export) on `owner`. Another machine's row is data: every column may be NULL or hostile,
+/// and the reader cleans and cuts it.
+#[allow(missing_docs)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, FromRow)]
+pub struct HoldRow {
+    pub id: String,
+    /// The contact's alias.
+    pub contact: Option<String>,
+    /// The contact's machine, from its card.
+    pub machine: Option<String>,
+    /// The export's name.
+    pub export: Option<String>,
+    pub session: Option<String>,
+    /// The engine id that holds the tasks.
+    pub owner: Option<String>,
+    pub since_ms: Option<i64>,
+    pub waiting: Option<i64>,
+    pub preview: Option<String>,
+    /// When the newest held task expires (ms since epoch).
+    pub until_ms: Option<i64>,
+    /// Read only, never written: `session`'s row here, by its `contact_inbox` marker
+    /// (`<principal>|<export id>`): `None` when no such row is here, `""` for a session that
+    /// is no inbox. The reader checks an agent export's row names that export's inbox.
+    pub inbox: Option<String>,
+}
+
 /// Everything the a2a reconcile stages, read in one snapshot. Its content (never a row's
 /// `hlc`, which is a max over columns and misses a remote column write older than the
 /// row's newest) is what [`Records::content_hash`] covers.
@@ -225,6 +264,8 @@ pub enum RecordTable {
     Heads,
     /// `contact_roster_local` (P2, local): keyed by `record`.
     Local,
+    /// `contact_holds` (P3): the owner's own rows only.
+    Holds,
 }
 
 impl RecordTable {
@@ -237,6 +278,7 @@ impl RecordTable {
             Self::Rosters => "contact_rosters",
             Self::Heads => "contact_roster_heads",
             Self::Local => "contact_roster_local",
+            Self::Holds => "contact_holds",
         }
     }
 
@@ -277,6 +319,10 @@ impl RecordTable {
                 "at_ms",
             ],
             Self::Local => &["chain", "version", "hash", "roster", "history"],
+            Self::Holds => &[
+                "contact", "machine", "export", "session", "owner", "since_ms", "waiting",
+                "preview", "until_ms",
+            ],
         }
     }
 }
@@ -449,16 +495,115 @@ impl Store {
         Ok(())
     }
 
-    /// 191 (D3, S4): `session`'s row exists and reads here and this engine owns it, strictly:
-    /// an unknown row, another engine's, or (on a mesh engine) an empty owner is not ours,
-    /// unlike [`super::Store`]'s `here`, which reads empty as local. A lone engine (no mesh
-    /// id: `me` is `""`) owns its own `''` rows. An unreadable row is `Err`. The predicate of
-    /// every contact path.
-    pub async fn owned_here(&self, session: SessionId) -> anyhow::Result<bool> {
-        Ok(self
-            .session(session)
+    /// 191 (D3, S4): whose `session` is, strictly: this engine's when its row exists and reads
+    /// here and this engine owns it; another machine's when the row names one; else unknown
+    /// (no row, or an empty owner on a mesh engine), unlike [`super::Store`]'s `here`, which
+    /// reads empty as local. A lone engine (no mesh id: `me` is `""`) owns its own `''` rows.
+    /// An unreadable row is `Err`. The predicate of every contact path.
+    pub async fn owner_strict(&self, session: SessionId) -> anyhow::Result<Owner> {
+        Ok(match self.session(session).await? {
+            Some(row) if row.owner == *self.me => Owner::Here,
+            Some(row) if !row.owner.is_empty() => Owner::Elsewhere(row.owner),
+            _ => Owner::Unknown,
+        })
+    }
+
+    /// 191 (D4): the local inbox rows of `(principal, export)` (`a2a_contexts`): each session
+    /// once, oldest first, with its owner and its marker.
+    pub async fn inbox_rows(
+        &self,
+        principal: &str,
+        export: &str,
+    ) -> anyhow::Result<Vec<(SessionId, String, Option<String>)>> {
+        let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT c.session, s.owner, s.contact_inbox FROM a2a_contexts c \
+             JOIN sessions s ON s.id = c.session WHERE c.principal = ? AND c.export = ? \
+             GROUP BY c.session ORDER BY MIN(c.created_at), c.session",
+        )
+        .bind(principal)
+        .bind(export)
+        .fetch_all(&self.read)
+        .await?;
+        rows.into_iter()
+            .map(|(id, owner, marker)| {
+                let id = id
+                    .parse()
+                    .map_err(|e| anyhow::anyhow!("a2a_contexts.session {id}: {e}"))?;
+                Ok((id, owner, marker))
+            })
+            .collect()
+    }
+
+    /// 191 (D4): the sessions whose inbox marker is `marker`, with their owners, oldest first.
+    pub async fn marked_inboxes(&self, marker: &str) -> anyhow::Result<Vec<(SessionId, String)>> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, owner FROM sessions WHERE contact_inbox = ? ORDER BY created_at, id",
+        )
+        .bind(marker)
+        .fetch_all(&self.read)
+        .await?;
+        rows.into_iter()
+            .map(|(id, owner)| {
+                let id = id
+                    .parse()
+                    .map_err(|e| anyhow::anyhow!("sessions.id {id}: {e}"))?;
+                Ok((id, owner))
+            })
+            .collect()
+    }
+
+    /// 191 (D4): `session` is a marked inbox: its marker (`<principal>|<export id>`) is set,
+    /// reads, and names a live `a2a_exports` row by id. A name-valued marker, one naming a
+    /// tombstoned or unknown export, and no marker are not.
+    pub async fn inbox_marked(&self, session: SessionId) -> anyhow::Result<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM sessions s JOIN a2a_exports x \
+             ON x.id = substr(s.contact_inbox, instr(s.contact_inbox, '|') + 1) \
+             WHERE s.id = ? AND instr(s.contact_inbox, '|') > 0 AND x.removed_ms IS NULL)",
+        )
+        .bind(session.to_string())
+        .fetch_one(&self.read)
+        .await?)
+    }
+
+    /// 191 (D4, P3): every `contact_holds` row (every machine's), by id, with its session's
+    /// `contact_inbox` here. Replicated cells keep whatever type another machine wrote, so
+    /// the cells are typed in SQL: a cell of another type reads NULL (the reader drops the
+    /// row), never failing the read of every other row; text is cut to 256 characters, a
+    /// row whose id is not text of at most 256 is skipped, and at most 512 rows are read
+    /// (one per held (contact, export) on each machine).
+    pub async fn contact_holds(&self) -> anyhow::Result<Vec<HoldRow>> {
+        Ok(sqlx::query_as(
+            "SELECT h.id, \
+             CASE WHEN typeof(h.contact) = 'text' THEN substr(h.contact, 1, 256) END AS contact, \
+             CASE WHEN typeof(h.machine) = 'text' THEN substr(h.machine, 1, 256) END AS machine, \
+             CASE WHEN typeof(h.export) = 'text' THEN substr(h.export, 1, 256) END AS export, \
+             CASE WHEN typeof(h.session) = 'text' THEN substr(h.session, 1, 256) END AS session, \
+             CASE WHEN typeof(h.owner) = 'text' THEN substr(h.owner, 1, 256) END AS owner, \
+             CASE WHEN typeof(h.since_ms) = 'integer' THEN h.since_ms END AS since_ms, \
+             CASE WHEN typeof(h.waiting) = 'integer' THEN h.waiting END AS waiting, \
+             CASE WHEN typeof(h.preview) = 'text' THEN substr(h.preview, 1, 256) END AS preview, \
+             CASE WHEN typeof(h.until_ms) = 'integer' THEN h.until_ms END AS until_ms, \
+             CASE WHEN s.id IS NULL THEN NULL WHEN typeof(s.contact_inbox) = 'text' \
+             THEN substr(s.contact_inbox, 1, 256) ELSE '' END AS inbox \
+             FROM contact_holds h LEFT JOIN sessions s ON s.id = h.session \
+             WHERE typeof(h.id) = 'text' AND length(h.id) <= 256 ORDER BY h.id LIMIT 512",
+        )
+        .fetch_all(&self.read)
+        .await?)
+    }
+
+    /// 191 (D4, P3): at boot, this engine's own `contact_holds` rows go: its holds lived in
+    /// memory and were failed by the restart. Returns how many.
+    pub async fn clear_own_contact_holds(&self) -> anyhow::Result<u64> {
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query("DELETE FROM contact_holds WHERE owner = ?")
+            .bind(&*self.me)
+            .execute(&mut *tx)
             .await?
-            .is_some_and(|row| row.owner == *self.me))
+            .rows_affected();
+        tx.commit().await?;
+        Ok(n)
     }
 
     /// Tests: `session` is owned by `owner`, as the session log applies another machine's
@@ -658,9 +803,9 @@ mod tests {
     }
 
     /// 191 (D3, S4): the contact paths' owner predicate is strict: this engine's row is ours;
-    /// an unknown row, an empty owner on a mesh engine (where `here` reads it as local) and
-    /// another engine's are not, and an unreadable row is an error (refused). A lone engine
-    /// (no mesh id) owns its own `''` rows.
+    /// an unknown row and an empty owner on a mesh engine (where `here` reads it as local) are
+    /// unknown, another engine's names it, and an unreadable row is an error (refused). A lone
+    /// engine (no mesh id) owns its own `''` rows.
     #[tokio::test]
     async fn only_a_row_this_engine_owns_is_owned_here() {
         let scratch = crate::TestDir::new("contacts");
@@ -675,30 +820,94 @@ mod tests {
             .create_session(id, "m", None, None, None)
             .await
             .unwrap();
-        assert!(store.owned_here(id).await.unwrap());
-        assert!(
-            !store.owned_here(SessionId::new()).await.unwrap(),
-            "unknown"
+        assert_eq!(store.owner_strict(id).await.unwrap(), Owner::Here);
+        assert_eq!(
+            store.owner_strict(SessionId::new()).await.unwrap(),
+            Owner::Unknown
         );
         store.owned_elsewhere(id, "").await;
         assert!(
             store.session(id).await.unwrap().unwrap().here,
             "`here` reads it as local"
         );
-        assert!(
-            !store.owned_here(id).await.unwrap(),
+        assert_eq!(
+            store.owner_strict(id).await.unwrap(),
+            Owner::Unknown,
             "empty, on a mesh engine"
         );
         store.owned_elsewhere(id, "other-engine").await;
-        assert!(!store.owned_here(id).await.unwrap(), "another engine's");
+        assert_eq!(
+            store.owner_strict(id).await.unwrap(),
+            Owner::Elsewhere("other-engine".into())
+        );
         store.owned_elsewhere(id, "me-engine").await;
         store.break_session_for_test(id).await;
-        assert!(store.owned_here(id).await.is_err(), "unreadable");
+        assert!(store.owner_strict(id).await.is_err(), "unreadable");
         // A lone engine: its rows are `''` and so is its id.
         let (lone, mine, _dir) = fresh().await;
-        assert!(lone.owned_here(mine).await.unwrap());
+        assert_eq!(lone.owner_strict(mine).await.unwrap(), Owner::Here);
         lone.owned_elsewhere(mine, "other-engine").await;
-        assert!(!lone.owned_here(mine).await.unwrap());
+        assert_eq!(
+            lone.owner_strict(mine).await.unwrap(),
+            Owner::Elsewhere("other-engine".into())
+        );
+    }
+
+    /// 191 (D4): an inbox is marked only by a marker naming a live export by id: a
+    /// name-valued marker, a tombstoned export's and no marker are not; the marker lookup finds
+    /// every session carrying it.
+    #[tokio::test]
+    async fn an_inbox_is_marked_only_by_a_live_export_id() {
+        let (store, mine, _dir) = fresh().await;
+        let other = SessionId::new();
+        store
+            .create_session(other, "m", None, None, None)
+            .await
+            .unwrap();
+        assert!(!store.inbox_marked(mine).await.unwrap(), "no marker");
+        store
+            .write_contact_records(&[
+                RecordWrite::new(
+                    RecordTable::Exports,
+                    "x-live",
+                    vec![("name", Cell::Text("research".into()))],
+                ),
+                RecordWrite::new(
+                    RecordTable::Exports,
+                    "x-gone",
+                    vec![("removed_ms", Cell::Int(1))],
+                ),
+            ])
+            .await
+            .unwrap();
+        for (marker, marked) in [
+            ("peer:b|research", false),
+            ("peer:b|x-gone", false),
+            ("peer:b|x-unknown", false),
+            ("peer:b|x-live", true),
+        ] {
+            store.set_contact_inbox(mine, marker).await.unwrap();
+            assert_eq!(store.inbox_marked(mine).await.unwrap(), marked, "{marker}");
+        }
+        store
+            .set_contact_inbox(other, "peer:b|x-live")
+            .await
+            .unwrap();
+        let found = store.marked_inboxes("peer:b|x-live").await.unwrap();
+        assert_eq!(
+            found
+                .iter()
+                .map(|(s, _)| *s)
+                .collect::<std::collections::HashSet<_>>(),
+            std::collections::HashSet::from([mine, other])
+        );
+        assert!(
+            store
+                .marked_inboxes("peer:b|research")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// 191 (D4): every local inbox of a session this machine owns gets
@@ -763,6 +972,139 @@ mod tests {
             store.backfill_contact_inboxes(&ids).await.unwrap(),
             0,
             "marked once"
+        );
+    }
+
+    /// `contact_holds` row `id` with every column `owner` mirrors.
+    fn hold(id: &str, owner: &str) -> RecordWrite {
+        RecordWrite::new(
+            RecordTable::Holds,
+            id,
+            vec![
+                ("contact", Cell::Text("bob".into())),
+                ("export", Cell::Text("research".into())),
+                ("owner", Cell::Text(owner.into())),
+                ("since_ms", Cell::Int(1)),
+                ("waiting", Cell::Int(1)),
+                ("until_ms", Cell::Int(2)),
+            ],
+        )
+    }
+
+    /// 191 (P3 review M1): replicated cells keep the type another machine wrote. A row with
+    /// text in an integer column or a blob in a text column reads those cells NULL (the
+    /// reader then drops it) and never fails the read of the good rows; a row whose id is
+    /// not text is skipped; long text is cut to 256 characters; at most 512 rows are read.
+    #[tokio::test]
+    async fn a_bad_typed_hold_row_never_hides_the_others() {
+        let (store, _, _dir) = fresh().await;
+        store
+            .write_contact_records(&[hold("good", "n2")])
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO contact_holds (id, contact, owner, since_ms, waiting, until_ms, preview) \
+             VALUES ('bad', x'00ff', 'n2', 'soon', 'many', 'never', ?)",
+        )
+        .bind("p".repeat(100_000))
+        .execute(&store.write)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO contact_holds (id, contact) VALUES (x'07', 'bob')")
+            .execute(&store.write)
+            .await
+            .unwrap();
+        let rows = store.contact_holds().await.unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["bad", "good"],
+            "the blob id is skipped"
+        );
+        let bad = &rows[0];
+        assert_eq!(
+            (
+                bad.contact.as_deref(),
+                bad.since_ms,
+                bad.waiting,
+                bad.until_ms
+            ),
+            (None, None, None, None)
+        );
+        assert_eq!(bad.owner.as_deref(), Some("n2"));
+        assert_eq!(bad.preview.as_deref().map(str::len), Some(256));
+        assert_eq!(rows[1].until_ms, Some(2));
+        let many: Vec<RecordWrite> = (0..600).map(|i| hold(&format!("h{i:03}"), "n2")).collect();
+        store.write_contact_records(&many).await.unwrap();
+        assert_eq!(store.contact_holds().await.unwrap().len(), 512);
+    }
+
+    /// 191 (P3 review M2): at boot only this engine's own hold rows go; another machine's
+    /// stay (it still holds them).
+    #[tokio::test]
+    async fn boot_clears_only_this_engines_hold_rows() {
+        let scratch = crate::TestDir::new("contacts");
+        let store = Store::open(
+            &scratch.0.join("sessions.sqlite"),
+            Some(mesh::EngineId("me-engine".into())),
+        )
+        .await
+        .unwrap();
+        store
+            .write_contact_records(&[
+                hold("a", "me-engine"),
+                hold("b", "other-engine"),
+                hold("c", "me-engine"),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(store.clear_own_contact_holds().await.unwrap(), 2);
+        let left: Vec<String> = store
+            .contact_holds()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(left, ["b"]);
+    }
+
+    /// 191 (P3 review S4): `contact_holds` rides the real record replica: a row written on
+    /// one machine is captured and applied on another, and its deletion follows.
+    #[tokio::test]
+    async fn a_hold_row_and_its_deletion_ride_the_record_replica() {
+        let open = |name: &'static str| async move {
+            let dir = crate::TestDir::new(name);
+            let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+                .await
+                .unwrap();
+            let engine = replica::Engine::open(&dir.0.join("replica.sqlite"))
+                .await
+                .unwrap();
+            let handle = engine.attach(&store.write, &RECORD_TABLES).await.unwrap();
+            (store, engine, handle, dir)
+        };
+        let (a, ea, ha, _da) = open("holds-rep-a").await;
+        let (b, eb, _hb, _db) = open("holds-rep-b").await;
+        let mut feed = ea.subscribe();
+        a.write_contact_records(&[hold("t-1", "n2")]).await.unwrap();
+        ha.flush().await.unwrap();
+        while let Ok(batch) = feed.try_recv() {
+            eb.apply(&batch).await.unwrap();
+        }
+        let on_b = b.contact_holds().await.unwrap();
+        assert_eq!(on_b, a.contact_holds().await.unwrap());
+        assert_eq!(on_b.len(), 1);
+        assert_eq!(on_b[0].owner.as_deref(), Some("n2"));
+        a.write_contact_records(&[RecordWrite::delete(RecordTable::Holds, "t-1")])
+            .await
+            .unwrap();
+        ha.flush().await.unwrap();
+        while let Ok(batch) = feed.try_recv() {
+            eb.apply(&batch).await.unwrap();
+        }
+        assert!(
+            b.contact_holds().await.unwrap().is_empty(),
+            "deleted there too"
         );
     }
 }

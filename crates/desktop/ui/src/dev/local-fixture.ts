@@ -73,7 +73,6 @@ const contact = (c: Partial<Contact> & Pick<Contact, 'name' | 'id'>): Contact =>
   endpoint: 'e7ac7242a74ef96fc15d964ef848e564f6971cf2bc08b08a94308c4a6e020825',
   fingerprint: '46WH EQVH J34W 7QK5 SZHP',
   path: 'offline',
-  cap: 'read_only',
   exports: [],
   first_contact: {},
   blocked: false,

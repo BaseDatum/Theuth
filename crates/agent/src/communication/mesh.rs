@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use replica::{ALPN_RPC, PeerId, Transport};
 use runtime::SessionId;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
@@ -97,11 +98,13 @@ pub async fn forward(
     session: SessionId,
     envelope: &PeerEnvelope,
 ) -> Result<PeerReceipt, Failure> {
-    let rp = call(
+    let rp = call::<PeerReceipt>(
         transport,
         owner,
         METHOD,
         serde_json::json!([session, envelope]),
+        TIMEOUT,
+        MAX_LINE,
     )
     .await?;
     let unreachable = |why: String| Failure::Unreachable {
@@ -118,57 +121,90 @@ pub async fn forward(
     }
 }
 
-/// 183 W-40: `contact_deliver` on the exported chat's owner (`rpc` serves it).
-pub const CONTACT_METHOD: &str = "contact_deliver";
-/// JSON-RPC "method not found": an owner too old for `contact_deliver` (§13 row 52).
-pub const METHOD_NOT_FOUND: i32 = -32601;
 /// `rpc::forward::NOT_OWNER`: the chat moved (§13 row 53).
 pub const NOT_OWNER: i32 = -32013;
 
-/// 183 W-40: why a `contact_deliver` yielded no receipt.
+/// 191 (D3): the mesh-internal RPC that carries a contact's unary call to the machine that
+/// owns its session (`rpc` serves it; `a2a::contacts::forward` is both ends).
+pub const A2A_FORWARD: &str = "a2a_forward";
+/// 191 (D3): a forward ends after this long, below the contact's own 30 s `CALL_TIMEOUT`, so
+/// the contact hears the receiving machine's answer first.
+pub const FORWARD_TIMEOUT: Duration = Duration::from_secs(10);
+/// 191 (D3): the longest answer body a forward carries, where the contact's own client caps
+/// it (`a2a_client::MAX_RESPONSE_BYTES`); a larger one fails, never cut.
+pub const FORWARD_BODY_MAX: usize = 2 * 1024 * 1024;
+/// A JSON string escapes a byte to at most six (`\u00XX`): any body up to
+/// [`FORWARD_BODY_MAX`] fits on the answer line.
+const FORWARD_LINE_MAX: usize = 6 * FORWARD_BODY_MAX + 64 * 1024;
+
+/// 191 (D3): what the owner's router answered a forwarded call: its HTTP status and body.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct A2aAnswer {
+    /// HTTP status (a JSON-RPC error rides inside a 200).
+    pub status: u16,
+    /// The body as the router wrote it (JSON-RPC text, or empty).
+    pub body: String,
+}
+
+/// 191 (D3): why a forward yielded no answer of the owner's router.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ContactFailure {
-    /// Not connected, no answer: "the chat is on …, which is offline".
-    Offline,
-    /// `-32601`: "… needs an update".
-    Old,
-    /// `-32013`: the chat moved; retry once on the new owner.
+pub enum ForwardFailure {
+    /// Not connected, a stream error, the deadline, a malformed line, or the owner said
+    /// `OWNER_UNREACHABLE` (not `contacts_ready`): "the chat's machine is offline".
+    Offline(String),
+    /// `NOT_OWNER`: the session is not the owner's either (it moved meanwhile).
     NotOwner,
-    /// The owner's intake refused it (its policy, the chat paused): its message.
+    /// Any other refusal, in the owner's words.
     Refused(String),
 }
 
-/// One `contact_deliver(envelope)` to `owner` over `theuth/rpc/1`, within [`TIMEOUT`].
-pub async fn contact_forward(
+/// 191 (D3): `caller`'s request (`POST path` with `body`) to `owner` over `theuth/rpc/1`,
+/// within [`FORWARD_TIMEOUT`].
+pub async fn a2a_forward(
     transport: &dyn Transport,
     owner: &PeerId,
-    envelope: &super::ContactEnvelope,
-) -> Result<PeerReceipt, ContactFailure> {
-    let rp = call(
+    caller: &str,
+    path: &str,
+    body: &str,
+) -> Result<A2aAnswer, ForwardFailure> {
+    let rp = call::<A2aAnswer>(
         transport,
         owner,
-        CONTACT_METHOD,
-        serde_json::json!([envelope]),
+        A2A_FORWARD,
+        serde_json::json!([caller, path, body]),
+        FORWARD_TIMEOUT,
+        FORWARD_LINE_MAX,
     )
     .await
-    .map_err(|_| ContactFailure::Offline)?;
+    .map_err(|f| match f {
+        Failure::Unreachable { why, .. } => ForwardFailure::Offline(why),
+        Failure::Refused(why) => ForwardFailure::Refused(why),
+    })?;
     match (rp.result, rp.error) {
-        (Some(receipt), _) => Ok(receipt),
-        (None, Some(e)) if e.code == METHOD_NOT_FOUND => Err(ContactFailure::Old),
-        (None, Some(e)) if e.code == NOT_OWNER => Err(ContactFailure::NotOwner),
-        (None, Some(e)) if e.code == OWNER_UNREACHABLE => Err(ContactFailure::Offline),
-        (None, Some(e)) => Err(ContactFailure::Refused(e.message)),
-        (None, None) => Err(ContactFailure::Offline),
+        (Some(a), _) if a.body.len() > FORWARD_BODY_MAX => Err(ForwardFailure::Refused(
+            "the answer is larger than 2 MiB".into(),
+        )),
+        (Some(a), _) => Ok(a),
+        (None, Some(e)) if e.code == NOT_OWNER => Err(ForwardFailure::NotOwner),
+        (None, Some(e)) if e.code == OWNER_UNREACHABLE => Err(ForwardFailure::Offline(e.message)),
+        (None, Some(e)) => Err(ForwardFailure::Refused(e.message)),
+        (None, None) => Err(ForwardFailure::Offline(
+            "malformed reply: neither result nor error".into(),
+        )),
     }
 }
 
-/// One request line to `owner` and its response line.
-async fn call(
+/// One request line to `owner` and its response line (at most `max_line` bytes), within
+/// `wait`.
+async fn call<T: DeserializeOwned>(
     transport: &dyn Transport,
     owner: &PeerId,
     method: &str,
     params: serde_json::Value,
-) -> Result<Response, Failure> {
+    wait: Duration,
+    max_line: usize,
+) -> Result<Response<T>, Failure> {
     let unreachable = |why: String| Failure::Unreachable {
         owner: owner.0.clone(),
         why,
@@ -194,7 +230,7 @@ async fn call(
         write.flush().await.map_err(|e| e.to_string())?;
         let mut reply = String::new();
         BufReader::with_capacity(16 * 1024, read)
-            .take(MAX_LINE as u64)
+            .take(max_line as u64)
             .read_line(&mut reply)
             .await
             .map_err(|e| e.to_string())?;
@@ -203,14 +239,11 @@ async fn call(
         }
         Ok(reply)
     };
-    let reply = match tokio::time::timeout(TIMEOUT, exchange).await {
+    let reply = match tokio::time::timeout(wait, exchange).await {
         Ok(Ok(r)) => r,
         Ok(Err(why)) => return Err(unreachable(why)),
         Err(_) => {
-            return Err(unreachable(format!(
-                "no answer within {}s",
-                TIMEOUT.as_secs()
-            )));
+            return Err(unreachable(format!("no answer within {}s", wait.as_secs())));
         }
     };
     serde_json::from_str(reply.trim_end()).map_err(|e| unreachable(format!("malformed reply: {e}")))
@@ -218,9 +251,10 @@ async fn call(
 
 /// The response line, either half.
 #[derive(Deserialize)]
-struct Response {
+#[serde(bound = "T: DeserializeOwned")]
+struct Response<T> {
     #[serde(default)]
-    result: Option<PeerReceipt>,
+    result: Option<T>,
     #[serde(default)]
     error: Option<RpcError>,
 }

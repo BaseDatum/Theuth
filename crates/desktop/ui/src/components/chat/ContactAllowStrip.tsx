@@ -14,7 +14,7 @@ function Row({ w, detail }: { w: FirstWaiting; detail: boolean }) {
         <span className="min-w-0 flex-1 basis-48 truncate text-fg-secondary" title={waitingLine(w)}>
           {who(w)} wants to message this chat{waitingCount(w)}
         </span>
-        <FirstButtons contact={w.contact} exp={w.export} />
+        <FirstButtons contact={w.contact} exp={w.export} elsewhere={w.elsewhere} />
       </div>
       {detail && w.preview && <p className="line-clamp-3 break-words text-xs text-fg-secondary">“{w.preview}”</p>}
     </div>
@@ -23,7 +23,8 @@ function Row({ w, detail }: { w: FirstWaiting; detail: boolean }) {
 
 /**
  * 183 Phase 3: a contact's first message to this chat waits for its owner — a strip above the composer like the kernels',
- * never a transcript card. Disappears once answered (`A2aChanged` refetches `contact_first_waiting`).
+ * never a transcript card. Disappears once answered (`A2aChanged` refetches `contact_first_waiting`). 191: the list covers every
+ * machine of the mesh, and `A2aChanged` also fires when another machine's hold row arrives or goes.
  */
 export function ContactAllowStrip({ session, embedded = false }: { session: string; embedded?: boolean }) {
   const held = (useFirstWaiting().data ?? []).filter((w) => w.session === session)

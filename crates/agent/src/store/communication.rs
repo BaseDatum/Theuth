@@ -2087,24 +2087,6 @@ impl Store {
         context_in(&mut conn, scope, id).await
     }
 
-    /// 183 §7.6: the inbox session of `scope` (a contact and an agent export): the session
-    /// of its oldest context whose session still exists; `None` before the first.
-    pub async fn a2a_inbox(&self, scope: A2aScope<'_>) -> anyhow::Result<Option<SessionId>> {
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT c.session FROM a2a_contexts c JOIN sessions s ON s.id = c.session \
-             WHERE c.principal = ? AND c.export = ? ORDER BY c.created_at, c.id LIMIT 1",
-        )
-        .bind(scope.principal)
-        .bind(scope.export)
-        .fetch_optional(&self.read)
-        .await?;
-        row.map(|(s,)| {
-            s.parse()
-                .map_err(|e| anyhow::anyhow!("a2a_contexts.session {s}: {e}"))
-        })
-        .transpose()
-    }
-
     /// 183 Z3-R2: mark the contexts of `session` as a contact's inbox (its limits come back at
     /// every actor start), speaking as `identity` (the exported agent's persona at this
     /// admission, Z3-R3; `None`: the engine's own) for the exported agent `agent` (bare roster
