@@ -43,6 +43,7 @@ pub mod talk;
 // Model-picker panels (after design 194): add modules below, in this block only.
 pub mod models;
 pub mod aws;
+pub mod vision_settings;
 pub use registry::{Registry, builtin, builtin_with, configured};
 
 #[cfg(test)]

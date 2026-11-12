@@ -80,24 +80,6 @@ impl Model {
     /// Enter (17 §4.4).
     pub fn attach(&mut self, img: Image) -> String {
         self.component_notify(crate::components::Lifecycle::ImageAttached);
-        let text_only = self
-            .catalog
-            .as_ref()
-            .and_then(|c| c.closest(&self.model_id))
-            .is_some_and(|m| !m.image);
-        if text_only {
-            let tail = match &self.vision_model {
-                Some(v) => format!(
-                    "{} will inspect the image for it and answer its question (/vision to change)",
-                    v.id
-                ),
-                None => "the image will be sent as omitted — /model to switch or /vision <model> to set a fallback".to_owned(),
-            };
-            self.entries.push(Entry::Info(format!(
-                "{} is text-only; {tail}",
-                self.model_id
-            )));
-        }
         let p = Paste::Image(img);
         let token = paste_token(self.pastes.len(), &p);
         self.pastes.push(p);

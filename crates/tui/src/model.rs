@@ -14,7 +14,7 @@ use agent::{
     AdvisorDefaults, AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AdvisoryKind,
     AgentEvent, AgentInfo, AgentState,
     CompactStyle, ContextAttachment, ContextEntry, ContextRemoval,
-    ContextTarget, HistoryEntry, Loaded, ModelInfo, ObservedMeta, ObservedSource,
+    ContextTarget, HistoryEntry, Loaded, ObservedMeta, ObservedSource,
     ObservedState, ProviderInfo, QueuedInput, SessionKind,
     SessionSummary, SkillBody, SkillMeta, Usage, VisionNote, VisionStage, VisionStatus,
 };
@@ -132,13 +132,6 @@ pub struct Model {
     pub approvals_global: bool,
     /// The root session opted out of prompts (`/approvals off`).
     pub approvals_off: bool,
-    /// The harness-wide vision fallback (52 §3): a text-only shown model
-    /// says at attach time whether this model will inspect the image.
-    /// Asked once at startup; `/vision` replies keep it current.
-    pub vision_model: Option<ModelInfo>,
-    /// `/vision` was typed: the next reply prints its line (the startup
-    /// fetch is silent).
-    awaiting_vision: bool,
     /// Large pastes and attached images held out of the input box; the box
     /// shows one [`paste_token`] each, expanded back on submit.
     pub pastes: Vec<Paste>,
@@ -286,7 +279,6 @@ pub(crate) use advisor::{AdvisorReply};
 pub use agents::{AgentRow, sort_agents, agent_row, WATCH_GLYPH, source_tag, observed_word};
 use agents::{rank, harness_word};
 pub use approvals::Ask;
-pub use catalog::vision_model_line;
 pub use credentials::LoginRow;
 pub use events::{UiEvent, Command};
 pub(crate) use components::Output;

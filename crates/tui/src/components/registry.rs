@@ -53,6 +53,7 @@ fn compose(app_enabled: bool, interactive: bool, models: models::Models) -> Regi
     // Model-picker panels (after design 194): register below, in this block only.
     registry.register(models).expect("built-in component registration");
     registry.register(aws::Aws::default()).expect("built-in component registration");
+    registry.register(vision_settings::VisionSettings::default()).expect("built-in component registration");
     registry
 }
 

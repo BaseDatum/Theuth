@@ -3,11 +3,6 @@ use super::*;
 /// Slash commands: name, argument hint (`<x>` required, `[x]` optional, `""` none), description.
 pub const COMMANDS: &[(&str, &str, &str)] = &[
     (
-        "/vision",
-        "[model|off]",
-        "model that inspects images when the main model cannot (off = images are omitted)",
-    ),
-    (
         "/advisor",
         "[off|on|status|consults <n>|<provider/model>]",
         "a second model that reviews this session and answers its consults (picker without argument)",
