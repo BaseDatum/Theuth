@@ -1,4 +1,9 @@
-use super::*;
+use crate as meeting;
+use crate::rpc_support::{client_of, meeting};
+use jsonrpsee::Extensions;
+use jsonrpsee::core::{RpcResult, async_trait};
+use jsonrpsee::proc_macros::rpc;
+use rpc_core::{Server, send, stub_err};
 
 #[rpc(server, client)]
 pub trait MeetingsApi {

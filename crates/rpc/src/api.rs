@@ -44,7 +44,7 @@ use agent::{
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use agent::{EndlessConfig, MemoryMode, SessionMemory, ViewLine};
-use agent::{GetPolishModel, Polish, PolishReply, Rewrite, SetPolishModel};
+use agent::{GetPolishModel, SetPolishModel};
 use app::{
     AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi,
 };
@@ -99,7 +99,6 @@ use tools::{
 };
 use tools::{LiveCounts, LiveCountsRow};
 use uuid::Uuid;
-use voice::{SpeechId, VoiceStatus};
 
 #[cfg(test)]
 use rpc_core::{Event, FocusMap, BACKLOG};
@@ -220,10 +219,6 @@ pub mod boards;
 pub mod artifacts;
 /// Credentials RPC server and client traits.
 pub mod credentials;
-/// Speech RPC server and client traits.
-pub mod speech;
-/// Meetings RPC server and client traits.
-pub mod meetings;
 /// Kernels RPC server and client traits.
 pub mod kernels;
 /// Dreams RPC server and client traits.
@@ -252,8 +247,6 @@ pub use routines::{RoutinesApiClient, RoutinesApiServer};
 pub use boards::{BoardsApiClient, BoardsApiServer};
 pub use artifacts::{ArtifactsApiClient, ArtifactsApiServer};
 pub use credentials::{CredentialsApiClient, CredentialsApiServer};
-pub use speech::{SpeechApiClient, SpeechApiServer};
-pub use meetings::{MeetingsApiClient, MeetingsApiServer};
 pub use kernels::{KernelsApiClient, KernelsApiServer};
 pub use dreams::{DreamsApiClient, DreamsApiServer};
 pub use research::{ResearchApiClient, ResearchApiServer};
@@ -280,8 +273,8 @@ pub mod clients {
     pub use super::boards::BoardsApiClient;
     pub use super::artifacts::ArtifactsApiClient;
     pub use super::credentials::CredentialsApiClient;
-    pub use super::speech::SpeechApiClient;
-    pub use super::meetings::MeetingsApiClient;
+    pub use talk::SpeechApiClient;
+    pub use meeting::MeetingsApiClient;
     pub use super::kernels::KernelsApiClient;
     pub use super::dreams::DreamsApiClient;
     pub use super::research::ResearchApiClient;
@@ -310,8 +303,8 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         boards::rpc_module(server.clone()),
         artifacts::rpc_module(server.clone()),
         credentials::rpc_module(server.clone()),
-        speech::rpc_module(server.clone()),
-        meetings::rpc_module(server.clone()),
+        talk::rpc_module(server.clone()),
+        meeting::rpc_module(server.clone()),
         dreams::rpc_module(server.clone()),
         research::rpc_module(server.clone()),
         kernels::rpc_module(server.clone()),
@@ -656,61 +649,10 @@ fn update_actor() -> RpcResult<ActorRef<update::UpdateActor>> {
     })
 }
 
-/// The voice actor; absent when `voice.enabled: false` or the plugin is not loaded.
-fn voice() -> RpcResult<ActorRef<voice::Voice>> {
-    lookup::<voice::Voice>(voice::VOICE_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "voice is disabled", None::<()>),
-        _ => e,
-    })
-}
-
-/// The STT actor; absent when `voice.enabled: false` or the plugin is not loaded.
-fn transcriber() -> RpcResult<ActorRef<voice::Transcriber>> {
-    lookup::<voice::Transcriber>(voice::TRANSCRIBER_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "voice is disabled", None::<()>),
-        _ => e,
-    })
-}
-
-/// The dictation actor; absent when `voice.enabled: false` or the plugin is not loaded.
-fn dictation() -> RpcResult<ActorRef<voice::Dictation>> {
-    lookup::<voice::Dictation>(voice::DICTATION_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "voice is disabled", None::<()>),
-        _ => e,
-    })
-}
-
-/// The 153 history store (§6.5): local peers only, like the daemon mic
-/// (`dictation_start`); `ASK_FAILED` "history disabled" when it is off.
-async fn history_store(ext: &Extensions) -> RpcResult<voice::Store> {
-    if peer(ext)?.remote() {
-        return Err(failed("dictation history is on the harness host"));
-    }
-    send(&dictation()?, voice::HistoryStore)
-        .await?
-        .ok_or_else(|| failed("history disabled"))
-}
-
-/// The talk actor; absent when `talk.enabled: false` or the plugin is not loaded.
-fn talk() -> RpcResult<ActorRef<talk::Talk>> {
-    lookup::<talk::Talk>(talk::TALK_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "talk is disabled", None::<()>),
-        _ => e,
-    })
-}
-
 /// The telegram actor; absent when `telegram.enabled: false` or the plugin is not loaded.
 fn telegram() -> RpcResult<ActorRef<telegram::Telegram>> {
     lookup::<telegram::Telegram>(telegram::TELEGRAM_ACTOR).map_err(|e| match e.code() {
         NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "telegram is disabled", None::<()>),
-        _ => e,
-    })
-}
-
-/// The meeting actor; absent when `meeting.enabled: false`, off macOS, or the plugin is not loaded.
-fn meeting() -> RpcResult<ActorRef<meeting::Meeting>> {
-    lookup::<meeting::Meeting>(meeting::MEETING_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "meetings are disabled", None::<()>),
         _ => e,
     })
 }
@@ -1198,12 +1140,6 @@ fn cost_service() -> RpcResult<&'static agent::CostService> {
     })
 }
 
-
-/// 158 §7.2: the connection's `x-theuth-client` value for companion-only methods; `None` when
-/// the call did not come over the socket (the in-process TUI).
-fn client_of(ext: &Extensions) -> Option<&'static str> {
-    ext.get::<rpc_core::Client>().map(|c| c.0)
-}
 
 /// Largest decoded image `put_attachment` accepts (17 §1: Anthropic's 5 MB); an
 /// `.svg` (a saved diagram) shares the cap.
