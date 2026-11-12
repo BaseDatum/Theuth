@@ -306,6 +306,15 @@ async fn broadcast_loss_is_exact_and_receiver_count_has_no_internal_subscriber()
     let mut slow = rt.wire_events();
     let second = rt.clone().wire_events();
     assert_eq!(rt.wire_receiver_count(), 2);
+    // Owner liveness counts external leases, never these local feed receivers.
+    assert_eq!(rt.wire_external_stream_count(), 0);
+    let external = rt.wire_external_stream();
+    let other_external = rt.clone().wire_external_stream();
+    assert_eq!(rt.wire_external_stream_count(), 2);
+    drop(external);
+    assert_eq!(rt.wire_external_stream_count(), 1);
+    drop(other_external);
+    assert_eq!(rt.wire_external_stream_count(), 0);
     drop(second);
     for seq in 0..1030 {
         rt.publish(event::<0>(seq)).await;

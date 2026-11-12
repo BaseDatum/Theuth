@@ -3313,9 +3313,7 @@ pub(crate) mod tests {
     /// A [`FakeRenderer`] drawing `png` on `rt`'s bus; installs the
     /// process-wide live feed once.
     pub(crate) async fn install_renderer(rt: &Runtime, png: Vec<u8>) {
-        let (tx, rx) = tokio::sync::broadcast::channel::<Arc<serde_json::Value>>(4);
-        artifact::preview::watch_feed(tx);
-        std::mem::forget(rx);
+        artifact::preview::watch_feed(Arc::new(|| 1));
         let actor = FakeRenderer::spawn(FakeRenderer { png });
         rt.subscribe::<FakeRenderer, FenceSnapshotRequested>(&actor)
             .await;

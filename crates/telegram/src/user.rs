@@ -139,9 +139,7 @@ mod tests {
     #[tokio::test]
     async fn raw_fence_is_delivered_as_a_photo_in_place() {
         let f = fixture(false);
-        let (tx, rx) = tokio::sync::broadcast::channel::<Arc<serde_json::Value>>(4);
-        artifact::preview::watch_feed(tx);
-        std::mem::forget(rx);
+        artifact::preview::watch_feed(Arc::new(|| 1));
         let image = png(1120, 600);
         let actor = kameo::actor::Spawn::spawn_with_mailbox(
             FakeRenderer(image.clone()),

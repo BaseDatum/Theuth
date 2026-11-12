@@ -204,7 +204,7 @@ pub async fn connect(running: &Running) -> anyhow::Result<WsClient> {
 }
 
 /// `subscribe_events` on `client`, each JSON event decoded back into its bus
-/// type (the same serde types the [`crate::bridge`] serialised, matched by
+/// type (the same owner-declared serde types, matched by
 /// their `type` tag) and published on the local bus. Returns when the
 /// subscription ends — the socket closed.
 pub async fn mirror(rt: &Runtime, client: &WsClient) -> anyhow::Result<()> {
