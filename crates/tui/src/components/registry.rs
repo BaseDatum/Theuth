@@ -7,8 +7,17 @@ struct Slot { generation: u64, component: Option<Box<dyn ErasedComponent>> }
 pub fn builtin() -> Registry {
     let mut registry = Registry::empty();
     registry.register(update::Update::default()).expect("built-in component registration");
+
+    // Step-11 group t1 (network and prompts): register below, in this block only.
     registry.register(computer::Computer).expect("built-in component registration");
     registry.register(sandboxes::Sandboxes).expect("built-in component registration");
+
+    // Step-11 group t2 (boards, costs and artifacts): register below, in this block only.
+
+    // Step-11 group t3 (jobs, terminals, speech and search): register below, in this block only.
+
+    // Model-picker panels (after design 194): register below, in this block only.
+
     registry
 }
 

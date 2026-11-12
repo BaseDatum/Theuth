@@ -8,8 +8,17 @@ use crate::{model::UiEvent, topics::TopicEvent};
 
 mod registry;
 pub mod update;
+
+// Step-11 group t1 (network and prompts): add modules below, in this block only.
 pub mod computer;
 pub mod sandboxes;
+
+// Step-11 group t2 (boards, costs and artifacts): add modules below, in this block only.
+
+// Step-11 group t3 (jobs, terminals, speech and search): add modules below, in this block only.
+
+// Model-picker panels (after design 194): add modules below, in this block only.
+
 pub use registry::{Registry, builtin};
 
 #[cfg(test)]
