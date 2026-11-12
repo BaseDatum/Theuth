@@ -122,6 +122,13 @@ ts-desktop: ts
     mkdir -p crates/desktop/ui/src/rpc/bindings
     cp -R bindings/. crates/desktop/ui/src/rpc/bindings/
 
+# Step 9d stubs: generation and explicit baseline acceptance depend on 9c.
+wire-schema:
+    @echo "Pending step 9c: export the declaration-only production composition to bindings/openrpc.json, then classify it against crates/theuth/tests/fixtures/wire/openrpc-v1.json."
+
+wire-schema-accept:
+    @echo "Pending step 9c: regenerate, review the classified diff, then explicitly replace crates/theuth/tests/fixtures/wire/openrpc-v1.json; never auto-accept Breaking/ReviewRequired."
+
 # Desktop app in dev mode against `target/debug/t` (or `$THEUTH_BIN`); `THEUTH_DATA_DIR` overrides ~/.theuth.
 # `TAURI_FRONTEND_PATH`: the UI lives inside the crate (not beside it as Tauri assumes), so the
 # before*Command cwd must be pinned.
