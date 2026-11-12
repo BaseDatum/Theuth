@@ -8,6 +8,7 @@ description = "Terminal frontend (iocraft): an ordinary bus subscriber"
 [dependencies]
 rpc-core = { workspace = true }
 runtime = { workspace = true }
+wire = { workspace = true }
 platform = { workspace = true }
 tools = { workspace = true }
 agent = { workspace = true }
@@ -45,8 +46,10 @@ futures = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+parking_lot = { workspace = true }
 kameo = { workspace = true }
 iocraft = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 crossterm = "0.29"
 arboard = { workspace = true }

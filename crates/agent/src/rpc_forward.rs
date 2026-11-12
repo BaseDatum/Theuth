@@ -84,7 +84,7 @@ pub const OWNER_UNREACHABLE: i32 = -32010;
 /// JSON-RPC error code (139 §6.1, D16): the session is mid-release-drain on
 /// this engine; retryable. `data` is [`FrontDoorError::SessionDraining`] in
 /// the same external enum form. The supervisor raises
-/// `SessionDraining:<reason>` from the input handler; `api::session_draining`
+/// `SessionDraining:<reason>` from the input handler; [`crate::rpc_support::session_draining`]
 /// maps it here, the composer retries once. `-32011` is `NOT_HUB` (69 Y).
 pub const SESSION_DRAINING: i32 = -32012;
 

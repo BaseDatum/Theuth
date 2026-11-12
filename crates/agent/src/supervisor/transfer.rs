@@ -58,7 +58,7 @@ pub const RELEASE: &str = "release";
 
 /// Prefix of the `Err` string `Agents::route` answers for a session in
 /// `draining_sessions` (D16): `SessionDraining:<reason>` (the
-/// `DocError::NotHub` convention). The RPC layer (`api::session_draining`)
+/// `DocError::NotHub` convention). The RPC layer ([`crate::rpc_support::session_draining`])
 /// maps it to `SESSION_DRAINING` with the user-facing wording.
 pub const DRAINING_PREFIX: &str = "SessionDraining:";
 

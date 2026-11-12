@@ -25,6 +25,7 @@ search = { path = "crates/search" }  # shared fuzzy matching/snippet/page envelo
 agent = { path = "crates/agent" }
 rpc = { path = "crates/rpc" }
 rpc-core = { path = "crates/rpc-core" }
+rpc-core-macros = { path = "crates/rpc-core-macros" }
 tui = { path = "crates/tui" }
 cursor = { path = "crates/cursor" }
 signal = { path = "crates/signal" }

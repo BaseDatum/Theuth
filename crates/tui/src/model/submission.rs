@@ -26,6 +26,8 @@ impl Model {
             self.prompt_submit(line, tx);
             return;
         }
+        if self.component_submit(line) { return; }
+        self.component_notify(crate::components::Lifecycle::ComposerSubmitted(line));
         // `/edit` in progress: a plain line replaces the turn being edited
         // (slash commands still run and leave the edit pending).
         if let Some((idx, turn)) = self.editing.filter(|_| !line.starts_with('/')) {
@@ -51,6 +53,7 @@ impl Model {
         let (cmd, arg) = line
             .split_once(' ')
             .map_or((line, ""), |(c, a)| (c, a.trim()));
+        if self.component_slash(cmd, arg) { return; }
         match cmd {
             "/quit" | "/exit" => {
                 // Leaving the process leaves the owned private tree (51 §4.3).

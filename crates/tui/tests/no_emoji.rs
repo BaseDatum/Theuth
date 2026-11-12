@@ -2,7 +2,7 @@
 //! (NO-EMOJI; the desktop's own tree is scanned by `crates/desktop/ui/src/lib/no-emoji.test.ts`). Glyphs in
 //! terminal text — the TUI, and `surface`'s text lowerings for the TUI, Signal and export — are allowed
 //! (Sky, 2026-10-07: "glyphs in the tui are acceptable, just no emojis in desktop"), so only the crates whose
-//! strings reach the desktop as chrome are scanned, including owners of extracted RPC methods.
+//! strings reach the desktop as chrome are scanned: see `CRATES`. Each offender is named as `file:line`;
 //! a line that legitimately needs one ends with `// no-emoji: allow`.
 
 use std::fs;
@@ -17,6 +17,10 @@ const CRATES: &[&str] = &[
     "sandbox",
     "computer",
     "codeindex",
+    "dreaming",
+    "meeting",
+    "talk",
+    "autoresearch",
 ];
 
 /// `Extended_Pictographic` ∪ `Emoji_Presentation` (Unicode 16) minus the arrows block and ™, which are

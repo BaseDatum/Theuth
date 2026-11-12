@@ -7,6 +7,8 @@ description = "A live, interruptible spoken conversation between the user and on
 
 [dependencies]
 runtime = { workspace = true }
+rpc-core = { workspace = true }
+jsonrpsee = { workspace = true }
 wire = { workspace = true }
 tools = { workspace = true }     # `RegisterPrompt` (76 §0.11)
 agent = { workspace = true }     # `SendInput` / `Cancel{keep}` (76 §0.7; used by the actor, TALK-CORE)
@@ -20,6 +22,7 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }  # `ApprovalRequested.args` (145 §0.6)
 schemars = { workspace = true }
+base64 = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 ts-rs = { workspace = true, optional = true }

@@ -1,0 +1,27 @@
+[package]
+name = "rpc-core-macros"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Owner-trait RPC discovery descriptors"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
+heck = "0.5"
+
+[dev-dependencies]
+rpc-core = { workspace = true }
+jsonrpsee = { workspace = true, features = ["client-core"] }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+
+[lints]
+workspace = true

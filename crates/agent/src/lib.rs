@@ -30,6 +30,22 @@ use serde::{Deserialize, Serialize};
 pub mod rpc_support;
 /// Session-owner forwarding and its immutable startup hooks.
 pub mod rpc_forward;
+/// Background jobs and terminal RPC methods.
+pub mod rpc_jobs;
+/// Skill RPC server and client methods.
+pub mod rpc_skills;
+/// Turn RPC server and client methods.
+pub mod rpc_turns;
+
+/// Assemble agent-owned RPC domains.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_core::merge([
+        rpc_jobs::rpc_module(server.clone()),
+        rpc_skills::rpc_module(server.clone()),
+        rpc_turns::rpc_module(server),
+    ])
+}
+
 pub mod acp_child;
 pub mod activity;
 pub mod advisor;

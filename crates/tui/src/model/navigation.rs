@@ -7,6 +7,7 @@ impl Model {
     /// shown `secret_request` types into the box (masked).
     pub fn input_focused(&self) -> bool {
         if self.approval().is_some()
+            || self.components.focused()
             || self.dictation.is_some()
             || self.suggestion.is_some()
             || self.talk_view

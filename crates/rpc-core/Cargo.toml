@@ -7,12 +7,15 @@ description = "Plugin-free RPC state, identity and actor helpers"
 
 [dependencies]
 runtime = { workspace = true }
+wire = { workspace = true }
 jsonrpsee = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 parking_lot = { workspace = true }
 serde_json = { workspace = true }
+schemars = { workspace = true }
+percent-encoding = "2"
 rand = { workspace = true }
 anyhow = { workspace = true }
 
