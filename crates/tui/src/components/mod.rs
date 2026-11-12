@@ -341,6 +341,8 @@ pub enum Surface<'a> {
     },
 
     // Step-11 group t3 Surface variants: add below, in this block only.
+    /// Owner activity while core streaming/compaction/vision has no priority.
+    Activity,
 }
 /// Read-only layout context; no iocraft Hooks or editor handles.
 pub struct ViewCx<'a> {

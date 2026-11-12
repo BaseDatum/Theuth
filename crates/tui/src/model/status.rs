@@ -75,6 +75,8 @@ impl Model {
             return Some(v.clone());
         }
         if !self.streaming {
+            let activity = self.component_text(crate::components::Surface::Activity);
+            if !activity.is_empty() { return Some(activity); }
             return self.harvesting.then(|| "harvesting…".into());
         }
         // Parallel calls: a running card need not be the last entry.
