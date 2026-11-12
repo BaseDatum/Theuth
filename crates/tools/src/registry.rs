@@ -616,52 +616,11 @@ fn mcp_remote<'a>(name: &'a str, server: &str) -> &'a str {
 /// anything the cap protects. The policy still runs for these.
 const CAP_EXEMPT: &[&str] = &["send_message"];
 
-/// 183 Z4: the only tools a contact allowlist may EVER hold — the public web and the
-/// read-only readers. Nothing else is grantable, read-only or not: anything that reaches past
-/// the contact's capped session (the screen, the browser and its cookies, knowledge writes,
-/// briefs, routines and drafts, reminders, the owner's sessions, the vault, tasks, agents,
-/// schedules, spawning, messaging) stays out. Besides these, an MCP tool at effective risk
-/// `read_only` is grantable as `mcp:<server>/<tool>`. Checked here at every [`SetAllowOnly`]
-/// (a W-40 turn's allowlist comes from another engine of the mesh).
-// W-40 only; removed by design 191 (contacts are mesh-wide)
-const CONTACT_GRANTABLE: &[&str] = &[
-    "search_web",
-    "read_url",
-    "scrape_url",
-    "crawl",
-    "map_site",
-    "knowledge_search",
-    "knowledge_get",
-    "knowledge_list",
-    "doc_read",
-    "nb_search",
-    "artifact_read",
-];
-
-/// The allowlist key of an MCP tool: `mcp:<server>/<tool>` (the server's own tool name).
-const MCP_GRANT: &str = "mcp:";
-
-/// 183 Z4: `name` may stand in a contact allowlist: one of [`CONTACT_GRANTABLE`], or an
-/// MCP key (`mcp:<server>/<tool>`, whose risk only the registry knows; it admits the key
-/// only while that tool is `read_only`).
-// W-40 only; removed by design 191 (contacts are mesh-wide)
-fn contact_grantable(name: &str) -> bool {
-    CONTACT_GRANTABLE.contains(&name)
-        || name.len() <= 160
-            && name
-                .strip_prefix(MCP_GRANT)
-                .and_then(|k| k.split_once('/'))
-                .is_some_and(|(server, tool)| {
-                    !server.is_empty()
-                        && !tool.is_empty()
-                        && !name.chars().any(|c| c.is_whitespace() || c.is_control())
-                })
-}
-
-/// `tell` (183 §7.6, Z3-R2): contact sessions are default-deny — only the tools in `tools`
-/// exist for `session` (and its subagents); everything else is hidden. `turn` scopes it to
+/// `tell` (183 §7.6, Z3-R2): contact sessions are default-deny — no tool exists for `session`
+/// (and its subagents) but the reply; everything else is hidden. `turn` scopes it to
 /// the running contact turn of an exported chat (cleared at turn end), otherwise it is the
-/// session's own (a contact's inbox). `None` clears that entry.
+/// session's own (a contact's inbox). `None` clears that entry. 191 (D5): only the empty
+/// list is installed; a non-empty `tools` is installed as the empty list and logged.
 #[derive(Clone, Debug)]
 pub struct SetAllowOnly {
     /// The inbox, or the exported chat whose contact turn runs.
@@ -682,20 +641,14 @@ impl Message<SetAllowOnly> for ToolRegistry {
             &mut self.allow_only
         };
         match m.tools {
-            // 183 Z4: `tools` may come from a paired engine (`origin.tools`): only what a
-            // contact may ever be granted is installed; the rest is dropped, fail closed.
+            // 191 (D5): every caller passes the empty list; a contact's session has no tool but
+            // the reply. A non-empty one is installed as the empty list (never skipped: a
+            // session with no entry drops out of `contact_scoped`; never installed as given).
             Some(t) => {
-                let t = t
-                    .into_iter()
-                    .filter(|name| {
-                        let keep = contact_grantable(name);
-                        if !keep {
-                            tracing::warn!(session = %m.session, tool = %name, "a contact may not be granted this tool; left out of its allowlist");
-                        }
-                        keep
-                    })
-                    .collect();
-                map.insert(m.session, t)
+                if !t.is_empty() {
+                    tracing::warn!(session = %m.session, tools = ?t, "a contact allowlist must be empty; installed empty");
+                }
+                map.insert(m.session, HashSet::new())
             }
             None => map.remove(&m.session),
         };
@@ -1052,15 +1005,10 @@ impl ToolRegistry {
 
     /// 183 Z3-R2: every allowlist on the session or an ancestor lists `name`, and so does a
     /// contact turn's allowlist on the session itself (Z3-R3: not on the chat's existing
-    /// subagents, which keep the owner's tools). None applies: admitted. Z4: under any
-    /// allowlist only a grantable tool is admitted, by its [`Self::grant_key`].
+    /// subagents, which keep the owner's tools). None applies: admitted. 191 (D5): every
+    /// allowlist is empty (see [`SetAllowOnly`]), so under one nothing is admitted.
     fn allowlist_admits(&self, id: SessionId, name: &str) -> bool {
-        let key = std::cell::OnceCell::new();
-        let admits = |allowed: &HashSet<String>| {
-            key.get_or_init(|| self.grant_key(name))
-                .as_deref()
-                .is_some_and(|k| allowed.contains(k))
-        };
+        let admits = |allowed: &HashSet<String>| allowed.contains(name);
         if self.turn_allow_only.get(&id).is_some_and(|a| !admits(a)) {
             return false;
         }
@@ -1073,18 +1021,6 @@ impl ToolRegistry {
                 Some(p) => cur = *p,
                 None => return true,
             }
-        }
-    }
-
-    /// 183 Z4: what a contact allowlist must hold for `name` to be admitted: `name` itself
-    /// for one of [`CONTACT_GRANTABLE`] (not an MCP tool under that name), `mcp:<server>/<tool>`
-    /// for an MCP tool at effective risk `read_only`; `None`: never grantable.
-    fn grant_key<'a>(&self, name: &'a str) -> Option<std::borrow::Cow<'a, str>> {
-        let tool = self.tools.get(name);
-        match tool.map(|t| t.source()) {
-            Some(ToolSource::Mcp { server, .. }) => (tool?.spec().risk == Risk::ReadOnly)
-                .then(|| format!("{MCP_GRANT}{server}/{}", mcp_remote(name, &server)).into()),
-            _ => CONTACT_GRANTABLE.contains(&name).then_some(name.into()),
         }
     }
 
@@ -3378,9 +3314,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// 183 Z3-R2: a contact session is default-deny. Only its allowlist exists (for the
-    /// session and its subagents, the session's own or the turn's), and only what a contact
-    /// may ever be granted (Z4): `send_message` and a mutating tool stay out even when listed.
+    /// 183 Z3-R2: a contact session is default-deny. Its allowlist is the empty list (191
+    /// D5): no tool exists for the session and its subagents, the session's own or the turn's.
     #[tokio::test]
     async fn contact_sessions_see_only_their_allowlist() {
         let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -3412,20 +3347,20 @@ pub(crate) mod tests {
         .await
         .unwrap();
 
-        // The inbox: only `read_url` exists, for it and its subagent.
+        // The inbox: nothing exists, for it and its subagent.
         reg.tell(SetAllowOnly {
             session: inbox,
-            tools: Some(vec!["read_url".into()]),
+            tools: Some(Vec::new()),
             turn: false,
         })
         .await
         .unwrap();
         for s in [inbox, child] {
-            assert_eq!(
-                names(reg.ask(ListTools(Some(s))).await.unwrap()),
-                ["read_url"]
+            assert!(
+                names(reg.ask(ListTools(Some(s))).await.unwrap()).is_empty(),
+                "an empty allowlist hides every tool"
             );
-            for hidden in ["echo", "touch", "send_message"] {
+            for hidden in ["echo", "touch", "send_message", "read_url"] {
                 let out = reg.ask(Invoke(call(hidden, s))).await.unwrap();
                 assert!(
                     out.is_error && out.content.contains("unknown tool"),
@@ -3441,17 +3376,18 @@ pub(crate) mod tests {
                 "read_url".to_owned(),
             ]
         };
-        assert_eq!(
-            reg.ask(Allowlisted(child, locals())).await.unwrap(),
-            ["read_url"]
+        assert!(
+            reg.ask(Allowlisted(child, locals()))
+                .await
+                .unwrap()
+                .is_empty()
         );
         assert_eq!(
             reg.ask(Allowlisted(chat, locals())).await.unwrap(),
             locals()
         );
 
-        // An exported chat's contact turn: listing `send_message` or a mutating tool does
-        // not make them grantable.
+        // An exported chat's contact turn: nothing exists in it, `read_url` included.
         reg.tell(SetTurnCap {
             session: chat,
             cap: Some(Risk::Mutating),
@@ -3460,20 +3396,16 @@ pub(crate) mod tests {
         .unwrap();
         reg.tell(SetAllowOnly {
             session: chat,
-            tools: Some(
-                ["read_url", "send_message", "touch", "echo"]
-                    .map(String::from)
-                    .to_vec(),
-            ),
+            tools: Some(Vec::new()),
             turn: true,
         })
         .await
         .unwrap();
-        assert_eq!(
-            names(reg.ask(ListTools(Some(chat))).await.unwrap()),
-            ["read_url"]
+        assert!(
+            names(reg.ask(ListTools(Some(chat))).await.unwrap()).is_empty(),
+            "an empty allowlist hides every tool"
         );
-        for hidden in ["send_message", "touch"] {
+        for hidden in ["read_url", "send_message", "touch"] {
             let out = reg.ask(Invoke(call(hidden, chat))).await.unwrap();
             assert!(out.content.contains("unknown tool"), "{out:?}");
         }
@@ -3555,41 +3487,41 @@ pub(crate) mod tests {
                 Ok(ToolOutput::ok(crate::egress::lan().to_string()))
             }
         }
-        let reg = registry(vec![Arc::new(Probe)], None);
-        let lan = |s: SessionId| {
-            let reg = reg.clone();
-            async move { reg.ask(Invoke(call("read_url", s))).await.unwrap().content }
-        };
         let (owner, inbox, child, chat) = (
             SessionId::new(),
             SessionId::new(),
             SessionId::new(),
             SessionId::new(),
         );
+        // Seeded directly: [`SetAllowOnly`] installs only the empty list (191 D5), which hides
+        // the probe; the LAN rule reads the restricted state, not the list.
+        let listed = || HashSet::from(["read_url".to_owned()]);
+        let reg = ToolRegistry::spawn(ToolRegistry {
+            allow_only: HashMap::from([(inbox, listed())]),
+            turn_allow_only: HashMap::from([(chat, listed())]),
+            ..build(vec![Arc::new(Probe)], None)
+        });
+        let lan = |s: SessionId| {
+            let reg = reg.clone();
+            async move { reg.ask(Invoke(call("read_url", s))).await.unwrap().content }
+        };
         reg.tell(SetParent {
             session: child,
             parent: inbox,
         })
         .await
         .unwrap();
-        reg.tell(SetAllowOnly {
-            session: inbox,
-            tools: Some(vec!["read_url".into()]),
-            turn: false,
-        })
-        .await
-        .unwrap();
-        let turn = |tools: Option<Vec<String>>| SetAllowOnly {
-            session: chat,
-            tools,
-            turn: true,
-        };
-        reg.tell(turn(Some(vec!["read_url".into()]))).await.unwrap();
         assert_eq!(lan(owner).await, "true");
         for s in [inbox, child, chat] {
             assert_eq!(lan(s).await, "false", "{s}");
         }
-        reg.tell(turn(None)).await.unwrap();
+        reg.tell(SetAllowOnly {
+            session: chat,
+            tools: None,
+            turn: true,
+        })
+        .await
+        .unwrap();
         assert_eq!(lan(chat).await, "true");
         assert!(!crate::egress::lan());
 
@@ -3614,12 +3546,12 @@ pub(crate) mod tests {
         assert_eq!(lan(job).await, "true");
     }
 
-    /// 183 Z4 (W-40): an allowlist holds only what a contact may ever be granted, whoever sent
-    /// it (a paired engine's `origin.tools`): `browser_open` is intersected away at install
-    /// though read-only; an MCP tool is admitted by its `mcp:<server>/<tool>` key only while
-    /// it is read-only, never by its bare name.
+    /// 191 (D5): [`SetAllowOnly`] installs only the empty allowlist, whoever sent it: a
+    /// non-empty list (a paired engine's, once) is installed as the empty list, never skipped
+    /// (the session stays `contact_scoped`) and never as given (nothing is grantable, not
+    /// `read_url`, not an MCP tool under its `mcp:<server>/<tool>` key).
     #[tokio::test]
-    async fn an_allowlist_from_a_peer_holds_only_grantable_tools() {
+    async fn a_non_empty_allowlist_is_installed_empty() {
         let reg = registry_with(
             vec![
                 Arc::new(ReadUrl),
@@ -3652,14 +3584,17 @@ pub(crate) mod tests {
             })
             .await
             .unwrap();
-            assert_eq!(
-                names(reg.ask(ListTools(Some(s))).await.unwrap()),
-                ["read_url", "search"],
+            assert!(
+                reg.ask(ContactScoped(s)).await.unwrap(),
+                "still a contact session, turn {turn}"
+            );
+            assert!(
+                names(reg.ask(ListTools(Some(s))).await.unwrap()).is_empty(),
                 "turn {turn}"
             );
-            for hidden in ["browser_open", "delete"] {
+            for hidden in ["read_url", "browser_open", "echo", "search", "delete"] {
                 let out = reg.ask(Invoke(call(hidden, s))).await.unwrap();
-                assert!(out.content.contains("unknown tool"), "{out:?}");
+                assert!(out.content.contains("unknown tool"), "{hidden}: {out:?}");
             }
         }
     }
@@ -3681,18 +3616,16 @@ pub(crate) mod tests {
     }
 
     /// 183 Z4-R1: in a contact session `crawl` runs at most 20 pages and depth 2 whatever
-    /// the contact asked (absent or junk too); the owner's own call is passed as sent.
+    /// the contact asked (absent or junk too); the owner's own call is passed as sent. The
+    /// allowlist is seeded directly: [`SetAllowOnly`] installs only the empty list (191 D5),
+    /// which hides `crawl` altogether, so the bound is the second line behind it.
     #[tokio::test]
     async fn a_contact_crawl_is_bounded_per_call() {
-        let reg = registry_with(vec![Arc::new(Crawl)], None, Policy::default(), None);
         let (inbox, owner) = (SessionId::new(), SessionId::new());
-        reg.tell(SetAllowOnly {
-            session: inbox,
-            tools: Some(vec!["crawl".into()]),
-            turn: false,
-        })
-        .await
-        .unwrap();
+        let reg = ToolRegistry::spawn(ToolRegistry {
+            allow_only: HashMap::from([(inbox, HashSet::from(["crawl".to_owned()]))]),
+            ..build(vec![Arc::new(Crawl)], None)
+        });
         let crawl = |s, args| ToolCall {
             args,
             ..call("crawl", s)

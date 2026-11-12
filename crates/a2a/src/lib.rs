@@ -175,7 +175,7 @@ struct Ctx {
     listener_lock: tokio::sync::Mutex<()>,
     /// 183 §7.8: one `peers.yaml` rewrite (and its reload) at a time.
     edit_lock: tokio::sync::Mutex<()>,
-    /// 183 §9.3: `a2a.contact_cap`, `.contact_window_secs`, `.mdns_types`.
+    /// 183 §9.3: `a2a.contact_window_secs`, `.mdns_types`.
     cfg: A2aConfig,
     state: Mutex<State>,
     /// 183 §7.2: the mesh endpoint `theuth/a2a/1` rides on, once bound.
@@ -475,7 +475,7 @@ impl Ctx {
             only.peers.retain(|_, p| p.is_contact());
             let staged = {
                 let resolve = |name: &str| vault.and_then(|v| v.get(name, 0));
-                config::stage(&only, &resolve, console, self.cfg.contact_cap)
+                config::stage(&only, &resolve, console)
             };
             let outcome = match staged {
                 Ok(staged) => self.import(&only, &staged).await,
@@ -555,7 +555,7 @@ impl Ctx {
         // 191 (D1): a mesh membership change is a reason to sign; this pass covers it.
         let peers_gen = self.net().map(|n| *n.peers_gen.borrow());
         let family = contacts::members::family(self.net().as_deref());
-        let base = contacts::records::stage_records(&records, &family, self.cfg.contact_cap);
+        let base = contacts::records::stage_records(&records, &family);
         // The hash of what is staged, never a later read: a write landing during the rest
         // of this pass is not in it, so the next tick reconciles it.
         let staged_hash = records.content_hash();
@@ -577,14 +577,8 @@ impl Ctx {
             tracing::warn!(contact = %q.alias, id = %q.id, problem = %q.problem, "a2a: contact record quarantined");
         }
         let hold: Vec<Uuid> = base.quarantined.iter().filter_map(|q| q.hold).collect();
-        let mut staged = config::stage_on(
-            base,
-            &file,
-            &resolve,
-            console.as_deref(),
-            self.cfg.contact_cap,
-        )
-        .map_err(|e| e.join("; "))?;
+        let mut staged = config::stage_on(base, &file, &resolve, console.as_deref())
+            .map_err(|e| e.join("; "))?;
         // Sessions are the agent's to validate (§6.3: native, existing). 191: a replicated
         // export whose chat this machine cannot publish (not here yet, an external harness)
         // is left out of this machine's routes, and so are its grants; nothing else is.
@@ -745,7 +739,7 @@ impl Ctx {
             .filter(|(a, b)| !staged.peers.contains_key(*a) && !rebound.contains(*b))
             .map(|(a, _)| a.clone())
             .collect();
-        // 183 F4: a contact whose grant epoch rotates, or whose cap changes, keeps a held
+        // 183 F4: a contact whose grant epoch rotates keeps a held
         // first message only for an export whose definition is unchanged (it moves to the new
         // epoch); every other held message fails now, before an Allow could run it under
         // authority that is gone.
@@ -753,10 +747,9 @@ impl Ctx {
             .contacts
             .iter()
             .filter(|(alias, f)| {
-                let cap_changed = prev.staged.contacts.get(*alias).map(|c| c.cap) != Some(f.cap);
                 !f.blocked
                     && prev.staged.peers.contains_key(*alias)
-                    && (cap_changed || !prev.staged.same_grant(&staged, alias))
+                    && !prev.staged.same_grant(&staged, alias)
             })
             .filter_map(|(alias, _)| {
                 Some(agent::communication::network::RebindHeld {

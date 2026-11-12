@@ -636,7 +636,7 @@ fn effective(rows: &[&GrantRow]) -> (Option<bool>, Option<FirstContact>) {
 /// Stage the records (D2): exports by name, the live groups as contacts (blocked ones
 /// included, without a route), and every record that cannot be proven sound quarantined
 /// with its endpoints denied. `family` is this mesh's own machines' endpoint ids.
-pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools::Risk) -> Staged {
+pub fn stage_records(r: &Records, family: &BTreeSet<String>) -> Staged {
     let mut staged = Staged {
         addrs: r
             .addrs
@@ -949,7 +949,6 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
                 eids: order,
                 display: c.name.clone().unwrap_or_else(|| alias.clone()),
                 machine: c.machine.clone().unwrap_or_default(),
-                cap: contact_cap.min(tools::Risk::Mutating),
                 first_contact,
                 blocked,
                 paired_ms: c.paired_ms.unwrap_or_default().max(0) as u64,
@@ -1237,7 +1236,7 @@ mod tests {
     }
 
     fn stage(r: &Records) -> Staged {
-        stage_records(r, &BTreeSet::new(), tools::Risk::ReadOnly)
+        stage_records(r, &BTreeSet::new())
     }
 
     /// Apply `writes` to `r` as the store would (column by column, inserting new rows).
@@ -1478,7 +1477,7 @@ mod tests {
         assert!(s.contacts["carol"].blocked && s.deny.contains(&eid(2)));
         assert!(s.peers.contains_key("dave") && !s.deny.contains(&eid(3)));
         // One of our own machines is never a contact.
-        let s = stage_records(&r, &BTreeSet::from([eid(3)]), tools::Risk::ReadOnly);
+        let s = stage_records(&r, &BTreeSet::from([eid(3)]));
         assert!(!s.contacts.contains_key("dave") && s.deny.contains(&eid(3)));
     }
 
@@ -1551,7 +1550,7 @@ mod tests {
             eid(5)
         ))
         .unwrap();
-        let staged = crate::config::stage(&file, &|_| None, None, tools::Risk::ReadOnly).unwrap();
+        let staged = crate::config::stage(&file, &|_| None, None).unwrap();
         let proj = chat(
             "xp",
             "proj",
@@ -1830,14 +1829,14 @@ mod tests {
             endpoints: vec![anchor("c", 1, 1)],
             ..Records::default()
         };
-        let s = stage_records(&r, &family, tools::Risk::ReadOnly);
+        let s = stage_records(&r, &family);
         assert_eq!(
             s.contacts["bob"].eids,
             vec![eid(1)],
             "pins, nothing based yet"
         );
         r.local = vec![local("c", 2, &[eid(2), eid(3)], &[])];
-        let s = stage_records(&r, &family, tools::Risk::ReadOnly);
+        let s = stage_records(&r, &family);
         assert_eq!(
             s.contacts["bob"].eids.iter().collect::<BTreeSet<_>>(),
             BTreeSet::from([&eid(2), &eid(3)])
@@ -1847,7 +1846,7 @@ mod tests {
         r.local.clear();
         for row in [head("c", &c2, false, 0), head("c", &gone, false, 0)] {
             r.heads = vec![row];
-            let s = stage_records(&r, &family, tools::Risk::ReadOnly);
+            let s = stage_records(&r, &family);
             assert!(!s.contacts.contains_key("bob"));
             let q = &s.quarantined[0];
             assert_eq!(q.problem, rosters::NOT_VERIFIED);
@@ -1857,21 +1856,13 @@ mod tests {
         r.local = vec![local("c", 2, &[eid(2)], &[])];
         let now = now_ms();
         r.heads = vec![head("c", &c2, true, now)];
-        let s = stage_records(&r, &family, tools::Risk::ReadOnly);
+        let s = stage_records(&r, &family);
         assert_eq!(s.quarantined[0].problem, rosters::DISAGREE);
         let old = now - 4 * rosters::ROUND.as_millis() as i64;
         r.heads = vec![head("c", &c2, true, old)];
-        assert!(
-            stage_records(&r, &family, tools::Risk::ReadOnly)
-                .contacts
-                .contains_key("bob")
-        );
+        assert!(stage_records(&r, &family).contacts.contains_key("bob"));
         r.heads = vec![head("c", &gone, true, now)];
-        assert!(
-            stage_records(&r, &family, tools::Risk::ReadOnly)
-                .contacts
-                .contains_key("bob")
-        );
+        assert!(stage_records(&r, &family).contacts.contains_key("bob"));
     }
 
     /// 191 (D1 attribution): an endpoint two unmerged contacts' rosters list is admitted only

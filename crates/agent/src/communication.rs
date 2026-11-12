@@ -674,7 +674,7 @@ pub struct PeerDeliver {
 /// message arrives like a mesh peer's, the receiving agent replies with
 /// `send_message(reply_to)` any number of times and the chat's own tool policy applies.
 /// `Cautious` (183's one capped turn per message, the reply the turn text) is only read: from
-/// old rows, an older contact's card, and an older holder's W-40 envelope (absent = cautious).
+/// old rows and an older contact's card (absent = cautious).
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]
@@ -698,9 +698,8 @@ impl ShareMode {
     }
 }
 
-/// 183 §14.6 (D9, W-40): who a contact's message into an exported chat comes from, as the
-/// engine that holds the contact vouches for it. The chat's owner may lower `cap`, never
-/// raise it above `mutating`.
+/// 183 §14.6 (D9): who a contact's message comes from, as the engine that holds the contact
+/// vouches for it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ContactOrigin {
@@ -710,51 +709,9 @@ pub struct ContactOrigin {
     pub machine: String,
     /// The export it addressed.
     pub export: String,
-    /// `read_only` | `mutating`: the turn cap.
-    pub cap: tools::Risk,
-    /// Engine id that holds the contact and the A2A task.
-    pub holder: String,
-    /// 183 Z3-R2: the export's allowlist — the only tools that exist in this contact's
-    /// session (inbox) or turn (exported chat), besides the reply. Absent (an older holder)
-    /// = none.
-    #[serde(default)]
-    pub tools: Vec<String>,
-    /// 186 (D11): the share's mode; absent (an older holder) = cautious. The chat's owner may
-    /// lower it, never raise it.
+    /// 186 (D11): the share's mode.
     #[serde(default)]
     pub mode: ShareMode,
-}
-
-/// 183 §14.6: one contact message for an exported chat owned by another engine of the
-/// mesh, the `contact_deliver` params (W-40). There is no `from` session.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct ContactEnvelope {
-    /// The message id, minted on the holding engine.
-    pub id: Uuid,
-    /// The exported chat.
-    pub to: SessionId,
-    /// Redacted, bounded body.
-    pub text: String,
-    /// Who sent it.
-    pub origin: ContactOrigin,
-    /// The message this one answers.
-    #[serde(default)]
-    pub reply_to: Option<Uuid>,
-    /// The holder's idempotency key (the A2A `messageId`).
-    #[serde(default)]
-    pub request_id: Option<String>,
-}
-
-/// `ask` → `Result<PeerReceipt, String>`: the chat owner's intake of `contact_deliver`
-/// (W-40): this engine's policy, then one capped turn (`tools::SetTurnCap`) opened by the
-/// `<contact_message>` row (§11.6).
-#[derive(Clone, Debug)]
-pub struct ContactDeliver {
-    /// The message.
-    pub envelope: ContactEnvelope,
-    /// The forwarding engine (the RPC's `Forwarded(peer)`); `None` = the holder is this engine.
-    pub forwarder: Option<String>,
 }
 
 /// Event: communication settings changed (§10). `session: None` = the global
@@ -1082,8 +1039,6 @@ pub enum ContactRefusal {
     NoAgentMessages,
     /// W-15: the chat's owner is not connected. Z3-R2: a contact is not told which machine.
     OwnerOffline,
-    /// §13 row 52: the owner answered `-32601` to `contact_deliver`.
-    OwnerOld,
 }
 
 impl fmt::Display for ContactRefusal {
@@ -1098,7 +1053,6 @@ impl fmt::Display for ContactRefusal {
                 f.write_str("export unavailable: this chat does not take agent messages")
             }
             Self::OwnerOffline => f.write_str("the chat's machine is offline"),
-            Self::OwnerOld => f.write_str("the chat's machine needs an update"),
         }
     }
 }

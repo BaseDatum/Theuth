@@ -43,7 +43,6 @@ use agent::{
     SpendReportQuery,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
-use agent::{ContactDeliver, ContactEnvelope};
 use agent::{EndlessConfig, MemoryMode, SessionMemory, ViewLine};
 use agent::{GetPolishModel, Polish, PolishReply, Rewrite, SetPolishModel};
 use app::{
@@ -244,11 +243,6 @@ pub trait Api {
         session: SessionId,
         envelope: PeerEnvelope,
     ) -> RpcResult<PeerReceipt>;
-    /// 183 §7.10 (W-40): a contact's message for an exported chat owned here, forwarded by
-    /// the engine that holds the contact. Mesh-internal like `peer_deliver`: a call without
-    /// the `Forwarded` marker is `-32002`. Returns the owner's receipt.
-    #[method(name = "contact_deliver", with_extensions)]
-    async fn contact_deliver(&self, envelope: ContactEnvelope) -> RpcResult<PeerReceipt>;
     /// One message to many sessions (62 §0.1): the selector is resolved on
     /// the harness, each row is authorized like `send_input`, and the reply
     /// carries one outcome per session. `dry_run: true` previews the rows.
@@ -4514,39 +4508,6 @@ impl ApiServer for Server {
                 }
                 other => ErrorObjectOwned::owned(ASK_FAILED, other.to_string(), None::<()>),
             })
-    }
-
-    async fn contact_deliver(
-        &self,
-        ext: &Extensions,
-        envelope: ContactEnvelope,
-    ) -> RpcResult<PeerReceipt> {
-        let Some(forward::Forwarded(peer)) = ext.get::<forward::Forwarded>() else {
-            return Err(ErrorObjectOwned::owned(
-                UNAUTHORIZED,
-                "contact_deliver is mesh-internal",
-                None::<()>,
-            ));
-        };
-        let forwarder = Some(peer.0.clone());
-        ask::<Agents, _>(
-            agent::AGENT_ACTOR,
-            ContactDeliver {
-                envelope,
-                forwarder,
-            },
-        )
-        .await
-        .map_err(|e| {
-            // 183 §13 row 53: the chat moved; the holder retries once on the new owner.
-            if e.message()
-                .starts_with(agent::communication::network::CONTACT_NOT_OWNER)
-            {
-                ErrorObjectOwned::owned(forward::NOT_OWNER, e.message().to_owned(), None::<()>)
-            } else {
-                e
-            }
-        })
     }
 
     async fn broadcast(

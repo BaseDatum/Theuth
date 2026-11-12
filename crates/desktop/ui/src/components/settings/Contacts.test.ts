@@ -56,7 +56,6 @@ const BOB: Contact = {
   endpoint: 'k3j9q2m4x7p1r8t5w6y0zabcdefgh',
   fingerprint: 'K3J9 Q2M4 X7P1 R8T5 W6Y0',
   path: 'relay',
-  cap: 'read_only',
   exports: ['research', 'ops-chat'],
   first_contact: { research: 'allow' },
   full_capable: true,
@@ -64,7 +63,7 @@ const BOB: Contact = {
   blocked: false,
   paired_ms: NOW,
 }
-const ALICE: Contact = { ...BOB, name: 'alice', machine: 'studio', path: 'lan', cap: 'mutating', exports: ['ops-chat'], first_contact: {}, fingerprint: 'AAAA BBBB CCCC DDDD EEEE', full_capable: false }
+const ALICE: Contact = { ...BOB, name: 'alice', machine: 'studio', path: 'lan', exports: ['ops-chat'], first_contact: {}, fingerprint: 'AAAA BBBB CCCC DDDD EEEE', full_capable: false }
 const EXPORTS: Export[] = [
   { name: 'research', target: { kind: 'agent', agent: 'research@studio' }, description: 'research@studio', paused: null },
   { name: 'ops-chat', target: { kind: 'chat', session: 's-ops' }, description: 'Ops chat', paused: 'chat archived' },
@@ -213,7 +212,7 @@ test('⋯ Rename → contact_update(name), Block… and Remove… confirm → co
   const input = document.querySelector<HTMLInputElement>('input[aria-label="Contact name"]')!
   input.value = 'robert'
   await run(() => input.blur())
-  expect(api.contact_update).toHaveBeenCalledWith('bob', { name: 'robert', cap: null, exports: null, blocked: null, modes: null })
+  expect(api.contact_update).toHaveBeenCalledWith('bob', { name: 'robert', exports: null, blocked: null })
   await click('Block…')
   expect(document.querySelector('[role=alertdialog]')?.textContent).toContain('Block bob?')
   expect(api.contact_remove).not.toHaveBeenCalled()
@@ -224,7 +223,7 @@ test('⋯ Rename → contact_update(name), Block… and Remove… confirm → co
   await click('Remove')
   await vi.waitFor(() => expect(api.contact_remove).toHaveBeenCalledWith('bob', false))
   await click('Unblock')
-  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('alice', { name: null, cap: null, exports: null, blocked: false, modes: null }))
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('alice', { name: null, exports: null, blocked: false }))
   await click('Choose what bob may reach…')
   expect(navigate).toHaveBeenCalledWith({ to: '/settings/$tab', params: { tab: 'contacts' }, search: { focus: 'access:bob' } })
 })
@@ -390,7 +389,7 @@ test('§7.6 Contacts\' access: first contact → contact_first_answer; paused na
   for (const gone of ['Cautious', 'cautious', 'Full collaboration', 'Read only', 'Can change things', 'Add tool', 'search_web']) expect(body()).not.toContain(gone)
 })
 
-test('190 export picker: agents and chats (not archived, with their machine); a pick grants at once, `modes` naming only the new export as full', async () => {
+test('190 export picker: agents and chats (not archived, with their machine); a pick grants at once, the patch naming no mode', async () => {
   api.contact_list.mockImplementation(async () => [{ ...BOB, exports: ['ops-chat'] }, ALICE])
   await mount(createElement(ContactAccess))
   await click('Share with bob…')
@@ -405,12 +404,12 @@ test('190 export picker: agents and chats (not archived, with their machine); a 
   // The consent line at the moment of sharing: what the agent may do there.
   expect(body()).toContain('yours works with its normal tools and your usual approvals')
   await click('Share Launch plan with bob')
-  // A new export is put, then granted: the existing grant (ops-chat) rides in `exports` but gets no `modes` entry.
-  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: ['ops-chat', 'launch-plan'], blocked: null, modes: { 'launch-plan': 'full' } }))
+  // A new export is put, then granted: the existing grant (ops-chat) rides in `exports`; the patch names no mode.
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, exports: ['ops-chat', 'launch-plan'], blocked: null }))
   expect(api.a2a_export_put).toHaveBeenCalledWith({ name: 'launch-plan', target: { kind: 'chat', session: 's-plan' }, description: 'Launch plan', paused: null })
   vi.clearAllMocks()
   await click('Share research@studio with bob')
-  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: ['ops-chat', 'research'], blocked: null, modes: { research: 'full' } }))
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, exports: ['ops-chat', 'research'], blocked: null }))
   expect(api.a2a_export_put).not.toHaveBeenCalled()
 })
 
@@ -423,23 +422,23 @@ test('190: Share… is on for every paired contact, whatever its card says (`ful
 test('§12.10 unset: taking an export back updates the grant; the export goes once nobody holds it', async () => {
   await mount(createElement(ContactAccess))
   await click('Stop sharing research@studio with bob')
-  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: ['ops-chat'], blocked: null, modes: null }))
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, exports: ['ops-chat'], blocked: null }))
   expect(api.a2a_export_remove).toHaveBeenCalledWith('research')
   vi.clearAllMocks()
   // alice still holds ops-chat: the export stays.
   await click('Stop sharing Ops chat with bob')
-  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: ['research'], blocked: null, modes: null }))
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, exports: ['research'], blocked: null }))
   expect(api.a2a_export_remove).not.toHaveBeenCalled()
 })
 
-test('⋯ Share with contact…: one Share per contact grants this chat (`modes` full for it alone), Shared · Stop takes it back; Stop sharing with <contacts> removes the export', async () => {
+test('⋯ Share with contact…: one Share per contact grants this chat, Shared · Stop takes it back; Stop sharing with <contacts> removes the export', async () => {
   await mount(createElement(ShareDialog, { session: 's-ops', title: 'Ops chat', onClose: vi.fn() }))
   expect(body()).toContain("They see only what this chat's agent sends back")
   expect(body()).toContain('You can stop sharing at any time.')
   expect(body()).toContain('A contact reaches only what you share. Their agent and yours talk freely, with Markdown, links and images, and yours works with its normal tools and your usual approvals.')
   for (const gone of ['Cautious', 'Full collaboration', 'read only', 'can change things']) expect(body()).not.toContain(gone)
   await click('Stop sharing with bob')
-  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: ['research'], blocked: null, modes: null }))
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, exports: ['research'], blocked: null }))
   await reset()
   api.contact_list.mockImplementation(async () => [{ ...BOB, exports: ['research'] }, { ...ALICE, exports: [] }])
   await mount(createElement(ShareDialog, { session: 's-new', title: 'New chat', onClose: vi.fn() }))
@@ -451,7 +450,7 @@ test('⋯ Share with contact…: one Share per contact grants this chat (`modes`
   expect(body()).not.toContain('to share')
   await click('Share this chat with bob')
   await vi.waitFor(() => expect(api.a2a_export_put).toHaveBeenCalledWith({ name: 'new-chat', target: { kind: 'chat', session: 's-new' }, description: 'New chat', paused: null }))
-  expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: ['research', 'new-chat'], blocked: null, modes: { 'new-chat': 'full' } })
+  expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, exports: ['research', 'new-chat'], blocked: null })
   await reset()
   api.contact_list.mockImplementation(async () => [BOB, ALICE])
   const onShare = vi.fn()

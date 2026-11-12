@@ -40,7 +40,7 @@ import type { FirstWaiting } from '@/rpc/bindings/FirstWaiting'
 import type { PairCeremony } from '@/rpc/bindings/PairCeremony'
 import type { PeerPath } from '@/rpc/bindings/PeerPath'
 
-const NO_PATCH: ContactPatch = { name: null, cap: null, exports: null, blocked: null, modes: null }
+const NO_PATCH: ContactPatch = { name: null, exports: null, blocked: null }
 const PATH: Record<PeerPath, [string, string]> = { lan: ['LAN', 'bg-success'], relay: ['Relay', 'bg-warning'], offline: ['offline', 'ring-1 ring-fg-tertiary ring-inset'] }
 const CHIP = 'inline-flex items-center gap-1 rounded-full border border-border-subtle px-2 py-0.5 text-xs text-fg-secondary'
 const FIRST: [FirstContact, string][] = [
@@ -629,8 +629,7 @@ export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { 
 }
 
 /** Grant `target` to `contact`: its export when one exists, else a new one named from `title` (`a2a_export_put`), then
- * `contact_update(exports, modes)`. 190 D2: every share is full; `modes` names the new export only (the engine keeps
- * `ContactPatch.modes` until 191 and ignores `full`). */
+ * `contact_update(exports)`. Every share is full (190 D2), so the patch names no mode. */
 export function useGrant() {
   const api = useApi()
   return useAction(
@@ -642,7 +641,7 @@ export function useGrant() {
           exp = { name: exportName(title, all.map((x) => x.name)), target, description: title, paused: null }
           await api.a2a_export_put(exp)
         }
-        if (!contact.exports.includes(exp.name)) await api.contact_update(contact.name, { ...NO_PATCH, exports: [...contact.exports, exp.name], modes: { [exp.name]: 'full' } })
+        if (!contact.exports.includes(exp.name)) await api.contact_update(contact.name, { ...NO_PATCH, exports: [...contact.exports, exp.name] })
       })(),
     { keys: [queryKeys.contacts, queryKeys.exports] },
   )

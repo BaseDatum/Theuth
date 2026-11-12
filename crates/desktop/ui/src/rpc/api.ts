@@ -270,7 +270,6 @@ import type { NearbyAgent } from '@/rpc/bindings/NearbyAgent'
 import type { Export } from '@/rpc/bindings/Export'
 import type { FirstContact } from '@/rpc/bindings/FirstContact'
 import type { FirstWaiting } from '@/rpc/bindings/FirstWaiting'
-import type { ContactEnvelope } from '@/rpc/bindings/ContactEnvelope'
 import type { DesktopAccess } from '@/rpc/bindings/DesktopAccess'
 import type { Handoff } from '@/rpc/bindings/Handoff'
 import type { LogLine } from '@/rpc/bindings/LogLine'
@@ -1085,8 +1084,6 @@ export interface Api {
   path_complete(session: SessionId | null, input: string, cursor: number, engine?: string | null): Promise<PathCompletion>
   /** Mesh-internal (62 §0.1): a peer's envelope delivered to `session`; anything but a mesh peer is `UNAUTHORIZED`. */
   peer_deliver(session: SessionId, envelope: PeerEnvelope): Promise<PeerReceipt>
-  /** Mesh-internal (183 W-40): a contact's message for an exported chat owned here; anything but a mesh peer is `UNAUTHORIZED`. */
-  contact_deliver(envelope: ContactEnvelope): Promise<PeerReceipt>
   /** One exchange as `session` recorded it (50 §5.2); never another session's history. */
   peer_message(session: SessionId, id: string): Promise<PeerRecord>
   /** Write base64 `bytes` to `<data_dir>/attachments/<sha256[..16]>.<ext>`; returns the path for `send_input.files`. */
@@ -1534,7 +1531,6 @@ export const METHODS = [
   'config_flag_get',
   'config_flag_set',
   'contact_answer',
-  'contact_deliver',
   'contact_first_answer',
   'contact_first_waiting',
   'contact_list',

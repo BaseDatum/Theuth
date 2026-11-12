@@ -39,8 +39,6 @@ pub struct A2aConfig {
     pub mdns_types: Vec<String>,
     /// 183 §9.3: how long an Add contact window (and its invite ticket) stays open.
     pub contact_window_secs: u64,
-    /// 183 §9.3: the cap a new contact gets (`read_only` | `mutating`).
-    pub contact_cap: tools::Risk,
 }
 
 /// 183 §9.3: `a2a.mdns_types` default: draft-zhao first, then the two rival types.
@@ -54,7 +52,6 @@ impl Default for A2aConfig {
             public_url: None,
             mdns_types: MDNS_TYPES.map(str::to_owned).to_vec(),
             contact_window_secs: 600,
-            contact_cap: tools::Risk::ReadOnly,
         }
     }
 }
@@ -158,8 +155,8 @@ pub struct PeerEntry {
     /// 183 (after C3): the contact's machine, from its card's `EXT_MACHINE` extension.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
-    /// 183 §7.6: the contact's risk cap; `None` = `a2a.contact_cap`. 190 (D9): read, never
-    /// written; it binds only a W-40 turn.
+    /// 183 §7.6: the contact's risk cap. 191: read and dropped, never written (a contact has no
+    /// cap; an old file's key still loads).
     #[serde(default, skip_serializing)]
     pub cap: Option<tools::Risk>,
     /// 183 §7.6 (W-27): export → first-contact answer; a missing export is `ask`.
@@ -187,7 +184,6 @@ impl PeerEntry {
         self.endpoint.is_some()
             || self.name.is_some()
             || self.machine.is_some()
-            || self.cap.is_some()
             || !self.first_contact.is_empty()
             || self.blocked
             || self.paired_ms.is_some()
@@ -214,12 +210,6 @@ pub struct ExportEntry {
     /// dropped, never written.
     #[serde(default, skip_serializing)]
     pub tools: Vec<String>,
-}
-
-/// 183 Z3-R2: what a contact's capped turn may use besides the reply: the public web only.
-// W-40 only; removed by design 191 (contacts are mesh-wide)
-pub fn default_contact_tools() -> Vec<String> {
-    vec!["search_web".into(), "read_url".into()]
 }
 
 /// A resolved credential: zeroized on drop, never printed.
@@ -288,7 +278,7 @@ impl Peer {
 }
 
 /// 183 §9.4: what a contact entry adds beyond its [`Peer`] grant. Kept apart from [`Peer`] so
-/// a first-contact answer or a cap change is not a new grant epoch (open tasks survive it).
+/// a first-contact answer is not a new grant epoch (open tasks survive it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContactFacts {
     /// 191 (D2): its record (a merge group's root); `""` for a `peers.yaml` entry (an import).
@@ -303,8 +293,6 @@ pub struct ContactFacts {
     pub display: String,
     /// Its machine, from its card.
     pub machine: String,
-    /// `read_only` | `mutating`.
-    pub cap: tools::Risk,
     /// Export → answer; absent = `ask`.
     pub first_contact: BTreeMap<String, FirstContact>,
     /// Refused at the gate; a blocked contact is in no route.
@@ -408,17 +396,13 @@ impl Staged {
     }
 
     /// 183 F4: the exports `alias` holds in both sets with the same authority — the same
-    /// session (chat) or agent — under the same contact cap: a first message held for one of
+    /// session (chat) or agent: a first message held for one of
     /// them may wait on into the next epoch; any other was admitted under authority that is
     /// gone. A title or description edit changes no authority.
     pub fn unchanged_exports(&self, next: &Staged, alias: &str) -> Vec<String> {
         let (Some(a), Some(b)) = (self.peers.get(alias), next.peers.get(alias)) else {
             return Vec::new();
         };
-        let cap = |s: &Staged| s.contacts.get(alias).map(|c| c.cap);
-        if cap(self) != cap(next) {
-            return Vec::new();
-        }
         b.exports
             .iter()
             .filter(|e| {
@@ -598,7 +582,6 @@ fn grant_chat(name: &str, export: &str, staged: &mut Staged, errors: &mut Vec<St
 fn stage_contact<'a>(
     name: &'a str,
     p: &'a PeerEntry,
-    contact_cap: tools::Risk,
     pins: &mut HashMap<&'a str, &'a str>,
     staged: &mut Staged,
     errors: &mut Vec<String>,
@@ -626,10 +609,6 @@ fn stage_contact<'a>(
         errors.push(format!(
             "peers {other} and {name} pin the same endpoint; one contact per endpoint"
         ));
-    }
-    let cap = p.cap.unwrap_or(contact_cap);
-    if cap > tools::Risk::Mutating {
-        errors.push(format!("peer {name}: cap {cap:?}: read_only or mutating"));
     }
     if !p.blocked {
         for export in &p.exports {
@@ -660,7 +639,6 @@ fn stage_contact<'a>(
             eids: vec![eid.to_owned()],
             display: p.name.clone().unwrap_or_else(|| name.to_owned()),
             machine: p.machine.clone().unwrap_or_default(),
-            cap: cap.min(tools::Risk::Mutating),
             first_contact: p.first_contact.clone(),
             blocked: p.blocked,
             paired_ms: p.paired_ms.unwrap_or_default(),
@@ -670,15 +648,13 @@ fn stage_contact<'a>(
 }
 
 /// Validate the whole file (§6.1). `console` is the RPC console token, which
-/// no peer credential may equal; `contact_cap` is `a2a.contact_cap`, the cap of a contact
-/// entry without its own. Returns every problem, not the first.
+/// no peer credential may equal. Returns every problem, not the first.
 pub fn stage(
     file: &PeersFile,
     resolve: Resolve<'_>,
     console: Option<&str>,
-    contact_cap: tools::Risk,
 ) -> Result<Staged, Vec<String>> {
-    stage_on(Staged::default(), file, resolve, console, contact_cap)
+    stage_on(Staged::default(), file, resolve, console)
 }
 
 /// 191 (D2): [`stage`] onto `base` (what the contact records staged: their exports, which
@@ -689,7 +665,6 @@ pub fn stage_on(
     file: &PeersFile,
     resolve: Resolve<'_>,
     console: Option<&str>,
-    contact_cap: tools::Risk,
 ) -> Result<Staged, Vec<String>> {
     let mut errors = Vec::new();
     let mut staged = base;
@@ -778,7 +753,7 @@ pub fn stage_on(
             continue;
         }
         if p.is_contact() {
-            stage_contact(name, p, contact_cap, &mut pins, &mut staged, &mut errors);
+            stage_contact(name, p, &mut pins, &mut staged, &mut errors);
             continue;
         }
         let outbound_side =
@@ -914,15 +889,6 @@ mod tests {
 
     fn file(yaml: &str) -> PeersFile {
         serde_yaml::from_str(yaml).unwrap()
-    }
-
-    /// [`super::stage`] with `a2a.contact_cap` at its default.
-    fn stage(
-        file: &PeersFile,
-        resolve: Resolve<'_>,
-        console: Option<&str>,
-    ) -> Result<Staged, Vec<String>> {
-        super::stage(file, resolve, console, tools::Risk::ReadOnly)
     }
 
     const S: &[(&str, &str)] = &[
@@ -1063,15 +1029,13 @@ exports:
   ops-chat: {{ session: "00000000-0000-0000-0000-000000000003", name: Ops }}
 "#
         ));
-        let s = super::stage(&f, &resolver(S), None, tools::Risk::ReadOnly).unwrap();
+        let s = stage(&f, &resolver(S), None).unwrap();
         assert_eq!(s.peers["bob"].endpoint(), format!("iroh:{bob}"));
         assert!(
             !s.peers.contains_key("eve"),
             "a blocked contact has no route"
         );
         assert!(s.contacts["eve"].blocked);
-        assert_eq!(s.contacts["eve"].cap, tools::Risk::ReadOnly);
-        assert_eq!(s.contacts["bob"].cap, tools::Risk::Mutating);
         assert_eq!(s.contacts["bob"].machine, "Bob's MacBook");
         assert_eq!(s.contact_by_eid(&eve), Some("eve"));
         assert_eq!(s.agents["research"].agent, "research@xeus");
@@ -1097,7 +1061,6 @@ exports:
         let errors = stage(&f, &resolver(S), None).unwrap_err();
         for e in [
             "peer bob: a contact takes no card_url, secrets, sessions or allow_private",
-            "peer bob: cap Destructive: read_only or mutating",
             "peers bob and bob2 pin the same endpoint; one contact per endpoint",
             "peer nopin: a contact needs its endpoint",
             "peer lab: export research is an agent export; only contacts reach agents",
@@ -1170,20 +1133,19 @@ exports:
     }
 
     /// 183 F4 (review 1, 2): a held first message may outlive a grant change only for an
-    /// export whose authority is unchanged: a chat re-pointed to another session, a removed
-    /// grant or a changed contact cap each drop it; a new title or description keeps it, and
-    /// so does a hand-edited `tools` list (190 D9: read and dropped).
+    /// export whose authority is unchanged: a chat re-pointed to another session or a removed
+    /// grant each drop it; a new title or description keeps it, and so does a hand-edited
+    /// `tools` list (190 D9: read and dropped).
     #[test]
     fn only_unchanged_exports_keep_held_messages_across_a_grant_change() {
         let bob = iroh::SecretKey::from_bytes(&[7; 32]).public().to_string();
-        let staged = |cap: &str, chat: u8, tools: &str, grants: &str, words: &str| {
+        let staged = |chat: u8, tools: &str, grants: &str, words: &str| {
             super::stage(
                 &file(&format!(
                     r#"
 peers:
   bob:
     endpoint: {bob}
-    cap: {cap}
     exports: [{grants}]
 exports:
   chat: {{ session: "00000000-0000-0000-0000-00000000000{chat}", name: Chat{words}, description: "About{words}" }}
@@ -1193,60 +1155,30 @@ exports:
                 )),
                 &resolver(S),
                 None,
-                tools::Risk::ReadOnly,
             )
             .unwrap()
         };
-        let base = staged("read_only", 1, "search_web", "chat, agent, other", "");
+        let base = staged(1, "search_web", "chat, agent, other", "");
         let same = |n: &Staged| base.unchanged_exports(n, "bob");
         assert_eq!(
-            same(&staged(
-                "read_only",
-                1,
-                "search_web",
-                "chat, agent, other",
-                " v2"
-            )),
+            same(&staged(1, "search_web", "chat, agent, other", " v2")),
             ["chat", "agent", "other"],
             "a title or description edit keeps every hold"
         );
         assert_eq!(
-            same(&staged("read_only", 1, "search_web", "chat, agent", "")),
+            same(&staged(1, "search_web", "chat, agent", "")),
             ["chat", "agent"],
             "a removed grant drops only its own holds"
         );
         assert_eq!(
-            same(&staged(
-                "read_only",
-                2,
-                "search_web",
-                "chat, agent, other",
-                ""
-            )),
+            same(&staged(2, "search_web", "chat, agent, other", "")),
             ["agent", "other"],
             "the chat now names another session"
         );
         assert_eq!(
-            same(&staged(
-                "read_only",
-                1,
-                "read_url",
-                "chat, agent, other",
-                ""
-            )),
+            same(&staged(1, "read_url", "chat, agent, other", "")),
             ["chat", "agent", "other"],
             "an export's tools are no authority any more"
-        );
-        assert!(
-            same(&staged(
-                "mutating",
-                1,
-                "search_web",
-                "chat, agent, other",
-                ""
-            ))
-            .is_empty(),
-            "a changed cap drops every hold"
         );
     }
 

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::A2aActor;
-use crate::config::{FirstContact, PeersFile, ShareMode};
+use crate::config::{FirstContact, PeersFile};
 
 pub mod ceremony;
 pub mod discovery;
@@ -86,8 +86,6 @@ pub struct Contact {
     pub fingerprint: String,
     /// How it is reached right now.
     pub path: mesh::PeerPath,
-    /// Its risk cap (`read_only` | `mutating`).
-    pub cap: tools::Risk,
     /// Export names granted to it.
     pub exports: Vec<String>,
     /// Export → first-contact answer; a missing export is `ask`.
@@ -153,18 +151,10 @@ pub struct FirstWaiting {
 pub struct ContactPatch {
     /// Rename (the alias).
     pub name: Option<String>,
-    /// New cap; lowering it applies to live inbox sessions at once (§7.6).
-    // 190: inert (every share is full): accepted and ignored.
-    pub cap: Option<tools::Risk>,
     /// The granted export names, whole.
     pub exports: Option<Vec<String>>,
     /// Block or unblock.
     pub blocked: Option<bool>,
-    /// 186 (D1, D3): export → share mode, merged per entry into the contact's modes; a newly
-    /// granted export must have one.
-    // 190 (D2): deprecated for one release: `full` is accepted and ignored, `cautious` is
-    // refused (every share is full).
-    pub modes: Option<BTreeMap<String, ShareMode>>,
 }
 
 /// `contact_pair`: whom to start the ceremony with.
@@ -1675,7 +1665,6 @@ fn contact_view(
         endpoint: c.eid.clone(),
         fingerprint: fingerprint(&c.eid),
         path: reach::path(net, &c.eid),
-        cap: c.cap,
         exports: peer.map(|p| p.exports.clone()).unwrap_or_default(),
         first_contact: c.first_contact.clone(),
         blocked: c.blocked,
@@ -1688,14 +1677,13 @@ fn contact_view(
 }
 
 /// 191 (D2): a quarantined record as `contact_list` shows it: refused, its problem said.
-fn quarantined_view(q: &crate::config::Quarantined, cap: tools::Risk) -> Contact {
+fn quarantined_view(q: &crate::config::Quarantined) -> Contact {
     Contact {
         name: q.alias.clone(),
         machine: clip(&q.machine),
         endpoint: q.eid.clone(),
         fingerprint: fingerprint(&q.eid),
         path: mesh::PeerPath::Offline,
-        cap,
         exports: Vec::new(),
         first_contact: BTreeMap::new(),
         blocked: false,
@@ -1745,12 +1733,7 @@ impl crate::Ctx {
                 Some(c)
             })
             .collect();
-        out.extend(
-            live.staged
-                .quarantined
-                .iter()
-                .map(|q| quarantined_view(q, self.cfg.contact_cap)),
-        );
+        out.extend(live.staged.quarantined.iter().map(quarantined_view));
         out
     }
 
@@ -1881,16 +1864,6 @@ impl crate::Ctx {
     pub(crate) async fn update_contact(&self, m: ContactUpdate) -> Result<Contact, String> {
         use agent::store::contacts::{Cell, RecordTable, RecordWrite};
         let ContactUpdate { name, patch } = m;
-        // 190 (D2): every share is full; `cap` is inert (accepted and ignored). Review 1: a
-        // share is never refused for the contact's version (no compatibility with older builds).
-        if patch
-            .modes
-            .iter()
-            .flat_map(|m| m.values())
-            .any(|m| *m == ShareMode::Cautious)
-        {
-            return Err("cautious shares are gone: every share is full".into());
-        }
         let r = self.records().await?;
         let a = records::analyze(&r);
         let members = Self::targets(&a, &r, &name, false)?;

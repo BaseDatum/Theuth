@@ -118,49 +118,8 @@ pub async fn forward(
     }
 }
 
-/// 183 W-40: `contact_deliver` on the exported chat's owner (`rpc` serves it).
-pub const CONTACT_METHOD: &str = "contact_deliver";
-/// JSON-RPC "method not found": an owner too old for `contact_deliver` (§13 row 52).
-pub const METHOD_NOT_FOUND: i32 = -32601;
 /// `rpc::forward::NOT_OWNER`: the chat moved (§13 row 53).
 pub const NOT_OWNER: i32 = -32013;
-
-/// 183 W-40: why a `contact_deliver` yielded no receipt.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ContactFailure {
-    /// Not connected, no answer: "the chat is on …, which is offline".
-    Offline,
-    /// `-32601`: "… needs an update".
-    Old,
-    /// `-32013`: the chat moved; retry once on the new owner.
-    NotOwner,
-    /// The owner's intake refused it (its policy, the chat paused): its message.
-    Refused(String),
-}
-
-/// One `contact_deliver(envelope)` to `owner` over `theuth/rpc/1`, within [`TIMEOUT`].
-pub async fn contact_forward(
-    transport: &dyn Transport,
-    owner: &PeerId,
-    envelope: &super::ContactEnvelope,
-) -> Result<PeerReceipt, ContactFailure> {
-    let rp = call(
-        transport,
-        owner,
-        CONTACT_METHOD,
-        serde_json::json!([envelope]),
-    )
-    .await
-    .map_err(|_| ContactFailure::Offline)?;
-    match (rp.result, rp.error) {
-        (Some(receipt), _) => Ok(receipt),
-        (None, Some(e)) if e.code == METHOD_NOT_FOUND => Err(ContactFailure::Old),
-        (None, Some(e)) if e.code == NOT_OWNER => Err(ContactFailure::NotOwner),
-        (None, Some(e)) if e.code == OWNER_UNREACHABLE => Err(ContactFailure::Offline),
-        (None, Some(e)) => Err(ContactFailure::Refused(e.message)),
-        (None, None) => Err(ContactFailure::Offline),
-    }
-}
 
 /// One request line to `owner` and its response line.
 async fn call(

@@ -262,11 +262,6 @@ async fn a_ticket_ceremony_pins_both_sides_after_both_accept() {
         (k.clone(), v.clone())
     };
     assert_eq!(facts.eid, b.eid());
-    assert_eq!(
-        facts.cap,
-        tools::Risk::ReadOnly,
-        "a new contact is read_only"
-    );
     assert!(facts.paired_ms > 0);
     assert!(!a.ctx.window_open(), "success closes the inviter's window");
     assert!(matches!(a.ctx.gate(&b.eid()), IrohGate::Contact { alias: x, .. } if x == alias));
@@ -1511,30 +1506,24 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
         })
         .await
         .unwrap();
-    let share = |modes: Option<ShareMode>| {
+    let share = || {
         a.ctx.update_contact(ContactUpdate {
             name: a_alias.clone(),
             patch: ContactPatch {
                 exports: Some(vec!["proj".into()]),
-                modes: modes.map(|m| std::collections::BTreeMap::from([("proj".into(), m)])),
                 ..ContactPatch::default()
             },
         })
     };
-    // D2: `cautious` is refused.
-    let cautious = share(Some(ShareMode::Cautious)).await.unwrap_err();
-    assert_eq!(cautious, "cautious shares are gone: every share is full");
     // Review 1: a contact whose card does not (yet) collaborate in full is shared with all
     // the same.
     until("A read B's card", || a.ctx.full_of(&b.eid()).then_some(())).await;
     if let Some(c) = a.ctx.offers.lock().get_mut(&b.eid()) {
         c.full = false;
     }
-    let shared = share(None).await.unwrap();
+    let shared = share().await.unwrap();
     assert!(!shared.full_capable);
     assert_eq!(shared.exports, ["proj"]);
-    // `full` is accepted and ignored.
-    share(Some(ShareMode::Full)).await.unwrap();
     a.ctx.refresh_offers(&b.eid()).await;
     until("B sees proj shared in full", || {
         b.ctx
@@ -1829,7 +1818,7 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
     );
 
     // 190 (D8): re-pointed to another chat, the export stays shared, in full.
-    share(None).await.unwrap();
+    share().await.unwrap();
     let other = chat_of(a_agents.clone()).await;
     a.ctx
         .put_export(Export {

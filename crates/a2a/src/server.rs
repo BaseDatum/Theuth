@@ -593,7 +593,7 @@ struct Handler {
     subscribers: Arc<Semaphore>,
     /// Binding → grant epoch of the configuration these routes belong to.
     epochs: Arc<HashMap<Uuid, CancellationToken>>,
-    /// 183 §7.6: contact binding → its alias and facts (cap, machine, first contact).
+    /// 183 §7.6: contact binding → its alias and facts (machine, first contact).
     grants: Arc<HashMap<Uuid, ContactGrant>>,
 }
 
@@ -622,19 +622,13 @@ impl Handler {
 
     async fn admit(&self, params: &ServiceParams) -> Result<A2aPrincipal, A2AError> {
         let (binding, route) = self.caller(params)?;
-        // 183 §7.6: a contact's origin rides with every admission: the first-contact hold, and
-        // (W-40) what a chat owned by another engine of the mesh caps the contact's turn at.
+        // 183 §7.6: a contact's origin rides with every admission (the first-contact hold).
         // 190 (D1): every share is full.
         let grant = self.grants.get(&binding);
         let contact = grant.map(|g| agent::communication::ContactOrigin {
             contact: g.alias.clone(),
             machine: g.facts.machine.clone(),
             export: self.export.clone(),
-            // W-40 only; removed by design 191 (contacts are mesh-wide)
-            cap: g.facts.cap,
-            holder: mesh::self_id().unwrap_or_default(),
-            // W-40 only; removed by design 191 (contacts are mesh-wide)
-            tools: crate::config::default_contact_tools(),
             mode: agent::ShareMode::Full,
         });
         let ask_first = match grant.map(|g| g.facts.first_contact.get(&self.export)) {
@@ -1486,7 +1480,6 @@ mod tests {
                     eids: vec![b.id.0.clone()],
                     display: "bob".into(),
                     machine: "Bob's MacBook".into(),
-                    cap: tools::Risk::ReadOnly,
                     first_contact: BTreeMap::new(),
                     blocked,
                     paired_ms: 1,
@@ -1559,7 +1552,6 @@ mod tests {
                 eids: vec!["bob-eid".into()],
                 display: "bob".into(),
                 machine: String::new(),
-                cap: tools::Risk::ReadOnly,
                 first_contact: BTreeMap::new(),
                 blocked: false,
                 paired_ms: 1,
