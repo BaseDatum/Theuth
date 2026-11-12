@@ -81,9 +81,8 @@ impl Model {
             Entry::Tool {
                 name,
                 result: None,
-                scrape,
                 ..
-            } => Some(self.entry_summary(e).or_else(|| scrape.clone()).unwrap_or_else(|| format!("running {name}…"))),
+            } => Some(self.entry_summary(e).unwrap_or_else(|| format!("running {name}…"))),
             Entry::Pending {
                 name,
                 progress: Some(p),

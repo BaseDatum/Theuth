@@ -395,7 +395,7 @@ pub(crate) use advisor::{AdvisorReply};
 pub use agents::{AgentRow, sort_agents, agent_row, WATCH_GLYPH, source_tag, observed_word};
 use agents::{rank, harness_word};
 pub use approvals::{DoubleCmd, double_chip, Ask};
-pub use artifacts::{Owner, artifact_rows, APP_WHERE, bytes_label, Progress, progress_line, scrape_line, artifact_size, artifact_row};
+pub use artifacts::{Owner, artifact_rows, APP_WHERE, bytes_label, Progress, progress_line, artifact_size, artifact_row};
 use artifacts::{SHOW, APP};
 pub(crate) use artifacts::{artifact_read_path, artifact_text};
 pub use catalog::{PickTarget, ModelRow, rank_models, providers, provider_models, title_model_line, vision_model_line, aws_profile_line};

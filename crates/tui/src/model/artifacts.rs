@@ -251,31 +251,6 @@ pub fn progress_line(tool: &str, p: &Progress) -> String {
     }
 }
 
-/// The spinner row of a running scrape tool from its latest `ScrapeProgress`
-/// (design doc 38): `crawling… 3/50 · example.com` (host of the first URL in
-/// flight), `mapping… 120/500` for `map_site`, `reading example.com…` for
-/// `scrape_url`, `searching…` then `reading 2/5 · example.com` for
-/// `search_web` (16 §2); `running <tool>…` for anything else.
-pub fn scrape_line(tool: &str, p: &web::progress::ScrapeProgress) -> String {
-    let at = p.inflight.first().or(p.done.last()).map_or("", |u| host(u));
-    let n = p.done.len();
-    match tool.strip_prefix("↳ ").unwrap_or(tool) {
-        "crawl" if at.is_empty() => format!("crawling… {n}/{}", p.limit),
-        "crawl" => format!("crawling… {n}/{} · {at}", p.limit),
-        "map_site" => format!("mapping… {n}/{}", p.limit),
-        "scrape_url" => format!("reading {at}…"),
-        "search_web" if at.is_empty() => "searching…".to_owned(),
-        "search_web" => format!("reading {n}/{} · {at}", p.limit),
-        _ => format!("running {tool}…"),
-    }
-}
-
-/// `example.com` from `https://example.com/a/b`; the input when it has no scheme or path.
-fn host(url: &str) -> &str {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    rest.split('/').next().unwrap_or(rest)
-}
-
 /// The kind-specific size of an artifact card header (35 §6.1): pages for a
 /// compiled PDF, bytes otherwise. Drawn every frame, so nothing here touches
 /// the file; the line count shows in the expanded body.

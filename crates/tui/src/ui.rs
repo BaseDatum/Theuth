@@ -2163,7 +2163,6 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16, summary: Option<Stri
             result,
             expanded,
             job,
-            scrape,
             ..
         } => {
             // Live job output: rows clipped, not wrapped, so the block never
@@ -2179,7 +2178,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16, summary: Option<Stri
             });
             let summary = match result {
                 None => (
-                    format!("{spinner} {}", summary.as_deref().or(scrape.as_deref()).unwrap_or("running…")),
+                    format!("{spinner} {}", summary.as_deref().unwrap_or("running…")),
                     SAND,
                 ),
                 Some((output, is_error)) => {
