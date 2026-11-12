@@ -278,6 +278,10 @@ impl runtime::Plugin for DreamingPlugin {
         "dreaming"
     }
 
+    async fn declare_wire(&mut self, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await
+    }
+
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
         declare_wire(rt).await?;
         let cfg: DreamConfig = rt.section("dreaming").unwrap_or_else(|e| {

@@ -56,6 +56,11 @@ impl runtime::Plugin for RpcPlugin {
         "rpc"
     }
 
+    async fn declare_wire(&mut self, rt: &Runtime) -> anyhow::Result<()> {
+        use wire::RuntimeWire as _;
+        rt.register_wire_event::<api::StreamControl>().await
+    }
+
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
         let module = self.module;
         let mut cfg: RpcConfig = rt.section("rpc").unwrap_or_default();

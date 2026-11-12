@@ -663,6 +663,10 @@ impl runtime::Plugin for ToolsPlugin {
         "tools"
     }
 
+    async fn declare_wire(&mut self, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await
+    }
+
     async fn start(self: Box<Self>, rt: &runtime::Runtime) -> anyhow::Result<()> {
         declare_wire(rt).await?;
         seat::set_data_dir(&rt.data_dir);

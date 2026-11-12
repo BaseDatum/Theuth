@@ -192,12 +192,70 @@ pub async fn connect(running: &Running) -> anyhow::Result<WsClient> {
         "Authorization",
         HeaderValue::from_str(&format!("Bearer {token}"))?,
     );
-    Ok(WsClientBuilder::default()
+    let client = WsClientBuilder::default()
         .set_headers(headers)
         .max_request_size(64 << 20)
         .max_response_size(64 << 20)
         .build(format!("ws://{listen}"))
-        .await?)
+        .await?;
+    // Take the cache out while awaiting the peer: unrelated endpoints never
+    // wait behind a network operation, and no old support escapes this barrier.
+    static CACHE: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashMap<String, rpc_core::DiscoveryCache>>> = std::sync::LazyLock::new(Default::default);
+    let caches = &*CACHE;
+    let mut cache = caches.lock().remove(listen).unwrap_or_default();
+    let negotiated = cache.negotiate(&client, listen, rpc_core::DiscoveryView::Owner).await;
+    caches.lock().insert(listen.to_owned(), cache);
+    negotiated?;
+    Ok(client)
 }
 
 
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+    use rpc_core::{Discovery, DiscoveryCache, DiscoveryView};
+
+    fn module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+        crate::rpc_module(server).module
+    }
+
+    fn composed(plugins: &[&str], version: &str) -> Local {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let described = crate::rpc_module(rpc_core::Server::new(rt.clone()));
+        let discovery = Discovery {
+            descriptors: described.descriptors,
+            plugins: plugins.iter().map(|name| (*name).to_owned()).collect(),
+            ..Default::default()
+        };
+        rpc_core::freeze_discovery(&rt, &discovery, version).unwrap();
+        Local::new(rt, module)
+    }
+
+    #[tokio::test]
+    async fn reconnect_fetches_fresh_summary_and_failover_invalidates_old_contract() {
+        let mut cache = DiscoveryCache::default();
+        let first = cache.negotiate(&composed(&["rpc"], "old"), "engine", DiscoveryView::Owner).await.unwrap().unwrap();
+        let reconnect = cache.negotiate(&composed(&["rpc"], "rebuilt"), "engine", DiscoveryView::Owner).await.unwrap().unwrap();
+        assert_eq!(first.capabilities.schema_hash, reconnect.capabilities.schema_hash);
+        assert_eq!(reconnect.capabilities.server_version, "rebuilt");
+        let failover = cache.negotiate(&composed(&["rpc", "new-plugin"], "failover"), "engine", DiscoveryView::Owner).await.unwrap().unwrap();
+        assert_ne!(first.capabilities.schema_hash, failover.capabilities.schema_hash);
+        let document: serde_json::Value = serde_json::from_str(failover.document.0.get()).unwrap();
+        assert_eq!(document["x-theuth"]["plugins"], serde_json::json!(["new-plugin", "rpc"]));
+        let guest = cache.negotiate(&composed(&["rpc"], "guest-view"), "other-engine", DiscoveryView::Guest).await.unwrap().unwrap();
+        assert_eq!(guest.capabilities.server_version, "guest-view");
+    }
+
+    #[tokio::test]
+    async fn only_method_not_found_selects_legacy_never_a_failed_current_summary() {
+        fn legacy(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+            jsonrpsee::RpcModule::new(server)
+        }
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let mut cache = DiscoveryCache::default();
+        cache.negotiate(&composed(&["rpc"], "build"), "engine", DiscoveryView::Owner).await.unwrap().unwrap();
+        assert!(cache.negotiate(&Local::new(rt.clone(), module), "engine", DiscoveryView::Owner).await.is_err());
+        assert!(cache.negotiate(&Local::new(rt, legacy), "engine", DiscoveryView::Owner).await.unwrap().is_none());
+    }
+}

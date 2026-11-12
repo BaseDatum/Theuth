@@ -594,5 +594,3 @@ impl SettingsConfigExt for Server {
 #[cfg(test)]
 #[path = "api/tests.rs"]
 mod tests;
-#[cfg(all(test, feature = "ts"))]
-pub(crate) use tests::test_rpc_module;

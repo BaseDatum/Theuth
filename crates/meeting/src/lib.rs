@@ -4673,6 +4673,10 @@ impl runtime::Plugin for MeetingPlugin {
         "meeting"
     }
 
+    async fn declare_wire(&mut self, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await
+    }
+
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
         declare_wire(rt).await?;
         let cfg: MeetingConfig = rt.section("meeting").unwrap_or_else(|e| {

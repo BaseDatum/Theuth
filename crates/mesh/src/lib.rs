@@ -1215,6 +1215,10 @@ impl runtime::Plugin for MeshPlugin {
         "mesh"
     }
 
+    async fn declare_wire(&mut self, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await
+    }
+
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
         declare_wire(rt).await?;
         // SIGTERM: release the lease gracefully (67 §4.6), then stop — armed
