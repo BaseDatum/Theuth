@@ -216,6 +216,8 @@ pub struct CoreView<'a> {
     pub reasoning: bool,
     /// Once-decoded agent event shared with the core reducer for this dispatch.
     pub agent: Option<&'a agent::AgentEvent>,
+    /// The current event passes canonical descendant membership/admission policy.
+    pub descendant_event: bool,
     /// Accepted transcript entries; components retain only their own projection.
     pub entries: &'a [crate::model::Entry],
 
@@ -297,7 +299,7 @@ pub trait SessionMembers: Sync {
     /// Borrow canonical descendant metadata without a presentation cache.
     fn agent_info(&self, id: SessionId) -> Option<&agent::AgentInfo>;
     /// Visit canonical descendants without allocating an inventory projection.
-    fn visit(&self, visitor: &mut dyn FnMut(&agent::AgentInfo));
+    fn visit<'a>(&'a self, visitor: &mut dyn FnMut(&'a agent::AgentInfo));
 }
 /// Borrowed identity lookup for accepted core prompts, never their feature data.
 pub trait PromptIds: Sync {
