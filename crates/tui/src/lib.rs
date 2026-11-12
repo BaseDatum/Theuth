@@ -805,44 +805,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             components::artifacts_apps::open_path(&path).map_err(anyhow::Error::msg)?;
             return Ok(());
         }
-        Command::GetCommunication(session) => {
-            UiEvent::Communication(msg(api.get_communication(session).await)?)
-        }
-        // The shown session's view, not the switched one's: a global flip
-        // is read back through the session it affects.
-        Command::SetCommunication {
-            session,
-            enabled,
-            view,
-        } => {
-            let state = msg(api.set_communication(session, enabled).await)?;
-            if session == view {
-                UiEvent::Communication(state)
-            } else {
-                UiEvent::Communication(msg(api.get_communication(view).await)?)
-            }
-        }
-        Command::SetPeerScope { root, scope, alias } => {
-            UiEvent::Communication(msg(api.set_peer_scope(root, scope, alias).await)?)
-        }
-        // Off is a reason, not an empty page: it lands in the menu.
-        Command::ListPeers(session) => UiEvent::Peers(
-            session,
-            api.list_peers(session, None, None, None)
-                .await
-                .map_err(reason),
-        ),
-        Command::ListPeerRequests(session) => UiEvent::PeerRequests(
-            session,
-            msg(api.list_peer_messages(session, None, None, true).await)?,
-        ),
-        Command::AnswerPeerRequest {
-            session,
-            reply_to,
-            text,
-        } => UiEvent::PeerAnswered(msg(api.answer_peer_request(session, reply_to, text).await)?),
-        Command::A2aStatus => UiEvent::A2a(msg(api.a2a_status().await)?),
-        Command::ReloadA2a => UiEvent::A2a(msg(api.reload_a2a().await)?),
         // The reply carries the state even when `DictationModel` was published before this bridge subscribed.
         Command::DictationPrewarm => UiEvent::Voice(voice::VoiceEvent::DictationModel {
             state: msg(api.dictation_prewarm().await)?,
@@ -1620,80 +1582,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                     .map_or(Ok(()), |r| writeln!(out, "    {r}"))
             })
         }),
-        UiEvent::Communication(s) => model::communication_lines(s)
-            .iter()
-            .try_for_each(|l| writeln!(out, "{l}")),
-        UiEvent::Peers(_, Err(e)) => writeln!(out, "no peers · {e}"),
-        UiEvent::Peers(_, Ok(p)) if p.peers.is_empty() => {
-            writeln!(out, "no peers this session may address")
-        }
-        UiEvent::Peers(_, Ok(page)) => page
-            .peers
-            .iter()
-            .try_for_each(|p| writeln!(out, "{}", model::PeerRow::Peer(p).line())),
-        // Full ids: no menu here, the id is what a later `/peers` answer needs.
-        UiEvent::PeerRequests(_, page) => {
-            let mut any = false;
-            page.messages
-                .iter()
-                .try_for_each(|r| {
-                    let id = r.receipt.id;
-                    let side = if page.awaiting_answer.contains(&id) {
-                        format!("from {} · awaiting your answer", r.from)
-                    } else if page.awaiting_reply.contains(&id) {
-                        format!("to {} · awaiting their reply", r.receipt.to)
-                    } else {
-                        return Ok(());
-                    };
-                    any = true;
-                    writeln!(
-                        out,
-                        "{id}  {side}  {}",
-                        r.text.lines().next().unwrap_or_default()
-                    )
-                })
-                .and_then(|()| {
-                    if any {
-                        Ok(())
-                    } else {
-                        writeln!(
-                            out,
-                            "no requests await a human (a restart clears live waits)"
-                        )
-                    }
-                })
-        }
-        UiEvent::PeerAnswered(r) => writeln!(
-            out,
-            "peers: {} answered → {}{}{}",
-            r.reply_to.unwrap_or(r.id),
-            r.state.as_str(),
-            r.answered_by
-                .as_deref()
-                .map_or_else(String::new, |by| format!(" · by {by}")),
-            r.error
-                .as_deref()
-                .map_or_else(String::new, |e| format!(" · {e}")),
-        ),
-        UiEvent::A2a(s) => model::a2a_lines(s)
-            .iter()
-            .try_for_each(|l| writeln!(out, "{l}")),
-        // Typed provenance (50 §10); the legacy `MessageDelivered` no longer
-        // fires for peer bodies, so this is the one echo.
-        UiEvent::PeerDelivered(ev) => writeln!(
-            out,
-            "⟵ {} · {}{}: {}…",
-            ev.origin.from,
-            ev.origin.id,
-            ev.origin
-                .reply_to
-                .map_or_else(String::new, |r| format!(" · reply to {r}")),
-            ev.text.lines().next().unwrap_or_default()
-        ),
-        // Invalidations: the model re-reads; nothing to say.
-        UiEvent::CommunicationChanged(_)
-        | UiEvent::PeerMessageChanged(_)
-        | UiEvent::A2aChanged(_) => Ok(()),
         UiEvent::SessionOpened(o) => writeln!(
             out,
             "session {}{}",

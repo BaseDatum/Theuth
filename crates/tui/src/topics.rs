@@ -136,10 +136,6 @@ pub fn residual(event: &TopicEvent) -> Option<UiEvent> {
         Some("agent.login") => decode!(agent::LoginFinished, LoginFinished),
         Some("artifact.shown") => decode!(artifact::ArtifactShown, ArtifactShown),
         Some("knowledge.changed") => decode!(knowledge::KnowledgeChanged, KnowledgeChanged),
-        Some("agent.communication") => decode!(agent::CommunicationChanged, CommunicationChanged),
-        Some("agent.peer-message") => decode!(agent::PeerMessageChanged, PeerMessageChanged),
-        Some("agent.peer-delivered") => decode!(agent::PeerDelivered, PeerDelivered),
-        Some("a2a.changed") => decode!(a2a::A2aChanged, A2aChanged),
         Some("voice.events") => decode!(voice::VoiceEvent, Voice),
         Some("talk.events") => decode!(talk::TalkEvent, Talk),
         None => legacy(value, matches!(event, TopicEvent::Local(_))),
@@ -165,10 +161,6 @@ fn legacy(value: &Value, _local: bool) -> Option<UiEvent> {
         agent::LoginFinished => "LoginFinished", LoginFinished,
         artifact::ArtifactShown => "ArtifactShown", ArtifactShown,
         knowledge::KnowledgeChanged => "KnowledgeChanged", KnowledgeChanged,
-        agent::CommunicationChanged => "CommunicationChanged", CommunicationChanged,
-        agent::PeerMessageChanged => "PeerMessageChanged", PeerMessageChanged,
-        agent::PeerDelivered => "PeerDelivered", PeerDelivered,
-        a2a::A2aChanged => "A2aChanged", A2aChanged,
     );
     macro_rules! owner {
         ($ty:ty, $variant:ident) => {

@@ -30,9 +30,6 @@ impl Model {
             components: std::mem::replace(&mut self.components, crate::components::Registry::empty()),
             component_commands: self.component_commands.take(),
             todo_open: std::mem::take(&mut self.todo_open),
-            // Per session: the switch view belongs to whatever is shown next
-            // (the global default after `/new`).
-            refresh_communication: true,
             app_enabled: self.app_enabled,
             advisor_default: std::mem::take(&mut self.advisor_default),
             vision_model: self.vision_model.take(),
@@ -134,11 +131,6 @@ impl Model {
             self.context_estimated = true;
         }
         self.loaded_todos(loaded.todos);
-        // The load carries the switches too; a `get_communication` reply
-        // already in flight is reconciled by revision.
-        if let Some(c) = loaded.communication {
-            self.set_communication(c);
-        }
     }
 }
 

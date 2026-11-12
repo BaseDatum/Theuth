@@ -299,7 +299,7 @@ impl Model {
                 HeaderSlot::Costs => {}
                 HeaderSlot::Advisor => text.push_str(&self.advisor_tag()),
                 HeaderSlot::Approvals => text.push_str(self.approvals_tag()),
-                HeaderSlot::Communication => text.push_str(&self.communication_tag()),
+                HeaderSlot::Communication => {}
                 HeaderSlot::Link => {}
                 HeaderSlot::Nodes => {}
                 HeaderSlot::Update => {}
@@ -339,17 +339,6 @@ impl Model {
         }
     }
 
-    /// `  ·  communication off` while the authoritative state says the
-    /// shown session (or the global default) is not effectively enabled;
-    /// `  ·  communication on` when it is; empty until fetched. Never
-    /// inferred from a local toggle (50 §0.8).
-    fn communication_tag(&self) -> &'static str {
-        match &self.communication {
-            None => "",
-            Some(c) if c.effective => "  ·  communication on",
-            Some(_) => "  ·  communication off",
-        }
-    }
 
 
 
@@ -381,4 +370,7 @@ pub(crate) fn when(rfc3339: &str) -> String {
 /// Time since a turn ended, coarse: `48s ago`, `3m ago`, `2h ago`, `3d ago`.
 pub(crate) fn ago(d: chrono::Duration) -> String {
     format!("{} ago", crate::components::broadcast::state::since(d))
+}
+pub(crate) fn on_off(b: bool) -> &'static str {
+    if b { "on" } else { "off" }
 }

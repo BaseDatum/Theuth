@@ -149,8 +149,6 @@ impl Model {
                 self.draft = None;
                 if self.session.is_none() {
                     self.session = Some(id);
-                    // The global default was shown; now this session's own view.
-                    self.refresh_communication = true;
                 }
                 if let Some((s, message)) = self.send_error.take()
                     && s == id
@@ -279,68 +277,6 @@ impl Model {
                     on_off(s.session && !self.approvals_off),
                     on_off(s.global)
                 )));
-            }
-            UiEvent::Communication(s) => {
-                // A reply for the session shown when it was asked, not now.
-                if s.session != self.session {
-                    return;
-                }
-                let print = std::mem::take(&mut self.awaiting_communication);
-                if self.set_communication(s) && print {
-                    let lines = communication_lines(self.communication.as_ref().expect("just set"));
-                    self.entries.extend(lines.into_iter().map(Entry::Info));
-                }
-            }
-            UiEvent::Peers(session, page) => {
-                if let Some(Menu::Peers {
-                    session: s, peers, ..
-                }) = &mut self.menu
-                    && *s == session
-                {
-                    *peers = Some(page);
-                }
-            }
-            UiEvent::PeerRequests(session, page) => {
-                if let Some(Menu::Peers {
-                    session: s,
-                    requests,
-                    ..
-                }) = &mut self.menu
-                    && *s == session
-                {
-                    *requests = Some(page);
-                }
-            }
-            UiEvent::PeerAnswered(r) => self.entries.push(Entry::Info(format!(
-                "peers: {} answered → {}{}{}",
-                short_uuid(r.reply_to.unwrap_or(r.id)),
-                r.state.as_str(),
-                r.answered_by
-                    .as_deref()
-                    .map_or_else(String::new, |by| format!(" · by {by}")),
-                r.error
-                    .as_deref()
-                    .map_or_else(String::new, |e| format!(" · {e}")),
-            ))),
-            UiEvent::A2a(status) => self
-                .entries
-                .extend(a2a_lines(&status).into_iter().map(Entry::Info)),
-            // Any subtree may be an ancestor of ours: the state is one cheap
-            // call, so every change reloads it (50 §10). The open picker's
-            // directory follows the switches too.
-            UiEvent::CommunicationChanged(_) | UiEvent::A2aChanged(_) => {
-                self.refresh_communication = true;
-                self.refresh_peers |= matches!(self.menu, Some(Menu::Peers { .. }));
-            }
-            UiEvent::PeerMessageChanged(ev) => {
-                self.refresh_peers |=
-                    matches!(&self.menu, Some(Menu::Peers { session, .. }) if *session == ev.session);
-            }
-            UiEvent::PeerDelivered(ev) => {
-                if self.session == Some(ev.session) {
-                    self.remember_peer(&ev.text);
-                    self.interject(peer_card(&ev.origin, ev.text, ""));
-                }
             }
             UiEvent::McpProgress(p) => {
                 // Any change while the menu is open (a login settled, a server
@@ -566,7 +502,6 @@ impl Model {
             UiEvent::SessionOpened(open) => {
                 self.reset();
                 self.session = Some(open.session);
-                self.refresh_communication = true;
                 if open.retention == Retention::Private
                     && let Some(secret) = open.lease_secret
                 {

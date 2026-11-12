@@ -91,8 +91,6 @@ pub enum Entry {
 /// What an [`Entry::Card`] holds; picks its glyph and colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CardKind {
-    /// Text a peer injected (`<subagent_result>` / `<message>`).
-    Peer,
     /// A skill body (`/skills`) or a knowledge card (`/knowledge`).
     Skill,
     /// The assembled system prompt (`/prompt`).
@@ -139,7 +137,6 @@ impl CardKind {
     /// Header glyph.
     pub fn glyph(self) -> &'static str {
         match self {
-            CardKind::Peer => "⟵",
             CardKind::Skill => "◇",
             CardKind::Prompt => "§",
             CardKind::Job => "▸",
@@ -236,11 +233,11 @@ impl Entry {
             Entry::Assistant(t) => md(t, width),
             Entry::Card {
                 kind,
-                title,
+                title: _,
                 text,
                 expanded,
             } => {
-                4 + match (*expanded, kind.plain() || outside_card(*kind, title)) {
+                4 + match (*expanded, kind.plain()) {
                     (false, _) => 0,
                     (true, true) => text_rows(&clean(text.raw()), inner),
                     (true, false) => md(text, inner),
@@ -416,7 +413,7 @@ pub fn injected<'a>(text: &'a str, mut project: impl FnMut(Wrapper<'a>) -> Optio
                     format!("autoresearch · {} · {event}", unescape(from)),
                 )
             } else {
-                (CardKind::Peer, from.to_owned())
+                (wrapper_kind(from), from.to_owned())
             };
             let body = body.strip_prefix('\n').unwrap_or(body).trim_end();
             out.push((kind, title, body.to_owned()));
@@ -437,7 +434,7 @@ fn human_secs(s: u64) -> String {
 }
 
 /// Undo the wrappers' XML attribute escape.
-pub(super) fn unescape(s: &str) -> String {
+pub(crate) fn unescape(s: &str) -> String {
     s.replace("&quot;", "\"")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
@@ -445,7 +442,7 @@ pub(super) fn unescape(s: &str) -> String {
 }
 
 /// Value of `key` (`name="`) in an open tag, up to the closing quote.
-pub(super) fn attr<'a>(open: &'a str, key: &str) -> Option<&'a str> {
+pub(crate) fn attr<'a>(open: &'a str, key: &str) -> Option<&'a str> {
     open.split_once(key).and_then(|(_, v)| v.split('"').next())
 }
 
@@ -741,4 +738,16 @@ pub(super) fn first_arg(args: &serde_json::Value) -> Option<String> {
 pub(crate) fn markdown_rows(text: &markdown::Text, width: usize) -> usize {
     let view = text.view();
     view.lines().map(|line| line_rows(line, width)).sum::<usize>() + text_rows(view.plain, width)
+}
+/// `s` without control characters (an ESC would reach the terminal: iocraft
+/// draws text verbatim), keeping line breaks and tabs. For remote text.
+pub(crate) fn clean(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect()
+}
+
+pub(super) fn wrapper_kind(from: &str) -> CardKind {
+    CardKind::Component { group: "wrapper", key: Uuid::nil(), glyph: "⟵", color: crate::ui::FAIENCE,
+        plain: from.starts_with("contact:") || from.starts_with("peer:") }
 }

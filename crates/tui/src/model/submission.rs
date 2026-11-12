@@ -144,13 +144,7 @@ impl Model {
             ),
             "/approvals" => self.approvals_cmd(arg, tx),
             "/advisor" => self.advisor_cmd(arg, tx),
-            "/communication" => self.communication_cmd(arg, tx),
-            "/peers" => self.peers_cmd(arg, tx),
-            "/a2a" if arg.is_empty() => send(tx, Command::A2aStatus),
-            "/a2a" if arg == "reload" => send(tx, Command::ReloadA2a),
-            "/a2a" => self
-                .entries
-                .push(Entry::Error("usage: /a2a [reload]".into())),
+
             "/mcp" | "/tools" if arg.is_empty() => {
                 self.awaiting_mcp = true;
                 send(tx, Command::ListMcp(self.session));

@@ -1,6 +1,6 @@
 use super::*;
 
-/// Core provider and peer-answer flows, backed by the mounted composer.
+/// Core provider flows, backed by the mounted composer.
 #[derive(Debug)]
 pub enum Prompt {
     /// Asking for the gateway name.
@@ -17,18 +17,6 @@ pub enum Prompt {
         /// Normalized URL already collected.
         url: String,
     },
-    /// `/peers` `a`: typing the answer to one exact pending request (50 §5.3).
-    PeerAnswer {
-        /// The session the human acts for.
-        session: SessionId,
-        /// The request.
-        reply_to: Uuid,
-        /// Its authenticated sender (the hint).
-        from: String,
-        /// `session` sent the request and is blocked on it: the answer
-        /// resolves its own wait instead of travelling to a peer.
-        resolve: bool,
-    },
 }
 
 impl Prompt {
@@ -42,21 +30,6 @@ impl Prompt {
             Prompt::ProviderKey { name, .. } => {
                 format!("provider add  {name}  api key  (esc cancel)")
             }
-            Prompt::PeerAnswer {
-                reply_to,
-                from,
-                resolve,
-                ..
-            } => format!(
-                "peers  {} {} · {}  answer  (esc cancel)",
-                if *resolve {
-                    "resolve own wait on"
-                } else {
-                    "answer for this session to"
-                },
-                short_uuid(*reply_to),
-                from
-            ),
         }
     }
 
@@ -66,7 +39,6 @@ impl Prompt {
             Prompt::ProviderName | Prompt::ProviderUrl { .. } | Prompt::ProviderKey { .. } => {
                 "provider add cancelled"
             }
-            Prompt::PeerAnswer { .. } => "peers: answer cancelled",
         }
     }
 
@@ -120,16 +92,6 @@ impl Model {
                     },
                 );
             }
-            Some(Prompt::PeerAnswer {
-                session, reply_to, ..
-            }) => send(
-                tx,
-                Command::AnswerPeerRequest {
-                    session,
-                    reply_to,
-                    text: line.to_owned(),
-                },
-            ),
             None => {}
         }
     }

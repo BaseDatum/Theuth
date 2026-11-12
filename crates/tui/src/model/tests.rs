@@ -2,6 +2,9 @@
     use crate::components::double::{Double, DoubleCmd, double_chip};
     use agent::{CostBucket, CostScope, Coverage, Money, SessionCost};
     use crate::components::costs::{cost_lines, cost_short, money_units};
+    use agent::{CommunicationState, PeerOrigin, PeerRecord, PeerReceipt, PeerMessagePage, PeerMessageChanged, PeerScope};
+    use crate::components::peers::{Peers, Menu as PeersMenu, Prompt as PeerPrompt, Request as PeerRequest,
+        Msg as PeerMsg, PeerRow, communication_lines, outside_card, kind as peer_kind};
     use tokio::sync::mpsc::unbounded_channel;
     use iocraft::KeyModifiers;
     use tools::JobEvent;
@@ -964,7 +967,7 @@
         let card = |out: &[Entry]| match out {
             [
                 Entry::Card {
-                    kind: CardKind::Peer,
+                    kind: CardKind::Component { group: "peer", .. },
                     title,
                     text,
                     ..
@@ -1051,14 +1054,14 @@
     #[test]
     fn outside_cards_are_plain_text() {
         assert!(outside_card(
-            CardKind::Peer,
+            peer_kind(""),
             "contact:studio:bob · 00000000"
         ));
-        assert!(outside_card(CardKind::Peer, "peer:b1 · 00000000"));
-        assert!(!outside_card(CardKind::Peer, "session:abc · 00000000"));
+        assert!(outside_card(peer_kind(""), "peer:b1 · 00000000"));
+        assert!(!outside_card(peer_kind(""), "session:abc · 00000000"));
         assert!(!outside_card(CardKind::Job, "peer:b1"));
         let mut e = card(
-            CardKind::Peer,
+            peer_kind("peer:b1 · 00000000"),
             "peer:b1 · 00000000".into(),
             "**now**\n# head\nmore",
         );
@@ -2734,7 +2737,7 @@
     #[test]
     fn injected_splits_a_batched_turn_and_leaves_human_text_alone() {
         let text = "<message from=\"pinger\" id=\"m1\" reply_expected=\"false\">\nPONG\n</message>\n<subagent_result name=\"pinger\" session=\"x\" stop=\"end_turn\">\nSent.\n</subagent_result>";
-        let peer = |from: &str, body: &str| (CardKind::Peer, from.to_owned(), body.to_owned());
+        let peer = |from: &str, body: &str| (peer_kind(from), from.to_owned(), body.to_owned());
         assert_eq!(
             injected(text),
             Some(vec![peer("pinger", "PONG"), peer("pinger", "Sent.")])
@@ -6620,18 +6623,18 @@
         m.session = Some(s);
         m.submit("/communication on", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetCommunication { session: Some(x), enabled: true, view: Some(v) }) if x == s && v == s
+            component_request::<PeerRequest>(&mut rx),
+            Ok(PeerRequest::SetCommunication { session: Some(x), enabled: true, view: Some(v) }) if x == s && v == s
         ));
         // A reply about a different session never lands here.
-        m.apply(UiEvent::Communication(state(
+        component_reply(&mut m, "peers", PeerMsg::Communication(state(
             Some(SessionId::new()),
             true,
             false,
             true,
         )));
-        assert!(m.communication.is_none() && m.entries.is_empty());
-        m.apply(UiEvent::Communication(state(Some(s), false, false, false)));
+        assert!(m.components.get::<Peers>().unwrap().communication.is_none() && m.entries.is_empty());
+        component_reply(&mut m, "peers", PeerMsg::Communication(state(Some(s), false, false, false)));
         let catalog = Catalog::load(
             std::env::temp_dir()
                 .join("theuth-tui-no-user-file")
@@ -6643,9 +6646,9 @@
         );
 
         m.submit("/peers", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListPeers(x)) if x == s));
-        assert!(matches!(rx.try_recv(), Ok(Command::ListPeerRequests(x)) if x == s));
-        m.apply(UiEvent::Peers(s, Err("communication disabled".into())));
+        assert!(matches!(component_request::<PeerRequest>(&mut rx), Ok(PeerRequest::ListPeers(x)) if x == s));
+        assert!(matches!(component_request::<PeerRequest>(&mut rx), Ok(PeerRequest::ListPeerRequests(x)) if x == s));
+        component_reply(&mut m, "peers", PeerMsg::Peers(s, Err("communication disabled".into())));
         let id = Uuid::new_v4();
         let record = PeerRecord {
             receipt: PeerReceipt {
@@ -6665,7 +6668,7 @@
             request_scope: None,
             contact_mode: None,
         };
-        m.apply(UiEvent::PeerRequests(
+        component_reply(&mut m, "peers", PeerMsg::PeerRequests(
             s,
             PeerMessagePage {
                 messages: vec![record],
@@ -6674,34 +6677,35 @@
                 cursor: None,
             },
         ));
-        let rows = m.peers_rows();
+        let owner = m.components.get::<Peers>().unwrap();
+        let rows = owner.peers_rows();
         assert!(matches!(&rows[0], PeerRow::Note(n) if n.contains("communication disabled")));
         assert!(matches!(&rows[2], PeerRow::Request(r, false) if r.receipt.id == id));
         // Down skips the separator onto the request; `a` prompts for its answer.
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Char('a'), "", &tx);
+        component_menu_key(&mut m, "peers", KeyCode::Down);
+        component_menu_key(&mut m, "peers", KeyCode::Char('a'));
         assert!(
-            matches!(&m.prompt, Some(Prompt::PeerAnswer { reply_to, resolve: false, .. }) if *reply_to == id)
+            matches!(&m.components.get::<Peers>().unwrap().prompt, Some(PeerPrompt::PeerAnswer { reply_to, resolve: false, .. }) if *reply_to == id)
         );
         m.submit("8080", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::AnswerPeerRequest { session, reply_to, text }) if session == s && reply_to == id && text == "8080"
+            component_request::<PeerRequest>(&mut rx),
+            Ok(PeerRequest::AnswerPeerRequest { session, reply_to, text }) if session == s && reply_to == id && text == "8080"
         ));
         // A pending change for this session refreshes an open picker only.
-        assert!(!m.refresh_peers);
-        m.menu = Some(Menu::Peers {
+        assert!(!m.components.get::<Peers>().unwrap().refresh_peers);
+        m.components.get_mut::<Peers>().unwrap().menu = Some(PeersMenu::Peers {
             session: s,
             peers: None,
             requests: None,
             cursor: 0,
         });
-        m.apply(UiEvent::PeerMessageChanged(PeerMessageChanged {
+        m.apply(wire_event("agent.peer-message", PeerMessageChanged {
             session: s,
             id,
             state: agent::PeerMessageState::Replied,
         }));
-        assert!(m.refresh_peers);
+        assert!(m.components.get::<Peers>().unwrap().refresh_peers);
     }
 
     fn summary(id: SessionId, parent: Option<SessionId>, project: Option<&str>) -> SessionSummary {
