@@ -187,6 +187,8 @@ pub struct CoreView<'a> {
     pub private_members: Option<&'a std::collections::HashSet<SessionId>>,
     /// Borrowed neutral identity metadata; no board DTO crosses this contract.
     pub members: &'a dyn SessionMembers,
+    /// Identity of the shown core approval, otherwise the first ask.
+    pub prompt: Option<uuid::Uuid>,
 
 
     // Step-11 group t3 CoreView fields: add below, in this block only.
@@ -259,6 +261,11 @@ pub enum Lifecycle<'a> {
     FocusLost,
 
     // Step-11 group t2 Lifecycle variants: add below, in this block only.
+    /// Core prompt queues changed; a resolver may name one completed identity.
+    PromptChanged {
+        /// Resolved core prompt id, absent for a request or local dismissal.
+        resolved: Option<uuid::Uuid>,
+    },
 
     // Step-11 group t3 Lifecycle variants: add below, in this block only.
 }
