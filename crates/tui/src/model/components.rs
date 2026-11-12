@@ -74,6 +74,11 @@ impl Model {
                 CoreAction::Reject(text) => self.entries.push(Entry::Error(text)),
                 CoreAction::AppendCard(card) => self.entries.push(card.into()),
                 CoreAction::InterjectCard(card) => self.interject(card.into()),
+                CoreAction::ResumeSession(session) => {
+                    if let Some(commands) = self.component_commands.clone() {
+                        self.resume(session, &commands);
+                    }
+                }
                 CoreAction::ReplaceCard { group, key, body } => {
                     if let Some(Entry::Card { kind: CardKind::Component { key: current, .. }, text, .. }) =
                         self.entries.iter_mut().rev().find(|entry| matches!(entry,

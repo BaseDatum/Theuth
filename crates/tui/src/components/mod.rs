@@ -574,6 +574,8 @@ pub enum CoreAction {
     // Step-11 group t1 CoreAction variants: add below, in this block only.
     /// Insert an owner-rendered card above a still-streaming tail without splitting it.
     InterjectCard(TranscriptCard),
+    /// Navigate through the existing core session/ownership policy.
+    ResumeSession(SessionId),
 
     // Step-11 group t2 CoreAction variants: add below, in this block only.
 
