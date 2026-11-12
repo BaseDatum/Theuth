@@ -1,3 +1,4 @@
+use super::harnesses::harness_groups;
 use super::*;
 
 /// Where a `/model` / `/effort` pick goes (125 §7.2).
@@ -118,8 +119,20 @@ impl Model {
             None => {
                 self.entries
                     .push(Entry::Info(format!("model → {model} (next session)")));
+                // 194 D4c, as `set_model` does: drop a draft effort the new model
+                // does not take (one the catalog does not know is kept).
+                let draft = self.draft.get_or_insert_default();
+                let known = self.catalog.as_ref().and_then(|c| c.closest(&model));
+                if let (Some(e), Some(known)) = (&draft.effort, known)
+                    && known.validate_effort(e).is_err()
+                {
+                    self.entries
+                        .push(Entry::Info(format!("effort reset: not offered by {model}")));
+                    draft.effort = None;
+                    self.effort = self.default_effort.clone();
+                }
                 self.model_id = model.clone();
-                self.draft.get_or_insert_default().model = Some(model);
+                draft.model = Some(model);
             }
         }
     }
@@ -141,6 +154,25 @@ impl Model {
                 self.effort = effort.clone().or_else(|| self.default_effort.clone());
                 self.draft.get_or_insert_default().effort = effort;
             }
+        }
+    }
+
+    /// Bare `/effort` on a native session (194 D6): the `/model` picker with
+    /// the cursor on the current model's chips, or a notice without levels.
+    pub(super) fn effort_picker(&mut self, tx: &UnboundedSender<Command>) {
+        let offered = self
+            .catalog
+            .as_ref()
+            .and_then(|c| c.closest(&self.model_id))
+            .is_some_and(|m| !m.efforts().is_empty());
+        if offered {
+            self.pick_effort = true;
+            send(tx, Command::ListModels);
+        } else {
+            self.entries.push(Entry::Info(format!(
+                "{} has no reasoning effort levels",
+                self.model_id
+            )));
         }
     }
 

@@ -95,16 +95,17 @@ impl Model {
         let chips = std::mem::take(&mut self.pick_effort);
         let agent = self.agent.clone().unwrap_or_else(|| "harness".into());
         match harness_groups(&options) {
+            (_, None) if chips => self.entries.push(Entry::Info(format!(
+                "{agent} has no reasoning effort levels"
+            ))),
             (None, None) => {
                 for line in harness_options_lines(&options) {
                     self.entries.push(Entry::Info(line));
                 }
             }
-            (_, None) if chips => self.entries.push(Entry::Info(format!(
-                "{agent} has no reasoning effort levels"
-            ))),
             _ => {
-                let items = harness_models(&options, &agent, &self.model_id);
+                let running = self.harness_model.as_deref().unwrap_or(&self.model_id);
+                let items = harness_models(&options, &agent, running);
                 self.open_models(items, PickTarget::Harness, options, chips);
             }
         }

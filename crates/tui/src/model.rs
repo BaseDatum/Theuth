@@ -437,7 +437,6 @@ use credentials::{bad_secret_name};
 pub use events::{UiEvent, Command};
 pub(crate) use events::{send};
 pub use harnesses::{AcpRow, harness_options_lines, harness_option_set_line};
-use harnesses::{harness_groups};
 use history::{revision, user_entries, cell_results, FENCE, from_history};
 #[cfg(test)]
 use history::{parent_view};

@@ -3993,6 +3993,54 @@
         ));
     }
 
+    /// 194 D4c: a draft model change keeps the draft's effort only when the
+    /// new model takes it; else it is dropped (header back on the default),
+    /// so the created session never carries a stale pair.
+    #[test]
+    fn draft_model_change_drops_an_effort_the_new_model_does_not_take() {
+        let catalog = Catalog::load(
+            std::env::temp_dir()
+                .join("theuth-tui-no-user-file")
+                .as_path(),
+        );
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::new("openai/gpt-5.4".into(), true);
+        m.default_effort = Some("low".into());
+        m.catalog = Some(Arc::new(catalog));
+        let mut sent = |m: &mut Model| {
+            m.submit("hello", &tx);
+            let Ok(Command::Send {
+                session: None,
+                draft: Some(draft),
+                ..
+            }) = rx.try_recv()
+            else {
+                panic!("no draft send");
+            };
+            (draft.model, draft.effort)
+        };
+        // xhigh is not one of claude-opus-4-6's levels: dropped.
+        m.submit("/effort xhigh", &tx);
+        m.submit("/model anthropic/claude-opus-4-6", &tx);
+        assert_eq!(m.effort.as_deref(), Some("low"));
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Info(t)) if t == "effort reset: not offered by anthropic/claude-opus-4-6")
+        );
+        assert_eq!(
+            sent(&mut m),
+            (Some("anthropic/claude-opus-4-6".into()), None)
+        );
+        // high is one of gpt-5.4-mini's: it survives the switch.
+        m.submit("/new", &tx);
+        m.submit("/effort high", &tx);
+        m.submit("/model openai/gpt-5.4-mini", &tx);
+        assert_eq!(m.effort.as_deref(), Some("high"));
+        assert_eq!(
+            sent(&mut m),
+            (Some("openai/gpt-5.4-mini".into()), Some("high".into()))
+        );
+    }
+
     /// 148 R1: the other session-creating entries — `/talk`, the MCP menu's
     /// `s` scope and `/<skill>` — carry the draft's picks the same way the
     /// first send does; without a pick their `draft` is `None`.
@@ -4225,8 +4273,10 @@
         m.apply(UiEvent::HarnessOptions(models_only));
         assert_eq!(model_row_ids(&m)[..2], ["●a/x", "●a:1"]);
         m.menu = None;
-        // Only the effort: one row for what it runs, still with its chips.
-        m.model_id = "claude-x".into();
+        // Only the effort: one row for what it runs (the harness's LLM, not
+        // the harness name in `model_id`), still with its chips.
+        m.model_id = "omp".into();
+        m.harness_model = Some("claude-x".into());
         m.submit("/model", &tx);
         rx.try_recv().unwrap();
         m.apply(UiEvent::HarnessOptions(options[1..].to_vec()));
@@ -4243,6 +4293,26 @@
         assert!(
             matches!(m.entries.last(), Some(Entry::Info(t)) if t == "mode: default  (has: default)")
         );
+        // Bare `/effort` with no levels is the notice, mode-only or no options at all.
+        for options in [
+            serde_json::from_value(serde_json::json!([
+                {"id":"mode","name":"Mode","category":"mode","current":"default",
+                 "options":[{"value":"default","name":"Default","description":null}]}
+            ]))
+            .unwrap(),
+            Vec::new(),
+        ] {
+            m.entries.clear();
+            m.submit("/effort", &tx);
+            rx.try_recv().unwrap();
+            m.apply(UiEvent::HarnessOptions(options));
+            assert!(m.menu.is_none());
+            assert!(
+                matches!(&m.entries[..], [.., Entry::Info(t)] if t == "omp has no reasoning effort levels"),
+                "{:?}",
+                m.entries
+            );
+        }
     }
 
     #[test]
