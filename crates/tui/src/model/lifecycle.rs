@@ -52,6 +52,7 @@ impl Model {
 
     /// Show a loaded transcript: `UiEvent::History` and `UiEvent::Forked`.
     pub(super) fn load(&mut self, loaded: Loaded) {
+        self.component_notify(crate::components::Lifecycle::SessionRead(&loaded));
         self.component_notify(crate::components::Lifecycle::TranscriptReplaced);
         self.component_notify(crate::components::Lifecycle::History(&loaded));
         let opts = self.assistant_options();
@@ -136,10 +137,12 @@ impl Model {
             && !self.context_stale
             && self.notice.is_none()
         {
+            self.component_notify(crate::components::Lifecycle::SessionRead(&loaded));
             self.loaded_todos(loaded.todos.take());
             return;
         }
         if !loaded.settled || self.streaming || theirs < ours {
+            self.component_notify(crate::components::Lifecycle::SessionRead(&loaded));
             self.context_stale = true;
             self.context_editable = false;
             if let Some(n) = self.notice.take() {

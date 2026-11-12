@@ -277,6 +277,9 @@ pub enum Lifecycle<'a> {
         resolved: Option<uuid::Uuid>,
     },
 
+    /// Selected-session read, including a snapshot whose transcript reload is refused.
+    SessionRead(&'a agent::Loaded),
+
     // Step-11 group t3 Lifecycle variants: add below, in this block only.
 }
 /// Existing per-entry operations, dispatched at their original core input boundaries.
