@@ -148,6 +148,14 @@ impl Registry {
         let token = self.by_wrapper.get(row.tag)?;
         Some(self.slots[token.slot].component.as_ref()?.wrapper(row))
     }
+    /// Admission stays in core; owners identify their otherwise hidden linked sessions.
+    pub fn session_hidden(&self, session: SessionId) -> bool {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).any(|component| component.session_hidden(session))
+    }
+    /// An owner already presented this turn's input through another transcript row.
+    pub fn turn_hidden(&self, seq: i64) -> bool {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).any(|component| component.turn_hidden(seq))
+    }
     fn lose_focus(&mut self, core: &CoreView<'_>, out: &mut Outbox) {
         if let Some((token, _)) = self.focus.take()
             && let Some(component) = &mut self.slots[token.slot].component

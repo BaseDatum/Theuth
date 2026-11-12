@@ -963,6 +963,12 @@ pub trait Component: Send + Sync + 'static {
     fn separate_editor(&self) -> bool { false }
     /// Presentation of the still-mounted shell editor.
     fn composer_mode(&self) -> ComposerMode { ComposerMode::Default }
+
+    // Model-picker panels: neutral core admission and presentation queries.
+    /// Hide an owner's linked session from ordinary child admission.
+    fn session_hidden(&self, _session: SessionId) -> bool { false }
+    /// Suppress the echoed input of an already presented turn.
+    fn turn_hidden(&self, _seq: i64) -> bool { false }
 }
 
 trait ErasedComponent: Send + Sync {
@@ -982,6 +988,8 @@ trait ErasedComponent: Send + Sync {
     fn entry_height(&self, key: &str, width: usize) -> Option<usize>;
     fn entry_openable(&self, key: &str) -> bool;
     fn slash_visible(&self, name: &str) -> bool;
+    fn session_hidden(&self, session: SessionId) -> bool;
+    fn turn_hidden(&self, seq: i64) -> bool;
     fn as_any(&self) -> &dyn Any;
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -1016,6 +1024,8 @@ impl<C: Component> ErasedComponent for Mounted<C> {
     fn entry_height(&self, key: &str, width: usize) -> Option<usize> { self.0.entry_height(key, width) }
     fn entry_openable(&self, key: &str) -> bool { self.0.entry_openable(key) }
     fn slash_visible(&self, name: &str) -> bool { self.0.slash_visible(name) }
+    fn session_hidden(&self, session: SessionId) -> bool { self.0.session_hidden(session) }
+    fn turn_hidden(&self, seq: i64) -> bool { self.0.turn_hidden(seq) }
     fn as_any(&self) -> &dyn Any { &self.0 }
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn Any { &mut self.0 }
