@@ -11925,6 +11925,7 @@ checksum = "4facc753ae494aeb6e3c22f839b158aebd4f9270f55cd3c79906c45476c47ab4"
 name = "mcp-server"
 version = "2.19.5"
 dependencies = [
+ "agent",
  "anyhow",
  "async-trait",
  "bytes",
@@ -11940,6 +11941,7 @@ dependencies = [
  "meeting",
  "parking_lot",
  "rmcp",
+ "rpc-core",
  "runtime",
  "schemars 1.2.3",
  "secrets",
@@ -11950,6 +11952,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "tools",
  "tracing",
  "ts-rs",
  "uuid",

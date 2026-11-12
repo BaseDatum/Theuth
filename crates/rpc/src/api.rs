@@ -87,11 +87,10 @@ use tokio::sync::broadcast;
 use tokio::time::Instant;
 use tools::git::SyncResult;
 use tools::{
-    AddRepo, AddServer, Answer, Approval, ApprovalId, ApprovalRequested, ApprovalsState, AskId,
-    AskRequested, CancelJob, CancelOrigin, Decision, Gate, GetApprovals, GetPtyIdle, JOBS_ACTOR,
-    JobId, JobView, Jobs, ListJobs, ListServers, ListTools, Mcp, McpHomeAction, McpLogin,
-    McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve, SetApprovals,
-    SetGate, SetHidden, SetMcpHome, SetPtyIdle, SyncMcp, ToolRegistry, ToolSpec,
+    Answer, Approval, ApprovalId, ApprovalRequested, ApprovalsState, AskId,
+    AskRequested, CancelJob, CancelOrigin, Decision, GetApprovals, GetPtyIdle, JOBS_ACTOR,
+    JobId, JobView, Jobs, ListJobs, ListTools, Resolve, SetApprovals,
+    SetHidden, SetPtyIdle, ToolRegistry, ToolSpec,
 };
 use tools::{
     Key, ListTerminals, PtyAttach, PtyChunk, PtyInput, PtyOut, PtyResize, PtyScreen,
@@ -199,7 +198,7 @@ pub mod skills;
 /// Screens RPC server and client traits.
 pub mod screens;
 /// Mcp RPC server and client traits.
-pub mod mcp;
+pub use mcp_server::rpc as mcp;
 /// Concepts RPC server and client traits.
 pub mod concepts;
 /// Documents RPC server and client traits.

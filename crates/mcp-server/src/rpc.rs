@@ -1,3 +1,4 @@
+use crate as mcp_server;
 use agent::rpc_forward as forward;
 use agent::rpc_support::RpcServerExt;
 use jsonrpsee::Extensions;

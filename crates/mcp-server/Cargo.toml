@@ -7,6 +7,9 @@ description = "theuth as an MCP server: rmcp streamable HTTP on loopback with a 
 
 [dependencies]
 runtime = { workspace = true }
+rpc-core = { workspace = true }
+agent = { workspace = true }
+tools = { workspace = true }
 secrets = { workspace = true }  # vault row `mcp.server.token`, `Vault::redact_value` over results
 # Argument schemas of the write tools are the RPCs' own payload types (158 §12.4: thin calls).
 meeting = { workspace = true }
