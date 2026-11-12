@@ -211,7 +211,7 @@ pub mod boards;
 /// Artifacts RPC server and client traits.
 pub mod artifacts;
 /// Credentials RPC server and client traits.
-pub mod credentials;
+pub use secrets::rpc as credentials;
 /// Kernels RPC server and client traits.
 pub mod kernels;
 /// Dreams RPC server and client traits.

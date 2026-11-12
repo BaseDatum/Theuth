@@ -1,3 +1,4 @@
+use crate as secrets;
 use std::collections::HashMap;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
