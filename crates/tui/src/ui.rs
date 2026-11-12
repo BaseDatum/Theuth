@@ -147,7 +147,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let mut handle = hooks.use_ref_default::<TextInputHandle>();
     // The `/search` query has its own editor and handle (49 §6.1): the chat
     // draft, its cursor and paste tokens are never touched by a search.
-    let search_handle = hooks.use_ref_default::<TextInputHandle>();
+    let mut search_handle = hooks.use_ref_default::<TextInputHandle>();
     let commands = links.commands.clone();
     let data_dir = links.data_dir.clone();
 
@@ -240,6 +240,9 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 if let Some((value, caret)) = m.pending_input.take() {
                     input.set(value);
                     handle.write().set_cursor_offset(caret);
+                }
+                if let Some(caret) = m.widget_cursor.take() {
+                    search_handle.write().set_cursor_offset(caret);
                 }
                 // "send it" (153 §7.4): the spliced value takes the send key's path, once.
                 if let Some(text) = m.pending_send.take() {
@@ -336,7 +339,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             let TerminalEvent::Key(key) = event
             else {
                 if let TerminalEvent::BracketedPaste(text) = event {
-                    if m.component_paste(&text) { return; }
+                    if m.component_paste(&text, search_handle.read().cursor_offset()) { return; }
                     // Search paste is query text at the cursor: never an
                     // attachment, paste token or slash command (49 §6.1).
                     if m.search_open() {
@@ -712,14 +715,14 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     // Approval on top, then a secret request, then the model's questions;
     // otherwise whichever menu is open.
     let (width, height) = terminal_size;
-    let pinned = component_slot(&m, Surface::Pinned, width, height);
-    let composer = component_slot(&m, Surface::Composer, width, height);
-    let hint = component_slot(&m, Surface::Hint, width, height);
-    let badge = component_slot(&m, Surface::PromptBadge, width, height);
+    let pinned = component_slot(&m, Surface::Pinned, width, height, None);
+    let composer = component_slot(&m, Surface::Composer, width, height, None);
+    let hint = component_slot(&m, Surface::Hint, width, height, None);
+    let badge = component_slot(&m, Surface::PromptBadge, width, height, None);
     let extra_rows = pinned.rows + composer.rows + hint.rows + badge.rows;
     *component_rows.write() = extra_rows;
     let modal = modal
-        .or_else(|| component_slot(&m, Surface::Prompt(FocusClass::Secret), width, height).element())
+        .or_else(|| component_slot(&m, Surface::Prompt(FocusClass::Secret), width, height, None).element())
 
         .or_else(|| ask_box(&m))
         .or_else(|| {
@@ -732,7 +735,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             })
         })
         .or_else(|| menu(&m, &input.read(), width, height))
-        .or_else(|| component_slot(&m, Surface::Modal, width, height).element());
+        .or_else(|| component_slot(&m, Surface::Modal, width, height, Some(search_handle)).element());
     // A secret's value (or a provider's key) shows as dots.
     let component_editor = m.components.editor();
     let mask = (m.prompt.as_ref().is_some_and(Prompt::masked)
@@ -786,7 +789,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         }
         .into_any()
     };
-    let content = component_slot(&m, Surface::Content, width, height);
+    let content = component_slot(&m, Surface::Content, width, height, None);
     let transcript = if content.replace {
         content.element().unwrap_or(transcript)
     } else if let Some(extra) = content.element() {
@@ -911,7 +914,7 @@ impl ComponentSlot {
         }).into_any())
     }
 }
-fn component_slot(m: &Model, at: Surface<'_>, width: u16, height: u16) -> ComponentSlot {
+fn component_slot(m: &Model, at: Surface<'_>, width: u16, height: u16, handle: Option<Ref<TextInputHandle>>) -> ComponentSlot {
     let mut slot = ComponentSlot { elements: Vec::new(), rows: 0, replace: false };
     for view in m.component_views(at, usize::from(width), usize::from(height)) {
         let (element, rows, replace) = match view {
@@ -920,6 +923,15 @@ fn component_slot(m: &Model, at: Surface<'_>, width: u16, height: u16) -> Compon
                 (element!(Text(content: text, wrap: TextWrap::NoWrap)).into_any(), rows, false)
             }
             crate::components::View::Element { element, rows, replace } => (element, rows, replace),
+            crate::components::View::Editor { editor, render, rows, replace } => {
+                let handle = handle.expect("separate editor must render in its shell slot");
+                let mut on_change = editor.on_change;
+                let input = element!(TextInput(
+                    handle, has_focus: editor.focused, value: editor.value, ignore_paste: true,
+                    on_change: move |value| on_change(value),
+                )).into_any();
+                (render(input), rows, replace)
+            }
         };
         if replace { slot.elements.clear(); slot.rows = 0; slot.replace = true; }
         slot.rows += rows;

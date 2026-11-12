@@ -272,11 +272,11 @@ impl Registry {
         out
     }
     /// Deliver bracketed paste to the intrinsic secret capture or exclusive focus owner.
-    pub fn paste(&mut self, text: &str, core: &CoreView<'_>) -> Outbox {
+    pub fn paste(&mut self, text: &str, caret: usize, core: &CoreView<'_>) -> Outbox {
         let mut out = Outbox::default();
         if let Some((token, _)) = self.editor_owner()
             && let Some(component) = &mut self.slots[token.slot].component
-        { component.input(Input::Paste(text), core, token, self.epoch, &mut out); }
+        { component.input(Input::Paste { text, caret }, core, token, self.epoch, &mut out); }
         self.finish(&mut out, core);
         out
     }
@@ -349,8 +349,12 @@ impl Registry {
         let (token, class) = self.editor_owner()?;
         Some((class, self.slots[token.slot].component.as_ref()?.editor()?))
     }
+    /// Separate editor presence is shell policy, independent of the owner's name.
+    pub fn separate_editor(&self) -> bool {
+        self.focus.is_some_and(|(token, _)| self.slots[token.slot].component.as_ref().is_some_and(|component| component.separate_editor()))
+    }
     /// Modal capture excludes composer-backed prompts, just like the core prompt.
     pub fn modal(&self) -> bool {
-        self.focus.is_some_and(|(_, class)| class == FocusClass::Modal) && self.editor().is_none()
+        self.separate_editor() || (self.focus.is_some_and(|(_, class)| class == FocusClass::Modal) && self.editor().is_none())
     }
 }

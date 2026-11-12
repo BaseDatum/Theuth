@@ -63,6 +63,7 @@ impl Model {
         }
         for action in out.actions {
             match action {
+                CoreAction::EditorCursor(caret) => self.widget_cursor = Some(caret),
                 CoreAction::Notice(text) => self.entries.push(Entry::Info(text)),
                 CoreAction::Interject(text) => self.interject(Entry::Info(text)),
                 CoreAction::Error(text) => self.receive(UiEvent::Error(text), emit),
@@ -132,10 +133,10 @@ impl Model {
         self.component_finish(out, &mut |_| {});
         consumed
     }
-    pub(crate) fn component_paste(&mut self, text: &str) -> bool {
+    pub(crate) fn component_paste(&mut self, text: &str, caret: usize) -> bool {
         self.component_reconcile_core_focus();
         let core = CoreView { prompts: &(&self.approvals, &self.asks), prompt: self.prompt_id(), session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
-        let out = self.components.paste(text, &core);
+        let out = self.components.paste(text, caret, &core);
         let consumed = out.consumed();
         self.component_finish(out, &mut |_| {});
         consumed

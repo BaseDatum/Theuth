@@ -45,7 +45,7 @@ impl Component for Counter {
             Input::Key(_) if self.capture.is_some() => { self.value += 1; cx.consume_key(); }
             Input::Key(key) if key.code == KeyCode::Esc => { cx.close(); cx.consume_key(); }
             Input::Key(_) => { cx.focus(self.bindings[0].class); cx.consume_key(); }
-            Input::Paste(text) | Input::Submit(text) => { self.value += text.len() as i64; cx.consume_key(); }
+            Input::Paste { text, .. } | Input::Submit(text) => { self.value += text.len() as i64; cx.consume_key(); }
             Input::Lifecycle(Lifecycle::Resync) => self.value = -1,
             _ => {}
         }
@@ -121,14 +121,14 @@ fn component_focus_is_exclusive_and_unmount_removes_interests() {
     let b = registry.register(b).unwrap();
     let key = KeyEvent::new(iocraft::KeyEventKind::Press, KeyCode::Char('x'));
     assert!(registry.key(FocusClass::Pinned, &key, &core()).consumed());
-    registry.paste("one", &core());
+    registry.paste("one", 0, &core());
     assert_eq!(shown(&registry), ["a=3", "b=0"]);
     assert!(registry.key(FocusClass::Modal, &key, &core()).consumed());
     registry.submit("four", &core());
     assert_eq!(shown(&registry), ["a=3", "b=4"]);
     registry.key(FocusClass::Modal, &KeyEvent::new(iocraft::KeyEventKind::Press, KeyCode::Esc), &core());
     assert!(!registry.focused());
-    assert!(!registry.paste("ignored", &core()).consumed());
+    assert!(!registry.paste("ignored", 0, &core()).consumed());
     registry.key(FocusClass::Modal, &key, &core());
     registry.unmount(b);
     assert!(!registry.focused());
