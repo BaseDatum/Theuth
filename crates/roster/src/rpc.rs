@@ -1,3 +1,4 @@
+use crate as roster;
 use agent::ModelInfo;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};

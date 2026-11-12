@@ -207,7 +207,7 @@ pub mod codemap;
 /// Messaging RPC server and client traits.
 pub mod messaging;
 /// Boards RPC server and client traits.
-pub mod boards;
+pub use roster::rpc as boards;
 /// Artifacts RPC server and client traits.
 pub mod artifacts;
 /// Kernels RPC server and client traits.
