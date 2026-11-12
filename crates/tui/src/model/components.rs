@@ -13,18 +13,16 @@ impl Model {
         let (residual, out) = match event {
             UiEvent::Wire(event) => {
                 let residual = crate::topics::residual(&event);
-                let core = CoreView {
-                    session: self.session, project: self.project.as_deref(),
-                    inspecting: self.inspect.is_some(), streaming: self.streaming,
-                    reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })),
-                    agent: match &residual { Some(UiEvent::Agent(event)) => Some(event), _ => None },
-                };
+                let core = CoreView { session: self.session, project: self.project.as_deref(),
+                inspecting: self.inspect.is_some(), streaming: self.streaming,
+                reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })),
+                agent: match &residual { Some(UiEvent::Agent(event)) => Some(event), _ => None }, entries: &self.entries };
                 let out = self.components.wire(&event, &core);
                 self.stream_control(&event, emit);
                 (residual, out)
             }
             UiEvent::Component(reply) => {
-                let core = CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None };
+                let core = CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
                 (None, self.components.reply(reply, &core))
             }
             event => {
@@ -61,12 +59,13 @@ impl Model {
                         self.use_skill(name, args, &commands);
                     }
                 }
+                CoreAction::Reject(text) => self.entries.push(Entry::Error(text)),
             }
         }
     }
 
     fn component_lifecycle(&mut self, event: Lifecycle<'_>) -> Outbox {
-        let core = CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None };
+        let core = CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         self.components.lifecycle(event, &core)
     }
     pub(crate) fn component_notify(&mut self, event: Lifecycle<'_>) {
@@ -81,48 +80,48 @@ impl Model {
         self.component_tick_with(now_ms, &mut |_| {});
     }
     pub(crate) fn component_tick_with(&mut self, now_ms: u64, emit: &mut impl FnMut(Output<'_>)) {
-        let core = CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None };
+        let core = CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let out = self.components.tick(now_ms, self.frame, &core);
         for plain in &out.plain { emit(Output::Plain(plain)); }
         self.component_finish(out, emit);
     }
     pub(crate) fn component_key(&mut self, class: FocusClass, key: &iocraft::KeyEvent) -> bool {
-        let core = CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None };
+        let core = CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let out = self.components.key(class, key, &core);
         let consumed = out.consumed();
         self.component_finish(out, &mut |_| {});
         consumed
     }
     pub(crate) fn component_paste(&mut self, text: &str) -> bool {
-        let core = CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None };
+        let core = CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let out = self.components.paste(text, &core);
         let consumed = out.consumed();
         self.component_finish(out, &mut |_| {});
         consumed
     }
     pub(super) fn component_submit(&mut self, text: &str) -> bool {
-        let core = CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None };
+        let core = CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let out = self.components.submit(text, &core);
         let consumed = out.consumed();
         self.component_finish(out, &mut |_| {});
         consumed
     }
     pub(super) fn component_slash(&mut self, name: &str, args: &str) -> bool {
-        let core = CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None };
+        let core = CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let Some(out) = self.components.slash(name, args, &core) else { return false };
         self.component_finish(out, &mut |_| {});
         true
     }
     pub(crate) fn component_views(&self, surface: Surface<'_>, width: usize, height: usize) -> Vec<View> {
         let cx = ViewCx {
-            core: CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None },
+            core: CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries },
             width, height, frame: self.frame,
         };
         self.components.views(surface, &cx).collect()
     }
     pub(crate) fn component_text(&self, surface: Surface<'_>) -> String {
         let cx = ViewCx {
-            core: CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None },
+            core: CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries },
             width: self.width, height: 0, frame: self.frame,
         };
         let mut text = String::new();
