@@ -32,7 +32,6 @@ impl Model {
             component_commands: self.component_commands.take(),
 
             advisor_default: std::mem::take(&mut self.advisor_default),
-            vision_model: self.vision_model.take(),
             private: self.private.take(),
             private_warned: self.private_warned,
             attached: self.attached.take(),

@@ -63,9 +63,6 @@ pub enum UiEvent {
     Info(String),
     /// Reply to [`Command::GetCompactStyle`].
     CompactStyle(CompactStyle),
-    /// Reply to [`Command::GetVisionModel`] / [`Command::SetVisionModel`]:
-    /// the harness-wide vision fallback (52 §3), `None` = off.
-    VisionModel(Option<ModelInfo>),
     /// A command failed (actor missing, ask error).
     Error(String),
     /// Reply to [`Command::ListLogins`]: providers and OAuth MCP servers.
@@ -210,10 +207,6 @@ pub enum Command {
     GetCompactStyle,
     /// `set_compact_style`.
     SetCompactStyle(CompactStyle),
-    /// `vision_model`.
-    GetVisionModel,
-    /// `set_vision_model`; `None` turns the fallback off.
-    SetVisionModel(Option<String>),
     /// `list_sessions`.
     ListSessions,
     /// `list_agents`: the subtree under a session.

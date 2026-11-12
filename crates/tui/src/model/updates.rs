@@ -267,14 +267,6 @@ impl Model {
             UiEvent::CompactStyle(s) => self.entries.push(Entry::Info(format!(
                 "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
             ))),
-            // The startup fetch only primes the attach notice; `/vision` prints.
-            UiEvent::VisionModel(m) => {
-                if std::mem::take(&mut self.awaiting_vision) {
-                    self.entries
-                        .push(Entry::Info(vision_model_line(m.as_ref())));
-                }
-                self.vision_model = m;
-            }
             UiEvent::Providers(list) => {
                 // 85 §0.9: the built-ins come first; there may be no custom provider.
                 for p in &list {
@@ -332,7 +324,6 @@ impl Model {
                 // A failed `/compact` answers here, not with an agent event.
                 self.compacting = false;
                 self.awaiting_effort = false;
-                self.awaiting_vision = false;
 
                 self.notice = None;
                 if error_claimed { return; }

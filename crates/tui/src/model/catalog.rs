@@ -174,15 +174,4 @@ impl Model {
 
 
 
-/// The `/vision` reply: the model that inspects images for a text-only main
-/// model (52 §3), or off.
-pub fn vision_model_line(m: Option<&ModelInfo>) -> String {
-    match m {
-        Some(m) => format!(
-            "vision fallback: {} ({}) — used only when the main model cannot view images; it receives the image and a question written by the main model, an extra call to that provider",
-            m.id, m.name
-        ),
-        None => "vision fallback: off — a text-only main model gets images as omitted (/vision <model> to set one)".into(),
-    }
-}
 

@@ -86,19 +86,6 @@ impl Model {
                 self.reset();
                 self.entries.push(Entry::Info("new session".into()));
             }
-            "/vision" => {
-                self.awaiting_vision = true;
-                send(
-                    tx,
-                    if arg.is_empty() {
-                        Command::GetVisionModel
-                    } else {
-                        Command::SetVisionModel(
-                            (arg != "off" && arg != "clear").then(|| arg.to_owned()),
-                        )
-                    },
-                );
-            }
             "/approvals" => self.approvals_cmd(arg, tx),
             "/advisor" => self.advisor_cmd(arg, tx),
 

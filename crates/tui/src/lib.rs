@@ -501,10 +501,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             msg(api.set_compact_style(style).await)?;
             UiEvent::Info(format!("compact style: {style}"))
         }
-        Command::GetVisionModel => UiEvent::VisionModel(msg(api.vision_model().await)?),
-        Command::SetVisionModel(model) => {
-            UiEvent::VisionModel(msg(api.set_vision_model(model).await)?)
-        }
         Command::ListSessions => UiEvent::Sessions(msg(api.list_sessions().await)?),
         // Failures show nothing: the list simply does not open (PATH-AC).
         Command::PathComplete {
@@ -1079,7 +1075,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             out,
             "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
         ),
-        UiEvent::VisionModel(m) => writeln!(out, "{}", model::vision_model_line(m.as_ref())),
         UiEvent::Skills(list) | UiEvent::SkillsAdded(list) => list.iter().try_for_each(|s| {
             writeln!(
                 out,

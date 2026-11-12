@@ -65,7 +65,7 @@
         assert_eq!(models(&m).menu.as_ref().unwrap().selection.noun, "another setting");
         assert!(!m.entries.iter().any(|entry| matches!(entry, Entry::Error(text) if text == "wrong requester")));
     }
-    use agent::{ContextItem, ContextKind, ContextSnapshot};
+    use agent::{ContextItem, ContextKind, ContextSnapshot, ModelInfo};
     use crate::components::shake::{ShakePanel, ShakeCategory, ShakeStage, expand, SHAKE_USAGE, Msg as ShakeMsg, Request as ShakeRequest};
     use agent::todo::{Status as TodoStatus, TodoSnapshot, TodoSource};
     use crate::components::todos::{Todos, TodoCard, TODO_ROWS, Msg as TodosMsg, Request as TodosRequest};
@@ -5151,8 +5151,9 @@
 
     #[test]
     fn vision_sets_clears_and_shows_the_harness_fallback() {
+        use crate::components::vision_settings::{VisionSettings, Msg as VisionMsg, Request as VisionRequest};
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         let info = |id: &str| ModelInfo {
             id: id.into(),
             name: "Haiku".into(),
@@ -5166,18 +5167,18 @@
             local: false,
         };
         // The startup fetch primes state silently.
-        m.apply(UiEvent::VisionModel(Some(info(
+        m.component_message::<VisionSettings>(VisionMsg::VisionModel(Some(info(
             "anthropic/claude-haiku-4-5",
         ))));
         assert_eq!(
-            m.vision_model.as_ref().map(|v| v.id.as_str()),
+            m.components.get::<VisionSettings>().unwrap().vision_model.as_ref().map(|v| v.id.as_str()),
             Some("anthropic/claude-haiku-4-5")
         );
         assert!(m.entries.is_empty());
         // Bare `/vision` asks and prints the canonical reply; never a prompt.
         m.submit("/vision", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::GetVisionModel)));
-        m.apply(UiEvent::VisionModel(Some(info(
+        assert!(matches!(component_request::<VisionRequest>(&mut rx), Ok(VisionRequest::GetVisionModel)));
+        m.component_message::<VisionSettings>(VisionMsg::VisionModel(Some(info(
             "anthropic/claude-haiku-4-5",
         ))));
         assert!(matches!(
@@ -5187,37 +5188,38 @@
         // Set sends the id; `off` and `clear` send None.
         m.submit("/vision openai/gpt-5", &tx);
         assert!(
-            matches!(rx.try_recv(), Ok(Command::SetVisionModel(Some(id))) if id == "openai/gpt-5")
+            matches!(component_request::<VisionRequest>(&mut rx), Ok(VisionRequest::SetVisionModel(Some(id))) if id == "openai/gpt-5")
         );
         m.submit("/vision off", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::SetVisionModel(None))));
+        assert!(matches!(component_request::<VisionRequest>(&mut rx), Ok(VisionRequest::SetVisionModel(None))));
         m.submit("/vision clear", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::SetVisionModel(None))));
+        assert!(matches!(component_request::<VisionRequest>(&mut rx), Ok(VisionRequest::SetVisionModel(None))));
         assert!(rx.try_recv().is_err(), "no Send slipped through");
         // A rejected selection is an error line; the old selection stands,
         // and the flag it left behind does not make a later silent reply print.
         m.apply(UiEvent::Error("not image-capable".into()));
         assert!(matches!(m.entries.last(), Some(Entry::Error(e)) if e == "not image-capable"));
-        assert!(m.vision_model.is_some());
+        assert!(m.components.get::<VisionSettings>().unwrap().vision_model.is_some());
         let n = m.entries.len();
-        m.apply(UiEvent::VisionModel(None));
-        assert!(m.vision_model.is_none() && m.entries.len() == n);
+        m.component_message::<VisionSettings>(VisionMsg::VisionModel(None));
+        assert!(m.components.get::<VisionSettings>().unwrap().vision_model.is_none() && m.entries.len() == n);
         // Off reply after `/vision off` prints the off line.
         m.submit("/vision off", &tx);
-        m.apply(UiEvent::VisionModel(None));
+        m.component_message::<VisionSettings>(VisionMsg::VisionModel(None));
         assert!(
             matches!(m.entries.last(), Some(Entry::Info(t)) if t.starts_with("vision fallback: off"))
         );
         // Harness-wide: `/new` keeps it.
-        m.apply(UiEvent::VisionModel(Some(info(
+        m.component_message::<VisionSettings>(VisionMsg::VisionModel(Some(info(
             "anthropic/claude-haiku-4-5",
         ))));
         m.submit("/new", &tx);
-        assert!(m.vision_model.is_some());
+        assert!(m.components.get::<VisionSettings>().unwrap().vision_model.is_some());
     }
 
     #[test]
     fn attach_notice_names_the_vision_fallback_for_a_text_only_model() {
+        use crate::components::vision_settings::{VisionSettings, Msg as VisionMsg};
         let catalog = Catalog::load(
             std::env::temp_dir()
                 .join("theuth-tui-no-user-file")
@@ -5242,7 +5244,7 @@
             "{:?}",
             m.entries.last()
         );
-        m.apply(UiEvent::VisionModel(Some(ModelInfo {
+        m.component_message::<VisionSettings>(VisionMsg::VisionModel(Some(ModelInfo {
             id: "anthropic/claude-haiku-4-5".into(),
             name: "Haiku".into(),
             provider: "anthropic".into(),
