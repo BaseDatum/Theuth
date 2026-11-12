@@ -1,8 +1,6 @@
 use super::*;
 
-/// Multi-step input (`/provider add`, `/link` rename / revoke, `/nodes` add /
-/// rename / remove, `/secrets` add / replace / delete). Rides on the input
-/// box (not a modal menu).
+/// Core provider and secret-vault flows, backed by the mounted composer.
 #[derive(Debug)]
 pub enum Prompt {
     /// Asking for the gateway name.
@@ -18,22 +16,6 @@ pub enum Prompt {
         name: String,
         /// Normalized URL already collected.
         url: String,
-    },
-    /// `/nodes` `a`: asking for a node's pasted pairing key.
-    NodeKey,
-    /// `/nodes` `r`: asking for a node's new local alias.
-    NodeName {
-        /// `Node.id`.
-        id: String,
-        /// Its current name (the hint).
-        name: String,
-    },
-    /// `/nodes` `x`: `y` removes the node, anything else keeps it.
-    NodeRemove {
-        /// `Node.id`.
-        id: String,
-        /// Its name (the hint).
-        name: String,
     },
     /// `/secrets add`: asking for the name.
     SecretName,
@@ -81,11 +63,6 @@ impl Prompt {
             Prompt::ProviderKey { name, .. } => {
                 format!("provider add  {name}  api key  (esc cancel)")
             }
-            Prompt::NodeKey => "nodes  add  paste the node's key  (esc cancel)".into(),
-            Prompt::NodeName { name, .. } => {
-                format!("nodes  rename {name}  new name  (esc cancel)")
-            }
-            Prompt::NodeRemove { name, .. } => format!("nodes  remove {name}?  y/n"),
             Prompt::SecretName => "secrets add  name  (esc cancel)".into(),
             Prompt::SecretValue {
                 name,
@@ -127,9 +104,6 @@ impl Prompt {
         match self {
             Prompt::ProviderName | Prompt::ProviderUrl { .. } | Prompt::ProviderKey { .. } => {
                 "provider add cancelled"
-            }
-            Prompt::NodeKey | Prompt::NodeName { .. } | Prompt::NodeRemove { .. } => {
-                "nodes: cancelled"
             }
             Prompt::SecretName
             | Prompt::SecretValue { .. }
@@ -189,23 +163,6 @@ impl Model {
                         key: line.to_owned(),
                     },
                 );
-            }
-            Some(Prompt::NodeKey) => {
-                self.awaiting_nodes = true;
-                send(tx, Command::AddNode(line.to_owned(), None));
-            }
-            Some(Prompt::NodeName { id, .. }) => {
-                self.awaiting_nodes = true;
-                send(tx, Command::RenameNode(id, line.to_owned()));
-            }
-            Some(Prompt::NodeRemove { id, name }) => {
-                if line.eq_ignore_ascii_case("y") || line.eq_ignore_ascii_case("yes") {
-                    self.awaiting_nodes = true;
-                    send(tx, Command::RemoveNode(id));
-                } else {
-                    self.entries
-                        .push(Entry::Info(format!("nodes: kept {name}")));
-                }
             }
             Some(Prompt::SecretName) => {
                 if secrets::vault::valid_name(line) {

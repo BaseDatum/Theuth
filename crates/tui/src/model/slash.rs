@@ -208,11 +208,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "devices paired with the mesh (any node serves them)",
     ),
     (
-        "/nodes",
-        "[add <key>|rm <n>|name <n> <name>|invite <n>]",
-        "machines this harness can run sessions on",
-    ),
-    (
         "/artifacts",
         "",
         "files the agent showed (picker: ⏎ opens, s shows inline, e exports to ~/Downloads)",

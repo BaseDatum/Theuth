@@ -222,7 +222,6 @@ impl Model {
                 self.refresh_artifacts = self.session.is_some();
                 self.refresh_advisor = self.session.is_some();
                 self.refresh_communication = true;
-                self.refresh_nodes = self.nodes.is_some();
                 self.refresh_secrets = self.secrets.is_some();
                 self.component_notify(Lifecycle::Resync);
             }

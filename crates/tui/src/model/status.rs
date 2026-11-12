@@ -128,7 +128,7 @@ impl Model {
                 t.reveal((backlog / 16).max(1));
             }
         }
-        tick_card(&mut self.entries, &mut self.invite, CardKind::Node);
+        tick_card(&mut self.entries, &mut self.invite);
     }
 }
 
@@ -308,7 +308,7 @@ impl Model {
                 HeaderSlot::Approvals => text.push_str(self.approvals_tag()),
                 HeaderSlot::Communication => text.push_str(&self.communication_tag()),
                 HeaderSlot::Link => {}
-                HeaderSlot::Nodes => text.push_str(&self.nodes_tag()),
+                HeaderSlot::Nodes => {}
                 HeaderSlot::Update => {}
             }
             text.push_str(&self.component_text(Surface::Header(slot)));
@@ -359,13 +359,6 @@ impl Model {
     }
 
 
-    /// `  ·  nodes ●N` (N = nodes online) while a node is paired; empty otherwise.
-    fn nodes_tag(&self) -> String {
-        match self.nodes.as_deref() {
-            Some([]) | None => String::new(),
-            Some(list) => format!("  ·  nodes ●{}", list.iter().filter(|n| n.online).count()),
-        }
-    }
 
 }
 
