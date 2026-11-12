@@ -119,6 +119,16 @@ pub struct Declaration {
     pub bindings: &'static [Binding],
 }
 
+/// A focused component may borrow the still-mounted composer instead of capturing it.
+pub struct Editor {
+    /// Prompt line above the composer.
+    pub hint: String,
+    /// Hide the bytes typed into the shared editor.
+    pub masked: bool,
+    /// An empty line is a meaningful answer.
+    pub submit_empty: bool,
+}
+
 /// Borrowed from disjoint core fields; never a mutable Model or stored event cache.
 pub struct CoreView<'a> {
     /// Current selected session; None for an unsent draft.
@@ -356,6 +366,8 @@ pub trait Component: Send + Sync + 'static {
     fn update(&mut self, input: Input<'_, Self::Msg>, cx: &mut Cx<'_, '_, Self::Msg>);
     /// Return owned presentation for a fixed layout slot.
     fn view(&self, at: Surface<'_>, cx: &ViewCx<'_>) -> Option<View>;
+    /// Composer-backed prompt configuration for the focused owner.
+    fn editor(&self) -> Option<Editor> { None }
     /// Exact additional rows for an owner decoration; shared by layout and view.
     fn entry_rows(&self, _key: &str) -> usize { 0 }
     /// Next Unix-millisecond deadline; idle components do not wake the loop.
@@ -368,6 +380,7 @@ trait ErasedComponent: Send + Sync {
     fn reply(&mut self, reply: LocalReply, core: &CoreView<'_>, out: &mut Outbox);
     fn input(&mut self, input: Input<'_, ()>, core: &CoreView<'_>, token: ComponentToken, epoch: u64, out: &mut Outbox);
     fn view(&self, at: Surface<'_>, cx: &ViewCx<'_>) -> Option<View>;
+    fn editor(&self) -> Option<Editor>;
     fn wake(&self) -> Option<u64>;
     fn entry_rows(&self, key: &str) -> usize;
     fn as_any(&self) -> &dyn Any;
@@ -391,6 +404,7 @@ impl<C: Component> ErasedComponent for Mounted<C> {
         }
     }
     fn view(&self, at: Surface<'_>, cx: &ViewCx<'_>) -> Option<View> { self.0.view(at, cx) }
+    fn editor(&self) -> Option<Editor> { self.0.editor() }
     fn wake(&self) -> Option<u64> { self.0.wake() }
     fn entry_rows(&self, key: &str) -> usize { self.0.entry_rows(key) }
     fn as_any(&self) -> &dyn Any { &self.0 }
