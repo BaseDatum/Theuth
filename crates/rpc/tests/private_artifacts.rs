@@ -13,7 +13,7 @@ use agent::{Authorize, CreateSessionOptions, SessionOpen};
 use jsonrpsee::core::server::MethodsError;
 use jsonrpsee::types::ErrorObjectOwned;
 use kameo::actor::{ActorRef, Spawn};
-use rpc::ApiServer;
+use rpc::into_rpc_module;
 use rpc::api::Server;
 use runtime::{Runtime, SessionId};
 use serde::de::DeserializeOwned;
@@ -93,7 +93,7 @@ async fn private_artifacts_are_served_to_the_owner_with_the_session_only() {
     let artifacts = artifact::ArtifactActor::spawn(artifact::ArtifactActor::new(stores.clone()));
     artifacts.register(artifact::ARTIFACT_ACTOR).unwrap();
 
-    let base: jsonrpsee::Methods = Server::new(rt).into_rpc().into();
+    let base: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
     let (a, peer_a, _guard_a) = conn(&base);
     let (b, _peer_b, _guard_b) = conn(&base);
 

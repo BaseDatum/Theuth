@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use jsonrpsee::core::server::Subscription;
 use kameo::actor::Spawn;
-use rpc::ApiServer;
+use rpc::into_rpc_module;
 use rpc::api::{PendingPrompts, Server};
 use runtime::{Runtime, SessionId};
 use tools::{Approval, AskUser, Decision};
@@ -49,15 +49,14 @@ async fn prompts_resolve_everywhere_and_replay_only_while_pending() {
     ask.register(tools::ASK_ACTOR).unwrap();
     let approval = Approval::spawn(Approval::new(rt.clone(), Duration::from_secs(30)));
     approval.register(tools::APPROVAL_ACTOR).unwrap();
-    let mut methods: jsonrpsee::Methods = Server {
+    let mut methods: jsonrpsee::Methods = into_rpc_module(Server {
         events,
         rt: rt.clone(),
         private: Default::default(),
         focus: Default::default(),
         seen: Default::default(),
         follows: Default::default(),
-    }
-    .into_rpc()
+    })
     .into();
     let (peer, _guard) = link::RpcPeer::open();
     methods.extensions_mut().insert(peer);

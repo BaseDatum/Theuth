@@ -1,6 +1,6 @@
 //! The agent half of the Agent Client Protocol (design doc 06 §4, §8.12-13):
 //! `t --acp` on stdio, and one connection per link mode-1 conn when this
-//! harness is a node (32 §4.3, §5.3). Every call is an [`ApiClient`] method
+//! harness is a node (32 §4.3, §5.3). Every call is an [`api::clients`] method
 //! on an [`Engine`] — this process's, or a running one `t --acp` attached to
 //! (63 §2.3) — with the ACP client (an editor, or a parent harness) as the
 //! only frontend.
@@ -47,7 +47,7 @@ use runtime::{Runtime, SessionId};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tools::{ApprovalRequested, Decision, Risk};
 
-use crate::api::{self, ApiClient};
+use crate::api::{self, clients::*};
 use crate::client::{Engine, Local};
 
 /// Registry name of the process-wide [`Relay`].

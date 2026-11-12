@@ -107,6 +107,89 @@ test('ReasoningDone closes the block with the engine time; without it the client
   expect(fromHistory({ role: 'reasoning', text: 't', turn: 1 })[0]).not.toHaveProperty('ms', expect.anything())
 })
 
+test('ACPTHOUGHT T3: an earlier tool result preserves streaming reasoning and its total time', () => {
+  const open = run([
+    { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 },
+    { type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'task', args: {} },
+    { type: 'ReasoningDelta', session: S, turn: T, text: "Now I'm sket" },
+  ], ctx(1000))
+  const finished = apply(open, { type: 'ToolCallFinished', session: S, turn: T, call_id: 'c1', output: 'first', is_error: false, files: [] }, ctx(2000))
+  expect(finished.activity).toBe('reasoning')
+  expect(finished.entries[2]).toBe(open.entries[2])
+  const s = apply(finished, { type: 'ReasoningDelta', session: S, turn: T, text: 'ching' }, ctx(3000))
+  expect(s.entries.map((e) => e.kind)).toEqual(['user', 'tool', 'reasoning'])
+  expect(s.entries[1]).toMatchObject({ callId: 'c1', result: { output: 'first', isError: false, files: [] } })
+  expect(s.entries[2]).toMatchObject({ kind: 'reasoning', text: "Now I'm sketching", done: false, startedAt: 1000 })
+  expect(s.activity).toBe('reasoning')
+  const done = apply(s, { type: 'ReasoningDone', session: S, turn: T, ms: 95000 }, ctx(96000))
+  expect(done.entries.filter((e) => e.kind === 'reasoning')).toMatchObject([
+    { text: "Now I'm sketching", done: true, ms: 95000 },
+  ])
+})
+
+test('ACPTHOUGHT T4: repeated tool finishes keep the first result and leave reasoning untouched', () => {
+  const open = run([
+    { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 },
+    { type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'task', args: {} },
+    { type: 'ToolCallFinished', session: S, turn: T, call_id: 'c1', output: 'first', is_error: false, files: ['/first'] },
+    { type: 'ReasoningDelta', session: S, turn: T, text: 'still thinking' },
+  ])
+  const s = apply(open, { type: 'ToolCallFinished', session: S, turn: T, call_id: 'c1', output: 'different', is_error: true, files: ['/second'] }, ctx(2000))
+  expect(s).toBe(open)
+  expect(s.entries.map((e) => e.kind)).toEqual(['user', 'tool', 'reasoning'])
+  expect(s.entries[1]).toMatchObject({ result: { output: 'first', isError: false, files: ['/first'] } })
+  expect(s.entries[2]).toMatchObject({ kind: 'reasoning', text: 'still thinking', done: false })
+  expect(s.activity).toBe('reasoning')
+})
+
+test('ACPTHOUGHT T5: an earlier tool result preserves an open assistant tail', () => {
+  const open = run([
+    { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 },
+    { type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'task', args: {} },
+    { type: 'TextDelta', session: S, turn: T, text: 'Hel' },
+  ])
+  const finished = apply(open, { type: 'ToolCallFinished', session: S, turn: T, call_id: 'c1', output: 'first', is_error: false, files: [] }, ctx())
+  expect(finished.activity).toBe('streaming')
+  expect(finished.entries[2]).toBe(open.entries[2])
+  const s = apply(finished, { type: 'TextDelta', session: S, turn: T, text: 'lo' }, ctx())
+  expect(s.entries.map((e) => e.kind)).toEqual(['user', 'tool', 'assistant'])
+  expect(s.entries[1]).toMatchObject({ result: { output: 'first' } })
+  expect(s.entries[2]).toMatchObject({ kind: 'assistant', text: 'Hello', open: true })
+  expect(s.activity).toBe('streaming')
+})
+
+test('ACPTHOUGHT T6: an unknown tool result still appends info and closes reasoning', () => {
+  const open = run([
+    { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 },
+    { type: 'ReasoningDelta', session: S, turn: T, text: 'thinking' },
+  ], ctx(1000))
+  const s = apply(open, { type: 'ToolCallFinished', session: S, turn: T, call_id: 'unknown', output: 'finished', is_error: false, files: [] }, ctx(2000))
+  expect(s.entries.map((e) => e.kind)).toEqual(['user', 'reasoning', 'info'])
+  expect(s.entries[1]).toMatchObject({ kind: 'reasoning', text: 'thinking', done: true, ms: 1000 })
+  expect(s.entries[2]).toMatchObject({ kind: 'info', text: '✓ finished' })
+  expect(s.activity).toBe('thinking')
+})
+
+test('ACPTHOUGHT T7: w193 replay keeps thirty thought chunks in one block across repeated finishes', () => {
+  let s = run([
+    { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 },
+    { type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'task', args: {} },
+    { type: 'ToolCallFinished', session: S, turn: T, call_id: 'c1', output: 'spawned', is_error: false, files: [] },
+  ])
+  const chunks = Array.from({ length: 30 }, (_, i) => `part${i} `)
+  for (const [i, text] of chunks.entries()) {
+    s = apply(s, { type: 'ReasoningDelta', session: S, turn: T, text }, ctx(i * 3000))
+    if ((i + 1) % 3 === 0)
+      s = apply(s, { type: 'ToolCallFinished', session: S, turn: T, call_id: 'c1', output: `stale${i}`, is_error: false, files: [] }, ctx(i * 3000 + 1))
+  }
+  expect(s.entries.map((e) => e.kind)).toEqual(['user', 'tool', 'reasoning'])
+  expect(s.entries[2]).toMatchObject({ text: chunks.join(''), done: false })
+  s = apply(s, { type: 'ReasoningDone', session: S, turn: T, ms: 95000 }, ctx(95000))
+  expect(s.entries.filter((e) => e.kind === 'reasoning')).toMatchObject([
+    { text: chunks.join(''), done: true, ms: 95000 },
+  ])
+})
+
 test('tool-only turns omit whitespace assistant rows', () => {
   const s = run([
     { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 },

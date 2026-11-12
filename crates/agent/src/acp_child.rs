@@ -229,7 +229,7 @@ pub(crate) struct Turn {
     /// The quiet timer of a continuation turn.
     quiet: Option<AbortHandle>,
     /// 91: when the first `agent_thought_chunk` of the current thinking
-    /// arrived; taken by the first message/tool update after it.
+    /// arrived; taken by the first message chunk or new tool call after it.
     thinking: Option<Instant>,
 }
 
@@ -1511,16 +1511,17 @@ pub(crate) fn tokens_of(u: &AcpUsage) -> TokenTotals {
 /// persist queued on it (06 §3.6).
 pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEvent> {
     let (session, id) = (turn.session, turn.id);
-    // 91: the first message or tool update after thought chunks ends the
-    // thinking; `ReasoningDone` goes ahead of that update's own event.
+    // 91: the first message chunk or new tool call after thought chunks ends
+    // the thinking; `ReasoningDone` goes ahead of that update's own event.
+    // A tool update reports on a call whose announcement already ended any
+    // prior thinking. Updates are harness activity, often from a background
+    // call, not the model moving on.
     let done = match &update {
         SessionUpdate::AgentThoughtChunk(_) => {
             turn.thinking.get_or_insert_with(Instant::now);
             None
         }
-        SessionUpdate::AgentMessageChunk(_)
-        | SessionUpdate::ToolCall(_)
-        | SessionUpdate::ToolCallUpdate(_) => {
+        SessionUpdate::AgentMessageChunk(_) | SessionUpdate::ToolCall(_) => {
             turn.thinking.take().map(|start| AgentEvent::ReasoningDone {
                 session,
                 turn: id,
@@ -2336,6 +2337,74 @@ pub(crate) mod tests {
             &mut t,
         );
         assert!(matches!(&ev[..], [AgentEvent::TextDelta { .. }]), "{ev:?}");
+    }
+
+    #[test]
+    fn thought_chunks_survive_tool_call_updates() {
+        let mut t = turn();
+        translate(SessionUpdate::ToolCall(ToolCall::new("c1", "task")), &mut t);
+        for (text, fields) in [
+            (
+                "a",
+                ToolCallUpdateFields::new()
+                    .status(ToolCallStatus::InProgress)
+                    .content(vec![ToolCallContent::from("progress")]),
+            ),
+            ("b", ToolCallUpdateFields::new()),
+            (
+                "c",
+                ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+            ),
+        ] {
+            let ev = translate(
+                SessionUpdate::AgentThoughtChunk(ContentChunk::new(ContentBlock::from(text))),
+                &mut t,
+            );
+            assert!(
+                matches!(&ev[..], [AgentEvent::ReasoningDelta { text: delta, .. }] if &**delta == text)
+            );
+            let ev = translate(update("c1", fields), &mut t);
+            if text == "c" {
+                assert!(
+                    matches!(&ev[..], [AgentEvent::ToolCallFinished { call_id, .. }] if call_id == "c1"),
+                    "{ev:?}"
+                );
+                assert!(
+                    t.open.is_empty(),
+                    "the terminal update still finishes the call"
+                );
+            } else {
+                assert!(ev.is_empty(), "{ev:?}");
+            }
+        }
+        let ev = translate(
+            SessionUpdate::AgentThoughtChunk(ContentChunk::new(ContentBlock::from("d"))),
+            &mut t,
+        );
+        assert!(matches!(&ev[..], [AgentEvent::ReasoningDelta { text, .. }] if &**text == "d"));
+        let ev = translate(chunk("x"), &mut t);
+        assert!(
+            matches!(&ev[..], [AgentEvent::ReasoningDone { .. }, AgentEvent::TextDelta { text, .. }] if &**text == "x"),
+            "{ev:?}"
+        );
+        let ev = translate(chunk("y"), &mut t);
+        assert!(matches!(&ev[..], [AgentEvent::TextDelta { .. }]), "{ev:?}");
+
+        translate(
+            SessionUpdate::AgentThoughtChunk(ContentChunk::new(ContentBlock::from("next"))),
+            &mut t,
+        );
+        let ev = translate(SessionUpdate::ToolCall(ToolCall::new("c2", "read")), &mut t);
+        assert!(
+            matches!(
+                &ev[..],
+                [
+                    AgentEvent::ReasoningDone { .. },
+                    AgentEvent::ToolCallStarted { .. }
+                ]
+            ),
+            "{ev:?}"
+        );
     }
 
     #[test]
@@ -5187,6 +5256,79 @@ pub(crate) mod tests {
         );
     }
 
+    fn frame(name: &str) -> serde_json::Value {
+        let path = format!(
+            "{}/../acp/fixtures/omp-18.3.1/task.{name}.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect(&path)).unwrap();
+        v["params"]["sessionId"] = json!("s1");
+        v
+    }
+
+    #[tokio::test]
+    async fn omp_task_frames_preserve_one_thinking_block() {
+        use agent_client_protocol::schema::v1::Implementation;
+
+        let mut rig = Rig::with_agent(
+            Duration::from_secs(3600),
+            Vec::new(),
+            Some(Implementation::new("oh-my-pi", "18.3.1")),
+        )
+        .await;
+        rig.input("spawn readers").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.fake.send(frame("tool_call"));
+        rig.fake
+            .update(SessionUpdate::AgentThoughtChunk(ContentChunk::new(
+                ContentBlock::from("a"),
+            )));
+        rig.fake.send(frame("mid"));
+        rig.fake
+            .update(SessionUpdate::AgentThoughtChunk(ContentChunk::new(
+                ContentBlock::from("b"),
+            )));
+        rig.fake.send(frame("final"));
+        rig.fake.send(frame("completed_stale"));
+        rig.fake
+            .update(SessionUpdate::AgentThoughtChunk(ContentChunk::new(
+                ContentBlock::from("c"),
+            )));
+        rig.fake.update(chunk("x"));
+        rig.fake.end_turn(&id);
+        let parent = rig.session;
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::TurnFinished { session, .. } if *session == parent))
+            .await;
+        let thinking: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::ReasoningDelta { session, text, .. } if *session == parent => {
+                    Some(("thought", &**text))
+                }
+                AgentEvent::ReasoningDone { session, .. } if *session == parent => {
+                    Some(("done", ""))
+                }
+                AgentEvent::TextDelta { session, text, .. } if *session == parent => {
+                    Some(("text", &**text))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            thinking,
+            [
+                ("thought", "a"),
+                ("thought", "b"),
+                ("thought", "c"),
+                ("done", ""),
+                ("text", "x")
+            ],
+            "{events:?}"
+        );
+    }
+
     /// 141 §13.2 (omp, real frames via W5's `progress_rows`): the recorded
     /// `task.{completed_stale, mid, final}` frames sent through the `Fake`
     /// on a harness that claims `oh-my-pi` → two `omp_task` children
@@ -5197,16 +5339,6 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn omp_task_frames_announce_two_children_through_progress_rows() {
         use agent_client_protocol::schema::v1::Implementation;
-        let frame = |name: &str| -> serde_json::Value {
-            let path = format!(
-                "{}/../acp/fixtures/omp-18.3.1/task.{name}.json",
-                env!("CARGO_MANIFEST_DIR")
-            );
-            let mut v: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&path).expect(&path)).unwrap();
-            v["params"]["sessionId"] = json!("s1");
-            v
-        };
         let mut rig = Rig::with_agent(
             Duration::from_secs(3600),
             Vec::new(),

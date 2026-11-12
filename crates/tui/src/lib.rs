@@ -1,6 +1,6 @@
 //! Terminal UI plugin. Subscribes to `agent::AgentEvent`,
 //! `tools::ApprovalRequested`, `secrets::SecretsEvent` and the rest of the
-//! bus; every command is an [`rpc::api::ApiClient`] call on an
+//! bus; every command is an [`rpc::api::clients`] call on an
 //! [`rpc::client::Engine`]: in-process (this process is the engine) or over a
 //! WebSocket to a running engine the TUI attached to (63 §2.3), whose events
 //! [`rpc::client::mirror`] republishes on the local bus. Cancels
@@ -23,7 +23,7 @@ use jsonrpsee::ws_client::WsClient;
 use kameo::Actor;
 use kameo::actor::Spawn;
 use kameo::message::{Context, Message};
-use rpc::api::ApiClient;
+use rpc::api::clients::*;
 use rpc::client::{Engine, Local};
 use rpc::engine::{Host, Running};
 use runtime::{Runtime, SessionId};

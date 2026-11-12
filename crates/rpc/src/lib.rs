@@ -1,9 +1,9 @@
 //! RPC plugin. Methods are `ask`s on named actors; `subscribe_events` streams
 //! every wire-visible bus event as `{"type": ..., ...}`. See design doc §7.
 //!
-//! [`api::Api`] is the single list of harness commands. In-process callers
+//! [`api`] contains the domain traits for harness commands. In-process callers
 //! (the TUI) hold an [`api::Server`] from [`api::Server::new`] and call its
-//! [`ApiServer`] methods directly; `serve` exposes the same trait over the
+//! domain server methods directly; `serve` exposes the merged methods over the
 //! socket for remote clients.
 
 use std::net::SocketAddr;
@@ -46,7 +46,7 @@ mod export;
 
 pub use self::search::SearchToolsPlugin;
 pub use acp::AcpPlugin;
-pub use api::{ApiClient, ApiServer};
+pub use api::{clients, into_rpc_module};
 
 /// `[rpc]` config section.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -170,14 +170,14 @@ pub fn configured_listen(rt: &Runtime) -> Option<String> {
     rt.config.find_value("rpc.listen").ok()?.into_string()
 }
 
-/// The full [`api::Api`] as a jsonrpsee `Methods` object, fed by the shared
+/// The full [`api`] surface as a jsonrpsee `Methods` object, fed by the shared
 /// [`bridge`]: what `serve` binds to the socket and what the link plugin
 /// dispatches decrypted requests into with `raw_json_request` (31 §6.2).
 pub async fn methods(rt: Runtime) -> jsonrpsee::Methods {
     let events = bridge::start(&rt).await;
     let mut server = api::Server::new(rt);
     server.events = events;
-    server.into_rpc().into()
+    into_rpc_module(server).into()
 }
 
 /// Start the bridge and the server; returns the bound address. The server
