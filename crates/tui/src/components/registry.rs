@@ -301,6 +301,10 @@ impl Registry {
     pub fn wake(&self) -> Option<u64> {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()?.wake()).min()
     }
+    /// Any mounted owner needs the shared animation clock.
+    pub fn animating(&self) -> bool {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).any(|component| component.animating())
+    }
     /// Read-only owner query for composition and component integration tests.
     pub fn get<C: Component>(&self) -> Option<&C> {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()).find_map(|component| component.as_any().downcast_ref())
