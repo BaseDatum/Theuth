@@ -167,6 +167,8 @@ pub struct CoreView<'a> {
     pub entries: &'a [crate::model::Entry],
 
     // Step-11 group t1 CoreView fields: add below, in this block only.
+    /// Accepted descendant-session rows; borrowed without rebuilding a membership set.
+    pub session_tree: &'a std::collections::HashMap<SessionId, crate::model::AgentRow>,
 
     // Step-11 group t2 CoreView fields: add below, in this block only.
     /// Whether this registry is mounted on an interactive terminal surface.
@@ -183,6 +185,10 @@ impl CoreView<'_> {
             } if *old == group => Some(*key),
             _ => None,
         }) == Some(key)
+    }
+    /// Match the selected root or one of its accepted descendants.
+    pub fn owns_session(&self, session: SessionId) -> bool {
+        self.session == Some(session) || self.session_tree.contains_key(&session)
     }
 }
 

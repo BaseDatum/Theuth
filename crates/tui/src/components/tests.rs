@@ -50,7 +50,9 @@ impl Component for Counter {
     }
 }
 fn core() -> CoreView<'static> {
-    CoreView { interactive: true, session: None, parent: None, private_root: None, project: None, inspecting: false, streaming: false, reasoning: false, agent: None, entries: &[] }
+    static TREE: std::sync::LazyLock<std::collections::HashMap<SessionId, crate::model::AgentRow>> =
+        std::sync::LazyLock::new(std::collections::HashMap::new);
+    CoreView { session_tree: &TREE, interactive: true, session: None, parent: None, private_root: None, project: None, inspecting: false, streaming: false, reasoning: false, agent: None, entries: &[] }
 }
 pub(crate) fn topic(name: &str, version: u32, event: serde_json::Value) -> TopicEvent {
     TopicEvent::Remote(Arc::new(TopicNotification { topic: name.into(), version, event }))
