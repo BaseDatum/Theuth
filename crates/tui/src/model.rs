@@ -220,6 +220,8 @@ pub struct Model {
     /// Fixed feature registry; feature state never leaks into the core enum.
     pub(crate) components: crate::components::Registry,
     component_commands: Option<UnboundedSender<Command>>,
+    /// A one-shot caret update for the shell's separate editor.
+    pub(crate) widget_cursor: Option<usize>,
     /// A loaded transcript holds `show` cards: the event loop asks
     /// `list_artifacts` to join their artifacts back (35 §0.3).
     pub refresh_artifacts: bool,

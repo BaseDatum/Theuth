@@ -432,7 +432,7 @@ impl Component for Terminals {
                 self.focus(cx);
             }
             Input::Key(key) if self.menu.is_some() => { cx.consume_key(); self.key(key, cx); }
-            Input::Paste(text) if self.interactive() => {
+            Input::Paste { text, .. } if self.interactive() => {
                 if let Some(Menu::Terminal(view)) = &mut self.menu {
                     Self::send(Request::PtyInput { session: view.session, job: view.job.clone(), text: None, keys: vec![Key::Paste(text.into())] }, cx);
                     view.dirty = true; cx.consume_key();

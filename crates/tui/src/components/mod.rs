@@ -277,7 +277,12 @@ pub enum Input<'a, M> {
     /// A key at the declared input-precedence boundary.
     Key(&'a KeyEvent),
     /// Bracketed paste addressed to the current focus owner.
-    Paste(&'a str),
+    Paste {
+        /// Original pasted bytes.
+        text: &'a str,
+        /// Byte cursor in the shell's separate editor, if one is visible.
+        caret: usize,
+    },
     /// A submitted line addressed to the current focus owner.
     Submit(&'a str),
     /// Declared builtin/alias invocation, before skill fallback.
@@ -308,7 +313,7 @@ impl<'a, M> Input<'a, M> {
     fn without_message<N>(self) -> Option<Input<'a, N>> {
         Some(match self {
             Self::Message(_) => return None,
-            Self::Key(key) => Input::Key(key), Self::Paste(text) => Input::Paste(text),
+            Self::Key(key) => Input::Key(key), Self::Paste { text, caret } => Input::Paste { text, caret },
             Self::Submit(text) => Input::Submit(text),
             Self::Slash { name, args } => Input::Slash { name, args },
             Self::EntryAction { key, operation } => Input::EntryAction { key, operation },
@@ -433,6 +438,15 @@ pub(crate) fn spinner(frame: usize) -> &'static str {
     const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     FRAMES[(frame / 5) % FRAMES.len()]
 }
+/// A separate input widget; the shell retains its handle and the chat draft.
+pub struct EditorConfig {
+    /// Current owner-controlled value.
+    pub value: String,
+    /// Whether this widget receives editing keys.
+    pub focused: bool,
+    /// Typed owner callback from ViewCx.
+    pub on_change: Box<dyn FnMut(String) + Send + Sync>,
+}
 /// Owned presentation; requested rows are used for both layout and view.
 pub enum View {
     /// Plain header/status segment, or non-wrapping slot text.
@@ -444,6 +458,17 @@ pub enum View {
         /// The same row budget core reserves.
         rows: usize,
         /// Replace earlier content in this slot instead of appending.
+        replace: bool,
+    },
+    /// Owner-built chrome around a shell-rendered separate input widget.
+    Editor {
+        /// Value, focus and typed edit callback, never a mutable handle.
+        editor: EditorConfig,
+        /// Receives only the rendered input element.
+        render: Box<dyn FnOnce(AnyElement<'static>) -> AnyElement<'static>>,
+        /// Exact reserved rows.
+        rows: usize,
+        /// Replace earlier content in this slot.
         replace: bool,
     },
 }
@@ -509,6 +534,8 @@ pub enum CoreAction {
     // Step-11 group t2 CoreAction variants: add below, in this block only.
 
     // Step-11 group t3 CoreAction variants: add below, in this block only.
+    /// Move the shell-owned separate editor cursor without touching the chat draft.
+    EditorCursor(usize),
 }
 
 /// Owned effects and actions emitted during one deterministic dispatch.
@@ -627,6 +654,8 @@ pub trait Component: Send + Sync + 'static {
     fn captures(&self, _class: FocusClass) -> bool { false }
     /// Request core animation frames while an owner operation remains active.
     fn animating(&self) -> bool { false }
+    /// The focused view owns a separate widget, not the composer-backed Editor.
+    fn separate_editor(&self) -> bool { false }
 }
 
 trait ErasedComponent: Send + Sync {
@@ -639,6 +668,7 @@ trait ErasedComponent: Send + Sync {
     fn captures(&self, class: FocusClass) -> bool;
     fn wake(&self) -> Option<u64>;
     fn animating(&self) -> bool;
+    fn separate_editor(&self) -> bool;
     fn entry_rows(&self, key: &str) -> usize;
     fn entry_height(&self, key: &str, width: usize) -> Option<usize>;
     fn entry_openable(&self, key: &str) -> bool;
@@ -670,6 +700,7 @@ impl<C: Component> ErasedComponent for Mounted<C> {
     fn captures(&self, class: FocusClass) -> bool { self.0.captures(class) }
     fn wake(&self) -> Option<u64> { self.0.wake() }
     fn animating(&self) -> bool { self.0.animating() }
+    fn separate_editor(&self) -> bool { self.0.separate_editor() }
     fn entry_rows(&self, key: &str) -> usize { self.0.entry_rows(key) }
     fn entry_height(&self, key: &str, width: usize) -> Option<usize> { self.0.entry_height(key, width) }
     fn entry_openable(&self, key: &str) -> bool { self.0.entry_openable(key) }
