@@ -283,7 +283,9 @@ impl Registry {
     }
     /// Registration-ordered rows shared by completion/help and dictation.
     pub fn slash_specs(&self) -> impl Iterator<Item = &'static SlashSpec> + '_ {
-        self.slots.iter().filter_map(|slot| slot.component.as_ref()).flat_map(|component| component.declaration().slash)
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).flat_map(|component| {
+            component.declaration().slash.iter().filter(move |spec| component.slash_visible(spec.0))
+        })
     }
     /// Render in registration order; elements own all retained presentation data.
     pub fn views<'a>(&'a self, at: Surface<'a>, cx: &'a ViewCx<'a>) -> impl Iterator<Item = View> + 'a {

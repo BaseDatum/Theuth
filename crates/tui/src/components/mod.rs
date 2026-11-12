@@ -591,6 +591,8 @@ pub trait Component: Send + Sync + 'static {
     fn entry_height(&self, _key: &str, _width: usize) -> Option<usize> { None }
     /// This owner can open a local representation of the stable entry.
     fn entry_openable(&self, _key: &str) -> bool { false }
+    /// Keep a command routable while omitting it from help/completion.
+    fn slash_visible(&self, _name: &str) -> bool { true }
 
     // Step-11 group t3 Component methods (with defaults): add below, in this block only.
     /// Intrinsic capture precedes exclusive focus and bound keys at this class.
@@ -609,6 +611,7 @@ trait ErasedComponent: Send + Sync {
     fn entry_rows(&self, key: &str) -> usize;
     fn entry_height(&self, key: &str, width: usize) -> Option<usize>;
     fn entry_openable(&self, key: &str) -> bool;
+    fn slash_visible(&self, name: &str) -> bool;
     fn as_any(&self) -> &dyn Any;
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -638,6 +641,7 @@ impl<C: Component> ErasedComponent for Mounted<C> {
     fn entry_rows(&self, key: &str) -> usize { self.0.entry_rows(key) }
     fn entry_height(&self, key: &str, width: usize) -> Option<usize> { self.0.entry_height(key, width) }
     fn entry_openable(&self, key: &str) -> bool { self.0.entry_openable(key) }
+    fn slash_visible(&self, name: &str) -> bool { self.0.slash_visible(name) }
     fn as_any(&self) -> &dyn Any { &self.0 }
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn Any { &mut self.0 }
