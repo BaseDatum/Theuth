@@ -1,0 +1,241 @@
+[
+  {
+    "input": {
+      "type": "peer",
+      "data": {
+        "type": "connected",
+        "peer": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "peer",
+          "data": {
+            "type": "connected",
+            "peer": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "peer",
+      "data": {
+        "type": "disconnected",
+        "peer": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "peer",
+          "data": {
+            "type": "disconnected",
+            "peer": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "lease",
+      "data": {
+        "since_ms": 1,
+        "reason": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "lease",
+          "data": {
+            "holder": null,
+            "since_ms": 1,
+            "reason": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "lease",
+      "data": {
+        "holder": "sample",
+        "since_ms": 1,
+        "reason": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "lease",
+          "data": {
+            "holder": "sample",
+            "since_ms": 1,
+            "reason": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "lease",
+      "data": {
+        "holder": null,
+        "since_ms": 1,
+        "reason": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "lease",
+          "data": {
+            "holder": null,
+            "since_ms": 1,
+            "reason": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "nearby",
+      "data": []
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "nearby",
+          "data": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "nearby",
+      "data": [
+        {
+          "id": "sample",
+          "name": "sample",
+          "os_name": "sample",
+          "addr": "sample",
+          "seen_ms": 1
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "nearby",
+          "data": [
+            {
+              "id": "sample",
+              "name": "sample",
+              "os_name": "sample",
+              "addr": "sample",
+              "seen_ms": 1
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "pair",
+      "data": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "peer": "sample",
+        "name": "sample",
+        "os_name": "sample",
+        "code": "sample",
+        "state": "sample",
+        "expires_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "pair",
+          "data": {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "peer": "sample",
+            "name": "sample",
+            "os_name": "sample",
+            "addr": "",
+            "code": "sample",
+            "state": "sample",
+            "expires_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "pair",
+      "data": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "peer": "sample",
+        "name": "sample",
+        "os_name": "sample",
+        "addr": "sample",
+        "code": "sample",
+        "state": "sample",
+        "expires_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "pair",
+          "data": {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "peer": "sample",
+            "name": "sample",
+            "os_name": "sample",
+            "addr": "sample",
+            "code": "sample",
+            "state": "sample",
+            "expires_ms": 1
+          }
+        }
+      }
+    }
+  }
+]

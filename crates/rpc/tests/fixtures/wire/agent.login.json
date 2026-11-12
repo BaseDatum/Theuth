@@ -1,0 +1,55 @@
+[
+  {
+    "input": {
+      "provider": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LoginFinished",
+          "provider": "sample",
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "provider": "sample",
+      "error": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LoginFinished",
+          "provider": "sample",
+          "error": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "provider": "sample",
+      "error": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LoginFinished",
+          "provider": "sample",
+          "error": null
+        }
+      }
+    }
+  }
+]

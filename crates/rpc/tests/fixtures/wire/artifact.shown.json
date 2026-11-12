@@ -1,0 +1,830 @@
+[
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "artifact": {
+        "id": "sample",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "call_id": "sample",
+        "name": "sample",
+        "title": "sample",
+        "kind": "markdown",
+        "mime": "sample",
+        "bytes": 1,
+        "version": 1,
+        "path": "sample",
+        "created_at": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ArtifactShown",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "artifact": {
+            "id": "sample",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "call_id": "sample",
+            "name": "sample",
+            "title": "sample",
+            "kind": "markdown",
+            "mime": "sample",
+            "bytes": 1,
+            "version": 1,
+            "path": "sample",
+            "source": null,
+            "preview": null,
+            "pages": null,
+            "origin": null,
+            "created_at": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "artifact": {
+        "id": "sample",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "call_id": "sample",
+        "name": "sample",
+        "title": "sample",
+        "kind": "markdown",
+        "mime": "sample",
+        "bytes": 1,
+        "version": 1,
+        "path": "sample",
+        "source": "sample",
+        "preview": "sample",
+        "pages": 1,
+        "origin": "sample",
+        "created_at": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ArtifactShown",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "artifact": {
+            "id": "sample",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "call_id": "sample",
+            "name": "sample",
+            "title": "sample",
+            "kind": "markdown",
+            "mime": "sample",
+            "bytes": 1,
+            "version": 1,
+            "path": "sample",
+            "source": "sample",
+            "preview": "sample",
+            "pages": 1,
+            "origin": "sample",
+            "created_at": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "artifact": {
+        "id": "sample",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "call_id": "sample",
+        "name": "sample",
+        "title": "sample",
+        "kind": "text",
+        "mime": "sample",
+        "bytes": 1,
+        "version": 1,
+        "path": "sample",
+        "source": "sample",
+        "preview": "sample",
+        "pages": 1,
+        "origin": "sample",
+        "created_at": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ArtifactShown",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "artifact": {
+            "id": "sample",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "call_id": "sample",
+            "name": "sample",
+            "title": "sample",
+            "kind": "text",
+            "mime": "sample",
+            "bytes": 1,
+            "version": 1,
+            "path": "sample",
+            "source": "sample",
+            "preview": "sample",
+            "pages": 1,
+            "origin": "sample",
+            "created_at": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "artifact": {
+        "id": "sample",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "call_id": "sample",
+        "name": "sample",
+        "title": "sample",
+        "kind": "csv",
+        "mime": "sample",
+        "bytes": 1,
+        "version": 1,
+        "path": "sample",
+        "source": "sample",
+        "preview": "sample",
+        "pages": 1,
+        "origin": "sample",
+        "created_at": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ArtifactShown",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "artifact": {
+            "id": "sample",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "call_id": "sample",
+            "name": "sample",
+            "title": "sample",
+            "kind": "csv",
+            "mime": "sample",
+            "bytes": 1,
+            "version": 1,
+            "path": "sample",
+            "source": "sample",
+            "preview": "sample",
+            "pages": 1,
+            "origin": "sample",
+            "created_at": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "artifact": {
+        "id": "sample",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "call_id": "sample",
+        "name": "sample",
+        "title": "sample",
+        "kind": "image",
+        "mime": "sample",
+        "bytes": 1,
+        "version": 1,
+        "path": "sample",
+        "source": "sample",
+        "preview": "sample",
+        "pages": 1,
+        "origin": "sample",
+        "created_at": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ArtifactShown",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "artifact": {
+            "id": "sample",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "call_id": "sample",
+            "name": "sample",
+            "title": "sample",
+            "kind": "image",
+            "mime": "sample",
+            "bytes": 1,
+            "version": 1,
+            "path": "sample",
+            "source": "sample",
+            "preview": "sample",
+            "pages": 1,
+            "origin": "sample",
+            "created_at": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "artifact": {
+        "id": "sample",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "call_id": "sample",
+        "name": "sample",
+        "title": "sample",
+        "kind": "svg",
+        "mime": "sample",
+        "bytes": 1,
+        "version": 1,
+        "path": "sample",
+        "source": "sample",
+        "preview": "sample",
+        "pages": 1,
+        "origin": "sample",
+        "created_at": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ArtifactShown",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "artifact": {
+            "id": "sample",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "call_id": "sample",
+            "name": "sample",
+            "title": "sample",
+            "kind": "svg",
+            "mime": "sample",
+            "bytes": 1,
+            "version": 1,
+            "path": "sample",
+            "source": "sample",
+            "preview": "sample",
+            "pages": 1,
+            "origin": "sample",
+            "created_at": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "artifact": {
+        "id": "sample",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "call_id": "sample",
+        "name": "sample",
+        "title": "sample",
+        "kind": "pdf",
+        "mime": "sample",
+        "bytes": 1,
+        "version": 1,
+        "path": "sample",
+        "source": "sample",
+        "preview": "sample",
+        "pages": 1,
+        "origin": "sample",
+        "created_at": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ArtifactShown",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "artifact": {
+            "id": "sample",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "call_id": "sample",
+            "name": "sample",
+            "title": "sample",
+            "kind": "pdf",
+            "mime": "sample",
+            "bytes": 1,
+            "version": 1,
+            "path": "sample",
+            "source": "sample",
+            "preview": "sample",
+            "pages": 1,
+            "origin": "sample",
+            "created_at": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "artifact": {
+        "id": "sample",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "call_id": "sample",
+        "name": "sample",
+        "title": "sample",
+        "kind": "html",
+        "mime": "sample",
+        "bytes": 1,
+        "version": 1,
+        "path": "sample",
+        "source": "sample",
+        "preview": "sample",
+        "pages": 1,
+        "origin": "sample",
+        "created_at": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ArtifactShown",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "artifact": {
+            "id": "sample",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "call_id": "sample",
+            "name": "sample",
+            "title": "sample",
+            "kind": "html",
+            "mime": "sample",
+            "bytes": 1,
+            "version": 1,
+            "path": "sample",
+            "source": "sample",
+            "preview": "sample",
+            "pages": 1,
+            "origin": "sample",
+            "created_at": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "artifact": {
+        "id": "sample",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "call_id": "sample",
+        "name": "sample",
+        "title": "sample",
+        "kind": "app",
+        "mime": "sample",
+        "bytes": 1,
+        "version": 1,
+        "path": "sample",
+        "source": "sample",
+        "preview": "sample",
+        "pages": 1,
+        "origin": "sample",
+        "created_at": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ArtifactShown",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "artifact": {
+            "id": "sample",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "call_id": "sample",
+            "name": "sample",
+            "title": "sample",
+            "kind": "app",
+            "mime": "sample",
+            "bytes": 1,
+            "version": 1,
+            "path": "sample",
+            "source": "sample",
+            "preview": "sample",
+            "pages": 1,
+            "origin": "sample",
+            "created_at": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "artifact": {
+        "id": "sample",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "call_id": "sample",
+        "name": "sample",
+        "title": "sample",
+        "kind": "archive",
+        "mime": "sample",
+        "bytes": 1,
+        "version": 1,
+        "path": "sample",
+        "source": "sample",
+        "preview": "sample",
+        "pages": 1,
+        "origin": "sample",
+        "created_at": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ArtifactShown",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "artifact": {
+            "id": "sample",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "call_id": "sample",
+            "name": "sample",
+            "title": "sample",
+            "kind": "archive",
+            "mime": "sample",
+            "bytes": 1,
+            "version": 1,
+            "path": "sample",
+            "source": "sample",
+            "preview": "sample",
+            "pages": 1,
+            "origin": "sample",
+            "created_at": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "artifact": {
+        "id": "sample",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "call_id": "sample",
+        "name": "sample",
+        "title": "sample",
+        "kind": "mermaid",
+        "mime": "sample",
+        "bytes": 1,
+        "version": 1,
+        "path": "sample",
+        "source": "sample",
+        "preview": "sample",
+        "pages": 1,
+        "origin": "sample",
+        "created_at": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ArtifactShown",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "artifact": {
+            "id": "sample",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "call_id": "sample",
+            "name": "sample",
+            "title": "sample",
+            "kind": "mermaid",
+            "mime": "sample",
+            "bytes": 1,
+            "version": 1,
+            "path": "sample",
+            "source": "sample",
+            "preview": "sample",
+            "pages": 1,
+            "origin": "sample",
+            "created_at": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "artifact": {
+        "id": "sample",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "call_id": "sample",
+        "name": "sample",
+        "title": "sample",
+        "kind": "file",
+        "mime": "sample",
+        "bytes": 1,
+        "version": 1,
+        "path": "sample",
+        "source": "sample",
+        "preview": "sample",
+        "pages": 1,
+        "origin": "sample",
+        "created_at": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ArtifactShown",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "artifact": {
+            "id": "sample",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "call_id": "sample",
+            "name": "sample",
+            "title": "sample",
+            "kind": "file",
+            "mime": "sample",
+            "bytes": 1,
+            "version": 1,
+            "path": "sample",
+            "source": "sample",
+            "preview": "sample",
+            "pages": 1,
+            "origin": "sample",
+            "created_at": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "artifact": {
+        "id": "sample",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "call_id": "sample",
+        "name": "sample",
+        "title": "sample",
+        "kind": "markdown",
+        "mime": "sample",
+        "bytes": 1,
+        "version": 1,
+        "path": "sample",
+        "source": null,
+        "preview": "sample",
+        "pages": 1,
+        "origin": "sample",
+        "created_at": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ArtifactShown",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "artifact": {
+            "id": "sample",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "call_id": "sample",
+            "name": "sample",
+            "title": "sample",
+            "kind": "markdown",
+            "mime": "sample",
+            "bytes": 1,
+            "version": 1,
+            "path": "sample",
+            "source": null,
+            "preview": "sample",
+            "pages": 1,
+            "origin": "sample",
+            "created_at": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "artifact": {
+        "id": "sample",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "call_id": "sample",
+        "name": "sample",
+        "title": "sample",
+        "kind": "markdown",
+        "mime": "sample",
+        "bytes": 1,
+        "version": 1,
+        "path": "sample",
+        "source": "sample",
+        "preview": null,
+        "pages": 1,
+        "origin": "sample",
+        "created_at": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ArtifactShown",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "artifact": {
+            "id": "sample",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "call_id": "sample",
+            "name": "sample",
+            "title": "sample",
+            "kind": "markdown",
+            "mime": "sample",
+            "bytes": 1,
+            "version": 1,
+            "path": "sample",
+            "source": "sample",
+            "preview": null,
+            "pages": 1,
+            "origin": "sample",
+            "created_at": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "artifact": {
+        "id": "sample",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "call_id": "sample",
+        "name": "sample",
+        "title": "sample",
+        "kind": "markdown",
+        "mime": "sample",
+        "bytes": 1,
+        "version": 1,
+        "path": "sample",
+        "source": "sample",
+        "preview": "sample",
+        "pages": null,
+        "origin": "sample",
+        "created_at": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ArtifactShown",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "artifact": {
+            "id": "sample",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "call_id": "sample",
+            "name": "sample",
+            "title": "sample",
+            "kind": "markdown",
+            "mime": "sample",
+            "bytes": 1,
+            "version": 1,
+            "path": "sample",
+            "source": "sample",
+            "preview": "sample",
+            "pages": null,
+            "origin": "sample",
+            "created_at": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "artifact": {
+        "id": "sample",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "call_id": "sample",
+        "name": "sample",
+        "title": "sample",
+        "kind": "markdown",
+        "mime": "sample",
+        "bytes": 1,
+        "version": 1,
+        "path": "sample",
+        "source": "sample",
+        "preview": "sample",
+        "pages": 1,
+        "origin": null,
+        "created_at": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ArtifactShown",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "artifact": {
+            "id": "sample",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "call_id": "sample",
+            "name": "sample",
+            "title": "sample",
+            "kind": "markdown",
+            "mime": "sample",
+            "bytes": 1,
+            "version": 1,
+            "path": "sample",
+            "source": "sample",
+            "preview": "sample",
+            "pages": 1,
+            "origin": null,
+            "created_at": 1
+          }
+        }
+      }
+    }
+  }
+]

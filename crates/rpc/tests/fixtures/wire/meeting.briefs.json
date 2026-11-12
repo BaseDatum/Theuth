@@ -1,0 +1,40 @@
+[
+  {
+    "input": {
+      "type": "BriefChanged",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "removed": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "BriefChanged",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "removed": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "BriefChanged",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "removed": true
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "BriefChanged",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "removed": true
+        }
+      }
+    }
+  }
+]

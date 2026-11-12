@@ -1,0 +1,725 @@
+[
+  {
+    "input": {
+      "type": "JobStarted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "call_id": "sample",
+      "log": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobStarted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "call_id": "sample",
+          "log": "sample",
+          "name": null,
+          "pty": false,
+          "kind": "shell"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobStarted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "call_id": "sample",
+      "log": "sample",
+      "name": "sample",
+      "pty": false,
+      "kind": "shell"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobStarted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "call_id": "sample",
+          "log": "sample",
+          "name": "sample",
+          "pty": false,
+          "kind": "shell"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobStarted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "call_id": "sample",
+      "log": "sample",
+      "name": null,
+      "pty": false,
+      "kind": "shell"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobStarted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "call_id": "sample",
+          "log": "sample",
+          "name": null,
+          "pty": false,
+          "kind": "shell"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobStarted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "call_id": "sample",
+      "log": "sample",
+      "name": "sample",
+      "pty": true,
+      "kind": "shell"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobStarted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "call_id": "sample",
+          "log": "sample",
+          "name": "sample",
+          "pty": true,
+          "kind": "shell"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobStarted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "call_id": "sample",
+      "log": "sample",
+      "name": "sample",
+      "pty": false,
+      "kind": "pty"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobStarted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "call_id": "sample",
+          "log": "sample",
+          "name": "sample",
+          "pty": false,
+          "kind": "pty"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobStarted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "call_id": "sample",
+      "log": "sample",
+      "name": "sample",
+      "pty": false,
+      "kind": "promoted"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobStarted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "call_id": "sample",
+          "log": "sample",
+          "name": "sample",
+          "pty": false,
+          "kind": "promoted"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobOutput",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "chunk": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobOutput",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "chunk": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobScreen",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "rows": [],
+      "cursor": [
+        1,
+        1
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobScreen",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "rows": [],
+          "cursor": [
+            1,
+            1
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobScreen",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "rows": [
+        "sample"
+      ],
+      "cursor": [
+        1,
+        1
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobScreen",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "rows": [
+            "sample"
+          ],
+          "cursor": [
+            1,
+            1
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobIdle",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "quiet_secs": 1,
+      "secs": 1,
+      "nudge": 1,
+      "output": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobIdle",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "name": null,
+          "quiet_secs": 1,
+          "secs": 1,
+          "nudge": 1,
+          "user_typed_secs": null,
+          "output": "sample",
+          "why": ""
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobIdle",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "name": "sample",
+      "quiet_secs": 1,
+      "secs": 1,
+      "nudge": 1,
+      "user_typed_secs": 1,
+      "output": "sample",
+      "why": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobIdle",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "name": "sample",
+          "quiet_secs": 1,
+          "secs": 1,
+          "nudge": 1,
+          "user_typed_secs": 1,
+          "output": "sample",
+          "why": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobIdle",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "name": null,
+      "quiet_secs": 1,
+      "secs": 1,
+      "nudge": 1,
+      "user_typed_secs": 1,
+      "output": "sample",
+      "why": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobIdle",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "name": null,
+          "quiet_secs": 1,
+          "secs": 1,
+          "nudge": 1,
+          "user_typed_secs": 1,
+          "output": "sample",
+          "why": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobIdle",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "name": "sample",
+      "quiet_secs": 1,
+      "secs": 1,
+      "nudge": 1,
+      "user_typed_secs": null,
+      "output": "sample",
+      "why": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobIdle",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "name": "sample",
+          "quiet_secs": 1,
+          "secs": 1,
+          "nudge": 1,
+          "user_typed_secs": null,
+          "output": "sample",
+          "why": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobFinished",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "exit": {
+        "exited": 1
+      },
+      "secs": 1,
+      "output": "sample",
+      "inline": false,
+      "pty": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobFinished",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "exit": {
+            "exited": 1
+          },
+          "secs": 1,
+          "output": "sample",
+          "inline": false,
+          "pty": false,
+          "kind": "shell"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobFinished",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "exit": {
+        "exited": 1
+      },
+      "secs": 1,
+      "output": "sample",
+      "inline": false,
+      "pty": false,
+      "kind": "shell"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobFinished",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "exit": {
+            "exited": 1
+          },
+          "secs": 1,
+          "output": "sample",
+          "inline": false,
+          "pty": false,
+          "kind": "shell"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobFinished",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "exit": "timeout",
+      "secs": 1,
+      "output": "sample",
+      "inline": false,
+      "pty": false,
+      "kind": "shell"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobFinished",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "exit": "timeout",
+          "secs": 1,
+          "output": "sample",
+          "inline": false,
+          "pty": false,
+          "kind": "shell"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobFinished",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "exit": "killed",
+      "secs": 1,
+      "output": "sample",
+      "inline": false,
+      "pty": false,
+      "kind": "shell"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobFinished",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "exit": "killed",
+          "secs": 1,
+          "output": "sample",
+          "inline": false,
+          "pty": false,
+          "kind": "shell"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobFinished",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "exit": "lost",
+      "secs": 1,
+      "output": "sample",
+      "inline": false,
+      "pty": false,
+      "kind": "shell"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobFinished",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "exit": "lost",
+          "secs": 1,
+          "output": "sample",
+          "inline": false,
+          "pty": false,
+          "kind": "shell"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobFinished",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "exit": {
+        "exited": 1
+      },
+      "secs": 1,
+      "output": "sample",
+      "inline": true,
+      "pty": false,
+      "kind": "shell"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobFinished",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "exit": {
+            "exited": 1
+          },
+          "secs": 1,
+          "output": "sample",
+          "inline": true,
+          "pty": false,
+          "kind": "shell"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobFinished",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "exit": {
+        "exited": 1
+      },
+      "secs": 1,
+      "output": "sample",
+      "inline": false,
+      "pty": true,
+      "kind": "shell"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobFinished",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "exit": {
+            "exited": 1
+          },
+          "secs": 1,
+          "output": "sample",
+          "inline": false,
+          "pty": true,
+          "kind": "shell"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobFinished",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "exit": {
+        "exited": 1
+      },
+      "secs": 1,
+      "output": "sample",
+      "inline": false,
+      "pty": false,
+      "kind": "pty"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobFinished",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "exit": {
+            "exited": 1
+          },
+          "secs": 1,
+          "output": "sample",
+          "inline": false,
+          "pty": false,
+          "kind": "pty"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "JobFinished",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "sample",
+      "command": "sample",
+      "exit": {
+        "exited": 1
+      },
+      "secs": 1,
+      "output": "sample",
+      "inline": false,
+      "pty": false,
+      "kind": "promoted"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobFinished",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "exit": {
+            "exited": 1
+          },
+          "secs": 1,
+          "output": "sample",
+          "inline": false,
+          "pty": false,
+          "kind": "promoted"
+        }
+      }
+    }
+  }
+]

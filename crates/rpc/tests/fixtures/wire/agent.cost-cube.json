@@ -1,0 +1,20 @@
+[
+  {
+    "input": {
+      "epoch": "sample",
+      "rev": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CostCubeChanged",
+          "epoch": "sample",
+          "rev": 1
+        }
+      }
+    }
+  }
+]

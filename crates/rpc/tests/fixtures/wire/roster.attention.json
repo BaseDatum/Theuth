@@ -1,0 +1,33 @@
+[
+  {
+    "input": {
+      "type": "AttentionChanged",
+      "count": 1,
+      "ids_added": [
+        "a"
+      ],
+      "ids_removed": [
+        "b"
+      ],
+      "at_ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AttentionChanged",
+          "count": 1,
+          "ids_added": [
+            "a"
+          ],
+          "ids_removed": [
+            "b"
+          ],
+          "at_ms": 1
+        }
+      }
+    }
+  }
+]

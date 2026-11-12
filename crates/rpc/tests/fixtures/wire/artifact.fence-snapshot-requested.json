@@ -1,0 +1,106 @@
+[
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "lang": "json-render",
+      "source": "sample",
+      "width": 1,
+      "appearance": "dark",
+      "scale": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "FenceSnapshotRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "lang": "json-render",
+          "source": "sample",
+          "width": 1,
+          "appearance": "dark",
+          "scale": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "lang": "mermaid",
+      "source": "sample",
+      "width": 1,
+      "appearance": "dark",
+      "scale": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "FenceSnapshotRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "lang": "mermaid",
+          "source": "sample",
+          "width": 1,
+          "appearance": "dark",
+          "scale": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "lang": "openui",
+      "source": "sample",
+      "width": 1,
+      "appearance": "dark",
+      "scale": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "FenceSnapshotRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "lang": "openui",
+          "source": "sample",
+          "width": 1,
+          "appearance": "dark",
+          "scale": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "lang": "json-render",
+      "source": "sample",
+      "width": 1,
+      "appearance": "light",
+      "scale": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "FenceSnapshotRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "lang": "json-render",
+          "source": "sample",
+          "width": 1,
+          "appearance": "light",
+          "scale": 1
+        }
+      }
+    }
+  }
+]

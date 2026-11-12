@@ -1,0 +1,298 @@
+[
+  {
+    "input": {
+      "night": "sample",
+      "counts": {
+        "triaged": 1,
+        "retitled": 1,
+        "merged": 1,
+        "superseded": 1,
+        "archived": 1,
+        "verified": 1,
+        "cases": 1,
+        "edits_accepted": 1,
+        "edits_rejected": 1,
+        "proposals": 1
+      },
+      "spend_nanos": 1,
+      "proposals": []
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DreamNightFinished",
+          "night": "sample",
+          "counts": {
+            "triaged": 1,
+            "retitled": 1,
+            "merged": 1,
+            "superseded": 1,
+            "archived": 1,
+            "verified": 1,
+            "cases": 1,
+            "edits_accepted": 1,
+            "edits_rejected": 1,
+            "proposals": 1
+          },
+          "spend_nanos": 1,
+          "proposals": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "night": "sample",
+      "counts": {
+        "triaged": 1,
+        "retitled": 1,
+        "merged": 1,
+        "superseded": 1,
+        "archived": 1,
+        "verified": 1,
+        "cases": 1,
+        "edits_accepted": 1,
+        "edits_rejected": 1,
+        "proposals": 1
+      },
+      "spend_nanos": 1,
+      "proposals": [
+        {
+          "id": "sample",
+          "kind": "routine",
+          "title": "sample",
+          "body": "sample",
+          "options": [],
+          "created_at": "sample"
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DreamNightFinished",
+          "night": "sample",
+          "counts": {
+            "triaged": 1,
+            "retitled": 1,
+            "merged": 1,
+            "superseded": 1,
+            "archived": 1,
+            "verified": 1,
+            "cases": 1,
+            "edits_accepted": 1,
+            "edits_rejected": 1,
+            "proposals": 1
+          },
+          "spend_nanos": 1,
+          "proposals": [
+            {
+              "id": "sample",
+              "kind": "routine",
+              "title": "sample",
+              "body": "sample",
+              "options": [],
+              "created_at": "sample"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "night": "sample",
+      "counts": {
+        "triaged": 1,
+        "retitled": 1,
+        "merged": 1,
+        "superseded": 1,
+        "archived": 1,
+        "verified": 1,
+        "cases": 1,
+        "edits_accepted": 1,
+        "edits_rejected": 1,
+        "proposals": 1
+      },
+      "spend_nanos": 1,
+      "proposals": [
+        {
+          "id": "sample",
+          "kind": "double_class",
+          "title": "sample",
+          "body": "sample",
+          "options": [],
+          "created_at": "sample"
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DreamNightFinished",
+          "night": "sample",
+          "counts": {
+            "triaged": 1,
+            "retitled": 1,
+            "merged": 1,
+            "superseded": 1,
+            "archived": 1,
+            "verified": 1,
+            "cases": 1,
+            "edits_accepted": 1,
+            "edits_rejected": 1,
+            "proposals": 1
+          },
+          "spend_nanos": 1,
+          "proposals": [
+            {
+              "id": "sample",
+              "kind": "double_class",
+              "title": "sample",
+              "body": "sample",
+              "options": [],
+              "created_at": "sample"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "night": "sample",
+      "counts": {
+        "triaged": 1,
+        "retitled": 1,
+        "merged": 1,
+        "superseded": 1,
+        "archived": 1,
+        "verified": 1,
+        "cases": 1,
+        "edits_accepted": 1,
+        "edits_rejected": 1,
+        "proposals": 1
+      },
+      "spend_nanos": 1,
+      "proposals": [
+        {
+          "id": "sample",
+          "kind": "remember",
+          "title": "sample",
+          "body": "sample",
+          "options": [],
+          "created_at": "sample"
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DreamNightFinished",
+          "night": "sample",
+          "counts": {
+            "triaged": 1,
+            "retitled": 1,
+            "merged": 1,
+            "superseded": 1,
+            "archived": 1,
+            "verified": 1,
+            "cases": 1,
+            "edits_accepted": 1,
+            "edits_rejected": 1,
+            "proposals": 1
+          },
+          "spend_nanos": 1,
+          "proposals": [
+            {
+              "id": "sample",
+              "kind": "remember",
+              "title": "sample",
+              "body": "sample",
+              "options": [],
+              "created_at": "sample"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "night": "sample",
+      "counts": {
+        "triaged": 1,
+        "retitled": 1,
+        "merged": 1,
+        "superseded": 1,
+        "archived": 1,
+        "verified": 1,
+        "cases": 1,
+        "edits_accepted": 1,
+        "edits_rejected": 1,
+        "proposals": 1
+      },
+      "spend_nanos": 1,
+      "proposals": [
+        {
+          "id": "sample",
+          "kind": "routine",
+          "title": "sample",
+          "body": "sample",
+          "options": [
+            "sample"
+          ],
+          "created_at": "sample"
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DreamNightFinished",
+          "night": "sample",
+          "counts": {
+            "triaged": 1,
+            "retitled": 1,
+            "merged": 1,
+            "superseded": 1,
+            "archived": 1,
+            "verified": 1,
+            "cases": 1,
+            "edits_accepted": 1,
+            "edits_rejected": 1,
+            "proposals": 1
+          },
+          "spend_nanos": 1,
+          "proposals": [
+            {
+              "id": "sample",
+              "kind": "routine",
+              "title": "sample",
+              "body": "sample",
+              "options": [
+                "sample"
+              ],
+              "created_at": "sample"
+            }
+          ]
+        }
+      }
+    }
+  }
+]

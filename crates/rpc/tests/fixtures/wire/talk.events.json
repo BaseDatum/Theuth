@@ -1,0 +1,602 @@
+[
+  {
+    "input": {
+      "type": "TalkStarted",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "sink": "client",
+      "aec": "vpio",
+      "since_ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TalkStarted",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "sink": "client",
+          "aec": "vpio",
+          "since_ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TalkStarted",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "sink": "device",
+      "aec": "vpio",
+      "since_ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TalkStarted",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "sink": "device",
+          "aec": "vpio",
+          "since_ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TalkStarted",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "sink": "client",
+      "aec": "none",
+      "since_ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TalkStarted",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "sink": "client",
+          "aec": "none",
+          "since_ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TalkState",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "state": "idle"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TalkState",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "state": "idle"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TalkState",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "state": "listening"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TalkState",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "state": "listening"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TalkState",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "state": "thinking"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TalkState",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "state": "thinking"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TalkState",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "state": "working"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TalkState",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "state": "working"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TalkState",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "state": "speaking"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TalkState",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "state": "speaking"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TalkState",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "state": "holding"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TalkState",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "state": "holding"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TalkState",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "state": "interrupted"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TalkState",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "state": "interrupted"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TalkLevel",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "rms": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TalkLevel",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "rms": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Heard",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "utterance": 1,
+      "text": "sample",
+      "final": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Heard",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "utterance": 1,
+          "text": "sample",
+          "final": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Heard",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "utterance": 1,
+      "text": "sample",
+      "final": true
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Heard",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "utterance": 1,
+          "text": "sample",
+          "final": true
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Saying",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "speech": "00000000-0000-0000-0000-000000000001",
+      "text": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Saying",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "speech": "00000000-0000-0000-0000-000000000001",
+          "text": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Submitted",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "interrupted": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Submitted",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "interrupted": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Submitted",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "interrupted": true
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Submitted",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "interrupted": true
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Holding",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "since_speech_ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Holding",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "since_speech_ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Resumed",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "reason": "backchannel"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Resumed",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "reason": "backchannel"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Resumed",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "reason": "echo"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Resumed",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "reason": "echo"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Resumed",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "reason": "noise"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Resumed",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "reason": "noise"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Interrupted",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "heard_sentences": 1,
+      "dropped_sentences": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Interrupted",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "heard_sentences": 1,
+          "dropped_sentences": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Flush",
+      "id": "00000000-0000-0000-0000-000000000001"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Flush",
+          "id": "00000000-0000-0000-0000-000000000001"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Degraded",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "degradation": "mic_no_aec"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Degraded",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "degradation": "mic_no_aec"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TalkFinished",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "reason": {
+        "reason": "stopped"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TalkFinished",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "reason": {
+            "reason": "stopped"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TalkFinished",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "reason": {
+        "reason": "disconnected"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TalkFinished",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "reason": {
+            "reason": "disconnected"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TalkFinished",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "reason": {
+        "reason": "session_closed"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TalkFinished",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "reason": {
+            "reason": "session_closed"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TalkFinished",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "reason": {
+        "reason": "error",
+        "message": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TalkFinished",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "reason": {
+            "reason": "error",
+            "message": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Announced",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "text": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Announced",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "text": "sample"
+        }
+      }
+    }
+  }
+]

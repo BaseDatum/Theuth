@@ -1,0 +1,418 @@
+[
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "record_call_id": "sample",
+      "request_id": "sample",
+      "statement_id": "sample",
+      "tool": "sample",
+      "risk": "read_only",
+      "trigger": "load",
+      "status": "running",
+      "ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AppCallChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "record_call_id": "sample",
+          "request_id": "sample",
+          "statement_id": "sample",
+          "tool": "sample",
+          "risk": "read_only",
+          "trigger": "load",
+          "status": "running",
+          "ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "record_call_id": "sample",
+      "request_id": "sample",
+      "statement_id": "sample",
+      "tool": "sample",
+      "risk": "mutating",
+      "trigger": "load",
+      "status": "running",
+      "ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AppCallChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "record_call_id": "sample",
+          "request_id": "sample",
+          "statement_id": "sample",
+          "tool": "sample",
+          "risk": "mutating",
+          "trigger": "load",
+          "status": "running",
+          "ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "record_call_id": "sample",
+      "request_id": "sample",
+      "statement_id": "sample",
+      "tool": "sample",
+      "risk": "destructive",
+      "trigger": "load",
+      "status": "running",
+      "ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AppCallChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "record_call_id": "sample",
+          "request_id": "sample",
+          "statement_id": "sample",
+          "tool": "sample",
+          "risk": "destructive",
+          "trigger": "load",
+          "status": "running",
+          "ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "record_call_id": "sample",
+      "request_id": "sample",
+      "statement_id": "sample",
+      "tool": "sample",
+      "risk": "read_only",
+      "trigger": "refresh",
+      "status": "running",
+      "ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AppCallChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "record_call_id": "sample",
+          "request_id": "sample",
+          "statement_id": "sample",
+          "tool": "sample",
+          "risk": "read_only",
+          "trigger": "refresh",
+          "status": "running",
+          "ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "record_call_id": "sample",
+      "request_id": "sample",
+      "statement_id": "sample",
+      "tool": "sample",
+      "risk": "read_only",
+      "trigger": "state_change",
+      "status": "running",
+      "ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AppCallChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "record_call_id": "sample",
+          "request_id": "sample",
+          "statement_id": "sample",
+          "tool": "sample",
+          "risk": "read_only",
+          "trigger": "state_change",
+          "status": "running",
+          "ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "record_call_id": "sample",
+      "request_id": "sample",
+      "statement_id": "sample",
+      "tool": "sample",
+      "risk": "read_only",
+      "trigger": "press",
+      "status": "running",
+      "ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AppCallChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "record_call_id": "sample",
+          "request_id": "sample",
+          "statement_id": "sample",
+          "tool": "sample",
+          "risk": "read_only",
+          "trigger": "press",
+          "status": "running",
+          "ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "record_call_id": "sample",
+      "request_id": "sample",
+      "statement_id": "sample",
+      "tool": "sample",
+      "risk": "read_only",
+      "trigger": "load",
+      "status": "succeeded",
+      "ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AppCallChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "record_call_id": "sample",
+          "request_id": "sample",
+          "statement_id": "sample",
+          "tool": "sample",
+          "risk": "read_only",
+          "trigger": "load",
+          "status": "succeeded",
+          "ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "record_call_id": "sample",
+      "request_id": "sample",
+      "statement_id": "sample",
+      "tool": "sample",
+      "risk": "read_only",
+      "trigger": "load",
+      "status": "failed",
+      "ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AppCallChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "record_call_id": "sample",
+          "request_id": "sample",
+          "statement_id": "sample",
+          "tool": "sample",
+          "risk": "read_only",
+          "trigger": "load",
+          "status": "failed",
+          "ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "record_call_id": "sample",
+      "request_id": "sample",
+      "statement_id": "sample",
+      "tool": "sample",
+      "risk": "read_only",
+      "trigger": "load",
+      "status": "unknown",
+      "ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AppCallChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "record_call_id": "sample",
+          "request_id": "sample",
+          "statement_id": "sample",
+          "tool": "sample",
+          "risk": "read_only",
+          "trigger": "load",
+          "status": "unknown",
+          "ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "record_call_id": "sample",
+      "request_id": "sample",
+      "statement_id": "sample",
+      "tool": "sample",
+      "risk": "read_only",
+      "trigger": "load",
+      "status": "needs_approval",
+      "ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AppCallChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "record_call_id": "sample",
+          "request_id": "sample",
+          "statement_id": "sample",
+          "tool": "sample",
+          "risk": "read_only",
+          "trigger": "load",
+          "status": "needs_approval",
+          "ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "record_call_id": "sample",
+      "request_id": "sample",
+      "statement_id": "sample",
+      "tool": "sample",
+      "risk": "read_only",
+      "trigger": "load",
+      "status": "unavailable",
+      "ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AppCallChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "record_call_id": "sample",
+          "request_id": "sample",
+          "statement_id": "sample",
+          "tool": "sample",
+          "risk": "read_only",
+          "trigger": "load",
+          "status": "unavailable",
+          "ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "record_call_id": "sample",
+      "request_id": "sample",
+      "statement_id": "sample",
+      "tool": "sample",
+      "risk": "read_only",
+      "trigger": "load",
+      "status": "busy",
+      "ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AppCallChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "record_call_id": "sample",
+          "request_id": "sample",
+          "statement_id": "sample",
+          "tool": "sample",
+          "risk": "read_only",
+          "trigger": "load",
+          "status": "busy",
+          "ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "record_call_id": "sample",
+      "request_id": "sample",
+      "statement_id": "sample",
+      "tool": "sample",
+      "risk": "read_only",
+      "trigger": "load",
+      "status": "cancelled",
+      "ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AppCallChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "record_call_id": "sample",
+          "request_id": "sample",
+          "statement_id": "sample",
+          "tool": "sample",
+          "risk": "read_only",
+          "trigger": "load",
+          "status": "cancelled",
+          "ms": 1
+        }
+      }
+    }
+  }
+]

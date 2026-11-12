@@ -1,0 +1,3990 @@
+[
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": null,
+            "vm": null,
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "snapshots": [],
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": null,
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": null,
+              "snapshots": [],
+              "mesh_port": null,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "ready"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "snapshots": [],
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "ready"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": null,
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": null,
+              "snapshots": [],
+              "mesh_port": null,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "starting"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "snapshots": [],
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "starting"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": null,
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": null,
+              "snapshots": [],
+              "mesh_port": null,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "running"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "snapshots": [],
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "running"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": null,
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": null,
+              "snapshots": [],
+              "mesh_port": null,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "paused"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "snapshots": [],
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "paused"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": null,
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": null,
+              "snapshots": [],
+              "mesh_port": null,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "stopped"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "snapshots": [],
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "stopped"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": null,
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": null,
+              "snapshots": [],
+              "mesh_port": null,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "crashed"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "snapshots": [],
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "crashed"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": null,
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": null,
+              "snapshots": [],
+              "mesh_port": null,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "gone"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "snapshots": [],
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "gone"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": null,
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": null,
+              "snapshots": [],
+              "mesh_port": null,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "failed",
+          "step": "sample",
+          "error": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "snapshots": [],
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "failed",
+              "step": "sample",
+              "error": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": null,
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": null,
+              "snapshots": [],
+              "mesh_port": null,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "destroying"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "snapshots": [],
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "destroying"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": null,
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": null,
+              "snapshots": [],
+              "mesh_port": null,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": null,
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "snapshots": [],
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": null,
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": null,
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": null,
+              "snapshots": [],
+              "mesh_port": null,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "bootstrap",
+            "base": "sample",
+            "script": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "bootstrap",
+                "base": "sample",
+                "script": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [
+            {
+              "host": "sample",
+              "guest": "sample"
+            }
+          ],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [
+                {
+                  "host": "sample",
+                  "guest": "sample",
+                  "readonly": false
+                }
+              ],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [
+            {
+              "host": "sample",
+              "guest": "sample",
+              "readonly": false
+            }
+          ],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [
+                {
+                  "host": "sample",
+                  "guest": "sample",
+                  "readonly": false
+                }
+              ],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [
+            {
+              "host": "sample",
+              "guest": "sample",
+              "readonly": true
+            }
+          ],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [
+                {
+                  "host": "sample",
+                  "guest": "sample",
+                  "readonly": true
+                }
+              ],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample",
+            "host_port": 1
+          },
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": 1
+              },
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": true,
+            "geometry": "sample",
+            "host_port": 1
+          },
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": true,
+                "geometry": "sample",
+                "host_port": 1
+              },
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample",
+            "host_port": null
+          },
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": null,
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": null,
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "public_host_private",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_host_private",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "public_only",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_only",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "none",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "none",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "public_host",
+          "autostart": true,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_host",
+              "autostart": true,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": true,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": true,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": true,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": true,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": true
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": true
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": null,
+          "snapshots": [],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": null,
+              "snapshots": [],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [
+            {
+              "id": "sample",
+              "label": "sample",
+              "full": false,
+              "at_ms": 1,
+              "auto": false
+            }
+          ],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [
+                {
+                  "id": "sample",
+                  "label": "sample",
+                  "full": false,
+                  "at_ms": 1,
+                  "bytes": null,
+                  "auto": false
+                }
+              ],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [
+            {
+              "id": "sample",
+              "label": "sample",
+              "full": false,
+              "at_ms": 1,
+              "bytes": 1,
+              "auto": false
+            }
+          ],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [
+                {
+                  "id": "sample",
+                  "label": "sample",
+                  "full": false,
+                  "at_ms": 1,
+                  "bytes": 1,
+                  "auto": false
+                }
+              ],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [
+            {
+              "id": "sample",
+              "label": "sample",
+              "full": true,
+              "at_ms": 1,
+              "bytes": 1,
+              "auto": false
+            }
+          ],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [
+                {
+                  "id": "sample",
+                  "label": "sample",
+                  "full": true,
+                  "at_ms": 1,
+                  "bytes": 1,
+                  "auto": false
+                }
+              ],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [
+            {
+              "id": "sample",
+              "label": "sample",
+              "full": false,
+              "at_ms": 1,
+              "bytes": null,
+              "auto": false
+            }
+          ],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [
+                {
+                  "id": "sample",
+                  "label": "sample",
+                  "full": false,
+                  "at_ms": 1,
+                  "bytes": null,
+                  "auto": false
+                }
+              ],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [
+            {
+              "id": "sample",
+              "label": "sample",
+              "full": false,
+              "at_ms": 1,
+              "bytes": 1,
+              "auto": true
+            }
+          ],
+          "mesh_port": 1,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [
+                {
+                  "id": "sample",
+                  "label": "sample",
+                  "full": false,
+                  "at_ms": 1,
+                  "bytes": 1,
+                  "auto": true
+                }
+              ],
+              "mesh_port": 1,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": {
+          "image": {
+            "kind": "oci",
+            "ref": "sample"
+          },
+          "resources": {
+            "cpus": 1,
+            "max_cpus": 1,
+            "memory_mib": 1,
+            "max_memory_mib": 1,
+            "root_disk_mib": 1
+          },
+          "shares": [],
+          "desktop": {
+            "enabled": false,
+            "geometry": "sample"
+          },
+          "network": "public_host",
+          "autostart": false,
+          "pending": {
+            "shares": false,
+            "ports": false,
+            "resources": false
+          },
+          "metrics": {
+            "cpu_percent": 1,
+            "memory_bytes": 1,
+            "memory_limit_bytes": 1,
+            "disk_used_bytes": 1,
+            "disk_free_bytes": 1,
+            "net_rx_bytes": 1,
+            "net_tx_bytes": 1,
+            "uptime_secs": 1,
+            "at_ms": 1
+          },
+          "snapshots": [],
+          "mesh_port": null,
+          "host_engine": "sample"
+        },
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": {
+              "image": {
+                "kind": "oci",
+                "ref": "sample"
+              },
+              "resources": {
+                "cpus": 1,
+                "max_cpus": 1,
+                "memory_mib": 1,
+                "max_memory_mib": 1,
+                "root_disk_mib": 1
+              },
+              "shares": [],
+              "desktop": {
+                "enabled": false,
+                "geometry": "sample",
+                "host_port": null
+              },
+              "network": "public_host",
+              "autostart": false,
+              "pending": {
+                "shares": false,
+                "ports": false,
+                "resources": false
+              },
+              "metrics": {
+                "cpu_percent": 1.0,
+                "memory_bytes": 1,
+                "memory_limit_bytes": 1,
+                "disk_used_bytes": 1,
+                "disk_free_bytes": 1,
+                "net_rx_bytes": 1,
+                "net_tx_bytes": 1,
+                "uptime_secs": 1,
+                "at_ms": 1
+              },
+              "snapshots": [],
+              "mesh_port": null,
+              "host_engine": "sample"
+            },
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "sandbox": {
+        "name": "sample",
+        "backend": "sample",
+        "state": {
+          "state": "creating",
+          "step": "sample"
+        },
+        "engine": "sample",
+        "vm": null,
+        "created_ms": 1,
+        "updated_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "sandbox": {
+            "name": "sample",
+            "backend": "sample",
+            "state": {
+              "state": "creating",
+              "step": "sample"
+            },
+            "engine": "sample",
+            "vm": null,
+            "created_ms": 1,
+            "updated_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Progress",
+      "name": "sample",
+      "step": "sample",
+      "line": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Progress",
+          "name": "sample",
+          "step": "sample",
+          "line": "sample",
+          "pct": null,
+          "session": null,
+          "call_id": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Progress",
+      "name": "sample",
+      "step": "sample",
+      "line": "sample",
+      "pct": 1,
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Progress",
+          "name": "sample",
+          "step": "sample",
+          "line": "sample",
+          "pct": 1,
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Progress",
+      "name": "sample",
+      "step": "sample",
+      "line": "sample",
+      "pct": null,
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Progress",
+          "name": "sample",
+          "step": "sample",
+          "line": "sample",
+          "pct": null,
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Progress",
+      "name": "sample",
+      "step": "sample",
+      "line": "sample",
+      "pct": 1,
+      "session": null,
+      "call_id": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Progress",
+          "name": "sample",
+          "step": "sample",
+          "line": "sample",
+          "pct": 1,
+          "session": null,
+          "call_id": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Progress",
+      "name": "sample",
+      "step": "sample",
+      "line": "sample",
+      "pct": 1,
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Progress",
+          "name": "sample",
+          "step": "sample",
+          "line": "sample",
+          "pct": 1,
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Removed",
+      "name": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Removed",
+          "name": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "OpenDesktop",
+      "name": "sample",
+      "ws_url": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "OpenDesktop",
+          "name": "sample",
+          "ws_url": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Takeover",
+      "name": "sample",
+      "engine": "sample",
+      "on": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Takeover",
+          "name": "sample",
+          "engine": "sample",
+          "on": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Takeover",
+      "name": "sample",
+      "engine": "sample",
+      "on": true
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Takeover",
+          "name": "sample",
+          "engine": "sample",
+          "on": true
+        }
+      }
+    }
+  }
+]

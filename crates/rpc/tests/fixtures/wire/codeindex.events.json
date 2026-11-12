@@ -1,0 +1,1866 @@
+[
+  {
+    "input": {
+      "type": "CodeToolRan",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "root": "sample",
+      "call_id": "sample",
+      "tool": "sample",
+      "args": null,
+      "summary": {
+        "rows": 1,
+        "dropped": 1,
+        "is_error": false,
+        "stale": false,
+        "pending": 1,
+        "truncated_walk": false,
+        "suspect_root": false
+      },
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeToolRan",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "root": "sample",
+          "call_id": "sample",
+          "tool": "sample",
+          "args": null,
+          "summary": {
+            "rows": 1,
+            "dropped": 1,
+            "is_error": false,
+            "stale": false,
+            "pending": 1,
+            "truncated_walk": false,
+            "suspect_root": false,
+            "hint": null
+          },
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeToolRan",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "root": "sample",
+      "call_id": "sample",
+      "tool": "sample",
+      "args": {
+        "text": "λ\n\"quoted\"",
+        "values": [
+          1,
+          false,
+          null
+        ]
+      },
+      "summary": {
+        "rows": 1,
+        "dropped": 1,
+        "is_error": false,
+        "stale": false,
+        "pending": 1,
+        "truncated_walk": false,
+        "suspect_root": false
+      },
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeToolRan",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "root": "sample",
+          "call_id": "sample",
+          "tool": "sample",
+          "args": {
+            "text": "λ\n\"quoted\"",
+            "values": [
+              1,
+              false,
+              null
+            ]
+          },
+          "summary": {
+            "rows": 1,
+            "dropped": 1,
+            "is_error": false,
+            "stale": false,
+            "pending": 1,
+            "truncated_walk": false,
+            "suspect_root": false,
+            "hint": null
+          },
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeToolRan",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "root": "sample",
+      "call_id": "sample",
+      "tool": "sample",
+      "args": null,
+      "summary": {
+        "rows": 1,
+        "dropped": 1,
+        "is_error": false,
+        "stale": false,
+        "pending": 1,
+        "truncated_walk": false,
+        "suspect_root": false,
+        "hint": "sample",
+        "focus": [],
+        "path": "sample",
+        "definition": {
+          "moniker": "sample",
+          "path": "sample",
+          "line_start": 1,
+          "line_end": 1,
+          "name": "sample",
+          "kind": "sample"
+        },
+        "impact": {
+          "mode": "sample",
+          "include_tests": false,
+          "changed": 1,
+          "direct": 1,
+          "transitive": 1,
+          "tests": 1,
+          "ambiguous_skipped": 1,
+          "unresolved_imports": 1
+        }
+      },
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeToolRan",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "root": "sample",
+          "call_id": "sample",
+          "tool": "sample",
+          "args": null,
+          "summary": {
+            "rows": 1,
+            "dropped": 1,
+            "is_error": false,
+            "stale": false,
+            "pending": 1,
+            "truncated_walk": false,
+            "suspect_root": false,
+            "hint": "sample",
+            "focus": [],
+            "path": "sample",
+            "definition": {
+              "moniker": "sample",
+              "path": "sample",
+              "line_start": 1,
+              "line_end": 1,
+              "name": "sample",
+              "kind": "sample"
+            },
+            "impact": {
+              "mode": "sample",
+              "range": null,
+              "include_tests": false,
+              "changed": 1,
+              "direct": 1,
+              "transitive": 1,
+              "tests": 1,
+              "ambiguous_skipped": 1,
+              "unresolved_imports": 1
+            }
+          },
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeToolRan",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "root": "sample",
+      "call_id": "sample",
+      "tool": "sample",
+      "args": null,
+      "summary": {
+        "rows": 1,
+        "dropped": 1,
+        "is_error": true,
+        "stale": false,
+        "pending": 1,
+        "truncated_walk": false,
+        "suspect_root": false,
+        "hint": "sample",
+        "focus": [],
+        "path": "sample",
+        "definition": {
+          "moniker": "sample",
+          "path": "sample",
+          "line_start": 1,
+          "line_end": 1,
+          "name": "sample",
+          "kind": "sample"
+        },
+        "impact": {
+          "mode": "sample",
+          "include_tests": false,
+          "changed": 1,
+          "direct": 1,
+          "transitive": 1,
+          "tests": 1,
+          "ambiguous_skipped": 1,
+          "unresolved_imports": 1
+        }
+      },
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeToolRan",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "root": "sample",
+          "call_id": "sample",
+          "tool": "sample",
+          "args": null,
+          "summary": {
+            "rows": 1,
+            "dropped": 1,
+            "is_error": true,
+            "stale": false,
+            "pending": 1,
+            "truncated_walk": false,
+            "suspect_root": false,
+            "hint": "sample",
+            "focus": [],
+            "path": "sample",
+            "definition": {
+              "moniker": "sample",
+              "path": "sample",
+              "line_start": 1,
+              "line_end": 1,
+              "name": "sample",
+              "kind": "sample"
+            },
+            "impact": {
+              "mode": "sample",
+              "range": null,
+              "include_tests": false,
+              "changed": 1,
+              "direct": 1,
+              "transitive": 1,
+              "tests": 1,
+              "ambiguous_skipped": 1,
+              "unresolved_imports": 1
+            }
+          },
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeToolRan",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "root": "sample",
+      "call_id": "sample",
+      "tool": "sample",
+      "args": null,
+      "summary": {
+        "rows": 1,
+        "dropped": 1,
+        "is_error": false,
+        "stale": true,
+        "pending": 1,
+        "truncated_walk": false,
+        "suspect_root": false,
+        "hint": "sample",
+        "focus": [],
+        "path": "sample",
+        "definition": {
+          "moniker": "sample",
+          "path": "sample",
+          "line_start": 1,
+          "line_end": 1,
+          "name": "sample",
+          "kind": "sample"
+        },
+        "impact": {
+          "mode": "sample",
+          "include_tests": false,
+          "changed": 1,
+          "direct": 1,
+          "transitive": 1,
+          "tests": 1,
+          "ambiguous_skipped": 1,
+          "unresolved_imports": 1
+        }
+      },
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeToolRan",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "root": "sample",
+          "call_id": "sample",
+          "tool": "sample",
+          "args": null,
+          "summary": {
+            "rows": 1,
+            "dropped": 1,
+            "is_error": false,
+            "stale": true,
+            "pending": 1,
+            "truncated_walk": false,
+            "suspect_root": false,
+            "hint": "sample",
+            "focus": [],
+            "path": "sample",
+            "definition": {
+              "moniker": "sample",
+              "path": "sample",
+              "line_start": 1,
+              "line_end": 1,
+              "name": "sample",
+              "kind": "sample"
+            },
+            "impact": {
+              "mode": "sample",
+              "range": null,
+              "include_tests": false,
+              "changed": 1,
+              "direct": 1,
+              "transitive": 1,
+              "tests": 1,
+              "ambiguous_skipped": 1,
+              "unresolved_imports": 1
+            }
+          },
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeToolRan",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "root": "sample",
+      "call_id": "sample",
+      "tool": "sample",
+      "args": null,
+      "summary": {
+        "rows": 1,
+        "dropped": 1,
+        "is_error": false,
+        "stale": false,
+        "pending": 1,
+        "truncated_walk": true,
+        "suspect_root": false,
+        "hint": "sample",
+        "focus": [],
+        "path": "sample",
+        "definition": {
+          "moniker": "sample",
+          "path": "sample",
+          "line_start": 1,
+          "line_end": 1,
+          "name": "sample",
+          "kind": "sample"
+        },
+        "impact": {
+          "mode": "sample",
+          "include_tests": false,
+          "changed": 1,
+          "direct": 1,
+          "transitive": 1,
+          "tests": 1,
+          "ambiguous_skipped": 1,
+          "unresolved_imports": 1
+        }
+      },
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeToolRan",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "root": "sample",
+          "call_id": "sample",
+          "tool": "sample",
+          "args": null,
+          "summary": {
+            "rows": 1,
+            "dropped": 1,
+            "is_error": false,
+            "stale": false,
+            "pending": 1,
+            "truncated_walk": true,
+            "suspect_root": false,
+            "hint": "sample",
+            "focus": [],
+            "path": "sample",
+            "definition": {
+              "moniker": "sample",
+              "path": "sample",
+              "line_start": 1,
+              "line_end": 1,
+              "name": "sample",
+              "kind": "sample"
+            },
+            "impact": {
+              "mode": "sample",
+              "range": null,
+              "include_tests": false,
+              "changed": 1,
+              "direct": 1,
+              "transitive": 1,
+              "tests": 1,
+              "ambiguous_skipped": 1,
+              "unresolved_imports": 1
+            }
+          },
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeToolRan",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "root": "sample",
+      "call_id": "sample",
+      "tool": "sample",
+      "args": null,
+      "summary": {
+        "rows": 1,
+        "dropped": 1,
+        "is_error": false,
+        "stale": false,
+        "pending": 1,
+        "truncated_walk": false,
+        "suspect_root": true,
+        "hint": "sample",
+        "focus": [],
+        "path": "sample",
+        "definition": {
+          "moniker": "sample",
+          "path": "sample",
+          "line_start": 1,
+          "line_end": 1,
+          "name": "sample",
+          "kind": "sample"
+        },
+        "impact": {
+          "mode": "sample",
+          "include_tests": false,
+          "changed": 1,
+          "direct": 1,
+          "transitive": 1,
+          "tests": 1,
+          "ambiguous_skipped": 1,
+          "unresolved_imports": 1
+        }
+      },
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeToolRan",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "root": "sample",
+          "call_id": "sample",
+          "tool": "sample",
+          "args": null,
+          "summary": {
+            "rows": 1,
+            "dropped": 1,
+            "is_error": false,
+            "stale": false,
+            "pending": 1,
+            "truncated_walk": false,
+            "suspect_root": true,
+            "hint": "sample",
+            "focus": [],
+            "path": "sample",
+            "definition": {
+              "moniker": "sample",
+              "path": "sample",
+              "line_start": 1,
+              "line_end": 1,
+              "name": "sample",
+              "kind": "sample"
+            },
+            "impact": {
+              "mode": "sample",
+              "range": null,
+              "include_tests": false,
+              "changed": 1,
+              "direct": 1,
+              "transitive": 1,
+              "tests": 1,
+              "ambiguous_skipped": 1,
+              "unresolved_imports": 1
+            }
+          },
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeToolRan",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "root": "sample",
+      "call_id": "sample",
+      "tool": "sample",
+      "args": null,
+      "summary": {
+        "rows": 1,
+        "dropped": 1,
+        "is_error": false,
+        "stale": false,
+        "pending": 1,
+        "truncated_walk": false,
+        "suspect_root": false,
+        "hint": null,
+        "focus": [],
+        "path": "sample",
+        "definition": {
+          "moniker": "sample",
+          "path": "sample",
+          "line_start": 1,
+          "line_end": 1,
+          "name": "sample",
+          "kind": "sample"
+        },
+        "impact": {
+          "mode": "sample",
+          "include_tests": false,
+          "changed": 1,
+          "direct": 1,
+          "transitive": 1,
+          "tests": 1,
+          "ambiguous_skipped": 1,
+          "unresolved_imports": 1
+        }
+      },
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeToolRan",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "root": "sample",
+          "call_id": "sample",
+          "tool": "sample",
+          "args": null,
+          "summary": {
+            "rows": 1,
+            "dropped": 1,
+            "is_error": false,
+            "stale": false,
+            "pending": 1,
+            "truncated_walk": false,
+            "suspect_root": false,
+            "hint": null,
+            "focus": [],
+            "path": "sample",
+            "definition": {
+              "moniker": "sample",
+              "path": "sample",
+              "line_start": 1,
+              "line_end": 1,
+              "name": "sample",
+              "kind": "sample"
+            },
+            "impact": {
+              "mode": "sample",
+              "range": null,
+              "include_tests": false,
+              "changed": 1,
+              "direct": 1,
+              "transitive": 1,
+              "tests": 1,
+              "ambiguous_skipped": 1,
+              "unresolved_imports": 1
+            }
+          },
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeToolRan",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "root": "sample",
+      "call_id": "sample",
+      "tool": "sample",
+      "args": null,
+      "summary": {
+        "rows": 1,
+        "dropped": 1,
+        "is_error": false,
+        "stale": false,
+        "pending": 1,
+        "truncated_walk": false,
+        "suspect_root": false,
+        "hint": "sample",
+        "focus": [
+          "sample"
+        ],
+        "path": "sample",
+        "definition": {
+          "moniker": "sample",
+          "path": "sample",
+          "line_start": 1,
+          "line_end": 1,
+          "name": "sample",
+          "kind": "sample"
+        },
+        "impact": {
+          "mode": "sample",
+          "include_tests": false,
+          "changed": 1,
+          "direct": 1,
+          "transitive": 1,
+          "tests": 1,
+          "ambiguous_skipped": 1,
+          "unresolved_imports": 1
+        }
+      },
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeToolRan",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "root": "sample",
+          "call_id": "sample",
+          "tool": "sample",
+          "args": null,
+          "summary": {
+            "rows": 1,
+            "dropped": 1,
+            "is_error": false,
+            "stale": false,
+            "pending": 1,
+            "truncated_walk": false,
+            "suspect_root": false,
+            "hint": "sample",
+            "focus": [
+              "sample"
+            ],
+            "path": "sample",
+            "definition": {
+              "moniker": "sample",
+              "path": "sample",
+              "line_start": 1,
+              "line_end": 1,
+              "name": "sample",
+              "kind": "sample"
+            },
+            "impact": {
+              "mode": "sample",
+              "range": null,
+              "include_tests": false,
+              "changed": 1,
+              "direct": 1,
+              "transitive": 1,
+              "tests": 1,
+              "ambiguous_skipped": 1,
+              "unresolved_imports": 1
+            }
+          },
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeToolRan",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "root": "sample",
+      "call_id": "sample",
+      "tool": "sample",
+      "args": null,
+      "summary": {
+        "rows": 1,
+        "dropped": 1,
+        "is_error": false,
+        "stale": false,
+        "pending": 1,
+        "truncated_walk": false,
+        "suspect_root": false,
+        "hint": "sample",
+        "focus": null,
+        "path": "sample",
+        "definition": {
+          "moniker": "sample",
+          "path": "sample",
+          "line_start": 1,
+          "line_end": 1,
+          "name": "sample",
+          "kind": "sample"
+        },
+        "impact": {
+          "mode": "sample",
+          "include_tests": false,
+          "changed": 1,
+          "direct": 1,
+          "transitive": 1,
+          "tests": 1,
+          "ambiguous_skipped": 1,
+          "unresolved_imports": 1
+        }
+      },
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeToolRan",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "root": "sample",
+          "call_id": "sample",
+          "tool": "sample",
+          "args": null,
+          "summary": {
+            "rows": 1,
+            "dropped": 1,
+            "is_error": false,
+            "stale": false,
+            "pending": 1,
+            "truncated_walk": false,
+            "suspect_root": false,
+            "hint": "sample",
+            "path": "sample",
+            "definition": {
+              "moniker": "sample",
+              "path": "sample",
+              "line_start": 1,
+              "line_end": 1,
+              "name": "sample",
+              "kind": "sample"
+            },
+            "impact": {
+              "mode": "sample",
+              "range": null,
+              "include_tests": false,
+              "changed": 1,
+              "direct": 1,
+              "transitive": 1,
+              "tests": 1,
+              "ambiguous_skipped": 1,
+              "unresolved_imports": 1
+            }
+          },
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeToolRan",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "root": "sample",
+      "call_id": "sample",
+      "tool": "sample",
+      "args": null,
+      "summary": {
+        "rows": 1,
+        "dropped": 1,
+        "is_error": false,
+        "stale": false,
+        "pending": 1,
+        "truncated_walk": false,
+        "suspect_root": false,
+        "hint": "sample",
+        "focus": [],
+        "path": null,
+        "definition": {
+          "moniker": "sample",
+          "path": "sample",
+          "line_start": 1,
+          "line_end": 1,
+          "name": "sample",
+          "kind": "sample"
+        },
+        "impact": {
+          "mode": "sample",
+          "include_tests": false,
+          "changed": 1,
+          "direct": 1,
+          "transitive": 1,
+          "tests": 1,
+          "ambiguous_skipped": 1,
+          "unresolved_imports": 1
+        }
+      },
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeToolRan",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "root": "sample",
+          "call_id": "sample",
+          "tool": "sample",
+          "args": null,
+          "summary": {
+            "rows": 1,
+            "dropped": 1,
+            "is_error": false,
+            "stale": false,
+            "pending": 1,
+            "truncated_walk": false,
+            "suspect_root": false,
+            "hint": "sample",
+            "focus": [],
+            "definition": {
+              "moniker": "sample",
+              "path": "sample",
+              "line_start": 1,
+              "line_end": 1,
+              "name": "sample",
+              "kind": "sample"
+            },
+            "impact": {
+              "mode": "sample",
+              "range": null,
+              "include_tests": false,
+              "changed": 1,
+              "direct": 1,
+              "transitive": 1,
+              "tests": 1,
+              "ambiguous_skipped": 1,
+              "unresolved_imports": 1
+            }
+          },
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeToolRan",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "root": "sample",
+      "call_id": "sample",
+      "tool": "sample",
+      "args": null,
+      "summary": {
+        "rows": 1,
+        "dropped": 1,
+        "is_error": false,
+        "stale": false,
+        "pending": 1,
+        "truncated_walk": false,
+        "suspect_root": false,
+        "hint": "sample",
+        "focus": [],
+        "path": "sample",
+        "definition": null,
+        "impact": {
+          "mode": "sample",
+          "include_tests": false,
+          "changed": 1,
+          "direct": 1,
+          "transitive": 1,
+          "tests": 1,
+          "ambiguous_skipped": 1,
+          "unresolved_imports": 1
+        }
+      },
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeToolRan",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "root": "sample",
+          "call_id": "sample",
+          "tool": "sample",
+          "args": null,
+          "summary": {
+            "rows": 1,
+            "dropped": 1,
+            "is_error": false,
+            "stale": false,
+            "pending": 1,
+            "truncated_walk": false,
+            "suspect_root": false,
+            "hint": "sample",
+            "focus": [],
+            "path": "sample",
+            "impact": {
+              "mode": "sample",
+              "range": null,
+              "include_tests": false,
+              "changed": 1,
+              "direct": 1,
+              "transitive": 1,
+              "tests": 1,
+              "ambiguous_skipped": 1,
+              "unresolved_imports": 1
+            }
+          },
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeToolRan",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "root": "sample",
+      "call_id": "sample",
+      "tool": "sample",
+      "args": null,
+      "summary": {
+        "rows": 1,
+        "dropped": 1,
+        "is_error": false,
+        "stale": false,
+        "pending": 1,
+        "truncated_walk": false,
+        "suspect_root": false,
+        "hint": "sample",
+        "focus": [],
+        "path": "sample",
+        "definition": {
+          "moniker": "sample",
+          "path": "sample",
+          "line_start": 1,
+          "line_end": 1,
+          "name": "sample",
+          "kind": "sample"
+        },
+        "impact": {
+          "mode": "sample",
+          "range": {
+            "old": "sample",
+            "new": "sample"
+          },
+          "include_tests": false,
+          "changed": 1,
+          "direct": 1,
+          "transitive": 1,
+          "tests": 1,
+          "ambiguous_skipped": 1,
+          "unresolved_imports": 1
+        }
+      },
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeToolRan",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "root": "sample",
+          "call_id": "sample",
+          "tool": "sample",
+          "args": null,
+          "summary": {
+            "rows": 1,
+            "dropped": 1,
+            "is_error": false,
+            "stale": false,
+            "pending": 1,
+            "truncated_walk": false,
+            "suspect_root": false,
+            "hint": "sample",
+            "focus": [],
+            "path": "sample",
+            "definition": {
+              "moniker": "sample",
+              "path": "sample",
+              "line_start": 1,
+              "line_end": 1,
+              "name": "sample",
+              "kind": "sample"
+            },
+            "impact": {
+              "mode": "sample",
+              "range": {
+                "old": "sample",
+                "new": "sample"
+              },
+              "include_tests": false,
+              "changed": 1,
+              "direct": 1,
+              "transitive": 1,
+              "tests": 1,
+              "ambiguous_skipped": 1,
+              "unresolved_imports": 1
+            }
+          },
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeToolRan",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "root": "sample",
+      "call_id": "sample",
+      "tool": "sample",
+      "args": null,
+      "summary": {
+        "rows": 1,
+        "dropped": 1,
+        "is_error": false,
+        "stale": false,
+        "pending": 1,
+        "truncated_walk": false,
+        "suspect_root": false,
+        "hint": "sample",
+        "focus": [],
+        "path": "sample",
+        "definition": {
+          "moniker": "sample",
+          "path": "sample",
+          "line_start": 1,
+          "line_end": 1,
+          "name": "sample",
+          "kind": "sample"
+        },
+        "impact": {
+          "mode": "sample",
+          "range": null,
+          "include_tests": false,
+          "changed": 1,
+          "direct": 1,
+          "transitive": 1,
+          "tests": 1,
+          "ambiguous_skipped": 1,
+          "unresolved_imports": 1
+        }
+      },
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeToolRan",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "root": "sample",
+          "call_id": "sample",
+          "tool": "sample",
+          "args": null,
+          "summary": {
+            "rows": 1,
+            "dropped": 1,
+            "is_error": false,
+            "stale": false,
+            "pending": 1,
+            "truncated_walk": false,
+            "suspect_root": false,
+            "hint": "sample",
+            "focus": [],
+            "path": "sample",
+            "definition": {
+              "moniker": "sample",
+              "path": "sample",
+              "line_start": 1,
+              "line_end": 1,
+              "name": "sample",
+              "kind": "sample"
+            },
+            "impact": {
+              "mode": "sample",
+              "range": null,
+              "include_tests": false,
+              "changed": 1,
+              "direct": 1,
+              "transitive": 1,
+              "tests": 1,
+              "ambiguous_skipped": 1,
+              "unresolved_imports": 1
+            }
+          },
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeToolRan",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "root": "sample",
+      "call_id": "sample",
+      "tool": "sample",
+      "args": null,
+      "summary": {
+        "rows": 1,
+        "dropped": 1,
+        "is_error": false,
+        "stale": false,
+        "pending": 1,
+        "truncated_walk": false,
+        "suspect_root": false,
+        "hint": "sample",
+        "focus": [],
+        "path": "sample",
+        "definition": {
+          "moniker": "sample",
+          "path": "sample",
+          "line_start": 1,
+          "line_end": 1,
+          "name": "sample",
+          "kind": "sample"
+        },
+        "impact": {
+          "mode": "sample",
+          "range": {
+            "old": "sample",
+            "new": "sample"
+          },
+          "include_tests": true,
+          "changed": 1,
+          "direct": 1,
+          "transitive": 1,
+          "tests": 1,
+          "ambiguous_skipped": 1,
+          "unresolved_imports": 1
+        }
+      },
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeToolRan",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "root": "sample",
+          "call_id": "sample",
+          "tool": "sample",
+          "args": null,
+          "summary": {
+            "rows": 1,
+            "dropped": 1,
+            "is_error": false,
+            "stale": false,
+            "pending": 1,
+            "truncated_walk": false,
+            "suspect_root": false,
+            "hint": "sample",
+            "focus": [],
+            "path": "sample",
+            "definition": {
+              "moniker": "sample",
+              "path": "sample",
+              "line_start": 1,
+              "line_end": 1,
+              "name": "sample",
+              "kind": "sample"
+            },
+            "impact": {
+              "mode": "sample",
+              "range": {
+                "old": "sample",
+                "new": "sample"
+              },
+              "include_tests": true,
+              "changed": 1,
+              "direct": 1,
+              "transitive": 1,
+              "tests": 1,
+              "ambiguous_skipped": 1,
+              "unresolved_imports": 1
+            }
+          },
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeToolRan",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "root": "sample",
+      "call_id": "sample",
+      "tool": "sample",
+      "args": null,
+      "summary": {
+        "rows": 1,
+        "dropped": 1,
+        "is_error": false,
+        "stale": false,
+        "pending": 1,
+        "truncated_walk": false,
+        "suspect_root": false,
+        "hint": "sample",
+        "focus": [],
+        "path": "sample",
+        "definition": {
+          "moniker": "sample",
+          "path": "sample",
+          "line_start": 1,
+          "line_end": 1,
+          "name": "sample",
+          "kind": "sample"
+        },
+        "impact": null
+      },
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeToolRan",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "root": "sample",
+          "call_id": "sample",
+          "tool": "sample",
+          "args": null,
+          "summary": {
+            "rows": 1,
+            "dropped": 1,
+            "is_error": false,
+            "stale": false,
+            "pending": 1,
+            "truncated_walk": false,
+            "suspect_root": false,
+            "hint": "sample",
+            "focus": [],
+            "path": "sample",
+            "definition": {
+              "moniker": "sample",
+              "path": "sample",
+              "line_start": 1,
+              "line_end": 1,
+              "name": "sample",
+              "kind": "sample"
+            }
+          },
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeReconciled",
+      "root": "sample",
+      "reparsed": [],
+      "removed": [],
+      "stale": false,
+      "pending": 1,
+      "suspect_root": false,
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeReconciled",
+          "root": "sample",
+          "reparsed": [],
+          "removed": [],
+          "stale": false,
+          "pending": 1,
+          "suspect_root": false,
+          "hint": null,
+          "git_head": null,
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeReconciled",
+      "root": "sample",
+      "reparsed": [],
+      "removed": [],
+      "more": 1,
+      "stale": false,
+      "pending": 1,
+      "suspect_root": false,
+      "hint": "sample",
+      "git_head": "sample",
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeReconciled",
+          "root": "sample",
+          "reparsed": [],
+          "removed": [],
+          "more": 1,
+          "stale": false,
+          "pending": 1,
+          "suspect_root": false,
+          "hint": "sample",
+          "git_head": "sample",
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeReconciled",
+      "root": "sample",
+      "reparsed": [
+        "sample"
+      ],
+      "removed": [],
+      "more": 1,
+      "stale": false,
+      "pending": 1,
+      "suspect_root": false,
+      "hint": "sample",
+      "git_head": "sample",
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeReconciled",
+          "root": "sample",
+          "reparsed": [
+            "sample"
+          ],
+          "removed": [],
+          "more": 1,
+          "stale": false,
+          "pending": 1,
+          "suspect_root": false,
+          "hint": "sample",
+          "git_head": "sample",
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeReconciled",
+      "root": "sample",
+      "reparsed": [],
+      "removed": [
+        "sample"
+      ],
+      "more": 1,
+      "stale": false,
+      "pending": 1,
+      "suspect_root": false,
+      "hint": "sample",
+      "git_head": "sample",
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeReconciled",
+          "root": "sample",
+          "reparsed": [],
+          "removed": [
+            "sample"
+          ],
+          "more": 1,
+          "stale": false,
+          "pending": 1,
+          "suspect_root": false,
+          "hint": "sample",
+          "git_head": "sample",
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeReconciled",
+      "root": "sample",
+      "reparsed": [],
+      "removed": [],
+      "more": 1,
+      "stale": true,
+      "pending": 1,
+      "suspect_root": false,
+      "hint": "sample",
+      "git_head": "sample",
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeReconciled",
+          "root": "sample",
+          "reparsed": [],
+          "removed": [],
+          "more": 1,
+          "stale": true,
+          "pending": 1,
+          "suspect_root": false,
+          "hint": "sample",
+          "git_head": "sample",
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeReconciled",
+      "root": "sample",
+      "reparsed": [],
+      "removed": [],
+      "more": 1,
+      "stale": false,
+      "pending": 1,
+      "suspect_root": true,
+      "hint": "sample",
+      "git_head": "sample",
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeReconciled",
+          "root": "sample",
+          "reparsed": [],
+          "removed": [],
+          "more": 1,
+          "stale": false,
+          "pending": 1,
+          "suspect_root": true,
+          "hint": "sample",
+          "git_head": "sample",
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeReconciled",
+      "root": "sample",
+      "reparsed": [],
+      "removed": [],
+      "more": 1,
+      "stale": false,
+      "pending": 1,
+      "suspect_root": false,
+      "hint": null,
+      "git_head": "sample",
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeReconciled",
+          "root": "sample",
+          "reparsed": [],
+          "removed": [],
+          "more": 1,
+          "stale": false,
+          "pending": 1,
+          "suspect_root": false,
+          "hint": null,
+          "git_head": "sample",
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeReconciled",
+      "root": "sample",
+      "reparsed": [],
+      "removed": [],
+      "more": 1,
+      "stale": false,
+      "pending": 1,
+      "suspect_root": false,
+      "hint": "sample",
+      "git_head": null,
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeReconciled",
+          "root": "sample",
+          "reparsed": [],
+          "removed": [],
+          "more": 1,
+          "stale": false,
+          "pending": 1,
+          "suspect_root": false,
+          "hint": "sample",
+          "git_head": null,
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeMapProgress",
+      "root": "sample",
+      "job": "sample",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "stage": "sample",
+      "done": 1,
+      "total": 1,
+      "calls": 1,
+      "cost_nanos": 1,
+      "currency": "sample",
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeMapProgress",
+          "root": "sample",
+          "job": "sample",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "stage": "sample",
+          "done": 1,
+          "total": 1,
+          "element": null,
+          "calls": 1,
+          "cost_nanos": 1,
+          "currency": "sample",
+          "error": null,
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeMapProgress",
+      "root": "sample",
+      "job": "sample",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "stage": "sample",
+      "done": 1,
+      "total": 1,
+      "element": "sample",
+      "calls": 1,
+      "cost_nanos": 1,
+      "currency": "sample",
+      "error": "sample",
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeMapProgress",
+          "root": "sample",
+          "job": "sample",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "stage": "sample",
+          "done": 1,
+          "total": 1,
+          "element": "sample",
+          "calls": 1,
+          "cost_nanos": 1,
+          "currency": "sample",
+          "error": "sample",
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeMapProgress",
+      "root": "sample",
+      "job": "sample",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "stage": "sample",
+      "done": 1,
+      "total": 1,
+      "element": null,
+      "calls": 1,
+      "cost_nanos": 1,
+      "currency": "sample",
+      "error": "sample",
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeMapProgress",
+          "root": "sample",
+          "job": "sample",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "stage": "sample",
+          "done": 1,
+          "total": 1,
+          "element": null,
+          "calls": 1,
+          "cost_nanos": 1,
+          "currency": "sample",
+          "error": "sample",
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeMapProgress",
+      "root": "sample",
+      "job": "sample",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "stage": "sample",
+      "done": 1,
+      "total": 1,
+      "element": "sample",
+      "calls": 1,
+      "cost_nanos": 1,
+      "currency": "sample",
+      "error": null,
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeMapProgress",
+          "root": "sample",
+          "job": "sample",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "stage": "sample",
+          "done": 1,
+          "total": 1,
+          "element": "sample",
+          "calls": 1,
+          "cost_nanos": 1,
+          "currency": "sample",
+          "error": null,
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeMapChanged",
+      "root": "sample",
+      "elements": [],
+      "stale": [],
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeMapChanged",
+          "root": "sample",
+          "elements": [],
+          "stale": [],
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeMapChanged",
+      "root": "sample",
+      "elements": [],
+      "stale": [],
+      "more": 1,
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeMapChanged",
+          "root": "sample",
+          "elements": [],
+          "stale": [],
+          "more": 1,
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeMapChanged",
+      "root": "sample",
+      "elements": [
+        "sample"
+      ],
+      "stale": [],
+      "more": 1,
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeMapChanged",
+          "root": "sample",
+          "elements": [
+            "sample"
+          ],
+          "stale": [],
+          "more": 1,
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "CodeMapChanged",
+      "root": "sample",
+      "elements": [],
+      "stale": [
+        "sample"
+      ],
+      "more": 1,
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CodeMapChanged",
+          "root": "sample",
+          "elements": [],
+          "stale": [
+            "sample"
+          ],
+          "more": 1,
+          "seq": 1
+        }
+      }
+    }
+  }
+]

@@ -1,0 +1,55 @@
+[
+  {
+    "input": {
+      "revision": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CommunicationChanged",
+          "session": null,
+          "revision": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "revision": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CommunicationChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "revision": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": null,
+      "revision": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "CommunicationChanged",
+          "session": null,
+          "revision": 1
+        }
+      }
+    }
+  }
+]

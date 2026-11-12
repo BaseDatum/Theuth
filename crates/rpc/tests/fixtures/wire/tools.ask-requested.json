@@ -1,0 +1,249 @@
+[
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "questions": []
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AskRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "questions": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "questions": [
+        {
+          "id": "sample",
+          "question": "sample"
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AskRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "questions": [
+            {
+              "id": "sample",
+              "question": "sample",
+              "options": []
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "questions": [
+        {
+          "id": "sample",
+          "question": "sample",
+          "options": [],
+          "recommended": 1
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AskRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "questions": [
+            {
+              "id": "sample",
+              "question": "sample",
+              "options": [],
+              "recommended": 1
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "questions": [
+        {
+          "id": "sample",
+          "question": "sample",
+          "options": [
+            {
+              "label": "sample"
+            }
+          ],
+          "recommended": 1
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AskRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "questions": [
+            {
+              "id": "sample",
+              "question": "sample",
+              "options": [
+                {
+                  "label": "sample"
+                }
+              ],
+              "recommended": 1
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "questions": [
+        {
+          "id": "sample",
+          "question": "sample",
+          "options": [
+            {
+              "label": "sample",
+              "description": "sample"
+            }
+          ],
+          "recommended": 1
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AskRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "questions": [
+            {
+              "id": "sample",
+              "question": "sample",
+              "options": [
+                {
+                  "label": "sample",
+                  "description": "sample"
+                }
+              ],
+              "recommended": 1
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "questions": [
+        {
+          "id": "sample",
+          "question": "sample",
+          "options": [
+            {
+              "label": "sample",
+              "description": null
+            }
+          ],
+          "recommended": 1
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AskRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "questions": [
+            {
+              "id": "sample",
+              "question": "sample",
+              "options": [
+                {
+                  "label": "sample"
+                }
+              ],
+              "recommended": 1
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "questions": [
+        {
+          "id": "sample",
+          "question": "sample",
+          "options": [],
+          "recommended": null
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AskRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "questions": [
+            {
+              "id": "sample",
+              "question": "sample",
+              "options": []
+            }
+          ]
+        }
+      }
+    }
+  }
+]

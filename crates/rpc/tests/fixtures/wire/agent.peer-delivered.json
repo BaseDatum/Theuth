@@ -1,0 +1,215 @@
+[
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "origin": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "from": "sample"
+      },
+      "text": "sample",
+      "seq": 1,
+      "turn": "00000000-0000-0000-0000-000000000001"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PeerDelivered",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "origin": {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "from": "sample",
+            "reply_to": null,
+            "scope": null,
+            "contact_mode": null
+          },
+          "text": "sample",
+          "seq": 1,
+          "turn": "00000000-0000-0000-0000-000000000001"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "origin": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "from": "sample",
+        "reply_to": "00000000-0000-0000-0000-000000000001",
+        "scope": "00000000-0000-0000-0000-000000000001",
+        "contact_mode": "full"
+      },
+      "text": "sample",
+      "seq": 1,
+      "turn": "00000000-0000-0000-0000-000000000001"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PeerDelivered",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "origin": {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "from": "sample",
+            "reply_to": "00000000-0000-0000-0000-000000000001",
+            "scope": "00000000-0000-0000-0000-000000000001",
+            "contact_mode": "full"
+          },
+          "text": "sample",
+          "seq": 1,
+          "turn": "00000000-0000-0000-0000-000000000001"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "origin": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "from": "sample",
+        "reply_to": null,
+        "scope": "00000000-0000-0000-0000-000000000001",
+        "contact_mode": "full"
+      },
+      "text": "sample",
+      "seq": 1,
+      "turn": "00000000-0000-0000-0000-000000000001"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PeerDelivered",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "origin": {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "from": "sample",
+            "reply_to": null,
+            "scope": "00000000-0000-0000-0000-000000000001",
+            "contact_mode": "full"
+          },
+          "text": "sample",
+          "seq": 1,
+          "turn": "00000000-0000-0000-0000-000000000001"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "origin": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "from": "sample",
+        "reply_to": "00000000-0000-0000-0000-000000000001",
+        "scope": null,
+        "contact_mode": "full"
+      },
+      "text": "sample",
+      "seq": 1,
+      "turn": "00000000-0000-0000-0000-000000000001"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PeerDelivered",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "origin": {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "from": "sample",
+            "reply_to": "00000000-0000-0000-0000-000000000001",
+            "scope": null,
+            "contact_mode": "full"
+          },
+          "text": "sample",
+          "seq": 1,
+          "turn": "00000000-0000-0000-0000-000000000001"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "origin": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "from": "sample",
+        "reply_to": "00000000-0000-0000-0000-000000000001",
+        "scope": "00000000-0000-0000-0000-000000000001",
+        "contact_mode": "cautious"
+      },
+      "text": "sample",
+      "seq": 1,
+      "turn": "00000000-0000-0000-0000-000000000001"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PeerDelivered",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "origin": {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "from": "sample",
+            "reply_to": "00000000-0000-0000-0000-000000000001",
+            "scope": "00000000-0000-0000-0000-000000000001",
+            "contact_mode": "cautious"
+          },
+          "text": "sample",
+          "seq": 1,
+          "turn": "00000000-0000-0000-0000-000000000001"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "origin": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "from": "sample",
+        "reply_to": "00000000-0000-0000-0000-000000000001",
+        "scope": "00000000-0000-0000-0000-000000000001",
+        "contact_mode": null
+      },
+      "text": "sample",
+      "seq": 1,
+      "turn": "00000000-0000-0000-0000-000000000001"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PeerDelivered",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "origin": {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "from": "sample",
+            "reply_to": "00000000-0000-0000-0000-000000000001",
+            "scope": "00000000-0000-0000-0000-000000000001",
+            "contact_mode": null
+          },
+          "text": "sample",
+          "seq": 1,
+          "turn": "00000000-0000-0000-0000-000000000001"
+        }
+      }
+    }
+  }
+]

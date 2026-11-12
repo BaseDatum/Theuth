@@ -1,0 +1,55 @@
+[
+  {
+    "input": {
+      "night": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DreamUndone",
+          "night": "sample",
+          "group": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "night": "sample",
+      "group": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DreamUndone",
+          "night": "sample",
+          "group": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "night": "sample",
+      "group": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DreamUndone",
+          "night": "sample",
+          "group": null
+        }
+      }
+    }
+  }
+]
