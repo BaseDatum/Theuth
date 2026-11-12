@@ -488,7 +488,7 @@ pub type SeenMap = Arc<RwLock<HashMap<u64, HashSet<String>>>>;
 /// held for each (a session owned elsewhere streams while focused). Dropped
 /// with the focus and with the connection.
 pub type FollowMap =
-    Arc<parking_lot::Mutex<HashMap<u64, HashMap<SessionId, sessionsync::events::Following>>>>;
+    Arc<parking_lot::Mutex<HashMap<u64, HashMap<SessionId, rpc_core::Following>>>>;
 
 /// Server state: the event feed and the runtime (for `shutdown`).
 #[derive(Clone)]

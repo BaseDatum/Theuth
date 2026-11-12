@@ -7,6 +7,7 @@ description = "Transcript replication with transferable ownership: ships the age
 
 [dependencies]
 runtime = { workspace = true }
+rpc-core = { workspace = true }
 replica = { workspace = true }
 agent = { workspace = true }
 # 68 §4.2 (c): an unreachable owner's `last_seen_ms` from `mesh::Status`.
