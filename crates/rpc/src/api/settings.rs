@@ -59,6 +59,14 @@ pub trait SettingsApi {
     /// children spawned without `model` start on it and the system prompt names it (148 R2).
     #[method(name = "set_subagent_model")]
     async fn set_subagent_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>>;
+    /// The live subagent default effort (`agent.subagents.effort`), if set (194 row 3).
+    #[method(name = "subagent_effort")]
+    async fn subagent_effort(&self) -> RpcResult<Option<String>>;
+    /// Persist `agent.subagents.effort`; `None` clears it (children inherit `agent.effort`).
+    /// Refused when the effective subagent model does not take it; native children spawned
+    /// without `effort` start on it, live. Returns the stored value.
+    #[method(name = "set_subagent_effort")]
+    async fn set_subagent_effort(&self, effort: Option<String>) -> RpcResult<Option<String>>;
     /// Every catalog model whose provider is configured. 183 W-12: `engine`
     /// (mesh id) lists that engine's catalog; `None` = this engine.
     #[method(name = "list_models", with_extensions)]
@@ -117,6 +125,10 @@ pub trait SettingsApi {
         &self,
         effort: Option<String>,
     ) -> RpcResult<AdvisorDefaults>;
+    /// Persist `advisor.model` (194 row 6), the default `/advisor on` uses; `None` clears it
+    /// and `advisor.effort`, and a model that does not take the stored effort drops it.
+    #[method(name = "set_advisor_default_model")]
+    async fn set_advisor_default_model(&self, model: Option<String>) -> RpcResult<AdvisorDefaults>;
     /// Persist `advisor.max_notes_per_update` (1–32).
     #[method(name = "set_advisor_notes_per_update")]
     async fn set_advisor_notes_per_update(&self, n: u8) -> RpcResult<AdvisorDefaults>;
@@ -338,6 +350,14 @@ impl SettingsApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetSubagentModel { model }).await
     }
 
+    async fn subagent_effort(&self) -> RpcResult<Option<String>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetSubagentEffort).await
+    }
+
+    async fn set_subagent_effort(&self, effort: Option<String>) -> RpcResult<Option<String>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::SetSubagentEffort { effort }).await
+    }
+
     async fn list_models(
         &self,
         ext: &Extensions,
@@ -451,6 +471,17 @@ impl SettingsApiServer for Server {
             agent::AGENT_ACTOR,
             SetAdvisorDefaults {
                 effort: Some(effort),
+                ..SetAdvisorDefaults::default()
+            },
+        )
+        .await
+    }
+
+    async fn set_advisor_default_model(&self, model: Option<String>) -> RpcResult<AdvisorDefaults> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            SetAdvisorDefaults {
+                model: Some(model),
                 ..SetAdvisorDefaults::default()
             },
         )

@@ -14,14 +14,21 @@ export function ModelDefaults() {
   const info = useConnection((s) => s.info)
   const models = useModels()
   const subagentModel = useQuery({ queryKey: queryKeys.subagentModel, queryFn: () => api.subagent_model() })
+  const subagentEffort = useQuery({ queryKey: queryKeys.subagentEffort, queryFn: () => api.subagent_effort() })
   const theuthModel = useQuery({ queryKey: queryKeys.theuthAgentModel, queryFn: () => api.theuth_agent_model() })
+  const theuthEffort = useQuery({ queryKey: queryKeys.theuthAgentEffort, queryFn: () => api.theuth_agent_effort() })
   // R1: `session: null` + `manual` sets the default; `info` follows through `DefaultModelChanged` / `DefaultEffortChanged`.
   const setDefaultModel = useAction((id: string) => api.set_model(null, id, true))
   const setDefaultEffort = useAction((level: string | null) => api.set_effort(null, level, true))
-  const setSubagentModel = useAction((id: string | null) => api.set_subagent_model(id), { keys: [queryKeys.subagentModel] })
-  // R3: the roster synthesises theuth's `AgentFile.model` from this, so the Agents page refetches too.
-  const setTheuthModel = useAction((id: string | null) => api.set_theuth_agent_model(id), { keys: [queryKeys.theuthAgentModel, queryKeys.roster] })
+  // 194 D4c: a model change may drop the stored effort, so its query refetches too.
+  const setSubagentModel = useAction((id: string | null) => api.set_subagent_model(id), { keys: [queryKeys.subagentModel, queryKeys.subagentEffort] })
+  const setSubagentEffort = useAction((level: string | null) => api.set_subagent_effort(level), { keys: [queryKeys.subagentEffort] })
+  // R3: the roster synthesises theuth's `AgentFile.model` (194: and `effort`) from these, so the Agents page refetches too.
+  const setTheuthModel = useAction((id: string | null) => api.set_theuth_agent_model(id), { keys: [queryKeys.theuthAgentModel, queryKeys.theuthAgentEffort, queryKeys.roster] })
+  const setTheuthEffort = useAction((level: string | null) => api.set_theuth_agent_effort(level), { keys: [queryKeys.theuthAgentEffort, queryKeys.roster] })
   const current = models.data?.find((m) => m.id === info?.default_model)
+  const subagent = models.data?.find((m) => m.id === subagentModel.data?.id)
+  const theuth = models.data?.find((m) => m.id === theuthModel.data?.id)
   return (
     <Section title="Models">
       <Row stack label="New sessions" description="The model every new chat starts on. Picking a model inside a chat changes only that chat.">
@@ -46,7 +53,8 @@ export function ModelDefaults() {
           models={models.data ?? []}
           value={subagentModel.data?.id}
           none={SAME_AS_NEW}
-          disabled={subagentModel.isPending || setSubagentModel.isPending}
+          effort={subagent && subagent.efforts.length > 0 ? { levels: subagent.efforts, current: subagentEffort.data, onSelect: (level) => setSubagentEffort.mutate(level) } : undefined}
+          disabled={subagentModel.isPending || setSubagentModel.isPending || setSubagentEffort.isPending}
           onChange={(v) => setSubagentModel.mutate(v)}
         />
       </Row>
@@ -57,7 +65,8 @@ export function ModelDefaults() {
           models={models.data ?? []}
           value={theuthModel.data?.id}
           none={SAME_AS_NEW}
-          disabled={theuthModel.isPending || setTheuthModel.isPending}
+          effort={theuth && theuth.efforts.length > 0 ? { levels: theuth.efforts, current: theuthEffort.data, onSelect: (level) => setTheuthEffort.mutate(level) } : undefined}
+          disabled={theuthModel.isPending || setTheuthModel.isPending || setTheuthEffort.isPending}
           onChange={(v) => setTheuthModel.mutate(v)}
         />
       </Row>

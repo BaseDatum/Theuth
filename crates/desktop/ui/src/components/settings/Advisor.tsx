@@ -1,4 +1,5 @@
-import { EFFORTS } from '@/components/agents/wizard'
+import { useModels } from '@/components/agents/queries'
+import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { Count, Row, Section, refreshInfo, useAction } from '@/components/settings/shared'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useApi } from '@/lib/rpc'
@@ -24,34 +25,36 @@ export const consultOptions = (cur: number | undefined): number[] => (cur === un
 /** `s` as a cap (0–32); `undefined` for anything the engine would refuse. */
 export const asConsults = (s: string): number | undefined => (/^\d+$/.test(s) && Number(s) <= 32 ? Number(s) : undefined)
 
-/** Radix `Select` refuses `''`: the Default row's value. */
-const DEFAULT = '__default'
-
 /** Settings › Advisor (125 §8.4): the defaults a new advisor starts with and the loop's tuning keys. No enable row — a session's advisor is picked in its header. */
 export function Advisor() {
   const api = useApi()
   const advisor = useConnection((s) => s.info?.advisor)
+  const models = useModels()
+  // 194: `Info.advisor` carries both, so one refetch shows a dropped effort (D4c) too.
+  const setModel = useAction((model: string | null) => api.set_advisor_default_model(model).then(() => refreshInfo(api)))
   const setEffort = useAction((effort: string | null) => api.set_advisor_default_effort(effort).then(() => refreshInfo(api)))
   const setNotes = useAction((n: number) => api.set_advisor_notes_per_update(n).then(() => refreshInfo(api)))
   const setImmune = useAction((n: number) => api.set_advisor_immune_turns(n).then(() => refreshInfo(api)))
   const setBacklog = useAction((v: SyncBacklog) => api.set_advisor_sync_backlog(v).then(() => refreshInfo(api)))
   const setConsults = useAction((n: number) => api.set_advisor_max_consults(n).then(() => refreshInfo(api)))
+  const current = models.data?.find((m) => m.id === advisor?.model)
   return (
     <Section title="Advisor">
-      <Row label="Default effort" description="Thinking effort the advisor starts with when you pick a model.">
-        <Select value={advisor?.effort ?? DEFAULT} disabled={!advisor || setEffort.isPending} onValueChange={(v) => setEffort.mutate(v === DEFAULT ? null : v)}>
-          <SelectTrigger className="w-40" aria-label="Default effort">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={DEFAULT}>Default</SelectItem>
-            {EFFORTS.map((e) => (
-              <SelectItem key={e} value={e}>
-                {e}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+      <Row
+        stack
+        label="Default advisor model"
+        description="What /advisor on starts the advisor on, with its effort; picking an advisor in a chat updates it. With None, /advisor on asks you to pick a model first."
+      >
+        <ModelCombobox
+          aria-label="Default advisor model"
+          className="max-w-64 max-md:w-full max-md:max-w-none"
+          models={models.data ?? []}
+          value={advisor?.model}
+          none={{ label: 'None' }}
+          effort={current && current.efforts.length > 0 ? { levels: current.efforts, current: advisor?.effort, onSelect: (level) => setEffort.mutate(level) } : undefined}
+          disabled={!advisor || setModel.isPending || setEffort.isPending}
+          onChange={(v) => setModel.mutate(v)}
+        />
       </Row>
       <Row label="Notes per update" description="Non-blocker notes the advisor may send per update (1–32).">
         <Count value={advisor?.max_notes_per_update} min={NOTES_RANGE[0]} max={NOTES_RANGE[1]} action={setNotes} />

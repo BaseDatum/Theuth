@@ -2206,8 +2206,9 @@ mod tests {
             );
         }
         let scratch = crate::TestDir::new("image-guidance");
-        let prompt =
-            crate::frame::baseline(&scratch.0, None, "", "", false, None, false, false, false);
+        let prompt = crate::frame::baseline(
+            &scratch.0, None, "", "", false, None, None, false, false, false,
+        );
         let guidance = prompt.split("## Guidance").nth(1).unwrap_or_default();
         assert!(
             guidance.contains("To look at an image") && guidance.contains("`read_file(path)`"),

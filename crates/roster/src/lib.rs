@@ -7,7 +7,8 @@
 //! Public surface consumed by other plugins:
 //! - commands on the [`ROSTER_ACTOR`] actor ([`Roster`]): [`ListAgents`],
 //!   [`GetAgent`], [`PutAgent`], [`PauseAgent`], [`ApproveAgent`], [`ProposeAgent`],
-//!   [`RoutableAgents`], [`TheuthModel`], [`SetTheuthModel`]
+//!   [`RoutableAgents`], [`TheuthModel`], [`SetTheuthModel`], [`TheuthEffort`],
+//!   [`SetTheuthEffort`]
 //! - [`file::parse`]: `agents/<name>.md` → [`AgentFile`]
 //! - [`Desks`]: the shared read model handed to the tasks plugin
 
@@ -145,11 +146,30 @@ pub struct TheuthModel;
 /// `roster.theuth_model` (148 E3). Validated through the catalog (an unknown
 /// or un-keyed id is refused like `agent::SetSubagentModel`), written to
 /// `config.yaml`, kept live, mirrored into the synthesised `theuth` file;
-/// an open theuth desk switches now and its native children follow.
+/// an open theuth desk switches now and its native children follow. 194
+/// D4c/d: `None` clears `roster.theuth_effort`; a model that does not take
+/// it drops it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetTheuthModel {
     /// `provider/model`, bare id, or `None` for the default.
     pub model: Option<String>,
+}
+
+/// `ask` → `Option<String>`: the live `roster.theuth_effort` (194 rows 4–5);
+/// `None` when unset (the default for new sessions).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct TheuthEffort;
+
+/// `ask` → `Result<Option<String>, String>`: set or clear (`None`)
+/// `roster.theuth_effort` (194 rows 4–5). Validated against theuth's
+/// effective model (`roster.theuth_model`, else the default for new sessions)
+/// with `agent::ValidateEffort`, written to `config.yaml`, kept live, carried
+/// by the synthesised `theuth` file; its open desk switches now and the
+/// desk's native children start on it. The reply is the stored value.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetTheuthEffort {
+    /// Effort keyword or token budget, or `None` for the default.
+    pub effort: Option<String>,
 }
 
 /// `ask` → `Result<(), String>`: close the agent's current episode (67 §6.2):
@@ -508,10 +528,7 @@ impl Roster {
                 tracing::warn!(agent = %gone, "agents row not removed: {e:#}");
             }
         }
-        self.shared.set_files(
-            files,
-            file::default_agent(&self.rt.data_dir, self.cfg.theuth_model.clone()),
-        );
+        self.shared.set_files(files, self.theuth_file());
         self.publish_agents().await;
         // 186 review 2: a contact's inbox shared in full follows its agent's `tools:` now.
         if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
@@ -939,6 +956,7 @@ impl Roster {
             .ask(agent::SetDeskModel {
                 session,
                 model: configured.clone(),
+                effort: f.effort.clone(),
             })
             .await
         {
@@ -1078,18 +1096,47 @@ impl Roster {
         ) {
             tracing::warn!("config.yaml: {e}");
         }
-        self.cfg.theuth_model = model.clone();
-        self.shared
-            .set_theuth(file::default_agent(&self.rt.data_dir, model.clone()));
-        self.apply_desk_model(AgentName::DEFAULT, model).await;
+        self.cfg.theuth_model = model;
+        self.refresh_theuth().await;
+    }
+
+    /// 194 rows 4–5: `roster.theuth_effort` := `effort`, written to
+    /// `config.yaml` best-effort like `theuth_model` (quoted so a bare budget
+    /// stays a string; `~` clears) and kept live. The caller refreshes theuth.
+    fn store_theuth_effort(&mut self, effort: Option<String>) {
+        let value = effort
+            .as_deref()
+            .map_or_else(|| "~".to_owned(), |e| format!("\"{e}\""));
+        let path = self.rt.data_dir.join("config.yaml");
+        if let Err(e) = runtime::write_config_value(&path, "roster", "theuth_effort", &value) {
+            tracing::warn!("config.yaml: {e}");
+        }
+        self.cfg.theuth_effort = effort;
+    }
+
+    /// The synthesised `theuth` file: the live `roster.theuth_model` and
+    /// (194) `roster.theuth_effort`.
+    fn theuth_file(&self) -> AgentFile {
+        AgentFile {
+            effort: self.cfg.theuth_effort.clone(),
+            ..file::default_agent(&self.rt.data_dir, self.cfg.theuth_model.clone())
+        }
+    }
+
+    /// theuth's live model or effort changed: mirror both into its file and
+    /// apply them to its open desk.
+    async fn refresh_theuth(&mut self) {
+        self.shared.set_theuth(self.theuth_file());
+        self.apply_desk_model(AgentName::DEFAULT, self.cfg.theuth_model.clone())
+            .await;
     }
 
     /// 148 E2/E3: the agent's configured model changed (theuth's live value,
     /// a hired agent's `model:` through [`PutAgent`] or an on-disk edit):
     /// tell Agents (its native children start on it) and put the open desk
     /// on its effective model — the configured one, else the live default
-    /// (`switch_session` skips a row already storing it). No-op without an
-    /// open desk.
+    /// (`switch_session` skips a row already storing it). 194: the file's
+    /// `effort:` travels with it. No-op without an open desk.
     async fn apply_desk_model(&mut self, name: &str, configured: Option<String>) {
         let Some(session) = self.desks.get(name).map(|d| d.session) else {
             return;
@@ -1102,6 +1149,7 @@ impl Roster {
             .ask(agent::SetDeskModel {
                 session,
                 model: configured.clone(),
+                effort: self.shared.file(name).and_then(|f| f.effort),
             })
             .await
         {
@@ -2708,19 +2756,74 @@ impl Message<SetTheuthModel> for Roster {
         m: SetTheuthModel,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        let info = match m.model {
+        let (info, effort) = match m.model {
             Some(id) => {
                 let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
                     .ok()
                     .flatten()
                     .ok_or_else(|| "agent actor not running".to_owned())?;
-                Some(resolve_keyed(&agents, &id).await?)
+                let info = resolve_keyed(&agents, &id).await?;
+                // 194 D4c: an effort the new model does not take is dropped.
+                let effort = match self.cfg.theuth_effort.clone() {
+                    Some(e) => agents
+                        .ask(agent::ValidateEffort {
+                            model: Some(info.id.clone()),
+                            effort: e.clone(),
+                        })
+                        .await
+                        .ok()
+                        .map(|()| e),
+                    None => None,
+                };
+                (Some(info), effort)
             }
-            None => None,
+            // 194 D4d: "Same as new sessions" clears the effort too.
+            None => (None, None),
         };
+        if effort != self.cfg.theuth_effort {
+            self.store_theuth_effort(effort);
+        }
         self.set_theuth_model(info.as_ref().map(|i| i.id.clone()))
             .await;
         Ok(info)
+    }
+}
+
+impl Message<TheuthEffort> for Roster {
+    type Reply = Option<String>;
+
+    async fn handle(&mut self, _: TheuthEffort, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.cfg.theuth_effort.clone()
+    }
+}
+
+impl Message<SetTheuthEffort> for Roster {
+    type Reply = Result<Option<String>, String>;
+
+    /// 194 D4b: validate against theuth's effective model, then store and
+    /// refresh theuth (its file and open desk).
+    async fn handle(
+        &mut self,
+        m: SetTheuthEffort,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        if let Some(e) = &m.effort {
+            let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+                .ok()
+                .flatten()
+                .ok_or_else(|| "agent actor not running".to_owned())?;
+            let model = effective_model(&agents, self.cfg.theuth_model.clone()).await;
+            agents
+                .ask(agent::ValidateEffort {
+                    model,
+                    effort: e.clone(),
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        self.store_theuth_effort(m.effort.clone());
+        self.refresh_theuth().await;
+        Ok(m.effort)
     }
 }
 
@@ -3939,6 +4042,121 @@ mod tests {
                 .remove(agent::AGENT_ACTOR);
             let _ = std::fs::remove_dir_all(&data);
         });
+    }
+
+    /// 194 rows 4–5, on a live engine: `SetTheuthEffort` is checked against theuth's
+    /// effective model (D4b), persisted to `roster.theuth_effort` (D4g), carried by
+    /// the synthesised file and put on its open desk at once (D4e/f; the desk's
+    /// children follow through `SetDeskModel`, agent tests); `SetTheuthModel` drops
+    /// an effort the new model does not take (D4c) and `None` clears it (D4d).
+    #[test]
+    fn theuth_effort_is_validated_persisted_and_reaches_its_desk() {
+        with_engine_lock(async {
+            let data = tmp("theuth-effort");
+            std::fs::write(
+                data.join("models.json"),
+                r#"{"testvis":{"id":"testvis","name":"Test","models":{
+                    "think":{"id":"think","name":"think","limit":{"context":100000,"output":4096},
+                             "reasoning_options":[{"type":"effort","values":["low","high"]}]},
+                    "blind":{"id":"blind","name":"blind","limit":{"context":100000,"output":4096}}}}}"#,
+            )
+            .unwrap();
+            let read = |data: &std::path::Path| -> RosterConfig {
+                use figment::providers::Format;
+                figment::Figment::new()
+                    .merge(figment::providers::Yaml::file(data.join("config.yaml")))
+                    .extract_inner("roster")
+                    .unwrap()
+            };
+            let rt = Runtime::new(figment::Figment::new(), data.clone());
+            let agents = agent::spawn_test_agents(rt.clone(), |_: &str| true)
+                .await
+                .unwrap();
+            set_default(&agents, "testvis/think").await;
+            let mut r = roster_on(rt.clone(), &data).await;
+            let theuth = r.desk_or_open("theuth").await.unwrap();
+            let actor = Roster::spawn(r);
+            let effort = |e: Option<&str>| SetTheuthEffort {
+                effort: e.map(Into::into),
+            };
+            let model = |m: Option<&str>| SetTheuthModel {
+                model: m.map(Into::into),
+            };
+            let desk_effort = async || {
+                agents
+                    .ask(agent::ListSessions)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|s| s.id == theuth)
+                    .and_then(|s| s.effort)
+            };
+
+            // D4b against the default model (theuth has none of its own).
+            let err = actor
+                .ask(effort(Some("bogus")))
+                .await
+                .unwrap_err()
+                .to_string();
+            assert_eq!(err, "think accepts off|low|high");
+            let yaml = std::fs::read_to_string(data.join("config.yaml")).unwrap_or_default();
+            assert!(
+                !yaml.contains("theuth_effort"),
+                "a refused effort writes nothing: {yaml}"
+            );
+            assert_eq!(
+                actor.ask(effort(Some("high"))).await.unwrap().as_deref(),
+                Some("high")
+            );
+            assert_eq!(
+                actor.ask(TheuthEffort).await.unwrap().as_deref(),
+                Some("high")
+            );
+            assert_eq!(read(&data).theuth_effort.as_deref(), Some("high"));
+            let listed = actor.ask(ListAgents).await.unwrap();
+            assert!(listed[0].file.name.is_default());
+            assert_eq!(listed[0].file.effort.as_deref(), Some("high"));
+            assert_eq!(desk_effort().await.as_deref(), Some("high"));
+
+            // D4c: a model without efforts drops it; that model then refuses one.
+            actor.ask(model(Some("testvis/blind"))).await.unwrap();
+            assert_eq!(actor.ask(TheuthEffort).await.unwrap(), None);
+            assert_eq!(read(&data).theuth_effort, None);
+            assert_eq!(desk_effort().await, None);
+            assert!(actor.ask(effort(Some("low"))).await.is_err());
+
+            // D4d: "Same as new sessions" clears it, and the desk goes back on agent.effort.
+            actor.ask(model(Some("testvis/think"))).await.unwrap();
+            actor.ask(effort(Some("low"))).await.unwrap();
+            assert_eq!(desk_effort().await.as_deref(), Some("low"));
+            actor.ask(model(None)).await.unwrap();
+            assert_eq!(actor.ask(TheuthEffort).await.unwrap(), None);
+            assert_eq!(read(&data).theuth_effort, None);
+            assert_eq!(desk_effort().await, None);
+
+            actor.kill();
+            agents.kill();
+            kameo::registry::ACTOR_REGISTRY
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(agent::AGENT_ACTOR);
+            let _ = std::fs::remove_dir_all(&data);
+        });
+    }
+
+    /// 194: a `roster:` section written before `theuth_effort` existed still loads;
+    /// the absent key is the default (same as new sessions).
+    #[test]
+    fn a_roster_section_without_theuth_effort_still_loads() {
+        use figment::providers::Format;
+        let c: RosterConfig = figment::Figment::new()
+            .merge(figment::providers::Yaml::string(
+                "roster:\n  theuth_model: testvis/think\n  max_rounds: 2\n",
+            ))
+            .extract_inner("roster")
+            .unwrap();
+        assert_eq!(c.theuth_model.as_deref(), Some("testvis/think"));
+        assert_eq!((c.max_rounds, c.theuth_effort), (2, None));
     }
 
     /// 67 decision 5: with no `agents/*.md` nothing wants a desk — theuth's is

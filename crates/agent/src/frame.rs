@@ -387,7 +387,7 @@ pub fn strip_reasoning(m: &mut ChatMessage) {
 /// `identity` verbatim in their place (70 DESK-PROTOCOL: the desk is that
 /// agent, not theuth; `prompt.md` is theuth's charter only), then the
 /// working-directory/date line (with the user's preferred `subagent_model`
-/// when set), `always` skill bodies, skills index, `peer_line` verbatim,
+/// and `subagent_effort` when set), `always` skill bodies, skills index, `peer_line` verbatim,
 /// `plugin_blocks` (registered `RegisterPrompt` texts, already joined and
 /// filtered for the audience by the caller), static guidance (its "report
 /// visually" sentence only when `attended`). Empty parts skipped, one blank
@@ -402,6 +402,7 @@ pub fn baseline(
     plugin_blocks: &str,
     claude_code: bool,
     subagent_model: Option<&str>,
+    subagent_effort: Option<&str>,
     attended: bool,
     advised: bool,
     consult: bool,
@@ -413,6 +414,7 @@ pub fn baseline(
         plugin_blocks,
         claude_code,
         subagent_model,
+        subagent_effort,
         attended,
         advised,
         consult,
@@ -434,6 +436,7 @@ pub fn baseline_dated(
     plugin_blocks: &str,
     claude_code: bool,
     subagent_model: Option<&str>,
+    subagent_effort: Option<&str>,
     attended: bool,
     advised: bool,
     consult: bool,
@@ -462,11 +465,21 @@ pub fn baseline_dated(
             chrono::Local::now().format("%Y-%m-%d")
         ));
     }
-    if let Some(m) = subagent_model {
-        header.push_str(&format!(
+    // 194 D4h: the effort joins the model's line; with no effort the line is unchanged.
+    match (subagent_model, subagent_effort) {
+        (Some(m), None) => header.push_str(&format!(
             "\nSubagent default model: {m} (the user's setting; spawn_subagent uses it when you omit `model` - pass \
              `model` only when the user asks for a specific model)"
-        ));
+        )),
+        (Some(m), Some(e)) => header.push_str(&format!(
+            "\nSubagent default model: {m}, effort {e} (the user's setting; spawn_subagent uses them when you omit \
+             `model`/`effort` - pass them only when the user asks for a specific one)"
+        )),
+        (None, Some(e)) => header.push_str(&format!(
+            "\nSubagent default effort: {e} (the user's setting; spawn_subagent uses it when you omit `effort` - pass \
+             `effort` only when the user asks for a specific one)"
+        )),
+        (None, None) => {}
     }
     let skills_dir = skills::dir(data_dir);
     let skills = skills::index(&skills_dir);
@@ -566,6 +579,7 @@ mod tests {
             "PLUGIN-BLOCK",
             false,
             None,
+            None,
             true,
             false,
             false,
@@ -590,6 +604,54 @@ mod tests {
         }
         let machine = &platform::process::machine().name;
         assert!(machine.is_empty() || !p.contains(machine.as_str()), "{p}");
+    }
+
+    /// 194 D4h: with no subagent effort the line is today's, byte for byte; with one
+    /// it names the effort beside the model; an effort alone gets its own line.
+    #[test]
+    fn the_subagent_line_names_the_effort_only_when_set() {
+        let dir = crate::TestDir::new("subagent-line");
+        let line = |m: Option<&str>, e: Option<&str>| {
+            baseline_dated(
+                &dir.0,
+                None,
+                "",
+                "",
+                false,
+                m,
+                e,
+                true,
+                false,
+                false,
+                false,
+                Path::new("/w"),
+            )
+            .lines()
+            .find(|l| l.starts_with("Subagent default"))
+            .map(str::to_owned)
+        };
+        assert_eq!(
+            line(Some("a/b"), None).as_deref(),
+            Some(
+                "Subagent default model: a/b (the user's setting; spawn_subagent uses it when you omit `model` - \
+                 pass `model` only when the user asks for a specific model)"
+            )
+        );
+        assert_eq!(
+            line(Some("a/b"), Some("high")).as_deref(),
+            Some(
+                "Subagent default model: a/b, effort high (the user's setting; spawn_subagent uses them when you \
+                 omit `model`/`effort` - pass them only when the user asks for a specific one)"
+            )
+        );
+        assert_eq!(
+            line(None, Some("high")).as_deref(),
+            Some(
+                "Subagent default effort: high (the user's setting; spawn_subagent uses it when you omit `effort` - \
+                 pass `effort` only when the user asks for a specific one)"
+            )
+        );
+        assert_eq!(line(None, None), None);
     }
 
     const ALL: [Transport; 3] = [
@@ -1028,6 +1090,7 @@ mod tests {
             &blocks(true),
             false,
             None,
+            None,
             true,
             false,
             false,
@@ -1038,6 +1101,7 @@ mod tests {
             "",
             &blocks(false),
             false,
+            None,
             None,
             false,
             false,
@@ -1075,6 +1139,7 @@ mod tests {
             "## Tools\nT",
             false,
             None,
+            None,
             true,
             false,
             false,
@@ -1086,6 +1151,7 @@ mod tests {
             "## Tools\nT",
             false,
             None,
+            None,
             false,
             false,
             false,
@@ -1096,6 +1162,7 @@ mod tests {
             "",
             "## Tools\nT",
             false,
+            None,
             None,
             false,
             false,
@@ -1143,6 +1210,7 @@ mod tests {
             "## Tools\nT",
             false,
             None,
+            None,
             false,
             false,
             false,
@@ -1172,6 +1240,7 @@ mod tests {
             "## Tools\nT",
             false,
             None,
+            None,
             false,
             true,
             false,
@@ -1197,6 +1266,7 @@ mod tests {
             "",
             "## Tools\nT",
             false,
+            None,
             None,
             false,
             true,
