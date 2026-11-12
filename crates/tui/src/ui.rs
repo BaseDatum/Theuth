@@ -1842,7 +1842,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<cr
             };
             let v = text.view();
             // 183: an outside agent's words are plain text: no Markdown, no OSC 8 links, no control characters.
-            let outside = crate::model::outside_card(*kind, title).then(|| crate::model::clean(text.raw()));
+            let outside = (kind.plain() || crate::model::outside_card(*kind, title)).then(|| crate::model::clean(text.raw()));
             let lines = outside.as_ref().map_or_else(|| v.lines().count(), |t| t.lines().count());
             let glyph = kind.glyph();
             let header = if *expanded {

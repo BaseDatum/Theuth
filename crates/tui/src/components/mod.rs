@@ -470,10 +470,21 @@ pub struct TranscriptCard {
     pub color: iocraft::Color,
     /// Card title.
     pub title: String,
-    /// Markdown body.
-    pub body: String,
+    /// Owned rendered body; its width/fence options survive the core append unchanged.
+    pub body: markdown::Text,
     /// Initial disclosure state.
     pub expanded: bool,
+    /// Render literal cleaned text, without Markdown or terminal hyperlinks.
+    pub plain: bool,
+}
+impl From<TranscriptCard> for crate::model::Entry {
+    fn from(card: TranscriptCard) -> Self {
+        Self::Card {
+            kind: crate::model::CardKind::Component { group: card.group, key: card.key,
+                glyph: card.glyph, color: card.color, plain: card.plain },
+            title: card.title, text: Box::new(card.body), expanded: card.expanded,
+        }
+    }
 }
 /// Core-only presentation operations, applied after registry borrows end.
 pub enum CoreAction {
@@ -505,6 +516,8 @@ pub enum CoreAction {
     },
 
     // Step-11 group t1 CoreAction variants: add below, in this block only.
+    /// Insert an owner-rendered card above a still-streaming tail without splitting it.
+    InterjectCard(TranscriptCard),
 
     // Step-11 group t2 CoreAction variants: add below, in this block only.
 
