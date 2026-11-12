@@ -1486,6 +1486,8 @@ impl Schedule {
                         tracing::debug!(%name, "runtime reset before fire: {e}");
                     }
                 }
+                // 194 D4e/f: a reused session runs on today's `model:`/`effort:` pair.
+                apply_pick(&agents, name, s, (model, effort)).await;
                 s
             }
             None => {
@@ -2145,6 +2147,49 @@ async fn new_session(
         tracing::warn!(%name, "effort not set: {e}");
     }
     Ok(s)
+}
+
+/// 194 D4e/f: before a fire of a reused session, put it on what a fresh run session gets —
+/// the routine's `model:` else the engine default, then its `effort:` else `agent.effort`
+/// (D4a) — through the user's `SetModel`/`SetEffort`, model first so the pair is never
+/// incompatible. An inherited effort the model does not take is dropped, as `SetModel` drops
+/// it on a new session.
+async fn apply_pick(
+    agents: &ActorRef<agent::Agents>,
+    name: &str,
+    session: SessionId,
+    (model, effort): (Option<String>, Option<String>),
+) {
+    let model = match model {
+        Some(m) => m,
+        None => agents.ask(agent::GetDefaultModel).await.unwrap_or_default(),
+    };
+    if !model.is_empty()
+        && let Err(e) = agents
+            .ask(agent::SetModel {
+                session: Some(session),
+                model,
+                manual: false,
+            })
+            .await
+    {
+        tracing::warn!(%name, "model not set: {e}");
+    }
+    let effort = match effort {
+        Some(e) => Some(e),
+        None => agents.ask(agent::GetDefaultEffort).await.ok().flatten(),
+    };
+    let set = |effort| agent::SetEffort {
+        session: Some(session),
+        effort,
+        manual: false,
+    };
+    if let Err(e) = agents.ask(set(effort)).await {
+        tracing::warn!(%name, "effort not set: {e}");
+        if let Err(e) = agents.ask(set(None)).await {
+            tracing::warn!(%name, "effort not cleared: {e}");
+        }
+    }
 }
 
 /// Cancel `session` after its live subtree (33 §3.4: the subtree goes with the run).
@@ -3070,9 +3115,8 @@ impl Message<Put> for Schedule {
         let old = self.entries.get(&name).and_then(|e| e.spec.as_ref().ok());
         let changed = old.is_some_and(|s| s.model.as_deref() != model);
         let info = agent::lifecycle::effort_model(model).await;
-        f.effort =
-            agent::lifecycle::settle_effort(model, info.as_ref(), f.effort.as_deref(), changed)
-                .map_err(|e| format!("effort: {e}"))?;
+        f.effort = agent::lifecycle::settle_effort(model, &info, f.effort.as_deref(), changed)
+            .map_err(|e| format!("effort: {e}"))?;
         let text = file::render(&f.args());
         file::parse(&name, &text)?;
         file::write_atomic(&self.dir, &name, &text).map_err(|e| e.to_string())?;
@@ -3837,53 +3881,125 @@ mod fire_tests {
         assert_eq!(effort_of(s).await, ("testp/thinker".to_owned(), None));
     }
 
-    /// 194 D4b/D4c against the catalog: the model's own levels pass, anything else is refused
-    /// with `validate_effort`'s message, or dropped when the model changed.
+    /// 194 every fire (R1): a reused routine session is put on the file's current pair before
+    /// each fire — `effort:` set, then cleared (back to `agent.effort`), then a `model:` change
+    /// and a cleared `model:` — exactly what a fresh run session gets; `rescan` keeps the session.
+    #[tokio::test]
+    async fn every_fire_applies_the_routines_model_and_effort() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = effort_engine(dir.path()).await;
+        let default = |model: &str| agent::SetModel {
+            session: None,
+            model: model.into(),
+            manual: true,
+        };
+        agents.ask(default("testp/thinker")).await.unwrap();
+        let inherited = agent::SetEffort {
+            session: None,
+            effort: Some("low".into()),
+            manual: true,
+        };
+        agents.ask(inherited).await.unwrap();
+        let state = |s: SessionId| {
+            let agents = agents.clone();
+            async move {
+                let l = agents
+                    .ask(agent::LoadSession {
+                        session: s,
+                        before: None,
+                        limit: Some(1),
+                        settled_only: false,
+                    })
+                    .await
+                    .unwrap();
+                (l.model, l.effort)
+            }
+        };
+        let file = |front: &str| format!("---\nevery: 1h\n{front}---\ngo\n");
+        let first = file("model: testp/thinker\neffort: high\n");
+        let (mut sched, _) = actor(dir.path(), &[("nightly", first.as_str())]).await;
+        let pick = |sched: &Schedule| {
+            let spec = sched.entries["nightly"].spec.as_ref().unwrap();
+            (spec.model.clone(), spec.effort.clone())
+        };
+        let s = new_session(&agents, "nightly", None, pick(&sched), None)
+            .await
+            .unwrap();
+        sched.entries.get_mut("nightly").unwrap().session = Some(s);
+        let thinker = || "testp/thinker".to_owned();
+        assert_eq!(state(s).await, (thinker(), Some("high".into())));
+        let edits = [
+            (
+                file("model: testp/thinker\n"),
+                (thinker(), Some("low".into())),
+            ),
+            (
+                file("model: testp/thinker\neffort: high\n"),
+                (thinker(), Some("high".into())),
+            ),
+            (file("model: testp/plain\n"), ("testp/plain".into(), None)),
+            (file(""), (thinker(), Some("low".into()))),
+        ];
+        for (text, want) in edits {
+            std::fs::write(dir.path().join(DIR).join("nightly.md"), &text).unwrap();
+            sched.rescan(Local::now()).await;
+            assert_eq!(sched.entries["nightly"].session, Some(s), "{text}");
+            apply_pick(&agents, "nightly", s, pick(&sched)).await;
+            assert_eq!(state(s).await, want, "{text}");
+            let fresh = new_session(&agents, "nightly", None, pick(&sched), None)
+                .await
+                .unwrap();
+            assert_eq!(state(fresh).await, want, "a fresh run session: {text}");
+        }
+    }
+
+    /// 194 D4b/D4c against the catalog through `model_meta`, for a provider without credentials
+    /// (R1): the model's own levels pass, anything else is refused with `validate_effort`'s
+    /// message, or dropped when the model changed; a model the catalog does not know takes any
+    /// known word.
     #[tokio::test]
     async fn settle_effort_checks_the_catalog_model() {
         let dir = tempfile::tempdir().unwrap();
         let agents = effort_engine(dir.path()).await;
-        // The catalog row `effort_model` gets from `ResolveModel`; `SetModel` answers the same
-        // `ModelInfo` without the credentials check this keyless test provider would fail.
-        let s = agents
-            .ask(agent::NewSession {
-                cwd: None,
-                unattended: true,
-            })
-            .await
-            .unwrap();
-        let info = |m: &str| {
-            let agents = agents.clone();
-            let model = m.to_owned();
-            async move {
-                let set = agent::SetModel {
-                    session: Some(s),
-                    model,
-                    manual: false,
-                };
-                agents.ask(set).await.ok()
-            }
-        };
+        let keyed = agents.ask(agent::ResolveModel {
+            model: "testp/thinker".into(),
+        });
+        assert!(keyed.await.is_err(), "testp has no credentials");
+        let meta = agent::lifecycle::model_meta;
+        let (thinker, plain) = (
+            meta(&agents, "testp/thinker").await,
+            meta(&agents, "testp/plain").await,
+        );
         let settle = agent::lifecycle::settle_effort;
-        let (thinker, plain) = (info("testp/thinker").await, info("testp/plain").await);
         let m = Some("testp/thinker");
         assert_eq!(
-            settle(m, thinker.as_ref(), Some("high"), false),
+            settle(m, &thinker, Some("high"), false),
             Ok(Some("high".into()))
         );
         assert_eq!(
-            settle(m, thinker.as_ref(), Some("medium"), false),
+            settle(m, &thinker, Some("medium"), false),
             Err("testp/thinker accepts off|low|high".into())
         );
-        assert_eq!(settle(m, thinker.as_ref(), Some("medium"), true), Ok(None));
+        assert_eq!(settle(m, &thinker, Some("medium"), true), Ok(None));
         let p = Some("testp/plain");
         assert_eq!(
-            settle(p, plain.as_ref(), Some("high"), false),
+            settle(p, &plain, Some("high"), false),
             Err("testp/plain accepts no reasoning effort".into())
         );
+        assert_eq!(settle(m, &thinker, Some("default"), false), Ok(None));
+        let unknown = meta(&agents, "thinker").await;
+        assert!(
+            matches!(unknown, Ok(None)),
+            "a bare id under no configured provider"
+        );
+        let u = Some("thinker");
         assert_eq!(
-            settle(m, thinker.as_ref(), Some("default"), false),
-            Ok(None)
+            settle(u, &unknown, Some("medium"), false),
+            Ok(Some("medium".into()))
+        );
+        assert_eq!(
+            settle(u, &Err("ambiguous".into()), Some("high"), false),
+            Err("ambiguous".into())
         );
     }
 

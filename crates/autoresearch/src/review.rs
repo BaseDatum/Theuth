@@ -426,9 +426,7 @@ pub fn parse_ideas(reply: &str) -> Vec<IdeaDraft> {
     out
 }
 
-/// The plateau consult (140 §9.2): five materially different ideas.
-/// `model` None → `advisor.model` (125) at `advisor.effort` when set, else the study session's
-/// model; a picked `model` brings the role's `effort` (194).
+/// The plateau consult (140 §9.2): five materially different ideas, on [`advisor_role`].
 pub async fn advise(
     store: &Store,
     study: &StudyRecord,
@@ -463,20 +461,12 @@ pub async fn advise(
         _ => String::new(),
     };
     let user = advisor_prompt(study, &summarise_diff(&diff, ADVISOR_DIFF), &kept, &dead);
-    let role = match model.map(str::trim).filter(|m| !m.is_empty()) {
-        Some(m) => runtime::ModelRole::NamedWithEffort {
-            model: m.to_owned(),
-            effort: effort.map(str::to_owned),
-        },
-        None => match rt.section::<agent::AdvisorConfig>("advisor").ok() {
-            Some(agent::AdvisorConfig {
-                model: Some(m),
-                effort,
-                ..
-            }) if !m.trim().is_empty() => runtime::ModelRole::NamedWithEffort { model: m, effort },
-            _ => runtime::ModelRole::Session,
-        },
+    // 125: `advisor.model` as the engine holds it now (not the startup config).
+    let advisor = match agents() {
+        Ok(a) => a.ask(agent::GetAdvisorDefaults).await.unwrap_or_default(),
+        Err(_) => agent::AdvisorDefaults::default(),
     };
+    let role = advisor_role(model, effort, &advisor);
     // 159 W7 H8 / R-SEAMS-17: the configured `root:` (as finalize.rs reads it) and the
     // study's pin, so a running study's advisor never switches on Adopt.
     let cfg: crate::config::AutoresearchConfig = rt.section("autoresearch").unwrap_or_default();
@@ -494,6 +484,29 @@ pub async fn advise(
         )));
     }
     Ok(ideas)
+}
+
+/// 194: the consult's model role. A picked `model` brings the role's `effort` (D4e); no pick is
+/// `advisor.model` (125) with no reasoning setting, as before (D4a: `advisor.effort` is the
+/// `/advisor` pick's, never inherited here), else the study session's model.
+fn advisor_role(
+    model: Option<&str>,
+    effort: Option<&str>,
+    advisor: &agent::AdvisorDefaults,
+) -> runtime::ModelRole {
+    let pick = |m: Option<&str>| {
+        m.map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_owned)
+    };
+    match (pick(model), pick(advisor.model.as_deref())) {
+        (Some(model), _) => runtime::ModelRole::NamedWithEffort {
+            model,
+            effort: effort.map(str::to_owned),
+        },
+        (None, Some(m)) => runtime::ModelRole::Named(m),
+        (None, None) => runtime::ModelRole::Session,
+    }
 }
 
 #[cfg(test)]
@@ -681,5 +694,32 @@ not an idea
             .unwrap_err()
             .to_string();
         assert!(err.contains("no bound session"), "{err}");
+    }
+
+    /// 194 D4a (R1): with no autoresearch pick the consult runs on `advisor.model` with no
+    /// reasoning setting, even when `advisor.effort` is set; a pick carries its own effort only.
+    #[test]
+    fn the_advisor_default_sends_no_reasoning() {
+        use runtime::ModelRole;
+        let advisor = agent::AdvisorDefaults {
+            model: Some("a/adv".into()),
+            effort: Some("high".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            advisor_role(None, None, &advisor),
+            ModelRole::Named("a/adv".into())
+        );
+        let picked = |effort: Option<&str>| ModelRole::NamedWithEffort {
+            model: "x/y".into(),
+            effort: effort.map(str::to_owned),
+        };
+        assert_eq!(advisor_role(Some("x/y"), None, &advisor), picked(None));
+        assert_eq!(
+            advisor_role(Some("x/y"), Some("low"), &advisor),
+            picked(Some("low"))
+        );
+        let none = agent::AdvisorDefaults::default();
+        assert_eq!(advisor_role(Some(" "), None, &none), ModelRole::Session);
     }
 }

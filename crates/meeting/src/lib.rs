@@ -858,7 +858,7 @@ impl Message<SetSettings> for Meeting {
         let info = agent::lifecycle::effort_model(m.0.model.as_deref()).await;
         m.0.effort = agent::lifecycle::settle_effort(
             m.0.model.as_deref(),
-            info.as_ref(),
+            &info,
             m.0.effort.as_deref(),
             m.0.model != self.cfg.model,
         )?;
@@ -2443,6 +2443,21 @@ fn session_pick(
     }
 }
 
+/// The meeting session's `create_session` options: its project, the picked `(model, effort)`
+/// ([`session_pick`], 194 D4e) and epochs memory.
+fn session_options(manifest: &Manifest) -> agent::CreateSessionOptions {
+    agent::CreateSessionOptions {
+        // 158 §9.2 W-c: the meeting's project, else the `meetings` pseudo-project.
+        project: manifest.project.clone().or_else(|| Some("meetings".into())),
+        model: manifest.session_model.clone(),
+        effort: manifest.session_effort.clone(),
+        // 137 R1-D6: never the chat default — the meeting's mode is set below with
+        // the meeting filter, so the agent never starts an unfiltered tree here.
+        memory: Some(agent::MemoryMode::Epochs),
+        ..Default::default()
+    }
+}
+
 /// What `start_task` needs from config.
 struct Setup {
     title: String,
@@ -2467,16 +2482,7 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
     };
     let open = agents
         .ask(agent::CreateSession {
-            options: agent::CreateSessionOptions {
-                // 158 §9.2 W-c: the meeting's project, else the `meetings` pseudo-project.
-                project: manifest.project.clone().or_else(|| Some("meetings".into())),
-                model: manifest.session_model.clone(),
-                effort: manifest.session_effort.clone(),
-                // 137 R1-D6: never the chat default — the meeting's mode is set below with
-                // the meeting filter, so the agent never starts an unfiltered tree here.
-                memory: Some(agent::MemoryMode::Epochs),
-                ..Default::default()
-            },
+            options: session_options(&manifest),
             peer: None,
         })
         .await;
@@ -5584,8 +5590,9 @@ mod tests {
 
     /// 194 D4a/d/e: the start's model brings the start's effort into `create_session`;
     /// without a start model, `meeting.model` brings `meeting.effort`; neither is `agent.*`.
-    #[test]
-    fn the_session_starts_on_the_picked_effort() {
+    /// R1: the session the meeting's own options create starts on that pair.
+    #[tokio::test]
+    async fn the_session_starts_on_the_picked_effort() {
         let cfg = MeetingConfig {
             model: Some("cfg/m".into()),
             effort: Some("low".into()),
@@ -5603,6 +5610,39 @@ mod tests {
         assert_eq!(pick(None, Some("high")), ("cfg/m".into(), "low".into()));
         let bare = session_pick(None, None, &MeetingConfig::default());
         assert_eq!(bare, (None, None), "today: agent.model at agent.effort");
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("models.json"),
+            r#"{"testp":{"id":"testp","name":"T","models":{
+                "thinker":{"id":"thinker","name":"thinker","limit":{"context":100000,"output":4096},
+                    "reasoning":true,"reasoning_options":[{"type":"effort","values":["low","high"]}]}}}}"#,
+        )
+        .unwrap();
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let agents = agent::spawn_engine_agents(rt, Default::default()).await;
+        let mut manifest =
+            Manifest::new(MeetingId::new(), zoom(), "2026-10-10T10:00:00+02:00".into());
+        let start = (Some("testp/thinker".into()), Some("high".into()));
+        (manifest.session_model, manifest.session_effort) = session_pick(start.0, start.1, &cfg);
+        let open = agents
+            .ask(agent::CreateSession {
+                options: session_options(&manifest),
+                peer: None,
+            })
+            .await
+            .unwrap();
+        let l = agents
+            .ask(agent::LoadSession {
+                session: open.session,
+                before: None,
+                limit: Some(1),
+                settled_only: false,
+            })
+            .await
+            .unwrap();
+        let want = ("testp/thinker".to_owned(), Some("high".to_owned()));
+        assert_eq!((l.model, l.effort), want);
     }
 
     /// 158 D13: a manifest the last run left `Recording` with a track on disk is `Stopping`

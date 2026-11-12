@@ -320,9 +320,9 @@ impl ResearchApiServer for Server {
     ) -> RpcResult<autoresearch::AutoresearchConfig> {
         match autoresearch::rpc_impl::set_settings(config.clone()).await {
             Err(e) if e.ends_with("is not running") => {
-                autoresearch::config::persist(&self.rt.data_dir.join("config.yaml"), &config)
-                    .map_err(|e| dreaming_err(format!("config.yaml: {e}")))?;
-                Ok(config)
+                autoresearch::config::set_unloaded(&self.rt.data_dir, config)
+                    .await
+                    .map_err(dreaming_err)
             }
             r => r.map_err(dreaming_err),
         }
