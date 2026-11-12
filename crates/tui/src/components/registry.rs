@@ -39,6 +39,7 @@ pub struct Registry {
     slots: Vec<Slot>,
     by_topic: HashMap<&'static str, Vec<ComponentToken>>,
     by_slash: HashMap<&'static str, ComponentToken>,
+    by_wrapper: HashMap<&'static str, ComponentToken>,
     focus: Option<(ComponentToken, FocusClass)>,
     epoch: u64,
     interactive: bool,
@@ -63,7 +64,7 @@ impl Registry {
     pub fn interactive(&self) -> bool { self.interactive }
     /// Empty shell for fixed composition and isolated contract consumers.
     pub fn empty() -> Self {
-        Self { slots: Vec::new(), by_topic: HashMap::new(), by_slash: HashMap::new(), focus: None, epoch: 0, interactive: true }
+        Self { slots: Vec::new(), by_topic: HashMap::new(), by_slash: HashMap::new(), by_wrapper: HashMap::new(), focus: None, epoch: 0, interactive: true }
     }
     /// Reject duplicate ids, reserved slash/aliases and equal-class key chords.
     pub fn register<C: Component>(&mut self, component: C) -> Result<ComponentToken, &'static str> {
@@ -83,6 +84,12 @@ impl Registry {
                 || declaration.slash[..index].iter().any(|old| old.0 == slash.0)
             { return Err("duplicate or reserved slash command"); }
         }
+        let tags = component.wrapper_tags();
+        for (index, tag) in tags.iter().enumerate() {
+            if self.by_wrapper.contains_key(tag) || tags[..index].contains(tag) {
+                return Err("duplicate wrapper tag");
+            }
+        }
         for (index, binding) in declaration.bindings.iter().enumerate() {
             if declaration.bindings[..index].iter().any(|old|
                 old.class == binding.class && old.code == binding.code && old.modifiers == binding.modifiers
@@ -94,6 +101,7 @@ impl Registry {
             if !recipients.contains(&token) { recipients.push(token); }
         }
         for slash in declaration.slash { self.by_slash.insert(slash.0, token); }
+        for &tag in tags { self.by_wrapper.insert(tag, token); }
         self.slots.push(Slot { generation: 0, component: Some(Box::new(Mounted(component))) });
         Ok(token)
     }
@@ -105,7 +113,13 @@ impl Registry {
         slot.generation = slot.generation.wrapping_add(1);
         self.by_topic.retain(|_, tokens| { tokens.retain(|to| *to != token); !tokens.is_empty() });
         self.by_slash.retain(|_, to| *to != token);
+        self.by_wrapper.retain(|_, owner| *owner != token);
         if self.focus.is_some_and(|(owner, _)| owner == token) { self.focus = None; }
+    }
+    /// Project by the sole registered protocol-tag owner; an unowned row keeps core rendering.
+    pub fn wrapper(&self, row: Wrapper<'_>) -> Option<WrapperView> {
+        let token = self.by_wrapper.get(row.tag)?;
+        Some(self.slots[token.slot].component.as_ref()?.wrapper(row))
     }
     fn lose_focus(&mut self, core: &CoreView<'_>, out: &mut Outbox) {
         if let Some((token, _)) = self.focus.take()

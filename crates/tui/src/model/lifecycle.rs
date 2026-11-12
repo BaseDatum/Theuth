@@ -57,7 +57,7 @@ impl Model {
         self.entries = loaded
             .history
             .into_iter()
-            .flat_map(|h| from_history(h, &opts))
+            .flat_map(|h| from_history(h, &opts, &self.components))
             .collect();
         self.refresh_artifacts = self
             .entries

@@ -13,7 +13,7 @@ impl Model {
         let (residual, out) = match event {
             UiEvent::Wire(event) => {
                 let residual = crate::topics::residual(&event);
-                let core = CoreView { session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(),
+                let core = CoreView { prompt: self.prompt_id(), session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(),
                 inspecting: self.inspect.is_some(), streaming: self.streaming,
                 reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })),
                 agent: match &residual { Some(UiEvent::Agent(event)) => Some(event), _ => None }, entries: &self.entries };
@@ -22,7 +22,7 @@ impl Model {
                 (residual, out)
             }
             UiEvent::Component(reply) => {
-                let core = CoreView { session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+                let core = CoreView { prompt: self.prompt_id(), session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
                 (None, self.components.reply(reply, &core))
             }
             event => {
@@ -73,10 +73,8 @@ impl Model {
                     }
                 }
                 CoreAction::Reject(text) => self.entries.push(Entry::Error(text)),
-                CoreAction::AppendCard(card) => self.entries.push(Entry::Card {
-                    kind: CardKind::Component { group: card.group, key: card.key, glyph: card.glyph, color: card.color },
-                    title: card.title, text: Box::new(markdown::Text::complete(&card.body)), expanded: card.expanded,
-                }),
+                CoreAction::AppendCard(card) => self.entries.push(card.into()),
+                CoreAction::InterjectCard(card) => self.interject(card.into()),
                 CoreAction::ReplaceCard { group, key, body } => {
                     if let Some(Entry::Card { kind: CardKind::Component { key: current, .. }, text, .. }) =
                         self.entries.iter_mut().rev().find(|entry| matches!(entry,
@@ -91,7 +89,7 @@ impl Model {
     }
 
     fn component_lifecycle(&mut self, event: Lifecycle<'_>) -> Outbox {
-        let core = CoreView { session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+        let core = CoreView { prompt: self.prompt_id(), session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         self.components.lifecycle(event, &core)
     }
     pub(crate) fn component_notify(&mut self, event: Lifecycle<'_>) {
@@ -103,7 +101,7 @@ impl Model {
         if self.components.focused()
             && (self.prompt.is_some() || self.menu.as_ref().is_some_and(|menu| !matches!(menu, Menu::Slash { .. })))
         {
-            let core = CoreView { session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+            let core = CoreView { prompt: self.prompt_id(), session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
             let out = self.components.release_focus(&core);
             self.component_finish(out, &mut |_| {});
         }
@@ -117,14 +115,14 @@ impl Model {
     }
     pub(crate) fn component_tick_with(&mut self, now_ms: u64, emit: &mut impl FnMut(Output<'_>)) {
         self.component_reconcile_core_focus();
-        let core = CoreView { session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+        let core = CoreView { prompt: self.prompt_id(), session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let out = self.components.tick(now_ms, self.frame, &core);
         for plain in &out.plain { emit(Output::Plain(plain)); }
         self.component_finish(out, emit);
     }
     pub(crate) fn component_key(&mut self, class: FocusClass, key: &iocraft::KeyEvent) -> bool {
         self.component_reconcile_core_focus();
-        let core = CoreView { session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+        let core = CoreView { prompt: self.prompt_id(), session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let out = self.components.key(class, key, &core);
         let consumed = out.consumed();
         self.component_finish(out, &mut |_| {});
@@ -132,7 +130,7 @@ impl Model {
     }
     pub(crate) fn component_paste(&mut self, text: &str, caret: usize) -> bool {
         self.component_reconcile_core_focus();
-        let core = CoreView { session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+        let core = CoreView { prompt: self.prompt_id(), session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let out = self.components.paste(text, caret, &core);
         let consumed = out.consumed();
         self.component_finish(out, &mut |_| {});
@@ -140,14 +138,14 @@ impl Model {
     }
     pub(crate) fn component_submit(&mut self, text: &str) -> bool {
         self.component_reconcile_core_focus();
-        let core = CoreView { session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+        let core = CoreView { prompt: self.prompt_id(), session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let out = self.components.submit(text, &core);
         let consumed = out.consumed();
         self.component_finish(out, &mut |_| {});
         consumed
     }
     pub(super) fn component_slash(&mut self, name: &str, args: &str) -> bool {
-        let core = CoreView { session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+        let core = CoreView { prompt: self.prompt_id(), session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let Some(out) = self.components.slash(name, args, &core) else { return false };
         self.component_finish(out, &mut |_| {});
         true
@@ -155,7 +153,7 @@ impl Model {
     /// Dispatch the existing entry operation with a stable identity, without copying it.
     pub(crate) fn component_entry_action(&mut self, index: usize, operation: crate::components::EntryOperation) -> bool {
         let Some(key) = self.entries.get(index).and_then(Entry::key) else { return false };
-        let core = CoreView { session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+        let core = CoreView { prompt: self.prompt_id(), session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let out = self.components.entry_action(key, operation, &core);
         let consumed = out.consumed();
         self.component_finish(out, &mut |_| {});
@@ -175,7 +173,7 @@ impl Model {
     }
     pub(crate) fn component_views(&self, surface: Surface<'_>, width: usize, height: usize) -> Vec<View> {
         let cx = ViewCx {
-            core: CoreView { session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries },
+            core: CoreView { prompt: self.prompt_id(), session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries },
             width, height, frame: self.frame,
             commands: self.component_commands.as_ref(), endpoint: None,
         };
@@ -183,7 +181,7 @@ impl Model {
     }
     pub(crate) fn component_text(&self, surface: Surface<'_>) -> String {
         let cx = ViewCx {
-            core: CoreView { session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries },
+            core: CoreView { prompt: self.prompt_id(), session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries },
             width: self.width, height: 0, frame: self.frame,
             commands: self.component_commands.as_ref(), endpoint: None,
         };
@@ -358,6 +356,59 @@ impl crate::components::SessionMembers for HashMap<SessionId, AgentRow> {
     }
 }
 
+#[test]
+fn component_cards_interject_without_rebuilding_rendered_text_or_splitting_stream() {
+    use crate::components::{Component, Declaration, Input, Cx, TranscriptCard, LocalReply};
+    use std::sync::Arc;
+    struct Cards;
+    impl Component for Cards {
+        type Msg = CoreAction;
+        fn declaration(&self) -> Declaration {
+            Declaration { id: "rendered-cards", interests: &[], slash: &[], bindings: &[] }
+        }
+        fn decode(&self, _: &TopicEvent, _: &CoreView<'_>) -> Option<CoreAction> { None }
+        fn update(&mut self, input: Input<'_, CoreAction>, cx: &mut Cx<'_, '_, CoreAction>) {
+            if let Input::Message(action) = input { cx.core(action); }
+        }
+        fn view(&self, _: Surface<'_>, _: &ViewCx<'_>) -> Option<View> { None }
+    }
+    let mut model = Model::default();
+    let session = SessionId::new();
+    let turn = runtime::TurnId::new();
+    model.session = Some(session);
+    model.streaming = true;
+    model.apply(crate::model::UiEvent::Agent(agent::AgentEvent::TextDelta { session, turn, text: "before ".into() }));
+    let token = model.components.register(Cards).unwrap();
+    let mut body = markdown::Text::with(markdown::Options {
+        width: 31,
+        fence: Some(Arc::new(|_, _, width| Some(vec![vec![markdown::Span {
+            text: format!("diagram@{width}"), style: markdown::Style::default(),
+        }]]))),
+    });
+    body.push("```diagram\nsource\n```\n");
+    body.finish();
+    body.reveal_all();
+    model.apply(crate::model::UiEvent::Component(LocalReply {
+        to: token, engine_epoch: 0,
+        body: Box::new(CoreAction::InterjectCard(TranscriptCard {
+            group: "test", key: uuid::Uuid::new_v4(), glyph: "▣", color: iocraft::Color::Cyan,
+            title: "rendered".into(), body, expanded: true, plain: false,
+        })),
+    }));
+    model.apply(crate::model::UiEvent::Agent(agent::AgentEvent::TextDelta { session, turn, text: "after".into() }));
+    let Entry::Card { text, .. } = &model.entries[0] else { panic!("interjected card") };
+    let rendered: String = text.view().lines().flat_map(|line| line.iter().map(|span| span.text.as_str())).collect();
+    assert_eq!(rendered, "diagram@31");
+    assert!(matches!(&model.entries[1], Entry::Assistant(text) if text.raw() == "before after" && !text.is_done()));
+    assert_eq!(model.entries.len(), 2);
+    let literal: Entry = TranscriptCard {
+        group: "literal", key: uuid::Uuid::new_v4(), glyph: "⟵", color: iocraft::Color::Cyan,
+        title: "remote".into(), body: markdown::Text::complete("**now**\n# head\nmore"),
+        expanded: true, plain: true,
+    }.into();
+    assert_eq!(literal.height(80), 7);
+}
+
 #[cfg(test)]
 #[test]
 fn owner_plain_claim_prints_once_without_skipping_core_tail_bookkeeping() {
@@ -399,4 +450,50 @@ fn owner_plain_claim_prints_once_without_skipping_core_tail_bookkeeping() {
     assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[0m\nknowledge +2 ~3\n");
     assert!(matches!(model.entries[0], Entry::Reasoning { done: true, .. }));
     assert!(model.streaming, "harvesting is detached from turn completion");
+}
+
+#[test]
+fn wrapper_projection_is_tag_owned_and_shared_by_history_and_live_rows() {
+    use crate::components::{Component, Declaration, Input, Cx, Registry, Wrapper, WrapperView};
+    struct Projector(&'static str);
+    impl Component for Projector {
+        type Msg = ();
+        fn declaration(&self) -> Declaration { Declaration { id: self.0, interests: &[], slash: &[], bindings: &[] } }
+        fn decode(&self, _: &TopicEvent, _: &CoreView<'_>) -> Option<()> { None }
+        fn update(&mut self, _: Input<'_, ()>, _: &mut Cx<'_, '_, ()>) {}
+        fn view(&self, _: Surface<'_>, _: &ViewCx<'_>) -> Option<View> { None }
+        fn wrapper_tags(&self) -> &'static [&'static str] { &["message", "user"] }
+        fn wrapper(&self, row: Wrapper<'_>) -> WrapperView {
+            if row.tag == "user" && row.origin.is_none() { return WrapperView::Fallback }
+            if row.body == "duplicate" { return WrapperView::Hidden }
+            let from = row.origin.map(|origin| origin.from).or(row.sender)
+                .or_else(|| transcript::attr(row.open, "from=\"")).unwrap();
+            WrapperView::Card {
+                kind: CardKind::Component { group: "projection", key: Uuid::nil(), glyph: "⟵", color: iocraft::Color::Cyan, plain: false },
+                title: format!("owner:{from}"), body: row.body.to_owned(),
+            }
+        }
+    }
+    let mut model = Model::default();
+    model.components = Registry::empty();
+    let token = model.components.register(Projector("projection")).unwrap();
+    assert_eq!(model.components.register(Projector("ambiguous")), Err("duplicate wrapper tag"));
+    let parsed = injected("<message from=\"parsed\">\none\n</message>\n<message from=\"parsed\">\nduplicate\n</message>\n<job_idle id=\"j4\" quiet=\"5\">\nscreen\n</job_idle>", |row| model.components.wrapper(row)).unwrap();
+    assert_eq!(parsed.iter().map(|(_, title, body)| (title.as_str(), body.as_str())).collect::<Vec<_>>(),
+        [("owner:parsed", "one"), ("j4 idle 5s", "screen")]);
+    let history = from_history(HistoryEntry::User {
+        text: "history body".into(), turn: Some(1), context: None, vision: None, channel: None,
+        peer: Some(PeerOrigin { id: Uuid::nil(), from: "history".into(), reply_to: None, scope: None, contact_mode: None }),
+    }, &markdown::Options::default(), &model.components);
+    assert!(matches!(&history[0], Entry::Card { title, text, .. } if title == "owner:history" && text.raw() == "history body"));
+    let session = SessionId::new();
+    model.session = Some(session);
+    model.streaming = true;
+    model.apply(UiEvent::Agent(AgentEvent::TextDelta { session, turn: runtime::TurnId::new(), text: "streaming".into() }));
+    model.apply(UiEvent::Agent(AgentEvent::MessageDelivered { session, from: "live".into(), text: "live body".into() }));
+    assert!(matches!(&model.entries[0], Entry::Card { title, text, .. } if title == "owner:live" && text.raw() == "live body"));
+    assert!(matches!(&model.entries[1], Entry::Assistant(text) if text.raw() == "streaming" && !text.is_done()));
+    model.components.unmount(token);
+    let fallback = injected("<message from=\"unowned\">\noriginal\n</message>", |row| model.components.wrapper(row)).unwrap();
+    assert_eq!((fallback[0].1.as_str(), fallback[0].2.as_str()), ("unowned", "original"));
 }

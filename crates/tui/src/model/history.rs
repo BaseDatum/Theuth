@@ -1,4 +1,5 @@
 use super::*;
+use crate::components::{Registry, Wrapper, WrapperOrigin, WrapperView};
 
 /// A wire context revision (decimal string, 48 §3.1) as a number; `0` when
 /// missing, so an unloaded transcript is older than any loaded one.
@@ -10,7 +11,7 @@ pub(super) fn revision(s: &str) -> u64 {
 /// collapsed `◇ name` card plus the user's words; an injected turn holding
 /// several peer messages becomes one card each; anything else is `you`,
 /// stamped with `turn` when the input opened one.
-pub(super) fn user_entries(text: String, turn: Option<i64>) -> Vec<Entry> {
+pub(super) fn user_entries(text: String, turn: Option<i64>, registry: &Registry) -> Vec<Entry> {
     // 152 D6: an endless parent's view leads a native child's opener (137 R1-D1); the brief follows it.
     if let Some((lines, body, rest)) = parent_view(&text) {
         let mut out = vec![card(
@@ -18,7 +19,7 @@ pub(super) fn user_entries(text: String, turn: Option<i64>) -> Vec<Entry> {
             format!("parent's memory · {lines} lines"),
             &body,
         )];
-        out.extend(user_entries(rest.trim_start().to_owned(), turn));
+        out.extend(user_entries(rest.trim_start().to_owned(), turn, registry));
         return out;
     }
     // 74 §3: the model's `<time …/>` line is never a `you` row.
@@ -28,7 +29,7 @@ pub(super) fn user_entries(text: String, turn: Option<i64>) -> Vec<Entry> {
     if !cells.is_empty() {
         let mut out: Vec<Entry> = cells.into_iter().map(Entry::Info).collect();
         if !said.is_empty() {
-            out.extend(user_entries(said.to_owned(), turn));
+            out.extend(user_entries(said.to_owned(), turn, registry));
         }
         return out;
     }
@@ -47,7 +48,7 @@ pub(super) fn user_entries(text: String, turn: Option<i64>) -> Vec<Entry> {
         }
         return out;
     }
-    match injected(&text) {
+    match injected(&text, |row| registry.wrapper(row)) {
         None => vec![Entry::User { text, turn }],
         Some(cards) => cards
             .into_iter()
@@ -120,7 +121,7 @@ pub(super) static FENCE: LazyLock<markdown::FenceHook> = LazyLock::new(|| Arc::n
 /// from context (48 §2.2) is a collapsed `⊘` card over the original — the
 /// archive stays readable (Ctrl+O), nothing re-enters the model's frame.
 /// Attachment occurrences are listed by name, removed ones marked.
-pub(super) fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
+pub(super) fn from_history(h: HistoryEntry, opts: &markdown::Options, registry: &Registry) -> Vec<Entry> {
     let removed = |c: &Option<ContextEntry>| c.as_ref().is_some_and(|c| c.removed);
     match h {
         // A consultation note (52 §6) is harness-authored, never `◆ you`:
@@ -151,17 +152,23 @@ pub(super) fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Ent
             // authenticated sender, the wrapper is only unwrapped for the
             // body. A wrapper without `peer` stays the untrusted card
             // `user_entries` always drew: no id, no controls.
-            let mut out = match peer {
+            let projection = registry.wrapper(Wrapper { tag: "user", open: "", body: &text, sender: None,
+                origin: peer.as_ref().map(|origin| WrapperOrigin { id: origin.id, from: &origin.from, reply_to: origin.reply_to }), live: false });
+            let mut out = match projection {
+                Some(WrapperView::Card { kind, title, body }) => vec![card(kind, title, &body)],
+                Some(WrapperView::Hidden) => Vec::new(),
+                Some(WrapperView::Fallback) | None => match peer {
                 Some(origin) => match contact_row(&text) {
                     Some((facts, words)) => vec![peer_card(&origin, words, &facts)],
                     None => {
-                        let body = injected(&text)
+                        let body = injected(&text, |row| registry.wrapper(row))
                             .and_then(|cards| cards.into_iter().next())
                             .map_or(text, |(_, _, body)| body);
                         vec![peer_card(&origin, body, "")]
                     }
                 },
-                None => user_entries(text, turn),
+                None => user_entries(text, turn, registry),
+                },
             };
             // One row each: `Entry::height` counts an `Info` as one line.
             out.extend(attachment_labels(&context).into_iter().map(Entry::Info));

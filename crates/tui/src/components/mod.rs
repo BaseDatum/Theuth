@@ -187,6 +187,8 @@ pub struct CoreView<'a> {
     pub private_members: Option<&'a std::collections::HashSet<SessionId>>,
     /// Borrowed neutral identity metadata; no board DTO crosses this contract.
     pub members: &'a dyn SessionMembers,
+    /// Identity of the shown core approval, otherwise the first ask.
+    pub prompt: Option<uuid::Uuid>,
 
 
     // Step-11 group t3 CoreView fields: add below, in this block only.
@@ -259,6 +261,11 @@ pub enum Lifecycle<'a> {
     FocusLost,
 
     // Step-11 group t2 Lifecycle variants: add below, in this block only.
+    /// Core prompt queues changed; a resolver may name one completed identity.
+    PromptChanged {
+        /// Resolved core prompt id, absent for a request or local dismissal.
+        resolved: Option<uuid::Uuid>,
+    },
 
     // Step-11 group t3 Lifecycle variants: add below, in this block only.
 }
@@ -483,6 +490,48 @@ pub enum Plain {
     /// Existing query-reply completion predicate, with no printable bytes.
     Finished,
 }
+/// Borrowed authenticated transcript provenance, independent of a feature DTO.
+#[derive(Clone, Copy)]
+pub struct WrapperOrigin<'a> {
+    /// Stable message identity.
+    pub id: uuid::Uuid,
+    /// Authenticated sender address.
+    pub from: &'a str,
+    /// Exact answered message, when present.
+    pub reply_to: Option<uuid::Uuid>,
+}
+/// One parsed injected wrapper or core user/message row.
+#[derive(Clone, Copy)]
+pub struct Wrapper<'a> {
+    /// Protocol tag; the registry indexes its sole owner.
+    pub tag: &'a str,
+    /// Borrowed opening tag and attributes, without angle brackets.
+    pub open: &'a str,
+    /// Body with the existing wrapper newline trimming applied.
+    pub body: &'a str,
+    /// Sender of a direct live message rather than an XML attribute.
+    pub sender: Option<&'a str>,
+    /// Authenticated history-row provenance, never inferred from wrapper text.
+    pub origin: Option<WrapperOrigin<'a>>,
+    /// Live echo routing rather than accepted-history reconstruction.
+    pub live: bool,
+}
+/// Owner projection at the existing wrapper position; no registration-order composition.
+pub enum WrapperView {
+    /// Retain the existing core rendering for this row.
+    Fallback,
+    /// The row is already represented or deliberately invisible.
+    Hidden,
+    /// One owner-formatted card.
+    Card {
+        /// Neutral transcript presentation.
+        kind: crate::model::CardKind,
+        /// Header.
+        title: String,
+        /// Body.
+        body: String,
+    },
+}
 /// Owned transcript presentation, with no feature DTO in core.
 pub struct TranscriptCard {
     /// Newer cards freeze earlier cards in this replacement group.
@@ -495,10 +544,21 @@ pub struct TranscriptCard {
     pub color: iocraft::Color,
     /// Card title.
     pub title: String,
-    /// Markdown body.
-    pub body: String,
+    /// Owned rendered body; its width/fence options survive the core append unchanged.
+    pub body: markdown::Text,
     /// Initial disclosure state.
     pub expanded: bool,
+    /// Render literal cleaned text, without Markdown or terminal hyperlinks.
+    pub plain: bool,
+}
+impl From<TranscriptCard> for crate::model::Entry {
+    fn from(card: TranscriptCard) -> Self {
+        Self::Card {
+            kind: crate::model::CardKind::Component { group: card.group, key: card.key,
+                glyph: card.glyph, color: card.color, plain: card.plain },
+            title: card.title, text: Box::new(card.body), expanded: card.expanded,
+        }
+    }
 }
 /// Core-only presentation operations, applied after registry borrows end.
 pub enum CoreAction {
@@ -530,6 +590,8 @@ pub enum CoreAction {
     },
 
     // Step-11 group t1 CoreAction variants: add below, in this block only.
+    /// Insert an owner-rendered card above a still-streaming tail without splitting it.
+    InterjectCard(TranscriptCard),
 
     // Step-11 group t2 CoreAction variants: add below, in this block only.
 
@@ -640,6 +702,10 @@ pub trait Component: Send + Sync + 'static {
     fn wake(&self) -> Option<u64> { None }
 
     // Step-11 group t1 Component methods (with defaults): add below, in this block only.
+    /// Exclusively owned protocol tags; duplicate registrations are rejected.
+    fn wrapper_tags(&self) -> &'static [&'static str] { &[] }
+    /// Project one borrowed wrapper for accepted history and live rows alike.
+    fn wrapper(&self, _row: Wrapper<'_>) -> WrapperView { WrapperView::Fallback }
 
     // Step-11 group t2 Component methods (with defaults): add below, in this block only.
     /// Total replacement height at this width; None keeps the core/raw entry.
@@ -666,6 +732,7 @@ trait ErasedComponent: Send + Sync {
     fn view(&self, at: Surface<'_>, cx: &ViewCx<'_>) -> Option<View>;
     fn editor(&self) -> Option<Editor>;
     fn captures(&self, class: FocusClass) -> bool;
+    fn wrapper(&self, row: Wrapper<'_>) -> WrapperView;
     fn wake(&self) -> Option<u64>;
     fn animating(&self) -> bool;
     fn separate_editor(&self) -> bool;
@@ -698,6 +765,7 @@ impl<C: Component> ErasedComponent for Mounted<C> {
     fn view(&self, at: Surface<'_>, cx: &ViewCx<'_>) -> Option<View> { self.0.view(at, cx) }
     fn editor(&self) -> Option<Editor> { self.0.editor() }
     fn captures(&self, class: FocusClass) -> bool { self.0.captures(class) }
+    fn wrapper(&self, row: Wrapper<'_>) -> WrapperView { self.0.wrapper(row) }
     fn wake(&self) -> Option<u64> { self.0.wake() }
     fn animating(&self) -> bool { self.0.animating() }
     fn separate_editor(&self) -> bool { self.0.separate_editor() }

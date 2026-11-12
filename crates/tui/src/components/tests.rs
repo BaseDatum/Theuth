@@ -54,7 +54,7 @@ impl Component for Counter {
 }
 pub(crate) fn core() -> CoreView<'static> {
     static MEMBERS: std::sync::LazyLock<std::collections::HashMap<SessionId, crate::model::AgentRow>> = std::sync::LazyLock::new(std::collections::HashMap::new);
-    CoreView { session_name: None, width: 0, private_members: None, members: &*MEMBERS, interactive: true, session: None, parent: None, private_root: None, project: None, inspecting: false, streaming: false, reasoning: false, agent: None, entries: &[] }
+    CoreView { prompt: None, session_name: None, width: 0, private_members: None, members: &*MEMBERS, interactive: true, session: None, parent: None, private_root: None, project: None, inspecting: false, streaming: false, reasoning: false, agent: None, entries: &[] }
 }
 pub(crate) fn topic(name: &str, version: u32, event: serde_json::Value) -> TopicEvent {
     TopicEvent::Remote(Arc::new(TopicNotification { topic: name.into(), version, event }))
@@ -312,7 +312,7 @@ fn replacement_group_freezes_older_cards_without_crossing_groups() {
     }));
     for (group, key, title) in [("shared", old, "old"), ("shared", new, "new"), ("separate", separate, "separate")] {
         apply(CoreAction::AppendCard(TranscriptCard {
-            group, key, title: title.into(), body: title.into(), expanded: true,
+            group, key, title: title.into(), body: markdown::Text::complete(title), expanded: true, plain: false,
             glyph: "⌁", color: iocraft::Color::Cyan,
         }));
     }
@@ -389,3 +389,4 @@ fn intrinsic_secret_editor_restores_underlying_wizard_without_focus_loss() {
     registry.submit("continue wizard", &core());
     assert!(registry.editor().is_none());
 }
+
