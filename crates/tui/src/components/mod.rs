@@ -704,6 +704,17 @@ pub enum CoreAction {
     Post(LocalReply),
     /// Adopt one core-created draft before releasing queued owner work.
     EnsureSession(SessionContinuation),
+    /// Atomically replace the mounted editor bytes and byte caret.
+    ReplaceEditor {
+        /// Complete replacement text.
+        value: String,
+        /// Byte cursor within the replacement.
+        caret: usize,
+    },
+    /// Take the shell's existing submit-once path.
+    SubmitEditor(String),
+    /// Cancel the existing agent turn without changing owner state.
+    CancelSession(SessionId),
 }
 
 /// Owned effects and actions emitted during one deterministic dispatch.

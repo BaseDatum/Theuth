@@ -108,6 +108,11 @@ impl Model {
         }
         for action in out.actions {
             match action {
+                CoreAction::ReplaceEditor { value, caret } => self.pending_input = Some((value, caret)),
+                CoreAction::SubmitEditor(value) => self.pending_send = Some(value),
+                CoreAction::CancelSession(session) => {
+                    if let Some(commands) = &self.component_commands { send(commands, Command::Cancel(session)); }
+                }
                 CoreAction::EnsureSession(continuation) => {
                     if let Some(session) = self.session {
                         if let Some(commands) = &self.component_commands {

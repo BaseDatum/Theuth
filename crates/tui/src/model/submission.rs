@@ -31,7 +31,6 @@ impl Model {
             return;
         }
         if self.component_submit(line) { return; }
-        self.component_notify(crate::components::Lifecycle::ComposerSubmitted(line));
         // `/edit` in progress: a plain line replaces the turn being edited
         // (slash commands still run and leave the edit pending).
         if let Some((idx, turn)) = self.editing.filter(|_| !line.starts_with('/')) {
@@ -266,6 +265,7 @@ impl Model {
     /// asked), else the next turn's input. Also the raw path of a harness
     /// slash command picked from the popup (141 D15 c): no `use_skill`.
     pub(super) fn send_text(&mut self, line: &str, interject: bool, tx: &UnboundedSender<Command>) {
+        self.component_notify(crate::components::Lifecycle::ComposerSubmitted(line));
         // 153 §6.1: what went out, when a dictation contributed to it (fire-and-forget).
         if let Some(id) = self.dictated.take() {
             send(
