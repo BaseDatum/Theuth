@@ -325,3 +325,30 @@ fn late_cost_error_keeps_current_summary_and_global_error_effects() {
     assert!(!model.compacting);
     assert!(matches!(model.entries.last(), Some(Entry::Error(error)) if error == "old request failed"));
 }
+
+#[cfg(test)]
+#[test]
+fn non_tty_composition_skips_header_cost_reads_but_keeps_explicit_cost() {
+    use crate::model::{Command, Model, UiEvent};
+    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+    let requests = |rx: &mut UnboundedReceiver<Command>| {
+        std::iter::from_fn(|| rx.try_recv().ok()).filter_map(|command| match command {
+            Command::Component(effect) => effect.request::<Request>().map(|Request::SessionCost(session)| *session),
+            _ => None,
+        }).collect::<Vec<_>>()
+    };
+    for interactive in [false, true] {
+        let session = SessionId::new();
+        let mut model = Model::with_components(String::new(), false, super::builtin_with(false, interactive));
+        model.session = Some(session);
+        let (tx, mut rx) = unbounded_channel();
+        model.mount_components(&tx);
+        model.apply(UiEvent::History(session, agent::Loaded::default()));
+        model.component_tick(0);
+        assert_eq!(requests(&mut rx), if interactive { vec![session] } else { Vec::new() });
+        if !interactive {
+            model.submit("/cost", &tx);
+            assert_eq!(requests(&mut rx), vec![session]);
+        }
+    }
+}

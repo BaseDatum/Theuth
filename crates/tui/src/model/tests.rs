@@ -65,16 +65,16 @@
         })
     }
     fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
-        let registry = crate::components::builtin(false);
+        let registry = crate::components::builtin();
         transcript::injected(text, |row| registry.wrapper(row))
     }
 
     fn user_entries(text: String, turn: Option<i64>) -> Vec<Entry> {
-        history::user_entries(text, turn, &crate::components::builtin(false))
+        history::user_entries(text, turn, &crate::components::builtin())
     }
 
     fn from_history(row: HistoryEntry, options: &markdown::Options) -> Vec<Entry> {
-        history::from_history(row, options, &crate::components::builtin(false))
+        history::from_history(row, options, &crate::components::builtin())
     }
 
 
@@ -131,7 +131,7 @@
             MenuKey::Input(String::new())
         );
         assert!(m.quit && m.menu.is_none());
-        m.components = crate::components::builtin(true);
+        m.components = crate::components::builtin_with(true, true);
         let declared = COMMANDS.len() + m.components.slash_specs().count();
         assert_eq!(m.command_specs("/").len(), declared);
         m.components.get_mut::<ArtifactsApps>().unwrap().enabled = false;

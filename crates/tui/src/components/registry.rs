@@ -2,10 +2,14 @@ use std::collections::HashMap;
 use super::*;
 
 struct Slot { generation: u64, component: Option<Box<dyn ErasedComponent>> }
+/// Default interactive composition with the app capability disabled.
+pub fn builtin() -> Registry { builtin_with(false, true) }
+
 /// The sole built-in composition list. Add a panel here only after deleting its
 /// residual enum/reducer/executor/render/print hooks.
-pub fn builtin(app_enabled: bool) -> Registry {
+pub fn builtin_with(app_enabled: bool, interactive: bool) -> Registry {
     let mut registry = Registry::empty();
+    registry.set_interactive(interactive);
     registry.register(update::Update::default()).expect("built-in component registration");
 
     // Step-11 group t1 (network and prompts): register below, in this block only.
