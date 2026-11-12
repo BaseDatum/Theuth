@@ -9,6 +9,7 @@ description = "User cells: code the user runs with one press in chat, notes and 
 # marked `# 171:<TAG>` and says so in DONE.
 [dependencies]
 runtime = { workspace = true }
+wire = { workspace = true }
 tools = { workspace = true }  # 171 §5.5 `StartPty{program, cell}`, `Mark`, `PtyChunk`, `RegisterPrompt`, `secrets::redact`
 agent = { workspace = true }  # 171 §9.3 `HarnessDeliver{wake}`, `AgentEvent` (parked runs consumed)
 surface = { workspace = true }  # 171 §3 the grammar: `surface::cell`

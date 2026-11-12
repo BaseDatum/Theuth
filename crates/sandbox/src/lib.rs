@@ -405,6 +405,12 @@ where
     Ok(done.peer)
 }
 
+/// Declare wire contracts before starting producers, in every sandbox mode.
+pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<SandboxEvent>().await
+}
+
 /// The plugin (79 §4.7): `enabled: false` → nothing; `guest:` set → the guest
 /// prompt block and `sandbox_takeover` only; else the [`SandboxActor`] as
 /// [`SANDBOX_ACTOR`], its tools, a reconcile at start (+ autostart) and every
@@ -418,6 +424,7 @@ impl runtime::Plugin for SandboxPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg = config::load(rt);
         match config::mode(&cfg) {
             config::Mode::Disabled => {

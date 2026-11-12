@@ -171,7 +171,7 @@ pub const CONTEXT_MAX: usize = 280;
 
 /// 130 E1: bus event the [`Attention`] actor publishes after a derive whose
 /// result differs from the previous one by id set; `count` is the new badge.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "type")]
 pub struct AttentionChanged {
@@ -184,6 +184,10 @@ pub struct AttentionChanged {
     /// ms since epoch of the derive.
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub at_ms: u64,
+}
+
+impl wire::WireEvent for AttentionChanged {
+    const TOPIC: &'static str = "roster.attention";
 }
 
 /// 130 E3: one `attention_finished` row — a root / desk session's last clean

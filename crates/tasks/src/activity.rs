@@ -125,12 +125,16 @@ pub struct ActivityFilter {
 }
 
 /// Bus event: a row was appended (the UI's live feed).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "type")]
 pub struct ActivityAppended {
     /// The row.
     pub entry: ActivityEntry,
+}
+
+impl wire::WireEvent for ActivityAppended {
+    const TOPIC: &'static str = "tasks.activity";
 }
 
 /// Bus message any plugin publishes to append a row (see [`record`]).

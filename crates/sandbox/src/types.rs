@@ -172,6 +172,10 @@ pub enum SandboxEvent {
     },
 }
 
+impl wire::WireEvent for SandboxEvent {
+    const TOPIC: &'static str = "sandbox.events";
+}
+
 /// `sandbox:` config section (79 §4.7). An absent section is the defaults.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]

@@ -1599,6 +1599,7 @@ dependencies = [
  "tools",
  "tracing",
  "ts-rs",
+ "wire",
 ]
 
 [[package]]
@@ -3232,6 +3233,7 @@ dependencies = [
  "ts-rs",
  "uuid",
  "vt100",
+ "wire",
 ]
 
 [[package]]
@@ -3600,6 +3602,7 @@ dependencies = [
  "tree-sitter-typescript",
  "ts-rs",
  "uuid",
+ "wire",
 ]
 
 [[package]]
@@ -5365,6 +5368,7 @@ dependencies = [
  "ts-rs",
  "uuid",
  "voice",
+ "wire",
 ]
 
 [[package]]
@@ -5420,6 +5424,7 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
+ "wire",
 ]
 
 [[package]]
@@ -17457,6 +17462,7 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
+ "wire",
 ]
 
 [[package]]
@@ -18501,6 +18507,7 @@ dependencies = [
  "tracing",
  "ts-rs",
  "update",
+ "wire",
  "zeroize",
 ]
 
@@ -21241,6 +21248,7 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
+ "wire",
 ]
 
 [[package]]

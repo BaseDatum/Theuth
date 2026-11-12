@@ -274,6 +274,12 @@ lens_handler! {
     map::Export => MapExport, map::export::export;
 }
 
+/// Declare wire contracts before starting producers, even when disabled.
+pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<CodeindexEvent>().await
+}
+
 /// The plugin: reads `codeindex`, creates `<data_dir>/codeindex/`, spawns
 /// [`CodeindexActor`], registers the `code_*` tools once the registry is up.
 /// Nothing is indexed at start; the first call on a root pays (60 §0.8).
@@ -286,6 +292,7 @@ impl runtime::Plugin for CodeindexPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: CodeindexConfig = rt.section("codeindex").unwrap_or_else(|e| {
             tracing::debug!("no [codeindex] config section, using defaults: {e}");
             CodeindexConfig::default()

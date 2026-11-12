@@ -7,6 +7,7 @@ description = "Make an engine: bring `t` up on new compute (ssh host, docker con
 
 [dependencies]
 runtime = { workspace = true }
+wire = { workspace = true }
 secrets = { workspace = true }
 mesh = { workspace = true }
 tools = { workspace = true }

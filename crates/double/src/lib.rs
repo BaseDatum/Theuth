@@ -63,6 +63,15 @@ pub const DOUBLE_ACTOR: &str = "double";
 // 126 W5 (built): `tool` (the `double_*` chat runtime functions, the `## Double`
 // prompt paragraph and the `double` skill) and `chip` (the surfaces' text).
 
+/// Declare wire contracts before starting producers, even when disabled.
+pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<DoublePredicted>().await?;
+    rt.register_wire_event::<DoubleAnswered>().await?;
+    rt.register_wire_event::<DoubleTrainingState>().await?;
+    rt.register_wire_event::<DoubleVersionActivated>().await
+}
+
 /// The plugin. Reads `double:`, and when enabled opens the store under
 /// `<data_dir>/double/`; the actor, scheduler and tools are added at the
 /// markers above.
@@ -75,6 +84,7 @@ impl runtime::Plugin for DoublePlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: DoubleConfig = rt.section("double").unwrap_or_else(|e| {
             tracing::debug!("no [double] config section, using defaults: {e}");
             DoubleConfig::default()

@@ -57,22 +57,13 @@ where
     }
 }
 
-// replaced by cells::declare_wire in increment 7
-#[derive(Clone, serde::Serialize, schemars::JsonSchema)]
-#[serde(transparent)]
-struct CellContract(cells::CellEvent);
-
-impl wire::WireEvent for CellContract {
-    const TOPIC: &'static str = "cells.events";
-}
-
 #[tokio::test]
 async fn tools_and_relay_contracts_match_golden() {
     let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
     tools::declare_wire(&rt).await.unwrap();
     sessionsync::declare_wire(&rt).await.unwrap();
     a2a::declare_wire(&rt).await.unwrap();
-    rt.register_wire_event::<CellContract>().await.unwrap();
+    cells::declare_wire(&rt).await.unwrap();
     let mut rx = rt.wire_events();
     family::<tools::ApprovalRequested>(&rt, &mut rx, "tools.approval-requested").await;
     family::<tools::ApprovalResolved>(&rt, &mut rx, "tools.approval-resolved").await;
