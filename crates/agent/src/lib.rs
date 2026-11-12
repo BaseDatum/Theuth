@@ -832,7 +832,7 @@ pub struct SetEscalateModel {
 pub struct GetEscalateModel;
 
 /// The escalation slot as the UI shows it: what is set and what would answer.
-#[derive(Clone, Debug, Serialize, Deserialize, kameo::Reply)]
+#[derive(Clone, Debug, Serialize, Deserialize, kameo::Reply, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct EscalateModel {
     /// `agent.escalate_model`, if set.
@@ -1543,7 +1543,7 @@ impl Default for SessionActivity {
 }
 
 /// Which sessions a [`Broadcast`] reaches (62 §0.2).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BroadcastTargets {
@@ -1560,7 +1560,7 @@ pub enum BroadcastTargets {
 
 /// One message to many sessions (62 §0.1); `ask` the supervisor with
 /// [`Broadcast`] → `Result<BroadcastReceipt, String>`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct BroadcastRequest {
     /// Selector.
@@ -1579,7 +1579,7 @@ pub struct BroadcastRequest {
 }
 
 /// What happened to one broadcast recipient.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum BroadcastOutcome {
@@ -1606,7 +1606,7 @@ pub enum BroadcastOutcome {
 }
 
 /// One recipient of a broadcast.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct BroadcastRow {
     /// Session id.
@@ -1622,7 +1622,7 @@ pub struct BroadcastRow {
 }
 
 /// Reply of [`Broadcast`].
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct BroadcastReceipt {
     /// Broadcast id; the marker's short id is its first 4 hex chars.
@@ -2567,7 +2567,7 @@ pub struct ProviderModels {
 }
 
 /// One model of a provider with its stored limits (177).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ProviderModel {
     /// Model id within the provider (`provider/<id>` is the picker id).
