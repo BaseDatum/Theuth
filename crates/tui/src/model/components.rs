@@ -55,6 +55,19 @@ impl Model {
                 CoreAction::Interject(text) => self.interject(Entry::Info(text)),
                 CoreAction::Error(text) => self.receive(UiEvent::Error(text), emit),
                 CoreAction::Reject(text) => self.entries.push(Entry::Error(text)),
+                CoreAction::AppendCard(card) => self.entries.push(Entry::Card {
+                    kind: CardKind::Component { group: card.group, key: card.key, glyph: card.glyph, color: card.color },
+                    title: card.title, text: Box::new(markdown::Text::complete(&card.body)), expanded: card.expanded,
+                }),
+                CoreAction::ReplaceCard { group, key, body } => {
+                    if let Some(Entry::Card { kind: CardKind::Component { key: current, .. }, text, .. }) =
+                        self.entries.iter_mut().rev().find(|entry| matches!(entry,
+                            Entry::Card { kind: CardKind::Component { group: old, .. }, .. } if *old == group))
+                        && *current == key
+                    {
+                        **text = markdown::Text::complete(&body);
+                    }
+                }
             }
         }
     }
