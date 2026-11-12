@@ -32,7 +32,7 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData, ServerHandler, ServiceExt};
 use rpc::api::SESSION_TOOLS;
-use rpc::api::clients::ToolingApiClient;
+use rpc::api::clients::{AgentToolingApiClient, ToolingApiClient};
 use serde::Deserialize;
 use tokio::sync::watch;
 

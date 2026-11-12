@@ -20,6 +20,7 @@ use kameo::actor::{ActorRef, Spawn};
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 
+pub mod rpc_support;
 pub mod actor;
 pub mod cells;
 pub mod cite_check;

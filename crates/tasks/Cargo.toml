@@ -6,6 +6,8 @@ publish.workspace = true
 description = "Task records: states, wakes, checkout, disposition, no-progress back-off; schedules that name an agent become tasks (design doc 67 §7)"
 
 [dependencies]
+rpc-core = { workspace = true }
+jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }
 tools = { workspace = true }

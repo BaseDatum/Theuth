@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 // Leading `::`: the `tools` crate, not this crate's `tools` module.
 use ::tools::{REGISTRY_ACTOR, ToolRegistry};
 
+pub mod rpc_support;
 pub mod harvest;
 pub mod repo;
 pub mod search;

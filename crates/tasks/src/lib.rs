@@ -16,6 +16,7 @@
 //!
 //! The rules live in [`ledger`]; this file is the actor around them.
 
+pub mod rpc_support;
 pub mod activity;
 pub mod config;
 pub mod escalate;
