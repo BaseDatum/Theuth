@@ -213,6 +213,15 @@ impl Model {
                 text,
             } => {
                 if self.session == Some(*session) {
+                    match self.components.wrapper(crate::components::Wrapper {
+                        tag: "message", open: "", body: text, sender: Some(from), origin: None, live: true,
+                    }) {
+                        Some(crate::components::WrapperView::Card { kind, title, body }) => {
+                            self.interject(card(kind, title, &body)); return;
+                        }
+                        Some(crate::components::WrapperView::Hidden) => return,
+                        Some(crate::components::WrapperView::Fallback) | None => {}
+                    }
                     let kind = if from.starts_with("job ") {
                         CardKind::Job
                     } else {
@@ -380,8 +389,11 @@ impl Model {
                 // the `<advisory>` wrapper when the card has not landed yet).
                 // 183 §11.6: a contact's row is the `PeerDelivered` card.
                 if self.advisory_seqs.contains(&turn_seq)
-                    || injected(&text).is_some()
+                    || injected(&text, |row| self.components.wrapper(row)).is_some()
                     || contact_row(&text).is_some()
+                    || matches!(self.components.wrapper(crate::components::Wrapper {
+                        tag: "user", open: "", body: &text, sender: None, origin: None, live: true,
+                    }), Some(crate::components::WrapperView::Hidden))
                 {
                     return;
                 }
@@ -390,7 +402,7 @@ impl Model {
                 let shown = self.last_injected_turn.take() == Some(turn)
                     || self.sent.take().as_deref() == Some(said);
                 if !shown {
-                    self.entries.extend(user_entries(text, Some(turn_seq)));
+                    self.entries.extend(user_entries(text, Some(turn_seq), &self.components));
                 } else if let Some(at) = self
                     .entries
                     .iter()
@@ -408,7 +420,7 @@ impl Model {
             AgentEvent::InputInjected { id, turn, .. } => {
                 if let Some(at) = self.queued.iter().position(|q| q.id == id) {
                     self.entries
-                        .extend(user_entries(self.queued.remove(at).text, None));
+                        .extend(user_entries(self.queued.remove(at).text, None, &self.components));
                     self.last_injected_turn = Some(turn);
                 }
             }

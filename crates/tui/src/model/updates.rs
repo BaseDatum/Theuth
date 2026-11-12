@@ -22,6 +22,7 @@ impl Model {
                     && (self.session == Some(req.session) || self.agents.contains_key(&req.session))
                 {
                     self.approvals.push_back(req);
+                    self.component_notify(crate::components::Lifecycle::PromptChanged { resolved: None });
                 }
             }
             UiEvent::Resolved(r) => {
@@ -31,6 +32,7 @@ impl Model {
                 }
                 self.approvals.retain(|a| a.id != r.id);
                 self.double.remove(&r.id.0.to_string());
+                self.component_notify(crate::components::Lifecycle::PromptChanged { resolved: Some(r.id.0) });
             }
             UiEvent::Ask(req) => {
                 if !req.questions.is_empty()
@@ -38,11 +40,13 @@ impl Model {
                     && (self.session == Some(req.session) || self.agents.contains_key(&req.session))
                 {
                     self.asks.push_back(Ask::new(req));
+                    self.component_notify(crate::components::Lifecycle::PromptChanged { resolved: None });
                 }
             }
             UiEvent::AskResolved(r) => {
                 self.asks.retain(|a| a.req.id != r.id);
                 self.double.remove(&r.id.0.to_string());
+                self.component_notify(crate::components::Lifecycle::PromptChanged { resolved: Some(r.id.0) });
             }
             UiEvent::DoublePredicted(p) => {
                 self.double.insert(p.question_id.clone(), p);

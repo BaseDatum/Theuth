@@ -371,7 +371,7 @@ impl Model {
                 target = Some(entries.len());
                 entries.push(Entry::Info(format!("▸ matched message · seq {seq}")));
             }
-            entries.extend(from_history(h, &opts));
+            entries.extend(from_history(h, &opts, &self.components));
         }
         if target.is_none() {
             entries.insert(

@@ -18,6 +18,19 @@
             to: model.components.token("knowledge"), engine_epoch: 0, body: Box::new(body),
         })
     }
+    fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
+        let registry = crate::components::builtin();
+        transcript::injected(text, |row| registry.wrapper(row))
+    }
+
+    fn user_entries(text: String, turn: Option<i64>) -> Vec<Entry> {
+        history::user_entries(text, turn, &crate::components::builtin())
+    }
+
+    fn from_history(row: HistoryEntry, options: &markdown::Options) -> Vec<Entry> {
+        history::from_history(row, options, &crate::components::builtin())
+    }
+
 
 
     fn wire_event(topic: &str, event: impl serde::Serialize) -> UiEvent {
