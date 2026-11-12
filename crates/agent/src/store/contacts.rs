@@ -573,6 +573,17 @@ impl Store {
     /// row whose id is not text of at most 256 is skipped, and at most 512 rows are read
     /// (one per held (contact, export) on each machine).
     pub async fn contact_holds(&self) -> anyhow::Result<Vec<HoldRow>> {
+        self.hold_rows(false).await
+    }
+
+    /// [`Self::contact_holds`], this engine's own rows only (the holds mirror's read-back;
+    /// P3 final review N2: filtered in SQL, so another machine's rows never push ours past
+    /// the cap).
+    pub async fn own_contact_holds(&self) -> anyhow::Result<Vec<HoldRow>> {
+        self.hold_rows(true).await
+    }
+
+    async fn hold_rows(&self, own: bool) -> anyhow::Result<Vec<HoldRow>> {
         Ok(sqlx::query_as(
             "SELECT h.id, \
              CASE WHEN typeof(h.contact) = 'text' THEN substr(h.contact, 1, 256) END AS contact, \
@@ -587,8 +598,11 @@ impl Store {
              CASE WHEN s.id IS NULL THEN NULL WHEN typeof(s.contact_inbox) = 'text' \
              THEN substr(s.contact_inbox, 1, 256) ELSE '' END AS inbox \
              FROM contact_holds h LEFT JOIN sessions s ON s.id = h.session \
-             WHERE typeof(h.id) = 'text' AND length(h.id) <= 256 ORDER BY h.id LIMIT 512",
+             WHERE typeof(h.id) = 'text' AND length(h.id) <= 256 \
+             AND (NOT ?1 OR (typeof(h.owner) = 'text' AND h.owner = ?2)) ORDER BY h.id LIMIT 512",
         )
+        .bind(own)
+        .bind(&*self.me)
         .fetch_all(&self.read)
         .await?)
     }
@@ -1066,6 +1080,41 @@ mod tests {
             .map(|r| r.id)
             .collect();
         assert_eq!(left, ["b"]);
+    }
+
+    /// 191 (P3 final review N2): the mirror's read-back of this engine's own rows filters in
+    /// SQL: 600 other machines' rows that sort first never push ours past the 512 cap.
+    #[tokio::test]
+    async fn the_own_hold_read_back_is_never_crowded_out() {
+        let scratch = crate::TestDir::new("contacts");
+        let store = Store::open(
+            &scratch.0.join("sessions.sqlite"),
+            Some(mesh::EngineId("me-engine".into())),
+        )
+        .await
+        .unwrap();
+        let mut rows: Vec<RecordWrite> = (0..600)
+            .map(|i| hold(&format!("a{i:03}"), "other-engine"))
+            .collect();
+        rows.push(hold("z-mine", "me-engine"));
+        store.write_contact_records(&rows).await.unwrap();
+        assert!(
+            !store
+                .contact_holds()
+                .await
+                .unwrap()
+                .iter()
+                .any(|r| r.id == "z-mine"),
+            "the whole read is capped first"
+        );
+        let own: Vec<String> = store
+            .own_contact_holds()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(own, ["z-mine"]);
     }
 
     /// 191 (P3 review S4): `contact_holds` rides the real record replica: a row written on

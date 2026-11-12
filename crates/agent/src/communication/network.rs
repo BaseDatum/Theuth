@@ -719,8 +719,11 @@ pub struct NetworkState {
     holds_mirrored: BTreeMap<String, crate::store::contacts::HoldRow>,
     /// 191 (P3 review S1): `holds_mirrored` is what the table holds of ours. False at start
     /// (a failed boot cleanup leaves rows) and after a failed write: the next mirror reads
-    /// this engine's rows back first, and `ContactHolds` (every 2 s) retries it.
+    /// this engine's rows back first, and `ContactHolds` retries it, at most once per
+    /// [`HOLDS_RETRY`] (`holds_retry_at`).
     holds_synced: bool,
+    /// 191 (P3 final review S1): when `ContactHolds` may retry an unsynced mirror next.
+    holds_retry_at: Option<std::time::Instant>,
 }
 
 /// 186 (D8): what a contact reads when the owner stopped the turn its message opened.
@@ -3724,28 +3727,34 @@ impl Agents {
         held
     }
 
-    /// 191 (D4): mirror [`NetworkState::held`] into `contact_holds` (one row per (contact,
-    /// export), keyed by its oldest task), then tell the surfaces (`ContactsHeldChanged`).
-    /// Only changed rows are written; a failed write is retried at the next change or the
-    /// next `ContactHolds` read, whichever comes first, from the rows this engine really has
-    /// in the table. The holds themselves stay memory: a missing row only hides one from
-    /// other machines.
+    /// 191 (D4): an in-memory hold changed: mirror it ([`Self::mirror_holds`]), then tell
+    /// the surfaces (`ContactsHeldChanged`): this machine lists its own holds from memory, so
+    /// they hear of it whether or not the mirror landed.
     async fn held_changed(&mut self) {
+        self.mirror_holds().await;
+        self.rt.publish(ContactsHeldChanged).await;
+    }
+
+    /// 191 (D4): mirror [`NetworkState::held`] into `contact_holds` (one row per (contact,
+    /// export), keyed by its oldest task). Only changed rows are written; a failed write is
+    /// retried at the next change or by `ContactHolds` (at most once per [`HOLDS_RETRY`]),
+    /// from the rows this engine really has in the table. The holds themselves stay memory:
+    /// a missing row only hides one from other machines. True only when a row was written
+    /// or deleted.
+    async fn mirror_holds(&mut self) -> bool {
         use crate::store::contacts::{Cell, HoldRow, RecordTable, RecordWrite};
         let owner = self.store.engine().to_owned();
         if !self.network.holds_synced {
-            match self.store.contact_holds().await {
+            match self.store.own_contact_holds().await {
                 Ok(rows) => {
                     self.network.holds_mirrored = rows
                         .into_iter()
-                        .filter(|r| r.owner.as_deref() == Some(owner.as_str()))
                         .map(|r| (r.id.clone(), HoldRow { inbox: None, ..r }))
                         .collect();
                 }
                 Err(e) => {
                     tracing::warn!("191: read back first-contact hold rows: {e:#}");
-                    self.rt.publish(ContactsHeldChanged).await;
-                    return;
+                    return false;
                 }
             }
         }
@@ -3811,19 +3820,20 @@ impl Agents {
         }
         if writes.is_empty() {
             self.network.holds_synced = true;
-        } else {
-            match self.store.write_contact_records(&writes).await {
-                Ok(()) => {
-                    self.network.holds_mirrored = want;
-                    self.network.holds_synced = true;
-                }
-                Err(e) => {
-                    tracing::warn!("191: mirror first-contact holds: {e:#}");
-                    self.network.holds_synced = false;
-                }
+            return false;
+        }
+        match self.store.write_contact_records(&writes).await {
+            Ok(()) => {
+                self.network.holds_mirrored = want;
+                self.network.holds_synced = true;
+                true
+            }
+            Err(e) => {
+                tracing::warn!("191: mirror first-contact holds: {e:#}");
+                self.network.holds_synced = false;
+                false
             }
         }
-        self.rt.publish(ContactsHeldChanged).await;
     }
 
     /// 191 (D3): `session` was drained for a release (another machine takes it). Its held
@@ -4107,16 +4117,26 @@ impl Message<ContactsHeld> for Agents {
 /// `ask` → `Result<Vec<HoldRow>, String>` (191 D4): the other machines' `contact_holds`
 /// rows, as stored (the reader cleans them). This engine's own holds are its memory
 /// ([`ContactsHeld`]), so its own rows (a stale one too) are never listed. P3 review S1: a
-/// mirror that failed is retried here first.
+/// mirror that failed is retried here first, at most once per [`HOLDS_RETRY`] (P3 final
+/// review S1: every surface's refetch asks this, and a publish here would ask it again),
+/// and the surfaces hear of it only when a row changed.
 #[derive(Clone, Copy, Debug)]
 pub struct ContactHolds;
+
+/// 191 (P3 final review S1): the least time between two `ContactHolds` retries of an
+/// unsynced holds mirror (the `holds_tick` period).
+const HOLDS_RETRY: Duration = Duration::from_secs(2);
 
 impl Message<ContactHolds> for Agents {
     type Reply = Result<Vec<crate::store::contacts::HoldRow>, String>;
 
     async fn handle(&mut self, _: ContactHolds, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        if !self.network.holds_synced {
-            self.held_changed().await;
+        let now = std::time::Instant::now();
+        if !self.network.holds_synced && self.network.holds_retry_at.is_none_or(|t| now >= t) {
+            self.network.holds_retry_at = Some(now + HOLDS_RETRY);
+            if self.mirror_holds().await {
+                self.rt.publish(ContactsHeldChanged).await;
+            }
         }
         let me = self.store.engine();
         let mut rows = self
@@ -6127,6 +6147,130 @@ mod tests {
         let mut want = vec![held.id.clone(), "theirs".to_owned()];
         want.sort();
         assert_eq!(ids, want);
+    }
+
+    /// Counts `ContactsHeldChanged` publishes.
+    #[derive(kameo::Actor)]
+    struct HeldCount(tokio::sync::mpsc::UnboundedSender<()>);
+
+    impl Message<ContactsHeldChanged> for HeldCount {
+        type Reply = ();
+        async fn handle(&mut self, _: ContactsHeldChanged, _: &mut Context<Self, ()>) {
+            let _ = self.0.send(());
+        }
+    }
+
+    /// 191 (P3 final review S1): a holds mirror that keeps failing never feeds itself. With
+    /// every hold-row write refused (a full disk), 20 `ContactHolds` asks (each surface's
+    /// refetch) publish nothing; once writes land again, the next retry after `HOLDS_RETRY`
+    /// writes the row and publishes once.
+    #[tokio::test]
+    async fn a_failing_holds_mirror_publishes_nothing_until_a_row_lands() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let (_, _, p) = held_chat(&mut a).await;
+        sqlx::query(
+            "CREATE TRIGGER holds_off BEFORE INSERT ON contact_holds \
+             BEGIN SELECT RAISE(ABORT, 'disk full'); END",
+        )
+        .execute(a.store.pool())
+        .await
+        .unwrap();
+        let held = a.admit_send(&p, &send("m-a")).await.unwrap().task;
+        assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+        assert!(!a.network.holds_synced, "the row write failed");
+        let (tx, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        let tap = <HeldCount as kameo::actor::Spawn>::spawn_with_mailbox(
+            HeldCount(tx),
+            runtime::subscriber_mailbox(),
+        );
+        a.rt.subscribe::<HeldCount, ContactsHeldChanged>(&tap).await;
+        let store = a.store.clone();
+        let agents = <Agents as kameo::actor::Spawn>::spawn(a);
+        for _ in 0..20 {
+            assert!(agents.ask(ContactHolds).await.unwrap().is_empty());
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            heard.try_recv().is_err(),
+            "nothing changed, nothing published"
+        );
+        assert!(store.contact_holds().await.unwrap().is_empty());
+
+        sqlx::query("DROP TRIGGER holds_off")
+            .execute(store.pool())
+            .await
+            .unwrap();
+        tokio::time::sleep(HOLDS_RETRY).await;
+        agents.ask(ContactHolds).await.unwrap();
+        let rows = store.contact_holds().await.unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].id, held.id);
+        tokio::time::timeout(Duration::from_secs(10), heard.recv())
+            .await
+            .expect("the written row is published")
+            .unwrap();
+        agents.ask(ContactHolds).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(heard.try_recv().is_err(), "once");
+    }
+
+    /// 191 (P3 final review N3): a forced take has no drain. When the taker's row lands
+    /// (`demote` → `SessionMoved`), the chat's hold and its waiting full contact task fail
+    /// "the chat moved; send again" (never released, never a receipt), and the row goes.
+    #[tokio::test]
+    async fn a_forced_take_fails_a_hold_and_a_waiting_full_task() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        a.communication.0.write().set_network(true, true);
+        let (session, principal, held_p) = held_chat(&mut a).await;
+        a.network.peers.insert(
+            held_p.binding,
+            RemotePeer {
+                name: "bob".into(),
+                roots: Vec::new(),
+                sender: None,
+                generation: CancellationToken::new(),
+                contact: true,
+                full: vec!["research".into()],
+            },
+        );
+        let full_p = A2aPrincipal {
+            ask_first: false,
+            route: CancellationToken::new(),
+            ..held_p.clone()
+        };
+        // The intake barrier keeps its turn from consuming the full message.
+        let barrier = crate::loop_::PEER_INTAKE.write().await;
+        let full = a
+            .admit_send(&full_p, &full_send("m-1", "bob-ctx", &FullWire::default()))
+            .await
+            .unwrap()
+            .task;
+        assert_eq!(full.status, A2aTaskStatus::Working, "{:?}", full.error);
+        let held = a.admit_send(&held_p, &send("m-2")).await.unwrap().task;
+        assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+        assert_eq!(a.store.contact_holds().await.unwrap().len(), 1);
+        // The taker's row landed (no drain ran here).
+        a.store.owned_elsewhere(session, "taker-engine").await;
+        let store = a.store.clone();
+        let agents = <Agents as kameo::actor::Spawn>::spawn(a);
+        agents
+            .ask(crate::supervisor::transfer::SessionMoved(session))
+            .await
+            .unwrap();
+        let s = A2aScope {
+            principal: &principal,
+            export: "research",
+        };
+        for id in [&held.id, &full.id] {
+            let t = store.a2a_task(s, id).await.unwrap().unwrap();
+            assert_eq!(t.status, A2aTaskStatus::Failed, "{id}");
+            assert_eq!(t.error.as_deref(), Some(HOLD_MOVED), "{id}");
+        }
+        assert!(
+            store.contact_holds().await.unwrap().is_empty(),
+            "its row went"
+        );
+        drop(barrier);
     }
 
     /// 183 review 1: the held line takes the holder's machine text cut to 64 characters
