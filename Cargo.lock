@@ -3217,6 +3217,7 @@ dependencies = [
  "parking_lot",
  "platform",
  "regex",
+ "rpc-core",
  "runtime",
  "schemars 1.2.3",
  "secrets",

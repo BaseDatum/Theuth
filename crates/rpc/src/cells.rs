@@ -9,7 +9,8 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use ::cells::{
+use ::cells;
+use cells::{
     CellLatest, CellRef, CellRun, CellsError, DocId, Interpreter, KernelId, OutputPage,
     RunAllRequest, RunGet, RunId, RunMode, RunRequest, Scope, SessionId, StateReply,
 };
@@ -48,8 +49,8 @@ pub(crate) fn cells_err(e: CellsError) -> ErrorObjectOwned {
 }
 
 /// The running engine's handle.
-pub(crate) async fn handle() -> RpcResult<::cells::Cells> {
-    ::cells::Cells::lookup()
+pub(crate) async fn handle() -> RpcResult<cells::Cells> {
+    cells::Cells::lookup()
         .await
         .ok_or_else(|| cells_err(CellsError::NotRunning))
 }
@@ -219,7 +220,7 @@ async fn locate(
     server: &Server,
     ext: &Extensions,
     run: &RunId,
-) -> RpcResult<Result<::cells::Cells, Scope>> {
+) -> RpcResult<Result<cells::Cells, Scope>> {
     let cells = handle().await?;
     if let Some(scope) = cells.run_scope(run).await {
         if let Scope::Session(s) = &scope {
@@ -365,7 +366,7 @@ pub(crate) async fn state(
         }
         return Ok(r);
     }
-    match ::cells::Cells::lookup().await {
+    match cells::Cells::lookup().await {
         Some(c) => c.state(scope, cells).await.map_err(cells_err),
         None => Ok(StateReply {
             cells: Vec::new(),
@@ -486,7 +487,7 @@ pub(crate) async fn runs(
     if let Some(r) = read_scope(server, ext, &scope, "cell_runs", (&scope, limit)).await? {
         return Ok(r);
     }
-    match ::cells::Cells::lookup().await {
+    match cells::Cells::lookup().await {
         Some(c) => c.runs(scope, limit).await.map_err(cells_err),
         None => Ok(Vec::new()),
     }
@@ -517,7 +518,7 @@ pub(crate) async fn interpreters(
             )))),
         };
     }
-    match ::cells::Cells::lookup().await {
+    match cells::Cells::lookup().await {
         Some(c) => c.interpreters(cwd).await.map_err(cells_err),
         None => Ok(Vec::new()),
     }
@@ -578,7 +579,7 @@ pub(crate) async fn env_refresh(server: &Server, ext: &Extensions) -> RpcResult<
 pub(crate) async fn live(server: &Server, ext: &Extensions) -> RpcResult<Vec<CellRun>> {
     let _ = server;
     cells_guard::read(ext)?;
-    match ::cells::Cells::lookup().await {
+    match cells::Cells::lookup().await {
         Some(c) => c.live().await.map_err(cells_err),
         None => Ok(Vec::new()),
     }
@@ -604,7 +605,7 @@ pub(crate) async fn reply_note_get(
     {
         return Ok(r);
     }
-    match ::cells::Cells::lookup().await {
+    match cells::Cells::lookup().await {
         Some(c) => c.reply_note_get(session, &entry).await.map_err(cells_err),
         None => Ok(None),
     }
@@ -644,10 +645,12 @@ pub(crate) type Latest = Vec<CellLatest>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::KernelsApiServer;
+    use crate::new_server as make_test_server;
 
     fn server() -> Server {
         let rt = runtime::Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        crate::new_server(rt)
+        make_test_server(rt)
     }
 
     fn with(peer: rpc_core::RpcPeer) -> Extensions {
@@ -667,7 +670,7 @@ mod tests {
     fn kernel() -> KernelId {
         KernelId {
             scope: Scope::Session(runtime::SessionId::new()),
-            spec: ::cells::KernelSpec::Monty,
+            spec: cells::KernelSpec::Monty,
         }
     }
 
@@ -842,9 +845,8 @@ mod tests {
     /// "invalid params".
     #[tokio::test]
     async fn cell_run_without_confirmed_is_an_unconfirmed_press() {
-        use crate::api::into_rpc_module;
         use jsonrpsee::core::server::MethodsError;
-        let mut methods: jsonrpsee::Methods = into_rpc_module(server()).into();
+        let mut methods: jsonrpsee::Methods = server().into_rpc().into();
         let (peer, _g) = rpc_core::RpcPeer::open();
         methods.extensions_mut().insert(peer);
         let (cell, run) = (chat_cell(), RunId("r_old".into()));

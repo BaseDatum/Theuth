@@ -205,6 +205,8 @@ installation. Method assembly is an explicit `rpc_core::ModuleFactory` function
 pointer, supplied by `main` and threaded through socket, Noise, mesh, ACP,
 `Local` and attached-TUI takeover paths. Transports never silently choose the
 aggregate factory; domain bodies and wire names remain unchanged.
+Kernel adapters use owner-independent imports; their isolated cells fixtures
+construct core state with explicit no-session/no-attachment forwarding hooks.
 Authorization belongs to `agent::rpc_support::RpcServerExt`, not inherent
 `Server` methods. `decision::rpc_support::RpcDecisionExt` and
 `sessionsync::rpc_support::RpcSessionMoveExt` expose the real owner operations;

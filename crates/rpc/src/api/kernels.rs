@@ -1,8 +1,14 @@
-use super::*;
+use jsonrpsee::Extensions;
+use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
+use jsonrpsee::proc_macros::rpc;
+use jsonrpsee::server::PendingSubscriptionSink;
+use rpc_core::Server;
+use tools::PtyChunk;
+use crate::{cells as kernel_rpc, cells_latest as kernel_latest};
 
 #[rpc(server, client)]
 pub trait KernelsApi {
-    // 171:C cells (design 171 §15.2). Bodies: `crate::cells` (E1), `crate::cells_latest` (E2).
+    // 171:C cells (design 171 §15.2). Bodies: `kernel_rpc` (E1), `kernel_latest` (E2).
     /// 171: run one cell. Press guard (§12.1 inv. 1) + `authorize`; idempotent per `run`.
     /// `confirmed: true` is the user's second press past a warning (§7.1, §7.6): Run anyway
     /// past an unarmed `after` gate, or a danger cell's line/selection ►; omitted or `false`,
@@ -117,7 +123,7 @@ impl KernelsApiServer for Server {
         member_ack: Option<String>,
         confirmed: Option<bool>,
     ) -> RpcResult<cells::CellRun> {
-        crate::cells::run(
+        kernel_rpc::run(
             self, ext, cell, seen, mode, run, edited, member_ack, confirmed,
         )
         .await
@@ -130,19 +136,19 @@ impl KernelsApiServer for Server {
         cells: Vec<(cells::CellRef, String)>,
         pass: String,
     ) -> RpcResult<String> {
-        crate::cells::run_all(self, ext, scope, cells, pass).await
+        kernel_rpc::run_all(self, ext, scope, cells, pass).await
     }
 
     async fn cell_stop(&self, ext: &Extensions, run: cells::RunId, kill: bool) -> RpcResult<()> {
-        crate::cells::stop(self, ext, run, kill).await
+        kernel_rpc::stop(self, ext, run, kill).await
     }
 
     async fn cell_input(&self, ext: &Extensions, run: cells::RunId, data: String) -> RpcResult<()> {
-        crate::cells::input(self, ext, run, data).await
+        kernel_rpc::input(self, ext, run, data).await
     }
 
     async fn cell_ask(&self, ext: &Extensions, run: cells::RunId) -> RpcResult<()> {
-        crate::cells::ask(self, ext, run).await
+        kernel_rpc::ask(self, ext, run).await
     }
 
     async fn cell_attach(
@@ -151,7 +157,7 @@ impl KernelsApiServer for Server {
         ext: &Extensions,
         run: cells::RunId,
     ) -> SubscriptionResult {
-        crate::cells::attach(self, pending, ext, run).await
+        kernel_rpc::attach(self, pending, ext, run).await
     }
 
     async fn cell_state(
@@ -160,11 +166,11 @@ impl KernelsApiServer for Server {
         scope: cells::Scope,
         cells: Vec<cells::CellRef>,
     ) -> RpcResult<cells::StateReply> {
-        crate::cells::state(self, ext, scope, cells).await
+        kernel_rpc::state(self, ext, scope, cells).await
     }
 
     async fn cell_run_get(&self, ext: &Extensions, run: cells::RunId) -> RpcResult<cells::RunGet> {
-        crate::cells::run_get(self, ext, run).await
+        kernel_rpc::run_get(self, ext, run).await
     }
 
     async fn cell_output(
@@ -175,7 +181,7 @@ impl KernelsApiServer for Server {
         limit: u32,
         ansi: bool,
     ) -> RpcResult<cells::OutputPage> {
-        crate::cells::output(self, ext, run, offset, limit, ansi).await
+        kernel_rpc::output(self, ext, run, offset, limit, ansi).await
     }
 
     async fn cell_output_file(
@@ -184,7 +190,7 @@ impl KernelsApiServer for Server {
         run: cells::RunId,
         name: String,
     ) -> RpcResult<String> {
-        crate::cells::output_file(self, ext, run, name).await
+        kernel_rpc::output_file(self, ext, run, name).await
     }
 
     async fn cell_runs(
@@ -193,7 +199,7 @@ impl KernelsApiServer for Server {
         scope: cells::Scope,
         limit: u32,
     ) -> RpcResult<Vec<cells::CellRun>> {
-        crate::cells::runs(self, ext, scope, limit).await
+        kernel_rpc::runs(self, ext, scope, limit).await
     }
 
     async fn cell_interpreters(
@@ -202,7 +208,7 @@ impl KernelsApiServer for Server {
         cwd: String,
         engine: Option<String>,
     ) -> RpcResult<Vec<cells::Interpreter>> {
-        crate::cells::interpreters(self, ext, cwd, engine).await
+        kernel_rpc::interpreters(self, ext, cwd, engine).await
     }
 
     async fn cell_kernel_restart(
@@ -210,19 +216,19 @@ impl KernelsApiServer for Server {
         ext: &Extensions,
         kernel: cells::KernelId,
     ) -> RpcResult<()> {
-        crate::cells::kernel_restart(self, ext, kernel).await
+        kernel_rpc::kernel_restart(self, ext, kernel).await
     }
 
     async fn cell_kernel_close(&self, ext: &Extensions, kernel: cells::KernelId) -> RpcResult<()> {
-        crate::cells::kernel_close(self, ext, kernel).await
+        kernel_rpc::kernel_close(self, ext, kernel).await
     }
 
     async fn cell_env_refresh(&self, ext: &Extensions) -> RpcResult<()> {
-        crate::cells::env_refresh(self, ext).await
+        kernel_rpc::env_refresh(self, ext).await
     }
 
     async fn cell_live(&self, ext: &Extensions) -> RpcResult<Vec<cells::CellRun>> {
-        crate::cells::live(self, ext).await
+        kernel_rpc::live(self, ext).await
     }
 
     async fn cell_latest(
@@ -230,7 +236,7 @@ impl KernelsApiServer for Server {
         ext: &Extensions,
         doc: document::DocId,
     ) -> RpcResult<Vec<cells::CellLatest>> {
-        crate::cells_latest::latest(self, ext, doc).await
+        kernel_latest::latest(self, ext, doc).await
     }
 
     async fn cell_reply_note_get(
@@ -239,7 +245,7 @@ impl KernelsApiServer for Server {
         session: cells::SessionId,
         entry: String,
     ) -> RpcResult<Option<cells::DocId>> {
-        crate::cells::reply_note_get(self, ext, session, entry).await
+        kernel_rpc::reply_note_get(self, ext, session, entry).await
     }
 
     async fn cell_reply_note_set(
@@ -249,6 +255,6 @@ impl KernelsApiServer for Server {
         entry: String,
         doc: cells::DocId,
     ) -> RpcResult<()> {
-        crate::cells::reply_note_set(self, ext, session, entry, doc).await
+        kernel_rpc::reply_note_set(self, ext, session, entry, doc).await
     }
 }

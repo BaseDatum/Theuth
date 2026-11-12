@@ -30,6 +30,8 @@ pub mod shell;
 pub mod store;
 pub mod tools;
 pub mod types;
+#[cfg(test)]
+mod rpc_test_support;
 
 pub use actor::{CELLS_ACTOR, Cells, CellsActor};
 pub use config::CellsConfig;

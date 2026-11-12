@@ -46,6 +46,7 @@ ts-rs = { workspace = true, optional = true }
 [dev-dependencies]
 tempfile = "3"
 figment = { workspace = true }
+rpc-core = { workspace = true }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "agent/ts", "surface/ts", "document/ts"]

@@ -6,6 +6,7 @@ use jsonrpsee::core::RpcResult;
 
 use rpc_core::peer;
 use crate::cells::cells_err;
+use ::cells;
 
 /// Invariant 1, a human press: an authenticated peer that is not a guest and not the internal
 /// peer — unless the request carries [`agent::rpc_forward::Forwarded`], in which case the engine
@@ -13,7 +14,7 @@ use crate::cells::cells_err;
 pub(crate) fn press(ext: &Extensions) -> RpcResult<rpc_core::RpcPeer> {
     let p = read(ext)?;
     if p.is_internal() && ext.get::<agent::rpc_forward::Forwarded>().is_none() {
-        return Err(cells_err(::cells::CellsError::NotOwner));
+        return Err(cells_err(cells::CellsError::NotOwner));
     }
     Ok(p)
 }
@@ -23,7 +24,7 @@ pub(crate) fn press(ext: &Extensions) -> RpcResult<rpc_core::RpcPeer> {
 pub(crate) fn read(ext: &Extensions) -> RpcResult<rpc_core::RpcPeer> {
     let p = peer(ext)?;
     if p.guest().is_some() {
-        return Err(cells_err(::cells::CellsError::NotOwner));
+        return Err(cells_err(cells::CellsError::NotOwner));
     }
     Ok(p)
 }
