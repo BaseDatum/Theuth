@@ -13,6 +13,7 @@ pub fn builtin() -> Registry {
     registry.register(sandboxes::Sandboxes).expect("built-in component registration");
     registry.register(link::Link::default()).expect("built-in component registration");
     registry.register(nodes::Nodes::default()).expect("built-in component registration");
+    registry.register(mesh_devices::MeshDevices::default()).expect("built-in component registration");
 
     // Step-11 group t2 (boards, costs and artifacts): register below, in this block only.
     registry.register(tasks::Tasks).expect("built-in component registration");
@@ -253,19 +254,19 @@ impl Registry {
         self.finish(&mut out, core);
         out
     }
-    /// Deliver bracketed paste only to the exclusive focus owner.
+    /// Deliver bracketed paste to the intrinsic secret capture or exclusive focus owner.
     pub fn paste(&mut self, text: &str, core: &CoreView<'_>) -> Outbox {
         let mut out = Outbox::default();
-        if let Some((token, _)) = self.focus
+        if let Some((token, _)) = self.editor_owner()
             && let Some(component) = &mut self.slots[token.slot].component
         { component.input(Input::Paste(text), core, token, self.epoch, &mut out); }
         self.finish(&mut out, core);
         out
     }
-    /// Deliver a submitted line only to the exclusive focus owner.
+    /// Deliver submitted input to the intrinsic secret capture or exclusive focus owner.
     pub fn submit(&mut self, text: &str, core: &CoreView<'_>) -> Outbox {
         let mut out = Outbox::default();
-        if let Some((token, _)) = self.focus
+        if let Some((token, _)) = self.editor_owner()
             && let Some(component) = &mut self.slots[token.slot].component
         { component.input(Input::Submit(text), core, token, self.epoch, &mut out); }
         self.finish(&mut out, core);
@@ -312,9 +313,16 @@ impl Registry {
     }
     /// Whether a component, rather than the chat editor, currently owns input.
     pub fn focused(&self) -> bool { self.focus.is_some() }
-    /// The exclusive focus owner's composer port and its input-precedence class.
+    fn editor_owner(&self) -> Option<(ComponentToken, FocusClass)> {
+        self.slots.iter().enumerate().find_map(|(slot, mounted)| {
+            mounted.component.as_ref()?.captures(FocusClass::Secret).then_some((
+                ComponentToken { slot, generation: mounted.generation }, FocusClass::Secret,
+            ))
+        }).or(self.focus)
+    }
+    /// Composer configuration at secret precedence, otherwise the exclusive focus owner.
     pub fn editor(&self) -> Option<(FocusClass, Editor)> {
-        let (token, class) = self.focus?;
+        let (token, class) = self.editor_owner()?;
         Some((class, self.slots[token.slot].component.as_ref()?.editor()?))
     }
     /// Modal capture excludes composer-backed prompts, just like the core prompt.

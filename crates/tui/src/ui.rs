@@ -739,6 +739,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let extra_rows = pinned.rows + composer.rows + hint.rows + badge.rows;
     *component_rows.write() = extra_rows;
     let modal = modal
+        .or_else(|| component_slot(&m, Surface::Prompt(FocusClass::Secret), width, height).element())
         .or_else(|| secret_box(&m))
         .or_else(|| ask_box(&m))
         .or_else(|| {
@@ -845,7 +846,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     Text(content: p.hint(), color: OCHRE)
                 })
             }))
-            #(component_editor.as_ref().map(|(_, editor)| element!(
+            #(component_editor.as_ref().filter(|(_, editor)| !editor.hint.is_empty()).map(|(_, editor)| element!(
                 View(height: 1, padding_left: 1) {
                     Text(content: editor.hint.clone(), color: OCHRE)
                 }

@@ -1823,19 +1823,21 @@
 
     #[test]
     fn mesh_devices_command_mirrors_the_cli() {
+        use crate::components::mesh_devices::{MeshDevices, Msg, Request, mesh_device_line};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.mount_components(&tx);
         m.submit("/mesh devices", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::MeshDevicesList)));
+        assert!(matches!(component_request::<Request>(&mut rx), Ok(Request::MeshDevicesList)));
         m.submit("/mesh devices add", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::MeshDevicesAdd(None))));
+        assert!(matches!(component_request::<Request>(&mut rx), Ok(Request::MeshDevicesAdd(None))));
         m.submit("/mesh devices add work phone", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::MeshDevicesAdd(Some(n))) if n == "work phone"));
+        assert!(matches!(component_request::<Request>(&mut rx), Ok(Request::MeshDevicesAdd(Some(n))) if n == "work phone"));
         m.submit("/mesh devices rm abcd1234", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::MeshDevicesRevoke(id)) if id == "abcd1234"));
+        assert!(matches!(component_request::<Request>(&mut rx), Ok(Request::MeshDevicesRevoke(id)) if id == "abcd1234"));
         m.submit("/mesh devices name abcd1234 Sky's phone", &tx);
         assert!(
-            matches!(rx.try_recv(), Ok(Command::MeshDevicesRename(id, n)) if id == "abcd1234" && n == "Sky's phone")
+            matches!(component_request::<Request>(&mut rx), Ok(Request::MeshDevicesRename(id, n)) if id == "abcd1234" && n == "Sky's phone")
         );
         // Anything but `devices` is usage, sent nowhere.
         m.submit("/mesh status", &tx);
@@ -1863,16 +1865,16 @@
             ..row.clone()
         };
         assert!(mesh_device_line(&revoked, now).ends_with("· revoked"));
-        m.apply(UiEvent::MeshDevices(vec![]));
+        component_reply(&mut m, "mesh-devices", Msg::Listed { notice: None, result: Ok(vec![]) });
         assert!(
             matches!(m.entries.last(), Some(Entry::Info(s)) if s == "mesh devices: none paired")
         );
-        m.apply(UiEvent::MeshDevicePairing(link::PairingPayload {
+        component_reply(&mut m, "mesh-devices", Msg::Pairing(Ok(link::PairingPayload {
             string: "https://relay.example/link#1.AAAA.d29yaw.QWJDLV8xMjM".into(),
             expires_ms: now + 300_000,
             pending_id: "AbC-_123".into(),
-        }));
-        assert!(m.invite.is_some());
+        })));
+        assert!(m.components.get::<MeshDevices>().unwrap().invite.is_some());
         assert!(
             matches!(m.entries.last(), Some(Entry::Card { kind: CardKind::Component { group: "node-invite", .. }, title, .. }) if title.ends_with("pending AbC-_123"))
         );

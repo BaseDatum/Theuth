@@ -14,6 +14,7 @@ pub mod computer;
 pub mod sandboxes;
 pub mod link;
 pub mod nodes;
+pub mod mesh_devices;
 
 // Step-11 group t2 (boards, costs and artifacts): add modules below, in this block only.
 pub mod tasks;
@@ -216,6 +217,10 @@ impl CoreView<'_> {
             _ => None,
         }) == Some(key)
     }
+    /// Match the selected root or one of its accepted descendants.
+    pub fn owns_session(&self, session: SessionId) -> bool {
+        self.session == Some(session) || self.members.member(session).is_some()
+    }
 }
 
 /// Notifications borrow accepted core data; retain only the owner's projection.
@@ -377,6 +382,8 @@ pub enum Surface<'a> {
     },
 
     // Step-11 group t1 Surface variants: add below, in this block only.
+    /// Intrinsic prompt at an explicit input-precedence boundary, without displacing focus.
+    Prompt(FocusClass),
 
     // Step-11 group t2 Surface variants: add below, in this block only.
     /// Owner text for an existing pending/running transcript summary row; no spinner or extra rows.

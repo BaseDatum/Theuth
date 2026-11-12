@@ -228,8 +228,6 @@ pub struct Model {
     /// A loaded transcript holds `show` cards: the event loop asks
     /// `list_artifacts` to join their artifacts back (35 §0.3).
     pub refresh_artifacts: bool,
-    /// The residual mesh-device pairing card, redrawn by [`Model::tick`].
-    invite: Option<PairingCard>,
     /// Latest `list_secrets` (the `/secrets` menu, the `replaces vN` hint); `None` until fetched.
     pub secrets: Option<secrets::SecretsList>,
     /// `/secrets` was typed; the next `UiEvent::Secrets` opens the menu.
@@ -366,7 +364,6 @@ mod lifecycle;
 pub(crate) use lifecycle::markdown_options;
 mod menus;
 mod navigation;
-mod network;
 mod paste;
 mod peers;
 mod prompts;
@@ -402,9 +399,6 @@ use history::{revision, user_entries, cell_results, FENCE, from_history};
 #[cfg(test)]
 use history::{parent_view};
 pub use menus::{window, Menu, Grouped, grouped_step, grouped_first, MenuKey};
-pub(crate) use network::{PairingCard};
-use network::{tick_card};
-pub use network::mesh_device_line;
 pub use paste::{Paste, paste_token};
 use peers::{on_off, short_uuid, peer_card, contact_row};
 pub(crate) use peers::{clean, outside_card};

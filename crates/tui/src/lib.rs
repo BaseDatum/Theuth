@@ -842,20 +842,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 .await)?;
             UiEvent::Info(format!("{provider}/{}", m.line()))
         }
-        Command::MeshDevicesList => UiEvent::MeshDevices(msg(api.devices_list().await)?),
-        Command::MeshDevicesAdd(name) => {
-            UiEvent::MeshDevicePairing(msg(api.device_pair_start(name).await)?)
-        }
-        Command::MeshDevicesRevoke(id) => {
-            msg(api.device_revoke(id.clone()).await)?;
-            let _ = tx.send(UiEvent::Info(format!("revoked device {id}")));
-            UiEvent::MeshDevices(msg(api.devices_list().await)?)
-        }
-        Command::MeshDevicesRename(id, name) => {
-            msg(api.device_rename(id.clone(), name.clone()).await)?;
-            let _ = tx.send(UiEvent::Info(format!("renamed device {id} → {name}")));
-            UiEvent::MeshDevices(msg(api.devices_list().await)?)
-        }
         Command::ListArtifacts {
             session,
             pick,
@@ -1754,19 +1740,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             out,
             "provider {}  {}  {} models — /model {}/<id>",
             p.name, p.base_url, p.models, p.name
-        ),
-        UiEvent::MeshDevices(list) if list.is_empty() => writeln!(out, "mesh devices: none paired"),
-        UiEvent::MeshDevices(list) => {
-            let now = model::now_ms();
-            list.iter()
-                .try_for_each(|d| writeln!(out, "{}", model::mesh_device_line(d, now)))
-        }
-        UiEvent::MeshDevicePairing(p) => writeln!(
-            out,
-            "{}\n{}\npending {} — expires in 5 min",
-            link::qr(&p.string),
-            p.string,
-            p.pending_id
         ),
         UiEvent::Secrets(list) => writeln!(out, "key: {}", list.key_store).and_then(|()| {
             list.secrets.iter().try_for_each(|s| {
