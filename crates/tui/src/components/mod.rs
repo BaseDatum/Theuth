@@ -390,6 +390,8 @@ pub enum StatusSlot {
     Pinned,
     /// Spoken-view hint, before the attached-engine label.
     Spoken,
+    /// Right-aligned status text, separate from the left status contributions.
+    Right,
 }
 
 /// Fixed layout locations, never feature names.
