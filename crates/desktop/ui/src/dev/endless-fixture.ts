@@ -2,10 +2,11 @@
 // predates `session_memory` / `endless_zoom` / `endless_recall`. Dev only, behind `VITE_ENDLESS_FIXTURE=1` (or
 // `localStorage.endless-fixture = "1"`); with it on, every session is treated as endless. The connection is still the engine's.
 
-import type { Api } from '@/rpc/api'
-import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
-import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
-import type { ViewLine } from '@/rpc/bindings/ViewLine'
+import { receiveComponent } from '@/rpc/bindings/receive'
+import type { Api } from '@/rpc/bindings/client'
+import type { EndlessConfig } from "@/rpc/bindings/method.agent.output"
+import type { SessionMemory } from "@/rpc/bindings/method.agent.output"
+import type { ViewLine } from "@/rpc/bindings/method.agent.output"
 
 /**
  * `"1"` turns the fixture on; `"backfill"` also serves the R1-D4 capped-backfill memory; `"stalled"` a failing frontier (137F), `"retrying"` the same while its retry runs;
@@ -14,7 +15,7 @@ import type { ViewLine } from '@/rpc/bindings/ViewLine'
 const flag = (): string | null => (import.meta.env.DEV ? globalThis.localStorage?.getItem('endless-fixture') || import.meta.env.VITE_ENDLESS_FIXTURE || null : null)
 export const endlessFixtureOn = (): boolean => !!flag()
 
-const line = (id: number, n: number, text: string, built = true): ViewLine => ({ id, n, text, built, level: Math.log2(n) })
+const line = (id: number, n: number, text: string, built = true): ViewLine => (receiveComponent("method.agent.output.ViewLine", { id, n, text, built, level: Math.log2(n) }))
 
 /** A 71-line view in the shape the fold produces: coarse bands oldest first, then one line per recent message. */
 const view: ViewLine[] = [
@@ -53,7 +54,7 @@ const children = (id: number, n: number): ViewLine[] => {
   return [line(id, half, `${parent.split(';')[0]}.`), line(id + half, half, `${parent.split(';').slice(1).join(';').trim() || parent}`)]
 }
 
-const memory: SessionMemory = {
+const memory: SessionMemory = receiveComponent("method.agent.output.SessionMemory", {
   mode: 'endless',
   view,
   settling: true,
@@ -74,10 +75,10 @@ const memory: SessionMemory = {
   model_override: null,
   model_source: 'settings',
   spend_today_usd: 0.42,
-}
+})
 
 /** `"backlog"` (137G): a long-stuck chat — 4,812 lines wait, the oldest 4,512 folded into one placeholder line, the newest shown raw. */
-const backlog: SessionMemory = {
+const backlog: SessionMemory = receiveComponent("method.agent.output.SessionMemory", {
   ...memory,
   units: 5_868,
   unbuilt: 4_812,
@@ -89,11 +90,11 @@ const backlog: SessionMemory = {
     line(5_867, 1, 'tool: grep "settle" → 41 hits in 6 files', false),
   ],
   backlog: { lines: 4_812, folded: 4_512, eta_secs: 660, paused: false, paused_by: null },
-}
-const paused = (by: 'user' | 'spend'): SessionMemory => ({ ...backlog, settling: false, backlog: { lines: 4_812, folded: 4_512, eta_secs: 0, paused: true, paused_by: by }, spend_today_usd: by === 'spend' ? 5.12 : 0.42 })
+})
+const paused = (by: 'user' | 'spend'): SessionMemory => (receiveComponent("method.agent.output.SessionMemory", { ...backlog, settling: false, backlog: { lines: 4_812, folded: 4_512, eta_secs: 0, paused: true, paused_by: by }, spend_today_usd: by === 'spend' ? 5.12 : 0.42 }))
 
 /** `"folded"` (137G): after Fold now — the waiting lines are excerpts (`mechanical`), the pump merges on. */
-const folded: SessionMemory = {
+const folded: SessionMemory = receiveComponent("method.agent.output.SessionMemory", {
   ...backlog,
   settling: false,
   unbuilt: 0,
@@ -105,19 +106,19 @@ const folded: SessionMemory = {
     { ...line(5_866, 1, 'user: check why the desk stopped answering wakes'), mechanical: true },
     line(5_867, 1, 'Traced the settle wait; grep found 41 call sites.'),
   ],
-}
+})
 
 /** `localStorage.endless-fixture = "backfill"`: the R1-D4 capped-backfill shape — sentinel first line, projected cost in the footer. */
-const backfilling: SessionMemory = {
+const backfilling: SessionMemory = receiveComponent("method.agent.output.SessionMemory", {
   ...memory,
   settling: false,
   unbuilt: 0,
   view: [line(0, 2_412, '(earlier history, not summarized; recall searches it)', false), ...view.map((l) => ({ ...l, id: l.id + 2_412 }))],
   backfill: { done: 812, total: 2_000, eta_secs: 3_540, usd_estimate: 2.9 },
-}
+})
 
 /** `"stalled"` / `"retrying"` (137F): the frontier keeps failing on a local model, newer lines wait; Retry now answers `retrying`. */
-const stalled = (retrying: boolean): SessionMemory => ({
+const stalled = (retrying: boolean): SessionMemory => (receiveComponent("method.agent.output.SessionMemory", {
   ...memory,
   unbuilt: 3,
   stalled: {
@@ -127,7 +128,7 @@ const stalled = (retrying: boolean): SessionMemory => ({
     model: 'ollama/qwen3:8b',
     blocking: true,
   },
-})
+}))
 
 /** The fold / pause / model RPCs' answer since the page loaded; the flag's memory before the first. */
 let changed: SessionMemory | null = null
@@ -150,7 +151,7 @@ const current = (): SessionMemory => {
               : memory
 }
 
-let settings: EndlessConfig = {
+let settings: EndlessConfig = receiveComponent("method.agent.output.EndlessConfig", {
   default_chat: false,
   default_desk: true,
   default_meeting: false,
@@ -165,7 +166,7 @@ let settings: EndlessConfig = {
   cap_chars: 30_000,
   backfill_max_units: 2_000,
   model: null,
-}
+})
 
 const wrapped = new WeakMap<Api, Api>()
 
@@ -197,11 +198,11 @@ export function endlessFixture(api: Api): Api {
       changed = m.backlog ? { ...m, settling: !p, backlog: { ...m.backlog, paused: p, paused_by: p ? 'user' : null, eta_secs: p ? 0 : 660 } } : m
       return Promise.resolve(changed)
     },
-    set_session_compactor_model: (_s, model) => {
+    set_session_compactor_model: (_s, model = null) => {
       changed = { ...current(), model: model ?? memory.model, model_override: model, model_source: model ? 'chat' : 'settings' }
       return Promise.resolve(changed)
     },
-    set_session_compactor_effort: (_s, effort) => {
+    set_session_compactor_effort: (_s, effort = null) => {
       changed = { ...current(), effort, effort_override: effort }
       return Promise.resolve(changed)
     },
@@ -221,7 +222,7 @@ export function endlessFixture(api: Api): Api {
     },
     endless_settings_get: () => Promise.resolve(settings),
     endless_settings_set: (next) => {
-      settings = next
+      settings = receiveComponent('method.agent.output.EndlessConfig', next)
       return Promise.resolve(settings)
     },
   }

@@ -3,8 +3,8 @@
 // pending card on (re)subscribe (§4.4), so a reload is whole again after the first frame. Nothing is persisted.
 import { useSyncExternalStore } from 'react'
 import { createStore } from 'zustand'
-import type { DoubleAnswered } from '@/rpc/bindings/DoubleAnswered'
-import type { DoublePredicted } from '@/rpc/bindings/DoublePredicted'
+import type { DoubleAnswered } from "@/rpc/bindings/event.double_2eanswered.output"
+import type { DoublePredicted } from "@/rpc/bindings/event.double_2epredicted.output"
 import { on } from './sessions'
 
 type DoubleStore = {
@@ -26,8 +26,8 @@ export const doubleStore = createStore<DoubleStore>()((set) => ({
   takeOver: (id) => set((s) => ({ takenOver: { ...s.takenOver, [id]: true } })),
 }))
 
-on('DoublePredicted', (e) => doubleStore.getState().predict(e))
-on('DoubleAnswered', (e) => doubleStore.getState().answer(e))
+on("double.predicted@1", 'DoublePredicted', (e) => doubleStore.getState().predict(e))
+on("double.answered@1", 'DoubleAnswered', (e) => doubleStore.getState().answer(e))
 
 /** One slice of the store; the same snapshot on the server render, so a static render sees the live state (tests). */
 export function useDouble<T>(selector: (s: DoubleStore) => T): T {

@@ -7,8 +7,8 @@
 
 import { clientKind } from '@/lib/page-preview'
 import { container } from '@/lib/platform'
-import type { FenceSnapshotAnswer } from '@/rpc/bindings/FenceSnapshotAnswer'
-import type { FenceSnapshotRequested } from '@/rpc/bindings/FenceSnapshotRequested'
+import type { FenceSnapshotAnswer } from '@/rpc/bindings/method.artifact.input'
+import type { FenceSnapshotRequested } from "@/rpc/bindings/event.artifact_2efence_2dsnapshot_2drequested.output"
 import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
 
@@ -160,7 +160,7 @@ export function installFenceSnapshot(): () => void {
   }
 
   const offs = [
-    on('FenceSnapshotRequested', (e) => {
+    on("artifact.fence-snapshot-requested@1", 'FenceSnapshotRequested', (e) => {
       if (jobs.has(e.id) || !useConnection.getState().api) return
       answer(e.id, { kind: 'started', client: clientKind() })
       const timer = window.setTimeout(() => end(e.id, { reason: `not drawn within ${FAIL_MS / 1000} s` }), FAIL_MS)
@@ -169,7 +169,7 @@ export function installFenceSnapshot(): () => void {
       queue = next.queue
       run(next.start)
     }),
-    on('FenceSnapshotResolved', (e) => end(e.id)),
+    on("artifact.fence-snapshot-resolved@1", 'FenceSnapshotResolved', (e) => end(e.id)),
   ]
   return () => {
     for (const off of offs) off()

@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 158 §5.5 (W1, W-q): the Meetings-page banner — the same prompt the islands show. "<App> is using your
 // microphone", the event line + project chip when present, Start recording / Not now / ⋮ Never for <App>,
 // and the R3 lawful sentence. After `AppReleased` during a recording: "Stop recording? / Keep recording".
@@ -20,19 +21,20 @@ import { eventLine } from '@/lib/calendar'
 import { isDesktop } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { LOCAL, useEngines } from '@/link/engines'
-import type { Detection } from '@/rpc/bindings/Detection'
+import type { Detection } from "@/rpc/bindings/method.meeting.output"
 import { on } from '@/store/sessions'
 
 export const DETECTION_KEY = ['meeting-detection'] as const
 
 export function DetectionBanner() {
+  const canQuery1 = useQuerySupport(["meeting_detection"])
   const api = useApi()
   const navigate = useNavigate()
   const local = useEngines((s) => s.active) === LOCAL && isDesktop()
-  const initial = useQuery({ queryKey: DETECTION_KEY, queryFn: () => api.meeting_detection(), enabled: local })
+  const initial = useQuery({ queryKey: DETECTION_KEY, queryFn: () => api.meeting_detection(), enabled: canQuery1 && (local) })
   const [state, dispatch] = useReducer(reduce, EMPTY)
   useEffect(() => {
-    const offs = (['Detected', 'DetectionCleared', 'AppReleased', 'Started', 'State'] as const).map((t) => on(t, dispatch))
+    const offs = (['Detected', 'DetectionCleared', 'AppReleased', 'Started', 'State'] as const).map((t) => on("meeting.events@1", t, dispatch))
     return () => {
       for (const off of offs) off()
     }

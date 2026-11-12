@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // Owner: U1
 import { useQuery } from '@tanstack/react-query'
 import { openPath } from '@tauri-apps/plugin-opener'
@@ -12,8 +13,8 @@ import { isDesktop, touch } from '@/lib/platform'
 import { useApi } from '@/lib/rpc'
 import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
-import type { CellRef } from '@/rpc/bindings/CellRef'
-import type { CellRun } from '@/rpc/bindings/CellRun'
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
+import type { CellRun } from "@/rpc/bindings/method.cells.output"
 import { useConnection } from '@/store/connection'
 import { CodeTokens } from './CodeTokens'
 import { setPicked, setStoppedAt, usePicked, useStoppedAt } from './edits'
@@ -157,11 +158,12 @@ export const trimBlankTail = (text: string) => text.replace(/(?:\r?\n(?:[ \t]|\x
 
 /** The finished run's text: the last `TAIL_LINES` lines, "show all N lines" pages the rest through `cell_output`. */
 function StaticText({ run, text, at }: { run: CellRun; text: string; at: string }) {
+  const canQuery1 = useQuerySupport(["cell_output"])
   const api = useApi()
   const [showAll, setShowAll] = useDisclosure(disclosureKey(at, run.id, 'all'))
   const all = useQuery({
     queryKey: ['cells', 'output', run.id, 'all'],
-    enabled: showAll,
+    enabled: canQuery1 && (showAll),
     staleTime: Infinity,
     queryFn: async () => {
       let out = ''
@@ -191,8 +193,9 @@ function StaticText({ run, text, at }: { run: CellRun; text: string; at: string 
 
 /** The output of a run that is not live: the record's outputs (`cell_run_get`), shell text as ANSI, rich ones through the media router. */
 function RunOutput({ run, at }: { run: CellRun; at: string }) {
+  const canQuery2 = useQuerySupport(["cell_run_get"])
   const api = useApi()
-  const q = useQuery({ queryKey: ['cells', 'run', run.id, run.state, run.ended_ms], queryFn: () => api.cell_run_get(run.id), staleTime: Infinity })
+  const q = useQuery({ enabled: canQuery2, queryKey: ['cells', 'run', run.id, run.state, run.ended_ms], queryFn: () => api.cell_run_get(run.id), staleTime: Infinity })
   if (q.error) return <p className="text-xs text-danger">{errorText(q.error)}</p>
   if (!q.data) return <p className="text-xs text-fg-tertiary">loading output…</p>
   const outputs = q.data.outputs
@@ -285,10 +288,11 @@ function CopyOutput({ run }: { run: CellRun }) {
 
 /** history ▾: this cell's runs (`cell_runs` of its scope, filtered to the cell); picking one shows its output. */
 function HistoryMenu({ cellRef, onPick }: { cellRef: CellRef; onPick(run: CellRun): void }) {
+  const canQuery3 = useQuerySupport(["cell_runs"])
   const api = useApi()
   const key = refKey(cellRef)
   const [open, setOpen] = useDisclosure(disclosureKey(key, 'history'))
-  const q = useQuery({ queryKey: ['cells', 'runs', key], queryFn: () => api.cell_runs(scopeOf(cellRef), 50), enabled: open })
+  const q = useQuery({ queryKey: ['cells', 'runs', key], queryFn: () => api.cell_runs(scopeOf(cellRef), 50), enabled: canQuery3 && (open) })
   const runs = (q.data ?? []).filter((r) => refKey(r.cell) === key)
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>

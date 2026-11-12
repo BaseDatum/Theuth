@@ -1,8 +1,8 @@
 import { createElement as h } from 'react'
 import { expect, test } from 'vitest'
-import type { CellRef } from '@/rpc/bindings/CellRef'
-import type { KernelState } from '@/rpc/bindings/KernelState'
-import type { PassEnd } from '@/rpc/bindings/PassEnd'
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
+import type { KernelState } from "@/rpc/bindings/method.cells.output"
+import type { PassEnd } from "@/rpc/bindings/method.cells.output"
 import { digest } from './grammar'
 import { NoteKernelPill, passLine, pillText, runAllChord, runAllNote } from './NoteKernelPill'
 import { cells, scopeKey } from './store'

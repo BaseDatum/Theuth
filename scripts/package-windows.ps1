@@ -133,11 +133,15 @@ $Setup = Join-Path $Dist "theuth_${Version}_windows-x86_64-setup.exe"
 $Zip = Join-Path $Dist "theuth_${Version}_windows-x86_64.zip"
 
 Write-Host "==> [1/6] TypeScript bindings"
-Exec 'cargo test -p theuth export_bindings' { cargo test -p theuth --features ts --bin t --quiet export_bindings }
+Exec 'cargo test -p theuth export_bindings' { cargo test -p theuth --bin t --quiet wire_contract_tests::export_bindings -- --exact }
+Push-Location (Join-Path $Desktop 'ui')
+try { Exec 'bun install' { bun install }; Exec 'bun run wire:generate' { bun run wire:generate } } finally { Pop-Location }
 $uiBindings = Join-Path $Desktop 'ui/src/rpc/bindings'
 if (Test-Path $uiBindings) { Remove-Item $uiBindings -Recurse -Force }
 New-Item -ItemType Directory -Path $uiBindings | Out-Null
-Copy-Item (Join-Path $Root 'bindings/*') $uiBindings -Recurse
+Copy-Item (Join-Path $Root 'bindings/typescript/*') $uiBindings -Recurse
+Copy-Item (Join-Path $Root 'bindings/surface-catalog*') $uiBindings
+Copy-Item (Join-Path $Root 'bindings/methods.json') $uiBindings
 
 Write-Host "==> [1/6] building theuth (release, $Triple)"
 Exec 'cargo build --release -p theuth' { cargo build --release -p theuth }

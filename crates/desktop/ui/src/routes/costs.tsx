@@ -1,3 +1,5 @@
+import { withCapability } from '@/rpc/capabilities'
+import { requirements } from '@/components/costs/requirements'
 import { createFileRoute } from '@tanstack/react-router'
 import { useContext } from 'react'
 import { CostsPage } from '@/components/costs/CostsPage'
@@ -9,7 +11,7 @@ import { validateCostsSearch } from '@/lib/costs/search'
  * R2: in the shell the page is resident (`CostsResident` in `__root`), so the route itself renders nothing there; a
  * popped-out window has no host and renders the page here.
  */
-export const Route = createFileRoute('/costs')({ validateSearch: validateCostsSearch, component: Page })
+export const Route = createFileRoute('/costs')({ validateSearch: validateCostsSearch, component: withCapability(Page, requirements) })
 
 function Page() {
   const search = Route.useSearch()

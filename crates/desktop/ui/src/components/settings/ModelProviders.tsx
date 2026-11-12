@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, Radar, RefreshCw, Trash2 } from 'lucide-react'
 import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useState } from 'react'
@@ -49,10 +50,10 @@ import {
 import { queryKeys, useApi } from '@/lib/rpc'
 import { LOCAL, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
-import type { LocalServer } from '@/rpc/bindings/LocalServer'
-import type { ProviderInfo } from '@/rpc/bindings/ProviderInfo'
-import type { ProviderModel } from '@/rpc/bindings/ProviderModel'
-import type { LoginInfo } from '@/rpc/extra'
+import type { LocalServer } from "@/rpc/bindings/method.agent.output"
+import type { ProviderInfo } from "@/rpc/bindings/method.agent.output"
+import type { ProviderModel } from "@/rpc/bindings/method.agent.output"
+import type { LoginInfo } from "@/rpc/bindings/method.agent.output"
 import { on } from '@/store/sessions'
 
 /** 188 A6: Settings › Models › Providers — every model provider with its key or login, then the AWS profile Bedrock signs with. */
@@ -67,9 +68,10 @@ export function ModelProviders() {
 
 /** A provider's OAuth login (the TUI's `/login`): Log in opens the browser, Log out forgets the tokens. */
 function useLogins() {
+  const canQuery1 = useQuerySupport(["list_logins"])
   const api = useApi()
   const active = useEngines((s) => s.active)
-  const logins = useQuery({ queryKey: queryKeys.logins, queryFn: () => api.list_logins() })
+  const logins = useQuery({ enabled: canQuery1, queryKey: queryKeys.logins, queryFn: () => api.list_logins() })
   // Over link the daemon opens its own browser on the engine (31 §9): the URL is only shown here, as text.
   const [remote, setRemote] = useState<{ name: string; url: string } | null>(null)
   const login = useAction(async (name: string) => {
@@ -81,7 +83,7 @@ function useLogins() {
   const logout = useAction((name: string) => api.logout(name), { keys: [queryKeys.logins, queryKeys.models] })
   useEffect(
     () =>
-      on('LoginFinished', (e) => {
+      on("agent.login@1", 'LoginFinished', (e) => {
         setRemote(null)
         if (e.error) toast.error(`${e.provider}: ${e.error}`)
         else toast.success(`Logged in to ${e.provider}`)
@@ -135,8 +137,9 @@ const SUB = 'mt-6 text-[13px] font-semibold'
  * login carries it on its row (188 A6); a login with no provider row gets a row of its own after the built-ins.
  */
 function ProviderList() {
+  const canQuery2 = useQuerySupport(["list_providers"])
   const api = useApi()
-  const providers = useQuery({
+  const providers = useQuery({ enabled: canQuery2,
     queryKey: queryKeys.providers,
     queryFn: () => api.list_providers(),
   })
@@ -303,10 +306,11 @@ function ProviderList() {
 
 /** 177 U1: Find running servers (`local_servers_probe`: the engine probes its own 127.0.0.1), the local provider rows, and Add local server. */
 function LocalServers({ names, empty, children }: { names: string[]; empty: boolean; children: ReactNode }) {
+  const canQuery3 = useQuerySupport(["local_servers_probe"])
   const api = useApi()
   const engine = useConnection((s) => s.info?.name) ?? 'this node'
   // A query, not a mutation: the rows stay through a re-probe and a failed one (R1-1). Fetched only on demand.
-  const probe = useQuery({ queryKey: queryKeys.localServers, queryFn: () => api.local_servers_probe(), enabled: false, retry: false })
+  const probe = useQuery({ queryKey: queryKeys.localServers, queryFn: () => api.local_servers_probe(), enabled: canQuery3 && (false), retry: false })
   const [form, setForm] = useState<LocalForm>(() => presetForm('ollama'))
   const add = useAction((f: LocalForm) => api.add_provider(...localAddArgs(f)), {
     keys: [queryKeys.providers, queryKeys.models],
@@ -493,10 +497,11 @@ export function CustomProviderForm({ form, names, onChange, onSubmit, pending }:
 
 /** 177 U2: a provider's models with Context / Output fields; Save stores them (`set_model_limits`), Clear sets both back to unknown. */
 export function ModelLimits({ provider }: { provider: string }) {
+  const canQuery4 = useQuerySupport(["provider_models"])
   const api = useApi()
   const qc = useQueryClient()
   const key = queryKeys.providerModels(provider)
-  const models = useQuery({ queryKey: key, queryFn: () => api.provider_models(provider) })
+  const models = useQuery({ enabled: canQuery4, queryKey: key, queryFn: () => api.provider_models(provider) })
   const save = useAction((v: Limits) => api.set_model_limits(...limitsArgs(provider, v)), {
     // `list_models` carries the context window the pickers show.
     keys: [queryKeys.models],
@@ -564,9 +569,10 @@ const CHAIN = 'chain'
 
 /** The AWS profile Bedrock signs with, engine-wide (the TUI's `/aws`); credentials never leave the engine. */
 function Bedrock() {
+  const canQuery5 = useQuerySupport(["list_aws_profiles"])
   const api = useApi()
   const engineName = useConnection((s) => s.info?.name)
-  const aws = useQuery({
+  const aws = useQuery({ enabled: canQuery5,
     queryKey: queryKeys.awsProfiles,
     queryFn: () => api.list_aws_profiles(),
   })

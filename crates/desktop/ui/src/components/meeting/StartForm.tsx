@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 53 §4.1 / 03 §3: the start form — source picker (System audio by default, or one app; apps playing
 // audio first), title, a dictated context box, the one lawful sentence (158 R3, Amendment A2: no checkbox;
 // Start sends `consent: true`), the project (158 §9.2: a combobox; "Default" leaves the engine's remembered /
@@ -22,8 +23,8 @@ import { isMacDesktop } from '@/lib/hotkeys'
 import { LAWFUL } from '@/lib/detection'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { PermissionState } from '@/rpc/bindings/PermissionState'
-import type { StartMeeting } from '@/rpc/bindings/StartMeeting'
+import type { PermissionState } from "@/rpc/bindings/method.meeting.output"
+import type { StartMeeting } from '@/rpc/bindings/method.meeting.input'
 
 /** The picker's "System audio" row; `meeting_start` gets `process: null`. */
 const SYSTEM = 0
@@ -50,11 +51,16 @@ const AUTO = 'auto'
 const MEETING_DEFAULT = { label: 'Meeting default' }
 
 export function StartForm() {
+  const canQuery1 = useQuerySupport(["meeting_processes"])
+  const canQuery1_2 = useQuerySupport(["meeting_permissions"])
+  const canQuery1_3 = useQuerySupport(["list_models"])
+  const canQuery1_4 = useQuerySupport(["endless_settings_get"])
+  const canQuery1_5 = useQuerySupport(["meeting_templates"])
   const api = useApi()
   const navigate = useNavigate()
-  const processes = useQuery({ queryKey: queryKeys.meetingProcesses, queryFn: () => api.meeting_processes() })
-  const perms = useQuery({ queryKey: queryKeys.meetingPermissions, queryFn: () => api.meeting_permissions() })
-  const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
+  const processes = useQuery({ enabled: canQuery1, queryKey: queryKeys.meetingProcesses, queryFn: () => api.meeting_processes() })
+  const perms = useQuery({ enabled: canQuery1_2, queryKey: queryKeys.meetingPermissions, queryFn: () => api.meeting_permissions() })
+  const models = useQuery({ enabled: canQuery1_3, queryKey: queryKeys.models, queryFn: () => api.list_models() })
   const [pid, setPid] = useState(SYSTEM)
   const [title, setTitle] = useState('')
   const [context, setContext] = useState('')
@@ -65,12 +71,12 @@ export function StartForm() {
   const current = saved ? models.data?.find((m) => m.id === saved) : undefined
 
   // 137 R1-D6: the ∞ switch starts at `agent.endless.default_meeting`, remembered for this form only.
-  const endlessSettings = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
+  const endlessSettings = useQuery({ enabled: canQuery1_4, queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
   const [endless, setEndless] = useState<boolean | null>(null)
   const endlessOn = endless ?? endlessSettings.data?.default_meeting ?? false
 
   // 158 §11.1: the note template; `null` = not picked here (remembered per event, else `meeting.template`).
-  const templates = useQuery({ queryKey: queryKeys.meetingTemplates, queryFn: () => api.meeting_templates() })
+  const templates = useQuery({ enabled: canQuery1_5, queryKey: queryKeys.meetingTemplates, queryFn: () => api.meeting_templates() })
   const [template, setTemplate] = useState<string | null>(null)
 
   const start = useAction(

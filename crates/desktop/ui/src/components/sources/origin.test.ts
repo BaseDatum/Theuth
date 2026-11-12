@@ -1,13 +1,13 @@
 import { expect, test } from 'vitest'
-import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
-import type { SourceOrigin } from '@/rpc/bindings/SourceOrigin'
+import type { Source as NotebookSource } from "@/rpc/bindings/method.document.output"
+import type { SourceOrigin } from "@/rpc/bindings/method.agent.output"
 import { agoText, detectFile, detectUrl, isMedia, originGlyph, originLabel, originLine, sourceTitle, statusWord } from './origin'
 
 const NOW = Date.UTC(2026, 9, 8, 12)
 const DAY = 86_400_000
 
 const source = (origin: SourceOrigin, extra: Partial<NotebookSource> = {}): NotebookSource => ({
-  doc: { id: 'd1', kind: 'source', title: 'T', binding: 'notebook', created_ms: 0n, updated_ms: 0n, bytes: 0n } as unknown as NotebookSource['doc'],
+  doc: { id: 'd1', kind: 'source', title: 'T', binding: 'notebook', created_ms: 0, updated_ms: 0, bytes: 0 } as unknown as NotebookSource['doc'],
   origin,
   status: 'completed',
   progress: null,
@@ -49,15 +49,15 @@ test('every origin has a glyph and a label', () => {
 })
 
 test('the origin line: pages, else minutes, else words; fetched ago; insights; the youtube route', () => {
-  const pdf = source({ kind: 'file', name: 'a.pdf', sha256: '', ext: 'pdf' }, { pages: 48, fetched_ms: BigInt(NOW - 3 * DAY), insights: 1, words: 9000 })
+  const pdf = source({ kind: 'file', name: 'a.pdf', sha256: '', ext: 'pdf' }, { pages: 48, fetched_ms: NOW - 3 * DAY, insights: 1, words: 9000 })
   expect(originLine(pdf, NOW)).toBe('file · 48 pages · fetched 3 d ago · 1 insight')
-  const yt = source({ kind: 'youtube', video: 'v', url: 'u', route: 'audio' }, { status: 'running', progress: 62, duration_ms: 2_460_000n })
+  const yt = source({ kind: 'youtube', video: 'v', url: 'u', route: 'audio' }, { status: 'running', progress: 62, duration_ms: 2460000 })
   expect(originLine(yt, NOW)).toBe('youtube · 41 min · transcript route: audio → local STT')
   expect(originLine(source({ kind: 'youtube', video: 'v', url: 'u', route: 'captions' }), NOW)).toBe('youtube · transcript route: captions')
-  expect(originLine(source({ kind: 'url', url: 'u', canonical: null }, { fetched_ms: BigInt(NOW - 9 * DAY), insights: 2 }), NOW)).toBe('url · fetched 9 d ago · 2 insights')
+  expect(originLine(source({ kind: 'url', url: 'u', canonical: null }, { fetched_ms: NOW - 9 * DAY, insights: 2 }), NOW)).toBe('url · fetched 9 d ago · 2 insights')
   expect(originLine(source({ kind: 'text', title: 't', sha256: '' }, { words: 1 }), NOW)).toBe('pasted text · 1 word')
   expect(originLine(source({ kind: 'session', session: 's' }), NOW)).toBe('past session')
-  expect(originLine(source({ kind: 'audio', name: 'a.m4a', sha256: '', ext: 'm4a' }, { duration_ms: 350_000n }), NOW)).toBe('audio · 6 min')
+  expect(originLine(source({ kind: 'audio', name: 'a.m4a', sha256: '', ext: 'm4a' }, { duration_ms: 350000 }), NOW)).toBe('audio · 6 min')
 })
 
 test('agoText rounds down to the largest unit', () => {
@@ -82,7 +82,7 @@ test('the status word per status, with the transcribing/fetching verb and the pe
 
 test('media detection, url/file detection, and the title fallback', () => {
   expect(isMedia(source({ kind: 'youtube', video: 'v', url: 'u', route: 'audio' }))).toBe(true)
-  expect(isMedia(source({ kind: 'meeting', meeting: 'm' }, { duration_ms: 1n }))).toBe(true)
+  expect(isMedia(source({ kind: 'meeting', meeting: 'm' }, { duration_ms: 1 }))).toBe(true)
   expect(isMedia(source({ kind: 'url', url: 'u', canonical: null }))).toBe(false)
   expect(detectUrl('https://www.youtube.com/watch?v=x')).toBe('youtube')
   expect(detectUrl('youtu.be/x')).toBe('youtube')

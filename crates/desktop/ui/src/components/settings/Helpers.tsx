@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useModels } from '@/components/agents/queries'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
@@ -6,18 +7,24 @@ import { queryKeys, useApi } from '@/lib/rpc'
 
 /** 188 A5: Settings › Models › Helpers — the cheap side-call models: chat titles, the vision fallback, the oracle's escalation. */
 export function Helpers() {
+  const canQuery1 = useQuerySupport(["title_model"])
+  const canQuery1_2 = useQuerySupport(["title_effort"])
+  const canQuery1_3 = useQuerySupport(["vision_model"])
+  const canQuery1_4 = useQuerySupport(["vision_effort"])
+  const canQuery1_5 = useQuerySupport(["escalate_model"])
+  const canQuery1_6 = useQuerySupport(["escalate_effort"])
   const api = useApi()
   const models = useModels()
-  const titleModel = useQuery({
+  const titleModel = useQuery({ enabled: canQuery1,
     queryKey: queryKeys.titleModel,
     queryFn: () => api.title_model(),
   })
-  const titleEffort = useQuery({ queryKey: queryKeys.titleEffort, queryFn: () => api.title_effort() })
-  const visionModel = useQuery({
+  const titleEffort = useQuery({ enabled: canQuery1_2, queryKey: queryKeys.titleEffort, queryFn: () => api.title_effort() })
+  const visionModel = useQuery({ enabled: canQuery1_3,
     queryKey: queryKeys.visionModel,
     queryFn: () => api.vision_model(),
   })
-  const visionEffort = useQuery({ queryKey: queryKeys.visionEffort, queryFn: () => api.vision_effort() })
+  const visionEffort = useQuery({ enabled: canQuery1_4, queryKey: queryKeys.visionEffort, queryFn: () => api.vision_effort() })
 
   // 194 D4c/D4d: a model change may drop the stored effort (Off clears it), so its key refetches too.
   const setTitleModel = useAction((id: string) => api.set_title_model(id === 'off' ? null : id), {
@@ -28,11 +35,11 @@ export function Helpers() {
     keys: [queryKeys.visionModel, queryKeys.visionEffort],
   })
   const setVisionEffort = useAction((level: string | null) => api.set_vision_effort(level), { keys: [queryKeys.visionEffort] })
-  const escalateModel = useQuery({
+  const escalateModel = useQuery({ enabled: canQuery1_5,
     queryKey: queryKeys.escalateModel,
     queryFn: () => api.escalate_model(),
   })
-  const escalateEffort = useQuery({ queryKey: queryKeys.escalateEffort, queryFn: () => api.escalate_effort() })
+  const escalateEffort = useQuery({ enabled: canQuery1_6, queryKey: queryKeys.escalateEffort, queryFn: () => api.escalate_effort() })
   // 57 §0.9: the effective model follows the title model, so both keys refresh.
   const setEscalateModel = useAction((id: string) => api.set_escalate_model(id === 'off' ? null : id), {
     keys: [queryKeys.escalateModel, queryKeys.escalateEffort],

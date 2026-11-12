@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { toast } from 'sonner'
@@ -13,13 +14,14 @@ const PRIVACY = 'x-apple.systempreferences:com.apple.preference.security'
 
 /** 27 §6: the `computer_*` tools' switch (188 F6), then the two macOS permissions they need and the displays they will see. */
 export function Computer() {
+  const canQuery1 = useQuerySupport(["computer_permissions"])
   const api = useApi()
   // Off, the engine has no computer actor to answer, so the permissions are not asked for.
   const runs = useFlagRuns('computer.enabled')
   const perms = useQuery({
     queryKey: queryKeys.computer,
     queryFn: () => api.computer_permissions(),
-    enabled: runs === true,
+    enabled: canQuery1 && (runs === true),
   })
   const p = perms.data
 

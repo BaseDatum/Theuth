@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 144 §10, §12.1 (wave 2, U2): the Overviews list under the notes column — one row per kind (newest version), its
 // status, Open / Regenerate, older versions behind `▾ versions`; the audio row plays `overview.mp3` inline.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -10,8 +11,8 @@ import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { askKeys, useAskApi, useOverviews } from '@/lib/ask-rpc'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { Overview } from '@/rpc/bindings/Overview'
-import type { OverviewKind } from '@/rpc/bindings/OverviewKind'
+import type { Overview } from "@/rpc/bindings/method.agent.output"
+import type { OverviewKind } from "@/rpc/bindings/method.agent.output"
 
 /** The five kinds in menu order (§10): glyph and label shared by the header's Overviews ▾ menu. */
 export const OVERVIEWS: readonly { kind: OverviewKind; label: string; Icon: LucideIcon }[] = [
@@ -154,8 +155,9 @@ function Open({ o }: { o: Overview }) {
 
 /** `<audio controls>` over the mp3's bytes: `asset://` on this Mac, else `get_attachment` → blob URL (31 §9) — the same path the viewer streams by. */
 function Audio({ callId }: { callId: string }) {
+  const canQuery1 = useQuerySupport(["get_artifact"])
   const api = useApi()
-  const record = useQuery({ queryKey: queryKeys.artifact(callId), queryFn: () => api.get_artifact(callId) })
+  const record = useQuery({ enabled: canQuery1, queryKey: queryKeys.artifact(callId), queryFn: () => api.get_artifact(callId) })
   if (!record.data) return <span className="h-8 w-full animate-pulse rounded-full bg-layer-2" />
   return <Player path={record.data.path} />
 }

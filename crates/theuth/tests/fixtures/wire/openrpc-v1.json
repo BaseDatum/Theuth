@@ -3,10 +3,28 @@
     "schemas": {
       "event.a2a_2echanged.output.A2aChanged": {
         "description": "Event: network configuration or listener state changed (§10). No payload:\nreload [`GetStatus`].",
+        "properties": {
+          "type": {
+            "const": "A2aChanged",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
         "type": "object"
       },
       "event.a2a_2echanged.receiver.A2aChanged": {
         "description": "Event: network configuration or listener state changed (§10). No payload:\nreload [`GetStatus`].",
+        "properties": {
+          "type": {
+            "const": "A2aChanged",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
         "type": "object"
       },
       "event.a2a_2econtacts.output.ContactEvent": {
@@ -317,11 +335,16 @@
               }
             ],
             "description": "Affected subtree; `None` for global."
+          },
+          "type": {
+            "const": "CommunicationChanged",
+            "type": "string"
           }
         },
         "required": [
           "session",
-          "revision"
+          "revision",
+          "type"
         ],
         "type": "object"
       },
@@ -349,10 +372,15 @@
               }
             ],
             "description": "Affected subtree; `None` for global."
+          },
+          "type": {
+            "const": "CommunicationChanged",
+            "type": "string"
           }
         },
         "required": [
-          "revision"
+          "revision",
+          "type"
         ],
         "type": "object"
       },
@@ -373,11 +401,16 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "type": {
+            "const": "CostCubeChanged",
+            "type": "string"
           }
         },
         "required": [
           "epoch",
-          "rev"
+          "rev",
+          "type"
         ],
         "type": "object"
       },
@@ -393,11 +426,16 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "type": {
+            "const": "CostCubeChanged",
+            "type": "string"
           }
         },
         "required": [
           "epoch",
-          "rev"
+          "rev",
+          "type"
         ],
         "type": "object"
       },
@@ -548,6 +586,10 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "type": {
+            "const": "EndlessProgress",
+            "type": "string"
           }
         },
         "required": [
@@ -558,7 +600,8 @@
           "error",
           "backfill",
           "stalled",
-          "backlog"
+          "backlog",
+          "type"
         ],
         "type": "object"
       },
@@ -750,13 +793,18 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "type": {
+            "const": "EndlessProgress",
+            "type": "string"
           }
         },
         "required": [
           "session",
           "built",
           "total",
-          "settling"
+          "settling",
+          "type"
         ],
         "type": "object"
       },
@@ -6785,11 +6833,16 @@
           "provider": {
             "description": "genai namespace (`openai`).",
             "type": "string"
+          },
+          "type": {
+            "const": "LoginFinished",
+            "type": "string"
           }
         },
         "required": [
           "provider",
-          "error"
+          "error",
+          "type"
         ],
         "type": "object"
       },
@@ -6806,10 +6859,15 @@
           "provider": {
             "description": "genai namespace (`openai`).",
             "type": "string"
+          },
+          "type": {
+            "const": "LoginFinished",
+            "type": "string"
           }
         },
         "required": [
-          "provider"
+          "provider",
+          "type"
         ],
         "type": "object"
       },
@@ -7022,11 +7080,16 @@
               }
             ],
             "description": "The ask session."
+          },
+          "type": {
+            "const": "NotebookAsk",
+            "type": "string"
           }
         },
         "required": [
           "session",
-          "event"
+          "event",
+          "type"
         ],
         "type": "object"
       },
@@ -7242,11 +7305,16 @@
               }
             ],
             "description": "The ask session."
+          },
+          "type": {
+            "const": "NotebookAsk",
+            "type": "string"
           }
         },
         "required": [
           "session",
-          "event"
+          "event",
+          "type"
         ],
         "type": "object"
       },
@@ -7290,6 +7358,10 @@
               }
             ],
             "description": "The turn that consumed it."
+          },
+          "type": {
+            "const": "PeerDelivered",
+            "type": "string"
           }
         },
         "required": [
@@ -7297,7 +7369,8 @@
           "origin",
           "text",
           "seq",
-          "turn"
+          "turn",
+          "type"
         ],
         "type": "object"
       },
@@ -7411,6 +7484,10 @@
               }
             ],
             "description": "The turn that consumed it."
+          },
+          "type": {
+            "const": "PeerDelivered",
+            "type": "string"
           }
         },
         "required": [
@@ -7418,7 +7495,8 @@
           "origin",
           "text",
           "seq",
-          "turn"
+          "turn",
+          "type"
         ],
         "type": "object"
       },
@@ -7517,12 +7595,17 @@
               }
             ],
             "description": "New state."
+          },
+          "type": {
+            "const": "PeerMessageChanged",
+            "type": "string"
           }
         },
         "required": [
           "session",
           "id",
-          "state"
+          "state",
+          "type"
         ],
         "type": "object"
       },
@@ -7594,12 +7677,17 @@
               }
             ],
             "description": "New state."
+          },
+          "type": {
+            "const": "PeerMessageChanged",
+            "type": "string"
           }
         },
         "required": [
           "session",
           "id",
-          "state"
+          "state",
+          "type"
         ],
         "type": "object"
       },
@@ -7704,6 +7792,10 @@
               }
             ],
             "description": "Why it ran."
+          },
+          "type": {
+            "const": "AppCallChanged",
+            "type": "string"
           }
         },
         "required": [
@@ -7715,7 +7807,8 @@
           "risk",
           "trigger",
           "status",
-          "ms"
+          "ms",
+          "type"
         ],
         "type": "object"
       },
@@ -7870,6 +7963,10 @@
               }
             ],
             "description": "Why it ran."
+          },
+          "type": {
+            "const": "AppCallChanged",
+            "type": "string"
           }
         },
         "required": [
@@ -7881,7 +7978,8 @@
           "risk",
           "trigger",
           "status",
-          "ms"
+          "ms",
+          "type"
         ],
         "type": "object"
       },
@@ -8057,6 +8155,10 @@
             "description": "The fence body verbatim (between the fence lines).",
             "type": "string"
           },
+          "type": {
+            "const": "FenceSnapshotRequested",
+            "type": "string"
+          },
           "width": {
             "description": "Frame width in CSS px.",
             "format": "uint32",
@@ -8070,7 +8172,8 @@
           "source",
           "width",
           "appearance",
-          "scale"
+          "scale",
+          "type"
         ],
         "type": "object"
       },
@@ -8151,6 +8254,10 @@
             "description": "The fence body verbatim (between the fence lines).",
             "type": "string"
           },
+          "type": {
+            "const": "FenceSnapshotRequested",
+            "type": "string"
+          },
           "width": {
             "description": "Frame width in CSS px.",
             "format": "uint32",
@@ -8164,7 +8271,8 @@
           "source",
           "width",
           "appearance",
-          "scale"
+          "scale",
+          "type"
         ],
         "type": "object"
       },
@@ -8183,10 +8291,15 @@
               }
             ],
             "description": "The request."
+          },
+          "type": {
+            "const": "FenceSnapshotResolved",
+            "type": "string"
           }
         },
         "required": [
-          "id"
+          "id",
+          "type"
         ],
         "type": "object"
       },
@@ -8205,10 +8318,15 @@
               }
             ],
             "description": "The request."
+          },
+          "type": {
+            "const": "FenceSnapshotResolved",
+            "type": "string"
           }
         },
         "required": [
-          "id"
+          "id",
+          "type"
         ],
         "type": "object"
       },
@@ -8261,6 +8379,10 @@
             ],
             "description": "Owning session."
           },
+          "type": {
+            "const": "PagePreviewRequested",
+            "type": "string"
+          },
           "width": {
             "description": "Frame width in CSS px.",
             "format": "uint32",
@@ -8273,7 +8395,8 @@
           "session",
           "html",
           "width",
-          "appearance"
+          "appearance",
+          "type"
         ],
         "type": "object"
       },
@@ -8336,6 +8459,10 @@
             ],
             "description": "Owning session."
           },
+          "type": {
+            "const": "PagePreviewRequested",
+            "type": "string"
+          },
           "width": {
             "description": "Frame width in CSS px.",
             "format": "uint32",
@@ -8347,7 +8474,8 @@
           "id",
           "session",
           "html",
-          "width"
+          "width",
+          "type"
         ],
         "type": "object"
       },
@@ -8371,10 +8499,15 @@
               }
             ],
             "description": "The request."
+          },
+          "type": {
+            "const": "PagePreviewResolved",
+            "type": "string"
           }
         },
         "required": [
-          "id"
+          "id",
+          "type"
         ],
         "type": "object"
       },
@@ -8393,10 +8526,15 @@
               }
             ],
             "description": "The request."
+          },
+          "type": {
+            "const": "PagePreviewResolved",
+            "type": "string"
           }
         },
         "required": [
-          "id"
+          "id",
+          "type"
         ],
         "type": "object"
       },
@@ -8537,12 +8675,17 @@
               }
             ],
             "description": "Owning session."
+          },
+          "type": {
+            "const": "ArtifactShown",
+            "type": "string"
           }
         },
         "required": [
           "session",
           "call_id",
-          "artifact"
+          "artifact",
+          "type"
         ],
         "type": "object"
       },
@@ -8739,12 +8882,17 @@
               }
             ],
             "description": "Owning session."
+          },
+          "type": {
+            "const": "ArtifactShown",
+            "type": "string"
           }
         },
         "required": [
           "session",
           "call_id",
-          "artifact"
+          "artifact",
+          "type"
         ],
         "type": "object"
       },
@@ -12108,10 +12256,15 @@
               }
             ],
             "description": "Document."
+          },
+          "type": {
+            "const": "CellLatestChanged",
+            "type": "string"
           }
         },
         "required": [
-          "doc"
+          "doc",
+          "type"
         ],
         "type": "object"
       },
@@ -12129,10 +12282,15 @@
               }
             ],
             "description": "Document."
+          },
+          "type": {
+            "const": "CellLatestChanged",
+            "type": "string"
           }
         },
         "required": [
-          "doc"
+          "doc",
+          "type"
         ],
         "type": "object"
       },
@@ -12221,6 +12379,10 @@
             "description": "Title after the change.",
             "type": "string"
           },
+          "type": {
+            "const": "DocumentChanged",
+            "type": "string"
+          },
           "updated_ms": {
             "description": "Last update, unix ms.",
             "format": "int64",
@@ -12232,7 +12394,8 @@
           "kind",
           "title",
           "updated_ms",
-          "deleted"
+          "deleted",
+          "type"
         ],
         "type": "object"
       },
@@ -12317,6 +12480,10 @@
             "description": "Title after the change.",
             "type": "string"
           },
+          "type": {
+            "const": "DocumentChanged",
+            "type": "string"
+          },
           "updated_ms": {
             "description": "Last update, unix ms.",
             "format": "int64",
@@ -12328,7 +12495,8 @@
           "kind",
           "title",
           "updated_ms",
-          "deleted"
+          "deleted",
+          "type"
         ],
         "type": "object"
       },
@@ -12558,6 +12726,10 @@
             ],
             "description": "The card's session, when it has one."
           },
+          "type": {
+            "const": "DoubleAnswered",
+            "type": "string"
+          },
           "undo_until": {
             "description": "RFC 3339 end of the undo window, when there is one.",
             "type": [
@@ -12574,7 +12746,8 @@
           "question_id",
           "class",
           "choice",
-          "version"
+          "version",
+          "type"
         ],
         "type": "object"
       },
@@ -12609,6 +12782,10 @@
             ],
             "description": "The card's session, when it has one."
           },
+          "type": {
+            "const": "DoubleAnswered",
+            "type": "string"
+          },
           "undo_until": {
             "description": "RFC 3339 end of the undo window, when there is one.",
             "type": [
@@ -12625,7 +12802,8 @@
           "question_id",
           "class",
           "choice",
-          "version"
+          "version",
+          "type"
         ],
         "type": "object"
       },
@@ -12745,6 +12923,10 @@
             ],
             "description": "The card's session, when it has one (packets and attention items may not);\nthe bridge's per-session filter reads it."
           },
+          "type": {
+            "const": "DoublePredicted",
+            "type": "string"
+          },
           "version": {
             "description": "`versions.id` the prediction names.",
             "type": "string"
@@ -12766,7 +12948,8 @@
           "probs",
           "rung",
           "version",
-          "explain"
+          "explain",
+          "type"
         ],
         "type": "object"
       },
@@ -12965,6 +13148,10 @@
             ],
             "description": "The card's session, when it has one (packets and attention items may not);\nthe bridge's per-session filter reads it."
           },
+          "type": {
+            "const": "DoublePredicted",
+            "type": "string"
+          },
           "version": {
             "description": "`versions.id` the prediction names.",
             "type": "string"
@@ -12986,7 +13173,8 @@
           "probs",
           "rung",
           "version",
-          "explain"
+          "explain",
+          "type"
         ],
         "type": "object"
       },
@@ -13109,6 +13297,10 @@
             ],
             "description": "Which tier runs."
           },
+          "type": {
+            "const": "DoubleTrainingState",
+            "type": "string"
+          },
           "venue": {
             "description": "`local` | `node:<name>`.",
             "type": "string"
@@ -13119,7 +13311,8 @@
           "tier",
           "venue",
           "state",
-          "message"
+          "message",
+          "type"
         ],
         "type": "object"
       },
@@ -13238,6 +13431,10 @@
             ],
             "description": "Which tier runs."
           },
+          "type": {
+            "const": "DoubleTrainingState",
+            "type": "string"
+          },
           "venue": {
             "description": "`local` | `node:<name>`.",
             "type": "string"
@@ -13248,7 +13445,8 @@
           "tier",
           "venue",
           "state",
-          "message"
+          "message",
+          "type"
         ],
         "type": "object"
       },
@@ -13345,6 +13543,10 @@
               "null"
             ]
           },
+          "type": {
+            "const": "DoubleVersionActivated",
+            "type": "string"
+          },
           "version": {
             "description": "The now-active `versions.id`.",
             "type": "string"
@@ -13352,7 +13554,8 @@
         },
         "required": [
           "version",
-          "metrics"
+          "metrics",
+          "type"
         ],
         "type": "object"
       },
@@ -13369,6 +13572,10 @@
               "null"
             ]
           },
+          "type": {
+            "const": "DoubleVersionActivated",
+            "type": "string"
+          },
           "version": {
             "description": "The now-active `versions.id`.",
             "type": "string"
@@ -13376,7 +13583,8 @@
         },
         "required": [
           "version",
-          "metrics"
+          "metrics",
+          "type"
         ],
         "type": "object"
       },
@@ -13407,13 +13615,18 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "type": {
+            "const": "DreamNightFinished",
+            "type": "string"
           }
         },
         "required": [
           "night",
           "counts",
           "spend_nanos",
-          "proposals"
+          "proposals",
+          "type"
         ],
         "type": "object"
       },
@@ -13587,13 +13800,18 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "type": {
+            "const": "DreamNightFinished",
+            "type": "string"
           }
         },
         "required": [
           "night",
           "counts",
           "spend_nanos",
-          "proposals"
+          "proposals",
+          "type"
         ],
         "type": "object"
       },
@@ -13746,10 +13964,15 @@
           "night": {
             "description": "The night id.",
             "type": "string"
+          },
+          "type": {
+            "const": "DreamNightStarted",
+            "type": "string"
           }
         },
         "required": [
-          "night"
+          "night",
+          "type"
         ],
         "type": "object"
       },
@@ -13759,10 +13982,15 @@
           "night": {
             "description": "The night id.",
             "type": "string"
+          },
+          "type": {
+            "const": "DreamNightStarted",
+            "type": "string"
           }
         },
         "required": [
-          "night"
+          "night",
+          "type"
         ],
         "type": "object"
       },
@@ -13779,11 +14007,16 @@
           "night": {
             "description": "The night id.",
             "type": "string"
+          },
+          "type": {
+            "const": "DreamUndone",
+            "type": "string"
           }
         },
         "required": [
           "night",
-          "group"
+          "group",
+          "type"
         ],
         "type": "object"
       },
@@ -13800,10 +14033,15 @@
           "night": {
             "description": "The night id.",
             "type": "string"
+          },
+          "type": {
+            "const": "DreamUndone",
+            "type": "string"
           }
         },
         "required": [
-          "night"
+          "night",
+          "type"
         ],
         "type": "object"
       },
@@ -13837,13 +14075,18 @@
               }
             ],
             "description": "Who did it."
+          },
+          "type": {
+            "const": "KnowledgeChanged",
+            "type": "string"
           }
         },
         "required": [
           "id",
           "op",
           "source",
-          "commit"
+          "commit",
+          "type"
         ],
         "type": "object"
       },
@@ -13947,12 +14190,17 @@
               }
             ],
             "description": "Who did it."
+          },
+          "type": {
+            "const": "KnowledgeChanged",
+            "type": "string"
           }
         },
         "required": [
           "id",
           "op",
-          "source"
+          "source",
+          "type"
         ],
         "type": "object"
       },
@@ -18943,13 +19191,18 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "type": {
+            "const": "AttentionChanged",
+            "type": "string"
           }
         },
         "required": [
           "count",
           "ids_added",
           "ids_removed",
-          "at_ms"
+          "at_ms",
+          "type"
         ],
         "type": "object"
       },
@@ -18981,13 +19234,18 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "type": {
+            "const": "AttentionChanged",
+            "type": "string"
           }
         },
         "required": [
           "count",
           "ids_added",
           "ids_removed",
-          "at_ms"
+          "at_ms",
+          "type"
         ],
         "type": "object"
       },
@@ -19029,6 +19287,10 @@
           "tool": {
             "description": "Tool name.",
             "type": "string"
+          },
+          "type": {
+            "const": "ApprovalRequested",
+            "type": "string"
           }
         },
         "required": [
@@ -19036,7 +19298,8 @@
           "session",
           "tool",
           "args",
-          "risk"
+          "risk",
+          "type"
         ],
         "type": "object"
       },
@@ -19070,12 +19333,17 @@
               }
             ],
             "description": "Owning session."
+          },
+          "type": {
+            "const": "AskRequested",
+            "type": "string"
           }
         },
         "required": [
           "id",
           "session",
-          "questions"
+          "questions",
+          "type"
         ],
         "type": "object"
       },
@@ -19147,10 +19415,15 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "type": {
+            "const": "Lagged",
+            "type": "string"
           }
         },
         "required": [
-          "count"
+          "count",
+          "type"
         ],
         "type": "object"
       },
@@ -19177,12 +19450,17 @@
               "$ref": "#/components/schemas/event.rpc_2estream.output.SecretsEvent"
             },
             "type": "array"
+          },
+          "type": {
+            "const": "PendingPrompts",
+            "type": "string"
           }
         },
         "required": [
           "approvals",
           "asks",
-          "secrets"
+          "secrets",
+          "type"
         ],
         "type": "object"
       },
@@ -19656,6 +19934,10 @@
           "tool": {
             "description": "Tool name.",
             "type": "string"
+          },
+          "type": {
+            "const": "ApprovalRequested",
+            "type": "string"
           }
         },
         "required": [
@@ -19663,7 +19945,8 @@
           "session",
           "tool",
           "args",
-          "risk"
+          "risk",
+          "type"
         ],
         "type": "object"
       },
@@ -19697,12 +19980,17 @@
               }
             ],
             "description": "Owning session."
+          },
+          "type": {
+            "const": "AskRequested",
+            "type": "string"
           }
         },
         "required": [
           "id",
           "session",
-          "questions"
+          "questions",
+          "type"
         ],
         "type": "object"
       },
@@ -19774,10 +20062,15 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "type": {
+            "const": "Lagged",
+            "type": "string"
           }
         },
         "required": [
-          "count"
+          "count",
+          "type"
         ],
         "type": "object"
       },
@@ -19804,12 +20097,17 @@
               "$ref": "#/components/schemas/event.rpc_2estream.receiver.SecretsEvent"
             },
             "type": "array"
+          },
+          "type": {
+            "const": "PendingPrompts",
+            "type": "string"
           }
         },
         "required": [
           "approvals",
           "asks",
-          "secrets"
+          "secrets",
+          "type"
         ],
         "type": "object"
       },
@@ -22515,11 +22813,16 @@
               }
             ],
             "description": "Followed session, not the relay carrier's admission scope."
+          },
+          "type": {
+            "const": "FollowState",
+            "type": "string"
           }
         },
         "required": [
           "session",
-          "live"
+          "live",
+          "type"
         ],
         "type": "object"
       },
@@ -22542,11 +22845,16 @@
               }
             ],
             "description": "Followed session, not the relay carrier's admission scope."
+          },
+          "type": {
+            "const": "FollowState",
+            "type": "string"
           }
         },
         "required": [
           "session",
-          "live"
+          "live",
+          "type"
         ],
         "type": "object"
       },
@@ -24265,10 +24573,15 @@
               }
             ],
             "description": "The row."
+          },
+          "type": {
+            "const": "ActivityAppended",
+            "type": "string"
           }
         },
         "required": [
-          "entry"
+          "entry",
+          "type"
         ],
         "type": "object"
       },
@@ -24436,10 +24749,15 @@
               }
             ],
             "description": "The row."
+          },
+          "type": {
+            "const": "ActivityAppended",
+            "type": "string"
           }
         },
         "required": [
-          "entry"
+          "entry",
+          "type"
         ],
         "type": "object"
       },
@@ -25128,6 +25446,10 @@
           "tool": {
             "description": "Tool name.",
             "type": "string"
+          },
+          "type": {
+            "const": "ApprovalRequested",
+            "type": "string"
           }
         },
         "required": [
@@ -25135,7 +25457,8 @@
           "session",
           "tool",
           "args",
-          "risk"
+          "risk",
+          "type"
         ],
         "type": "object"
       },
@@ -25202,6 +25525,10 @@
           "tool": {
             "description": "Tool name.",
             "type": "string"
+          },
+          "type": {
+            "const": "ApprovalRequested",
+            "type": "string"
           }
         },
         "required": [
@@ -25209,7 +25536,8 @@
           "session",
           "tool",
           "args",
-          "risk"
+          "risk",
+          "type"
         ],
         "type": "object"
       },
@@ -25265,12 +25593,17 @@
           "timed_out": {
             "description": "True when nobody answered in time.",
             "type": "boolean"
+          },
+          "type": {
+            "const": "ApprovalResolved",
+            "type": "string"
           }
         },
         "required": [
           "id",
           "decision",
-          "timed_out"
+          "timed_out",
+          "type"
         ],
         "type": "object"
       },
@@ -25316,12 +25649,17 @@
           "timed_out": {
             "description": "True when nobody answered in time.",
             "type": "boolean"
+          },
+          "type": {
+            "const": "ApprovalResolved",
+            "type": "string"
           }
         },
         "required": [
           "id",
           "decision",
-          "timed_out"
+          "timed_out",
+          "type"
         ],
         "type": "object"
       },
@@ -25370,12 +25708,17 @@
               }
             ],
             "description": "Owning session."
+          },
+          "type": {
+            "const": "AskRequested",
+            "type": "string"
           }
         },
         "required": [
           "id",
           "session",
-          "questions"
+          "questions",
+          "type"
         ],
         "type": "object"
       },
@@ -25470,12 +25813,17 @@
               }
             ],
             "description": "Owning session."
+          },
+          "type": {
+            "const": "AskRequested",
+            "type": "string"
           }
         },
         "required": [
           "id",
           "session",
-          "questions"
+          "questions",
+          "type"
         ],
         "type": "object"
       },
@@ -25562,12 +25910,17 @@
           "timed_out": {
             "description": "Nobody answered in time.",
             "type": "boolean"
+          },
+          "type": {
+            "const": "AskResolved",
+            "type": "string"
           }
         },
         "required": [
           "id",
           "dismissed",
-          "timed_out"
+          "timed_out",
+          "type"
         ],
         "type": "object"
       },
@@ -25594,12 +25947,17 @@
           "timed_out": {
             "description": "Nobody answered in time.",
             "type": "boolean"
+          },
+          "type": {
+            "const": "AskResolved",
+            "type": "string"
           }
         },
         "required": [
           "id",
           "dismissed",
-          "timed_out"
+          "timed_out",
+          "type"
         ],
         "type": "object"
       },
@@ -26426,13 +26784,18 @@
               "string",
               "null"
             ]
+          },
+          "type": {
+            "const": "McpProgress",
+            "type": "string"
           }
         },
         "required": [
           "connecting",
           "connected",
           "failed",
-          "homes_problem"
+          "homes_problem",
+          "type"
         ],
         "type": "object"
       },
@@ -26466,12 +26829,17 @@
               "string",
               "null"
             ]
+          },
+          "type": {
+            "const": "McpProgress",
+            "type": "string"
           }
         },
         "required": [
           "connecting",
           "connected",
-          "failed"
+          "failed",
+          "type"
         ],
         "type": "object"
       },
@@ -26712,6 +27080,10 @@
             "description": "`true`: the next start of `theuth` runs it. `false`: `t --update`\n(with `sudo`) installs it.",
             "type": "boolean"
           },
+          "type": {
+            "const": "UpdateReady",
+            "type": "string"
+          },
           "version": {
             "description": "The version that is ready (`0.2.0`).",
             "type": "string"
@@ -26719,7 +27091,8 @@
         },
         "required": [
           "version",
-          "applied"
+          "applied",
+          "type"
         ],
         "type": "object"
       },
@@ -26730,6 +27103,10 @@
             "description": "`true`: the next start of `theuth` runs it. `false`: `t --update`\n(with `sudo`) installs it.",
             "type": "boolean"
           },
+          "type": {
+            "const": "UpdateReady",
+            "type": "string"
+          },
           "version": {
             "description": "The version that is ready (`0.2.0`).",
             "type": "string"
@@ -26737,7 +27114,8 @@
         },
         "required": [
           "version",
-          "applied"
+          "applied",
+          "type"
         ],
         "type": "object"
       },
@@ -28143,6 +28521,10 @@
               }
             ],
             "description": "Owning session."
+          },
+          "type": {
+            "const": "ScrapeProgress",
+            "type": "string"
           }
         },
         "required": [
@@ -28150,7 +28532,8 @@
           "call_id",
           "inflight",
           "done",
-          "limit"
+          "limit",
+          "type"
         ],
         "type": "object"
       },
@@ -28193,6 +28576,10 @@
               }
             ],
             "description": "Owning session."
+          },
+          "type": {
+            "const": "ScrapeProgress",
+            "type": "string"
           }
         },
         "required": [
@@ -28200,7 +28587,8 @@
           "call_id",
           "inflight",
           "done",
-          "limit"
+          "limit",
+          "type"
         ],
         "type": "object"
       },
@@ -83004,13 +83392,18 @@
               "string",
               "null"
             ]
+          },
+          "type": {
+            "const": "McpProgress",
+            "type": "string"
           }
         },
         "required": [
           "connecting",
           "connected",
           "failed",
-          "homes_problem"
+          "homes_problem",
+          "type"
         ],
         "type": "object"
       },
@@ -83481,12 +83874,17 @@
               "string",
               "null"
             ]
+          },
+          "type": {
+            "const": "McpProgress",
+            "type": "string"
           }
         },
         "required": [
           "connecting",
           "connected",
-          "failed"
+          "failed",
+          "type"
         ],
         "type": "object"
       },
@@ -93659,12 +94057,17 @@
               }
             ],
             "description": "Owning session."
+          },
+          "type": {
+            "const": "AskRequested",
+            "type": "string"
           }
         },
         "required": [
           "id",
           "session",
-          "questions"
+          "questions",
+          "type"
         ],
         "type": "object"
       },
@@ -95654,12 +96057,17 @@
               }
             ],
             "description": "Owning session."
+          },
+          "type": {
+            "const": "AskRequested",
+            "type": "string"
           }
         },
         "required": [
           "id",
           "session",
-          "questions"
+          "questions",
+          "type"
         ],
         "type": "object"
       },
@@ -113098,6 +113506,10 @@
             "description": "`true`: the next start of `theuth` runs it. `false`: `t --update`\n(with `sudo`) installs it.",
             "type": "boolean"
           },
+          "type": {
+            "const": "UpdateReady",
+            "type": "string"
+          },
           "version": {
             "description": "The version that is ready (`0.2.0`).",
             "type": "string"
@@ -113105,7 +113517,8 @@
         },
         "required": [
           "version",
-          "applied"
+          "applied",
+          "type"
         ],
         "type": "object"
       },
@@ -113116,6 +113529,10 @@
             "description": "`true`: the next start of `theuth` runs it. `false`: `t --update`\n(with `sudo`) installs it.",
             "type": "boolean"
           },
+          "type": {
+            "const": "UpdateReady",
+            "type": "string"
+          },
           "version": {
             "description": "The version that is ready (`0.2.0`).",
             "type": "string"
@@ -113123,7 +113540,8 @@
         },
         "required": [
           "version",
-          "applied"
+          "applied",
+          "type"
         ],
         "type": "object"
       },

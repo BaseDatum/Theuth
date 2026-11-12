@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import NumberFlow, { NumberFlowGroup } from '@number-flow/react'
 import { useQuery } from '@tanstack/react-query'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -45,6 +46,7 @@ export function meterSource(
 }
 
 export function ContextMeter({ session, compact }: { session: string; compact?: boolean }) {
+  const canQuery1 = useQuerySupport(["list_models"])
   const api = useApi()
   const context = useSessionField(session, 'context')
   const contextEstimated = useSessionField(session, 'contextEstimated')
@@ -52,7 +54,7 @@ export function ContextMeter({ session, compact }: { session: string; compact?: 
   const model = useSessionField(session, 'model')
   const size = useSessionField(session, 'contextSize')
   const observed = useSessionField(session, 'observed')
-  const { data: models } = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
+  const { data: models } = useQuery({ enabled: canQuery1, queryKey: queryKeys.models, queryFn: () => api.list_models() })
   const { used, estimated, limit: own } = meterSource(observed, context, contextEstimated, size ?? undefined)
   if (used === undefined) return null
   const limit = own ?? models?.find((m) => m.id === model)?.context ?? 0

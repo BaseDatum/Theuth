@@ -1,25 +1,28 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
-import type { ItemKind } from '@/rpc/bindings/ItemKind'
-import type { Notebook } from '@/rpc/bindings/Notebook'
-import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
-import type { SourceEvent } from '@/rpc/bindings/SourceEvent'
-import type { SourceStatus } from '@/rpc/bindings/SourceStatus'
+import type { ItemKind } from "@/rpc/bindings/method.agent.output"
+import type { Notebook } from "@/rpc/bindings/method.agent.output"
+import type { Source as NotebookSource } from "@/rpc/bindings/method.document.output"
+import type { SourceEvent } from "@/rpc/bindings/event.document_2esources.output"
+import type { SourceStatus } from "@/rpc/bindings/method.agent.output"
 import { notebookKeys, useContextApi, useNotebooksApi } from '@/lib/notebooks-rpc'
 import { useApi } from '@/lib/rpc'
 import { on } from '@/store/sessions'
-import type { WireEvent } from '@/rpc/events'
+
 
 /** `notebook_get(id)` — the row with counts (the items come from `useNotebookItems`). `enabled: false` = no id yet. */
 export function useNotebook(id: string, enabled = true) {
+  const canQuery1 = useQuerySupport(["notebook_get"])
   const nb = useNotebooksApi()
-  return useQuery({ queryKey: notebookKeys.one(id), queryFn: async () => (await nb.notebook_get(id)).notebook, enabled })
+  return useQuery({ queryKey: notebookKeys.one(id), queryFn: async () => (await nb.notebook_get(id)).notebook, enabled: canQuery1 && (enabled) })
 }
 
 /** `notebook_items_list(id)` — live rows only (removed_ms null). */
 export function useNotebookItems(id: string) {
+  const canQuery2 = useQuerySupport(["notebook_items_list"])
   const nb = useNotebooksApi()
-  return useQuery({
+  return useQuery({ enabled: canQuery2,
     queryKey: notebookKeys.items(id),
     queryFn: async () => (await nb.notebook_items_list(id)).filter((i) => i.removed_ms === null),
   })
@@ -27,6 +30,7 @@ export function useNotebookItems(id: string) {
 
 /** `source_list(notebook)`; `SourceEvent`s patch status/progress in place (§12.1 "cards live"). */
 export function useSources(notebook: string | null) {
+  const canQuery3 = useQuerySupport(["source_list"])
   const nb = useNotebooksApi()
   const qc = useQueryClient()
   useEffect(() => {
@@ -37,29 +41,31 @@ export function useSources(notebook: string | null) {
       qc.setQueryData<NotebookSource>(notebookKeys.source(ev.source), (s) => (s ? applySourceEvent(s, ev) : s))
       if (ev.type === 'Changed') void qc.invalidateQueries({ queryKey: ['notebooks', 'sources'] })
     }
-    // The bus is typed by `WireEvent`, which predates `SourceEvent`; subscribe by the tags §13.1 writes.
-    const offs = (['Changed', 'Progress'] as unknown as WireEvent['type'][]).map((t) => on(t, apply))
+    const offs = (['Changed', 'Progress'] as const).map((t) => on('document.sources@1', t, apply))
     return () => offs.forEach((off) => off())
   }, [qc])
-  return useQuery({ queryKey: notebookKeys.sources(notebook), queryFn: () => nb.source_list(notebook) })
+  return useQuery({ enabled: canQuery3, queryKey: notebookKeys.sources(notebook), queryFn: () => nb.source_list(notebook) })
 }
 
 /** `source_get(id)`. */
 export function useSource(id: string) {
+  const canQuery4 = useQuerySupport(["source_get"])
   const nb = useNotebooksApi()
-  return useQuery({ queryKey: notebookKeys.source(id), queryFn: () => nb.source_get(id) })
+  return useQuery({ enabled: canQuery4, queryKey: notebookKeys.source(id), queryFn: () => nb.source_get(id) })
 }
 
 /** `notebook_chats(id)` — this notebook's sessions, newest first (§8); owner-only. */
 export function useNotebookChats(id: string) {
+  const canQuery5 = useQuerySupport(["notebook_chats"])
   const nb = useNotebooksApi()
-  return useQuery({ queryKey: notebookKeys.chats(id), queryFn: () => nb.notebook_chats(id) })
+  return useQuery({ enabled: canQuery5, queryKey: notebookKeys.chats(id), queryFn: () => nb.notebook_chats(id) })
 }
 
 /** The notebook document's markdown — the description (§3.2). */
 export function useDescription(id: string) {
+  const canQuery6 = useQuerySupport(["doc_markdown"])
   const api = useApi()
-  return useQuery({ queryKey: notebookKeys.description(id), queryFn: () => api.doc_markdown(id) })
+  return useQuery({ enabled: canQuery6, queryKey: notebookKeys.description(id), queryFn: () => api.doc_markdown(id) })
 }
 
 /**
@@ -67,15 +73,16 @@ export function useDescription(id: string) {
  * invalidate `notebookKeys.estimate`) and on every `SourceEvent::Changed` (an ingest or insight run changes the tokens).
  */
 export function useContextEstimate(notebook: string, session: string | null) {
+  const canQuery7 = useQuerySupport(["notebook_context_estimate"])
   const ctx = useContextApi()
   const qc = useQueryClient()
   useEffect(() => {
     const apply = (raw: unknown) => {
       if (sourceEventOf(raw)?.type === 'Changed') void qc.invalidateQueries({ queryKey: ['notebooks', 'estimate', notebook] })
     }
-    return on('Changed' as unknown as WireEvent['type'], apply)
+    return on('document.sources@1', 'Changed', apply)
   }, [qc, notebook])
-  return useQuery({ queryKey: notebookKeys.estimate(notebook, session), queryFn: () => ctx.notebook_context_estimate(notebook, session) })
+  return useQuery({ enabled: canQuery7, queryKey: notebookKeys.estimate(notebook, session), queryFn: () => ctx.notebook_context_estimate(notebook, session) })
 }
 
 /**
@@ -84,10 +91,12 @@ export function useContextEstimate(notebook: string, session: string | null) {
  * did (ponytail: O(notebooks); an item→notebooks RPC if it grows). `undefined` while any list is still loading.
  */
 export function useItemNotebooks(kind: ItemKind, item: string): Notebook[] | undefined {
+  const canQuery8 = useQuerySupport(["notebook_list"])
+  const canQuery8_2 = useQuerySupport(["notebook_items_list"])
   const nb = useNotebooksApi()
-  const notebooks = useQuery({ queryKey: notebookKeys.list(false), queryFn: () => nb.notebook_list(false) })
+  const notebooks = useQuery({ enabled: canQuery8, queryKey: notebookKeys.list(false), queryFn: () => nb.notebook_list(false) })
   const lists = useQueries({
-    queries: (notebooks.data ?? []).map((n) => ({
+    queries: (notebooks.data ?? []).map((n) => ({ enabled: canQuery8_2,
       queryKey: notebookKeys.items(n.doc.id),
       queryFn: async () => (await nb.notebook_items_list(n.doc.id)).filter((i) => i.removed_ms === null),
     })),

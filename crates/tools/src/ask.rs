@@ -82,6 +82,7 @@ pub enum Answer {
 /// Event: a tool call is waiting on the user's answers. Every UI subscribes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct AskRequested {
     /// Use in [`AnswerAsk`].
@@ -101,6 +102,7 @@ impl wire::WireEvent for AskRequested {
 /// prompt on this.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct AskResolved {
     /// The request.

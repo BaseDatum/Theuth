@@ -2,8 +2,8 @@ import '../settings/test-dom'
 import { act, createElement, type ReactElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, expect, type Mock, test, vi } from 'vitest'
-import type { ConfigOption } from '@/rpc/bindings/ConfigOption'
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import type { ConfigOption } from "@/rpc/bindings/method.agent.output"
+import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { AdvisorCommand, dialogPlacement, HarnessPicker, harnessCurrent, harnessGroups, type Model, slashTarget } from './ModelMenu'
 
 const advisor = vi.hoisted(() => ({ status: undefined as unknown, mutate: (() => {}) as (v: unknown) => void }))

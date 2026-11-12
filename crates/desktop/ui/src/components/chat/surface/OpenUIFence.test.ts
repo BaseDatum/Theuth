@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { toast } from 'sonner'
 import { expect, test, vi } from 'vitest'
-import type { AppDoc } from '@/rpc/extra'
+import type { AppDoc } from "@/rpc/bindings/method.app.output"
 import { useSessions } from '@/store/sessions'
 import { FenceContext } from './JsonRenderFence'
 import { INERT, OpenUIFence, appName, openAsApp, staticProvider } from './OpenUIFence'

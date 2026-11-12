@@ -3,8 +3,8 @@ import { type ComponentType, createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
-import type { CalSource } from '@/rpc/bindings/CalSource'
-import type { CalEvent } from '@/rpc/bindings/CalEvent'
+import type { CalSource } from "@/rpc/bindings/method.meeting.output"
+import type { CalEvent } from "@/rpc/bindings/method.meeting.output"
 import { CalendarSources, CalendarUpcoming, addSource, deleteSource } from './Calendar'
 
 // Frozen clock: Upcoming's key is the minute-rounded `Date.now()`; two paints must share it.

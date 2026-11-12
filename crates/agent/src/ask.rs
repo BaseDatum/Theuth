@@ -129,6 +129,7 @@ pub struct AskHit {
 /// `{ "type": "NotebookAsk", "session": …, "event": { "type": "plan", … } }`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct NotebookAsk {
     /// The ask session.

@@ -7,12 +7,12 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { isApple } from '@/lib/chord'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { Api } from '@/rpc/api'
-import type { CellRef } from '@/rpc/bindings/CellRef'
-import type { CellScope } from '@/rpc/bindings/CellScope'
-import type { DocId } from '@/rpc/bindings/DocId'
-import type { KernelState } from '@/rpc/bindings/KernelState'
-import type { PassEnd } from '@/rpc/bindings/PassEnd'
+import type { Api } from '@/rpc/bindings/client'
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
+import type { Scope as CellScope } from "@/rpc/bindings/method.cells.output"
+import type { DocId } from "@/rpc/bindings/method.agent.output"
+import type { KernelState } from "@/rpc/bindings/method.cells.output"
+import type { PassEnd } from "@/rpc/bindings/method.cells.output"
 import { liveKernels } from './KernelStrip'
 import { mountedCells } from './NoteCell'
 import { digest } from './grammar'

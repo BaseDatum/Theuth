@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // Owner: U2
 import type { BlockNoteEditor } from '@blocknote/core'
 import { useEditorState } from '@blocknote/react'
@@ -12,15 +13,15 @@ import { isApple } from '@/lib/chord'
 import { useApi } from '@/lib/rpc'
 import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
-import type { Api } from '@/rpc/api'
+import type { Api } from '@/rpc/bindings/client'
 import { RpcError } from '@/rpc/client'
-import type { CellLatest } from '@/rpc/bindings/CellLatest'
-import type { CellRef } from '@/rpc/bindings/CellRef'
-import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
-import type { CellScope } from '@/rpc/bindings/CellScope'
-import type { CellSpec } from '@/rpc/bindings/CellSpec'
-import type { DocId } from '@/rpc/bindings/DocId'
-import type { NoteKey } from '@/rpc/bindings/NoteKey'
+import type { CellLatest } from "@/rpc/bindings/method.cells.output"
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
+import type { RunMode as CellRunMode } from "@/rpc/bindings/method.cells.output"
+import type { Scope as CellScope } from "@/rpc/bindings/method.cells.output"
+import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
+import type { DocId } from "@/rpc/bindings/method.agent.output"
+import type { NoteKey } from "@/rpc/bindings/method.cells.output"
 import { Cell, CellExtras, Chip, Notice } from './Cell'
 import { CodeTokens } from './CodeTokens'
 import { AnsiText } from './Outputs'
@@ -192,8 +193,9 @@ function lineTop(slot: HTMLElement | null, offset: number): number {
 
 /** "Review diff" / "Review": the owner's last run's code against the member's text, or the text alone if never run. */
 function MemberReview({ run, code }: { run: string | null; code: string }) {
+  const canQuery1 = useQuerySupport(["cell_output_file"])
   const api = useApi()
-  const q = useQuery({ queryKey: ['cells', 'code', run], queryFn: async () => decode(await api.cell_output_file(run as string, 'code')), enabled: run !== null, staleTime: Infinity })
+  const q = useQuery({ queryKey: ['cells', 'code', run], queryFn: async () => decode(await api.cell_output_file(run as string, 'code')), enabled: canQuery1 && (run !== null), staleTime: Infinity })
   if (q.error) return <div className="px-3 py-1 text-xs text-danger">{errorText(q.error)}</div>
   const rows = run === null ? code.split('\n').map((line) => ({ op: '+' as const, line })) : q.data === undefined ? null : lineDiff(q.data.replace(/\n$/, ''), code)
   if (!rows) return <div className="px-3 py-1 text-xs text-fg-tertiary">loading the code of your last run…</div>
@@ -210,17 +212,19 @@ function MemberReview({ run, code }: { run: string | null; code: string }) {
 
 /** §3.5 stale: the code the latest run ran, one click away (`runs/<run>/code` through `cell_output_file`). */
 function RanCode({ run, lang }: { run: string; lang: string }) {
+  const canQuery2 = useQuerySupport(["cell_output_file"])
   const api = useApi()
-  const q = useQuery({ queryKey: ['cells', 'code', run], queryFn: async () => decode(await api.cell_output_file(run, 'code')), staleTime: Infinity })
+  const q = useQuery({ enabled: canQuery2, queryKey: ['cells', 'code', run], queryFn: async () => decode(await api.cell_output_file(run, 'code')), staleTime: Infinity })
   if (q.error) return <div className="px-3 py-1 text-xs text-danger">{errorText(q.error)}</div>
   return <pre className="mx-3 mb-2 max-h-64 overflow-auto rounded-md border border-border-subtle px-2 py-1 font-mono text-xs text-fg-secondary">{q.data === undefined ? 'loading…' : <CodeTokens code={q.data} lang={lang} />}</pre>
 }
 
 /** §6.3: the python chip as a menu of `cell_interpreters(cwd)`; a pick rewrites the `#| python:` header. */
 function PythonChip({ text, cwd, at, onPick }: { text: string; cwd: string; at: string; onPick(value: string): void }) {
+  const canQuery3 = useQuerySupport(["cell_interpreters"])
   const api = useApi()
   const [open, setOpen] = useDisclosure(disclosureKey(at, 'python'))
-  const q = useQuery({ queryKey: ['cells', 'interpreters', cwd], queryFn: () => api.cell_interpreters(cwd, null), enabled: open, staleTime: 60_000 })
+  const q = useQuery({ queryKey: ['cells', 'interpreters', cwd], queryFn: () => api.cell_interpreters(cwd, null), enabled: canQuery3 && (open), staleTime: 60_000 })
   const picks = (q.data ?? []).filter((i) => i.kind === 'python' || i.kind === 'monty')
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -285,7 +289,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   const local = useEngines((s) => s.active === LOCAL)
   const row = useLatestRow(scope, `${doc}:${key_.value}`)
   const own = rec?.latest ?? null
-  const foreign = inMesh(mesh) && row && row.engine !== '' && row.engine !== mesh?.self_id && (!own || (own.ended_ms != null && row.ended_ms > BigInt(own.ended_ms))) ? row : null
+  const foreign = inMesh(mesh) && row && row.engine !== '' && row.engine !== mesh?.self_id && (!own || (own.ended_ms != null && row.ended_ms > own.ended_ms)) ? row : null
   const record = foreign && rec ? { ...rec, latest: null } : rec
   const latest = record?.latest ?? null
   const pub8 = record?.member_edit ?? null

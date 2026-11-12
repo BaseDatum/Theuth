@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Trash2 } from 'lucide-react'
 import { useRef, useState } from 'react'
@@ -7,7 +8,7 @@ import { Empty, Row, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { SecretInfo } from '@/rpc/bindings/SecretInfo'
+import type { SecretInfo } from "@/rpc/bindings/method.secrets.output"
 
 const EMPTY_FORM = { name: '', value: '', note: '' }
 
@@ -23,8 +24,9 @@ function when(iso: string): string {
  * (prefilled name = a new version of that name).
  */
 export function Secrets() {
+  const canQuery1 = useQuerySupport(["list_secrets"])
   const api = useApi()
-  const list = useQuery({ queryKey: queryKeys.secrets, queryFn: () => api.list_secrets() })
+  const list = useQuery({ enabled: canQuery1, queryKey: queryKeys.secrets, queryFn: () => api.list_secrets() })
   const [form, setForm] = useState(EMPTY_FORM)
   const [history, setHistory] = useState<string | null>(null)
   const valueRef = useRef<HTMLInputElement>(null)

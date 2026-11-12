@@ -4,9 +4,9 @@ import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
-import type { BenchSample } from '@/rpc/bindings/BenchSample'
-import type { ExperimentDetail as Detail } from '@/rpc/bindings/ExperimentDetail'
-import type { StudyDetail } from '@/rpc/bindings/StudyDetail'
+import type { Sample as BenchSample } from "@/rpc/bindings/method.autoresearch.output"
+import type { ExperimentDetail as Detail } from "@/rpc/bindings/method.autoresearch.output"
+import type { StudyDetail } from "@/rpc/bindings/method.autoresearch.output"
 import { VerdictBadge } from './RunTable'
 import { Delta } from './StudyList'
 import { clock, duration, metric, reviewWord, rowDuration, shortSha, usd } from './model'

@@ -1,6 +1,6 @@
 import { createElement as h } from 'react'
 import { afterEach, expect, test } from 'vitest'
-import type { KernelState } from '@/rpc/bindings/KernelState'
+import type { KernelState } from "@/rpc/bindings/method.cells.output"
 import { KernelStrip } from './KernelStrip'
 import { cells, scopeKey } from './store'
 import { SESSION, render } from './test-fixtures'

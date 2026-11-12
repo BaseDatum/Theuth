@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useMutation, useQueries } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { MessageSquare, TriangleAlert } from 'lucide-react'
@@ -27,9 +28,9 @@ import { costShort } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useConnection } from '@/store/connection'
 import { cn } from '@/lib/utils'
-import type { Task } from '@/rpc/bindings/Task'
-import type { TaskEvent } from '@/rpc/bindings/TaskEvent'
-import type { TaskPatch } from '@/rpc/bindings/TaskPatch'
+import type { Task } from "@/rpc/bindings/method.roster.output"
+import type { TaskEvent } from "@/rpc/bindings/method.roster.output"
+import type { TaskPatch } from '@/rpc/bindings/method.roster.input'
 import { AttachmentsEditor } from './Attachments'
 import { rememberOpenedTask } from './boardMemory'
 import { MoveButton, TaskMenu } from './MoveHome'
@@ -363,12 +364,13 @@ function ThreadDoc({ id }: { id: string }) {
 
 /** Sessions known to the record: the checkout plus every session an event names; each opens in the chat pane. */
 function Sessions({ task: t, events }: { task: Task; events: TaskEvent[] }) {
+  const canQuery1 = useQuerySupport(["session_cost"])
   const mesh = useMesh().data
   const api = useApi()
   const navigate = useNavigate()
   const ids = [...new Set([t.checkout?.session, ...events.map((e) => e.session)].filter((s): s is string => !!s))]
   const costs = useQueries({
-    queries: ids.map((s) => ({ queryKey: queryKeys.sessionCost(s), queryFn: () => api.session_cost(s), retry: false })),
+    queries: ids.map((s) => ({ enabled: canQuery1, queryKey: queryKeys.sessionCost(s), queryFn: () => api.session_cost(s), retry: false })),
   })
   return (
     <>

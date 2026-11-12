@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import { KEY } from '@/components/autoresearch/queries'
-import type { MechanismInfo } from '@/rpc/bindings/MechanismInfo'
+import type { MechanismInfo } from "@/rpc/bindings/method.autoresearch.output"
 import { Mechanism, adoptMechanism, adoptedText } from './Mechanism'
 
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))

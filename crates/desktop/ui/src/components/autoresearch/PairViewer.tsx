@@ -1,9 +1,10 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import { Button } from '@/components/ui/button'
 import { useAction } from '@/components/settings/shared'
 import { cn } from '@/lib/utils'
-import type { JudgmentRow } from '@/rpc/bindings/JudgmentRow'
+import type { JudgmentRow } from "@/rpc/bindings/method.autoresearch.output"
 import { shortSha, usd } from './model'
 import { KEY, useAutoresearchApi } from './queries'
 
@@ -70,9 +71,10 @@ function shown(r: JudgmentRow): string {
  * the judge's cost; a case's judge rows appear only once its human pair is answered. Owner: W3.
  */
 export function PairViewer({ slug, n }: { slug: string; n: number | null }) {
+  const canQuery1 = useQuerySupport(["autoresearch.judgments"])
   const api = useAutoresearchApi()
-  const q = useQuery({ queryKey: [...KEY, slug, 'judgments', n], queryFn: () => api['autoresearch.judgments'](slug, n) })
-  const answer = useAction((v: { id: bigint; winner: 'a' | 'b' | 'same' }) => api['autoresearch.human_pair'](slug, Number(v.id), v.winner), { keys: [[...KEY, slug]] })
+  const q = useQuery({ enabled: canQuery1, queryKey: [...KEY, slug, 'judgments', n], queryFn: () => api['autoresearch.judgments'](slug, n) })
+  const answer = useAction((v: { id: number; winner: 'a' | 'b' | 'same' }) => api['autoresearch.human_pair'](slug, Number(v.id), v.winner), { keys: [[...KEY, slug]] })
   const pairs = useMemo(() => pairsOf(q.data ?? []), [q.data])
   if (q.isPending) return <p className="text-xs text-fg-tertiary">Loading pairs…</p>
   if (pairs.length === 0) return <p className="text-xs text-fg-tertiary">No blind pairs yet{n === null ? '' : ` for experiment ${n}`}.</p>
@@ -80,7 +82,7 @@ export function PairViewer({ slug, n }: { slug: string; n: number | null }) {
 }
 
 /** The viewer's body, pure: pending human pairs blind in their own block, then the judged pairs. */
-export function PairList({ pairs, busy, onAnswer }: { pairs: Pair[]; busy: boolean; onAnswer: (id: bigint, winner: 'a' | 'b' | 'same') => void }) {
+export function PairList({ pairs, busy, onAnswer }: { pairs: Pair[]; busy: boolean; onAnswer: (id: number, winner: 'a' | 'b' | 'same') => void }) {
   const pending = pairs.filter((p) => p.human && !p.human.human)
   const judged = pairs.filter((p) => !(p.human && !p.human.human))
   const total = pairs.reduce((s, p) => s + p.cost, 0)

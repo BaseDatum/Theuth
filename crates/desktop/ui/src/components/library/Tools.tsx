@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useSearch } from '@tanstack/react-router'
 import { ChevronRight, Plus, RefreshCw, Trash2 } from 'lucide-react'
@@ -36,12 +37,12 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { LOCAL, useEngines } from '@/link/engines'
-import type { Gate } from '@/rpc/bindings/Gate'
-import type { McpHomeAction } from '@/rpc/bindings/McpHomeAction'
-import type { McpServer } from '@/rpc/bindings/McpServer'
-import type { McpToolInfo } from '@/rpc/bindings/McpToolInfo'
-import type { Risk } from '@/rpc/bindings/Risk'
-import type { SyncResult } from '@/rpc/bindings/SyncResult'
+import type { Gate } from "@/rpc/bindings/method.mcp_2dserver.output"
+import type { McpHomeAction } from '@/rpc/bindings/method.mcp_2dserver.input'
+import type { McpServer } from "@/rpc/bindings/method.mcp_2dserver.output"
+import type { McpToolInfo } from "@/rpc/bindings/method.mcp_2dserver.output"
+import type { Risk } from "@/rpc/bindings/method.agent.output"
+import type { SyncResult } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
 
 /** `tui/model.rs::Switch`: on, hidden in this session, or `off` in `mcp/config.yaml`. */
@@ -153,13 +154,15 @@ export function McpServersTab() {
 }
 
 export function Tools({ session }: { session: string | null }) {
+  const canQuery1 = useQuerySupport(["list_mcp"])
+  const canQuery1_2 = useQuerySupport(["mcp_status"])
   const api = useApi()
-  const servers = useQuery({
+  const servers = useQuery({ enabled: canQuery1,
     queryKey: queryKeys.mcp(session),
     queryFn: () => api.list_mcp(session),
   })
   // Under the `mcp` prefix: every `McpProgress` event refreshes it with the list.
-  const status = useQuery({ queryKey: ['mcp', 'status'], queryFn: () => api.mcp_status() })
+  const status = useQuery({ enabled: canQuery1_2, queryKey: ['mcp', 'status'], queryFn: () => api.mcp_status() })
   const mesh = useMesh()
   // Until the mesh answers, no home chip and no home actions: "on this machine" would flicker to the real name.
   const machines = mesh.isPending ? null : engines(mesh.data)

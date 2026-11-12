@@ -11,7 +11,7 @@ import { rasterize, standalone } from '@/lib/diagram-export'
 import { fitPng, frameFor, type Outcome, settleAt } from '@/lib/fence-snapshot'
 import type { Appearance } from '@/lib/page-theme'
 import { SnapshotContext, type SnapshotMode } from '@/lib/snapshot-mode'
-import type { FenceSnapshotRequested } from '@/rpc/bindings/FenceSnapshotRequested'
+import type { FenceSnapshotRequested } from "@/rpc/bindings/event.artifact_2efence_2dsnapshot_2drequested.output"
 import { plugins } from './MessageAssistant'
 
 /** Side padding of an HTML picture (the svg path is the diagram alone). */

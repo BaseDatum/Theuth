@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight, Download, File, Folder } from 'lucide-react'
 import { useMemo, useState } from 'react'
@@ -10,8 +11,8 @@ import { privateOwner } from '@/lib/private'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { useEngines } from '@/link/engines'
-import type { ArchiveEntry } from '@/rpc/bindings/ArchiveEntry'
-import type { Artifact } from '@/rpc/extra'
+import type { ArchiveEntry } from "@/rpc/bindings/method.artifact.output"
+import type { Artifact } from "@/rpc/bindings/method.artifact.output"
 
 const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e))
 
@@ -98,9 +99,10 @@ function Rows({ node, depth, closed, toggle }: { node: Node; depth: number; clos
 
 /** An `archive` artifact (35 §3.2): totals, a filter, the member tree from the listing sidecar, and the download. */
 export function ArchiveView({ a }: { a: Artifact }) {
+  const canQuery1 = useQuerySupport(["get_artifact_listing"])
   const api = useApi()
   const active = useEngines((s) => s.active)
-  const listing = useQuery({ queryKey: ['artifact-listing', a.call_id], queryFn: () => api.get_artifact_listing(a.call_id, privateOwner(a.session)), retry: false })
+  const listing = useQuery({ enabled: canQuery1, queryKey: ['artifact-listing', a.call_id], queryFn: () => api.get_artifact_listing(a.call_id, privateOwner(a.session)), retry: false })
   const [q, setQ] = useState('')
   const [closed, setClosed] = useState<Set<string>>(new Set())
   const toggle = (p: string) =>

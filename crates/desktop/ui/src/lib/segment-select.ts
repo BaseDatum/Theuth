@@ -2,9 +2,9 @@
 // voiceprint is "the word spans of the chosen segments, one track, at least 1 s"; `speechMs` and `enrollBlock`
 // mirror it so the UI disables with the reason instead of round-tripping for the refusal.
 
-import type { Enrolled } from '@/rpc/bindings/Enrolled'
-import type { EnrollTarget } from '@/rpc/bindings/EnrollTarget'
-import type { Segment } from '@/rpc/bindings/Segment'
+import type { Enrolled } from "@/rpc/bindings/method.meeting.output"
+import type { EnrollTarget } from '@/rpc/bindings/method.meeting.input'
+import type { Segment } from "@/rpc/bindings/method.meeting.output"
 
 /** The engine refuses less than this much speech. */
 export const MIN_SPEECH_MS = 1000

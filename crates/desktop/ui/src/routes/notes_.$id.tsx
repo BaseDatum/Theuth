@@ -1,3 +1,5 @@
+import { withCapability } from '@/rpc/capabilities'
+import { panelRequirements as requirements } from '@/components/notes/requirements'
 import { createFileRoute } from '@tanstack/react-router'
 import { NotePage } from '@/components/notes/NotePage'
 
@@ -10,5 +12,5 @@ export const Route = createFileRoute('/notes_/$id')({
     ...(s.new === true ? { new: true as const } : {}),
     ...(typeof s.nb === 'string' && s.nb ? { nb: s.nb } : {}),
   }),
-  component: NotePage,
+  component: withCapability(NotePage, requirements),
 })

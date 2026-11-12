@@ -2074,6 +2074,11 @@ async fn export_wire_contract(out: &Path) -> anyhow::Result<()> {
     std::fs::write(out.join("methods.json"), serde_json::to_string_pretty(&names)?)?;
     std::fs::write(out.join("surface-catalog.json"), serde_json::to_string_pretty(&surface::catalog_schema())?)?;
     std::fs::write(out.join("surface-catalog-compact.txt"), surface::catalog_compact())?;
+    let auxiliary = serde_json::json!({
+        "agent": agent::rpc_forward::client_error_schema(),
+        "surface": surface::client_schema(),
+    });
+    std::fs::write(out.join("client-auxiliary.json"), serde_json::to_string_pretty(&auxiliary)?)?;
     Ok(())
 }
 
@@ -2087,8 +2092,6 @@ mod wire_contract_tests {
     async fn export_bindings() {
         let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bindings");
         export_wire_contract(&out).await.unwrap();
-        #[cfg(feature = "ts")]
-        rpc_compose::export::typescript(out.to_str().unwrap());
     }
 
     #[tokio::test]

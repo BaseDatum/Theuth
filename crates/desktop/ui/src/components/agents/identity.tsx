@@ -2,8 +2,8 @@ import { THEUTH } from '@/components/tasks/helpers'
 import type { RemoteAgent } from '@/components/tasks/home'
 import { Switch } from '@/components/ui/switch'
 import { cn } from '@/lib/utils'
-import type { AgentStatus } from '@/rpc/bindings/AgentStatus'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
+import type { AgentStatus } from "@/rpc/bindings/method.roster.output"
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
 import { useAgentActions } from './queries'
 import { budgetUsed } from './tree'
 

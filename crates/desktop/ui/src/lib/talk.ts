@@ -9,11 +9,11 @@ import { closeTap, openTap, type Tap, wireTap } from '@/lib/mic-tap'
 import * as speech from '@/lib/speech'
 import { useTalkSettings } from '@/lib/talk-settings'
 import { LOCAL, useEngines } from '@/link/engines'
-import type { Api } from '@/rpc/api'
-import type { Aec } from '@/rpc/bindings/Aec'
-import type { State } from '@/rpc/bindings/State'
-import type { TalkEvent } from '@/rpc/bindings/TalkEvent'
-import type { VoiceEvent } from '@/rpc/bindings/VoiceEvent'
+import type { Api } from '@/rpc/bindings/client'
+import type { Aec } from "@/rpc/bindings/method.talk.output"
+import type { State } from "@/rpc/bindings/method.talk.output"
+import type { TalkEvent } from "@/rpc/bindings/event.talk_2eevents.output"
+import type { VoiceEvent } from "@/rpc/bindings/event.voice_2eevents.output"
 import { on } from '@/store/sessions'
 import { openDraftSession } from '@/lib/drafts'
 
@@ -252,17 +252,17 @@ export function handle(e: SubEvent): void {
 /** Wire `TalkEvent`s (and `SpeechFinished` for the agent line) to the store; once per app boot. Returns the unsubscribe. */
 export function installTalkListeners(): () => void {
   const offs = [
-    on('TalkStarted', handle),
-    on('TalkState', handle),
-    on('Heard', handle),
-    on('TalkLevel', handle),
-    on('Saying', handle),
-    on('Submitted', handle),
-    on('Interrupted', handle),
-    on('Flush', handle),
-    on('Degraded', handle),
-    on('TalkFinished', handle),
-    on('SpeechFinished', handle),
+    on("talk.events@1", 'TalkStarted', handle),
+    on("talk.events@1", 'TalkState', handle),
+    on("talk.events@1", 'Heard', handle),
+    on("talk.events@1", 'TalkLevel', handle),
+    on("talk.events@1", 'Saying', handle),
+    on("talk.events@1", 'Submitted', handle),
+    on("talk.events@1", 'Interrupted', handle),
+    on("talk.events@1", 'Flush', handle),
+    on("talk.events@1", 'Degraded', handle),
+    on("talk.events@1", 'TalkFinished', handle),
+    on("voice.events@1", 'SpeechFinished', handle),
   ]
   return () => {
     for (const off of offs) off()

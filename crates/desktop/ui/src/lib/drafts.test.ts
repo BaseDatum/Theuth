@@ -1,5 +1,5 @@
 import { beforeEach, expect, test, vi } from 'vitest'
-import type { Api } from '@/rpc/api'
+import type { Api } from '@/rpc/bindings/client'
 import { EMPTY, NO_PICK, PLAIN_OPTIONS, load, openDraftSession, useDrafts } from './drafts'
 import { attach, attachRef } from './pastes'
 

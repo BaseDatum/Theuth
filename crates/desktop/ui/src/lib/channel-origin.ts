@@ -1,5 +1,5 @@
 // 172 D4/D5: where a user row came from (Slack, Signal, Telegram) and the Slack shared-message blocks in its text.
-import type { ChannelOrigin } from '@/rpc/bindings/ChannelOrigin'
+import type { ChannelOrigin } from "@/rpc/bindings/method.agent.output"
 
 /** The 110 §7.1 marker line Slack puts first for the model (`crates/slack/src/channel.rs`, `handle_message`). */
 const MARKER = /^\[slack (dm|channel)\](?:\n|$)/
@@ -16,7 +16,7 @@ export const stripMarker = (text: string): string => text.replace(MARKER, '')
 
 /** What a bubble or queued chip shows of a channel row: no marker line, and no exact `<from>: ` prefix the channel adds
  * for an allowed user (the chip already says "from <from>"). The model's input is unchanged. */
-export function shownText(entry: { text: string; channel?: ChannelOrigin }): string {
+export function shownText(entry: { text: string; channel?: ChannelOrigin | null }): string {
   const text = stripMarker(entry.text)
   const from = entry.channel?.from
   return from && text.startsWith(`${from}: `) ? text.slice(from.length + 2) : text

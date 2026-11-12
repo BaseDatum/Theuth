@@ -1,7 +1,7 @@
 // Owner: U1
 // 171 §3.4: a reply's cells in document order, from its markdown — the ordinals `CellFence` claims and the list the
 // runbook bar shows before the later fences have mounted.
-import type { CellSpec } from '@/rpc/bindings/CellSpec'
+import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
 import { cellOf } from './grammar'
 
 /** `end`: the index of the fence's closing line in the reply's LF-split lines (the last line when unclosed). */

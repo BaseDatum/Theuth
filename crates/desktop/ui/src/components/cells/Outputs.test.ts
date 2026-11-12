@@ -5,7 +5,7 @@ import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import type * as PageTheme from '@/lib/page-theme'
 import type * as Page from '@/components/chat/HtmlPage'
-import type { CellOutput } from '@/rpc/bindings/CellOutput'
+import type { CellOutput } from "@/rpc/bindings/method.cells.output"
 import { AnsiText, CellOutputs, frameDocument } from './Outputs'
 
 // The theme hook reads `document`; none in a node test. The api is never reached: no run-file image is rendered here.

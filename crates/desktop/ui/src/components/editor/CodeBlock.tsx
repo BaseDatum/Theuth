@@ -14,8 +14,8 @@ import { CODE_BLOCK_OPTIONS, type Diagram, diagramOf } from '@/components/editor
 import { Button } from '@/components/ui/button'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { shikiLang } from '@/lib/shiki'
-import type { Api } from '@/rpc/api'
-import type { CellSpec } from '@/rpc/bindings/CellSpec'
+import type { Api } from '@/rpc/bindings/client'
+import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
 import { cn } from 'cn'
 
 /**

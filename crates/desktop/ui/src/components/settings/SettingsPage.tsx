@@ -9,6 +9,8 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { cn } from '@/lib/utils'
+import { Capability } from '@/rpc/capabilities'
+import { useConnection } from '@/store/connection'
 
 /** Category links keep a visible focus ring, as the band's tabs do. */
 const FOCUS_RING = 'outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50'
@@ -19,6 +21,7 @@ const FOCUS_RING = 'outline-none focus-visible:ring-[3px] focus-visible:ring-rin
  * category list (`/settings`), then the body. You leave by navigating or with Back: no close button, no Esc.
  */
 export function SettingsPage({ tab, focus }: { tab: string; focus: string | null }) {
+  const discovery = useConnection(s => s.discovery)
   const mobile = useIsMobile()
   const navigate = useNavigate()
   // `beforeLoad` sent unknown and hidden ids elsewhere.
@@ -27,7 +30,7 @@ export function SettingsPage({ tab, focus }: { tab: string; focus: string | null
   const { category, tab: current } = placed
   const band = (
     <TabBand
-      tabs={shownTabs(category)}
+      tabs={shownTabs(category, discovery)}
       value={tab}
       inset={mobile}
       onValueChange={(id) => void navigate({ to: '/settings/$tab', params: { tab: id } })}
@@ -38,7 +41,7 @@ export function SettingsPage({ tab, focus }: { tab: string; focus: string | null
     <div key={tab} className="min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto w-full max-w-[720px] px-4 pt-4 pb-8 md:px-6">
         <RestartBanner />
-        <current.Component focus={focus} />
+        {current.required ? <Capability required={current.required}><current.Component focus={focus} /></Capability> : <current.Component focus={focus} />}
       </div>
     </div>
   )
@@ -64,6 +67,7 @@ export function SettingsPage({ tab, focus }: { tab: string; focus: string | null
 
 /** The categories column; its 52 px head lines up with the band and is the column's label, not a title bar. */
 function Categories({ current }: { current: SettingsCategory }) {
+  const discovery = useConnection(s => s.discovery)
   const sidebar = useSidebar()
   const mac = isMacDesktop()
   return (
@@ -76,14 +80,14 @@ function Categories({ current }: { current: SettingsCategory }) {
         Settings
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto p-2">
-        {shownCategories().map((category) => {
+        {shownCategories(discovery).map((category) => {
           const Icon = category.icon
           const on = category === current
           return (
             <Link
               key={category.id}
               to="/settings/$tab"
-              params={{ tab: shownTab(category.tabs[0].id) }}
+              params={{ tab: shownTab(category.tabs[0].id, discovery) }}
               aria-current={on ? 'page' : undefined}
               className={cn('flex h-9 shrink-0 items-center gap-2.5 rounded-[10px] px-2.5 text-sm', FOCUS_RING, on ? 'bg-layer-3' : 'hover:bg-layer-3/60')}
             >
@@ -99,6 +103,7 @@ function Categories({ current }: { current: SettingsCategory }) {
 
 /** 188 S3: `/settings` on a phone: one row per category, opening its first shown tab. */
 export function SettingsHome() {
+  const discovery = useConnection(s => s.discovery)
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3">
@@ -106,11 +111,11 @@ export function SettingsHome() {
         <h2 className="px-1 text-sm font-semibold">Settings</h2>
       </header>
       <nav aria-label="Settings categories" className="min-h-0 flex-1 overflow-y-auto p-2">
-        {shownCategories().map(({ id, label, icon: Icon, tabs }) => (
+        {shownCategories(discovery).map(({ id, label, icon: Icon, tabs }) => (
           <Link
             key={id}
             to="/settings/$tab"
-            params={{ tab: shownTab(tabs[0].id) }}
+            params={{ tab: shownTab(tabs[0].id, discovery) }}
             className={cn('flex h-12 items-center gap-3 rounded-[10px] px-3 text-base active:bg-layer-3', FOCUS_RING)}
           >
             <Icon className="size-5 text-fg-secondary" />

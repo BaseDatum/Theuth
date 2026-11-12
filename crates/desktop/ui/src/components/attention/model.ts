@@ -1,9 +1,9 @@
 // 101: pure helpers of the decision & review surface — the code-ref grammar of §3, the D11 "next item" rule, and the
 // in-app route a pointer opens. 104: the grouped rail and the context line's clamp. No React, no fetches.
 
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
-import type { Pointer } from '@/rpc/bindings/Pointer'
-import type { HistoryEntry } from '@/rpc/extra'
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
+import type { Pointer } from "@/rpc/bindings/method.roster.output"
+import type { HistoryEntry } from "@/rpc/bindings/method.agent.output"
 
 type Kind = AttentionItem['kind']
 

@@ -1,3 +1,5 @@
+import { withCapability } from '@/rpc/capabilities'
+import { requirements } from '@/components/codemap/requirements'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { type PanelRoute, POPOUT_STATE_KEY, PoppedCodeMap } from '@/components/codemap/CodeMapPanel'
@@ -18,7 +20,7 @@ export const Route = createFileRoute('/codemap/$session/$root')({
     if (typeof s.sel === 'string' && s.sel) out.sel = s.sel
     return out
   },
-  component: CodemapRoute,
+  component: withCapability(CodemapRoute, requirements),
 })
 
 function CodemapRoute() {

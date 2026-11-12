@@ -5,17 +5,17 @@
  * fence (§13.3). No React, no DOM; `map.test.ts` covers the tables.
  */
 import type { GraphData } from '@/lib/graph-layout'
-import type { GraphProps } from '@/rpc/bindings/GraphProps'
-import type { MapChild } from '@/rpc/bindings/MapChild'
-import type { MapEdge } from '@/rpc/bindings/MapEdge'
-import type { MapElement } from '@/rpc/bindings/MapElement'
-import type { MapEvidence } from '@/rpc/bindings/MapEvidence'
-import type { MapHit } from '@/rpc/bindings/MapHit'
-import type { MapIndex } from '@/rpc/bindings/MapIndex'
-import type { MapJob } from '@/rpc/bindings/MapJob'
-import type { MapOrigin } from '@/rpc/bindings/MapOrigin'
-import type { MapProvenance } from '@/rpc/bindings/MapProvenance'
-import type { MapTreeRow } from '@/rpc/bindings/MapTreeRow'
+import type { GraphProps } from "@/rpc/bindings/method.codeindex.output"
+import type { MapChild } from "@/rpc/bindings/method.codeindex.output"
+import type { MapEdge } from "@/rpc/bindings/method.codeindex.output"
+import type { MapElement } from "@/rpc/bindings/method.codeindex.output"
+import type { MapEvidence } from "@/rpc/bindings/method.codeindex.output"
+import type { MapHit } from "@/rpc/bindings/method.codeindex.output"
+import type { MapIndex } from "@/rpc/bindings/method.codeindex.output"
+import type { MapJob } from "@/rpc/bindings/method.codeindex.output"
+import type { MapOrigin } from "@/rpc/bindings/method.codeindex.output"
+import type { MapProvenance } from "@/rpc/bindings/method.codeindex.output"
+import type { MapTreeRow } from "@/rpc/bindings/method.codeindex.output"
 import { anchorOf } from './labels'
 import type { CodeMapProgress } from './types'
 

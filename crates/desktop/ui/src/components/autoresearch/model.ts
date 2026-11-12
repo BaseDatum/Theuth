@@ -1,20 +1,20 @@
 // 140 §13.1: pure helpers of the Study view — outcome of a row, state pill, budget fractions, phase chips, number
 // formatting and the chart's layout. No React, no RPC; `model.test.ts` covers them.
 
-import type { BudgetSpec } from '@/rpc/bindings/BudgetSpec'
-import type { BudgetUsed } from '@/rpc/bindings/BudgetUsed'
-import type { Call } from '@/rpc/bindings/Call'
-import type { ExperimentPhase } from '@/rpc/bindings/ExperimentPhase'
-import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
-import type { ExperimentState } from '@/rpc/bindings/ExperimentState'
-import type { ExperimentVerdict } from '@/rpc/bindings/ExperimentVerdict'
-import type { PauseReason } from '@/rpc/bindings/PauseReason'
-import type { ReviewVerdict } from '@/rpc/bindings/ReviewVerdict'
-import type { StopReason } from '@/rpc/bindings/StopReason'
-import type { StudyChartPoint } from '@/rpc/bindings/StudyChartPoint'
-import type { StudyChartSeries } from '@/rpc/bindings/StudyChartSeries'
-import type { StudyInfo } from '@/rpc/bindings/StudyInfo'
-import type { StudyState } from '@/rpc/bindings/StudyState'
+import type { BudgetSpec } from "@/rpc/bindings/method.autoresearch.output"
+import type { BudgetUsed } from "@/rpc/bindings/method.autoresearch.output"
+import type { Call } from "@/rpc/bindings/method.autoresearch.output"
+import type { Phase as ExperimentPhase } from "@/rpc/bindings/method.autoresearch.output"
+import type { ExperimentRow } from "@/rpc/bindings/method.autoresearch.output"
+import type { ExperimentState } from "@/rpc/bindings/method.autoresearch.output"
+import type { Verdict as ExperimentVerdict } from "@/rpc/bindings/method.autoresearch.output"
+import type { PauseReason } from "@/rpc/bindings/method.autoresearch.output"
+import type { ReviewVerdict } from "@/rpc/bindings/method.autoresearch.output"
+import type { StopReason } from "@/rpc/bindings/method.autoresearch.output"
+import type { ChartPoint as StudyChartPoint } from "@/rpc/bindings/method.autoresearch.output"
+import type { ChartSeries as StudyChartSeries } from "@/rpc/bindings/method.autoresearch.output"
+import type { StudyInfo } from "@/rpc/bindings/method.autoresearch.output"
+import type { StudyState } from "@/rpc/bindings/method.autoresearch.output"
 
 /** What a row means to the eye: the chart's colour and the table's badge. */
 export type Outcome = 'kept' | 'no_gain' | 'worse' | 'failed' | 'reverted' | 'lost' | 'open'

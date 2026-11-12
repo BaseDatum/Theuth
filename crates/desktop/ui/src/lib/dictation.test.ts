@@ -1,6 +1,6 @@
 import { expect, test, vi } from 'vitest'
-import type { Api } from '@/rpc/api'
-import type { VoiceEvent } from '@/rpc/bindings/VoiceEvent'
+import type { Api } from '@/rpc/bindings/client'
+import type { VoiceEvent } from "@/rpc/bindings/event.voice_2eevents.output"
 import { type Active, type State, anchor, applyEvent, current, finish, splice, start, startOpts } from './dictation'
 
 vi.mock('@/lib/speech', () => ({ release: async () => undefined, hold: async () => undefined }))

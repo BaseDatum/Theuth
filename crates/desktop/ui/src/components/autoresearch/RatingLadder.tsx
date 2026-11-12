@@ -1,5 +1,5 @@
-import type { KindView } from '@/rpc/bindings/KindView'
-import type { RatingRow } from '@/rpc/bindings/RatingRow'
+import type { KindView } from "@/rpc/bindings/method.autoresearch.output"
+import type { RatingRow } from "@/rpc/bindings/method.autoresearch.output"
 import { shortSha } from './model'
 
 /** 159 W3: the Bradley–Terry ladder of kept versions (θ ± 2 se, Elo-style label) and the judge–human agreement figure. Owner: W3. */

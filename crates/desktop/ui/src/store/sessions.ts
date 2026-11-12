@@ -1,33 +1,30 @@
+import type { TaggedTopicPayloads, TopicEvent, TopicKey, TopicPayloads } from '@/rpc/bindings/client';
 import { type StoreApi, createStore } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
 import type { CellResultInput, ContactNote, Injected, ParentViewLine, RestartNote } from '@/lib/injected';
 import { codeFromHistory } from '@/lib/codemap/slice';
 import type { CodemapSlice } from '@/lib/codemap/types';
 import { useRemoteStart } from '@/lib/remote-start';
-import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
-import type { CompactStyle } from "@/rpc/bindings/CompactStyle";
-import type { ChannelOrigin } from "@/rpc/bindings/ChannelOrigin";
-import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
-import type { HarnessCommand } from "@/rpc/bindings/HarnessCommand";
-import type { JobExit } from "@/rpc/bindings/JobExit";
-import type { LiveCountsRow } from "@/rpc/bindings/LiveCountsRow";
-import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
-import type { ObservedMeta } from "@/rpc/bindings/ObservedMeta";
-import type { QueuedInput } from "@/rpc/bindings/QueuedInput";
-import type { SessionKind } from "@/rpc/bindings/SessionKind";
-import type { ResumeCause } from "@/rpc/bindings/ResumeCause";
-import type { SessionSummary } from "@/rpc/bindings/SessionSummary";
-import type { TodoSnapshot } from "@/rpc/bindings/TodoSnapshot";
-import type { Usage } from "@/rpc/bindings/Usage";
-import type { WireEvent } from "@/rpc/events";
-import type {
-  AgentInfo,
-  AppCallChanged,
-  Artifact,
-  LoadedPage,
-  VisionNote,
-  VisionSource,
-} from "@/rpc/extra";
+import type { AdvisoryNote } from "@/rpc/bindings/method.agent.output"
+import type { CompactStyle } from "@/rpc/bindings/method.agent.output"
+import type { ChannelOrigin } from "@/rpc/bindings/method.agent.output"
+import type { ContextEntry } from "@/rpc/bindings/method.agent.output"
+import type { HarnessCommand } from "@/rpc/bindings/method.agent.output"
+import type { JobExit } from "@/rpc/bindings/method.agent.output"
+import type { LiveCountsRow } from "@/rpc/bindings/method.agent.output"
+import type { PeerOrigin } from "@/rpc/bindings/method.agent.output"
+import type { ObservedMeta } from "@/rpc/bindings/method.agent.output"
+import type { QueuedInput } from "@/rpc/bindings/method.agent.output"
+import type { SessionKind } from "@/rpc/bindings/method.agent.output"
+import type { ResumeCause } from "@/rpc/bindings/method.agent.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { TodoSnapshot } from "@/rpc/bindings/method.agent.output"
+import type { Usage } from "@/rpc/bindings/event.agent_2eevents.output"
+import type { UiEvent as WireEvent } from '@/store/ui-events'
+import type { AgentInfo } from '@/store/ui-events'
+import type { AppCallChanged } from "@/rpc/bindings/event.app_2ecalls.output"
+import type { Artifact } from "@/rpc/bindings/method.artifact.output"
+import type { Loaded as LoadedPage, VisionNote, VisionSource } from "@/rpc/bindings/method.agent.output"
 import {
   adopt,
   empty,
@@ -851,63 +848,83 @@ export const browserBusy = (s: SessionSlice | undefined): boolean =>
 export const useBrowserBusy = (id: string) =>
   useSessions((s) => browserBusy(s.sessions[id]));
 
-type Listener<T extends WireEvent["type"]> = (
-  e: Extract<WireEvent, { type: T }>,
-) => void;
+type TaggedKey = keyof TaggedTopicPayloads;
+type Listener<K extends TaggedKey, T extends TaggedTopicPayloads[K]['type']> = (event: Extract<TaggedTopicPayloads[K], {type: T}>) => void;
+const listeners = new Map<TopicKey, Map<string, Set<(event: unknown) => void>>>();
+const topicListeners = new Map<TopicKey, Set<(event: unknown) => void>>();
 
-const listeners = new Map<string, Set<(e: WireEvent) => void>>();
-
-/** Subscribe to one event type outside the stores (`McpProgress`, `LoginFinished`, `KnowledgeChanged`, …). Returns the unsubscribe. */
-export function on<T extends WireEvent["type"]>(
-  type: T,
-  cb: Listener<T>,
-): () => void {
-  let set = listeners.get(type);
-  if (!set) listeners.set(type, (set = new Set()));
-  // The map is keyed by `type`, so every event reaching `cb` has type `T`; the compiler cannot see the key.
-  const l = (e: WireEvent) => cb(e as Extract<WireEvent, { type: T }>);
-  set.add(l);
-  return () => {
-    set.delete(l);
-  };
+/** Topic identity is checked before the owner's inner variant. */
+export function on<K extends TaggedKey, T extends TaggedTopicPayloads[K]['type']>(topic: K, type: T, cb: Listener<K, T>): () => void {
+  let variants = listeners.get(topic);
+  if (!variants) listeners.set(topic, variants = new Map());
+  let callbacks = variants.get(type);
+  if (!callbacks) variants.set(type, callbacks = new Set());
+  const listener = (event: unknown) => cb(event as Extract<TaggedTopicPayloads[K], {type: T}>);
+  callbacks.add(listener);
+  return () => { callbacks.delete(listener); };
 }
 
-/** Route one frame's events into `st` (the engine they came from): session slices, approvals, asks, secret requests, Info, then `on` listeners. */
-export function dispatch(events: WireEvent[], st: Stores = active()): void {
-  st.sessions.getState().applyEvents(events);
+export function onTopic<K extends TopicKey>(topic: K, cb: (event: TopicPayloads[K]) => void): () => void {
+  let callbacks = topicListeners.get(topic);
+  if (!callbacks) topicListeners.set(topic, callbacks = new Set());
+  const listener = (event: unknown) => cb(event as TopicPayloads[K]);
+  callbacks.add(listener);
+  return () => { callbacks.delete(listener); };
+}
+
+/** Keep the envelope until the owning reducer/listener has been selected. */
+export function dispatch(events: TopicEvent[], st: Stores = active()): void {
+  const core: WireEvent[] = [];
+  for (const item of events) {
+    switch (item.key) {
+      case 'agent.events@1': case 'agent.peer-delivered@1': case 'tools.jobs@1':
+      case 'tools.reminders@1': case 'browser.events@1': case 'codeindex.events@1':
+      case 'artifact.shown@1': case 'app.calls@1': case 'web.scrape-progress@1':
+      case 'sandbox.events@1': case 'sessionsync.follow-state@1': case 'rpc.stream@1':
+        core.push(item.event);
+    }
+  }
+  st.sessions.getState().applyEvents(core);
   const approvals = st.approvals.getState();
   const asks = st.asks.getState();
   const secrets = st.secretRequests.getState();
   const live = st === active();
-  for (const e of events) {
-    if (e.type === "PendingPrompts") {
-      approvals.replace(e.approvals);
-      asks.replace(e.asks);
-      secrets.replace(
-        e.secrets.filter((s): s is SecretRequested => s.type === "SecretRequested"),
-      );
-    } else if (e.type === "ApprovalRequested") approvals.add(e);
-    else if (e.type === "ApprovalResolved") approvals.resolve(e.id);
-    else if (e.type === "AskRequested") asks.add(e);
-    else if (e.type === "AskResolved") asks.resolve(e.id);
-    else if (e.type === "SecretRequested") secrets.add(e);
-    else if (e.type === "SecretResolved") secrets.resolve(e.id);
-    // 82 §3 / 83 §3 / 148: the new-chat draft (while nothing is picked) and Settings › Chat show this engine's live defaults; a reconnect's `info()` agrees.
-    else if (e.type === "DefaultModelChanged") {
-      const conn = st.connection.getState();
-      if (conn.info) conn.setInfo({ ...conn.info, default_model: e.model });
-    } else if (e.type === "DefaultEffortChanged") {
-      const conn = st.connection.getState();
-      if (conn.info) conn.setInfo({ ...conn.info, default_effort: e.effort });
-    } else if (e.type === "FavoriteModelsChanged") {
-      const conn = st.connection.getState();
-      if (conn.info) conn.setInfo({ ...conn.info, favorite_models: e.models });
+  for (const item of events) {
+    const e = item.event;
+    switch (item.key) {
+      case 'rpc.stream@1':
+        if (item.event.type === 'PendingPrompts') {
+          approvals.replace(item.event.approvals);
+          asks.replace(item.event.asks);
+          secrets.replace(item.event.secrets.filter((s): s is SecretRequested => s.type === 'SecretRequested'));
+        }
+        break;
+      case 'tools.approval-requested@1': approvals.add(item.event); break;
+      case 'tools.approval-resolved@1': approvals.resolve(item.event.id); break;
+      case 'tools.ask-requested@1': asks.add(item.event); break;
+      case 'tools.ask-resolved@1': asks.resolve(item.event.id); break;
+
+      case 'secrets.events@1':
+        if (item.event.type === 'SecretRequested') secrets.add(item.event);
+        else if (item.event.type === 'SecretResolved') secrets.resolve(item.event.id);
+        break;
+      case 'agent.events@1': {
+        const event = item.event;
+        const conn = st.connection.getState();
+        if (conn.info) {
+          if (event.type === 'DefaultModelChanged') conn.setInfo({...conn.info, default_model: event.model});
+          else if (event.type === 'DefaultEffortChanged') conn.setInfo({...conn.info, default_effort: event.effort});
+          else if (event.type === 'FavoriteModelsChanged') conn.setInfo({...conn.info, favorite_models: event.models});
+        }
+        break;
+      }
     }
-    // 183 §5.6: a chat just created on another machine: its follow stream is up (the first send may go), or it is heard
-    // from (nothing is starting any more: the composer is free, an unreachable card goes).
-    if (live && e.type === "FollowState") {
-      if (e.live) useRemoteStart.getState().live(e.session);
-    } else if (live && "session" in e && typeof e.session === "string") useRemoteStart.getState().forget(e.session);
-    if (live) listeners.get(e.type)?.forEach((cb) => cb(e));
+    if (!live) continue;
+    if (item.key === 'sessionsync.follow-state@1') {
+      if (item.event.live) useRemoteStart.getState().live(item.event.session);
+    } else if ('session' in e && typeof e.session === 'string') useRemoteStart.getState().forget(e.session);
+    topicListeners.get(item.key)?.forEach(cb => cb(e));
+    if ('type' in e && typeof e.type === 'string') listeners.get(item.key)?.get(e.type)?.forEach(cb => cb(e));
   }
 }
+

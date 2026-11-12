@@ -2,12 +2,12 @@
 // the digest field. Wire types in `@/rpc/bindings/Dream*`; everything here is testable without React.
 
 import { moneyParts } from '@/lib/money'
-import type { DreamModels } from '@/rpc/bindings/DreamModels'
-import type { DreamSettings } from '@/rpc/bindings/DreamSettings'
-import type { NightCounts } from '@/rpc/bindings/NightCounts'
-import type { NightSummary } from '@/rpc/bindings/NightSummary'
-import type { RunMode } from '@/rpc/bindings/RunMode'
-import type { UndoReport } from '@/rpc/bindings/UndoReport'
+import type { DreamModels } from "@/rpc/bindings/method.dreaming.output"
+import type { DreamSettings } from "@/rpc/bindings/method.dreaming.output"
+import type { NightCounts } from "@/rpc/bindings/method.dreaming.output"
+import type { NightSummary } from "@/rpc/bindings/method.dreaming.output"
+import type { RunMode } from '@/rpc/bindings/method.dreaming.input'
+import type { UndoReport } from "@/rpc/bindings/method.dreaming.output"
 
 /** §9.2 `budget_usd: 1` — the nightly default. */
 export const DEFAULT_BUDGET_USD = 1
@@ -142,7 +142,7 @@ export function reduceSettings(s: DreamSettings, c: SettingsChange): DreamSettin
     // 194: a tier's effort beside its pick; the engine clears it with the pick and drops one a new pick does not take.
     case 'effort':
       if ((s.efforts?.[c.tier] ?? null) === c.effort) return null
-      return { ...s, efforts: { triage: null, tidy: null, propose: null, judge: null, ...s.efforts, [c.tier]: c.effort } }
+      return { ...s, efforts: { ...s.efforts, [c.tier]: c.effort } }
     case 'preferences_auto':
       return s.preferences_auto === c.on ? null : { ...s, preferences_auto: c.on }
     case 'digest_day': {

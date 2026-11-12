@@ -8,8 +8,8 @@ import { SidebarMenu, SidebarProvider } from '@/components/ui/sidebar'
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
 import { usePanes } from '@/lib/panes'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { AgentInfo } from '@/rpc/extra'
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { AgentInfo } from '@/store/ui-events'
 import { useSessions } from '@/store/sessions'
 import { Desks, deskLabels } from './Desks'
 

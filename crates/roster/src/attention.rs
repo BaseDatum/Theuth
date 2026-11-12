@@ -173,6 +173,7 @@ pub const CONTEXT_MAX: usize = 280;
 /// result differs from the previous one by id set; `count` is the new badge.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct AttentionChanged {
     /// The new list's length (the badge).

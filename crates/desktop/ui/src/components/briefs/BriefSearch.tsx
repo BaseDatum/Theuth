@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 05 §7: `/meetings/briefs` — the knowledge `SearchBox` pattern (200 ms debounce, ≥ 2 chars → `brief_search`);
 // an empty box shows `brief_list` newest first behind a tag chip row. Edit / delete / New brief.
 // `BriefChanged` invalidates `queryKeys.briefs` (lib/rpc.ts), so the page follows tools and RPC alike.
@@ -15,11 +16,14 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { CachedBrief } from '@/rpc/bindings/CachedBrief'
+import type { CachedBrief } from "@/rpc/bindings/method.meeting.output"
 
 const MIN = 2
 
 export function BriefSearch({ initial, focus }: { initial: string; focus: string | null }) {
+  const canQuery1 = useQuerySupport(["brief_search"])
+  const canQuery1_2 = useQuerySupport(["brief_list"])
+  const canQuery1_3 = useQuerySupport(["brief_tags"])
   const api = useApi()
   const [q, setQ] = useState(initial)
   const [debounced, setDebounced] = useState(initial)
@@ -34,15 +38,15 @@ export function BriefSearch({ initial, focus }: { initial: string; focus: string
   const hits = useQuery({
     queryKey: queryKeys.briefsSearch(debounced),
     queryFn: () => api.brief_search(debounced, 50),
-    enabled: searching,
+    enabled: canQuery1 && (searching),
     placeholderData: (prev) => prev,
   })
   const list = useQuery({
     queryKey: queryKeys.briefsList(tag),
     queryFn: () => api.brief_list(tag, 50),
-    enabled: !searching,
+    enabled: canQuery1_2 && (!searching),
   })
-  const tags = useQuery({ queryKey: queryKeys.briefTags, queryFn: () => api.brief_tags() })
+  const tags = useQuery({ enabled: canQuery1_3, queryKey: queryKeys.briefTags, queryFn: () => api.brief_tags() })
   const remove = useAction((id: string) => api.brief_delete(id), { keys: [queryKeys.briefs] })
 
   const shown = searching ? hits : list

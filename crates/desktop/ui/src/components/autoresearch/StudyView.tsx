@@ -7,11 +7,11 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
-import type { ControlOp } from '@/rpc/bindings/ControlOp'
-import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
-import type { PauseReason } from '@/rpc/bindings/PauseReason'
-import type { StudyDetail } from '@/rpc/bindings/StudyDetail'
-import type { StudyInfo } from '@/rpc/bindings/StudyInfo'
+import type { ControlOp } from '@/rpc/bindings/method.autoresearch.input'
+import type { ExperimentRow } from "@/rpc/bindings/method.autoresearch.output"
+import type { PauseReason } from "@/rpc/bindings/method.autoresearch.output"
+import type { StudyDetail } from "@/rpc/bindings/method.autoresearch.output"
+import type { StudyInfo } from "@/rpc/bindings/method.autoresearch.output"
 import { ArchiveGrid } from './ArchiveGrid'
 import { CaseStrip } from './CaseStrip'
 import { ExperimentSheet } from './ExperimentDetail'

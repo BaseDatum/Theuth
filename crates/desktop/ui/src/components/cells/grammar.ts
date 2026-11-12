@@ -2,12 +2,12 @@
 // 171 §3.1: the TypeScript mirror of `surface::cell::{parse, parse_defaults, digest}` (`crates/surface/src/cell.rs`),
 // held to it by the shared fixtures `crates/surface/tests/cells.json` (grammar.test.ts). Validation and lint stay in
 // the engine and arrive in `CellState`.
-import type { CellOptions } from '@/rpc/bindings/CellOptions'
-import type { CellSpec } from '@/rpc/bindings/CellSpec'
-import type { HeaderLine } from '@/rpc/bindings/HeaderLine'
-import type { Lang } from '@/rpc/bindings/Lang'
-import type { NoteDefaults } from '@/rpc/bindings/NoteDefaults'
-import type { PythonChoice } from '@/rpc/bindings/PythonChoice'
+import type { CellOptions } from '@/rpc/bindings/auxiliary.surface.output'
+import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
+import type { HeaderLine } from '@/rpc/bindings/auxiliary.surface.output'
+import type { Lang } from '@/rpc/bindings/auxiliary.surface.output'
+import type { NoteDefaults } from '@/rpc/bindings/auxiliary.surface.output'
+import type { PythonChoice } from '@/rpc/bindings/auxiliary.surface.output'
 
 const LANGS: Record<string, Lang> = {
   bash: 'bash',
@@ -51,12 +51,12 @@ function headerLine(raw: string): HeaderLine {
 const U64_MAX = (1n << 64n) - 1n
 
 /** `30s` / `10m` / `2h` in seconds (`surface::cell::parse_duration`, u64 overflow → `null`). */
-export function parseDuration(text: string): bigint | null {
+export function parseDuration(text: string): number | null {
   const m = /^\+?(\d+)([smh])$/u.exec(text)
   if (!m) return null
   const n = BigInt(m[1] as string)
   const secs = n * ({ s: 1n, m: 60n, h: 3600n } as const)[m[2] as 's' | 'm' | 'h']
-  return n > U64_MAX || secs > U64_MAX ? null : secs
+  return n > U64_MAX || secs > U64_MAX ? null : Number(secs)
 }
 
 function parsePython(v: string): PythonChoice | null {

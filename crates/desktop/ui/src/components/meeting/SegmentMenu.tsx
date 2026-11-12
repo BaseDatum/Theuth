@@ -12,7 +12,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import type { Profile } from '@/rpc/bindings/Profile'
+import type { Profile } from "@/rpc/bindings/method.meeting.output"
 
 export interface SegmentMenuProps {
   /** Segments the enroll items act on: the selection when this row is in a multi-selection, else the row alone. */

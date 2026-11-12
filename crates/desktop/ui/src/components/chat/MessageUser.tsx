@@ -13,8 +13,8 @@ import { parseScreenLines } from '@/lib/screen-context'
 import { openExternal } from '@/lib/platform'
 import { parseNote } from '@/lib/voice-note'
 import { disclosureKey } from '@/lib/tool-runs'
-import type { ChannelOrigin } from '@/rpc/bindings/ChannelOrigin'
-import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
+import type { ChannelOrigin } from "@/rpc/bindings/method.agent.output"
+import type { ContextEntry } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
 import { useSessionField } from '@/store/sessions'
 import { AttachChip } from './AttachChip'

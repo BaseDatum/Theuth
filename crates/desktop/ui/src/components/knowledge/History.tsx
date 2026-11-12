@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft } from 'lucide-react'
 import { useState } from 'react'
@@ -25,8 +26,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useSearchFocus } from '@/hooks/use-search-focus'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { isSearchDestination, useSearchOrigin } from '@/lib/search'
-import type { Change } from '@/rpc/bindings/Change'
-import type { Revision } from '@/rpc/bindings/Revision'
+import type { Change } from "@/rpc/bindings/method.knowledge.output"
+import type { Revision } from "@/rpc/bindings/method.knowledge.output"
 import { cn } from 'cn'
 
 type ChangedFile = Revision['files'][number]
@@ -103,6 +104,8 @@ function Scoped({
   initialCommit: string | undefined
   onScope: (id: string) => void
 }) {
+  const canQuery1 = useQuerySupport(["knowledge_history"])
+  const canQuery1_2 = useQuerySupport(["knowledge_revision"])
   const api = useApi()
   const qc = useQueryClient()
   const origin = useSearchOrigin()
@@ -112,7 +115,7 @@ function Scoped({
     null,
   )
   // One extra row tells whether an older page exists without a count RPC.
-  const history = useQuery({
+  const history = useQuery({ enabled: canQuery1,
     queryKey: queryKeys.knowledgeHistory(id, limit),
     queryFn: () => api.knowledge_history(id, limit + 1),
     placeholderData: keepPreviousData,
@@ -126,7 +129,7 @@ function Scoped({
   const revision = useQuery({
     queryKey: queryKeys.knowledgeRevision(current ?? '', id),
     queryFn: () => api.knowledge_revision(current ?? '', id),
-    enabled: current !== null,
+    enabled: canQuery1_2 && (current !== null),
     staleTime: Number.POSITIVE_INFINITY,
   })
   // A commit-metadata hit (`snapshot: null`) opens this sheet on its commit: focus lands on the selected commit's

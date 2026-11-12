@@ -1,8 +1,8 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { type Layout, OUTCOME_PAINT, layout } from './model'
-import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
-import type { StudyDetail } from '@/rpc/bindings/StudyDetail'
+import type { ExperimentRow } from "@/rpc/bindings/method.autoresearch.output"
+import type { StudyDetail } from "@/rpc/bindings/method.autoresearch.output"
 
 const H = 260
 

@@ -1,11 +1,11 @@
-import type { LimitSource } from '@/rpc/bindings/LimitSource'
-import type { LocalRuntime } from '@/rpc/bindings/LocalRuntime'
-import type { LocalServer } from '@/rpc/bindings/LocalServer'
-import type { ProviderInfo } from '@/rpc/bindings/ProviderInfo'
-import type { ProviderModel } from '@/rpc/bindings/ProviderModel'
-import type { RefreshedModels } from '@/rpc/bindings/RefreshedModels'
-import type { SummaryTest } from '@/rpc/bindings/SummaryTest'
-import type { LoginInfo } from '@/rpc/extra'
+import type { LimitSource } from "@/rpc/bindings/method.agent.output"
+import type { LocalRuntime } from "@/rpc/bindings/method.agent.output"
+import type { LocalServer } from "@/rpc/bindings/method.agent.output"
+import type { ProviderInfo } from "@/rpc/bindings/method.agent.output"
+import type { ProviderModel } from "@/rpc/bindings/method.agent.output"
+import type { RefreshedModels } from "@/rpc/bindings/method.agent.output"
+import type { SummaryTest } from "@/rpc/bindings/method.agent.output"
+import type { LoginInfo } from "@/rpc/bindings/method.agent.output"
 
 /** Display names of the built-in key providers (85 §0.9); the engine sends the ids. */
 export const BUILTIN_LABEL: Record<string, string> = {

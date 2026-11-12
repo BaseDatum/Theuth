@@ -12,7 +12,7 @@ import { QueuedChips, withdrawInto } from './QueuedChips'
 import { FRESH } from './slash'
 import { StopButton } from './StopButton'
 import { interrupt, phase } from '@/lib/composer-state'
-import type { WireEvent } from '@/rpc/events'
+import type { UiEvent as WireEvent } from '@/store/ui-events'
 import { label as chordLabel } from '@/lib/chord'
 import { useShortcuts } from '@/lib/shortcuts'
 

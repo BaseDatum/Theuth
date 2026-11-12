@@ -2,7 +2,7 @@ import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Router from '@tanstack/react-router'
-import type { Task } from '@/rpc/bindings/Task'
+import type { Task } from "@/rpc/bindings/method.roster.output"
 import { sceneFixture, T } from './fixtures'
 import { scene } from './model'
 import { Scene } from './Scene'

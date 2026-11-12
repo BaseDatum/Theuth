@@ -1,7 +1,9 @@
+import { withCapability } from '@/rpc/capabilities'
+import { requirements } from '@/components/artifacts/requirements'
 import { Outlet, createFileRoute } from '@tanstack/react-router'
 import { Explorer } from '@/components/artifacts/Explorer'
 import { isPopout } from '@/lib/popout'
-import type { Kind } from '@/rpc/extra'
+import type { Kind } from "@/rpc/bindings/method.artifact.output"
 
 const KINDS: Record<Kind, true> = { markdown: true, text: true, csv: true, image: true, svg: true, pdf: true, html: true, file: true, app: true, archive: true, mermaid: true }
 
@@ -14,5 +16,5 @@ export const Route = createFileRoute('/artifacts')({
     if (typeof s.session === 'string' && s.session !== '') out.session = s.session
     return out
   },
-  component: isPopout() ? Outlet : Explorer,
+  component: withCapability(isPopout() ? Outlet : Explorer, requirements),
 })

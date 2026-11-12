@@ -4,14 +4,14 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as NotebooksRpc from '@/lib/notebooks-rpc'
 import { notebookKeys } from '@/lib/notebooks-rpc'
-import type { Citation } from '@/rpc/bindings/Citation'
+import type { Citation } from "@/rpc/bindings/method.agent.output"
 import { CitationLink, CitationsProvider, References, citationCount } from './Citations'
 
 const HREF = 'theuth://sources/s1#b12'
 const citation: Citation = { href: HREF, kind: 'sources', id: 's1', locator: '#b12', sha8: null, status: 'moved', available: true, title: 'ICD portal DR runbook v7', text: null }
 
 vi.mock('@tanstack/react-router', () => ({ useRouter: () => undefined }))
-vi.mock('@/store/connection', () => ({ useConnection: (sel: (s: { client: unknown }) => unknown) => sel({ client: {} }) }))
+vi.mock('@/store/connection', () => ({ useConnection: (pick: (s: unknown) => unknown) => pick({ client: {} , discovery: { phase: 'legacy' } }) }))
 vi.mock('@/components/notebooks/NotebookContext', () => ({ useNotebookChat: () => null }))
 // Radix renders popover content only when open; plain elements show the dangling-ref card.
 vi.mock('@/components/ui/popover', () => ({

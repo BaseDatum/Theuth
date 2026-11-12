@@ -1,3 +1,4 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { MutationObserver, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -6,14 +7,14 @@ import { expect, test, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
-import type { Api } from '@/rpc/api'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
-import type { Stalled } from '@/rpc/bindings/Stalled'
-import type { ViewLine } from '@/rpc/bindings/ViewLine'
+import type { Api } from '@/rpc/bindings/client'
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { SessionMemory } from "@/rpc/bindings/method.agent.output"
+import type { Stalled } from "@/rpc/bindings/method.agent.output"
+import type { ViewLine } from "@/rpc/bindings/method.agent.output"
 import { INITIAL, LineNode, MemoryBadge, MemoryFooter, SummaryModel, ViewNote, badgeTip, effortMutation, flatten, foldMutation, highlight, modelMutation, nextTry, pauseMutation, reduce, retryMutation } from './MemoryPanel'
 import { isFoldedNote } from '@/lib/endless'
-import type { EndlessBacklog } from '@/rpc/bindings/EndlessBacklog'
+import type { Backlog as EndlessBacklog } from "@/rpc/bindings/method.agent.output"
 import type * as Combobox from './ModelCombobox'
 import type { Effort } from './ModelPicker'
 
@@ -24,11 +25,11 @@ vi.mock('./ModelCombobox', async (original) => {
   return { ...m, ModelCombobox: (p: Parameters<typeof m.ModelCombobox>[0]) => (pickers.push(p), createElement(m.ModelCombobox, p)) }
 })
 
-const line = (id: number, n: number, text: string, built = true): ViewLine => ({ id, n, text, built, level: Math.log2(n) })
+const line = (id: number, n: number, text: string, built = true): ViewLine => (receiveComponent("method.agent.output.ViewLine", { id, n, text, built, level: Math.log2(n) }))
 
 const view = [line(0, 64, 'the beginning'), line(64, 2, 'two recent'), line(66, 1, 'the last one', false)]
 
-const memory: SessionMemory = {
+const memory: SessionMemory = receiveComponent("method.agent.output.SessionMemory", {
   mode: 'endless',
   view,
   settling: false,
@@ -38,10 +39,10 @@ const memory: SessionMemory = {
   model: 'anthropic/claude-haiku-4-5',
   view_bytes: 128_000,
   backfill: null,
-}
+})
 
 const summary = (memory: 'endless' | 'epochs'): SessionSummary =>
-  ({ id: 's1', title: 'x', memory }) as unknown as SessionSummary
+  receiveComponent('method.agent.output.SessionSummary', { id: 's1', title: 'x', memory, created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-01T00:00:00Z', model: 'm' })
 
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
@@ -189,7 +190,7 @@ test('Retry now: the reply replaces the cached memory; an error toasts and leave
 // ---------------------------------------------------------------------------------------------------------------- 137G
 
 const waiting: EndlessBacklog = { lines: 4_812, folded: 4_512, eta_secs: 660, paused: false, paused_by: null }
-const backlogged: SessionMemory = { ...memory, units: 5_868, settling: true, unbuilt: 4_812, backlog: waiting, spend_today_usd: 5.12 }
+const backlogged: SessionMemory = receiveComponent("method.agent.output.SessionMemory", { ...memory, units: 5_868, settling: true, unbuilt: 4_812, backlog: waiting, spend_today_usd: 5.12 })
 
 /** The footer over a cache that may hold the endless settings (batch size, day cap). */
 const footerWith = (data: SessionMemory, settings?: object) => {
@@ -301,7 +302,7 @@ test("194: the summary chips belong to the chat's own pick, at its own stored ef
     renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(SummaryModel, { session: 's1', m }) as ReactNode }))
     return pickers.find((p) => p['aria-label'] === 'Summary model')
   }
-  const own: SessionMemory = { ...memory, model_override: 'anthropic/claude-haiku-4-5', effort_override: 'high', effort: 'high' }
+  const own: SessionMemory = receiveComponent("method.agent.output.SessionMemory", { ...memory, model_override: 'anthropic/claude-haiku-4-5', effort_override: 'high', effort: 'high' })
   const chips = paint(own, ['low', 'high'])?.effort
   expect(chips?.levels).toEqual(['low', 'high'])
   expect(chips?.current).toBe('high')

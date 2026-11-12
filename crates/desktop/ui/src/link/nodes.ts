@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // Auto-pair with a parent's nodes (32 §8.2): after an engine connects, every node
 // it lists becomes an engine of this device — `invite_node` on the parent hands
 // out the node's pairing string and the ordinary 31 §7.5 paste path does the rest.
@@ -8,9 +9,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { deviceName } from '@/lib/platform'
 import { useApi } from '@/lib/rpc'
-import type { Api } from '@/rpc/api'
-import type { Node } from '@/rpc/bindings/Node'
-import type { NodeEvent } from '@/rpc/bindings/NodeEvent'
+import type { Api } from '@/rpc/bindings/client'
+import type { Node } from "@/rpc/bindings/method.nodes.output"
+import type { NodeEvent } from "@/rpc/bindings/event.nodes_2eevents.output"
 import { RpcError } from '@/rpc/client'
 import { useConnection } from '@/store/connection'
 import { scope } from '@/store/engine-scope'
@@ -152,7 +153,7 @@ export function watchNodes(): () => void {
     const api = useConnection.getState().api
     if (api) onNodeEvent(useEngines.getState().active, api, e)
   }
-  const offs = (['NodeAdded', 'NodeOnline', 'NodeRemoved', 'NodeRevoked'] as const).map((t) => on(t, handle))
+  const offs = (['NodeAdded', 'NodeOnline', 'NodeRemoved', 'NodeRevoked'] as const).map((t) => on("nodes.events@1", t, handle))
   return () => {
     for (const off of offs) off()
   }
@@ -166,6 +167,7 @@ export const NODES_KEY = ['nodes'] as const
 
 /** The active engine's nodes; disabled (no request) where `list_nodes` is not answered. */
 export function useNodes() {
+  const canQuery1 = useQuerySupport(["list_nodes"])
   const api = useApi()
-  return useQuery({ queryKey: NODES_KEY, queryFn: () => api.list_nodes(), enabled: useHasNodes(), retry: false })
+  return useQuery({ queryKey: NODES_KEY, queryFn: () => api.list_nodes(), enabled: canQuery1 && (useHasNodes()), retry: false })
 }

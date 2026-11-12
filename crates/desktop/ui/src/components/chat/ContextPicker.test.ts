@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
-import type { ContextItem } from '@/rpc/bindings/ContextItem'
-import type { ContextTarget } from '@/rpc/bindings/ContextTarget'
+import type { ContextItem } from "@/rpc/bindings/method.agent.output"
+import type { ContextTarget } from "@/rpc/bindings/method.agent.output"
 import { expand } from './ContextPicker'
 
 const m = (seq: number): ContextTarget => ({ kind: 'message', seq })

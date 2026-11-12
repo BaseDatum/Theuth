@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
-import type { Enrolled } from '@/rpc/bindings/Enrolled'
-import type { Segment } from '@/rpc/bindings/Segment'
+import type { Enrolled } from "@/rpc/bindings/method.meeting.output"
+import type { Segment } from "@/rpc/bindings/method.meeting.output"
 import { alreadyEnrolled, enrollBlock, enrolledToast, rowBlock, secondsText, selectClick, speechMs } from './segment-select'
 
 /** A segment of `n` words of 400 ms each, starting at `t0`. */
@@ -8,10 +8,10 @@ const seg = (id: number, track: Segment['track'], t0: number, n: number): Segmen
   id,
   track,
   speaker: track === 'Mic' ? 'me' : 's1',
-  t0_ms: BigInt(t0),
-  t1_ms: BigInt(t0 + n * 500),
+  t0_ms: t0,
+  t1_ms: t0 + n * 500,
   text: 'w '.repeat(n).trim(),
-  words: Array.from({ length: n }, (_, k) => ({ text: 'w', t0_ms: BigInt(t0 + k * 500), t1_ms: BigInt(t0 + k * 500 + 400) })),
+  words: Array.from({ length: n }, (_, k) => ({ text: 'w', t0_ms: t0 + k * 500, t1_ms: t0 + k * 500 + 400 })),
 })
 
 const segments = [seg(1, 'Mic', 0, 2), seg(2, 'System', 1000, 3), seg(3, 'System', 3000, 1), seg(4, 'Mic', 4000, 4), seg(5, 'System', 7000, 2)]

@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { BookOpen, ExternalLink, FolderOpen, ListChecks, type LucideIcon, MessageSquare, Mic, StickyNote } from 'lucide-react'
@@ -9,7 +10,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { extOf } from '@/lib/files'
 import { openExternal } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { Pointer } from '@/rpc/bindings/Pointer'
+import type { Pointer } from "@/rpc/bindings/method.roster.output"
 import { parseCodeRef, pointerRoute, urlHost } from './model'
 import { UnifiedDiff } from './UnifiedDiff'
 
@@ -95,8 +96,9 @@ function Row({ icon: Icon, title, note, meta }: { icon: LucideIcon; title: strin
 
 /** The artifact record the viewer route fetches (`Viewer.tsx`), rendered inline and capped, with Open → `/artifacts/$callId`. */
 function ArtifactPointer({ p }: { p: Pointer }) {
+  const canQuery1 = useQuerySupport(["get_artifact"])
   const api = useApi()
-  const record = useQuery({ queryKey: queryKeys.artifact(p.ref), queryFn: () => api.get_artifact(p.ref) })
+  const record = useQuery({ enabled: canQuery1, queryKey: queryKeys.artifact(p.ref), queryFn: () => api.get_artifact(p.ref) })
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2">

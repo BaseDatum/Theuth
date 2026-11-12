@@ -1,9 +1,9 @@
 import { createElement as h } from 'react'
 import { expect, test, vi } from 'vitest'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
-import type { CellSpec } from '@/rpc/bindings/CellSpec'
-import type { CellState } from '@/rpc/bindings/CellState'
-import type { Interpreter } from '@/rpc/bindings/Interpreter'
+import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
+import type { CellState } from "@/rpc/bindings/method.cells.output"
+import type { Interpreter } from "@/rpc/bindings/method.cells.output"
 import { announce, Cell, CellExtras, ensureLiveRegion, trimBlankTail } from './Cell'
 import { gutterMark, keyRun } from './CellEditor'
 import { cellOf } from './grammar'

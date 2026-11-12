@@ -19,8 +19,8 @@ import { useCompactorLabel } from '@/lib/endless'
 import { contextLine } from '@/lib/notebook-context'
 import { notebookKeys, useContextApi, useNotebooksApi } from '@/lib/notebooks-rpc'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { ContextEstimate } from '@/rpc/bindings/ContextEstimate'
-import type { DocSummary } from '@/rpc/bindings/DocSummary'
+import type { ContextEstimate } from "@/rpc/bindings/method.agent.output"
+import type { DocSummary } from "@/rpc/bindings/method.agent.output"
 import { useSessions } from '@/store/sessions'
 
 const PAGE = 60

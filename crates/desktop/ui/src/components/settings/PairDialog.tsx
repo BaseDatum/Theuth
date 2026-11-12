@@ -5,8 +5,8 @@ import { errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { putPair, queryKeys, useApi } from '@/lib/rpc'
-import type { NearbyEngine } from '@/rpc/bindings/NearbyEngine'
-import type { PairCeremony } from '@/rpc/bindings/PairCeremony'
+import type { NearbyEngine } from "@/rpc/bindings/method.nodes.output"
+import type { PairCeremony } from "@/rpc/bindings/method.a2a.output"
 
 /** What the pair dialog shows: `starting` until `mesh_pair_nearby` answers; `code` until this side presses Pair, then
  * `waiting` for the other side; `paired` / `rejected` / `expired` end it; `failed` is an RPC refusal. */

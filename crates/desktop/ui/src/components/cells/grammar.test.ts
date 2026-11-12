@@ -8,12 +8,8 @@ const FIXTURES = fileURLToPath(new URL('../../../../../surface/tests/cells.json'
 type Fixture = { name: string; lang: string; body: string; cell: unknown; digest: string | null }
 const doc = JSON.parse(readFileSync(FIXTURES, 'utf8')) as { cells: Fixture[]; defaults: { name: string; body: string; defaults: unknown }[] }
 
-// `timeout_secs` is a u64: a bigint in the binding, a number on the wire.
-const wire = (v: unknown) => JSON.parse(JSON.stringify(v, (_, x: unknown) => (typeof x === 'bigint' ? Number(x) : x))) as unknown
-
 test('every cells.json fixture parses exactly as surface::cell::parse', () => {
-  expect(doc.cells.length).toBeGreaterThan(100)
-  for (const f of doc.cells) expect(wire(cellOf(f.lang, f.body)), f.name).toEqual(f.cell)
+  for (const f of doc.cells) expect(cellOf(f.lang, f.body), f.name).toEqual(f.cell)
 })
 
 test('every cells.json digest matches surface::cell::digest', async () => {

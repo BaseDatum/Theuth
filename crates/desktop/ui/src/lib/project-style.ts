@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import {
   Book,
@@ -27,7 +28,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { ProjectStyle } from '@/rpc/bindings/ProjectStyle'
+import type { ProjectStyle } from "@/rpc/bindings/method.agent.output"
 
 /**
  * Project icon and colour (51 §3 as-built). The server stores keys from these two lists and nothing else;
@@ -91,8 +92,9 @@ const byName = (rows: ProjectStyle[]): Record<string, ProjectStyle> =>
 
 /** Every styled project by name (`list_project_styles`); setters invalidate `queryKeys.projectStyles`. */
 export function useProjectStyles(): Record<string, ProjectStyle> {
+  const canQuery1 = useQuerySupport(["list_project_styles"])
   const api = useApi()
-  const { data } = useQuery({
+  const { data } = useQuery({ enabled: canQuery1,
     queryKey: queryKeys.projectStyles,
     queryFn: () => api.list_project_styles(),
     select: byName,

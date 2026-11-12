@@ -4,13 +4,13 @@
  * start: the meeting). No React; `calendar.test.ts` covers the tables.
  */
 import { formatAt } from '@/lib/time'
-import type { CalEvent } from '@/rpc/bindings/CalEvent'
-import type { CalSource } from '@/rpc/bindings/CalSource'
-import type { Detection } from '@/rpc/bindings/Detection'
-import type { EventMatch } from '@/rpc/bindings/EventMatch'
-import type { EventRef } from '@/rpc/bindings/EventRef'
-import type { Manifest } from '@/rpc/bindings/Manifest'
-import type { MeetingId } from '@/rpc/bindings/MeetingId'
+import type { CalEvent } from "@/rpc/bindings/method.meeting.output"
+import type { CalSource } from "@/rpc/bindings/method.meeting.output"
+import type { Detection } from "@/rpc/bindings/method.meeting.output"
+import type { EventMatch } from "@/rpc/bindings/method.meeting.output"
+import type { EventRef } from "@/rpc/bindings/method.meeting.output"
+import type { Manifest } from "@/rpc/bindings/method.meeting.output"
+import type { MeetingId } from "@/rpc/bindings/method.meeting.output"
 
 const MIN = 60_000
 

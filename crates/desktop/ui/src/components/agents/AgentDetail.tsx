@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { SAME_AS_NEW } from '@/components/settings/ModelDefaults'
@@ -27,8 +28,8 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { byRank, rankSummary, rootOf } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
-import type { AgentFile } from '@/rpc/bindings/AgentFile'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
+import type { AgentFile } from "@/rpc/bindings/method.roster.output"
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
 import { CharterDoc } from './CharterDoc'
 import { CharterEditor } from './CharterEditor'
 import { AccessFields, Field, RuntimeFields } from './RuntimeAccessFields'
@@ -368,10 +369,13 @@ function Charter({ file: f }: { file: AgentFile }) {
 
 /** 148 R3: theuth's model (`roster.theuth_model`, 194: and `roster.theuth_effort` as its chips) — the same picker, RPCs and queries as Settings › Models › Defaults; the roster refetches so the header's model updates. */
 function TheuthRuntime() {
+  const canQuery1 = useQuerySupport(["list_models"])
+  const canQuery1_2 = useQuerySupport(["theuth_agent_model"])
+  const canQuery1_3 = useQuerySupport(["theuth_agent_effort"])
   const api = useApi()
-  const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
-  const model = useQuery({ queryKey: queryKeys.theuthAgentModel, queryFn: () => api.theuth_agent_model() })
-  const effort = useQuery({ queryKey: queryKeys.theuthAgentEffort, queryFn: () => api.theuth_agent_effort() })
+  const models = useQuery({ enabled: canQuery1, queryKey: queryKeys.models, queryFn: () => api.list_models() })
+  const model = useQuery({ enabled: canQuery1_2, queryKey: queryKeys.theuthAgentModel, queryFn: () => api.theuth_agent_model() })
+  const effort = useQuery({ enabled: canQuery1_3, queryKey: queryKeys.theuthAgentEffort, queryFn: () => api.theuth_agent_effort() })
   // 194 D4c: a model change may drop the stored effort, so its query refetches too.
   const setModel = useAction((id: string | null) => api.set_theuth_agent_model(id), { keys: [queryKeys.theuthAgentModel, queryKeys.theuthAgentEffort, queryKeys.roster] })
   const setEffort = useAction((level: string | null) => api.set_theuth_agent_effort(level), { keys: [queryKeys.theuthAgentEffort, queryKeys.roster] })
@@ -429,8 +433,9 @@ function Runtime({ file: f }: { file: AgentFile }) {
 
 /** The agent's sessions under the one list rule (running first, then most recently active): its desks (the row's `desk` mark) and everything under them at any depth (the work sessions and their subagents). */
 function Runs({ name, desk }: { name: string; desk: string | null }) {
+  const canQuery2 = useQuerySupport(["list_sessions"])
   const api = useApi()
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const sessions = useQuery({ enabled: canQuery2, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const all = sessions.data ?? []
   const desks = all.filter((s) => s.desk === name || s.id === desk).map((s) => s.id)
   const runs = all.filter((s) => desks.includes(rootOf(all, s.id) ?? s.id)).sort((a, b) => byRank(rankSummary(a), rankSummary(b)))

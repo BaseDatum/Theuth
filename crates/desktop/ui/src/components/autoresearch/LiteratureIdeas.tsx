@@ -1,6 +1,6 @@
 import { BookOpen } from 'lucide-react'
-import type { CitationRow } from '@/rpc/bindings/CitationRow'
-import type { StudyIdea } from '@/rpc/bindings/StudyIdea'
+import type { CitationRow } from "@/rpc/bindings/method.autoresearch.output"
+import type { Idea as StudyIdea } from "@/rpc/bindings/method.autoresearch.output"
 
 /** `host` of a URL, `www.` dropped (mirrors `literature::host`). */
 export function host(url: string): string {

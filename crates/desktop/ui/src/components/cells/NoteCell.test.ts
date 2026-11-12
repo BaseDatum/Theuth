@@ -4,14 +4,14 @@ import { createElement as h } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import { LOCAL } from '@/link/engines'
-import type { CellLatest } from '@/rpc/bindings/CellLatest'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
+import type { CellLatest } from "@/rpc/bindings/method.cells.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
 import type { EngineProvider } from '@/lib/doc/provider'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
-import type { CellRef } from '@/rpc/bindings/CellRef'
-import type { CellSpec } from '@/rpc/bindings/CellSpec'
-import type { CellState } from '@/rpc/bindings/CellState'
-import type { PassEnd } from '@/rpc/bindings/PassEnd'
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
+import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
+import type { CellState } from "@/rpc/bindings/method.cells.output"
+import type { PassEnd } from "@/rpc/bindings/method.cells.output"
 import { cellOf, digest } from './grammar'
 import { NoteCell, pressNote, rereadAfterEdit, UnsureRun } from './NoteCell'
 import { NoteHost } from './note-context'
@@ -189,7 +189,7 @@ const row = (over: Partial<CellLatest> = {}): CellLatest => ({
   expect: 'expect ✓',
   summary: null,
   code_sha: 'a',
-  ended_ms: BigInt(Date.now() - 4 * 60_000),
+  ended_ms: Date.now() - 4 * 60_000,
   text: 'from xeus',
   engine: XEUS,
   ...over,

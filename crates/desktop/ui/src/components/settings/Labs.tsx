@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 57 §7.1: Settings › Decision models (was Labs) — everything experimental about the local decision oracle in one pane:
 // the plugin's Enabled switch (188 F4, `config_flag_*`), the "Decision models loaded now" line (`decision_loaded`,
 // 57 §2.1), the meeting oracle and browser System-1 mode switches (`decision_mode` / `set_decision_mode`), and
@@ -30,7 +31,7 @@ import {
 } from '@/lib/labs'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useEngines } from '@/link/engines'
-import type { Mode } from '@/rpc/bindings/Mode'
+import type { Mode } from "@/rpc/bindings/method.dreaming.output"
 
 /** The design doc every card links to. */
 const DESIGN_NOTES = 'https://github.com/skymoore/wth/blob/main/docs/design/57-decision.md'
@@ -50,8 +51,9 @@ export function Labs() {
 
 /** Everything that needs the running plugin; not rendered (so not queried) while it is off. */
 function Families() {
+  const canQuery1 = useQuerySupport(["decision_stats"])
   const api = useApi()
-  const stats = useQuery({ queryKey: queryKeys.decisionStats, queryFn: () => api.decision_stats(), refetchInterval: 30_000 })
+  const stats = useQuery({ enabled: canQuery1, queryKey: queryKeys.decisionStats, queryFn: () => api.decision_stats(), refetchInterval: 30_000 })
   return (
     <>
       <Section title="Loaded now">
@@ -91,8 +93,9 @@ function Families() {
 
 /** 57 §2.1 item 4: what the daemon holds resident right now, refreshed every 10 s. */
 function DecisionLoaded() {
+  const canQuery2 = useQuerySupport(["decision_loaded"])
   const api = useApi()
-  const loaded = useQuery({ queryKey: queryKeys.decisionLoaded, queryFn: () => api.decision_loaded(), refetchInterval: 10_000 })
+  const loaded = useQuery({ enabled: canQuery2, queryKey: queryKeys.decisionLoaded, queryFn: () => api.decision_loaded(), refetchInterval: 10_000 })
   return (
     <Row
       label="Decision models loaded now"
@@ -119,9 +122,10 @@ function Blurb({ children }: { children: ReactNode }) {
 
 /** Off · Shadow · Active on `decision_mode(prefix)`; disabled with the reason when the oracle cannot run. */
 function ModeRow({ prefix, label, counters }: { prefix: Prefix; label: string; counters: string }) {
+  const canQuery3 = useQuerySupport(["decision_mode"])
   const api = useApi()
   const key = queryKeys.decisionMode(prefix)
-  const info = useQuery({ queryKey: key, queryFn: () => api.decision_mode(prefix) })
+  const info = useQuery({ enabled: canQuery3, queryKey: key, queryFn: () => api.decision_mode(prefix) })
   const set = useAction((mode: Mode) => api.set_decision_mode(prefix, mode), { keys: [key, queryKeys.decisionStats] })
   const mode = info.data?.mode ?? 'off'
   const blocked = blockedReason(info.data, prefix, info.isError ? errorText(info.error) : undefined)
@@ -165,10 +169,11 @@ function ModeRow({ prefix, label, counters }: { prefix: Prefix; label: string; c
 
 /** One family's Capture and Share rows on `decision_training(prefix)`. */
 function TrainingRows({ prefix, title }: { prefix: Prefix; title: string }) {
+  const canQuery4 = useQuerySupport(["decision_training"])
   const api = useApi()
   const local = isLocal(useEngines((s) => s.active))
   const key = queryKeys.decisionTraining(prefix)
-  const info = useQuery({ queryKey: key, queryFn: () => api.decision_training(prefix) })
+  const info = useQuery({ enabled: canQuery4, queryKey: key, queryFn: () => api.decision_training(prefix) })
   const capture = useAction((on: boolean) => api.set_decision_training(prefix, on), { keys: [key] })
   const share = useAction((on: boolean) => api.set_decision_share(prefix, on), { keys: [key] })
   const del = useAction(() => api.delete_decision_training(prefix), { keys: [key], onSuccess: () => setConfirm(false) })

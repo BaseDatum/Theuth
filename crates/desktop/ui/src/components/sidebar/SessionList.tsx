@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight, MoreHorizontal, Plus, X } from 'lucide-react'
 import { useNavigate } from '@tanstack/react-router'
@@ -24,7 +25,7 @@ import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { notAdvisor, notStudy, rootOf, subtrees } from '@/lib/session-tree'
 import { nextSelection, type SelectMode } from '@/lib/selection'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { AgentTree } from './AgentTree'
 import { ProjectIcon, ProjectStyleDialog } from './ProjectStyle'
 import { SessionItem } from './SessionItem'
@@ -223,10 +224,11 @@ export function SessionList({
   barEl: HTMLDivElement | null
   active: string | undefined
 }) {
+  const canQuery1 = useQuerySupport(["list_sessions"])
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
-  const { data: sessions = [] } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const { data: sessions = [] } = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
   const [archivedOpen, setArchivedOpen] = useState(false)
   const root = usePanes((s) => s.root)

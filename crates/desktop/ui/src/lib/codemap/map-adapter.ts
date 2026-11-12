@@ -13,15 +13,15 @@ import elementTop from '@/components/codemap/__fixtures__/map-element-overall-ar
 import overviewStructure from '@/components/codemap/__fixtures__/map-overview-structure.json'
 import overviewReady from '@/components/codemap/__fixtures__/map-overview.json'
 import progressScript from '@/components/codemap/__fixtures__/map-progress.json'
-import type { Api } from '@/rpc/api'
-import type { GraphProps } from '@/rpc/bindings/GraphProps'
-import type { MapChild } from '@/rpc/bindings/MapChild'
-import type { MapElement } from '@/rpc/bindings/MapElement'
-import type { MapExport } from '@/rpc/bindings/MapExport'
-import type { MapHit } from '@/rpc/bindings/MapHit'
-import type { MapIndex } from '@/rpc/bindings/MapIndex'
-import type { MapJob } from '@/rpc/bindings/MapJob'
-import type { MapTreeRow } from '@/rpc/bindings/MapTreeRow'
+import type { Api } from '@/rpc/bindings/client'
+import type { GraphProps } from "@/rpc/bindings/method.codeindex.output"
+import type { MapChild } from "@/rpc/bindings/method.codeindex.output"
+import type { MapElement } from "@/rpc/bindings/method.codeindex.output"
+import type { MapExport } from "@/rpc/bindings/method.codeindex.output"
+import type { MapHit } from "@/rpc/bindings/method.codeindex.output"
+import type { MapIndex } from "@/rpc/bindings/method.codeindex.output"
+import type { MapJob } from "@/rpc/bindings/method.codeindex.output"
+import type { MapTreeRow } from "@/rpc/bindings/method.codeindex.output"
 import { localSearch } from './map'
 import type { CodeMapChanged, CodeMapProgress } from './types'
 

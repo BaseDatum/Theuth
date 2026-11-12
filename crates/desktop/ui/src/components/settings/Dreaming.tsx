@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Moon, Undo2 } from 'lucide-react'
@@ -56,14 +57,17 @@ import {
   usd,
 } from '@/lib/dreaming'
 import { queryKeys } from '@/lib/rpc'
-import type { DreamSettings } from '@/rpc/bindings/DreamSettings'
-import type { NightSummary } from '@/rpc/bindings/NightSummary'
-import type { Proposal } from '@/rpc/bindings/Proposal'
-import type { RunMode } from '@/rpc/bindings/RunMode'
+import type { DreamSettings } from "@/rpc/bindings/method.dreaming.output"
+import type { NightSummary } from "@/rpc/bindings/method.dreaming.output"
+import type { Proposal } from "@/rpc/bindings/method.dreaming.output"
+import type { RunMode } from '@/rpc/bindings/method.dreaming.input'
 import { useConnection } from '@/store/connection'
 
 /** Settings › Dreaming (136 §8, §14.1): the nightly routine's status, switch, window, budget, models, digest, pause, Dream now, nights and proposals. */
 export function Dreaming() {
+  const canQuery1 = useQuerySupport(["list_schedules"])
+  const canQuery1_2 = useQuerySupport(["title_model"])
+  const canQuery1_3 = useQuerySupport(["subagent_model"])
   const api = useDreamingApi()
   const info = useConnection((s) => s.info)
   const status = useDreamStatus()
@@ -71,7 +75,7 @@ export function Dreaming() {
   const nights = useDreamNights()
   const proposals = useDreamProposals()
   // The routine's state (Dream now's blocker, the Tidy tier's default); its switch lives on Agents › Routines (188 removal 3).
-  const schedules = useQuery({ queryKey: SCHEDULES, queryFn: () => api.list_schedules() })
+  const schedules = useQuery({ enabled: canQuery1, queryKey: SCHEDULES, queryFn: () => api.list_schedules() })
   const routine = schedules.data?.find((s) => s.name === 'dreaming')
   // 188 F2: `enabled` turns the routine and its sensor off and on with it, so the schedules refresh too.
   const save = useAction((next: DreamSettings) => api['dreaming.set_settings'](next), { keys: [KEY, SCHEDULES] })
@@ -84,8 +88,8 @@ export function Dreaming() {
   const [budgetProblem, setBudgetProblem] = useState<string | null>(null)
 
   const models = useModels()
-  const titleModel = useQuery({ queryKey: queryKeys.titleModel, queryFn: () => api.title_model() })
-  const subagentModel = useQuery({ queryKey: queryKeys.subagentModel, queryFn: () => api.subagent_model() })
+  const titleModel = useQuery({ enabled: canQuery1_2, queryKey: queryKeys.titleModel, queryFn: () => api.title_model() })
+  const subagentModel = useQuery({ enabled: canQuery1_3, queryKey: queryKeys.subagentModel, queryFn: () => api.subagent_model() })
 
   const s = status.data
   const digest = settings.data ? parseDigest(settings.data.digest) : null

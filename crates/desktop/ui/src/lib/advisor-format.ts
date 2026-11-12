@@ -1,12 +1,12 @@
 // 125 §8: the pure half of the advisor UI — severity tones, the pill's label by state, note counts and the
 // popover's context/tokens lines — so the components stay thin and the logic is vitest-able.
 
-import type { AdvisorConsultCounts } from '@/rpc/bindings/AdvisorConsultCounts'
-import type { AdvisorSeverity } from '@/rpc/bindings/AdvisorSeverity'
-import type { AdvisorState } from '@/rpc/bindings/AdvisorState'
-import type { AdvisorStatus } from '@/rpc/bindings/AdvisorStatus'
-import type { Advisory } from '@/rpc/bindings/Advisory'
-import type { AdvisoryNote } from '@/rpc/bindings/AdvisoryNote'
+import type { AdvisorConsultCounts } from "@/rpc/bindings/method.agent.output"
+import type { AdvisorSeverity } from "@/rpc/bindings/method.agent.output"
+import type { AdvisorState } from "@/rpc/bindings/method.agent.output"
+import type { AdvisorStatus } from "@/rpc/bindings/method.agent.output"
+import type { Advisory } from "@/rpc/bindings/method.agent.output"
+import type { AdvisoryNote } from "@/rpc/bindings/method.agent.output"
 import { k } from '@/components/chat/CostPill'
 
 /** Severity order for the card's worst-of pick; `advice` (a consultation's answer, 125 R1) never wins. */

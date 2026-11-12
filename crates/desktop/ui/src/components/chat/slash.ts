@@ -1,3 +1,4 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import type { UseNavigateResult } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { limitsArgs, limitValue, probeLine, refreshedText } from '@/components/settings/providers'
@@ -6,12 +7,12 @@ import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
 import { queryKeys } from '@/lib/rpc'
 import { openSearch } from '@/lib/search'
 import { LOCAL, useEngines } from '@/link/engines'
-import type { Api } from '@/rpc/api'
-import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
-import type { HarnessCommand } from '@/rpc/bindings/HarnessCommand'
-import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
-import type { SyncResult } from '@/rpc/bindings/SyncResult'
-import type { LoadedPage } from '@/rpc/extra'
+import type { Api } from '@/rpc/bindings/client'
+import type { CommunicationState } from "@/rpc/bindings/method.agent.output"
+import type { HarnessCommand } from "@/rpc/bindings/method.agent.output"
+import type { CompactStyle } from "@/rpc/bindings/method.agent.output"
+import type { SyncResult } from "@/rpc/bindings/method.agent.output"
+import type { Loaded as LoadedPage } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
 import { active } from '@/store/engine-scope'
 import { useSessions } from '@/store/sessions'
@@ -288,7 +289,7 @@ const need = (session: string | null): string => {
  * a fresh session loaded keeps the route from re-fetching an empty history
  * over the in-flight first turn.
  */
-export const FRESH: LoadedPage = {
+export const FRESH: LoadedPage = receiveComponent("method.agent.output.Loaded", {
   history: [],
   running: false,
   model: '',
@@ -311,7 +312,7 @@ export const FRESH: LoadedPage = {
   communication: null,
   project: null,
   retention: 'durable',
-}
+})
 
 /** Park `name` (and any `words` typed after it) on `session`'s composer — creating and opening the session when
  * there is none (`openDraftSession`: a draft model/effort pick rides along, 148 R1) — and show that chat. No turn

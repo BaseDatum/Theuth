@@ -95,6 +95,7 @@ pub struct Relayed {
 
 /// Whether a followed owner's stream supports live Watch events.
 #[derive(Clone, Debug, Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct FollowState {
     /// Followed session, not the relay carrier's admission scope.

@@ -13,17 +13,20 @@ import { isMacDesktop } from '@/lib/hotkeys'
 import { GROUPS, type Group, type Tab, tabOf } from '@/lib/nav'
 import { isPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
+import { supports } from '@/rpc/discovery'
+import { useConnection } from '@/store/connection'
 
 /** One tab of a band: `id` is what `onValueChange` receives. */
 export type BandTab = { id: string; label: string; icon: LucideIcon }
 
 /** The band of a sidebar group (Agents, Library), whose tabs are its routes. */
 export function SectionBand({ group }: { group: Group }) {
+  const discovery = useConnection(s => s.discovery)
   const navigate = useNavigate()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   return (
     <TabBand
-      tabs={GROUPS[group].map(({ to, label, icon }) => ({ id: to, label, icon }))}
+      tabs={GROUPS[group].filter(tab => supports(discovery, tab.required)).map(({ to, label, icon }) => ({ id: to, label, icon }))}
       value={tabOf(group, pathname) ?? ''}
       onValueChange={(to) => void navigate({ to: to as Tab })}
     />

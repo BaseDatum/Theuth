@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Copy, RefreshCw } from 'lucide-react'
@@ -11,8 +12,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { A2aStatus } from '@/rpc/bindings/A2aStatus'
-import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
+import type { A2AStatus as A2aStatus } from "@/rpc/bindings/method.a2a.output"
+import type { CommunicationState } from "@/rpc/bindings/method.agent.output"
 
 /** Touch target for a text button beside a row (44px under a coarse pointer). */
 const TOUCH = 'pointer-coarse:min-h-11'
@@ -39,9 +40,10 @@ function sourceText(s: CommunicationState): string | null {
  * replaces the snapshot. What one chat may do lives in that chat's menu.
  */
 export function MessagingTab() {
+  const canQuery1 = useQuerySupport(["get_communication"])
   const api = useApi()
   const qc = useQueryClient()
-  const state = useQuery({
+  const state = useQuery({ enabled: canQuery1,
     queryKey: queryKeys.communication(null),
     queryFn: () => api.get_communication(null),
   })
@@ -50,7 +52,7 @@ export function MessagingTab() {
   const install = (next: CommunicationState) => {
     if (next.session !== null) return
     const cur = qc.getQueryData<CommunicationState>(queryKeys.communication(null))
-    if (cur && BigInt(next.revision) < BigInt(cur.revision)) return
+    if (cur && next.revision < cur.revision) return
     qc.setQueryData(queryKeys.communication(null), next)
   }
   const setGlobal = useAction(
@@ -105,10 +107,11 @@ export function MessagingTab() {
  * 183 §7: a contact is listed under Network › Contacts, never here as an HTTP peer with roots.
  */
 export function A2aSection({ state }: { state: CommunicationState | undefined }) {
+  const canQuery2 = useQuerySupport(["a2a_status"])
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
-  const status = useQuery({ queryKey: queryKeys.a2a, queryFn: () => api.a2a_status() })
+  const status = useQuery({ enabled: canQuery2, queryKey: queryKeys.a2a, queryFn: () => api.a2a_status() })
   const reload = useAction(() => api.reload_a2a(), {
     keys: [['communication'], ['peers']],
     onSuccess: (next: A2aStatus) => {

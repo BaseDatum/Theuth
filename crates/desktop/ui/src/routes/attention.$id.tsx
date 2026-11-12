@@ -1,9 +1,11 @@
+import { withCapability } from '@/rpc/capabilities'
+import { panelRequirements as requirements } from '@/components/attention/requirements'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useRef } from 'react'
 import { Screen } from '@/components/attention/Screen'
 import { useAttention } from '@/components/hud/queries'
 import { Skeleton } from '@/components/ui/skeleton'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 
 /**
  * `/attention/$id` (101 D6): the selected item's screen; the router decodes the `:`-bearing id. 104 A2: an item that
@@ -36,4 +38,4 @@ function Selected() {
   )
 }
 
-export const Route = createFileRoute('/attention/$id')({ component: Selected })
+export const Route = createFileRoute('/attention/$id')({ component: withCapability(Selected, requirements) })

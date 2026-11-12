@@ -2,7 +2,7 @@
 // truth while the board is open), the horizontal position and the last opened card per window (module memory, gone
 // on reload). Pure functions, no React, so the rules are unit-tested in node.
 
-import type { TaskState } from '@/rpc/bindings/TaskState'
+import type { TaskState } from "@/rpc/bindings/method.roster.output"
 import { STATES } from './helpers'
 
 /** Board filters live in the URL so a board survives reload and can be linked. `project: ''` = all projects. */

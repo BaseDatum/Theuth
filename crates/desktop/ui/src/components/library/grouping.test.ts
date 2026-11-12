@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
-import type { HarnessCommand } from '@/rpc/bindings/HarnessCommand'
-import type { SkillMeta } from '@/rpc/bindings/SkillMeta'
+import type { HarnessCommand } from "@/rpc/bindings/method.agent.output"
+import type { SkillMeta } from "@/rpc/bindings/method.agent.output"
 import { groupSkills, isEditable, repoDir, splitHarnessCommands } from './grouping'
 
 const skill = (name: string, repo: string | null, description = '', path = `/data/skills/${repo ? `${repo}/` : ''}${name}.md`): SkillMeta => ({

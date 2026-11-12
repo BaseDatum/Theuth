@@ -1,11 +1,13 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
 
 /** `notebook_list(archived)` (144 §12.3), live notebooks by default. */
 export function useNotebooks(archived = false) {
+  const canQuery1 = useQuerySupport(["notebook_list"])
   const nb = useNotebooksApi()
-  return useQuery({ queryKey: notebookKeys.list(archived), queryFn: () => nb.notebook_list(archived) })
+  return useQuery({ enabled: canQuery1, queryKey: notebookKeys.list(archived), queryFn: () => nb.notebook_list(archived) })
 }
 
 /** `notebook_create` → the new row; the caller navigates. */

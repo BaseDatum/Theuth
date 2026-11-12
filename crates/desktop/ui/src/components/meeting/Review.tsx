@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 04 §7 / 156: the transcript pane on `/meetings/$id` in every ended state (Review, Summarizing, Done) — the
 // speaker legend (rename, accept a proposed profile, enroll; Review only), then the segment list: click a
 // timestamp to hear the segment (Web Audio, `lib/segment-audio.ts`), tick rows (shift for a range) and use the
@@ -26,13 +27,13 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { SegmentPlayer, playError } from '@/lib/segment-audio'
 import { enrollBlock, enrolledToast, rowBlock, secondsText, selectClick, speechMs } from '@/lib/segment-select'
 import { cn } from '@/lib/utils'
-import type { EditOp } from '@/rpc/bindings/EditOp'
-import type { EnrollTarget } from '@/rpc/bindings/EnrollTarget'
-import type { Enrolled } from '@/rpc/bindings/Enrolled'
-import type { MeetingTranscript } from '@/rpc/bindings/MeetingTranscript'
-import type { Segment } from '@/rpc/bindings/Segment'
-import type { SpeakerLabel } from '@/rpc/bindings/SpeakerLabel'
-import type { SpeakerSuggestion } from '@/rpc/bindings/SpeakerSuggestion'
+import type { EditOp } from '@/rpc/bindings/method.meeting.input'
+import type { EnrollTarget } from '@/rpc/bindings/method.meeting.input'
+import type { Enrolled } from "@/rpc/bindings/method.meeting.output"
+import type { Transcript as MeetingTranscript } from "@/rpc/bindings/method.meeting.output"
+import type { Segment } from "@/rpc/bindings/method.meeting.output"
+import type { SpeakerLabel } from "@/rpc/bindings/method.meeting.output"
+import type { Suggestion as SpeakerSuggestion } from "@/rpc/bindings/method.meeting.output"
 import { EnrollDialog } from './EnrollDialog'
 import { SegmentMenu } from './SegmentMenu'
 
@@ -46,20 +47,23 @@ const chipClass = (speaker: string) =>
   cn('shrink-0 rounded px-1.5 text-[11px] leading-5', speaker === 'me' ? 'bg-fg-accent/15 text-fg-accent' : 'bg-accent text-fg-secondary')
 
 export function Review({ id, readOnly = false }: { id: string; readOnly?: boolean }) {
+  const canQuery1 = useQuerySupport(["meeting_transcript"])
+  const canQuery1_2 = useQuerySupport(["meeting_get"])
+  const canQuery1_3 = useQuerySupport(["meeting_suggest_speakers"])
   const api = useApi()
   const qc = useQueryClient()
-  const transcript = useQuery({ queryKey: queryKeys.meetingTranscript(id), queryFn: () => api.meeting_transcript(id) })
+  const transcript = useQuery({ enabled: canQuery1, queryKey: queryKeys.meetingTranscript(id), queryFn: () => api.meeting_transcript(id) })
   const edit = useAction((ops: EditOp[]) => api.meeting_edit(id, ops), {
     onSuccess: (t) => qc.setQueryData(queryKeys.meetingTranscript(id), t),
   })
   // 158 §13: the manifest (shared with the page header) says whether the speakers question was answered.
   const askSpeakers = !isMacDesktop()
-  const manifest = useQuery({ queryKey: queryKeys.meeting(id), queryFn: () => api.meeting_get(id), enabled: askSpeakers })
+  const manifest = useQuery({ queryKey: queryKeys.meeting(id), queryFn: () => api.meeting_get(id), enabled: canQuery1_2 && (askSpeakers) })
   const speakers = useAction((used: boolean) => api.meeting_set_speakers(id, used), {
     onSuccess: (m) => qc.setQueryData(queryKeys.meeting(id), m),
   })
   // Cached, never fetched on its own: the button refetches; Accept/Not them drop rows from the cached list.
-  const suggestions = useQuery({ queryKey: queryKeys.meetingSuggestions(id), queryFn: () => api.meeting_suggest_speakers(id), enabled: false, staleTime: Infinity })
+  const suggestions = useQuery({ queryKey: queryKeys.meetingSuggestions(id), queryFn: () => api.meeting_suggest_speakers(id), enabled: canQuery1_3 && (false), staleTime: Infinity })
   const suggest = () =>
     void suggestions.refetch().then((r) => {
       if (r.error) toast.error(errorText(r.error))
@@ -230,6 +234,7 @@ function SpeakerChip({ label, onEdit }: { label: SpeakerLabel; onEdit: (op: Edit
  * (Review) the bar also relabels/merges, the text click → `FixText`, the words view → `Split`.
  */
 export function SegmentList({ id, transcript, onEdit }: { id: string; transcript: MeetingTranscript; onEdit?: (ops: EditOp[]) => void }) {
+  const canQuery2 = useQuerySupport(["meeting_speakers"])
   const api = useApi()
   const qc = useQueryClient()
   const [playing, setPlaying] = useState<number | null>(null)
@@ -242,7 +247,7 @@ export function SegmentList({ id, transcript, onEdit }: { id: string; transcript
   const [words, setWords] = useState<Set<number>>(new Set())
   /** Segments the enroll dialog is open for. */
   const [enrolling, setEnrolling] = useState<number[] | null>(null)
-  const profiles = useQuery({ queryKey: queryKeys.meetingSpeakers, queryFn: () => api.meeting_speakers() })
+  const profiles = useQuery({ enabled: canQuery2, queryKey: queryKeys.meetingSpeakers, queryFn: () => api.meeting_speakers() })
   const names = new Map(transcript.speakers.map((s) => [s.id, s.name]))
   const order = transcript.segments.map((s) => s.id)
   const ids = order.filter((k) => selected.has(k))

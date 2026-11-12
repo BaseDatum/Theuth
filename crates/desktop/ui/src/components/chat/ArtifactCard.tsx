@@ -48,8 +48,8 @@ import { isPrivate, privateOwner } from "@/lib/private";
 import { useApi } from "@/lib/rpc";
 import { cn } from "@/lib/utils";
 import { useEngines } from "@/link/engines";
-import type { Api } from "@/rpc/api";
-import type { Artifact, Kind } from "@/rpc/extra";
+import type { Api } from '@/rpc/bindings/client'
+import type { Artifact, Kind } from "@/rpc/bindings/method.artifact.output"
 import { useConnection } from "@/store/connection";
 import { type Entry, type SessionsApi, useSessions } from "@/store/sessions";
 import { partialShow } from "@/store/reduce";

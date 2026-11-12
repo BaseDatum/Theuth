@@ -3,8 +3,8 @@ import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
-import type { TelegramEvent } from '@/rpc/bindings/TelegramEvent'
-import type { TelegramStatus } from '@/rpc/bindings/TelegramStatus'
+import type { TelegramEvent } from "@/rpc/bindings/method.telegram.output"
+import type { TelegramStatus } from "@/rpc/bindings/method.telegram.output"
 import { Telegram, mmss, secondsLeft, telegramId, telegramState } from './Telegram'
 
 let telegram: TelegramStatus
@@ -29,7 +29,7 @@ async function render(): Promise<string> {
 
 const base = (state: TelegramEvent | null, polling = true, bot = true): TelegramStatus => ({
   state,
-  bot: bot ? { id: 7n, username: 'omp_bot', topics: true, users_may_create_topics: true } : null,
+  bot: bot ? { id: 7, username: 'omp_bot', topics: true, users_may_create_topics: true } : null,
   polling,
   owner: null,
   allowed: [],
@@ -37,7 +37,7 @@ const base = (state: TelegramEvent | null, polling = true, bot = true): Telegram
   threads: [],
   open: 0,
   calls: {},
-  dropped_updates: 0n,
+  dropped_updates: 0,
 })
 
 test('telegramState: one phrase per variant (98 §10.5)', () => {
@@ -47,11 +47,11 @@ test('telegramState: one phrase per variant (98 §10.5)', () => {
     [{ type: 'Connected', bot: 'omp_bot' }, 'connected as @omp_bot · topics on'],
     [{ type: 'Disconnected', reason: 'timeout' }, 'disconnected: timeout'],
     [{ type: 'Conflict' }, 'another poller holds this token'],
-    [{ type: 'RateLimited', method: 'sendMessage', retry_after_secs: 5n }, 'rate limited on sendMessage, retry in 5s'],
+    [{ type: 'RateLimited', method: 'sendMessage', retry_after_secs: 5 }, 'rate limited on sendMessage, retry in 5s'],
     [{ type: 'StreamFallback', session: 's1', reason: 'draft failed' }, 'connected'],
-    [{ type: 'Unreachable', chat: -100n, reason: 'kicked' }, 'chat -100 unreachable: kicked'],
-    [{ type: 'PairingLink', url: 'https://t.me/omp_bot?start=x', expires_at_ms: 0n }, 'waiting for the owner to tap Start'],
-    [{ type: 'Paired', user: 42n, name: 'Sky' }, 'paired with Sky'],
+    [{ type: 'Unreachable', chat: -100, reason: 'kicked' }, 'chat -100 unreachable: kicked'],
+    [{ type: 'PairingLink', url: 'https://t.me/omp_bot?start=x', expires_at_ms: 0 }, 'waiting for the owner to tap Start'],
+    [{ type: 'Paired', user: 42, name: 'Sky' }, 'paired with Sky'],
     [{ type: 'DaemonOnly' }, 'daemon only'],
     [{ type: 'Starting' }, 'starting…'],
   ]
@@ -94,10 +94,10 @@ test('card: no token → "not set", a password input, Pair disabled; no link blo
 test('card: live pairing link → QR, URL, countdown; owner and lists render as text', async () => {
   const url = 'https://t.me/omp_bot?start=abcdefgh12345678'
   telegram = {
-    ...base({ type: 'PairingLink', url, expires_at_ms: BigInt(Date.now() + 9 * 60_000 + 30_000) }),
-    owner: 42n,
-    allowed: [1n, 2n],
-    groups: [-1001234567890n],
+    ...base({ type: 'PairingLink', url, expires_at_ms: Date.now() + 9 * 60_000 + 30_000 }),
+    owner: 42,
+    allowed: [1, 2],
+    groups: [-1001234567890],
   }
   const html = await render()
   expect(html).toContain('waiting for the owner to tap Start')

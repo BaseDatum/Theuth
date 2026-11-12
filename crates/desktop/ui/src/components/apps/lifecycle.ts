@@ -5,9 +5,10 @@
  */
 import { autoClose, mergeStatements } from "@openuidev/lang-core";
 import type { AppRendererProps } from "@theuth/apps/renderer";
-import type { Api } from "@/rpc/api";
+import type { Api } from '@/rpc/bindings/client'
 import { RpcError } from "@/rpc/client";
-import type { AppToolResult, CallArgs, CallStatus } from "@/rpc/extra";
+import type { AppToolResult, CallStatus } from "@/rpc/bindings/method.app.output"
+import type { CallArgs } from '@/rpc/bindings/method.app.input'
 
 export type Provider = AppRendererProps["provider"];
 export type ProviderContext = Parameters<Provider>[2];

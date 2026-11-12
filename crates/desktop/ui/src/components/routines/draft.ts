@@ -1,6 +1,7 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { FRESH } from '@/components/chat/slash'
-import type { Api } from '@/rpc/api'
-import type { ScheduleFile } from '@/rpc/bindings/ScheduleFile'
+import type { Api } from '@/rpc/bindings/client'
+import type { ScheduleFile } from "@/rpc/bindings/method.schedule.output"
 import { type Entry, useSessions } from '@/store/sessions'
 
 /** 108 §8.1 `RoutineDraft`: the fields of `schedules/<name>.md` as `ScheduleArgs` names them; the card's `args.routines[i]`. */
@@ -34,7 +35,7 @@ export type RoutineDraft = {
 export type RoutineDraftArgs = { routines: RoutineDraft[] }
 
 /** An empty `/routines/new` form: weekday 09:00 clock, enabled, approvals on. */
-export const NEW: ScheduleFile = {
+export const NEW: ScheduleFile = receiveComponent("method.schedule.output.ScheduleFile", {
   name: '',
   cron: '0 9 * * 1-5',
   every: null,
@@ -62,11 +63,11 @@ export const NEW: ScheduleFile = {
   runtime: null,
   budget: null,
   prompt: '',
-}
+})
 
 /** §6.4: a card's draft as the form's state; the draft never says `enabled` / `missed` / `created`, so those keep `NEW`'s. */
 export function draftToFile(d: RoutineDraft): ScheduleFile {
-  return {
+  return receiveComponent("method.schedule.output.ScheduleFile", {
     ...NEW,
     name: d.name,
     cron: d.cron ?? null,
@@ -91,7 +92,7 @@ export function draftToFile(d: RoutineDraft): ScheduleFile {
     expires: d.expires ?? null,
     timeout: d.timeout ?? null,
     prompt: d.prompt,
-  }
+  })
 }
 
 /** A card's draft and the tool call it came from (§6.4). */

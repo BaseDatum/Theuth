@@ -4,11 +4,11 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
-import type { Enrolled } from '@/rpc/bindings/Enrolled'
-import type { Manifest } from '@/rpc/bindings/Manifest'
-import type { MeetingTranscript } from '@/rpc/bindings/MeetingTranscript'
-import type { Segment } from '@/rpc/bindings/Segment'
-import type { SpeakerSuggestion } from '@/rpc/bindings/SpeakerSuggestion'
+import type { Enrolled } from "@/rpc/bindings/method.meeting.output"
+import type { Manifest } from "@/rpc/bindings/method.meeting.output"
+import type { Transcript as MeetingTranscript } from "@/rpc/bindings/method.meeting.output"
+import type { Segment } from "@/rpc/bindings/method.meeting.output"
+import type { Suggestion as SpeakerSuggestion } from "@/rpc/bindings/method.meeting.output"
 import { Review } from './Review'
 
 const toast = vi.hoisted(() => Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn(), message: vi.fn() }))
@@ -46,12 +46,12 @@ const seg = (id: number, speaker: string, t0: number): Segment => ({
   id,
   track: speaker === 'me' ? 'Mic' : 'System',
   speaker,
-  t0_ms: BigInt(t0),
-  t1_ms: BigInt(t0 + 4000),
+  t0_ms: t0,
+  t1_ms: t0 + 4000,
   text: 'hello there',
   words: [
-    { text: 'hello', t0_ms: BigInt(t0), t1_ms: BigInt(t0 + 2000) },
-    { text: 'there', t0_ms: BigInt(t0 + 2000), t1_ms: BigInt(t0 + 4000) },
+    { text: 'hello', t0_ms: t0, t1_ms: t0 + 2000 },
+    { text: 'there', t0_ms: t0 + 2000, t1_ms: t0 + 4000 },
   ],
 })
 const transcript: MeetingTranscript = {

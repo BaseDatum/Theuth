@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import type { AskRequested } from '@/rpc/bindings/AskRequested'
+import type { AskRequested } from "@/rpc/bindings/method.roster.output"
 import { createAsks } from './approvals'
 import { scope } from './engine-scope'
 import { dispatch } from './sessions'
@@ -28,18 +28,18 @@ test('resolve drops the card by id and a late Requested for it is ignored', () =
 
 test('PendingPrompts replaces the pending set with what the engine reports', () => {
   const st = scope('test-asksync')
-  dispatch([ask('stale'), { type: 'ApprovalRequested', id: 'ap', session: 's1', tool: 'shell', args: {}, risk: 'mutating' }], st)
+  dispatch([{key: 'tools.ask-requested@1', event: ask('stale')}, {key: 'tools.approval-requested@1', event: { type: 'ApprovalRequested', id: 'ap', session: 's1', tool: 'shell', args: {}, risk: 'mutating' }}], st)
   expect(st.asks.getState().pending.map((p) => p.id)).toEqual(['stale'])
   expect(st.approvals.getState().pending.map((p) => p.id)).toEqual(['ap'])
   // Resubscribe: the engine has one other ask and no approvals; a secrets `Changed` is not a prompt.
   dispatch(
     [
-      {
+      {key: 'rpc.stream@1', event: {
         type: 'PendingPrompts',
         approvals: [],
         asks: [ask('live')],
         secrets: [{ type: 'SecretsChanged' }, { type: 'SecretRequested', id: 'sr', session: 's1', name: 'TOKEN', note: '', current: null, title: null, fields: [] }],
-      },
+      }},
     ],
     st,
   )
@@ -47,8 +47,8 @@ test('PendingPrompts replaces the pending set with what the engine reports', () 
   expect(st.approvals.getState().pending).toEqual([])
   expect(st.secretRequests.getState().pending.map((p) => p.id)).toEqual(['sr'])
   // The snapshot is authoritative: a previously resolved id may be pending again after it.
-  dispatch([{ type: 'AskResolved', id: 'live', dismissed: false, timed_out: false }], st)
+  dispatch([{key: 'tools.ask-resolved@1', event: { type: 'AskResolved', id: 'live', dismissed: false, timed_out: false }}], st)
   expect(st.asks.getState().pending).toEqual([])
-  dispatch([{ type: 'PendingPrompts', approvals: [], asks: [ask('live')], secrets: [] }], st)
+  dispatch([{key: 'rpc.stream@1', event: { type: 'PendingPrompts', approvals: [], asks: [ask('live')], secrets: [] }}], st)
   expect(st.asks.getState().pending.map((p) => p.id)).toEqual(['live'])
 })

@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { ExternalLink, SquarePen, X } from 'lucide-react'
@@ -27,6 +28,7 @@ const PAGE = 60
  * agent's charter is one too).
  */
 export function NoteChat({ note, doc, about = 'this note' }: { note: string; doc: AttachRef; about?: string }) {
+  const canQuery1 = useQuerySupport(["list_sessions"])
   const state = useNoteChat((s) => s.notes[note] ?? EMPTY)
   const set = useNoteChat((s) => s.set)
   const navigate = useNavigate()
@@ -35,7 +37,7 @@ export function NoteChat({ note, doc, about = 'this note' }: { note: string; doc
   useLoadSession(session)
   // The store slice learns the title from `TitleChanged`; after a reload the session list has it.
   const live = useSessionField(session ?? '', 'title')
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: !!session && !live })
+  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: canQuery1 && (!!session && !live) })
   const title = live || sessions.data?.find((s) => s.id === session)?.title
   // 59 §9.3: the page seeded the panel draft for "Ask theuth…" while this panel was open; remount the composer on it.
   const [seed, setSeed] = useState(0)

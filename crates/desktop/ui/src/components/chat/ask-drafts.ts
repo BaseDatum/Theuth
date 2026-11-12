@@ -5,16 +5,16 @@
 // starts the ask fresh.
 import { useCallback, useEffect, useSyncExternalStore } from 'react'
 import { createStore } from 'zustand'
-import type { Answer } from '@/rpc/bindings/Answer'
-import type { DoublePredicted } from '@/rpc/bindings/DoublePredicted'
-import type { Question } from '@/rpc/bindings/Question'
+import type { Answer } from '@/rpc/bindings/method.tasks.input'
+import type { DoublePredicted } from "@/rpc/bindings/event.double_2epredicted.output"
+import type { Question } from "@/rpc/bindings/method.roster.output"
 import { preselect } from './DoubleChip'
 
 /** Draft answer per question: an option, typed text, an explicit skip, or nothing yet. */
 export type Draft = Answer | null
 
 /** The starting drafts: the recommended option pre-picked, else nothing (the attention Ask screen starts the same way, 104). */
-export const draftsFor = (questions: readonly Question[]): Draft[] => questions.map((q) => (q.recommended === undefined ? null : { kind: 'choice', index: q.recommended }))
+export const draftsFor = (questions: readonly Question[]): Draft[] => questions.map((q) => (q.recommended == null ? null : { kind: 'choice', index: q.recommended }))
 
 /** Every question has an option, non-blank text, or an explicit skip. */
 export const allAnswered = (drafts: readonly Draft[]): boolean => drafts.every((d) => d !== null && !(d.kind === 'text' && d.text.trim() === ''))
@@ -39,7 +39,7 @@ export function withDoublePick(drafts: readonly Draft[], questions: readonly Que
 /** The model's `recommended` label of a one-question ask, for the chip's disagreement badge. */
 export function recommendedLabel(questions: readonly Question[]): string | undefined {
   const q = questions.length === 1 ? questions[0] : undefined
-  return q?.recommended === undefined ? undefined : q.options[q.recommended]?.label
+  return q?.recommended == null ? undefined : q.options[q.recommended]?.label
 }
 
 /** What Send puts on the wire for one pick: the option, the trimmed text, else skipped. The own text of a question whose pick is not text never gets here. */

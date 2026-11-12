@@ -5,7 +5,7 @@ import { BUDGET_PROBLEM, MAX_BUDGET_USD, budgetFromInput, countsLine, dreamNowBl
 describe('formatting', () => {
   test('counts line omits zeros, pluralises, and says so when nothing happened', () => {
     expect(countsLine(NIGHT.counts)).toBe('212 retitled, 14 merged, 3 superseded, 31 archived, 15 verified, 9 cases, 1 skill edit kept, 2 rejected, 1 proposal')
-    expect(countsLine({ ...NIGHT.counts, edits_accepted: 2n, cases: 1n })).toContain('1 case, 2 skill edits kept')
+    expect(countsLine({ ...NIGHT.counts, edits_accepted: 2, cases: 1 })).toContain('1 case, 2 skill edits kept')
     expect(countsLine(QUIET_NIGHT.counts)).toBe('nothing to tidy')
   })
 

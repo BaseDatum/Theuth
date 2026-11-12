@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import type { Item } from '@/rpc/bindings/Item'
+import type { Item } from "@/rpc/bindings/method.roster.output"
 import { allAnswered, allRecommended, bundleAnswer, head, slug } from './Bundle'
 
 const item = (id: string, labels: string[], recommended: number | null): Item => ({ id, title: id, description: null, options: labels.map((label) => ({ label, description: null })), recommended })

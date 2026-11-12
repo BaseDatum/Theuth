@@ -1,9 +1,9 @@
 // 114 + Sky's 16:55 correction: a decision ask is never a chat card (D1); every other loose prompt stays appended at
 // the bottom, as before 114, so an open approval or question is never lost in the transcript after a reload.
 import { expect, test } from 'vitest'
-import type { ApprovalRequested } from '@/rpc/bindings/ApprovalRequested'
-import type { AskRequested } from '@/rpc/bindings/AskRequested'
-import type { AgentInfo } from '@/rpc/extra'
+import type { ApprovalRequested } from "@/rpc/bindings/event.rpc_2estream.output"
+import type { AskRequested } from "@/rpc/bindings/method.roster.output"
+import type { AgentInfo } from '@/store/ui-events'
 import type { Entry } from '@/store/sessions'
 import { GAP_MS } from '@/lib/time'
 import { buildRows, type Row } from './rows'

@@ -10,9 +10,9 @@ import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { cn } from '@/lib/utils'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
-import type { Packet } from '@/rpc/bindings/Packet'
-import type { Priority } from '@/rpc/bindings/Priority'
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
+import type { Packet } from "@/rpc/bindings/method.roster.output"
+import type { Priority } from "@/rpc/bindings/method.roster.output"
 import { nextAfter } from './model'
 
 /**

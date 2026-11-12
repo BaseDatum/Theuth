@@ -21,7 +21,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { toRef } from '@/lib/attach'
 import { canPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { DocSummary } from '@/rpc/bindings/DocSummary'
+import type { DocSummary } from "@/rpc/bindings/method.agent.output"
 
 /** `/notes` (59 §7.3): every note, newest update first; New note; per-row Rename (inline) and Delete (one click). */
 export function NotesList() {

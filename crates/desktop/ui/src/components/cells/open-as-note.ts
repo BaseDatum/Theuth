@@ -5,9 +5,9 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { queryKeys } from '@/lib/rpc'
-import type { Api } from '@/rpc/api'
-import type { CellRun } from '@/rpc/bindings/CellRun'
-import type { CellState } from '@/rpc/bindings/CellState'
+import type { Api } from '@/rpc/bindings/client'
+import type { CellRun } from "@/rpc/bindings/method.cells.output"
+import type { CellState } from "@/rpc/bindings/method.cells.output"
 import type { CellOrdinals } from './CellFence'
 import { clock, ended, errorText } from './store'
 

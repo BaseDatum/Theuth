@@ -11,9 +11,9 @@ import { Button } from '@/components/ui/button'
 import { isApple } from '@/lib/chord'
 import { tokensOf } from '@/lib/shiki'
 import { cn } from '@/lib/utils'
-import type { CellRun } from '@/rpc/bindings/CellRun'
-import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
-import type { Lang } from '@/rpc/bindings/Lang'
+import type { CellRun } from "@/rpc/bindings/method.cells.output"
+import type { RunMode as CellRunMode } from "@/rpc/bindings/method.cells.output"
+import type { Lang } from '@/rpc/bindings/auxiliary.surface.output'
 import { CONFIRM_ROOM, LineConfirm } from './LineConfirm'
 import { type Ask, askSkipped, askStep, type HoverEvent, type LineMark, lineGuard, MARK_LOOK, hoverAfter, useLineRun } from './line-run'
 import { commandUnits, unitMode, unitOf } from './units'

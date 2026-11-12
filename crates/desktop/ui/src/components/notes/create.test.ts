@@ -2,20 +2,20 @@ import { QueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { queryKeys } from '@/lib/rpc'
-import type { DocSummary } from '@/rpc/bindings/DocSummary'
-import type { DocumentChanged } from '@/rpc/bindings/DocumentChanged'
+import type { DocSummary } from "@/rpc/bindings/method.agent.output"
+import type { DocumentChanged } from "@/rpc/bindings/event.document_2echanged.output"
 import { dispatch } from '@/store/sessions'
 import { createNote } from './create'
 
 vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
 
-const row = (id: string, title = 'Old'): DocSummary => ({ id, kind: 'note', title, binding: 'note', created_ms: 1n, updated_ms: 1n, bytes: 0n })
+const row = (id: string, title = 'Old'): DocSummary => ({ id, kind: 'note', title, binding: 'note', created_ms: 1, updated_ms: 1, bytes: 0 })
 const changed = (doc: string, over: Partial<DocumentChanged> = {}): DocumentChanged => ({
   type: 'DocumentChanged',
   doc,
   kind: 'note',
   title: 'Untitled',
-  updated_ms: 5n,
+  updated_ms: 5,
   deleted: false,
   ...over,
 })
@@ -39,9 +39,9 @@ beforeEach(() => {
 test('the bus event opens the note before the body import replies, and lists it at once', async () => {
   const p = createNote(api, qc, qc.getQueryData(queryKeys.notes)!).then(open)
   expect(api.doc_create).toHaveBeenCalledWith('Untitled', null)
-  dispatch([changed('old', { title: 'Old' })]) // an export of a listed note is not ours
-  dispatch([changed('agent', { title: 'Plan' })]) // nor a note the agent titled
-  dispatch([changed('fresh')])
+  dispatch([{key: 'document.changed@1', event: changed('old', { title: 'Old' })}]) // an export of a listed note is not ours
+  dispatch([{key: 'document.changed@1', event: changed('agent', { title: 'Plan' })}]) // nor a note the agent titled
+  dispatch([{key: 'document.changed@1', event: changed('fresh')}])
   await p
   expect(navigate).toHaveBeenCalledWith({ to: '/notes/$id', params: { id: 'fresh' }, search: { new: true } })
   expect(qc.getQueryData<DocSummary[]>(queryKeys.notes)!.map((n) => n.id)).toEqual(['fresh', 'old'])
@@ -60,7 +60,7 @@ test('the reply alone opens the note when no event arrived', async () => {
   expect(navigate).toHaveBeenCalledWith({ to: '/notes/$id', params: { id: 'fresh' }, search: { new: true } })
   expect(qc.getQueryData<DocSummary[]>(queryKeys.notes)!.map((n) => n.id)).toEqual(['fresh', 'old'])
   // A later event for the same note does not add a second row or re-open it.
-  dispatch([changed('fresh')])
+  dispatch([{key: 'document.changed@1', event: changed('fresh')}])
   expect(qc.getQueryData<DocSummary[]>(queryKeys.notes)).toHaveLength(2)
   expect(navigate).toHaveBeenCalledTimes(1)
 })

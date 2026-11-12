@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
-import type { CaseRow } from '@/rpc/bindings/CaseRow'
+import type { CaseRow } from "@/rpc/bindings/method.autoresearch.output"
 import { CaseStrip, experimentNumbers, splitMeans } from './CaseStrip'
 
 const rows: CaseRow[] = [

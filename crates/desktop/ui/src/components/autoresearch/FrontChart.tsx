@@ -1,5 +1,5 @@
 import { useId, useState } from 'react'
-import type { KindView } from '@/rpc/bindings/KindView'
+import type { KindView } from "@/rpc/bindings/method.autoresearch.output"
 
 type FrontView = Extract<KindView, { kind: 'front' }>
 

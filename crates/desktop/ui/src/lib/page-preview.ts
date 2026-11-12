@@ -9,9 +9,9 @@ import { type Appearance, pageThemeFor } from '@/lib/page-theme'
 import { pageDrop, pagePut } from '@/lib/pages'
 import { container } from '@/lib/platform'
 import { isTauri } from '@/lib/tauri'
-import type { Client } from '@/rpc/bindings/Client'
-import type { PagePreviewAnswer } from '@/rpc/bindings/PagePreviewAnswer'
-import type { PagePreviewRequested } from '@/rpc/bindings/PagePreviewRequested'
+import type { Client } from '@/rpc/bindings/method.artifact.input'
+import type { PagePreviewAnswer } from '@/rpc/bindings/method.artifact.input'
+import type { PagePreviewRequested } from "@/rpc/bindings/event.artifact_2epage_2dpreview_2drequested.output"
 import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
 
@@ -136,10 +136,10 @@ function start(e: PagePreviewRequested, finished: () => void): () => void {
 export function installPagePreview(): () => void {
   const running = new Map<string, () => void>()
   const offs = [
-    on('PagePreviewRequested', (e) => {
+    on("artifact.page-preview-requested@1", 'PagePreviewRequested', (e) => {
       if (!running.has(e.id)) running.set(e.id, start(e, () => running.delete(e.id)))
     }),
-    on('PagePreviewResolved', (e) => {
+    on("artifact.page-preview-resolved@1", 'PagePreviewResolved', (e) => {
       running.get(e.id)?.()
       running.delete(e.id)
     }),

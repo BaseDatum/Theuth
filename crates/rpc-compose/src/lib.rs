@@ -27,5 +27,3 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
 use bootstrap::install_forward_hooks;
 #[cfg(test)]
 mod forward_tests;
-#[cfg(feature = "ts")]
-pub mod export;

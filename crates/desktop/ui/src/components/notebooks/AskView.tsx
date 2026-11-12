@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 144 §9 (wave 2, U2): `/ask/$session` — one ask-across-notebooks run drawn from its `NotebookAsk` events (the plan
 // as steps, the branches as collapsible rows with their hit chips and streaming partial answers, the end), over the
 // `kind: ask` session's normal chat (transcript + composer) so the user keeps asking. Nothing is replayed: after a
@@ -21,9 +22,9 @@ import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { type AskState, askKeys, hitHref, useAskApi, useAskEvents } from '@/lib/ask-rpc'
 import { useApi } from '@/lib/rpc'
-import type { AskBranch } from '@/rpc/bindings/AskBranch'
-import type { AskHit } from '@/rpc/bindings/AskHit'
-import type { Notebook } from '@/rpc/bindings/Notebook'
+import type { AskBranch } from "@/rpc/bindings/event.agent_2enotebook_2dask.output"
+import type { AskHit } from "@/rpc/bindings/event.agent_2enotebook_2dask.output"
+import type { Notebook } from "@/rpc/bindings/method.agent.output"
 import { useSessions } from '@/store/sessions'
 
 const route = getRouteApi('/ask_/$session')
@@ -59,6 +60,7 @@ export function planSteps(plan: readonly AskBranch[], notebooks: readonly Notebo
 }
 
 function Ask({ session }: { session: string }) {
+  const canQuery1 = useQuerySupport(["notebook_ask_list"])
   const api = useAskApi()
   const navigate = useNavigate()
   useLoadSession(session)
@@ -66,7 +68,7 @@ function Ask({ session }: { session: string }) {
   const notebooks = useNotebooks(false).data ?? []
   const sourceIds = new Set((useSources(null).data ?? []).map((s) => s.doc.id))
   // The run's own row (question, scope) is what survives a reload and what Retry re-sends.
-  const summary = useQuery({ queryKey: askKeys.list, queryFn: () => api.notebook_ask_list(null) }).data?.find((a) => a.session === session)
+  const summary = useQuery({ enabled: canQuery1, queryKey: askKeys.list, queryFn: () => api.notebook_ask_list(null) }).data?.find((a) => a.session === session)
   // The synthesis is the session's assistant turn; the `answer` event only bridges until that turn is in the transcript.
   const answered = useSessions((s) => (s.sessions[session]?.entries ?? []).some((e) => e.kind === 'assistant'))
   const retry = useMutation({

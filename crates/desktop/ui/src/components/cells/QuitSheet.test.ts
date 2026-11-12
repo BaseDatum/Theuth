@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import type { CellRun } from '@/rpc/bindings/CellRun'
+import type { CellRun } from "@/rpc/bindings/method.cells.output"
 import { KILL_AFTER_MS } from './Cell'
 import { POLL_MS, confirmQuit, stopRuns, usePreQuit, waitForRuns } from './QuitSheet'
 import { run } from './test-fixtures'

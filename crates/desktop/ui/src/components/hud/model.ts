@@ -1,9 +1,9 @@
-import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
-import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
-import type { Task } from '@/rpc/bindings/Task'
-import type { TaskState } from '@/rpc/bindings/TaskState'
+import type { ActivityEntry } from "@/rpc/bindings/method.roster.output"
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
+import type { ScheduleInfo } from "@/rpc/bindings/method.schedule.output"
+import type { Task } from "@/rpc/bindings/method.roster.output"
+import type { TaskState } from "@/rpc/bindings/method.roster.output"
 
 /** How many feed rows the HUD keeps (paperclip's dashboard/live ≤ 50). */
 export const ACTIVITY_CAP = 50

@@ -13,7 +13,7 @@ import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from '@/com
 import { Textarea } from '@/components/ui/textarea'
 import { useApi } from '@/lib/rpc'
 import type { AttachRef } from '@/lib/attach'
-import type { Task } from '@/rpc/bindings/Task'
+import type { Task } from "@/rpc/bindings/method.roster.output"
 import { AttachmentsEditor } from './Attachments'
 import { OwnerSelect } from './OwnerSelect'
 import { TaskChips } from './TaskChips'

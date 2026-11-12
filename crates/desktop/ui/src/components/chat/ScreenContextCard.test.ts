@@ -23,7 +23,7 @@ vi.mock('@/lib/mobile', () => ({ usePointerCoarse: () => false }))
 // `renderToStaticMarkup` reads zustand's initial state, so the engine's `data_dir` is a plain pick here.
 vi.mock('@/store/connection', async (original) => ({
   ...(await original<typeof Conn>()),
-  useConnection: (pick: (s: unknown) => unknown) => pick({ info: { data_dir: '/dd' }, api: null }),
+  useConnection: (pick: (s: unknown) => unknown) => pick({ info: { data_dir: '/dd' }, api: null , discovery: { phase: 'legacy' } }),
 }))
 
 const WIN = 'window "majiayu000/litellm-rs: Self-hosted Rust LLM gateway with OpenAI-compatible APIs,…"'

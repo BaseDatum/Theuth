@@ -2,13 +2,13 @@
 // snapshot with a row in every status. Shaped like a real ledger (one dominant model, an endless compactor, a reported
 // omp leg, a deleted root, unpriced failures) — every title, name and number here is invented.
 
-import type { CostCall } from '@/rpc/bindings/CostCall'
-import type { CostCallsPage } from '@/rpc/bindings/CostCallsPage'
-import type { CostCallsQuery } from '@/rpc/bindings/CostCallsQuery'
-import type { CostCells } from '@/rpc/bindings/CostCells'
-import type { CostCube } from '@/rpc/bindings/CostCube'
-import type { CostRootEntry } from '@/rpc/bindings/CostRootEntry'
-import type { UsageLimits } from '@/rpc/bindings/UsageLimits'
+import type { CostCall } from "@/rpc/bindings/method.agent.output"
+import type { CostCallsPage } from "@/rpc/bindings/method.agent.output"
+import type { CostCallsQuery } from '@/rpc/bindings/method.agent.input'
+import type { CostCells } from "@/rpc/bindings/method.agent.output"
+import type { CostCube } from "@/rpc/bindings/method.agent.output"
+import type { CostRootEntry } from "@/rpc/bindings/method.agent.output"
+import type { UsageLimits } from "@/rpc/bindings/method.agent.output"
 import { BASES } from '@/lib/costs/cube'
 
 const HOUR = 3_600_000
@@ -195,11 +195,11 @@ let callsMemo: { cube: CostCube; calls: CostCall[] } | undefined
 export function costCallsFixture(cube: CostCube, q: CostCallsQuery): CostCallsPage {
   if (callsMemo?.cube !== cube) callsMemo = { cube, calls: fixtureCalls(cube) }
   const limit = Math.min(1000, q.limit ?? 200)
-  const ok = (v: string | null, list: string[] | null) => !list || (v !== null && list.includes(v))
+  const ok = (v: string | null, list: string[] | null | undefined) => !list || (v !== null && list.includes(v))
   const page: CostCall[] = []
   for (const c of callsMemo.calls) {
     if (q.before && (c.at_ms > q.before.at_ms || (c.at_ms === q.before.at_ms && c.id >= q.before.id))) continue
-    if ((q.from_ms !== null && c.at_ms < q.from_ms) || (q.to_ms !== null && c.at_ms >= q.to_ms)) continue
+    if ((q.from_ms != null && c.at_ms < q.from_ms) || (q.to_ms != null && c.at_ms >= q.to_ms)) continue
     if (!ok(c.root, q.roots) || !ok(c.provider, q.providers) || !ok(c.model, q.models) || !ok(c.kind, q.kinds) || !ok(c.via, q.vias) || !(q.bases ?? [c.basis]).includes(c.basis)) continue
     page.push(c)
     if (page.length === limit) break

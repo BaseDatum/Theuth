@@ -1,11 +1,11 @@
 import { expect, test } from 'vitest'
-import type { SessionOrphan } from '@/rpc/bindings/SessionOrphan'
+import type { SessionOrphan } from "@/rpc/bindings/method.sessionsync.output"
 import { orphanCount, orphansText } from './OrphansBanner'
 
 const range = (epoch: number, from: number, to: number, at: string): SessionOrphan => ({
   epoch,
-  from_seq: BigInt(from),
-  to_seq: BigInt(to),
+  from_seq: from,
+  to_seq: to,
   at,
 })
 

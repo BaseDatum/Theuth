@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import type { PathCandidate } from '@/rpc/bindings/PathCandidate'
+import type { PathCandidate } from "@/rpc/bindings/method.agent.output"
 import { type PathPopup, accept, pathKey, pathTrigger, step } from './path-complete'
 
 /** `|` marks the caret. */

@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { createContext, useContext } from 'react'
 import { create } from 'zustand'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -6,9 +7,9 @@ import { type DraftPick, PLAIN_OPTIONS, useDrafts } from '@/lib/drafts'
 import { remembered, useContextDefaults } from '@/lib/notebook-context'
 import { type ContextApi, notebookKeys, useContextApi } from '@/lib/notebooks-rpc'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
-import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
-import type { DocSummary } from '@/rpc/bindings/DocSummary'
+import type { CreateSessionOptions } from '@/rpc/bindings/method.sessionsync.input'
+import type { EndlessConfig } from "@/rpc/bindings/method.agent.output"
+import type { DocSummary } from "@/rpc/bindings/method.agent.output"
 
 /**
  * 144 §8: provided by a notebook's chat column around its transcript so each assistant message can offer
@@ -107,6 +108,7 @@ export function useEnsureNotebookSession(notebook: string): () => Promise<string
 
 /** 157 D3: `agent.endless` (NewChatPane's read): `default_chat` is what a new chat's ∞ switch starts at, `model` the compactor line; `undefined` until read. */
 export function useEndlessSettings(): EndlessConfig | undefined {
+  const canQuery1 = useQuerySupport(["endless_settings_get"])
   const api = useApi()
-  return useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() }).data
+  return useQuery({ enabled: canQuery1, queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() }).data
 }

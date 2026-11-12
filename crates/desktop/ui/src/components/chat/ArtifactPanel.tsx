@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/sheet";
 import { fmtBytes } from "@/lib/files";
 import { clamp, PX_STEP } from "@/lib/resize-drag";
-import type { Artifact } from "@/rpc/extra";
+import type { Artifact } from "@/rpc/bindings/method.artifact.output"
 import {
   type AppDraft,
   on,
@@ -196,7 +196,7 @@ export function ArtifactPanel({ session }: { session: string }) {
       if (document.hasFocus())
         useSessions.getState().setArtifactPanel(session, id);
     };
-    const offShown = on("ArtifactShown", (e) => {
+    const offShown = on("artifact.shown@1", "ArtifactShown", (e) => {
       if (e.session !== session || !autoOpens(e.artifact.name, window.location.pathname)) return;
       // A new version of the lineage already on screen is adopted (latest mode) or ignored (pinned) by the open
       // `Content`; changing the key would remount it and drop its state and any running action.
@@ -208,10 +208,10 @@ export function ArtifactPanel({ session }: { session: string }) {
       open(e.call_id);
     });
     // Overlap the runtime's cold load with the arguments' arrival: the panel opens on the first renderable partial.
-    const offPending = on("ToolCallPending", (e) => {
+    const offPending = on("agent.events@1", "ToolCallPending", (e) => {
       if (e.session === session && e.name === "app" && document.visibilityState === "visible") preloadAppView();
     });
-    const offProgress = on("ToolCallProgress", (e) => {
+    const offProgress = on("agent.events@1", "ToolCallProgress", (e) => {
       if (e.session !== session) return;
       const s = useSessions.getState().sessions[session];
       const draft = s?.appDrafts.get(e.call_id);

@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronRight } from 'lucide-react'
 import { Fragment, useEffect, useState } from 'react'
@@ -9,8 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { ENDLESS_DEFAULTS, tokenEstimate, useCompactorLabel } from '@/lib/endless'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
-import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
+import type { CompactStyle } from "@/rpc/bindings/method.agent.output"
+import type { EndlessConfig } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
 
 type Key = keyof typeof ENDLESS_DEFAULTS
@@ -76,10 +77,13 @@ function Range({ value, min, max, step, onChange, onCommit, disabled, 'aria-labe
  * daily spend cap (the paused-by-spend row's link, 137G).
  */
 export function Memory({ focus = null }: { focus?: string | null }) {
+  const canQuery1 = useQuerySupport(["endless_settings_get"])
+  const canQuery1_2 = useQuerySupport(["list_models"])
+  const canQuery1_3 = useQuerySupport(["title_model"])
   const api = useApi()
   const info = useConnection((s) => s.info)
-  const settings = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
-  const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
+  const settings = useQuery({ enabled: canQuery1, queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
+  const models = useQuery({ enabled: canQuery1_2, queryKey: queryKeys.models, queryFn: () => api.list_models() })
   const save = useAction((next: EndlessConfig) => api.endless_settings_set(next), { keys: [queryKeys.endlessSettings] })
   const s = settings.data
   const busy = !s || save.isPending
@@ -91,7 +95,7 @@ export function Memory({ focus = null }: { focus?: string | null }) {
   const kb = viewKb ?? (s ? s.view_bytes / 1000 : 128)
   const pct = slackPct ?? (s ? s.slack * 100 : 12.5)
   // 177 U5: the model a summary call would use now — the compactor model, else the title model; else each chat's own.
-  const title = useQuery({ queryKey: queryKeys.titleModel, queryFn: () => api.title_model(), enabled: !!s && !s.model })
+  const title = useQuery({ queryKey: queryKeys.titleModel, queryFn: () => api.title_model(), enabled: canQuery1_3 && (!!s && !s.model) })
   const testModel = s?.model ?? title.data?.id
   // R1-D3: `null` resolves to the title model when one is set; the picker's first row names what that is right now.
   const resolved = useCompactorLabel(null)

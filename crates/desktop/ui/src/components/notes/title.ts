@@ -1,5 +1,5 @@
 import type { EngineProvider } from '@/lib/doc/provider'
-import type { DocumentChanged } from '@/rpc/bindings/DocumentChanged'
+import type { DocumentChanged } from "@/rpc/bindings/event.document_2echanged.output"
 
 /**
  * The title the open page shows after `e` (59 §7.3): a rename of `provider`'s document — from this page, the list

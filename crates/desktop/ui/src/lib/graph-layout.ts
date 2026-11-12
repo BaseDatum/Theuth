@@ -5,10 +5,10 @@
 // Entities, Swimlane, GraphDelta, Tree nodes|org) shares: the render queue, the last good layout, the time-out.
 import type { ElkExtendedEdge, ElkNode } from 'elkjs/lib/elk-api.js'
 import { useEffect, useRef, useState } from 'react'
-import type { GraphEdge } from '@/rpc/bindings/GraphEdge'
-import type { GraphGroup } from '@/rpc/bindings/GraphGroup'
-import type { GraphNode } from '@/rpc/bindings/GraphNode'
-import type { GraphProps } from '@/rpc/bindings/GraphProps'
+import type { GraphEdge } from "@/rpc/bindings/method.codeindex.output"
+import type { GraphGroup } from "@/rpc/bindings/method.codeindex.output"
+import type { GraphNode } from "@/rpc/bindings/method.codeindex.output"
+import type { GraphProps } from "@/rpc/bindings/method.codeindex.output"
 import { ELK_OPTIONS, elkLayout, elkPeek, flattenElk, fnv, GROUP_OPTIONS, labelSize, type Layout, LayoutTimeout, nodeSize, norm } from './diagram/elk'
 import type { Loose } from './diagram/types'
 import { createRenderQueue, type RenderQueue } from './render-queue'

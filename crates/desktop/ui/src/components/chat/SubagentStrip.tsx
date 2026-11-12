@@ -4,7 +4,7 @@ import { dotLabel } from '@/components/agents/sessions'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { stripRows } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
-import type { AgentInfo } from '@/rpc/extra'
+import type { AgentInfo } from '@/store/ui-events'
 import { useSessionField } from '@/store/sessions'
 import { WatchDot } from './ObservedBar'
 

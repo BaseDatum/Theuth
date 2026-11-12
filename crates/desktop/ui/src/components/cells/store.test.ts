@@ -1,5 +1,5 @@
 import { expect, test, vi } from 'vitest'
-import type { PassEnd } from '@/rpc/bindings/PassEnd'
+import type { PassEnd } from "@/rpc/bindings/method.cells.output"
 import { RpcError } from '@/rpc/client'
 import { cells, duration, exitText, lastPass, mintId, press, refKey, register, registeredCells, scopeKey } from './store'
 import { dispatch } from '@/store/sessions'
@@ -88,8 +88,8 @@ test('184 §6.5: CellLatestChanged for an open note re-reads cell_latest; other 
   await vi.waitFor(() => expect(cells.getState().scopes[scopeKey(scope)]?.rows).toEqual(rows))
   const reads = () => calls.filter(([m]) => m === 'cell_latest').length
   const before = reads()
-  dispatch([{ type: 'CellLatestChanged', doc: 'other' } as never])
-  dispatch([{ type: 'CellLatestChanged', doc } as never])
+  dispatch([{key: 'document.cell-latest@1', event: { type: 'CellLatestChanged', doc: 'other' } as never}])
+  dispatch([{key: 'document.cell-latest@1', event: { type: 'CellLatestChanged', doc } as never}])
   await vi.waitFor(() => expect(reads()).toBe(before + 1))
   off()
 })

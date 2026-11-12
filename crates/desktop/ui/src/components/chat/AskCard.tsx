@@ -11,10 +11,10 @@ import { cn } from 'cn'
 import { useApi } from '@/lib/rpc'
 import * as speech from '@/lib/speech'
 import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
-import type { Answer } from '@/rpc/bindings/Answer'
-import type { AskRequested } from '@/rpc/bindings/AskRequested'
-import type { Packet } from '@/rpc/bindings/Packet'
-import type { Question } from '@/rpc/bindings/Question'
+import type { Answer } from '@/rpc/bindings/method.tasks.input'
+import type { AskRequested } from "@/rpc/bindings/method.roster.output"
+import type { Packet } from "@/rpc/bindings/method.roster.output"
+import type { Question } from "@/rpc/bindings/method.roster.output"
 import { useAsks } from '@/store/approvals'
 import { ActionButton } from './MessageAssistant'
 import { DoubleCard, DoubleChip } from './DoubleChip'

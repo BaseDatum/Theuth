@@ -1,5 +1,5 @@
 import { expect, test, vi } from 'vitest'
-import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
+import type { CreateSessionOptions } from '@/rpc/bindings/method.sessionsync.input'
 import { type Entry, useSessions } from '@/store/sessions'
 import { CARD_PRESS, autoOpens, discardMessage, editMessage, lastSetupResultId, latestStudyDraft, leafValue, recentRepos, seedText, sessionTitle, sparkPoints, startSetupChat } from './setup'
 import { studies } from './fixtures'
@@ -11,7 +11,7 @@ test('startSetupChat: a root with cwd = the repo, its title, the slice seeded, t
   const api = {
     create_session: vi.fn(async (o: CreateSessionOptions) => {
       calls.push(`create_session cwd=${o.cwd} retention=${o.retention}`)
-      return { session: 's1', root: 's1', retention: o.retention, lease_secret: null }
+      return { session: 's1', root: 's1', retention: o.retention ?? 'durable', lease_secret: null }
     }),
     rename_session: vi.fn(async (id: string, title: string) => {
       calls.push(`rename_session ${id} ${title}`)

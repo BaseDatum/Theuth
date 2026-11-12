@@ -140,6 +140,12 @@ pub enum FrontDoorError {
     },
 }
 
+/// Auxiliary client error contract; RpcResult success metadata cannot carry it.
+pub fn client_error_schema() -> serde_json::Value {
+    schemars::generate::SchemaSettings::draft07().for_serialize().into_generator()
+        .into_root_schema_for::<FrontDoorError>().to_value()
+}
+
 /// Where a session-mutating call goes (183 §4.1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Route {

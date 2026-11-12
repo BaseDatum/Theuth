@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
-import type { Notebook } from '@/rpc/bindings/Notebook'
+import type { Notebook } from "@/rpc/bindings/method.agent.output"
 import { DocumentPage, ownedByMeeting, useNotebookBack } from './DocumentPage'
 
 const nb = (id: string, title: string): Notebook => ({ doc: { id, title } } as unknown as Notebook)

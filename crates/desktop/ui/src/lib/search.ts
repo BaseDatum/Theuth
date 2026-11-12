@@ -4,8 +4,8 @@
 // cached per engine by TanStack Query under `queryKeys.search`.
 
 import { type StoreApi, createStore } from 'zustand'
-import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
-import type { SearchGroup } from '@/rpc/bindings/SearchGroup'
+import type { SearchCategory } from '@/rpc/bindings/method.rpc_2dcompose.input'
+import type { SearchGroup } from "@/rpc/bindings/method.rpc_2dcompose.output"
 import { scoped } from '@/store/engine-scope'
 
 /** Display and wire order of the six categories; also the canonical order of a selection. */

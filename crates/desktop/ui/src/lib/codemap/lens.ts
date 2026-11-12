@@ -1,5 +1,6 @@
 /** 73 §6.1 — the lens state machine, pure. */
 import type { CodeTool, CodeToolRan, CodeToolSummary } from './types'
+import { isCodeTool } from './types'
 
 export type Lens = 'here' | 'fit' | 'change'
 export type LensParams = {
@@ -67,6 +68,7 @@ export function lensFor(tool: CodeTool, args: Record<string, unknown>, summary: 
 }
 
 export function onCodeToolRan(s: LensState, e: CodeToolRan): LensState {
+  if (!isCodeTool(e.tool)) return s
   const r = lensFor(e.tool, e.args, e.summary)
   if (!r) return s
   const params = { ...s.params, ...r.params }

@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQueries } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronDown, ChevronRight } from 'lucide-react'
@@ -7,8 +8,8 @@ import { describe } from '@/lib/describe'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { detailOf, observedLabel, watchCost } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
-import type { CostBucket } from '@/rpc/bindings/CostBucket'
-import type { AgentInfo } from '@/rpc/extra'
+import type { CostBucket } from "@/rpc/bindings/method.agent.output"
+import type { AgentInfo } from '@/store/ui-events'
 import type { Entry } from '@/store/sessions'
 import { k } from './CostPill'
 import { EyeMark, WatchDot } from './ObservedBar'
@@ -96,11 +97,12 @@ export function RosterRows({ rows, costs }: { rows: readonly AgentInfo[]; costs?
  * the child's header show).
  */
 export function RosterCard({ tool, rows }: { tool: Tool; rows: readonly AgentInfo[] }) {
+  const canQuery1 = useQuerySupport(["session_cost"])
   const api = useApi()
   const [raw, setRaw] = useDisclosure(toolKey(tool.callId))
   const lines = useMemo(() => describe(tool.name, tool.args), [tool.name, tool.args])
   const costs = useQueries({
-    queries: rows.map((r) => ({ queryKey: queryKeys.sessionCost(r.id), queryFn: () => api.session_cost(r.id) })),
+    queries: rows.map((r) => ({ enabled: canQuery1, queryKey: queryKeys.sessionCost(r.id), queryFn: () => api.session_cost(r.id) })),
     combine: (results) => new Map(results.flatMap((q, i) => (q.data && rows[i] ? [[rows[i].id, q.data.total] as const] : []))),
   })
   const live = rows.some((r) => r.observed?.state === 'running' || r.observed?.state === 'requires_action')

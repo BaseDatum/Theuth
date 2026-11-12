@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useModels } from '@/components/agents/queries'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
@@ -10,13 +11,17 @@ export const SAME_AS_NEW = { label: 'Same as new sessions' }
 
 /** 188 A4: Settings › Models › Defaults — the model defaults (148, engine settings): new sessions, native subagents, the theuth agent. */
 export function ModelDefaults() {
+  const canQuery1 = useQuerySupport(["subagent_model"])
+  const canQuery1_2 = useQuerySupport(["subagent_effort"])
+  const canQuery1_3 = useQuerySupport(["theuth_agent_model"])
+  const canQuery1_4 = useQuerySupport(["theuth_agent_effort"])
   const api = useApi()
   const info = useConnection((s) => s.info)
   const models = useModels()
-  const subagentModel = useQuery({ queryKey: queryKeys.subagentModel, queryFn: () => api.subagent_model() })
-  const subagentEffort = useQuery({ queryKey: queryKeys.subagentEffort, queryFn: () => api.subagent_effort() })
-  const theuthModel = useQuery({ queryKey: queryKeys.theuthAgentModel, queryFn: () => api.theuth_agent_model() })
-  const theuthEffort = useQuery({ queryKey: queryKeys.theuthAgentEffort, queryFn: () => api.theuth_agent_effort() })
+  const subagentModel = useQuery({ enabled: canQuery1, queryKey: queryKeys.subagentModel, queryFn: () => api.subagent_model() })
+  const subagentEffort = useQuery({ enabled: canQuery1_2, queryKey: queryKeys.subagentEffort, queryFn: () => api.subagent_effort() })
+  const theuthModel = useQuery({ enabled: canQuery1_3, queryKey: queryKeys.theuthAgentModel, queryFn: () => api.theuth_agent_model() })
+  const theuthEffort = useQuery({ enabled: canQuery1_4, queryKey: queryKeys.theuthAgentEffort, queryFn: () => api.theuth_agent_effort() })
   // R1: `session: null` + `manual` sets the default; `info` follows through `DefaultModelChanged` / `DefaultEffortChanged`.
   const setDefaultModel = useAction((id: string) => api.set_model(null, id, true))
   const setDefaultEffort = useAction((level: string | null) => api.set_effort(null, level, true))

@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 53 decision 8, 11 / 03 §2: the island — a 440 × 44 strip at the notch (meters, recording clock, topic
 // buttons, badges, the eye, ⋮ pause/stop) that grows to fit the brief pane when one is showing, the transcript
 // dropdown (`IslandTranscript`, collapsed by default) and the request box. Runs in its own non-activating
@@ -23,8 +24,8 @@ import {
   setHiddenFromCapture,
 } from '@/lib/tauri'
 import { cn } from '@/lib/utils'
-import type { MeetingState } from '@/rpc/bindings/MeetingState'
-import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
+import type { MeetingState } from "@/rpc/bindings/method.meeting.output"
+import type { OracleDecision } from "@/rpc/bindings/event.meeting_2eevents.output"
 import { captureBadge, captureWarning, current, elapsed, live, liveBadges, mmss, oracleSummary, useMeeting } from '@/store/meeting'
 import { on } from '@/store/sessions'
 
@@ -328,8 +329,9 @@ const VERDICT_MS = 4000
  * indicator Zap `deciding` → `skip` (fades) / `brief` / `→ model`. The tooltip carries the session counters.
  */
 function OracleChip() {
+  const canQuery1 = useQuerySupport(["decision_mode"])
   const api = useApi()
-  const mode = useQuery({ queryKey: queryKeys.decisionMode('meeting'), queryFn: () => api.decision_mode('meeting'), refetchInterval: 30_000 })
+  const mode = useQuery({ enabled: canQuery1, queryKey: queryKeys.decisionMode('meeting'), queryFn: () => api.decision_mode('meeting'), refetchInterval: 30_000 })
   const oracle = useMeeting((s) => s.oracle)
   const deciding = useMeeting((s) => s.deciding)
   const last: OracleDecision | undefined = oracle[oracle.length - 1]
@@ -432,7 +434,7 @@ function Meters() {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(
     () =>
-      on('Level', (e) => {
+      on("meeting.events@1", 'Level', (e) => {
         const el = ref.current
         if (!el) return
         el.style.setProperty('--mic', String(Math.min(1, e.mic_rms * 10)))

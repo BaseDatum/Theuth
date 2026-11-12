@@ -1,5 +1,5 @@
 /** 73 §6.5 — glyphs, badge words, colour states and labels shared by every lens. */
-import type { GraphState } from '@/rpc/bindings/GraphState'
+import type { GraphState } from "@/rpc/bindings/method.codeindex.output"
 
 export type ColourState = 'changed' | 'impacted' | 'transitive' | 'test' | 'stale'
 /** 73 §6.5: every colour state carries its badge word — the word IS the state name. */

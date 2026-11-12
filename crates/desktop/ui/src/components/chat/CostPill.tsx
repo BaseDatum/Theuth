@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import NumberFlow from '@number-flow/react'
 import { useQuery } from '@tanstack/react-query'
 import { Coins, Eye } from 'lucide-react'
@@ -5,10 +6,10 @@ import { Fragment, useEffect, useState } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { costLines, costParts, costShort, costTitle, moneyParts } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { CostBucket } from '@/rpc/bindings/CostBucket'
-import type { RemoteTokens } from '@/rpc/bindings/RemoteTokens'
-import type { ObservedMeta } from '@/rpc/bindings/ObservedMeta'
-import type { SessionCost } from '@/rpc/bindings/SessionCost'
+import type { CostBucket } from "@/rpc/bindings/method.agent.output"
+import type { RemoteTokens } from "@/rpc/bindings/method.agent.output"
+import type { ObservedMeta } from "@/rpc/bindings/method.agent.output"
+import type { SessionCost } from "@/rpc/bindings/method.agent.output"
 import { useSessionField } from '@/store/sessions'
 import { MenuRow } from './HeaderMenu'
 
@@ -142,8 +143,9 @@ export function Breakdown({ cost, observed }: { cost: SessionCost; observed?: Ob
 }
 
 const useCost = (session: string) => {
+  const canQuery1 = useQuerySupport(["session_cost"])
   const api = useApi()
-  return useQuery({ queryKey: queryKeys.sessionCost(session), queryFn: () => api.session_cost(session) }).data
+  return useQuery({ enabled: canQuery1, queryKey: queryKeys.sessionCost(session), queryFn: () => api.session_cost(session) }).data
 }
 
 /** Three fixed decimals, no grouping: `formatMoney`'s digits. */

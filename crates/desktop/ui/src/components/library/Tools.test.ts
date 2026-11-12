@@ -7,9 +7,9 @@ import { afterEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
 import { LOCAL, useEngines } from '@/link/engines'
-import type { McpServer } from '@/rpc/bindings/McpServer'
-import type { McpToolInfo } from '@/rpc/bindings/McpToolInfo'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
+import type { McpServer } from "@/rpc/bindings/method.mcp_2dserver.output"
+import type { McpToolInfo } from "@/rpc/bindings/method.mcp_2dserver.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
 import { Tools } from './Tools'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
@@ -18,7 +18,7 @@ vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), messa
 const mesh = {
   self_id: 'id-xeus',
   self_name: 'xeus',
-  peers: [{ id: 'id-333', name: '333', reachable: true, last_seen_ms: 0n }],
+  peers: [{ id: 'id-333', name: '333', reachable: true, last_seen_ms: 0 }],
 } as unknown as MeshStatus
 const server = (over: Partial<McpServer> = {}): McpServer => ({
   name: 'mikrotik',

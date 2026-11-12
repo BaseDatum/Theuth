@@ -1,7 +1,7 @@
 // 155 §7.6 / §11: one notification per `alert.id`, none for the session in view, the event path for items the
 // engine does not decide.
 import { afterEach, expect, test, vi } from 'vitest'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import { AlertNotifier } from './alerts'
 
 afterEach(() => vi.useRealTimers())

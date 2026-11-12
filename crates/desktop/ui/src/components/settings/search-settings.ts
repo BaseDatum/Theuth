@@ -1,9 +1,9 @@
 // Settings › Search form state (16 §8): pure helpers over the `SearchSettings` wire type so the
 // pane's reorder / edit / dirty logic is testable without rendering.
 
-import type { ProviderSettings } from '@/rpc/bindings/ProviderSettings'
-import type { SearchDefaults } from '@/rpc/bindings/SearchDefaults'
-import type { SearchSettings } from '@/rpc/bindings/SearchSettings'
+import type { ProviderSettings } from "@/rpc/bindings/method.search_2dproviders.output"
+import type { SearchDefaults } from "@/rpc/bindings/method.search_2dproviders.output"
+import type { SearchSettings } from "@/rpc/bindings/method.search_2dproviders.output"
 
 /** Human labels and one-line purpose per provider name. */
 export const PROVIDER_INFO: Record<string, { label: string; blurb: string }> = {

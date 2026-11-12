@@ -1,10 +1,11 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { describe, expect, test } from 'vitest'
-import type { Artifact } from '@/rpc/bindings/Artifact'
-import type { DocSummary } from '@/rpc/bindings/DocSummary'
-import type { HistorySearchHit } from '@/rpc/bindings/HistorySearchHit'
-import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
-import type { Meta } from '@/rpc/bindings/Meta'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { Artifact } from "@/rpc/bindings/method.artifact.output"
+import type { DocSummary } from "@/rpc/bindings/method.agent.output"
+import type { HistorySearchHit } from "@/rpc/bindings/method.rpc_2dcompose.output"
+import type { MeetingSummary } from "@/rpc/bindings/method.meeting.output"
+import type { Meta } from "@/rpc/bindings/method.knowledge.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { type AttachRef, atTrigger, chatName, cleanTitle, compose, marker, parse, size, subtitle, title, toRef } from './attach'
 // One grammar, one fixture (66 §3.3): the same file drives `agent::attach::tests`.
 import fixtures from '../../../../agent/tests/fixtures/attach_markers.json'
@@ -60,9 +61,9 @@ const doc: DocSummary = {
   kind: 'note',
   title: 'Groceries',
   binding: 'note',
-  created_ms: BigInt(new Date(2026, 8, 20, 9, 0).getTime()),
-  updated_ms: BigInt(new Date(2026, 8, 24, 9, 0).getTime()),
-  bytes: 1024n,
+  created_ms: new Date(2026, 8, 20, 9, 0).getTime(),
+  updated_ms: new Date(2026, 8, 24, 9, 0).getTime(),
+  bytes: 1024,
 }
 const meta: Meta = {
   id: 'decisions/prod-dr',
@@ -103,16 +104,16 @@ const artifact: Artifact = {
   title: 'Q3 pipeline report',
   kind: 'pdf',
   mime: 'application/pdf',
-  bytes: 86_016n,
+  bytes: 86016,
   version: 2,
   path: '/p',
   source: null,
   preview: null,
   pages: 3,
   origin: null,
-  created_at: BigInt(Math.floor(new Date(2026, 8, 21).getTime() / 1000)),
+  created_at: Math.floor(new Date(2026, 8, 21).getTime() / 1000),
 }
-const session: SessionSummary = {
+const session: SessionSummary = receiveComponent("method.agent.output.SessionSummary", {
   id: '0192a4c1-7e3b-7c0e-9c1f-2b6d1e8f4a10',
   created_at: new Date(2026, 8, 18, 14, 5).toISOString(),
   updated_at: new Date(2026, 8, 19).toISOString(),
@@ -134,7 +135,7 @@ const session: SessionSummary = {
   epoch: 1,
   memory: 'epochs',
   here: true,
-}
+})
 const meeting: MeetingSummary = {
   id: '0192b0f2-0a1d-7e55-8d3a-6f2c9e1b7d44',
   started_at: new Date(2026, 8, 23, 10, 0).toISOString(),
@@ -142,7 +143,7 @@ const meeting: MeetingSummary = {
   title: 'Weekly planning',
   session: 's1',
   process_name: 'zoom.us',
-  duration_ms: 42n * 60_000n,
+  duration_ms: 42 * 60000,
   state: 'Done',
   project: null,
 }
@@ -192,7 +193,7 @@ describe('§8 naming table', () => {
     expect(subtitle({ kind: 'meeting', meeting: { ...meeting, state: 'Recording', duration_ms: null } }, NOW)).toBe('Sep 23 · recording')
   })
   test('dates outside this year carry the year; sizes keep one decimal below 10', () => {
-    expect(subtitle({ kind: 'note', doc: { ...doc, updated_ms: BigInt(new Date(2025, 0, 3).getTime()), bytes: 1536n } }, NOW)).toBe(
+    expect(subtitle({ kind: 'note', doc: { ...doc, updated_ms: new Date(2025, 0, 3).getTime(), bytes: 1536 } }, NOW)).toBe(
       'note · updated Jan 3, 2025 · 1.5 KB',
     )
     expect(size(512)).toBe('512 B')

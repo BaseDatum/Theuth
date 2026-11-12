@@ -8,8 +8,8 @@ import { type ReactNode, useEffect, useState } from 'react'
 import { HtmlPage } from '@/components/chat/HtmlPage'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { CellOutput } from '@/rpc/bindings/CellOutput'
-import type { CellRunId } from '@/rpc/bindings/CellRunId'
+import type { CellOutput } from "@/rpc/bindings/method.cells.output"
+import type { RunId as CellRunId } from "@/rpc/bindings/method.cells.output"
 import { type JupyterOutput, OutputArea } from './vendor/nteract/cell/OutputArea'
 import { AnsiText as AnsiInline } from './vendor/nteract/outputs/ansi-output'
 import { ImageOutput } from './vendor/nteract/outputs/image-output'

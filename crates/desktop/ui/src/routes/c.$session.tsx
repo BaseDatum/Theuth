@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -31,7 +32,7 @@ import { ownedElsewhere } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { type SearchDestination, isSearchDestination, useSearchOrigin } from '@/lib/search'
 import { useScope } from '@/store/engine-scope'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { freshness, on, useSessionField, useSessions } from '@/store/sessions'
 import { ContactAllowStrip } from '@/components/chat/ContactAllowStrip'
 import { KernelStrip } from '@/components/cells/KernelStrip'
@@ -116,6 +117,7 @@ function scrollToCell(cell: string): () => void {
  * `first`: the top-left pane, the only one that inserts the sidebar toggle and macOS traffic-light inset. Also the chat a
  * meeting page embeds under its transcript (`ControlCenter`), which passes `first={false}`. */
 export function LiveSession({ session, first, aboveComposer }: { session: string; first: boolean; /** 151 R1: a host's strip right above the composer (the setup pane's phone "Draft n of m" pill). */ aboveComposer?: ReactNode }) {
+  const canQuery1 = useQuerySupport(["list_sessions"])
   const api = useApi()
   const navigate = useNavigate()
   const focused = usePanes((s) => s.focused) === session
@@ -132,7 +134,7 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
   const fromSearch = isSearchDestination(origin, destination)
 
   // Same fallback as the header: the list row until `TitleChanged` fills the slice (the query is shared with it).
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const sessions = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const row = sessions.data?.find((s) => s.id === session)
   useEffect(() => {
     if (focused) document.title = `${title || (row ? chatName(row) : '')}${running ? ' ·' : ''}`
@@ -353,10 +355,10 @@ export function useSessionLoad(session: string): void {
     }
     window.addEventListener('theuth:reload-session', reload)
     const offs = [
-      on('ContextChanged', (e) => {
+      on("agent.events@1", 'ContextChanged', (e) => {
         if (e.session === session) settle(ctl.signal)
       }),
-      on('TurnFinished', (e) => {
+      on("agent.events@1", 'TurnFinished', (e) => {
         if (e.session !== session || !ownedElsewhere(qc.getQueryData<SessionSummary[]>(queryKeys.sessions), session)) return
         store.getState().markStale(session)
         settle(ctl.signal)

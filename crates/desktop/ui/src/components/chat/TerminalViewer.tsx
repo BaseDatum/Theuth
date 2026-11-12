@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import '@xterm/xterm/css/xterm.css'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as Xterm } from '@xterm/xterm'
@@ -18,13 +19,13 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { macKeyBytes } from '@/lib/terminal-keys'
 import { swallowEngineQueries } from '@/lib/terminal-replies'
 import { cn } from '@/lib/utils'
-import type { Api } from '@/rpc/api'
-import type { JobExit } from '@/rpc/bindings/JobExit'
-import type { Key } from '@/rpc/bindings/Key'
-import type { PtyChunk } from '@/rpc/bindings/PtyChunk'
-import type { CellRunId } from '@/rpc/bindings/CellRunId'
+import type { Api } from '@/rpc/bindings/client'
+import type { JobExit } from "@/rpc/bindings/method.agent.output"
+import type { Key } from '@/rpc/bindings/method.agent.input'
+import type { PtyChunk } from "@/rpc/bindings/method.agent.output"
+import type { RunId as CellRunId } from "@/rpc/bindings/method.cells.output"
 import type { RpcClient } from '@/rpc/client'
-import type { TerminalSummary } from '@/rpc/bindings/TerminalSummary'
+import type { TerminalSummary } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
 import { useSessionField } from '@/store/sessions'
 import { MenuRow } from './HeaderMenu'
@@ -523,12 +524,13 @@ export function TerminalViewer({ session, open, onOpenChange }: { session: strin
  * the globe follows the first `browser_*` call.
  */
 export function useHasTerminals(session: string | null): boolean {
+  const canQuery1 = useQuerySupport(["list_terminals"])
   const api = useApi()
   const live = useSessionField(session ?? '', 'terminal')
   const { data } = useQuery({
     queryKey: queryKeys.terminals(session ?? ''),
     queryFn: () => api.list_terminals(session ?? '', true),
-    enabled: session !== null && !live,
+    enabled: canQuery1 && (session !== null && !live),
     staleTime: Infinity,
   })
   return live || (data?.length ?? 0) > 0

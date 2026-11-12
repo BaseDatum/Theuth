@@ -35,11 +35,11 @@ import { Textarea } from '@/components/ui/textarea'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { RunInfo } from '@/rpc/bindings/RunInfo'
-import type { ScheduleFile } from '@/rpc/bindings/ScheduleFile'
-import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
-import type { SensorInfo } from '@/rpc/bindings/SensorInfo'
-import type { Verdict } from '@/rpc/bindings/Verdict'
+import type { RunInfo } from "@/rpc/bindings/method.schedule.output"
+import type { ScheduleFile } from "@/rpc/bindings/method.schedule.output"
+import type { ScheduleInfo } from "@/rpc/bindings/method.schedule.output"
+import type { SensorInfo } from "@/rpc/bindings/method.schedule.output"
+import type { Verdict } from "@/rpc/bindings/method.schedule.output"
 import { useConnection } from '@/store/connection'
 import { useSessions } from '@/store/sessions'
 import { RoutineChat } from './RoutineChat'
@@ -648,12 +648,7 @@ function Editor({
                   <NativeSelect
                     id="rt-engine"
                     value={f.engine ?? ''}
-                    onChange={(v) =>
-                      setF((x) => {
-                        const { engine: _, ...rest } = x
-                        return v ? { ...rest, engine: v } : rest
-                      })
-                    }
+                    onChange={(v) => set('engine', v || null)}
                     options={routineMachines(mesh.data, f.engine)}
                     none="the hub (any machine)"
                   />
@@ -673,9 +668,9 @@ function Editor({
                     className="w-full"
                     models={models.data ?? []}
                     value={f.model}
-                    effort={runModel && runModel.efforts.length > 0 ? { levels: runModel.efforts, current: f.effort ?? null, onSelect: (level) => set('effort', level ?? undefined) } : undefined}
+                    effort={runModel && runModel.efforts.length > 0 ? { levels: runModel.efforts, current: f.effort, onSelect: (level) => set('effort', level) } : undefined}
                     none={{ label: 'Engine default' }}
-                    onChange={(v) => setF((x) => ({ ...x, model: v, effort: v && models.data?.find((m) => m.id === v)?.efforts.includes(x.effort ?? '') ? x.effort : undefined }))}
+                    onChange={(v) => setF((x) => ({ ...x, model: v, effort: v && models.data?.find((m) => m.id === v)?.efforts.includes(x.effort ?? '') ? x.effort : null }))}
                   />
                 </Field>
                 <Field label="Directory" id="rt-cwd" hint="where until runs and the run starts" error={errAt('cwd')}>

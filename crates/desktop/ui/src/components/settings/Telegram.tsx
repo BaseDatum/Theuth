@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Copy } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
@@ -8,9 +9,9 @@ import { Dot, Row, Section, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { PairingLink } from '@/rpc/bindings/PairingLink'
-import type { TelegramEvent } from '@/rpc/bindings/TelegramEvent'
-import type { TelegramStatus } from '@/rpc/bindings/TelegramStatus'
+import type { PairingLink } from "@/rpc/bindings/method.telegram.output"
+import type { TelegramEvent } from "@/rpc/bindings/method.telegram.output"
+import type { TelegramStatus } from "@/rpc/bindings/method.telegram.output"
 import { on } from '@/store/sessions'
 
 /** One phrase per `TelegramEvent` variant (98 §10.5); a bot that is not polling is idle because another engine holds the hub lease. */
@@ -93,9 +94,10 @@ function withId(kind: 'user' | 'chat', call: (id: number) => Promise<null>): (va
 
 /** 188: Channels › Telegram: the bot, its token, the owner and pairing, allowed users and groups. */
 export function Telegram() {
+  const canQuery1 = useQuerySupport(["telegram_status"])
   const api = useApi()
-  useChannelEvents(queryKeys.telegram)
-  const status = useQuery({ queryKey: queryKeys.telegram, queryFn: () => api.telegram_status() })
+  useChannelEvents('telegram.events@1', queryKeys.telegram)
+  const status = useQuery({ enabled: canQuery1, queryKey: queryKeys.telegram, queryFn: () => api.telegram_status() })
   const keys = [queryKeys.telegram]
   const [token, setToken] = useState('')
   const [replacing, setReplacing] = useState(false)
@@ -117,7 +119,7 @@ export function Telegram() {
   const remove = useAction((v: string) => api.telegram_remove_allowed(Number(v)), { keys })
   const allowGroup = useAction(withId('chat', (id) => api.telegram_allow_group(id)), { keys })
   const removeGroup = useAction((v: string) => api.telegram_remove_group(Number(v)), { keys })
-  useEffect(() => on('Paired', () => link.reset()), [link.reset])
+  useEffect(() => on("telegram.events@1", 'Paired', () => link.reset()), [link.reset])
 
   const pairing: PairingLink | null = link.data ?? (s?.state?.type === 'PairingLink' ? s.state : null)
   const left = useCountdown(pairing ? Number(pairing.expires_at_ms) : null)

@@ -1,5 +1,5 @@
 import { beforeEach, expect, test, vi } from 'vitest'
-import type { Api } from '@/rpc/api'
+import type { Api } from '@/rpc/bindings/client'
 import { NO_PICK, openDraftSession, sendFirst, useDraftTarget, useDrafts } from './drafts'
 import { YOUNG_MS, reportLoadError, useRemoteStart } from './remote-start'
 

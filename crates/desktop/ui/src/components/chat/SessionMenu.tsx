@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { MoreHorizontal } from 'lucide-react'
@@ -45,12 +46,12 @@ import { hasLocal } from '@/link/engines'
 import { ShareDialog, SharingItems } from '@/components/settings/Contacts'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
-import type { ApprovalsState } from '@/rpc/bindings/ApprovalsState'
-import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
-import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
+import type { ApprovalsState } from "@/rpc/bindings/method.agent.output"
+import type { CommunicationState } from "@/rpc/bindings/method.agent.output"
+import type { CompactStyle } from "@/rpc/bindings/method.agent.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { useSessionField, useSessions } from '@/store/sessions'
 import { useModels } from './ModelMenu'
 import { useMessagingSheet } from './messaging-sheet'
@@ -209,11 +210,12 @@ function PromptSheet({
   open: boolean
   onOpenChange(o: boolean): void
 }) {
+  const canQuery1 = useQuerySupport(["get_prompt"])
   const api = useApi()
   const { data, error } = useQuery({
     queryKey: queryKeys.prompt(session),
     queryFn: () => api.get_prompt(session),
-    enabled: open,
+    enabled: canQuery1 && (open),
   })
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -239,12 +241,13 @@ function JobsSheet({
   open: boolean
   onOpenChange(o: boolean): void
 }) {
+  const canQuery2 = useQuerySupport(["list_jobs"])
   const api = useApi()
   const key = queryKeys.jobs(session)
   const { data: jobs = [], refetch } = useQuery({
     queryKey: key,
     queryFn: () => api.list_jobs(session),
-    enabled: open,
+    enabled: canQuery2 && (open),
     refetchInterval: open ? 2000 : false,
   })
   const kill = async (id: string) => {
@@ -307,13 +310,17 @@ function JobsSheet({
 
 /** The `…` menu of the open session; every action is the slash command the TUI would run. */
 export function SessionMenu({ session }: { session: string }) {
+  const canQuery3 = useQuerySupport(["list_sessions"])
+  const canQuery3_2 = useQuerySupport(["list_jobs"])
+  const canQuery3_3 = useQuerySupport(["get_approvals"])
+  const canQuery3_4 = useQuerySupport(["get_communication"])
   const api = useApi()
   const navigate = useNavigate()
   const parent = useSessionField(session, 'parent')
   const undone = useSessionField(session, 'undone') ?? 0
   const liveTags = useSessionField(session, 'tags')
   // Tags: live from `TitleChanged`, else the stored set from the session list; the owner row (68 §5) is always the list's.
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const sessions = useQuery({ enabled: canQuery3, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const row = sessions.data?.find((s) => s.id === session)
   const tags = liveTags ?? row?.tags ?? []
   const here = row?.here ?? true
@@ -325,7 +332,7 @@ export function SessionMenu({ session }: { session: string }) {
   const [open, setOpen] = useState(false)
   const mesh = useMesh()
   const agents = useAgents()
-  const jobs = useQuery({ queryKey: queryKeys.jobs(session), queryFn: () => api.list_jobs(session), enabled: open && here })
+  const jobs = useQuery({ queryKey: queryKeys.jobs(session), queryFn: () => api.list_jobs(session), enabled: canQuery3_2 && (open && here) })
   // 181 D1 / 183 §12.2: a session owned elsewhere moves from its owner (forwarded), so its own engine is no target.
   const targets = moveTargets(mesh.data, here ? (jobs.data ?? []).filter((j) => j.state === 'running').length : 0).filter((t) => here || t.id !== row?.owner)
   const blocked = moveBlocked(row, sessions.data ?? [], agents.data ?? [])
@@ -347,8 +354,8 @@ export function SessionMenu({ session }: { session: string }) {
   // 183 §12.2: the settings the owner applies, read through it (forwarded readers) while the menu is open; a reader
   // answering -32010, an unreachable owner or a parked call grey the setters (§4.4).
   const owner = !here && row ? engineLabel(row.owner, mesh.data?.peers) : undefined
-  const approvals = useQuery({ queryKey: ['approvals', session], queryFn: () => api.get_approvals(session), enabled: open, retry: false })
-  const messaging = useQuery({ queryKey: queryKeys.communication(session), queryFn: () => api.get_communication(session), enabled: open, retry: false })
+  const approvals = useQuery({ queryKey: ['approvals', session], queryFn: () => api.get_approvals(session), enabled: canQuery3_3 && (open), retry: false })
+  const messaging = useQuery({ queryKey: queryKeys.communication(session), queryFn: () => api.get_communication(session), enabled: canQuery3_4 && (open), retry: false })
   const parked = useOwnerOffline((s) => s.by[session] !== undefined)
   const unreachable = mesh.data?.peers.find((p) => p.id === row?.owner)?.reachable === false
   const offline = parked || unreachable || !!ownerUnreachable(approvals.error) || !!ownerUnreachable(messaging.error)

@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
 import { FrontChart } from './FrontChart'
-import type { KindView } from '@/rpc/bindings/KindView'
+import type { KindView } from "@/rpc/bindings/method.autoresearch.output"
 
 const count = (html: string, re: RegExp) => (html.match(re) ?? []).length
 

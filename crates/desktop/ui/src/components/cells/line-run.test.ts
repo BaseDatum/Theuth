@@ -1,5 +1,5 @@
 import { expect, test, vi } from 'vitest'
-import type { CellSpec } from '@/rpc/bindings/CellSpec'
+import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
 import { cellOf } from './grammar'
 import { askSkipped, busy, cellIdentity, hoverAfter, lineGuard, noteHover, pastGate, pressed, refused, settled, skipAsking, started, WARN_MS } from './line-run'
 import { run } from './test-fixtures'

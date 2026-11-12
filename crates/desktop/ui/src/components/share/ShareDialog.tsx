@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy, Share2 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
@@ -12,10 +13,10 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from '@/components/ui/input'
 import type { EngineProvider } from '@/lib/doc/provider'
 import { useApi } from '@/lib/rpc'
-import type { LinkCreated } from '@/rpc/bindings/LinkCreated'
-import type { LinkVia } from '@/rpc/bindings/LinkVia'
-import type { Members } from '@/rpc/bindings/Members'
-import type { Role } from '@/rpc/bindings/Role'
+import type { LinkCreated } from "@/rpc/bindings/method.link.output"
+import type { LinkVia } from "@/rpc/bindings/method.link.output"
+import type { Members } from "@/rpc/bindings/method.agent.output"
+import type { Role } from "@/rpc/bindings/method.agent.output"
 
 const DAY_MS = 86_400_000
 /** Expiry choices (59 §8.2): days, or never. */
@@ -60,11 +61,12 @@ export function ShareAction({ provider }: { provider: EngineProvider }) {
  * live through the subscription's `Members` events.
  */
 export function ShareDialog({ provider, open, onOpenChange }: { provider: EngineProvider; open: boolean; onOpenChange: (o: boolean) => void }) {
+  const canQuery1 = useQuerySupport(["doc_members"])
   const api = useApi()
   const qc = useQueryClient()
   const doc = provider.id
   const key = ['doc', 'members', doc]
-  const members = useQuery({ queryKey: key, queryFn: () => api.doc_members(doc), enabled: open })
+  const members = useQuery({ queryKey: key, queryFn: () => api.doc_members(doc), enabled: canQuery1 && (open) })
   useEffect(
     () =>
       provider.onEvent((e) => {

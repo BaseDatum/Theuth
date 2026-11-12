@@ -1,7 +1,8 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // Owner: U2
 import { useQuery } from '@tanstack/react-query'
-import type { Interpreter } from '@/rpc/bindings/Interpreter'
-import type { NoteDefaults } from '@/rpc/bindings/NoteDefaults'
+import type { Interpreter } from "@/rpc/bindings/method.cells.output"
+import type { NoteDefaults } from '@/rpc/bindings/auxiliary.surface.output'
 import { useConnection } from '@/store/connection'
 import { parseDefaults } from './grammar'
 import './note-cells.css'
@@ -34,12 +35,13 @@ export function defaultsLine(d: NoteDefaults, shell: Interpreter | undefined): s
  * last segment stands in.
  */
 export function CellDefaults({ text, second = false, onOpen }: CellDefaultsProps) {
+  const canQuery1 = useQuerySupport(["cell_interpreters"])
   const api = useConnection((s) => s.api)
   const d = parseDefaults(text)
   const q = useQuery({
     queryKey: ['cells', 'interpreters', d.cwd ?? '~'],
     queryFn: () => (api ? api.cell_interpreters(d.cwd ?? '~', null) : Promise.resolve([])),
-    enabled: !!api && !!d.shell && !second,
+    enabled: canQuery1 && (!!api && !!d.shell && !second),
     staleTime: 60_000,
   })
   const shell = q.data?.find((i) => i.path === d.shell)

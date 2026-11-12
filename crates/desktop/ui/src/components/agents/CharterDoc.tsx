@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { MessageSquare } from 'lucide-react'
 import { useMemo } from 'react'
@@ -10,7 +11,7 @@ import { Button } from '@/components/ui/button'
 import { useNoteChat } from '@/lib/note-chat'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { AgentFile } from '@/rpc/bindings/AgentFile'
+import type { AgentFile } from "@/rpc/bindings/method.roster.output"
 import { charterBinding, charterRef } from './charter'
 import { NAME_RE } from './wizard'
 
@@ -21,12 +22,13 @@ type Who = Pick<AgentFile, 'name' | 'title' | 'reports_to' | 'capabilities'>
  * Hire wizard before the file exists — created from the seed. `null` until known; disabled for a bad name and theuth.
  */
 export function useCharterDoc(name: string, seed?: string) {
+  const canQuery1 = useQuerySupport(["doc_ensure","doc_resolve"])
   const api = useApi()
   return useQuery({
     queryKey: ['charter-doc', name, seed !== undefined],
     queryFn: () => (seed !== undefined ? api.doc_ensure(charterBinding(name), seed) : api.doc_resolve(charterBinding(name))),
     staleTime: Number.POSITIVE_INFINITY,
-    enabled: NAME_RE.test(name) && name !== THEUTH,
+    enabled: canQuery1 && (NAME_RE.test(name) && name !== THEUTH),
   })
 }
 

@@ -8,7 +8,7 @@ import { useApi } from '@/lib/rpc'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
 import { useEngines } from '@/link/engines'
-import type { ContextAttachment } from '@/rpc/bindings/ContextAttachment'
+import type { ContextAttachment } from "@/rpc/bindings/method.agent.output"
 import { RemoveButton } from './MessageAssistant'
 import { useDisclosed, useScopeKey } from './disclosure'
 

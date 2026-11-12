@@ -3,7 +3,7 @@
 // Pure: `App.tsx` feeds it, `components/launch/QuitOverlay.tsx` draws it, the tests drive it with stubs.
 
 import type { QuitProgress } from '@/lib/tauri'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { SessionSlice } from '@/store/sessions'
 
 /** `durability.drain_secs`' default (109 §9.2): the engine drains running turns this long after `shutdown`. */

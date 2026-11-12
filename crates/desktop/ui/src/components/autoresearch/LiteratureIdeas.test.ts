@@ -1,8 +1,8 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
-import type { CitationRow } from '@/rpc/bindings/CitationRow'
-import type { StudyIdea } from '@/rpc/bindings/StudyIdea'
+import type { CitationRow } from "@/rpc/bindings/method.autoresearch.output"
+import type { Idea as StudyIdea } from "@/rpc/bindings/method.autoresearch.output"
 import { LiteratureIdeas, host } from './LiteratureIdeas'
 
 const idea = (id: number, source: StudyIdea['source'], extra: Partial<StudyIdea> = {}): StudyIdea => ({
@@ -19,7 +19,7 @@ const idea = (id: number, source: StudyIdea['source'], extra: Partial<StudyIdea>
 })
 
 const citation = (idea_id: number, url: string, quote: string, title = ''): CitationRow => ({
-  idea_id: BigInt(idea_id),
+  idea_id: idea_id,
   url,
   title,
   quote,

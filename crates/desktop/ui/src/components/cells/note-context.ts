@@ -3,7 +3,7 @@
 // provides it around BlockNote (React portals of the block node views keep the context).
 import { createContext } from 'react'
 import type { EngineProvider } from '@/lib/doc/provider'
-import type { Api } from '@/rpc/api'
+import type { Api } from '@/rpc/bindings/client'
 
 /**
  * `provider`: the document (id, members for "Changed by Alice", block authors). `guest`: the share-link member's api

@@ -2,7 +2,7 @@
 // without a daemon meeting. Dev only (`/island?fixture=meeting`, or `VITE_MEETING_FIXTURE=1`); deleted
 // at integration — a scaffold, not a test.
 
-import type { MeetingEvent } from '@/rpc/bindings/MeetingEvent'
+import type { MeetingEvent } from "@/rpc/bindings/event.meeting_2eevents.output"
 import { dispatch } from '@/store/sessions'
 
 const M = 'fixture-meeting'
@@ -10,21 +10,21 @@ const M = 'fixture-meeting'
 const topic = (id: string, label: string, at_ms: number): MeetingEvent => ({
   type: 'TopicAdded',
   meeting: M,
-  topic: { id, label, at_ms: BigInt(at_ms), brief: `b-${id}`, cached: id === 't2' ? 'row-keda' : null, source: id === 't2' ? 'Cache' : 'Auto' },
+  topic: { id, label, at_ms: at_ms, brief: `b-${id}`, cached: id === 't2' ? 'row-keda' : null, source: id === 't2' ? 'Cache' : 'Auto' },
 })
 
 const brief = (id: string, source: 'Auto' | 'Tap', title: string, bullets: string[], topic: string | null = null): MeetingEvent => ({
   type: 'Brief',
   meeting: M,
-  brief: { id, topic, title, bullets, source, at_ms: 0n, parent: null, cached: null },
+  brief: { id, topic, title, bullets, source, at_ms: 0, parent: null, cached: null },
 })
 
 const said = (track: 'Mic' | 'System', t0_ms: number, text: string, final = true, speaker: string | null = null): MeetingEvent => ({
   type: 'Utterance',
   meeting: M,
   track,
-  t0_ms: BigInt(t0_ms),
-  t1_ms: BigInt(t0_ms + 900),
+  t0_ms: t0_ms,
+  t1_ms: t0_ms + 900,
   text,
   request: false,
   final,
@@ -77,17 +77,17 @@ const SCRIPT: [number, MeetingEvent][] = [
 
 /** Start the replay (plus `Level` at 10 Hz until `Done`); returns a stop. */
 export function play(): () => void {
-  const timers = SCRIPT.map(([at, e]) => window.setTimeout(() => dispatch([e]), at))
+  const timers = SCRIPT.map(([at, e]) => window.setTimeout(() => dispatch([{key: 'meeting.events@1', event: e}]), at))
   let t = 0
   const level = window.setInterval(() => {
     t += 0.1
     dispatch([
-      {
+      {key: 'meeting.events@1', event: {
         type: 'Level',
         meeting: M,
         mic_rms: 0.03 + 0.03 * Math.abs(Math.sin(t * 2.3)),
         system_rms: 0.02 + 0.04 * Math.abs(Math.sin(t * 1.1 + 1)),
-      },
+      }},
     ])
   }, 100)
   const end = window.setTimeout(() => clearInterval(level), 30000)

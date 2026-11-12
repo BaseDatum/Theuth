@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { RefreshCw } from 'lucide-react'
@@ -10,8 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
-import type { PeerScope } from '@/rpc/bindings/PeerScope'
+import type { CommunicationState } from "@/rpc/bindings/method.agent.output"
+import type { PeerScope } from "@/rpc/bindings/method.agent.output"
 import { useSessions } from '@/store/sessions'
 import { effectiveLine, scopeView, useMessagingSheet } from './messaging-sheet'
 import { Peers } from './Peers'
@@ -58,10 +59,11 @@ export function MessagingSheet({ session }: { session: string }) {
 
 /** The authoritative `get_communication` snapshot for this chat; every control is one RPC whose reply replaces it. */
 function Messaging({ session, peer }: { session: string; peer: string | null }) {
+  const canQuery1 = useQuerySupport(["get_communication"])
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
-  const state = useQuery({
+  const state = useQuery({ enabled: canQuery1,
     queryKey: queryKeys.communication(session),
     queryFn: () => api.get_communication(session),
   })
@@ -74,7 +76,7 @@ function Messaging({ session, peer }: { session: string; peer: string | null }) 
     // 183 §4.4: `routed` resolves undefined when the owner is unreachable and the call is parked behind the chat's card.
     if (!next || next.session !== session) return
     const cur = qc.getQueryData<CommunicationState>(queryKeys.communication(session))
-    if (cur && BigInt(next.revision) < BigInt(cur.revision)) return
+    if (cur && next.revision < cur.revision) return
     qc.setQueryData(queryKeys.communication(session), next)
   }
   const setScope = useAction(

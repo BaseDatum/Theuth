@@ -15,9 +15,9 @@ import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import * as speech from '@/lib/speech'
 import { cn } from '@/lib/utils'
-import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
-import type { ContextTarget } from '@/rpc/bindings/ContextTarget'
-import type { DocSummary } from '@/rpc/bindings/DocSummary'
+import type { ContextEntry } from "@/rpc/bindings/method.agent.output"
+import type { ContextTarget } from "@/rpc/bindings/method.agent.output"
+import type { DocSummary } from "@/rpc/bindings/method.agent.output"
 import { useSessionField, useSessions } from '@/store/sessions'
 import { CitationLink, CitationsProvider, References } from './Citations'
 import { openContextPicker } from './ContextPicker'

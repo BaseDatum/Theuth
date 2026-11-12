@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 158 §8.2 (W2U): the `[▾]` event list. Before start (`detection`) a pick drives `meeting_detection_set_event`
 // and the prompt re-renders from the returned `Detection`; after start (`meeting`) the header's Event chip drives
 // `meeting_set_event`. The rows are the match (shown event + alternatives) plus the §8.1 window's other
@@ -20,8 +21,8 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { calendarKeys, candidateWindow, choices, eventLine, setEvent } from '@/lib/calendar'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { Detection } from '@/rpc/bindings/Detection'
-import type { MeetingId } from '@/rpc/bindings/MeetingId'
+import type { Detection } from "@/rpc/bindings/method.meeting.output"
+import type { MeetingId } from "@/rpc/bindings/method.meeting.output"
 
 export const ASK = 'Which meeting is this?'
 
@@ -33,13 +34,15 @@ export const ASK = 'Which meeting is this?'
 export type EventSwitcherProps = { detection?: Detection; meeting?: MeetingId; onChanged?: (next: Detection | null) => void; className?: string }
 
 export function EventSwitcher({ detection, meeting, onChanged, className }: EventSwitcherProps) {
+  const canQuery1 = useQuerySupport(["meeting_get"])
+  const canQuery1_2 = useQuerySupport(["calendar_events"])
   const api = useApi()
-  const manifest = useQuery({ queryKey: queryKeys.meeting(meeting ?? ''), queryFn: () => api.meeting_get(meeting!), enabled: meeting !== undefined })
+  const manifest = useQuery({ queryKey: queryKeys.meeting(meeting ?? ''), queryFn: () => api.meeting_get(meeting!), enabled: canQuery1 && (meeting !== undefined) })
   const current = meeting ? (manifest.data?.event ?? null) : (detection?.event?.event ?? null)
   // Before start the window is fixed per mount (a live `Date.now()` key would refetch every render); after start it is the meeting's.
   const [mounted] = useState(() => Date.now())
   const [from, to] = candidateWindow(manifest.data ? Date.parse(manifest.data.started_at) : mounted)
-  const candidates = useQuery({ queryKey: calendarKeys.events(from, to), queryFn: () => api.calendar_events(from, to) })
+  const candidates = useQuery({ enabled: canQuery1_2, queryKey: calendarKeys.events(from, to), queryFn: () => api.calendar_events(from, to) })
   const pick = useAction((id: string | null) => setEvent(api, meeting ?? null, id), {
     keys: meeting ? [queryKeys.meeting(meeting), queryKeys.meetingStatus] : [queryKeys.meetingStatus],
     onSuccess: (result) => !meeting && onChanged?.(result as Detection | null),

@@ -1,10 +1,12 @@
+import { withCapability } from '@/rpc/capabilities'
+import { panelRequirements as requirements } from '@/components/meeting/requirements'
 import { createFileRoute } from '@tanstack/react-router'
 import { MeetingHeader, useCanRecord } from '@/components/meeting/MeetingList'
 import { StartForm } from '@/components/meeting/StartForm'
 import { Empty } from '@/components/settings/shared'
 
 /** 53 §4.1: the start form (tray → *Start meeting…* lands here). Off the local Mac (phone, browser, relay) it only explains. */
-export const Route = createFileRoute('/meetings/new')({ component: New })
+export const Route = createFileRoute('/meetings/new')({ component: withCapability(New, requirements) })
 
 function New() {
   const canRecord = useCanRecord()

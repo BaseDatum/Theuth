@@ -1,8 +1,9 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { SessionOrphan } from '@/rpc/bindings/SessionOrphan'
+import type { SessionOrphan } from "@/rpc/bindings/method.sessionsync.output"
 import { useConnection } from '@/store/connection'
 
 /** Log rows in one orphaned range; `bigint` on the wire type, a plain count here. */
@@ -26,9 +27,10 @@ const when = (rfc3339: string): string => {
  * "view" opens a read-only list of the ranges (time, epoch, count).
  */
 export function OrphansBanner({ session }: { session: string }) {
+  const canQuery1 = useQuerySupport(["session_orphans"])
   const api = useApi()
   const engine = useConnection((s) => s.info?.name) || 'this node'
-  const { data: orphans = [] } = useQuery({ queryKey: queryKeys.sessionOrphans(session), queryFn: () => api.session_orphans(session) })
+  const { data: orphans = [] } = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessionOrphans(session), queryFn: () => api.session_orphans(session) })
   const [open, setOpen] = useState(false)
   if (orphans.length === 0) return null
   return (

@@ -2,11 +2,11 @@
 // `cost_cube` answer into the held cube, `index` turns it into typed columns with per-cell local time keys for one
 // IANA zone, and every query below is one pass over those columns.
 
-import type { CostBasis } from '@/rpc/bindings/CostBasis'
-import type { CostCells } from '@/rpc/bindings/CostCells'
-import type { CostCube } from '@/rpc/bindings/CostCube'
-import type { CostRoot } from '@/rpc/bindings/CostRoot'
-import type { SpendOwnerKind } from '@/rpc/bindings/SpendOwnerKind'
+import type { CostBasis } from "@/rpc/bindings/method.agent.output"
+import type { CostCells } from "@/rpc/bindings/method.agent.output"
+import type { CostCube } from "@/rpc/bindings/method.agent.output"
+import type { CostRoot } from "@/rpc/bindings/method.agent.output"
+import type { SpendOwnerKind } from "@/rpc/bindings/method.agent.output"
 
 export const HOUR_MS = 3_600_000
 export const DAY_MS = 86_400_000

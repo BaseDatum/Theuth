@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Bot, ChevronDown, ChevronLeft, ChevronRight, Cpu, Eye, RotateCcw } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
@@ -13,8 +14,8 @@ import { cn } from '@/lib/utils'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useConnection } from '@/store/connection'
 import { on, useSessionField } from '@/store/sessions'
-import type { ConfigOption } from '@/rpc/bindings/ConfigOption'
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import type { ConfigOption } from "@/rpc/bindings/method.agent.output"
+import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { useAdvisor, useSetAdvisor } from './advisor'
 import { MenuRow } from './HeaderMenu'
 import { LocalTag, ModelPicker, stubModel } from './ModelPicker'
@@ -76,12 +77,14 @@ export function useFavorites(): { favorites: string[]; toggleFavorite(id: string
 /** 183 §12.2 / §5.6: the catalog of the engine that would run this chat — a remote session's owner, or the new chat's
  * machine — via `list_models(engine)`; this engine's own list otherwise (the shared `queryKeys.models` entry). */
 export function useModels(session: string | null, enabled = true): ModelInfo[] {
+  const canQuery1 = useQuerySupport(["list_sessions"])
+  const canQuery1_2 = useQuerySupport(["list_models"])
   const api = useApi()
-  const { data: rows } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: !!session })
+  const { data: rows } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: canQuery1 && (!!session) })
   const row = session ? rows?.find((r) => r.id === session) : undefined
   const draft = useDraftTarget((s) => s.engine)
   const engine = session ? (row && !row.here ? row.owner : null) : draft
-  const { data = [] } = useQuery({ queryKey: engine ? [...queryKeys.models, engine] : queryKeys.models, queryFn: () => api.list_models(engine), enabled })
+  const { data = [] } = useQuery({ queryKey: engine ? [...queryKeys.models, engine] : queryKeys.models, queryFn: () => api.list_models(engine), enabled: canQuery1_2 && (enabled) })
   return data
 }
 
@@ -121,6 +124,7 @@ export type Model = {
 
 /** `done` runs after a choice (closes whichever surface showed the picker). */
 function useModel({ session }: Props, done: () => void): Model {
+  const canQuery2 = useQuerySupport(["harness_options"])
   const api = useApi()
   const qc = useQueryClient()
   const info = useConnection((s) => s.info)
@@ -141,7 +145,7 @@ function useModel({ session }: Props, done: () => void): Model {
   const { data: harness, isError } = useQuery({
     queryKey: harnessOptionsKey(session ?? ''),
     queryFn: () => api.harness_options(session ?? ''),
-    enabled: acp,
+    enabled: canQuery2 && (acp),
     retry: false,
   })
   const [pending, setPending] = useState<Record<string, string>>({})
@@ -151,7 +155,7 @@ function useModel({ session }: Props, done: () => void): Model {
       if (e.session !== session) return
       void qc.invalidateQueries({ queryKey: harnessOptionsKey(session) })
     }
-    const offs = [on('HarnessModelChanged', refresh), on('TurnFinished', (e) => (refresh(e), setPending({})))]
+    const offs = [on("agent.events@1", 'HarnessModelChanged', refresh), on("agent.events@1", 'TurnFinished', (e) => (refresh(e), setPending({})))]
     return () => offs.forEach((off) => off())
   }, [acp, session, qc])
   // 148 R1: a pick applies to this chat only. In a session the engine switches that session (`set_model` with a

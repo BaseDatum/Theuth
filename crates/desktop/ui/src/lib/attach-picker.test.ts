@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import type { Artifact } from '@/rpc/bindings/Artifact'
+import type { Artifact } from "@/rpc/bindings/method.artifact.output"
 import type { AttachRef } from './attach'
 import {
   categoriesFor,
@@ -19,14 +19,14 @@ const art = (call_id: string, session: string, name: string, version: number, cr
   title: name,
   kind: 'pdf',
   mime: 'application/pdf',
-  bytes: 10n,
+  bytes: 10,
   version,
   path: '/p',
   source: null,
   preview: null,
   pages: null,
   origin: null,
-  created_at: BigInt(created),
+  created_at: created,
 })
 
 test('latest version per (session, name), newest first', () => {

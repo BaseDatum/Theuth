@@ -1,27 +1,26 @@
 /**
- * 73 §5 — the CodeMap contract. The wire shapes come from the engine's `ts_rs` bindings
- * (`crates/codeindex/src/{event,lens}.rs`); only the client-side slice types live here.
+ * 73 §5 — the CodeMap contract. Wire shapes come from the engine's scoped OpenRPC
+ * schemas; only client-side slice types and supported visualizations live here.
  */
-import type { ChangeLens } from '@/rpc/bindings/ChangeLens'
-import type { CodeToolSummary } from '@/rpc/bindings/CodeToolSummary'
-import type { CodeindexEvent } from '@/rpc/bindings/CodeindexEvent'
-import type { FitLens } from '@/rpc/bindings/FitLens'
-import type { HereLens } from '@/rpc/bindings/HereLens'
-import type { LensMeta } from '@/rpc/bindings/LensMeta'
+import type { Api } from '@/rpc/bindings/client'
+import type { CodeToolSummary } from "@/rpc/bindings/event.codeindex_2eevents.output"
+import type { CodeindexEvent } from "@/rpc/bindings/event.codeindex_2eevents.output"
 
-export type { ChangeFile } from '@/rpc/bindings/ChangeFile'
-export type { ChangeLens } from '@/rpc/bindings/ChangeLens'
-export type { ChangeSym } from '@/rpc/bindings/ChangeSym'
-export type { CodeToolSummary } from '@/rpc/bindings/CodeToolSummary'
-export type { DirRow } from '@/rpc/bindings/DirRow'
-export type { FitEdge } from '@/rpc/bindings/FitEdge'
-export type { FitLens } from '@/rpc/bindings/FitLens'
-export type { FitNode } from '@/rpc/bindings/FitNode'
-export type { HereLens } from '@/rpc/bindings/HereLens'
-export type { LensMeta } from '@/rpc/bindings/LensMeta'
-export type { MapRow } from '@/rpc/bindings/MapRow'
+export type { ChangeFile } from "@/rpc/bindings/method.codeindex.output"
+export type { ChangeLens } from "@/rpc/bindings/method.codeindex.output"
+export type { ChangeSym } from "@/rpc/bindings/method.codeindex.output"
+export type { CodeToolSummary } from "@/rpc/bindings/event.codeindex_2eevents.output"
+export type { DirRow } from "@/rpc/bindings/method.codeindex.output"
+export type { FitEdge } from "@/rpc/bindings/method.codeindex.output"
+export type { FitLens } from "@/rpc/bindings/method.codeindex.output"
+export type { FitNode } from "@/rpc/bindings/method.codeindex.output"
+export type { HereLens } from "@/rpc/bindings/method.codeindex.output"
+export type { LensMeta } from "@/rpc/bindings/method.codeindex.output"
+export type { MapRow } from "@/rpc/bindings/method.codeindex.output"
 
-export type CodeTool = 'code_map' | 'code_find' | 'code_outline' | 'code_refs' | 'code_symbol' | 'code_impact' | 'code_overview'
+const CODE_TOOLS = ['code_map', 'code_find', 'code_outline', 'code_refs', 'code_symbol', 'code_impact', 'code_overview'] as const
+export type CodeTool = (typeof CODE_TOOLS)[number]
+export const isCodeTool = (tool: string): tool is CodeTool => CODE_TOOLS.some(known => known === tool)
 
 /** `CodeindexEvent::CodeToolRan` — once per `Tool::call`, after the envelope exists (errors too). */
 export type CodeToolRan = Extract<CodeindexEvent, { type: 'CodeToolRan' }>
@@ -35,13 +34,8 @@ export type CodeMapProgress = Extract<CodeindexEvent, { type: 'CodeMapProgress' 
 /** 147 §10.1 `CodeindexEvent::CodeMapChanged` — element ids to refetch and the ones that went stale. */
 export type CodeMapChanged = Extract<CodeindexEvent, { type: 'CodeMapChanged' }>
 
-/** §5.2 — the four lens methods, positional params, flat names (a structural subset of `Api`). */
-export interface CodemapApi {
-  codemap_here(root: string, focus: string[] | null, edited: string[] | null, limit: number | null): Promise<HereLens>
-  codemap_fit(root: string, symbol: string, limit: number | null): Promise<FitLens>
-  codemap_change(root: string, git_range: string | null, files: string[] | null, include_tests: boolean | null): Promise<ChangeLens>
-  codemap_touch(root: string, paths: string[] | null): Promise<LensMeta>
-}
+/** §5.2 — the panel's subset of the generated API. */
+export type CodemapApi = Pick<Api, 'codemap_here' | 'codemap_fit' | 'codemap_change' | 'codemap_touch'>
 
 /** §4 — what the session slice keeps per engine (`SessionSlice.codemap`). */
 export type CodemapSlice = {

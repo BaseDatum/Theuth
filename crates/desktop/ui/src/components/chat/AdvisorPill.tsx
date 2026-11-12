@@ -8,7 +8,7 @@ import { useIsMobile } from '@/hooks/use-mobile'
 import { STATE_FG, TONE, consultsLine, contextLine, detailLine, pillLabel, tokensLine } from '@/lib/advisor-format'
 import { costShort } from '@/lib/money'
 import { cn } from '@/lib/utils'
-import type { AdvisorStatus } from '@/rpc/bindings/AdvisorStatus'
+import type { AdvisorStatus } from "@/rpc/bindings/method.agent.output"
 import { useAdvisor, useSetAdvisor } from './advisor'
 import { openAdvisorPicker } from './ModelMenu'
 

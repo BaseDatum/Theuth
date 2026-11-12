@@ -482,6 +482,7 @@ impl From<&DocMeta> for DocSummary {
 /// current), renamed or deleted — the notes list refreshes on it. Wire shape `{ "type": "DocumentChanged", … }`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct DocumentChanged {
     /// Document.
@@ -519,6 +520,7 @@ impl DocumentChanged {
 /// `{ "type": "CellLatestChanged", "doc": … }`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct CellLatestChanged {
     /// Document.

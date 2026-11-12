@@ -14,6 +14,7 @@ use crate::types::{RunState, Tier};
 /// Re-published for every pending card when a client (re)subscribes (§4.4).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct DoublePredicted {
     /// `ApprovalId` / `AskId` / packet key / draft id / attention item id, as text.
@@ -92,6 +93,7 @@ pub struct Parts {
 /// The double answered a card at L2 (grace expired) or L3 (§4.2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct DoubleAnswered {
     /// The card answered.
@@ -119,6 +121,7 @@ impl wire::WireEvent for DoubleAnswered {
 /// A training run changed state (§8.1); Settings shows it live.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct DoubleTrainingState {
     /// `runs.id`.
@@ -144,6 +147,7 @@ impl wire::WireEvent for DoubleTrainingState {
 /// A candidate passed the gate (or `double_rollback` ran) and is now active (§8.5).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct DoubleVersionActivated {
     /// The now-active `versions.id`.

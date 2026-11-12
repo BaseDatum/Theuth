@@ -1,3 +1,5 @@
+import { withCapability } from '@/rpc/capabilities'
+import { requirements } from '@/components/briefs/requirements'
 import { createFileRoute } from '@tanstack/react-router'
 import { BriefSearch } from '@/components/briefs/BriefSearch'
 
@@ -11,8 +13,8 @@ export const Route = createFileRoute('/meetings/briefs')({
     if (typeof s.id === 'string' && s.id !== '') out.id = s.id
     return out
   },
-  component: () => {
+  component: withCapability(() => {
     const { q, id } = Route.useSearch()
     return <BriefSearch initial={q ?? ''} focus={id ?? null} />
-  },
+  }, requirements),
 })

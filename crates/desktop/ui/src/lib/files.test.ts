@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest'
 import { LOCAL } from '@/link/engines'
-import type { Api } from '@/rpc/api'
+import type { Api } from '@/rpc/bindings/client'
 import { type ConnState, RpcError } from '@/rpc/client'
 import { forgetPrivate, readText, readTextOnline, resolveDocument, resolveFile } from './files'
 import { usePrivate } from './private'

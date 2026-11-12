@@ -1,12 +1,13 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { expect, test } from 'vitest'
 import type { RemoteAgent } from '@/components/tasks/home'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
 import { type Node, budgetUsed, layout, tree } from './tree'
 
-const s = (name: string, reports_to: string, extra: Partial<AgentSummary> = {}): AgentSummary => ({
+const s = (name: string, reports_to: string, extra: Partial<AgentSummary> = {}): AgentSummary => (receiveComponent("method.roster.output.AgentSummary", {
   file: { name, title: name, reports_to, model: null, effort: null, tools: null, mcp: null, budget: { type: 'none' }, capabilities: null, paused: false, proposed_by: null, runs_in: 'any', body: 'x' },
   status: 'idle', desk: null, open_tasks: 0, spent_month: 0, ...extra,
-})
+}))
 
 const names = (n: Node): unknown => [n.name, n.children.map(names)]
 

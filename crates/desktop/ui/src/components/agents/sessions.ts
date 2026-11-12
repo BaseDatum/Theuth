@@ -1,5 +1,6 @@
 import { observedLabel, stripRows } from '@/lib/session-tree'
-import type { AgentInfo, AgentState } from '@/rpc/extra'
+import type { AgentInfo } from '@/store/ui-events'
+import type { AgentState } from "@/rpc/bindings/method.agent.output"
 
 /** How long a session that stopped being live stays listed (fading) before it drops out (100 D2). */
 export const LINGER_MS = 700

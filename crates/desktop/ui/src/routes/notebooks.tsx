@@ -1,3 +1,5 @@
+import { withCapability } from '@/rpc/capabilities'
+import { requirements } from '@/components/notebooks/requirements'
 import { createFileRoute } from '@tanstack/react-router'
 import { NotebooksList } from '@/components/notebooks/NotebooksList'
 
@@ -9,5 +11,5 @@ export const Route = createFileRoute('/notebooks')({
     ...(s.view === 'ask' ? { view: 'ask' as const } : {}),
     ...(s.ask === true || (typeof s.ask === 'string' && s.ask !== '') ? { ask: s.ask } : {}),
   }),
-  component: NotebooksList,
+  component: withCapability(NotebooksList, requirements),
 })

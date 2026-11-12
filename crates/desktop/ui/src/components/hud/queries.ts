@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef } from 'react'
 import { useModels } from '@/components/agents/queries'
@@ -5,16 +6,16 @@ import { ATTENTION_CROWDED, ATTENTION_SIM, SECRET_REQUESTS_SIM, crowdedFlag, sim
 import { useAction } from '@/components/settings/shared'
 import { keys as taskKeys } from '@/components/tasks/queries'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { ContextBreakdown } from '@/rpc/bindings/ContextBreakdown'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
-import type { Answer } from '@/rpc/bindings/Answer'
-import type { ApprovalId } from '@/rpc/bindings/ApprovalId'
-import type { AskId } from '@/rpc/bindings/AskId'
-import type { Priority } from '@/rpc/bindings/Priority'
-import type { FirstContact } from '@/rpc/bindings/FirstContact'
-import type { WireEvent } from '@/rpc/events'
-import { on } from '@/store/sessions'
+import type { ContextBreakdown } from "@/rpc/bindings/method.agent.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { ActivityEntry } from "@/rpc/bindings/method.roster.output"
+import type { Answer } from '@/rpc/bindings/method.tasks.input'
+import type { ApprovalId } from "@/rpc/bindings/method.roster.output"
+import type { AskId } from "@/rpc/bindings/method.roster.output"
+import type { Priority } from "@/rpc/bindings/method.roster.output"
+import type { FirstContact } from "@/rpc/bindings/method.a2a.output"
+import type { UiEvent as WireEvent } from '@/store/ui-events'
+import { on, onTopic } from '@/store/sessions'
 import { HANDOFFS_KEY } from '@/store/sandboxes'
 import { toast } from 'sonner'
 import { movedToast } from '@/components/tasks/home'
@@ -33,10 +34,11 @@ export const ACTIVITY_KEY = ['activity'] as const
  * 130 E1: `AttentionChanged` is the engine's own answer (snooze expiry, budgets, finished turns); the 13 older kinds stay
  * so the UI works against an engine that predates it. 126: a double answer adds its row.
  */
-const ATTENTION_EVENTS = ['ActivityAppended', 'ApprovalRequested', 'ApprovalResolved', 'ArtifactShown', 'AskRequested', 'AskResolved', 'NodeAdded', 'NodeOnline', 'NodeRemoved', 'NodeRevoked', 'SecretRequested', 'SecretResolved', 'Takeover', 'DoubleAnswered', 'AttentionChanged'] as const satisfies readonly WireEvent['type'][]
+const ATTENTION_TOPICS = ["tasks.activity@1","tools.approval-requested@1","tools.approval-resolved@1","artifact.shown@1","tools.ask-requested@1","tools.ask-resolved@1","nodes.events@1","secrets.events@1","sandbox.events@1","double.answered@1","roster.attention@1"] as const
 
 /** `attention_list`, re-derived on every event that can change it (130 E1: no timer poll). 132 D10: `?mock=crowded` serves the sixty-row fixture. */
 export function useAttention() {
+  const canQuery1 = useQuerySupport(["attention_list"])
   const api = useApi()
   const qc = useQueryClient()
   const crowded = crowdedFlag()
@@ -47,12 +49,12 @@ export function useAttention() {
       void qc.invalidateQueries({ queryKey: PACKET_KEY })
       void qc.invalidateQueries({ queryKey: SECRET_REQUESTS_KEY })
     }
-    const offs = ATTENTION_EVENTS.map((t) => on(t, invalidate))
+    const offs = ATTENTION_TOPICS.map((topic) => onTopic(topic, invalidate))
     return () => {
       for (const off of offs) off()
     }
   }, [qc])
-  return useQuery({ queryKey: ATTENTION_KEY, queryFn: () => (sim ? ATTENTION_SIM : crowded ? ATTENTION_CROWDED : api.attention_list()) })
+  return useQuery({ enabled: canQuery1, queryKey: ATTENTION_KEY, queryFn: () => (sim ? ATTENTION_SIM : crowded ? ATTENTION_CROWDED : api.attention_list()) })
 }
 
 /**
@@ -61,10 +63,11 @@ export function useAttention() {
  * once; nothing is fetched to find out (the cache is observed, not loaded) and nothing happens under `?sim=`.
  */
 export function useMarkShown(callId: string | null, delayMs = 0) {
+  const canQuery2 = useQuerySupport(["attention_list"])
   const api = useApi()
   const qc = useQueryClient()
   const sim = simFlag()
-  const list = useQuery({ queryKey: ATTENTION_KEY, queryFn: () => api.attention_list(), enabled: false })
+  const list = useQuery({ queryKey: ATTENTION_KEY, queryFn: () => api.attention_list(), enabled: canQuery2 && (false) })
   const id = callId === null ? null : `show:${callId}`
   const present = id !== null && !sim && (list.data?.some((i) => i.id === id) ?? false)
   const fired = useRef(false)
@@ -84,18 +87,20 @@ export function useMarkShown(callId: string | null, delayMs = 0) {
  * the fallback for the events that never arrive here.
  */
 export function useSecretRequestRows(enabled = true) {
+  const canQuery3 = useQuerySupport(["secret_requests_list"])
   const api = useApi()
   const sim = simFlag()
-  return useQuery({ queryKey: SECRET_REQUESTS_KEY, queryFn: () => (sim ? SECRET_REQUESTS_SIM : api.secret_requests_list()), enabled, refetchInterval: 60_000 })
+  return useQuery({ queryKey: SECRET_REQUESTS_KEY, queryFn: () => (sim ? SECRET_REQUESTS_SIM : api.secret_requests_list()), enabled: canQuery3 && (enabled), refetchInterval: 60_000 })
 }
 
 /** The last 50 feed rows, live: `ActivityAppended` prepends into the cache and marks the task lists stale. */
 export function useActivity() {
+  const canQuery4 = useQuerySupport(["activity_list"])
   const api = useApi()
   const qc = useQueryClient()
   useEffect(
     () =>
-      on('ActivityAppended', (e) => {
+      on("tasks.activity@1", 'ActivityAppended', (e) => {
         qc.setQueryData<ActivityEntry[]>(ACTIVITY_KEY, (old) => appendActivity(old ?? [], e.entry))
         if (e.entry.kind.startsWith('task_') || e.entry.kind.startsWith('child_') || e.entry.kind.startsWith('escalation_')) {
           void qc.invalidateQueries({ queryKey: taskKeys.tasks })
@@ -104,7 +109,7 @@ export function useActivity() {
       }),
     [qc],
   )
-  return useQuery({ queryKey: ACTIVITY_KEY, queryFn: () => api.activity_list({ since_ms: null, kinds: null, limit: ACTIVITY_CAP }) })
+  return useQuery({ enabled: canQuery4, queryKey: ACTIVITY_KEY, queryFn: () => api.activity_list({ since_ms: null, kinds: null, limit: ACTIVITY_CAP }) })
 }
 
 /** 128: the scene's windows over the feed — `['activity', 'today']` since local midnight, `['activity', 'week']` since now − 7 d, 500 rows each. */
@@ -113,11 +118,12 @@ export const ACTIVITY_WEEK_KEY = ['activity', 'week'] as const
 const SCENE_ACTIVITY_CAP = 500
 
 function useActivityWindow(key: typeof ACTIVITY_TODAY_KEY | typeof ACTIVITY_WEEK_KEY, since: () => number, refetchInterval: number) {
+  const canQuery5 = useQuerySupport(["activity_list"])
   const api = useApi()
   const qc = useQueryClient()
   const sim = simFlag()
-  useEffect(() => on('ActivityAppended', (e) => qc.setQueryData<ActivityEntry[]>(key, (old) => (old ? appendActivity(old, e.entry, SCENE_ACTIVITY_CAP) : old))), [qc, key])
-  return useQuery({
+  useEffect(() => on("tasks.activity@1", 'ActivityAppended', (e) => qc.setQueryData<ActivityEntry[]>(key, (old) => (old ? appendActivity(old, e.entry, SCENE_ACTIVITY_CAP) : old))), [qc, key])
+  return useQuery({ enabled: canQuery5,
     queryKey: key,
     queryFn: () => (sim ? (key === ACTIVITY_TODAY_KEY ? sceneFixture(Date.now()).activityToday : sceneFixture(Date.now()).activityWeek) : api.activity_list({ since_ms: since(), kinds: null, limit: SCENE_ACTIVITY_CAP })),
     refetchInterval,
@@ -131,19 +137,21 @@ export const useActivityWeek = () => useActivityWindow(ACTIVITY_WEEK_KEY, () => 
 
 /** The sidebar's session list (`queryKeys.sessions`): the same key, so the HUD shares its fetch. */
 export function useSessionList() {
+  const canQuery6 = useQuerySupport(["list_sessions"])
   const api = useApi()
   const sim = simFlag()
-  return useQuery({ queryKey: queryKeys.sessions, queryFn: () => (sim ? sceneFixture(Date.now()).sessions : api.list_sessions()) })
+  return useQuery({ enabled: canQuery6, queryKey: queryKeys.sessions, queryFn: () => (sim ? sceneFixture(Date.now()).sessions : api.list_sessions()) })
 }
 
 /** Rev 3: `spend_report(7)` for SPEND — fresh for 20 s, refetched each minute (the local day moves), invalidated by `ModelUsageChanged`. */
 export const SPEND_KEY = ['spend', 7] as const
 export function useSpendReport() {
+  const canQuery7 = useQuerySupport(["spend_report"])
   const api = useApi()
   const qc = useQueryClient()
   const sim = simFlag()
-  useEffect(() => on('ModelUsageChanged', () => void qc.invalidateQueries({ queryKey: SPEND_KEY })), [qc])
-  return useQuery({ queryKey: SPEND_KEY, queryFn: () => (sim ? sceneFixture(Date.now()).spend : api.spend_report(7)), staleTime: 20_000, refetchInterval: 60_000 })
+  useEffect(() => on("agent.events@1", 'ModelUsageChanged', () => void qc.invalidateQueries({ queryKey: SPEND_KEY })), [qc])
+  return useQuery({ enabled: canQuery7, queryKey: SPEND_KEY, queryFn: () => (sim ? sceneFixture(Date.now()).spend : api.spend_report(7)), staleTime: 20_000, refetchInterval: 60_000 })
 }
 
 /** Revision 2: the per-session events that change a desk's context — a turn ends, a compaction lands, the provider bills a frame. */
@@ -161,19 +169,20 @@ const CONTEXT_QUERIES_MAX = 24
  * simply absent — no gauge, never a fake value.
  */
 export function useSessionContexts(sessions: readonly SessionSummary[] | undefined): ReadonlyMap<string, Ctx> {
+  const canQuery8 = useQuerySupport(["session_context_breakdown"])
   const api = useApi()
   const qc = useQueryClient()
   const sim = simFlag()
   const models = useModels()
   const desks = useMemo(() => [...(sessions ?? []).filter((s) => s.desk && !s.archived), ...sessionPresence(sessions ?? [], Date.now()).map((r) => r.s)].slice(0, CONTEXT_QUERIES_MAX), [sessions])
   useEffect(() => {
-    const offs = CONTEXT_EVENTS.map((t) => on(t, (e) => void qc.invalidateQueries({ queryKey: contextKey(e.session) })))
+    const offs = CONTEXT_EVENTS.map((t) => on('agent.events@1', t, (e) => void qc.invalidateQueries({ queryKey: contextKey(e.session) })))
     return () => {
       for (const off of offs) off()
     }
   }, [qc])
   const data = useQueries({
-    queries: desks.map((s) => ({ queryKey: contextKey(s.id), queryFn: () => api.session_context_breakdown(s.id), staleTime: 20_000, refetchInterval: 30_000, enabled: !sim })),
+    queries: desks.map((s) => ({ queryKey: contextKey(s.id), queryFn: () => api.session_context_breakdown(s.id), staleTime: 20_000, refetchInterval: 30_000, enabled: canQuery8 && (!sim) })),
     combine: breakdowns,
   })
   return useMemo(() => {

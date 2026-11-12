@@ -3,13 +3,13 @@ import { type ComponentType, createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
-import type { HistoryRow } from '@/rpc/bindings/HistoryRow'
+import type { HistoryRow } from "@/rpc/bindings/method.talk.output"
 import { Dictation, Microphone, SYSTEM_DEFAULT, VoiceHistory, inputDevicesFor, phrases, timingsLine } from './Voice'
 
 const row: HistoryRow = {
   id: 'd1',
-  started_ms: BigInt(Date.now() - 3 * 60_000),
-  finished_ms: BigInt(Date.now() - 3 * 60_000 + 4_000),
+  started_ms: Date.now() - 3 * 60_000,
+  finished_ms: Date.now() - 3 * 60_000 + 4_000,
   surface: 'composer',
   destination: 'agent_prompt',
   app: null,
@@ -22,7 +22,7 @@ const row: HistoryRow = {
   first_final_ms: 890,
   final_ms: 1_300,
   reason: 'done',
-  audio_bytes: BigInt(128_000),
+  audio_bytes: 128_000,
   has_audio: true,
 }
 const polishedRow: HistoryRow = { ...row, id: 'd2', surface: 'phone', raw: 'hello there', shaped: 'hello there', polished: 'Hello there.', has_audio: false }

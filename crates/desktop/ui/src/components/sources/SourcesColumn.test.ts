@@ -3,22 +3,22 @@ import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as NbRpc from '@/lib/notebooks-rpc'
-import type { ContextEstimate } from '@/rpc/bindings/ContextEstimate'
-import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
+import type { ContextEstimate } from "@/rpc/bindings/method.agent.output"
+import type { Source as NotebookSource } from "@/rpc/bindings/method.document.output"
 import type * as Rpc from '@/lib/rpc'
 import { SourcesColumn } from './SourcesColumn'
 
 const fixture: NotebookSource = {
-  doc: { id: 'src1', kind: 'source', title: 'ICD portal DR runbook v7', binding: 'notebook', created_ms: 0n, updated_ms: 0n, bytes: 0n } as unknown as NotebookSource['doc'],
+  doc: { id: 'src1', kind: 'source', title: 'ICD portal DR runbook v7', binding: 'notebook', created_ms: 0, updated_ms: 0, bytes: 0 } as unknown as NotebookSource['doc'],
   origin: { kind: 'file', name: 'runbook.pdf', sha256: 'x', ext: 'pdf' },
   status: 'completed',
   progress: null,
   error: null,
   attempts: 1,
-  fetched_ms: BigInt(Date.now() - 3 * 86_400_000),
+  fetched_ms: Date.now() - 3 * 86_400_000,
   content_sha: 'abc',
   changed_since: null,
-  bytes: 1n,
+  bytes: 1,
   words: 9000,
   duration_ms: null,
   pages: 48,
@@ -45,7 +45,7 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
-vi.mock('@/store/connection', () => ({ useConnection: (sel: (s: { client: unknown }) => unknown) => sel({ client: {} }) }))
+vi.mock('@/store/connection', () => ({ useConnection: (pick: (s: unknown) => unknown) => pick({ client: {} , discovery: { phase: 'legacy' } }) }))
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
 vi.mock('@/lib/notebooks-rpc', async (original) => ({ ...(await original<typeof NbRpc>()), useNotebooksApi: () => ({}), useContextApi: () => ({}) }))
 vi.mock('@/components/notebooks/NotebookContext', () => ({ useNotebookSession: () => 'sess1', useEnsureNotebookSession: () => async () => 'sess1' }))

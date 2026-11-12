@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react'
 import type { ComponentType } from 'react'
+import type { Requirements } from '@/rpc/discovery'
 
 /** 188: what every settings tab receives. `focus` is the route's `?focus=` (Memory: `model` | `spend`). */
 export type TabProps = { focus: string | null }
@@ -11,6 +12,7 @@ export type SettingsTab = {
   /** The phone band shows icons only (97b). */
   icon: LucideIcon
   Component: ComponentType<TabProps>
+  required?: Requirements
   /** Omitted: always shown. Return false to hide the tab here (a phone or web client has no local node); called during render, so it must not call hooks. */
   visible?: () => boolean
 }

@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { modelsOfProvider, providersOf, rankModels, searchTerms, termTier } from './model-search'
 
 const model = (provider: string, id: string, name: string, extra: Partial<ModelInfo> = {}): ModelInfo => ({

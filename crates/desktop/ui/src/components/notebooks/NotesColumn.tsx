@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { AppWindow, MoreHorizontal, Plus, X } from 'lucide-react'
@@ -21,7 +22,7 @@ import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
 import { canPopout, openPopout } from '@/lib/popout'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { DocSummary } from '@/rpc/bindings/DocSummary'
+import type { DocSummary } from "@/rpc/bindings/method.agent.output"
 
 /**
  * 144 §12.1 Notes: the notebook's notes, newest added first — paper glyph, title, `edited <ago>`, an `AI · from chat ·
@@ -130,8 +131,9 @@ function Paper() {
 }
 
 function Row({ id, notebook, summary, context, onRemove, onOpen }: { id: string; notebook: string; summary: DocSummary | undefined; context: EstimateItem | undefined; onRemove: () => void; onOpen?: () => void }) {
+  const canQuery1 = useQuerySupport(["doc_markdown"])
   const api = useApi()
-  const md = useQuery({ queryKey: ['doc', 'markdown', id], queryFn: () => api.doc_markdown(id) })
+  const md = useQuery({ enabled: canQuery1, queryKey: ['doc', 'markdown', id], queryFn: () => api.doc_markdown(id) })
   const title = summary?.title || firstLine(md.data) || 'Untitled'
   const saved = md.data ? provenanceOf(md.data) : null
   const kind = summary?.kind

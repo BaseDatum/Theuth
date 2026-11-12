@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { useEffect, useMemo, useState } from 'react'
@@ -16,11 +17,12 @@ const MORE_CLASS = 'flex h-7 items-center gap-1.5 rounded-md pr-2 text-xs text-f
  * Nothing (no `<tr>`) while the desk is idle and the subtree quiet. Phones get 44 px rows.
  */
 export function AgentSessionRows({ desk, depth }: { desk: string; depth: number }) {
+  const canQuery1 = useQuerySupport(["list_sessions"])
   const api = useApi()
   const mobile = useSidebar().isMobile
   const { rows, live, deskRunning } = useAgentSessions(desk)
   const lingering = useLingering(useMemo(() => live.map((r) => r.id), [live]))
-  const { data: sessions = [] } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const { data: sessions = [] } = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000)

@@ -1,8 +1,8 @@
 import { create } from 'zustand'
 import { age } from '@/components/tasks/helpers'
 import { useMesh } from '@/components/tasks/queries'
-import type { Peer } from '@/rpc/bindings/Peer'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { Peer } from "@/rpc/bindings/method.nodes.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { notOwner } from '@/lib/front-door'
 import { RpcError } from '@/rpc/client'
 import type { Stores } from '@/store/engine-scope'
@@ -107,7 +107,7 @@ export function parkIfOffline(session: string, e: unknown, retry: () => Promise<
  * owner change follows. `retry` runs once, on the next `SessionOwnerChanged` for `session`; `giveUp` if none comes in `ms`.
  */
 export function retryAfterOwnerChange(session: string, retry: () => void, giveUp: () => void, ms = 10_000): void {
-  const off = on('SessionOwnerChanged', (e) => {
+  const off = on("agent.events@1", 'SessionOwnerChanged', (e) => {
     if (e.session !== session) return
     off()
     clearTimeout(timer)

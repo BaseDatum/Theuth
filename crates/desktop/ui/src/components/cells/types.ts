@@ -1,11 +1,11 @@
 // Owner: contract (171 §11, §15). Shared by U1 (chat) and U2 (notes).
 import type { ReactNode } from 'react'
-import type { CellOutput } from '@/rpc/bindings/CellOutput'
-import type { CellRef } from '@/rpc/bindings/CellRef'
-import type { CellRun } from '@/rpc/bindings/CellRun'
-import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
-import type { CellSpec } from '@/rpc/bindings/CellSpec'
-import type { CellState } from '@/rpc/bindings/CellState'
+import type { CellOutput } from "@/rpc/bindings/method.cells.output"
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
+import type { CellRun } from "@/rpc/bindings/method.cells.output"
+import type { RunMode as CellRunMode } from "@/rpc/bindings/method.cells.output"
+import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
+import type { CellState } from "@/rpc/bindings/method.cells.output"
 
 /** 171 §11.2: what the cell looks like; derived from `CellState`, the latest run and the editor. */
 export type CellViewState =

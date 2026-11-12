@@ -1,6 +1,6 @@
 // 184 §12: machine names for the note chip, Move to ▸, the Share copy and the cells' "ran on" line.
 import { engines } from '@/components/tasks/home'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
 
 export type Mesh = Pick<MeshStatus, 'self_id' | 'self_name' | 'peers'> | undefined
 

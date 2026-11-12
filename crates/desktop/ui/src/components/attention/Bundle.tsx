@@ -1,7 +1,7 @@
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
-import type { Item } from '@/rpc/bindings/Item'
+import type { Item } from "@/rpc/bindings/method.roster.output"
 
 /**
  * 103 F3: the N sub-decisions of one escalation as a numbered list — title (a button that scrolls the embedded board to

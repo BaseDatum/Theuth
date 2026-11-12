@@ -31,7 +31,7 @@ pub mod slack;
 mod spec;
 mod validate;
 
-pub use catalog::{catalog_compact, catalog_schema};
+pub use catalog::{catalog_compact, catalog_schema, client_schema};
 pub use fences::json_render_fences;
 pub use mermaid::mermaid_lines;
 pub use pictures::{

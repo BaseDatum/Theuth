@@ -7,7 +7,7 @@ import { toast } from 'sonner'
 import { summaryTestStats } from '@/components/settings/providers'
 import { Button } from '@/components/ui/button'
 import { useApi } from '@/lib/rpc'
-import type { SummaryTest } from '@/rpc/bindings/SummaryTest'
+import type { SummaryTest } from "@/rpc/bindings/method.agent.output"
 
 /** What one `test_summary_call` came back with — the line and its numbers, or the error and what to do about it. */
 export function SummaryTestResult({ t }: { t: SummaryTest }) {

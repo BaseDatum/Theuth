@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { LoaderCircle, TriangleAlert } from 'lucide-react'
@@ -17,13 +18,13 @@ import { ENDLESS_DEFAULTS, EARLIER_HISTORY, isFoldedNote, tokenEstimate } from '
 import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { Api } from '@/rpc/api'
-import type { EndlessBacklog } from '@/rpc/bindings/EndlessBacklog'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { GuardTrips } from '@/rpc/bindings/GuardTrips'
-import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
-import type { Stalled } from '@/rpc/bindings/Stalled'
-import type { ViewLine } from '@/rpc/bindings/ViewLine'
+import type { Api } from '@/rpc/bindings/client'
+import type { Backlog as EndlessBacklog } from "@/rpc/bindings/method.agent.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { GuardTrips } from "@/rpc/bindings/method.agent.output"
+import type { SessionMemory } from "@/rpc/bindings/method.agent.output"
+import type { Stalled } from "@/rpc/bindings/method.agent.output"
+import type { ViewLine } from "@/rpc/bindings/method.agent.output"
 import { MenuRow } from './HeaderMenu'
 import { ModelCombobox } from './ModelCombobox'
 import { settings } from './slash'
@@ -118,8 +119,9 @@ export function highlight(text: string, query: string): ReactNode {
 
 /** `session_memory` (137 §11.2), shared by the badge and the panel; `useInvalidateOn` refetches it on `EndlessProgress`. */
 export function useSessionMemory(session: string, enabled: boolean) {
+  const canQuery1 = useQuerySupport(["session_memory"])
   const api = useApi()
-  return useQuery({ queryKey: queryKeys.sessionMemory(session), queryFn: () => api.session_memory(session), enabled })
+  return useQuery({ queryKey: queryKeys.sessionMemory(session), queryFn: () => api.session_memory(session), enabled: canQuery1 && (enabled) })
 }
 
 /**
@@ -191,9 +193,10 @@ export const effortMutation = (api: Api, qc: QueryClient, session: string) => me
 
 /** 137G: this chat's summary model on the regular picker (124 §5); "Use default" clears the chat's own pick. 194: the chips belong to the chat's own pick — shown only beside it, at its own stored effort (the Default chip clears it). */
 export function SummaryModel({ session, m }: { session: string; m: SessionMemory }) {
+  const canQuery2 = useQuerySupport(["list_models"])
   const api = useApi()
   const qc = useQueryClient()
-  const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
+  const models = useQuery({ enabled: canQuery2, queryKey: queryKeys.models, queryFn: () => api.list_models() })
   const setModel = useMutation(modelMutation(api, qc, session))
   const setEffort = useMutation(effortMutation(api, qc, session))
   const hint = m.model_source ? SOURCE_HINT[m.model_source] : undefined
@@ -444,10 +447,11 @@ const count = (n: number, one: string) => `${n.toLocaleString('en-US')} ${one}${
  * Pause settling. Paused by the user: Resume settling. Paused by the day's spend cap: the cap, today's spend, Resume for today.
  */
 function BacklogRow({ session, m, b, fold }: { session: string; m: SessionMemory; b: EndlessBacklog; fold: Fold }) {
+  const canQuery3 = useQuerySupport(["endless_settings_get"])
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
-  const cfg = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() }).data
+  const cfg = useQuery({ enabled: canQuery3, queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() }).data
   const pause = useMutation(pauseMutation(api, qc, session))
   const toggle = (paused: boolean, label: string, primary = false) => (
     <Button size="xs" variant={primary ? 'default' : 'outline'} disabled={pause.isPending} onClick={() => pause.mutate(paused)}>

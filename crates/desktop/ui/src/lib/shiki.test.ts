@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import type { Lang } from '@/rpc/bindings/Lang'
+import type { Lang } from '@/rpc/bindings/auxiliary.surface.output'
 import { loadHighlighter, shikiLang } from './shiki'
 
 test('shikiLang: every cell Lang and every stored form resolves to a shiki grammar; other languages pass through', async () => {

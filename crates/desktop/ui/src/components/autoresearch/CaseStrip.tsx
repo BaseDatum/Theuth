@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
-import type { CaseRow } from '@/rpc/bindings/CaseRow'
-import type { KindView } from '@/rpc/bindings/KindView'
+import type { CaseRow } from "@/rpc/bindings/method.autoresearch.output"
+import type { KindView } from "@/rpc/bindings/method.autoresearch.output"
 
 type CasesView = Extract<KindView, { kind: 'cases' }>
 const SPLITS = ['val', 'holdout', 'train'] as const

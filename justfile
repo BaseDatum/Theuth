@@ -110,15 +110,16 @@ documents-helper:
     build_doc_helper
     echo "built $DOC_HELPER_SRC ($DOC_HELPER)"
 
-# Export legacy TS roots and the real declaration-only production wire contract.
-ts:
-    cargo test -p theuth --features ts --bin t --quiet export_bindings
+# Export the real production contract and compile the shared desktop/iOS client.
+ts: wire-schema
+    cd crates/desktop/ui && bun install && bun run wire:generate
 
 # Bindings for the desktop UI: `just ts` plus a copy into the Vite tree (25 §5).
 ts-desktop: ts
     rm -rf crates/desktop/ui/src/rpc/bindings
     mkdir -p crates/desktop/ui/src/rpc/bindings
-    cp -R bindings/. crates/desktop/ui/src/rpc/bindings/
+    cp -R bindings/typescript/. crates/desktop/ui/src/rpc/bindings/
+    cp bindings/surface-catalog* bindings/methods.json crates/desktop/ui/src/rpc/bindings/
 
 # Generate the production contract without starting plugins, ports or stores.
 wire-schema:

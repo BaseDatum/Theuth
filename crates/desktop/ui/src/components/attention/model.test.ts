@@ -1,11 +1,12 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { expect, test } from 'vitest'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
-import type { Pointer } from '@/rpc/bindings/Pointer'
-import type { HistoryEntry } from '@/rpc/extra'
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
+import type { Pointer } from "@/rpc/bindings/method.roster.output"
+import type { HistoryEntry } from "@/rpc/bindings/method.agent.output"
 import { ATTENTION_CROWDED } from '@/components/settings/sandbox-queries'
 import { clampText, groupItems, lastAssistantBefore, nextAfter, parseCodeRef, pointerRoute, urlHost } from './model'
 
-const item = (id: string, kind: AttentionItem['kind'] = 'decision', at_ms = 1, priority: AttentionItem['priority'] = null): AttentionItem => ({ id, kind, title: id, detail: null, at_ms, task: null, agent: null, session: null, approval: null, decision: null, packet: null, ask: null, turn: null, priority, rank: 5 })
+const item = (id: string, kind: AttentionItem['kind'] = 'decision', at_ms = 1, priority: AttentionItem['priority'] = null): AttentionItem => (receiveComponent("method.roster.output.AttentionItem", { id, kind, title: id, detail: null, at_ms, task: null, agent: null, session: null, approval: null, decision: null, packet: null, ask: null, turn: null, priority, rank: 5 }))
 const ptr = (kind: Pointer['kind'], ref: string): Pointer => ({ kind, ref, title: ref, note: null, text: null, root: null })
 
 test('groupItems: Sky’s order, empty groups omitted, the engine’s order kept inside (132 D4: no at_ms re-sort), hand-offs and secrets share a group', () => {

@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
-import type { DoublePredicted } from '@/rpc/bindings/DoublePredicted'
+import type { DoublePredicted } from "@/rpc/bindings/event.double_2epredicted.output"
 import { doubleStore } from '@/store/double'
 import { recommendedLabel, withDoublePick } from './ask-drafts'
 import { DoubleChip, chipText, countdownText, disagrees, preselect, rungGlyph, secondsLeft, takeOver } from './DoubleChip'

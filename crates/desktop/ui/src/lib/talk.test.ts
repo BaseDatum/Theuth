@@ -161,7 +161,7 @@ test('client sink: once this speaker reports Playing, the agent line follows it,
 test('the turn cue plays when the state leaves listening for thinking after Submitted, for the owner, behind talk.cue', async () => {
   const state = (s: 'listening' | 'thinking' | 'speaking' | 'holding') => handle({ type: 'TalkState', id, state: s })
   await start({ talk_start: () => Promise.resolve('t') } as never, 'sess')
-  handle({ type: 'TalkStarted', id, session: 'sess', sink: 'device', aec: 'none', since_ms: 0n })
+  handle({ type: 'TalkStarted', id, session: 'sess', sink: 'device', aec: 'none', since_ms: 0 })
   handle({ type: 'Heard', id, utterance: 0, text: 'hello', final: true })
   handle({ type: 'Submitted', id, text: '[spoken, 1 s] hello', interrupted: false })
   // Committed, but the turn has not started yet.
@@ -191,7 +191,7 @@ test('the turn cue plays when the state leaves listening for thinking after Subm
   useTalkSettings.getState().setCue(true)
   // Another window attached to the talk (`mine: false`) stays silent.
   handle({ type: 'TalkFinished', id, reason: { reason: 'stopped' } })
-  handle({ type: 'TalkStarted', id, session: 'sess', sink: 'device', aec: 'none', since_ms: 0n })
+  handle({ type: 'TalkStarted', id, session: 'sess', sink: 'device', aec: 'none', since_ms: 0 })
   handle({ type: 'Submitted', id, text: '[spoken, 1 s] hello', interrupted: false })
   state('thinking')
   expect(chime).toHaveBeenCalledTimes(2)

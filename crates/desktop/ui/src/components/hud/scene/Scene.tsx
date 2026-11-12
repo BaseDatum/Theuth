@@ -3,7 +3,7 @@ import { type CSSProperties, Fragment, type ReactNode, type RefObject, type SVGP
 import { age } from '@/components/tasks/helpers'
 import { cn } from '@/lib/utils'
 import { type Board, C, type Color, FIELD_H, fieldHeight, type Flow, fmtUsd, hhmm, hhmmss, type Hairline, type Need, type PunchCard, type Ring, type SceneData, type SceneModel, type SpendOwnerRow, type SpendPanelModel, type Target, actorLabel, ctxTitle, GAUGE_R, gaugeEnd, gaugePath, projectLine, ringColor, ringDashed, ringDots, SAT_MAX, satPoint, scene, streamColor, streamLink, truncate, W, waffle, WAFFLE_CELLS } from './model'
-import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
+import type { ActivityEntry } from "@/rpc/bindings/method.roster.output"
 
 /**
  * 128 HUD-SCENE: the visual overview on `/` (≥ md). The flow field is one SVG over a canvas (the grey hairlines) that

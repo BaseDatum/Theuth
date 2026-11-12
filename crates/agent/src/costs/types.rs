@@ -209,6 +209,7 @@ pub struct CostCube {
 /// Bus/wire event: the cube moved to `rev` (at most once per second).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct CostCubeChanged {
     /// Cube epoch.

@@ -1,3 +1,5 @@
+import { withCapability } from '@/rpc/capabilities'
+import { panelRequirements as requirements } from '@/components/artifacts/requirements'
 import { createFileRoute } from '@tanstack/react-router'
 import { Viewer } from '@/components/artifacts/Viewer'
 import { useMarkShown } from '@/components/hud/queries'
@@ -9,4 +11,4 @@ function LibraryArtifact() {
   return <Viewer />
 }
 
-export const Route = createFileRoute('/artifacts/$callId')({ component: LibraryArtifact })
+export const Route = createFileRoute('/artifacts/$callId')({ component: withCapability(LibraryArtifact, requirements) })

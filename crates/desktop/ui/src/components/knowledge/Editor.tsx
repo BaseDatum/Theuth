@@ -18,7 +18,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { subscribeDark } from '@/lib/theme'
-import type { Meta } from '@/rpc/bindings/Meta'
+import type { Meta } from "@/rpc/bindings/method.knowledge.output"
 
 const extensions = [yamlFrontmatter({ content: markdown({ base: markdownLanguage, codeLanguages: languages }) }), EditorView.lineWrapping]
 

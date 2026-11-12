@@ -4,13 +4,13 @@
 import type { ReactNode } from 'react'
 import { CATEGORY_LABEL } from '@/lib/search'
 import { cn } from '@/lib/utils'
-import type { MatchRange } from '@/rpc/bindings/MatchRange'
-import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
-import type { SearchNotice } from '@/rpc/bindings/SearchNotice'
-import type { SearchPage } from '@/rpc/bindings/SearchPage'
+import type { MatchRange } from "@/rpc/bindings/method.artifact.output"
+import type { SearchCategory } from '@/rpc/bindings/method.rpc_2dcompose.input'
+import type { SearchNotice } from "@/rpc/bindings/method.rpc_2dcompose.output"
+import type { SearchGroup } from "@/rpc/bindings/method.rpc_2dcompose.output"
 
 /** Heading suffix and live-region wording for one page. */
-export function status(page: SearchPage<unknown>): string {
+export function status(page: SearchGroup['page']): string {
   switch (page.state) {
     case 'ready':
       return page.hits.length === 0

@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import type { Detection } from '@/rpc/bindings/Detection'
+import type { Detection } from "@/rpc/bindings/method.meeting.output"
 import { EMPTY, LAWFUL, detectedStart, reduce } from './detection'
 
 const zoom: Detection = {

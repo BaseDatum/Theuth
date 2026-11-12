@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
+import type { OracleDecision } from "@/rpc/bindings/event.meeting_2eevents.output"
 import { batchStamps, oracleRow, parseMeetingLine } from './meeting-line'
 
 // The exact strings `crates/meeting/src/session.rs` writes (02 §3).
@@ -45,7 +45,7 @@ test('oracle rows read as the design shows them; carried stamps attach to the de
     subject: null,
     tier2: null,
     top: [],
-    latency_ms: 78n,
+    latency_ms: 78,
     tier: 1,
     outcome: null,
   }
@@ -58,7 +58,7 @@ test('oracle rows read as the design shows them; carried stamps attach to the de
       stages: [['kind: subject', 0.88], ['brief: SRE-2386', 0.91]],
       mentions: ['SRE-2386'],
       top: [['SRE-2386', 0.91], ['none', 0.05]],
-      latency_ms: 81n,
+      latency_ms: 81,
     }),
   ).toBe('kind: subject 0.88 · mentions: SRE-2386 · brief: SRE-2386 0.91 → published SRE-2386 · 81 ms')
   expect(
@@ -71,7 +71,7 @@ test('oracle rows read as the design shows them; carried stamps attach to the de
       subject: 'Planet Nine',
       tier2: '"Planet Nine" → no cached brief',
       top: [['DR', 0.31], ['none', 0.57]],
-      latency_ms: 1442n,
+      latency_ms: 1442,
       tier: 3,
     }),
   ).toBe('kind: subject 0.91 · mentions: Kuiper belt, Constantin · brief: none 0.57 · tier 2: "Planet Nine" → no cached brief → model · 1442 ms')

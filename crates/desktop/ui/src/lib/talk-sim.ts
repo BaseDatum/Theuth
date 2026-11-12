@@ -18,14 +18,14 @@ type Step = [number, SubEvent | (() => void)]
 /** The session's tool activity (`Working…` above the orb): a pending call the transcript shows as a sim card. */
 const tool = (session: string, on: boolean) =>
   dispatch([
-    on
+    {key: 'agent.events@1', event: on
       ? { type: 'ToolCallPending', session, turn: 'sim-turn', call_id: 'sim-tool', name: 'sim_lookup' }
-      : { type: 'ToolCallFinished', session, turn: 'sim-turn', call_id: 'sim-tool', output: 'ok', is_error: false, files: [] },
+      : { type: 'ToolCallFinished', session, turn: 'sim-turn', call_id: 'sim-tool', output: 'ok', is_error: false, files: [] }},
   ])
 
 /** The engine's speaker (`sink: device`): `Saying` is within the ring's 200 ms of playback. */
 const script = (session: string): Step[] => [
-  [0, { type: 'TalkStarted', id: ID, session, sink: 'device', aec: 'none', since_ms: 0n }],
+  [0, { type: 'TalkStarted', id: ID, session, sink: 'device', aec: 'none', since_ms: 0 }],
   [0, { type: 'Degraded', id: ID, degradation: 'mic_no_aec' }],
   [0, { type: 'TalkState', id: ID, state: 'listening' }],
   [900, { type: 'Heard', id: ID, utterance: 0, text: 'So what', final: false }],
@@ -42,7 +42,7 @@ const script = (session: string): Step[] => [
   [3200, { type: 'SpeechFinished', id: 's1', session, reason: { reason: 'done' }, sink: 'device' }],
   [50, { type: 'Saying', id: ID, speech: 's2', text: 'Your two languages already gave you the habit of tolerating ambiguity, so lean on comprehensible input and skip the grammar drills until the patterns start to itch.' }],
   [1800, { type: 'TalkState', id: ID, state: 'holding' }],
-  [0, { type: 'Holding', id: ID, since_speech_ms: 400n }],
+  [0, { type: 'Holding', id: ID, since_speech_ms: 400 }],
   [300, { type: 'Heard', id: ID, utterance: 1, text: 'Wait, what', final: false }],
   // The barge-in commits: the speaker stops (`stopped`), the line freezes on the cut sentence until `thinking`.
   [400, { type: 'SpeechFinished', id: 's2', session, reason: { reason: 'stopped' }, sink: 'device' }],
@@ -57,7 +57,7 @@ const script = (session: string): Step[] => [
   [3000, { type: 'SpeechFinished', id: 's3', session, reason: { reason: 'done' }, sink: 'device' }],
   [0, { type: 'TalkState', id: ID, state: 'listening' }],
   [2500, { type: 'TalkFinished', id: ID, reason: { reason: 'stopped' } }],
-  [800, { type: 'TalkStarted', id: ID, session, sink: 'device', aec: 'none', since_ms: 0n }],
+  [800, { type: 'TalkStarted', id: ID, session, sink: 'device', aec: 'none', since_ms: 0 }],
 ]
 
 /**
@@ -65,7 +65,7 @@ const script = (session: string): Step[] => [
  * and `SpeechFinished` of the reply lands within ~2 s while playback takes ~9 s. The line must move with `Playing`.
  */
 const clientScript = (session: string): Step[] => [
-  [0, { type: 'TalkStarted', id: ID, session, sink: 'client', aec: 'none', since_ms: 0n }],
+  [0, { type: 'TalkStarted', id: ID, session, sink: 'client', aec: 'none', since_ms: 0 }],
   [0, { type: 'TalkState', id: ID, state: 'listening' }],
   [900, { type: 'Heard', id: ID, utterance: 0, text: 'What time is it', final: false }],
   [600, { type: 'Heard', id: ID, utterance: 0, text: 'What time is it in Lisbon right now?', final: true }],
@@ -104,7 +104,7 @@ const clientScript = (session: string): Step[] => [
   [0, { type: 'TalkState', id: ID, state: 'thinking' }],
   [1500, { type: 'TalkState', id: ID, state: 'listening' }],
   [2500, { type: 'TalkFinished', id: ID, reason: { reason: 'stopped' } }],
-  [800, { type: 'TalkStarted', id: ID, session, sink: 'client', aec: 'none', since_ms: 0n }],
+  [800, { type: 'TalkStarted', id: ID, session, sink: 'client', aec: 'none', since_ms: 0 }],
 ]
 
 export type SimFlag = { hold: OrbState | null; client: boolean }

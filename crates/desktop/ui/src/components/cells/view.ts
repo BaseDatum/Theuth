@@ -1,8 +1,8 @@
 // Owner: U1
 // 171 §11.2: the one state a cell shows, derived from the engine's record, the parsed cell and the local edit.
-import type { CellSpec } from '@/rpc/bindings/CellSpec'
-import type { Interpreter } from '@/rpc/bindings/Interpreter'
-import type { CellState } from '@/rpc/bindings/CellState'
+import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
+import type { Interpreter } from "@/rpc/bindings/method.cells.output"
+import type { CellState } from "@/rpc/bindings/method.cells.output"
 import type { CellViewState } from './types'
 
 export function viewOf(state: CellState | null, cell: CellSpec, edited: boolean, guest = false): CellViewState {

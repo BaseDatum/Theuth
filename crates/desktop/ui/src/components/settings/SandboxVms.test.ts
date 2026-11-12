@@ -5,8 +5,8 @@ import { expect, test, vi } from 'vitest'
 import { answerPayload } from '@/components/chat/SecretRequestCard'
 import type * as Popout from '@/lib/popout'
 import type * as Rpc from '@/lib/rpc'
-import type { Preflight } from '@/rpc/bindings/Preflight'
-import type { SandboxInfo } from '@/rpc/bindings/SandboxInfo'
+import type { Preflight } from "@/rpc/bindings/method.sandbox.output"
+import type { SandboxInfo } from "@/rpc/bindings/method.sandbox.output"
 import { limits, nextVmName, resizeGuard, sandboxLogKey } from '@/store/sandboxes'
 import { toCreate } from './SandboxSheets'
 import { MEMORY_ALLOCATED_TIP, SandboxVms, openVmTerminal } from './SandboxVms'
@@ -94,7 +94,7 @@ test('the create sheet starts from Preflight.defaults, the next free vm-N name, 
   expect(changed.desktop).toBe(false)
   expect(changed.network).toBe('public_host_private')
   expect(changed.autostart).toBe(false)
-  expect(changed.shares[0]?.guest).toBe('/shared/Dev')
+  expect(changed.shares?.[0]?.guest).toBe('/shared/Dev')
 })
 
 test('the resize guard mirrors the server: memory floor = use + 512 MiB, at least 1 CPU, disk never shrinks', () => {

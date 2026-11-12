@@ -18,8 +18,8 @@ import { useIsMobile } from '@/hooks/use-mobile'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { groupOf } from '@/lib/nav'
 import { isPopout } from '@/lib/popout'
-import type { DocKind } from '@/rpc/bindings/DocKind'
-import type { ItemKind } from '@/rpc/bindings/ItemKind'
+import type { DocKind } from "@/rpc/bindings/method.agent.output"
+import type { ItemKind } from "@/rpc/bindings/method.agent.output"
 import { cn } from 'cn'
 
 /**

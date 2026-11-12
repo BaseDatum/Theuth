@@ -1,3 +1,12 @@
+import { Capability } from '@/rpc/capabilities'
+import { supports } from '@/rpc/discovery'
+import { useConnection } from '@/store/connection'
+import { GROUPS } from '@/lib/nav'
+import { requirements as talkRequirements } from '@/components/talk/requirements'
+import { requirements as noteRequirements } from '@/components/notes/requirements'
+import { requirements as attentionRequirements } from '@/components/attention/requirements'
+import { requirements as costsRequirements } from '@/components/costs/requirements'
+import { broadcastRequirements } from '@/components/chat/requirements'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { AudioLines, Bell, Bot, ChartColumn, Library, Megaphone, Mic, PanelLeft, Plus, Settings, SquarePen, StickyNote } from 'lucide-react'
@@ -33,7 +42,7 @@ import { useShortcuts } from '@/lib/shortcuts'
 import * as talk from '@/lib/talk'
 import { useUpdate } from '@/lib/update'
 import { cn } from '@/lib/utils'
-import type { DocSummary } from '@/rpc/bindings/DocSummary'
+import type { DocSummary } from "@/rpc/bindings/method.agent.output"
 import { Desks } from './Desks'
 import { SearchTrigger } from './SearchTrigger'
 import { SessionList } from './SessionList'
@@ -50,6 +59,9 @@ export const NOTE_PLUS = 'text-success'
  * page under it carries the tab band (`SectionBand`), so the rail stays short.
  */
 export function AppSidebar({ session }: { session: string | undefined }) {
+  const discovery = useConnection(s => s.discovery)
+  const agentsTab = GROUPS.agents.find(tab => supports(discovery, tab.required))
+  const libraryTab = GROUPS.library.find(tab => supports(discovery, tab.required))
   const navigate = useNavigate()
   const { isMobile, setOpenMobile, toggleSidebar } = useSidebar()
   // Phones: the sidebar is a sheet over the chat, so every tap that navigates (a chat, New chat,
@@ -100,7 +112,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
         <EngineSwitcher className="min-w-0 flex-1 justify-start" />
         <div className="ml-auto flex shrink-0 items-center">
           <SearchTrigger />
-          <Button
+          <Capability required={broadcastRequirements} hide><Button
             variant="ghost"
             size="icon"
             className="rounded-lg text-fg-secondary"
@@ -109,7 +121,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             onClick={() => openBroadcastDialog({})}
           >
             <Megaphone className="size-5" />
-          </Button>
+          </Button></Capability>
           <Button
             variant="ghost"
             size="icon"
@@ -147,7 +159,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             </SidebarMenuButton>
             <NewChatOnMenu />
           </SidebarMenuItem>
-          <SidebarMenuItem>
+          <Capability required={talkRequirements} hide><SidebarMenuItem>
             <SidebarMenuButton asChild isActive={section === 'talk'} className="h-9 rounded-[10px] px-2.5">
               <Link
                 to="/"
@@ -167,8 +179,8 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                 {live && <span className="ml-auto size-2 shrink-0 rounded-full bg-success" aria-label="talk running" />}
               </Link>
             </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
+          </SidebarMenuItem></Capability>
+          <Capability required={noteRequirements} hide><SidebarMenuItem>
             <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
               <button type="button" aria-label="New note" disabled={createNoteAndOpen.isPending} onClick={() => createNoteAndOpen.mutate()}>
                 {/* Label in a span (see the Meeting row); the plus overhangs the icon wrapper like the Meeting dot. */}
@@ -179,7 +191,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                 <span>Note</span>
               </button>
             </SidebarMenuButton>
-          </SidebarMenuItem>
+          </SidebarMenuItem></Capability>
           {canRecord && (
             <SidebarMenuItem>
               <SidebarMenuButton asChild isActive={section === 'meeting'} className="h-9 rounded-[10px] px-2.5">
@@ -194,38 +206,38 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
           )}
-          <SidebarMenuItem>
+          <Capability required={attentionRequirements} hide><SidebarMenuItem>
             <SidebarMenuButton asChild isActive={section === 'attention'} className="h-9 rounded-[10px] px-2.5">
               <Link to="/attention">
                 <Bell /> Attention
                 <AttentionBadge />
               </Link>
             </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
+          </SidebarMenuItem></Capability>
+          {agentsTab && (<SidebarMenuItem>
             <SidebarMenuButton asChild isActive={section === 'agents'} className="h-9 rounded-[10px] px-2.5">
-              <Link to="/agents">
+              <Link to={agentsTab.to}>
                 <Bot /> Agents
               </Link>
             </SidebarMenuButton>
-          </SidebarMenuItem>
+          </SidebarMenuItem>)}
           {/* Artifacts first (Sky, 2026-09-27): the most-opened Library entry; `/library` redirects there too. */}
-          <SidebarMenuItem>
+          {libraryTab && (<SidebarMenuItem>
             <SidebarMenuButton asChild isActive={section === 'library'} className="h-9 rounded-[10px] px-2.5">
-              <Link to="/artifacts">
+              <Link to={libraryTab.to}>
                 <Library /> Library
               </Link>
             </SidebarMenuButton>
-          </SidebarMenuItem>
+          </SidebarMenuItem>)}
           {/* Sky, 2026-11-02: the costs dashboard (160) gets its own row; the HUD SPEND button stays too. */}
-          <SidebarMenuItem>
+          <Capability required={costsRequirements} hide><SidebarMenuItem>
             <SidebarMenuButton asChild isActive={section === 'costs'} className="h-9 rounded-[10px] px-2.5">
               <Link to="/costs" preload="intent">
                 <ChartColumn /> Costs
               </Link>
             </SidebarMenuButton>
-          </SidebarMenuItem>
-          <Desks active={session} />
+          </SidebarMenuItem></Capability>
+          <Capability required={{ methods: ['desk_open', 'list_sessions'] }} hide><Desks active={session} /></Capability>
         </SidebarMenu>
         <SessionList scrollEl={scrollEl} barEl={barEl} active={session} />
       </SidebarContent>
@@ -248,7 +260,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
       </SidebarFooter>
     </Sidebar>
     {/* Beside, not inside: on phones the sidebar is a sheet that unmounts when closed (62 §5.2). */}
-    <BroadcastDialog />
+    <Capability required={broadcastRequirements} hide><BroadcastDialog /></Capability>
     </>
   )
 }

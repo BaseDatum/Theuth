@@ -4,7 +4,7 @@ import { Pencil, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import type { CachedBrief } from '@/rpc/bindings/CachedBrief'
+import type { CachedBrief } from "@/rpc/bindings/method.meeting.output"
 
 /** `3d` / `2h` / `11m`, as the batch line renders it (session.rs `age`). */
 export function age(iso: string, now = Date.now()): string {

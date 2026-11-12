@@ -55,6 +55,7 @@ const ROUTINE_TEMPLATE: &str = include_str!("routine.md");
 /// Event: a night began (136 §9.3).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct DreamNightStarted {
     /// The night id.
@@ -68,6 +69,7 @@ impl wire::WireEvent for DreamNightStarted {
 /// Event: a night ended (136 §9.3); the attention digest and the HUD ring listen.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct DreamNightFinished {
     /// The night id.
@@ -87,6 +89,7 @@ impl wire::WireEvent for DreamNightFinished {
 /// Event: a night or a group was undone (136 §9.3).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct DreamUndone {
     /// The night id.

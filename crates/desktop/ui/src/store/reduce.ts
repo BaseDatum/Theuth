@@ -1,3 +1,4 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { jsonrepair } from "jsonrepair";
 import { resultLine } from "@/lib/describe";
 import { codeEdited, codeToolRan, emptyCodemap } from "@/lib/codemap/slice";
@@ -5,14 +6,16 @@ import { classify, type CellResultInput, type ContactNote, humanSecs, type Injec
 import { pushChunk } from "@/lib/jobTail";
 import { splitRestart, splitTime } from "@/lib/time";
 import { live, observedState } from "@/lib/session-tree";
-import type { Advisory as AdvisoryRow } from "@/rpc/bindings/Advisory";
-import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
-import type { ChannelOrigin } from "@/rpc/bindings/ChannelOrigin";
-import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
-import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
-import type { TodoSnapshot } from "@/rpc/bindings/TodoSnapshot";
-import type { WireEvent } from "@/rpc/events";
-import type { AgentInfo, AppCallChanged, HistoryEntry, LoadedPage } from "@/rpc/extra";
+import type { Advisory as AdvisoryRow } from "@/rpc/bindings/method.agent.output"
+import type { AdvisoryNote } from "@/rpc/bindings/method.agent.output"
+import type { ChannelOrigin } from "@/rpc/bindings/method.agent.output"
+import type { ContextEntry } from "@/rpc/bindings/method.agent.output"
+import type { PeerOrigin } from "@/rpc/bindings/method.agent.output"
+import type { TodoSnapshot } from "@/rpc/bindings/method.agent.output"
+import type { UiEvent as WireEvent } from '@/store/ui-events'
+import type { AgentInfo } from '@/store/ui-events'
+import type { AppCallChanged } from "@/rpc/bindings/event.app_2ecalls.output"
+import type { HistoryEntry, Loaded as LoadedPage } from "@/rpc/bindings/method.agent.output"
 import type { AppDraft, Entry, JobTail, ResumeBanner, SessionSlice } from "./sessions";
 
 /** `sent`: texts we submitted (echo skipped); `now`: the batch's client clock (91: the thinking-time fallback). */
@@ -240,7 +243,7 @@ function userEntries(
   injected?: true,
   turn?: number,
   context?: ContextEntry,
-  channel?: ChannelOrigin,
+  channel?: ChannelOrigin | null,
 ): Entry[] {
   const flag = { ...(injected ? { injected } : {}), ...(channel ? { channel } : {}) };
   if (cls === null)
@@ -567,9 +570,10 @@ export function resumeFromLoaded(
   if (loaded.here === false && loaded.resumed) return undefined;
   const report = loaded.report ? reportCounts(loaded.report) : undefined;
   const here = loaded.here ?? true;
+  const owner = loaded.owner ?? undefined;
   if (cur?.turn === loaded.turn) {
     const next = cur.resumed || !loaded.resumed ? cur : { ...cur, resumed: true };
-    const owned = next.here === here && next.owner === loaded.owner ? next : { ...next, here, owner: loaded.owner };
+    const owned = next.here === here && next.owner === owner ? next : { ...next, here, owner };
     // 183 R1 (H3): the moved-from engine survives a reload (a live `TurnResumed.from` already set it).
     const sourced = owned.from || !loaded.from ? owned : { ...owned, from: loaded.from };
     return cur.report || !report ? sourced : { ...sourced, report };
@@ -581,9 +585,9 @@ export function resumeFromLoaded(
     at: Number.isNaN(at) ? Date.now() : at,
     resumed: loaded.resumed,
     report,
-    owner: loaded.owner,
+    owner,
     here,
-    cause: loaded.cause,
+    cause: loaded.cause ?? undefined,
     ...(loaded.from ? { from: loaded.from } : {}),
   };
 }
@@ -831,7 +835,7 @@ export function apply(
           // 139 §9.3: a relayed `TurnResumed` from a followed owner must not flip a replica's view to "here".
           ...whose(slice.resume),
           cause: e.cause,
-          from: e.from,
+          from: e.from ?? undefined,
         },
       };
     }
@@ -955,7 +959,7 @@ export function apply(
       };
     // 79 §4.4: a `sandbox_*` tool's bring-up line, joined to its card by `call_id` like `ScrapeProgress`.
     case "Progress":
-      if (e.call_id === null) return slice;
+      if (!('call_id' in e) || e.call_id === null) return slice;
       return {
         ...slice,
         sandbox: new Map(slice.sandbox).set(e.call_id, { step: e.step, line: e.line, pct: e.pct }),
@@ -1511,7 +1515,7 @@ export function route(
     for (let id: string | null | undefined = e.parent, depth = 1; id; depth++) {
       const s: SessionSlice | undefined = draft[id];
       if (!s) break;
-      const row: AgentInfo = {
+      const row: AgentInfo = receiveComponent("method.agent.output.AgentInfo", {
         id: e.child,
         name: e.name,
         parent: e.parent,
@@ -1523,7 +1527,7 @@ export function route(
         finished_at: null,
         last: "",
         cap: e.cap,
-      };
+      });
       const next = { ...s, children: { ...s.children, [e.child]: row } };
       draft[id] =
         depth === 1
@@ -1559,7 +1563,7 @@ export function route(
       const s: SessionSlice | undefined = draft[id];
       if (!s) break;
       const prev = s.children[e.child];
-      const row: AgentInfo = {
+      const row: AgentInfo = receiveComponent("method.agent.output.AgentInfo", {
         ...prev,
         id: e.child,
         name: e.name,
@@ -1573,7 +1577,7 @@ export function route(
         last: prev?.last ?? "",
         kind: "observed",
         observed: e.observed,
-      };
+      });
       draft[id] = { ...s, children: { ...s.children, [e.child]: row } };
       id = s.parent;
     }

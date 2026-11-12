@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { Usage } from '@/rpc/bindings/Usage'
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { Usage } from "@/rpc/bindings/event.agent_2eevents.output"
 import { runningSubagents } from '@/components/sidebar/SessionItem'
 import { createSessions } from './sessions'
 
@@ -14,8 +14,8 @@ function liveStore() {
   st.ensure('desk')
   st.applyEvents([
     { type: 'TurnStarted', session: 'desk', turn: 't0', text: 'go', model: 'm', turn_seq: 1 },
-    { type: 'SubagentSpawned', parent: 'desk', child: 'a', name: 'a' },
-    { type: 'SubagentSpawned', parent: 'desk', child: 'b', name: 'b' },
+    { type: 'SubagentSpawned', parent: 'desk', child: 'a', name: 'a', cap: null },
+    { type: 'SubagentSpawned', parent: 'desk', child: 'b', name: 'b', cap: null },
     { type: 'TurnStarted', session: 'a', turn: 't1', text: 'x', model: 'm', turn_seq: 1 },
     { type: 'TurnStarted', session: 'b', turn: 't2', text: 'y', model: 'm', turn_seq: 1 },
   ])

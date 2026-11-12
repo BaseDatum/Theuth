@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 53 §4.3 / 03 §3: `/meetings/$id` — while recording: state, elapsed, degradations, pause/resume/stop, the
 // live log (`me:`/`them:`; a `final: false` utterance replaces the open row of its track, `final: true`
 // commits it), a typed request box, the brief column with the island's cursor mirrored, the session link, and the
@@ -35,11 +36,11 @@ import { PX_STEP, RATIO_MAX, RATIO_MIN, RATIO_STEP } from '@/lib/resize-drag'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { LiveSession } from '@/routes/c.$session'
-import type { CaptureFault } from '@/rpc/bindings/CaptureFault'
-import type { Degradation } from '@/rpc/bindings/Degradation'
-import type { Gap } from '@/rpc/bindings/Gap'
-import type { MeetingState } from '@/rpc/bindings/MeetingState'
-import type { PostStage } from '@/rpc/bindings/PostStage'
+import type { CaptureFault } from "@/rpc/bindings/method.meeting.output"
+import type { Degradation } from "@/rpc/bindings/method.meeting.output"
+import type { Gap } from "@/rpc/bindings/method.meeting.output"
+import type { MeetingState } from "@/rpc/bindings/method.meeting.output"
+import type { PostStage } from "@/rpc/bindings/method.meeting.output"
 import { type Line, captureWarning, current, live, oracleSummary, toLine, useMeeting, who } from '@/store/meeting'
 import { on } from '@/store/sessions'
 
@@ -110,11 +111,12 @@ export const gapText = (g: Gap): string =>
   `${g.track} ${hhmmss(Number(g.at_ms))} for ${Math.round(Number(g.dur_ms) / 1000)} s (${g.reason ? FAULT[g.reason] : 'silent'}${g.retarget === undefined ? '' : `, tap moved to pid ${g.retarget}`})`
 
 export function ControlCenter({ id }: { id: string }) {
+  const canQuery1 = useQuerySupport(["meeting_get"])
   const api = useApi()
   const qc = useQueryClient()
   const store = useMeeting()
   const isLive = store.meeting === id && live(store.state)
-  const manifest = useQuery({ queryKey: queryKeys.meeting(id), queryFn: () => api.meeting_get(id) })
+  const manifest = useQuery({ enabled: canQuery1, queryKey: queryKeys.meeting(id), queryFn: () => api.meeting_get(id) })
   const state = isLive ? store.state : manifest.data?.state
   const session = isLive ? store.session : manifest.data?.session
   const title = manifest.data?.title ?? (manifest.data ? `Meeting with ${manifest.data.process.name}` : 'Meeting')
@@ -355,7 +357,7 @@ function LiveLog({ id }: { id: string }) {
       .meeting_live(id)
       .then((us) => setRows(us.map((u) => toLine(u))))
       .catch(() => undefined)
-    return on('Utterance', (e) => {
+    return on("meeting.events@1", 'Utterance', (e) => {
       if (e.meeting !== id) return
       setRows((prev) => {
         const line = toLine(e, !e.final)

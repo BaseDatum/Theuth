@@ -11,7 +11,7 @@ import { Excerpt } from '@/components/chat/surface/Excerpt'
 import { Button } from '@/components/ui/button'
 import { isDesktop } from '@/lib/platform'
 import { cn } from '@/lib/utils'
-import type { Located } from '@/rpc/bindings/Located'
+import type { Located } from "@/rpc/bindings/method.codeindex.output"
 import { type Anchor, type AnchorState, contains, formatAnchor, intersect } from './anchors'
 import type { BoardExcerpt } from './blocks'
 import { chipText, langOf, toLocate, useLiveStore, useLocated } from './live'

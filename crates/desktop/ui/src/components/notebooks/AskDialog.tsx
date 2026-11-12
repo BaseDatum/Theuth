@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { useAskApi } from '@/lib/ask-rpc'
-import type { Notebook } from '@/rpc/bindings/Notebook'
+import type { Notebook } from "@/rpc/bindings/method.agent.output"
 
 /** Pure: the scope list — `current` first (when live), the rest in list order. */
 export function scopeOrder(notebooks: readonly Notebook[], current: string | null): Notebook[] {

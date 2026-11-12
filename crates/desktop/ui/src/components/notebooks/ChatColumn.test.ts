@@ -2,7 +2,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
-import type { ContextEstimate } from '@/rpc/bindings/ContextEstimate'
+import type { ContextEstimate } from "@/rpc/bindings/method.agent.output"
 import { ContextLine } from './ChatColumn'
 
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }))
@@ -11,7 +11,7 @@ vi.mock('@/components/chat/Composer', () => ({ Composer: () => null }))
 vi.mock('@/components/chat/Transcript', () => ({ Transcript: () => null }))
 vi.mock('@/components/sidebar/AgentTree', () => ({ ago: () => '' }))
 vi.mock('@/store/sessions', () => ({ on: () => () => {}, useSessions: { getState: () => ({}) } }))
-vi.mock('@/store/connection', () => ({ useConnection: (sel: (s: { client: unknown }) => unknown) => sel({ client: {} }) }))
+vi.mock('@/store/connection', () => ({ useConnection: (pick: (s: unknown) => unknown) => pick({ client: {} , discovery: { phase: 'legacy' } }) }))
 vi.mock('@/lib/rpc', () => ({ useApi: () => ({}), queryKeys: { notes: ['notes'], roster: ['roster'] } }))
 
 const estimate: ContextEstimate = {

@@ -1,7 +1,7 @@
 // 138 ASK-OWN: a typed answer survives changing the pick and is sent only while it is the pick.
 import { beforeEach, expect, test } from 'vitest'
-import type { DoublePredicted } from '@/rpc/bindings/DoublePredicted'
-import type { Question } from '@/rpc/bindings/Question'
+import type { DoublePredicted } from "@/rpc/bindings/event.double_2epredicted.output"
+import type { Question } from "@/rpc/bindings/method.roster.output"
 import { type AskDraft, allAnswered, askDrafts, draftsFor, ownPick, picked, seedDraft, toAnswer, typed, withDoublePick } from './ask-drafts'
 
 const q1: Question = { id: 'q1', question: 'Which?', options: [{ label: 'A' }, { label: 'B' }], recommended: 1 }

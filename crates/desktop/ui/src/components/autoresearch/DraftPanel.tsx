@@ -9,10 +9,10 @@ import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { DraftField } from '@/rpc/bindings/DraftField'
-import type { DraftView } from '@/rpc/bindings/DraftView'
-import type { StartWhen } from '@/rpc/bindings/StartWhen'
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import type { DraftField } from "@/rpc/bindings/method.autoresearch.output"
+import type { DraftView } from "@/rpc/bindings/method.autoresearch.output"
+import type { StartWhen } from '@/rpc/bindings/method.autoresearch.input'
+import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { experimentsText, usd } from './model'
 import { useControl, useDiscardDraft, useDraftConfirm, useDraftEdit, useStartDraft, useStudy } from './queries'
 import { ADVANCED, LEAVES, PROBE_OF, STATE_BADGE, discardMessage, editMessage, leafValue, rowLabel, sparkPoints } from './setup'

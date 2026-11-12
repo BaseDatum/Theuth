@@ -1,5 +1,5 @@
 import { expect, test, vi } from 'vitest'
-import type { AskEvent } from '@/rpc/bindings/AskEvent'
+import type { AskEvent } from "@/rpc/bindings/event.agent_2enotebook_2dask.output"
 import { EMPTY_ASK, applyAskEvent, askEventOf, hitHref } from './ask-rpc'
 
 vi.mock('@/store/sessions', () => ({ on: () => () => {} }))

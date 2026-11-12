@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Command, Copy, Monitor, MoreHorizontal, Terminal } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
@@ -33,14 +34,14 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { LOCAL, useEngines } from '@/link/engines'
 import { NODES_KEY, useHasNodes, useNodes } from '@/link/nodes'
-import type { HubPref } from '@/rpc/bindings/HubPref'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
-import type { NearbyEngine } from '@/rpc/bindings/NearbyEngine'
-import type { Node } from '@/rpc/bindings/Node'
-import type { NodeEvent } from '@/rpc/bindings/NodeEvent'
-import type { Peer } from '@/rpc/bindings/Peer'
-import type { RelayState } from '@/rpc/bindings/RelayState'
-import type { RotationState } from '@/rpc/bindings/RotationState'
+import type { HubPref } from "@/rpc/bindings/method.nodes.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
+import type { NearbyEngine } from "@/rpc/bindings/method.nodes.output"
+import type { Node } from "@/rpc/bindings/method.nodes.output"
+import type { NodeEvent } from "@/rpc/bindings/event.nodes_2eevents.output"
+import type { Peer } from "@/rpc/bindings/method.nodes.output"
+import type { RelayState } from "@/rpc/bindings/method.nodes.output"
+import type { RotationState } from "@/rpc/bindings/method.nodes.output"
 import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
 
@@ -128,7 +129,7 @@ function Chip({ tone, children }: { tone: 'ok' | 'bad' | 'plain'; children: Reac
 }
 
 /** 183 §6.7: `Relay · iroh.relay.theuth.io · 38 ms ✓`, or the relay's error. */
-export function relayChip(r: RelayState | undefined): { text: string; ok: boolean } {
+export function relayChip(r: RelayState | null | undefined): { text: string; ok: boolean } {
   if (!r) return { text: 'Relay · none', ok: false }
   let host = r.url
   try {
@@ -204,8 +205,9 @@ function ThisMachine({ s, managing }: { s: MeshStatus; managing: string | null }
 
 /** 183 §6.8: machines the Nearby browse sees, not paired (`mesh_nearby`, then every `MeshEvent.nearby`). */
 function NearbyList({ on, onPair }: { on: boolean; onPair: (n: NearbyEngine) => void }) {
+  const canQuery1 = useQuerySupport(["mesh_nearby"])
   const api = useApi()
-  const nearby = useQuery({ queryKey: queryKeys.meshNearby, queryFn: () => api.mesh_nearby(), staleTime: 0 })
+  const nearby = useQuery({ enabled: canQuery1, queryKey: queryKeys.meshNearby, queryFn: () => api.mesh_nearby(), staleTime: 0 })
   return (
     <Section title="Nearby">
       <p className="text-[13px] text-fg-secondary">Found on this network, not paired.</p>
@@ -341,9 +343,10 @@ function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void 
 
 /** §6.7's Advanced rows, shown flat on This machine: the mesh name, the hub preference, sessions and Rotate vault key. */
 function MeshSettings({ s }: { s: MeshStatus }) {
+  const canQuery2 = useQuerySupport(["sessions_status"])
   const api = useApi()
   const qc = useQueryClient()
-  const sessions = useQuery({ queryKey: queryKeys.sessionsStatus, queryFn: () => api.sessions_status() })
+  const sessions = useQuery({ enabled: canQuery2, queryKey: queryKeys.sessionsStatus, queryFn: () => api.sessions_status() })
   const setHub = useAction((pref: HubPref) => api.mesh_set_hub(pref), { keys: [keys.mesh] })
   const rotate = useAction(() => api.vault_rotate(), { onSuccess: (r: RotationState) => qc.setQueryData(queryKeys.vaultRotation, r) })
   const hub = s.lease.holder === s.self_id
@@ -387,13 +390,14 @@ function MeshSettings({ s }: { s: MeshStatus }) {
 
 /** §6.7 pairing by string, for a machine not on this network: this node's string and QR, or paste the other node's. */
 function PairString() {
+  const canQuery3 = useQuerySupport(["mesh_pairing_string"])
   const api = useApi()
   const [pasted, setPasted] = useState('')
   const [showPairing, setShowPairing] = useState(false)
   const pairing = useQuery({
     queryKey: [...keys.mesh, 'pairing'],
     queryFn: () => (mockOn() ? PAIRING : api.mesh_pairing_string()),
-    enabled: showPairing,
+    enabled: canQuery3 && (showPairing),
   })
   const add = useAction((p: string) => api.mesh_add(p), {
     keys: [keys.mesh],
@@ -467,7 +471,7 @@ function OverSsh() {
 
   useEffect(() => {
     const invalidate = () => void qc.invalidateQueries({ queryKey: NODES_KEY })
-    const offs = NODE_EVENTS.map((t) => on(t, invalidate))
+    const offs = NODE_EVENTS.map((t) => on("nodes.events@1", t, invalidate))
     return () => {
       for (const off of offs) off()
     }

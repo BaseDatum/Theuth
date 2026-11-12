@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { Link } from '@tanstack/react-router'
 import { Eye } from 'lucide-react'
 import { toast } from 'sonner'
@@ -6,8 +7,8 @@ import { useQuery } from '@tanstack/react-query'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { harnessName, observedLabel, sourceTag, watchCost } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
-import type { ObservedMeta } from '@/rpc/bindings/ObservedMeta'
-import type { ObservedState } from '@/rpc/bindings/ObservedState'
+import type { ObservedMeta } from "@/rpc/bindings/method.agent.output"
+import type { ObservedState } from "@/rpc/bindings/method.agent.output"
 import { useSessionField, useSessions } from '@/store/sessions'
 
 /** 141 mock: a solid dot while live, a ring while resting, a dashed ring once contact is lost; `completed` is a check. */
@@ -50,8 +51,9 @@ export function EyeMark({ className }: { className?: string }) {
 /** `omp task` / `opencode` / `ACP`: which feed describes the child. */
 /** 141 R3 T8/T9: the child's money cell from its own `session_cost` under its cost rule — the same figure in every surface. */
 export function WatchCostCell({ session, observed, className }: { session: string; observed: Pick<ObservedMeta, 'cost_rule' | 'detail'>; className?: string }) {
+  const canQuery1 = useQuerySupport(["session_cost"])
   const api = useApi()
-  const { data } = useQuery({ queryKey: queryKeys.sessionCost(session), queryFn: () => api.session_cost(session) })
+  const { data } = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessionCost(session), queryFn: () => api.session_cost(session) })
   const cost = watchCost(observed, data?.total)
   return (
     <span className={cn('whitespace-nowrap tabular-nums text-fg-tertiary', cost.grey && 'opacity-60', className)} title={cost.title}>

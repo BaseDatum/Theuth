@@ -1,10 +1,11 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { expect, test } from 'vitest'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { SessionSlice } from '@/store/sessions'
 import { rowActivity, runningSubagents } from './SessionItem'
 import { buildRows, listOffset, newChatLabel, type Row, watchListOffset } from './SessionList'
 
-const s = (id: string, project: string | null, updated_at: string, pinned = false, archived = false): SessionSummary => ({
+const s = (id: string, project: string | null, updated_at: string, pinned = false, archived = false): SessionSummary => (receiveComponent("method.agent.output.SessionSummary", {
   id,
   created_at: updated_at,
   updated_at,
@@ -26,7 +27,7 @@ const s = (id: string, project: string | null, updated_at: string, pinned = fals
   epoch: 1,
   memory: 'epochs',
   here: true,
-})
+}))
 
 const keys = (rows: Row[]) => rows.map((r) => r.key)
 
@@ -98,7 +99,7 @@ test('running subagents: a live slice counts, so does the list snapshot for a ch
 
 // 141 §9.4: a watch-only child has no turn of its own — the harness's state is its live bit, live from the slice, else the snapshot.
 test('running subagents: a watch-only child counts while the harness says running or waiting on you, not when idle or finished', () => {
-  const meta = (state: 'running' | 'requires_action' | 'idle' | 'completed') => ({ source: 'opencode_ext' as const, external: 'x', state, can_cancel: false, cost_rule: 'unreported' as const, detail: null })
+  const meta = (state: 'running' | 'requires_action' | 'idle' | 'completed') => receiveComponent('method.agent.output.ObservedMeta', { source: 'opencode_ext', external: 'x', state, can_cancel: false, cost_rule: 'unreported', detail: null })
   const d = (id: string, state: 'running' | 'requires_action' | 'idle' | 'completed') => ({ ...s(id, null, '2026-01-01T00:00:00Z'), parent: 'a', running: false, kind: 'observed' as const, observed: meta(state) })
   const subs = [d('run', 'running'), d('ask', 'requires_action'), d('idle', 'idle'), d('done', 'completed')]
   expect(runningSubagents(subs, {})).toBe(2)

@@ -25,5 +25,5 @@ test('179: a paused agent says how many wakes it holds and whether a turn is sus
   expect(paused(2, true)).toContain('>Paused · 2 wakes held · suspended mid-turn<')
   expect(paused(1, false)).toContain('>Paused · 1 wake held<')
   expect(paused(0, false)).not.toContain('suspended mid-turn')
-  expect(pausedLabel({})).toBe('Paused · 0 wakes held')
+  expect(pausedLabel({ held_wakes: 0, suspended: false })).toBe('Paused · 0 wakes held')
 })

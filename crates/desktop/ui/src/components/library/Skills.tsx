@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener'
@@ -26,7 +27,7 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { SkillMeta } from '@/rpc/bindings/SkillMeta'
+import type { SkillMeta } from "@/rpc/bindings/method.agent.output"
 import { useSessionField, useSessions } from '@/store/sessions'
 
 const WHAT = 'A skill is markdown the model pulls into context on demand: the system prompt lists every skill by name and description, the model loads the body when it needs it. Skills marked always are inlined into every prompt instead.'
@@ -39,9 +40,10 @@ const WHAT = 'A skill is markdown the model pulls into context on demand: the sy
  * command to the session as typed (`/skill:<name>`, `/<command>`; 141 D15a), bypassing theuth's `/skill:` parking.
  */
 export function SkillsPage({ name, session }: { name: string | null; session: string | null }) {
+  const canQuery1 = useQuerySupport(["list_skills"])
   const api = useApi()
   const navigate = useNavigate()
-  const skills = useQuery({ queryKey: queryKeys.skills, queryFn: () => api.list_skills() })
+  const skills = useQuery({ enabled: canQuery1, queryKey: queryKeys.skills, queryFn: () => api.list_skills() })
   const loaded = useSessionField(session ?? '', 'skills')
   const agent = useSessionField(session ?? '', 'agent')
   const harnessCommands = useSessionField(session ?? '', 'harnessCommands')
@@ -197,9 +199,10 @@ export function SkillsPage({ name, session }: { name: string | null; session: st
 }
 
 function SkillDetail({ skill, session }: { skill: SkillMeta; session: string | null }) {
+  const canQuery2 = useQuerySupport(["load_skill"])
   const api = useApi()
   const navigate = useNavigate()
-  const body = useQuery({ queryKey: queryKeys.skill(skill.name), queryFn: () => api.load_skill(skill.name) })
+  const body = useQuery({ enabled: canQuery2, queryKey: queryKeys.skill(skill.name), queryFn: () => api.load_skill(skill.name) })
   const editable = isEditable(skill)
   const repo = repoDir(skill)
   const keys = [queryKeys.skills, queryKeys.skill(skill.name)]
@@ -282,8 +285,9 @@ function SkillDetail({ skill, session }: { skill: SkillMeta; session: string | n
 /** A skill's markdown, rendered; shared with the transcript's skill card. Leading YAML front matter (name/description,
  * shown in the header already) is dropped. */
 export function SkillBody({ name }: { name: string }) {
+  const canQuery3 = useQuerySupport(["load_skill"])
   const api = useApi()
-  const body = useQuery({
+  const body = useQuery({ enabled: canQuery3,
     queryKey: queryKeys.skill(name),
     queryFn: () => api.load_skill(name),
   })

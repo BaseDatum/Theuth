@@ -93,6 +93,7 @@ pub struct ConsoleLine {
 /// desktop/web client that receives it renders and answers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct PagePreviewRequested {
     /// Use in `answer_page_preview`.
@@ -115,6 +116,7 @@ impl wire::WireEvent for PagePreviewRequested {
 /// tear their frame down.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct PagePreviewResolved {
     /// The request.

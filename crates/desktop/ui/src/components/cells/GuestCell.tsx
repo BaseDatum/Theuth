@@ -1,10 +1,10 @@
 // Owner: U2
 import { type ReactNode, useEffect, useSyncExternalStore } from 'react'
-import type { Api } from '@/rpc/api'
-import type { CellLatest } from '@/rpc/bindings/CellLatest'
-import type { CellRef } from '@/rpc/bindings/CellRef'
-import type { CellSpec } from '@/rpc/bindings/CellSpec'
-import type { DocId } from '@/rpc/bindings/DocId'
+import type { Api } from '@/rpc/bindings/client'
+import type { CellLatest } from "@/rpc/bindings/method.cells.output"
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
+import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
+import type { DocId } from "@/rpc/bindings/method.agent.output"
 import { Cell, CellExtras, Chip } from './Cell'
 import { AnsiText } from './Outputs'
 import { clock, duration } from './store'

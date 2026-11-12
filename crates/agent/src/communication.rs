@@ -719,6 +719,7 @@ pub struct ContactOrigin {
 /// = that subtree's opt-out or scope changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct CommunicationChanged {
     /// Affected subtree; `None` for global.
@@ -742,6 +743,7 @@ impl wire::WireEvent for CommunicationChanged {
 /// durable record when needed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct PeerMessageChanged {
     /// Participant whose view changed.
@@ -824,6 +826,7 @@ pub enum ChannelChat {
 /// event still fires until every surface renders this one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct PeerDelivered {
     /// Receiving session.

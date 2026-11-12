@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { memo, useState } from 'react'
@@ -14,10 +15,10 @@ import { chatName } from '@/lib/attach'
 import { describe } from '@/lib/describe'
 import { useEngineLabel } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { ApprovalRequested } from '@/rpc/bindings/ApprovalRequested'
-import type { Decision } from '@/rpc/bindings/Decision'
-import type { Risk } from '@/rpc/bindings/Risk'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { ApprovalRequested } from "@/rpc/bindings/event.rpc_2estream.output"
+import type { Decision } from "@/rpc/bindings/event.tools_2eapproval_2dresolved.output"
+import type { Risk } from "@/rpc/bindings/method.agent.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { useApprovals } from '@/store/approvals'
 import { DoubleCard, DoubleChip, preselect, useDoubleCard } from './DoubleChip'
 
@@ -47,9 +48,10 @@ export const ApprovalCard = memo(function ApprovalCard({
 }: {
   approval: ApprovalRequested
 }) {
+  const canQuery1 = useQuerySupport(["list_sessions"])
   const api = useApi()
   // The card's session decides: owner ≠ this engine → relayed (`list_sessions` is the sidebar's warm cache).
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const sessions = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const row = sessions.data?.find((s) => s.id === approval.session)
   const owner = useEngineLabel(row?.owner ?? '')
   const relayed = !!row && !row.here

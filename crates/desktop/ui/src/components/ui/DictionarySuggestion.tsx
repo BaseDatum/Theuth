@@ -8,8 +8,8 @@ import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { type Suggestion, clearSuggestion } from '@/lib/dictation'
-import type { Api } from '@/rpc/api'
-import type { SuggestionAnswer } from '@/rpc/bindings/SuggestionAnswer'
+import type { Api } from '@/rpc/bindings/client'
+import type { SuggestionAnswer } from '@/rpc/bindings/method.talk.input'
 
 /** §3.1 "suggesting": auto-dismiss after 20 s. */
 export const DISMISS_MS = 20_000

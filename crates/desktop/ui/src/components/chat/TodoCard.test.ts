@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
-import type { Todo } from '@/rpc/bindings/Todo'
-import type { TodoSnapshot } from '@/rpc/bindings/TodoSnapshot'
+import type { Todo } from "@/rpc/bindings/method.agent.output"
+import type { TodoSnapshot } from "@/rpc/bindings/method.agent.output"
 import { handleLabel, note, summarize } from './TodoCard'
 
 const t = (status: Todo['status'], text: string = status): Todo => ({ text, status, reason: null })

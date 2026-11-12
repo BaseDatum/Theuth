@@ -4,11 +4,11 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as NbRpc from '@/lib/notebooks-rpc'
 import { notebookKeys } from '@/lib/notebooks-rpc'
-import type { NotebookItem } from '@/rpc/bindings/NotebookItem'
+import type { NotebookItem } from "@/rpc/bindings/method.agent.output"
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
-import type { ContextEstimate } from '@/rpc/bindings/ContextEstimate'
-import type { DocSummary } from '@/rpc/bindings/DocSummary'
+import type { ContextEstimate } from "@/rpc/bindings/method.agent.output"
+import type { DocSummary } from "@/rpc/bindings/method.agent.output"
 import type * as Hooks from './useNotebook'
 import { NotesColumn } from './NotesColumn'
 
@@ -19,7 +19,7 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
 vi.mock('@/store/sessions', () => ({ on: () => () => {} }))
-vi.mock('@/store/connection', () => ({ useConnection: (sel: (s: { client: unknown }) => unknown) => sel({ client: {} }) }))
+vi.mock('@/store/connection', () => ({ useConnection: (pick: (s: unknown) => unknown) => pick({ client: {} , discovery: { phase: 'legacy' } }) }))
 vi.mock('@/lib/popout', () => ({ canPopout: () => false, noteOpenMode: () => 'navigate', openPopout: vi.fn() }))
 vi.mock('@/lib/citations', () => ({ provenanceOf: (md: string) => (md.includes('*Answer from [') ? 'chat' : null) }))
 vi.mock('@/components/chat/Citations', () => ({ citationCount: () => 2, CitationLink: () => null }))
@@ -50,8 +50,8 @@ const estimate: ContextEstimate = {
   omitted: 1,
   empty: false,
 }
-const item = (id: string, added: number): NotebookItem => ({ notebook: NB, kind: 'note', item: id, added_ms: BigInt(added), added_by: 'owner', removed_ms: null })
-const note = (id: string, title: string): DocSummary => ({ id, kind: 'note', title, binding: 'note', created_ms: 1n, updated_ms: BigInt(Date.now() - 7_200_000), bytes: 0n })
+const item = (id: string, added: number): NotebookItem => ({ notebook: NB, kind: 'note', item: id, added_ms: added, added_by: 'owner', removed_ms: null })
+const note = (id: string, title: string): DocSummary => ({ id, kind: 'note', title, binding: 'note', created_ms: 1, updated_ms: Date.now() - 7_200_000, bytes: 0 })
 
 const render = () => {
   const qc = new QueryClient()

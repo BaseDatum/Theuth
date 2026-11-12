@@ -1,6 +1,6 @@
 import { THEUTH } from '@/components/tasks/helpers'
 import type { RemoteAgent } from '@/components/tasks/home'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
 
 /** One (agent, engine) pair: `key` is unique across engines; `agent` is a local roster row, `remote` another engine's file; `on` the machine's name. */
 export type Node = { name: string; key: string; agent: AgentSummary | null; remote: RemoteAgent | null; on: string | null; children: Node[] }

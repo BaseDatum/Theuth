@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { MessageSquare, SquarePen } from 'lucide-react'
@@ -28,9 +29,10 @@ export function ChatPicker({
   onOpenChange: (open: boolean) => void
   item: AttachRef
 }) {
+  const canQuery1 = useQuerySupport(["list_sessions"])
   const api = useApi()
   const navigate = useNavigate()
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: open })
+  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: canQuery1 && (open) })
   const go = (session: string | null) => {
     prefillDraft(session, '', [item])
     onOpenChange(false)

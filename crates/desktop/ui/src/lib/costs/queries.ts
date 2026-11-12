@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 160 §6.1–6.4: the costs data never loads in front of the user. `CostsPrefetch` (mounted once in the shell) paints the
 // IndexedDB snapshot, fetches `cost_cube`, follows `CostCubeChanged` with deltas and writes the merged cube back at idle;
 // the page reads it synchronously through `useCostIndex`. `?sim=costs` serves the synthetic fixture instead.
@@ -7,9 +8,9 @@ import { useRouter } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { costCallsFixture, costsFixture, limitsFixture } from '@/dev/costs-fixture'
 import { useApi } from '@/lib/rpc'
-import type { CostCallsQuery } from '@/rpc/bindings/CostCallsQuery'
-import type { CostCallsPage } from '@/rpc/bindings/CostCallsPage'
-import type { CostCube } from '@/rpc/bindings/CostCube'
+import type { CostCallsQuery } from '@/rpc/bindings/method.agent.input'
+import type { CostCallsPage } from "@/rpc/bindings/method.agent.output"
+import type { CostCube } from "@/rpc/bindings/method.agent.output"
 import { useScope } from '@/store/engine-scope'
 import { on } from '@/store/sessions'
 import { defaultTz, type Index, emptyCube, index, merge } from './cube'
@@ -133,11 +134,11 @@ export function CostsPrefetch() {
     })
     idle(() => void qc.prefetchQuery({ queryKey: LIMITS_KEY, queryFn: () => api.usage_limits() }))
     const offs = [
-      on('CostCubeChanged', (e) => {
+      on("agent.cost-cube@1", 'CostCubeChanged', (e) => {
         const h = held()
         if (!h || h.epoch !== e.epoch || e.rev > h.rev) void fetchCube()
       }),
-      on('Lagged', () => void fetchCube()),
+      on("rpc.stream@1", 'Lagged', () => void fetchCube()),
     ]
     return () => {
       live = false
@@ -154,6 +155,7 @@ export function CostsPrefetch() {
  * `undefined` data = the engine cannot answer.
  */
 export function useUsageLimits(onScreen = true) {
+  const canQuery1 = useQuerySupport(["usage_limits"])
   const api = useApi()
   const sim = costsSim()
   useEffect(() => {
@@ -163,7 +165,7 @@ export function useUsageLimits(onScreen = true) {
     const t = setInterval(kick, 60_000)
     return () => clearInterval(t)
   }, [api, sim, onScreen])
-  return useQuery({
+  return useQuery({ enabled: canQuery1,
     queryKey: LIMITS_KEY,
     queryFn: () => (sim === 'costs' ? limitsFixture(Date.now()) : api.usage_limits()),
     refetchInterval: onScreen ? 15_000 : false,
@@ -174,10 +176,11 @@ export function useUsageLimits(onScreen = true) {
 
 /** The ledger: newest-first keyset pages of `query` (its `before` is the page cursor); previous rows stay while the next arrive. */
 export function useCostCalls(query: Omit<CostCallsQuery, 'before'>) {
+  const canQuery2 = useQuerySupport(["cost_calls"])
   const api = useApi()
   const qc = useQueryClient()
   const sim = costsSim()
-  return useInfiniteQuery({
+  return useInfiniteQuery({ enabled: canQuery2,
     queryKey: [...CALLS_KEY, query],
     queryFn: ({ pageParam }): Promise<CostCallsPage> => {
       const q = { ...query, before: pageParam }

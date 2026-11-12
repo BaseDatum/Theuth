@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 144 §12.1: `+ Add ▾` on the Sources column — File… / URL / Meeting… / Paste / Chat… / Confluence / Jira. YouTube and
 // audio/video are detected (the engine routes them; the UI only words the toast).
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -11,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { extFor, putAttachment } from '@/lib/files'
 import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
-import type { SourceAddArgs } from '@/rpc/bindings/SourceAddArgs'
+import type { SourceAddArgs } from '@/rpc/bindings/method.agent.input'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { formatAt } from '@/lib/time'
 import { detectFile, detectUrl, sourceTitle } from './origin'
@@ -196,15 +197,17 @@ function PickDialog({ title, description, rows, onClose, pending, onPick }: { ti
 }
 
 function MeetingDialog({ onClose, pending, onAdd }: DialogProps) {
+  const canQuery1 = useQuerySupport(["meeting_list"])
   const api = useApi()
-  const q = useQuery({ queryKey: queryKeys.meetings, queryFn: () => api.meeting_list(null) })
+  const q = useQuery({ enabled: canQuery1, queryKey: queryKeys.meetings, queryFn: () => api.meeting_list(null) })
   const rows = q.data?.map((m) => ({ id: m.id, label: m.title ?? m.process_name, sub: formatAt(Date.parse(m.started_at)) }))
   return <PickDialog title="Add a meeting" description="Its transcript and summary become one source." rows={rows} onClose={onClose} pending={pending} onPick={(id) => onAdd({ spec: { meeting: id }, title: null })} />
 }
 
 function ChatDialog({ onClose, pending, onAdd }: DialogProps) {
+  const canQuery2 = useQuerySupport(["list_sessions"])
   const api = useApi()
-  const q = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const q = useQuery({ enabled: canQuery2, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const rows = q.data
     ?.filter((s) => !s.parent && !s.desk)
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))

@@ -1,8 +1,8 @@
 import { expect, test } from 'vitest'
 import { blockedReason, captureLine, countersLine, loadedText, shareState } from './labs'
-import type { FamilyStats } from '@/rpc/bindings/FamilyStats'
-import type { ModeInfo } from '@/rpc/bindings/ModeInfo'
-import type { TrainingInfo } from '@/rpc/bindings/TrainingInfo'
+import type { FamilyStats } from "@/rpc/bindings/method.dreaming.output"
+import type { ModeInfo } from "@/rpc/bindings/method.dreaming.output"
+import type { TrainingInfo } from "@/rpc/bindings/method.dreaming.output"
 
 // ts-rs types u64 as `bigint`; the wire carries numbers, so the fixtures do too.
 const info = (p: Record<string, unknown>): ModeInfo =>

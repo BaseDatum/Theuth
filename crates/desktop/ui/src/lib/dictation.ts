@@ -9,13 +9,13 @@ import { toast } from 'sonner'
 import { closeTap, openTap, type Tap, wireTap } from '@/lib/mic-tap'
 import { touch } from '@/lib/platform'
 import * as speech from '@/lib/speech'
-import type { Api } from '@/rpc/api'
-import type { DeviceState } from '@/rpc/bindings/DeviceState'
-import type { DictationOpts } from '@/rpc/bindings/DictationOpts'
-import type { EndCommand } from '@/rpc/bindings/EndCommand'
-import type { ModelState } from '@/rpc/bindings/ModelState'
-import type { Surface } from '@/rpc/bindings/Surface'
-import type { VoiceEvent } from '@/rpc/bindings/VoiceEvent'
+import type { Api } from '@/rpc/bindings/client'
+import type { DeviceState } from "@/rpc/bindings/event.voice_2eevents.output"
+import type { DictationOpts } from '@/rpc/bindings/method.talk.input'
+import type { EndCommand } from "@/rpc/bindings/event.voice_2eevents.output"
+import type { ModelState } from "@/rpc/bindings/method.talk.output"
+import type { Surface } from "@/rpc/bindings/method.talk.output"
+import type { VoiceEvent } from "@/rpc/bindings/event.voice_2eevents.output"
 import { on } from '@/store/sessions'
 
 /**
@@ -324,13 +324,13 @@ function handle(e: VoiceEvent): void {
 /** Wire the `Dictation*` events to the store; once per app boot. Returns the unsubscribe. */
 export function installDictationListeners(): () => void {
   const offs = [
-    on('DictationModel', handle),
-    on('DictationStarted', handle),
-    on('DictationLevel', handle),
-    on('DictationText', handle),
-    on('DictationDevice', handle),
-    on('DictionarySuggestion', handle),
-    on('DictationFinished', handle),
+    on("voice.events@1", 'DictationModel', handle),
+    on("voice.events@1", 'DictationStarted', handle),
+    on("voice.events@1", 'DictationLevel', handle),
+    on("voice.events@1", 'DictationText', handle),
+    on("voice.events@1", 'DictationDevice', handle),
+    on("voice.events@1", 'DictionarySuggestion', handle),
+    on("voice.events@1", 'DictationFinished', handle),
   ]
   return () => {
     for (const off of offs) off()

@@ -1,14 +1,15 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useExports, useContacts } from '@/lib/contacts'
 import { engineLabel } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useMesh } from '@/components/tasks/queries'
-import type { A2aPeerStatus } from '@/rpc/bindings/A2aPeerStatus'
-import type { Contact } from '@/rpc/bindings/Contact'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { A2APeerStatus as A2aPeerStatus } from "@/rpc/bindings/method.a2a.output"
+import type { Contact } from "@/rpc/bindings/method.a2a.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { ContactNote } from '@/lib/injected'
-import type { AgentInfo } from '@/rpc/extra'
+import type { AgentInfo } from '@/store/ui-events'
 import { useSessionField } from '@/store/sessions'
 
 /** Who a peer card or a send names: words for the header, never a raw uuid when the UI knows better. */
@@ -162,11 +163,13 @@ export function senderColor(key: string): string {
 
 /** The directory for chat `self`, from the caches the app already keeps. `outside`: also read the contact and A2A lists. */
 export function useDirectory(self: string, outside: boolean): Directory {
+  const canQuery1 = useQuerySupport(["list_sessions"])
+  const canQuery1_2 = useQuerySupport(["a2a_status"])
   const api = useApi()
   const children = useSessionField(self, 'children')
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() }).data
+  const sessions = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() }).data
   const mesh = useMesh().data
-  const peers = useQuery({ queryKey: queryKeys.a2a, queryFn: () => api.a2a_status(), enabled: outside }).data?.peers
+  const peers = useQuery({ queryKey: queryKeys.a2a, queryFn: () => api.a2a_status(), enabled: canQuery1_2 && (outside) }).data?.peers
   const contacts = useContacts(outside).data
   const exported = useExports(outside).data?.find((x) => x.target.kind === 'chat' && x.target.session === self)?.name
   return { self, children, sessions, peers, contacts, mesh, exported }

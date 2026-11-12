@@ -1,20 +1,21 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { expect, test } from 'vitest'
-import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
-import type { Task } from '@/rpc/bindings/Task'
+import type { ActivityEntry } from "@/rpc/bindings/method.roster.output"
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
+import type { Task } from "@/rpc/bindings/method.roster.output"
 import { appendActivity, badgeCount, boardPulse, headline, inFlight, snoozeUntil, spend } from './model'
 
-const agent = (name: string, extra: Partial<AgentSummary> = {}, file: Partial<AgentSummary['file']> = {}): AgentSummary => ({
+const agent = (name: string, extra: Partial<AgentSummary> = {}, file: Partial<AgentSummary['file']> = {}): AgentSummary => (receiveComponent("method.roster.output.AgentSummary", {
   file: { name, title: name, reports_to: 'theuth', model: null, effort: null, tools: null, mcp: [], budget: { type: 'none' }, capabilities: null, paused: false, proposed_by: null, runs_in: 'any', body: 'x', ...file },
   status: 'idle',
   desk: null,
   open_tasks: 0,
   spent_month: 0,
   ...extra,
-})
+}))
 
-const task = (id: string, state: Task['state'], extra: Partial<Task> = {}): Task => ({
+const task = (id: string, state: Task['state'], extra: Partial<Task> = {}): Task => (receiveComponent("method.roster.output.Task", {
   id,
   title: id,
   brief: '',
@@ -41,9 +42,9 @@ const task = (id: string, state: Task['state'], extra: Partial<Task> = {}): Task
   next_wake_after_ms: null,
   priority: 'medium',
   ...extra,
-})
+}))
 
-const item = (id: string): AttentionItem => ({ id, kind: 'blocked', title: id, detail: null, at_ms: 1, task: null, agent: null, session: null, approval: null, decision: null, packet: null, ask: null, turn: null, rank: 5 })
+const item = (id: string): AttentionItem => (receiveComponent("method.roster.output.AttentionItem", { id, kind: 'blocked', title: id, detail: null, at_ms: 1, task: null, agent: null, session: null, approval: null, decision: null, packet: null, ask: null, turn: null, rank: 5 }))
 
 const row = (id: number): ActivityEntry => ({ id, ts_ms: id, kind: 'task_moved', actor: 'user', subject: 't', summary: `${id}`, cost: null })
 

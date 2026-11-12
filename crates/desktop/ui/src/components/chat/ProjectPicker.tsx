@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { ProjectIcon } from '@/components/sidebar/ProjectStyle'
@@ -7,8 +8,9 @@ import { queryKeys, useApi } from '@/lib/rpc'
 
 /** Distinct project labels across the known sessions (51 §3), sorted. */
 export function useProjects(): string[] {
+  const canQuery1 = useQuerySupport(["list_sessions"])
   const api = useApi()
-  const { data } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const { data } = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   return [...new Set(data?.flatMap((s) => (s.project ? [s.project] : [])))].sort()
 }
 

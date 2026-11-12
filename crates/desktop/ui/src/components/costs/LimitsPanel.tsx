@@ -4,12 +4,12 @@
 
 import { memo, useMemo, type ReactNode } from 'react'
 import { PolarAngleAxis, RadialBar, RadialBarChart } from 'recharts'
-import type { Balance } from '@/rpc/bindings/Balance'
-import type { BudgetLimit } from '@/rpc/bindings/BudgetLimit'
-import type { LimitStatus } from '@/rpc/bindings/LimitStatus'
-import type { ProviderLimits } from '@/rpc/bindings/ProviderLimits'
-import type { RateLimit } from '@/rpc/bindings/RateLimit'
-import type { UsageWindow } from '@/rpc/bindings/UsageWindow'
+import type { Balance } from "@/rpc/bindings/method.agent.output"
+import type { BudgetLimit } from "@/rpc/bindings/method.agent.output"
+import type { LimitStatus } from "@/rpc/bindings/method.agent.output"
+import type { ProviderLimits } from "@/rpc/bindings/method.agent.output"
+import type { RateLimit } from "@/rpc/bindings/method.agent.output"
+import type { UsageWindow } from "@/rpc/bindings/method.agent.output"
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart'
 import { Panel, Tag, type Tone } from '@/components/costs/ui'
 import { ago, compact, int, resetIn, usd, usdShort, when } from '@/lib/costs/format'

@@ -1,8 +1,8 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
-import type { ArmWindow } from '@/rpc/bindings/ArmWindow'
-import type { KindView } from '@/rpc/bindings/KindView'
+import type { ArmWindow } from "@/rpc/bindings/method.autoresearch.output"
+import type { KindView } from "@/rpc/bindings/method.autoresearch.output"
 import { WorldChart, interval, latestLaunch } from './WorldChart'
 
 type WorldView = Extract<KindView, { kind: 'world' }>

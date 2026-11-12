@@ -4,7 +4,7 @@
 // status row text (drawn under a Zap icon), and which batch stamps a batch card covers (its own plus the ones the oracle skipped
 // and the daemon carried into it).
 
-import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
+import type { OracleDecision } from "@/rpc/bindings/event.meeting_2eevents.output"
 
 export type MeetingLine = {
   kind: 'batch' | 'started' | 'request' | 'tapped' | 'dismissed' | 'deeper' | 'nudge' | 'summary'

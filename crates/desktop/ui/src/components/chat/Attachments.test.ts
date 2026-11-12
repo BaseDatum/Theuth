@@ -4,7 +4,7 @@ import { expect, test, vi } from 'vitest'
 import { Dialog } from '@/components/ui/dialog'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type * as Rpc from '@/lib/rpc'
-import type { ContextAttachment } from '@/rpc/bindings/ContextAttachment'
+import type { ContextAttachment } from "@/rpc/bindings/method.agent.output"
 import type * as Conn from '@/store/connection'
 import { type Item, Lightbox } from './Attachments'
 
@@ -15,7 +15,7 @@ vi.mock('@/lib/rpc', async (original) => ({
 }))
 vi.mock('@/store/connection', async (original) => ({
   ...(await original<typeof Conn>()),
-  useConnection: (pick: (s: unknown) => unknown) => pick({ info: { data_dir: '/dd' }, api: null }),
+  useConnection: (pick: (s: unknown) => unknown) => pick({ info: { data_dir: '/dd' }, api: null , discovery: { phase: 'legacy' } }),
 }))
 
 const occurrence = (removed: boolean): ContextAttachment => ({

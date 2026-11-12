@@ -3,7 +3,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, expect, test, vi } from 'vitest'
-import type { PtyChunk } from '@/rpc/bindings/PtyChunk'
+import type { PtyChunk } from "@/rpc/bindings/method.agent.output"
 import { RpcError } from '@/rpc/client'
 import { attachSource, CELL_KEYS, liveRows, Terminal } from './TerminalViewer'
 
@@ -15,7 +15,7 @@ const touch = vi.fn(() => false)
 vi.mock('@xterm/xterm', () => ({ Terminal: class {} }))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class {} }))
 vi.mock('@/lib/rpc', () => ({ useApi: () => api, queryKeys: { terminals: (s: string) => ['terminals', s] } }))
-vi.mock('@/store/connection', () => ({ useConnection: (sel: (s: { client: typeof client }) => unknown) => sel({ client }) }))
+vi.mock('@/store/connection', () => ({ useConnection: (pick: (s: unknown) => unknown) => pick({ client , discovery: { phase: 'legacy' } }) }))
 vi.mock('@/store/sessions', () => ({ useSessionField: () => null }))
 vi.mock('@/lib/platform', () => ({ touch: () => touch() }))
 vi.mock('@/lib/chord', () => ({ isApple: () => true }))

@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Hourglass, TriangleAlert } from 'lucide-react'
@@ -9,9 +10,10 @@ import { costShort, costTitle } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cappedTree, childrenOf, live, observedLabel, withAncestors } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
-import type { CostBucket } from '@/rpc/bindings/CostBucket'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { AgentInfo, AgentState } from '@/rpc/extra'
+import type { CostBucket } from "@/rpc/bindings/method.agent.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { AgentInfo } from '@/store/ui-events'
+import type { AgentState } from "@/rpc/bindings/method.agent.output"
 import { useSessionField, useSessions } from '@/store/sessions'
 
 export const GLYPH: Record<AgentState['state'], ReactNode> = {
@@ -157,10 +159,12 @@ export function Branch({
  * rows and their ancestors — a desk that is not the open chat shows what is working, not its history.
  */
 export function AgentTree({ session, active, liveOnly = false }: { session: string; active: string | undefined; liveOnly?: boolean }) {
+  const canQuery1 = useQuerySupport(["list_sessions"])
+  const canQuery1_2 = useQuerySupport(["session_cost"])
   const api = useApi()
   const children = useSessionField(session, 'children')
   // The sidebar keeps `list_sessions` warm; it lends `updated_at`/`created_at` to the ranking.
-  const { data: sessions = [] } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const { data: sessions = [] } = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000)
@@ -182,7 +186,7 @@ export function AgentTree({ session, active, liveOnly = false }: { session: stri
   const { data: cost } = useQuery({
     queryKey: queryKeys.sessionCost(session),
     queryFn: () => api.session_cost(session),
-    enabled: some,
+    enabled: canQuery1_2 && (some),
   })
   if (!some) return null
   return (

@@ -3,7 +3,7 @@
 // published). Brand colours, not `currentColor`: the colour is what makes a 14 px mark readable
 // (docs/design/172-channel-origin-ui.md). Slack's single path is split into its four two-piece lobes, each in its colour.
 import type { SVGProps } from 'react'
-import type { ChannelVia } from '@/rpc/bindings/ChannelVia'
+import type { ChannelVia } from "@/rpc/bindings/method.agent.output"
 
 type Props = Omit<SVGProps<SVGSVGElement>, 'children'>
 

@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 144 §12.2: `/sources/$id` — a read-only `DocumentPage` with Content · Insights · Details.
 // Wave 2 (U1): the way back to the notebook (§4, `useNotebookBack`) and the Insights tab (§4.3): the `## Insights`
 // sections of the document, **Run ▾** (`insight_skills` → `insight_run`), **Promote to note** (`insight_promote`).
@@ -26,7 +27,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import type { EngineProvider } from '@/lib/doc/provider'
 import { fmtBytes } from '@/lib/files'
 import { notebookKeys, useContextApi, useNotebooksApi } from '@/lib/notebooks-rpc'
-import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
+import type { Source as NotebookSource } from "@/rpc/bindings/method.document.output"
 import { useApi } from '@/lib/rpc'
 import { formatAt } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -80,7 +81,7 @@ export function SourcePage() {
           {tab === 'content' && s && isMedia(s) && (
             <div title="wave 2" className="flex items-center gap-3 border-b border-border-subtle px-6 py-2 text-xs text-fg-tertiary">
               <input type="range" disabled className="flex-1" />
-              <span className="font-mono">0:00 / {mmss(Number(s.duration_ms ?? 0n))}</span>
+              <span className="font-mono">0:00 / {mmss(s.duration_ms ?? 0)}</span>
             </div>
           )}
         </>
@@ -135,11 +136,12 @@ export function insightSections(blocks: readonly DocBlock[]): InsightSection[] {
 }
 
 function Insights({ source, provider, nb }: { source: string; provider: EngineProvider; nb: string | undefined }) {
+  const canQuery1 = useQuerySupport(["insight_skills"])
   const ctx = useContextApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
   const sections = insightSections(useBlocks(provider))
-  const skills = useQuery({ queryKey: notebookKeys.insightSkills, queryFn: () => ctx.insight_skills() })
+  const skills = useQuery({ enabled: canQuery1, queryKey: notebookKeys.insightSkills, queryFn: () => ctx.insight_skills() })
   // The new section appears on the next `SourceEvent::Changed` through the document stream; `running` covers the gap.
   const run = useMutation({
     mutationFn: (name: string) => ctx.insight_run(source, name in BUILTINS ? { builtin: name, skill: null } : { builtin: null, skill: name }),

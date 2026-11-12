@@ -2,8 +2,8 @@ import { ChevronRight, CircleX, Info, TriangleAlert } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { NOTES_SHOWN, TONE, cardTitle, worstSeverity } from '@/lib/advisor-format'
 import { formatAt, fullAt } from '@/lib/time'
-import type { AdvisorSeverity } from '@/rpc/bindings/AdvisorSeverity'
-import type { AdvisoryNote } from '@/rpc/bindings/AdvisoryNote'
+import type { AdvisorSeverity } from "@/rpc/bindings/method.agent.output"
+import type { AdvisoryNote } from "@/rpc/bindings/method.agent.output"
 import { Details, useScopedDisclosure } from './disclosure'
 
 const ICON: Record<AdvisorSeverity, typeof Info> = { advice: Info, nit: Info, concern: TriangleAlert, blocker: CircleX }

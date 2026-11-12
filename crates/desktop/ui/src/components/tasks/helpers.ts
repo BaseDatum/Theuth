@@ -1,8 +1,8 @@
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
-import type { Owner } from '@/rpc/bindings/Owner'
-import type { Task } from '@/rpc/bindings/Task'
-import type { TaskState } from '@/rpc/bindings/TaskState'
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
+import type { Owner } from "@/rpc/bindings/method.roster.output"
+import type { Task } from "@/rpc/bindings/method.roster.output"
+import type { TaskState } from "@/rpc/bindings/method.roster.output"
 
 /** Board columns in order — Backlog first (69 TASKS); `cancelled` sits behind a toggle (67 §12). */
 export const COLUMNS: readonly TaskState[] = ['backlog', 'todo', 'doing', 'review', 'blocked', 'done']

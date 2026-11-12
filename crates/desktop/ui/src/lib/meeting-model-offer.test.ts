@@ -1,8 +1,9 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { expect, test, vi } from 'vitest'
-import type { MeetingSettings } from '@/rpc/bindings/MeetingSettings'
+import type { MeetingSettings } from "@/rpc/bindings/method.meeting.output"
 import { OFFERED_KEY, offerMeetingDefault } from './meeting-model-offer'
 
-const block: MeetingSettings = {
+const block: MeetingSettings = receiveComponent("method.meeting.output.MeetingSettings", {
   model: null,
   effort: null,
   summary_model: null,
@@ -13,7 +14,7 @@ const block: MeetingSettings = {
   project: null,
   detect: { enabled: true, ignore: [], poll_secs: 2 },
   calendar: { eventkit: false, prebrief: true, poll_secs: 900 },
-}
+})
 
 const fakes = () => {
   const store: Record<string, string> = {}

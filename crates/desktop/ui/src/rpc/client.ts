@@ -1,4 +1,7 @@
-import type { WireEvent } from '@/rpc/events'
+import { SUBSCRIPTIONS, type MethodMap, type TopicEvent } from '@/rpc/bindings/client'
+import { receiveStream } from '@/rpc/bindings/receive'
+import { capabilitiesSchema, disconnected, rawResult, ready, supports, UnsupportedCapability, validateDocument, verifyHash, type Capabilities, type Discovery, type DiscoveryDocument } from '@/rpc/discovery'
+import { readLegacy, readTopic } from '@/rpc/topics'
 import { type ConnState, type DropReason, LocalTransport, type Transport } from '@/rpc/transport'
 
 export type { ConnState } from '@/rpc/transport'
@@ -23,25 +26,23 @@ export const backoff = (attempt: number): number => Math.min(10_000, 500 * 2 ** 
 /** A probe that saw no inbound frame for this long means the socket died while the phone slept. */
 const PROBE_MS = 5_000
 
-type Pending = { resolve: (v: unknown) => void; reject: (e: RpcError) => void }
+type Pending = { method: string; raw: boolean; sub?: Sub; resolve: (v: unknown) => void; reject: (e: Error) => void }
 type Sub = {
-  method: string
+  method: keyof typeof SUBSCRIPTIONS
   unsubscribe: string
+  notification: string
   params: unknown[]
-  onItem: (item: never) => void
-  id: unknown
+  onItem: (item: unknown) => void
+  id: string | number | null
+  feed: boolean
+  issued: number
+  issuing?: Promise<void>
 }
-type Frame = {
-  id?: number
-  result?: unknown
-  error?: { code: number; message: string; data?: unknown }
-  method?: string
-  params?: { subscription: unknown; result: unknown }
-}
+const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v)
 
 /**
  * JSON-RPC 2.0 over one `Transport` (jsonrpsee framing): positional params,
- * numeric ids, subscription items as `subscribe_events` notifications keyed
+ * numeric ids, negotiated topic or legacy subscription notifications keyed
  * by `params.subscription`. When the transport reports `reconnecting` it is
  * reconnected with capped exponential backoff and live subscriptions are
  * re-issued; the gap between is lost by design (25 §2.1).
@@ -70,23 +71,32 @@ export class RpcClient {
   /** The reason of the `reset()` in progress; the transport's own drop reason otherwise. */
   #resetting: DropReason | undefined
   #drop: { at: number; why: DropReason } | null = null
+  #generation = 0
+  #discovery = disconnected()
+  #discoveryListeners = new Set<(d: Discovery) => void>()
+  #documents = new Map<string, DiscoveryDocument>()
+  #barrier = Promise.withResolvers<void>()
+  #diagnostics = 0
 
   constructor(transport: Transport, source?: string) {
     this.#t = transport
     this.#source = source
-    transport.onMessage((text) => this.#receive(JSON.parse(text) as Frame))
+    void this.#barrier.promise.catch(() => undefined)
+    transport.onMessage(text => { if (!this.#closed) this.#receive(text) })
     transport.onState((s, why) => {
+      if (this.#closed || s === this.#state) return
       const was = this.#state
+      if (s === 'reconnecting' && !this.#drop && (was === 'open' || this.#resetting)) this.#drop = { at: Date.now(), why: this.#resetting ?? why ?? 'onclose' }
+      const generation = this.#invalidate('connection changed')
+      if (this.#closed || generation !== this.#generation) return
+      if (s === 'open') this.#setDiscovery({ ...this.#discovery, phase: 'discovering' })
+      if (this.#closed || generation !== this.#generation) return
       this.#setState(s)
+      if (this.#closed || generation !== this.#generation) return
       if (s === 'open') {
         this.#attempt = 0
-        for (const sub of this.#subs) void this.#issue(sub).catch(() => undefined)
-        this.#reportDrop()
-      } else if (s === 'reconnecting') {
-        if (!this.#drop && (was === 'open' || this.#resetting)) this.#drop = { at: Date.now(), why: this.#resetting ?? why ?? 'onclose' }
-        this.#failPending('connection closed')
-        this.#schedule()
-      }
+        void this.#negotiate(generation)
+      } else if (s === 'reconnecting') this.#schedule()
     })
     // Tests run without a document.
     if (typeof document !== 'undefined') {
@@ -100,57 +110,62 @@ export class RpcClient {
     return new RpcClient(new LocalTransport(url, token, source), source)
   }
 
-  /** Open the transport; resolves once open, rejects if the first attempt fails (retries continue). */
-  connect(): Promise<void> {
+  /** Open/authenticate the transport, then negotiate this generation's discovery readiness. */
+  async connect(): Promise<void> {
     this.#closed = false
-    return this.#t.connect()
+    await this.#t.connect()
+    const generation = this.#generation
+    await this.#barrier.promise
+    if (generation !== this.#generation) throw new RpcError(TRANSPORT, 'connection changed')
   }
 
-  /** One request; rejects with `RpcError` on an error reply or when not connected. */
-  call<T>(method: string, params: unknown[]): Promise<T> {
-    const { promise, resolve, reject } = Promise.withResolvers<T>()
-    if (this.#state !== 'open') {
-      reject(new RpcError(TRANSPORT, 'not connected'))
-      return promise
-    }
-    const id = this.#next++
-    this.#pending.set(id, { resolve: resolve as (v: unknown) => void, reject })
-    this.#t.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }))
-    return promise
+  /** Raw generic calls remain available; ordinary calls wait for discovery and fail missing support locally. */
+  async call<T>(method: string, params: unknown[]): Promise<T> {
+    if (this.#state !== 'open') throw new RpcError(TRANSPORT, 'not connected')
+    const generation = this.#generation
+    await this.#barrier.promise
+    if (generation !== this.#generation) throw new RpcError(TRANSPORT, 'connection changed')
+    if (this.#discovery.phase === 'ready' && !supports(this.#discovery, { methods: [method as keyof MethodMap] })) throw new UnsupportedCapability(method)
+    const value = await this.#request<T>(method, params)
+    if (generation !== this.#generation) throw new RpcError(TRANSPORT, 'connection changed')
+    return value
   }
 
-  /**
-   * `subscribe_events`; the returned function unsubscribes. Survives reconnects,
-   * and may be called before the transport is open (issued on `open`).
-   */
-  subscribe(
-    session: string | null,
-    descendants: boolean | null,
-    onEvent: (e: WireEvent) => void,
-  ): Promise<() => Promise<void>> {
-    return this.stream('subscribe_events', [session, descendants], 'unsubscribe_events', onEvent)
+  /** Versioned topic feed; legacy uses only unambiguous old-ABI tags from the same generated owners. */
+  subscribe(session: string | null, descendants: boolean | null, onEvent: (e: TopicEvent) => void): Promise<() => Promise<void>> {
+    return this.#track('subscribe_events', [session, descendants], 'unsubscribe_events', onEvent as (item: unknown) => void, true)
   }
 
-  /**
-   * Any jsonrpsee subscription pair: items arrive at `onItem`; the returned function unsubscribes.
-   * Re-issued on every reconnect (the server starts the stream over), so `onItem` sees its first item again.
-   */
-  async stream<T>(
-    method: string,
-    params: unknown[],
-    unsubscribe: string,
-    onItem: (item: T) => void,
-  ): Promise<() => Promise<void>> {
-    const sub: Sub = { method, params, unsubscribe, onItem: onItem as (item: never) => void, id: null }
+  /** Direct streams retain their independent items, buffering and initial snapshots. */
+  stream<T>(method: string, params: unknown[], unsubscribe: string, onItem: (item: T) => void): Promise<() => Promise<void>> {
+    return this.#track(method, params, unsubscribe, onItem as (item: unknown) => void, false)
+  }
+
+  async #track(method: string, params: unknown[], unsubscribe: string, onItem: (item: unknown) => void, feed: boolean): Promise<() => Promise<void>> {
+    if (this.#discovery.phase === 'failed') throw new Error(this.#discovery.error)
+    if (!Object.hasOwn(SUBSCRIPTIONS, method)) throw new UnsupportedCapability(method)
+    const name = method as keyof typeof SUBSCRIPTIONS
+    const metadata = SUBSCRIPTIONS[name]
+    if (metadata.unsubscribe !== unsubscribe) throw new UnsupportedCapability(`${method} subscription ABI`)
+    const sub: Sub = { method: name, params, unsubscribe, notification: metadata.notification, onItem, id: null, issued: -1, feed }
     this.#subs.add(sub)
-    if (this.#state === 'open') await this.#issue(sub)
+    try { if (ready(this.#discovery)) await this.#issue(sub) }
+    catch (e) { this.#subs.delete(sub); throw e }
     return async () => {
       this.#subs.delete(sub)
-      this.#bySubId.delete(sub.id)
-      if (this.#state === 'open' && sub.id !== null) {
-        await this.call(sub.unsubscribe, [sub.id]).catch(() => undefined)
-      }
+      const id = sub.id
+      sub.id = null
+      this.#bySubId.delete(id)
+      if (this.#state === 'open' && id !== null && sub.issued === this.#generation) await this.call(sub.unsubscribe, [id]).catch(() => undefined)
     }
+  }
+
+  get generation(): number { return this.#generation }
+  get discovery(): Discovery { return this.#discovery }
+  onDiscovery(cb: (d: Discovery) => void): () => void {
+    this.#discoveryListeners.add(cb)
+    cb(this.#discovery)
+    return () => this.#discoveryListeners.delete(cb)
   }
 
   /** Observe state changes; called immediately with the current state. Returns the unlisten. */
@@ -173,8 +188,94 @@ export class RpcClient {
       window.removeEventListener('pageshow', this.#foreground)
     }
     this.#t.close()
-    this.#failPending('closed')
+    this.#invalidate('closed')
     this.#setState('closed')
+  }
+
+  #request<T>(method: string, params: unknown[], raw = false, sub?: Sub): Promise<T> {
+    const { promise, resolve, reject } = Promise.withResolvers<T>()
+    if (this.#state !== 'open') { reject(new RpcError(TRANSPORT, 'not connected')); return promise }
+    const id = this.#next++
+    this.#pending.set(id, { method, raw, sub, resolve: resolve as (v: unknown) => void, reject })
+    try { this.#t.send(JSON.stringify({ jsonrpc: '2.0', id, method, params })) }
+    catch (e) { this.#pending.delete(id); reject(new RpcError(TRANSPORT, e instanceof Error ? e.message : String(e))) }
+    return promise
+  }
+
+  #invalidate(why: string): number {
+    const generation = ++this.#generation
+    this.#failPending(why)
+    this.#bySubId.clear()
+    for (const sub of this.#subs) { sub.id = null; sub.issued = -1; sub.issuing = undefined }
+    this.#barrier.reject(new RpcError(TRANSPORT, why))
+    this.#barrier = Promise.withResolvers<void>()
+    void this.#barrier.promise.catch(() => undefined)
+    this.#diagnostics = 0
+    this.#setDiscovery(disconnected())
+    return generation
+  }
+
+  #setDiscovery(discovery: Discovery): void {
+    this.#discovery = discovery
+    for (const cb of this.#discoveryListeners) cb(discovery)
+  }
+
+  #failDiscovery(error: unknown, capabilities: Capabilities | null = null): void {
+    const message = `Discovery failed: ${error instanceof Error ? error.message : String(error)}. Reconnect or update this app/engine.`
+    const barrier = this.#barrier
+    this.#setDiscovery({ ...this.#discovery, phase: 'failed', capabilities, document: null, error: message })
+    barrier.reject(new Error(message))
+  }
+
+  async #negotiate(generation: number): Promise<void> {
+    if (generation !== this.#generation || this.#discovery.phase !== 'discovering') return
+    let capabilities: Capabilities | null = null
+    let discovery: Discovery
+    try {
+      const value = await this.#request<unknown>('rpc.capabilities', [])
+      if (generation !== this.#generation) return
+      capabilities = capabilitiesSchema.parse(value)
+      if (capabilities.protocolVersion.major !== 1) throw new Error(`Unsupported wire protocol ${capabilities.protocolVersion.major}`)
+      let document = this.#documents.get(capabilities.schemaHash)
+      if (!document) {
+        const raw = await this.#request<string>('rpc.discover', [], true)
+        if (generation !== this.#generation) return
+        await verifyHash(raw, capabilities.schemaHash)
+        if (generation !== this.#generation) return
+        document = validateDocument(JSON.parse(raw))
+      }
+      if (document['x-theuth'].protocolVersion.major !== capabilities.protocolVersion.major || document['x-theuth'].protocolVersion.minor !== capabilities.protocolVersion.minor) throw new Error('Capabilities/document protocol mismatch')
+      const declared = document['x-theuth'].plugins, advertised = capabilities.plugins
+      if (declared.length !== advertised.length || declared.some((name, i) => name !== advertised[i]!.name)) throw new Error('Capabilities/document plugin mismatch')
+      if (generation !== this.#generation || this.#discovery.phase !== 'discovering') return
+      if (!this.#documents.has(capabilities.schemaHash)) {
+        if (this.#documents.size >= 2) this.#documents.delete(this.#documents.keys().next().value!)
+        this.#documents.set(capabilities.schemaHash, document)
+      }
+      discovery = { phase: 'ready', capabilities, document, unavailable: new Set() }
+    } catch (e) {
+      if (generation !== this.#generation || this.#discovery.phase !== 'discovering') return
+      if (!(e instanceof RpcError && e.code === -32601)) { this.#failDiscovery(e, capabilities); return }
+      discovery = { phase: 'legacy', capabilities, document: null, unavailable: new Set() }
+    }
+    this.#setDiscovery(discovery)
+    if (generation !== this.#generation || this.#discovery !== discovery) return
+    this.#barrier.resolve()
+    for (const sub of this.#subs) void this.#issue(sub).catch(() => undefined)
+    this.#reportDrop()
+  }
+
+  #malformed = (): void => {
+    if (this.#diagnostics++ < 3) console.warn('[rpc] ignored malformed routing item')
+  }
+
+  #corrupt(): void {
+    this.#malformed()
+    if (this.#discovery.phase === 'discovering') {
+      const generation = this.#generation
+      this.#failDiscovery(new Error('Malformed discovery framing'))
+      if (generation === this.#generation) this.#failPending('malformed discovery framing')
+    }
   }
 
   #foreground = (): void => {
@@ -203,7 +304,7 @@ export class RpcClient {
       this.#probe = undefined
       if (this.#heardAt < started) this.#reset(why)
     }, PROBE_MS)
-    void this.call('ping', []).catch(() => undefined)
+    void this.#request('ping', []).catch(() => undefined)
   }
 
   #reset(why: DropReason): void {
@@ -230,24 +331,66 @@ export class RpcClient {
   }
 
   async #issue(sub: Sub): Promise<void> {
-    const id = await this.call<unknown>(sub.method, sub.params)
-    if (!this.#subs.has(sub)) return
-    sub.id = id
-    this.#bySubId.set(id, sub)
+    if (!ready(this.#discovery) || !this.#subs.has(sub)) return
+    const generation = this.#generation
+    if (sub.issued === generation) return sub.issuing
+    sub.issued = generation
+    if (sub.feed) {
+      sub.method = this.#discovery.phase === 'ready' ? 'subscribe_topics' : 'subscribe_events'
+      const metadata = SUBSCRIPTIONS[sub.method]
+      sub.unsubscribe = metadata.unsubscribe
+      sub.notification = metadata.notification
+    }
+    if (this.#discovery.phase === 'ready' && !supports(this.#discovery, { methods: [sub.method] })) throw new UnsupportedCapability(sub.method)
+    const params = sub.feed && sub.method === 'subscribe_topics' ? [null, ...sub.params] : sub.params
+    sub.issuing = this.#request<unknown>(sub.method, params, false, sub).then(async id => {
+      if (generation !== this.#generation) return
+      if (!this.#subs.has(sub)) await this.call(sub.unsubscribe, [id]).catch(() => undefined)
+    })
+    return sub.issuing
   }
 
-  #receive(f: Frame): void {
+  #receive(text: string): void {
     this.#heardAt = Date.now()
-    if (f.params && 'subscription' in f.params) {
-      this.#bySubId.get(f.params.subscription)?.onItem(f.params.result as never)
+    let f: unknown
+    try { f = JSON.parse(text) } catch { this.#corrupt(); return }
+    if (!object(f) || f.jsonrpc !== '2.0') { this.#corrupt(); return }
+    if ('method' in f) {
+      // Notifications only; an unsolicited server request is never a reply or a client action.
+      if ('id' in f) return
+      if (typeof f.method !== 'string') { this.#malformed(); return }
+      const params = f.params
+      if (!object(params) || !Object.hasOwn(params, 'subscription') || (typeof params.subscription !== 'string' && !(typeof params.subscription === 'number' && Number.isFinite(params.subscription)))) { this.#malformed(); return }
+      const sub = this.#bySubId.get(params.subscription)
+      if (!sub || f.method !== sub.notification) return
+      if (!Object.hasOwn(params, 'result')) { this.#malformed(); return }
+      if (sub.feed) {
+        const event = sub.method === 'subscribe_topics' ? readTopic(params.result, this.#malformed) : readLegacy(params.result, this.#malformed)
+        if (event && (this.#discovery.phase === 'legacy' || supports(this.#discovery, { topics: [event.key] }))) sub.onItem(event)
+      } else sub.onItem(receiveStream(sub.method, params.result))
       return
     }
-    if (f.id === undefined) return
+    if (typeof f.id !== 'number') return
     const p = this.#pending.get(f.id)
     if (!p) return
     this.#pending.delete(f.id)
-    if (f.error) p.reject(new RpcError(f.error.code, f.error.message, f.error.data))
-    else p.resolve(f.result)
+    if (f.error !== undefined && Object.hasOwn(f, 'result')) { p.reject(new Error('Ambiguous JSON-RPC result/error')); return }
+    if (f.error !== undefined) {
+      if (!object(f.error) || !Number.isInteger(f.error.code) || typeof f.error.code !== 'number' || typeof f.error.message !== 'string') { p.reject(new Error('Malformed JSON-RPC error')); return }
+      if (f.error.code === -32601 && this.#discovery.phase === 'ready') this.#setDiscovery({ ...this.#discovery, unavailable: new Set([...this.#discovery.unavailable, p.method]) })
+      p.reject(new RpcError(f.error.code, f.error.message, f.error.data))
+    } else if (!Object.hasOwn(f, 'result')) p.reject(new Error('Missing JSON-RPC result'))
+    else if (p.raw) {
+      try { p.resolve(rawResult(text)) } catch (e) { p.reject(e instanceof Error ? e : new Error(String(e))) }
+    } else {
+      if (p.sub) {
+        const id = f.result
+        if (typeof id !== 'string' && !(typeof id === 'number' && Number.isFinite(id))) { p.reject(new Error('Malformed subscription id')); return }
+        // Bind synchronously before resolving: ordered transports may deliver the initial item in the same turn.
+        if (this.#subs.has(p.sub)) { p.sub.id = id; this.#bySubId.set(id, p.sub) }
+      }
+      p.resolve(f.result)
+    }
   }
 
   #failPending(why: string): void {

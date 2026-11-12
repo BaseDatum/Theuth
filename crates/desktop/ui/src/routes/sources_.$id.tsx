@@ -1,3 +1,5 @@
+import { withCapability } from '@/rpc/capabilities'
+import { requirements } from '@/components/sources/requirements'
 import { createFileRoute } from '@tanstack/react-router'
 import { SourcePage } from '@/components/sources/SourcePage'
 
@@ -7,5 +9,5 @@ export const Route = createFileRoute('/sources_/$id')({
     ...(typeof s.nb === 'string' && s.nb ? { nb: s.nb } : {}),
     ...(s.tab === 'content' || s.tab === 'insights' || s.tab === 'details' ? { tab: s.tab } : {}),
   }),
-  component: SourcePage,
+  component: withCapability(SourcePage, requirements),
 })

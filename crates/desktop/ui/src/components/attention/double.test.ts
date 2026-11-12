@@ -5,7 +5,7 @@ import { expect, test, vi } from 'vitest'
 import { DoubleUndo } from '@/components/chat/DoubleChip'
 import { doubleIds } from '@/components/hud/Hud'
 import type * as Rpc from '@/lib/rpc'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import { doubleStore } from '@/store/double'
 import { groupItems } from './model'
 

@@ -28,7 +28,7 @@ import { noteText } from '@/lib/voice-note'
 import { LOCAL, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
 import { type Activity, on, useSessions } from '@/store/sessions'
-import type { Api } from '@/rpc/api'
+import type { Api } from '@/rpc/bindings/client'
 
 // ---- settings (§5.4; localStorage + zustand, `lib/nudges.ts` pattern) ----
 
@@ -469,16 +469,16 @@ export function install(): () => void {
     return s.desk === session && replying(s.phase)
   }
   const sessionOffs = [
-    on('TextDelta', (e) => mine(e.session) && dispatch({ type: 'delta', text: e.text })),
-    on('ApprovalRequested', (e) => {
+    on("agent.events@1", 'TextDelta', (e) => mine(e.session) && dispatch({ type: 'delta', text: e.text })),
+    on("tools.approval-requested@1", 'ApprovalRequested', (e) => {
       if (!mine(e.session)) return
       approvals.add(e.id)
       dispatch({ type: 'approval', on: true })
     }),
-    on('ApprovalResolved', (e) => {
+    on("tools.approval-resolved@1", 'ApprovalResolved', (e) => {
       if (approvals.delete(e.id) && approvals.size === 0) dispatch({ type: 'approval', on: false })
     }),
-    on('Error', (e) => {
+    on("agent.events@1", 'Error', (e) => {
       if (!mine(e.session)) return
       dispatch({ type: 'error', message: e.message })
       clearTimers()
@@ -487,10 +487,10 @@ export function install(): () => void {
         finish(null, pointCancel)
       }, ERROR_MS)
     }),
-    on('TurnStarted', (e) => mine(e.session) && turn(false)),
-    on('TurnFinished', (e) => mine(e.session) && turn(true)),
+    on("agent.events@1", 'TurnStarted', (e) => mine(e.session) && turn(false)),
+    on("agent.events@1", 'TurnFinished', (e) => mine(e.session) && turn(true)),
     // Synthesis started: playback follows (or has begun) — a `done` panel comes back as `working`; the grace restarts.
-    on('SpeechStarted', (e) => {
+    on("voice.events@1", 'SpeechStarted', (e) => {
       if (!mine(e.session)) return
       clearTimeout(doneTimer)
       dispatch({ type: 'queued' })

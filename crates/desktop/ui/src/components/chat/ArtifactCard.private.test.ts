@@ -8,7 +8,7 @@ import type * as PageTheme from '@/lib/page-theme'
 import { usePrivate } from '@/lib/private'
 import type * as Rpc from '@/lib/rpc'
 import { useEngines } from '@/link/engines'
-import type { Artifact } from '@/rpc/extra'
+import type { Artifact } from "@/rpc/bindings/method.artifact.output"
 import { type Entry, useSessions } from '@/store/sessions'
 import { active } from '@/store/engine-scope'
 import { ArchiveView } from '@/components/artifacts/ArchiveView'

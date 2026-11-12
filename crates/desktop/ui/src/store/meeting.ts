@@ -5,19 +5,19 @@
 // island component's. `Level` never lands here (a ref drives the meters).
 
 import { create } from 'zustand'
-import type { Api } from '@/rpc/api'
-import type { Brief } from '@/rpc/bindings/Brief'
-import type { CaptureHealth } from '@/rpc/bindings/CaptureHealth'
-import type { CaptureStatus } from '@/rpc/bindings/CaptureStatus'
-import type { Degradation } from '@/rpc/bindings/Degradation'
-import type { MeetingEvent } from '@/rpc/bindings/MeetingEvent'
-import type { MeetingState } from '@/rpc/bindings/MeetingState'
-import type { MeetingStatus } from '@/rpc/bindings/MeetingStatus'
-import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
-import type { Topic } from '@/rpc/bindings/Topic'
-import type { TopicId } from '@/rpc/bindings/TopicId'
-import type { Track } from '@/rpc/bindings/Track'
-import type { PostStage } from '@/rpc/bindings/PostStage'
+import type { Api } from '@/rpc/bindings/client'
+import type { Brief } from "@/rpc/bindings/method.meeting.output"
+import type { CaptureHealth } from "@/rpc/bindings/method.meeting.output"
+import type { CaptureStatus } from "@/rpc/bindings/method.meeting.output"
+import type { Degradation } from "@/rpc/bindings/method.meeting.output"
+import type { MeetingEvent } from "@/rpc/bindings/event.meeting_2eevents.output"
+import type { MeetingState } from "@/rpc/bindings/method.meeting.output"
+import type { Status as MeetingStatus } from "@/rpc/bindings/method.meeting.output"
+import type { OracleDecision } from "@/rpc/bindings/event.meeting_2eevents.output"
+import type { Topic } from "@/rpc/bindings/method.meeting.output"
+import type { TopicId } from "@/rpc/bindings/method.meeting.output"
+import type { Track } from "@/rpc/bindings/method.meeting.output"
+import type { PostStage } from "@/rpc/bindings/method.meeting.output"
 import { on } from '@/store/sessions'
 
 /** Oracle verdicts kept per meeting (57 §3.4 data path). */
@@ -33,7 +33,7 @@ export const LINES_KEEP = 200
 export type Line = { track: Track; t0_ms: number; text: string; request: boolean; open: boolean; speaker: string | null }
 
 export const toLine = (
-  u: { track: Track; t0_ms: bigint; text: string; request: boolean; speaker?: string | null },
+  u: { track: Track; t0_ms: number; text: string; request: boolean; speaker?: string | null },
   open = false,
 ): Line => ({
   track: u.track,
@@ -368,12 +368,12 @@ export function installMeetingListeners(): () => void {
         'Capture',
       ] as const
     ).map((t) =>
-      on(t, apply),
+      on("meeting.events@1", t, apply),
     ),
-    on('TurnStarted', (e) => activity(e.session, 'thinking…')),
-    on('ToolCallStarted', (e) => activity(e.session, `${e.name}…`)),
-    on('ToolCallFinished', (e) => activity(e.session, 'thinking…')),
-    on('TurnFinished', (e) => activity(e.session, null)),
+    on("agent.events@1", 'TurnStarted', (e) => activity(e.session, 'thinking…')),
+    on("agent.events@1", 'ToolCallStarted', (e) => activity(e.session, `${e.name}…`)),
+    on("agent.events@1", 'ToolCallFinished', (e) => activity(e.session, 'thinking…')),
+    on("agent.events@1", 'TurnFinished', (e) => activity(e.session, null)),
   ]
   return () => {
     for (const off of offs) off()

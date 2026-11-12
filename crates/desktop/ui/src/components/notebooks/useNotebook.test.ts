@@ -1,5 +1,5 @@
 import { expect, test, vi } from 'vitest'
-import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
+import type { Source as NotebookSource } from "@/rpc/bindings/method.document.output"
 import { applySourceEvent, firstLine, sourceEventOf } from './useNotebook'
 
 vi.mock('@/lib/rpc', () => ({ useApi: () => ({}) }))

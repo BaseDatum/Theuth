@@ -9,6 +9,8 @@ import { type ReactNode, createContext, useContext } from 'react'
 import { type StoreApi, useStore } from 'zustand'
 import { type SearchApi, createSearchState } from '@/lib/search'
 import { useEngines } from '@/link/engines'
+import { RpcError } from '@/rpc/client'
+import { UnsupportedCapability } from '@/rpc/discovery'
 import {
   type ApprovalsApi,
   type AsksApi,
@@ -31,7 +33,7 @@ export type Stores = {
   qc: QueryClient
   /** Transient search state: remembered categories, last view, origin of a search-opened screen (49 §7). */
   search: SearchApi
-  /** The live `subscribe_events` unsubscribe, while this engine is the active one. */
+  /** The negotiated topic/legacy feed unsubscribe, while this engine is active. */
   attached: Promise<() => Promise<void>> | null
 }
 
@@ -49,7 +51,7 @@ export function scope(id: string): Stores {
       secretRequests: createSecretRequests(),
       connection: createConnection(),
       search: createSearchState(),
-      qc: new QueryClient({ defaultOptions: { queries: { staleTime: 30_000, retry: 1 } } }),
+      qc: new QueryClient({ defaultOptions: { queries: { staleTime: 30_000, retry: (count, error) => !(error instanceof UnsupportedCapability || error instanceof RpcError && error.code === -32601) && count < 1 } } }),
       attached: null,
     }
     scopes.set(id, st)

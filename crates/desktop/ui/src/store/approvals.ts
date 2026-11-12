@@ -1,9 +1,9 @@
 import { type StoreApi, createStore } from 'zustand'
-import type { ApprovalId } from '@/rpc/bindings/ApprovalId'
-import type { ApprovalRequested } from '@/rpc/bindings/ApprovalRequested'
-import type { AskId } from '@/rpc/bindings/AskId'
-import type { AskRequested } from '@/rpc/bindings/AskRequested'
-import type { SecretsEvent } from '@/rpc/bindings/SecretsEvent'
+import type { ApprovalId } from "@/rpc/bindings/method.roster.output"
+import type { ApprovalRequested } from "@/rpc/bindings/event.rpc_2estream.output"
+import type { AskId } from "@/rpc/bindings/method.roster.output"
+import type { AskRequested } from "@/rpc/bindings/method.roster.output"
+import type { SecretsEvent } from "@/rpc/bindings/event.rpc_2estream.output"
 import { scoped } from './engine-scope'
 
 /** `SecretsEvent.SecretRequested`: the model asked the user to type a secret (37 §3.3). */

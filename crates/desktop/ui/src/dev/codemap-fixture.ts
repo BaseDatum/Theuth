@@ -23,13 +23,13 @@ export function play(session: string): void {
   if (played.has(session)) return
   played.add(session)
   SCRIPT.forEach((e, i) => {
-    window.setTimeout(() => dispatch([e.type === 'CodeToolRan' ? { ...e, session } : e], active()), 800 + i * 1500)
+    window.setTimeout(() => dispatch([{key: 'codeindex.events@1', event: e.type === 'CodeToolRan' ? { ...e, session } : e}], active()), 800 + i * 1500)
   })
   window.setTimeout(
-    () => dispatch([{ type: 'ToolCallStarted', session, turn: 'fixture', call_id: 'toolu_edit', name: 'edit', args: { path: 'crates/tools/src/registry.rs' } }], active()),
+    () => dispatch([{key: 'agent.events@1', event: { type: 'ToolCallStarted', session, turn: 'fixture', call_id: 'toolu_edit', name: 'edit', args: { path: 'crates/tools/src/registry.rs' } }}], active()),
     800 + SCRIPT.length * 1500,
   )
   const root = SCRIPT[0]?.root ?? '/Users/sky/Develop/theuth'
   const changed: CodeMapChanged = { type: 'CodeMapChanged', root, elements: [], stale: ['overall-architecture/unit:crates/codeindex/src/git.rs'], more: 0, seq: 99 }
-  window.setTimeout(() => dispatch([changed as never], active()), 800 + (SCRIPT.length + 1) * 1500)
+  window.setTimeout(() => dispatch([{key: 'codeindex.events@1', event: changed as never}], active()), 800 + (SCRIPT.length + 1) * 1500)
 }

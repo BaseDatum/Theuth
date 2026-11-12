@@ -1,3 +1,5 @@
+import { withCapability } from '@/rpc/capabilities'
+import { secretsRequirements as requirements } from '@/components/library/requirements'
 import { createFileRoute } from '@tanstack/react-router'
 import { Secrets } from '@/components/library/Secrets'
 
@@ -6,4 +8,4 @@ const validateSearch = (s: Record<string, unknown>): { session?: string } => ({
   ...(typeof s.session === 'string' && { session: s.session }),
 })
 
-export const Route = createFileRoute('/secrets')({ validateSearch, component: Secrets })
+export const Route = createFileRoute('/secrets')({ validateSearch, component: withCapability(Secrets, requirements) })

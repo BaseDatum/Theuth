@@ -1,3 +1,4 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import './test-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { type ReactNode, act, createContext, createElement, useContext } from 'react'
@@ -10,19 +11,19 @@ import { queryKeys, useInvalidateOn } from '@/lib/rpc'
 import { accessFocus, contactFirstOf, exportName, fingerprint, focusedContact, names, sharedLabel, sharingOf } from '@/lib/contacts'
 import { ContactFirstScreen } from '@/components/attention/PlainScreens'
 import { KindActions } from '@/components/hud/Hud'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
-import type { Contact } from '@/rpc/bindings/Contact'
-import type { FirstWaiting } from '@/rpc/bindings/FirstWaiting'
-import type { Export } from '@/rpc/bindings/Export'
-import type { NearbyAgent } from '@/rpc/bindings/NearbyAgent'
-import type { PairCeremony } from '@/rpc/bindings/PairCeremony'
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
+import type { Contact } from "@/rpc/bindings/method.a2a.output"
+import type { FirstWaiting } from "@/rpc/bindings/method.a2a.output"
+import type { Export } from "@/rpc/bindings/method.a2a.output"
+import type { NearbyAgent } from "@/rpc/bindings/method.a2a.output"
+import type { PairCeremony } from "@/rpc/bindings/method.a2a.output"
 import { dispatch } from '@/store/sessions'
 import { Dialog } from '@/components/ui/dialog'
 import { AddContact, CeremonyBody, type CeremonyView, ContactAccess, Contacts, ShareDialog, SharingItems } from './Contacts'
 import { A2aSection } from './Communication'
 import { CommunicationNotice, useCommunication } from '@/components/chat/CommunicationNotice'
-import type { A2aStatus } from '@/rpc/bindings/A2aStatus'
-import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
+import type { A2AStatus as A2aStatus } from "@/rpc/bindings/method.a2a.output"
+import type { CommunicationState } from "@/rpc/bindings/method.agent.output"
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
 const navigate = vi.hoisted(() => vi.fn())
@@ -50,7 +51,7 @@ vi.mock('@/components/ui/select', () => ({
 }))
 
 const NOW = Date.now()
-const BOB: Contact = {
+const BOB: Contact = receiveComponent("method.a2a.output.Contact", {
   name: 'bob',
   machine: "Bob's MacBook",
   endpoint: 'k3j9q2m4x7p1r8t5w6y0zabcdefgh',
@@ -65,11 +66,11 @@ const BOB: Contact = {
   problem_kind: null,
   paired_on: null,
   machines: [],
-}
-const ALICE: Contact = { ...BOB, name: 'alice', machine: 'studio', path: 'lan', exports: ['ops-chat'], first_contact: {}, fingerprint: 'AAAA BBBB CCCC DDDD EEEE', full_capable: false }
+})
+const ALICE: Contact = receiveComponent("method.a2a.output.Contact", { ...BOB, name: 'alice', machine: 'studio', path: 'lan', exports: ['ops-chat'], first_contact: {}, fingerprint: 'AAAA BBBB CCCC DDDD EEEE', full_capable: false })
 const EXPORTS: Export[] = [
-  { name: 'research', target: { kind: 'agent', agent: 'research@studio' }, description: 'research@studio', paused: null },
-  { name: 'ops-chat', target: { kind: 'chat', session: 's-ops' }, description: 'Ops chat', paused: 'chat archived' },
+  receiveComponent("method.a2a.output.Export", { name: 'research', target: { kind: 'agent', agent: 'research@studio' }, description: 'research@studio', paused: null }),
+  receiveComponent("method.a2a.output.Export", { name: 'ops-chat', target: { kind: 'chat', session: 's-ops' }, description: 'Ops chat', paused: 'chat archived' }),
 ]
 const NEARBY: NearbyAgent[] = [
   { name: 'Shopbot', service: '_agent._tcp', addr: '192.168.8.40:8080', eid: null, card: 'http://192.168.8.40:8080/.well-known/agent-card.json', verified: false },
@@ -233,7 +234,7 @@ test('⋯ Rename → contact_update(name), Block… and Remove… confirm → co
 
 // 191 D8: one of each row — sound (a machine of theirs left), alert, refused, and waiting (a rename in flight: a second `bob`).
 const ROWS: Contact[] = [
-  {
+  receiveComponent("method.a2a.output.Contact", {
     ...BOB,
     id: 'r-bob',
     paired_on: 'studio',
@@ -242,10 +243,10 @@ const ROWS: Contact[] = [
       { eid: 'e-studio', name: 'studio', left: false },
       { eid: 'e-old', name: 'old-imac', left: true },
     ],
-  },
-  { ...ALICE, name: 'carol', id: 'r-carol', problem: 'a machine of carol follows a roster we never signed; one of ours may be compromised', problem_kind: 'alert', machines: [{ eid: 'e-tp', name: 'thinkpad', left: false }] },
-  { ...ALICE, name: 'dave', id: 'r-dave', exports: [], problem: "cannot verify this contact's machines", problem_kind: 'refused', machines: [{ eid: 'd4v3q2m4xyz', name: 'd4v3q2m4', left: false }] },
-  { ...BOB, id: 'r-bob-2', exports: [], problem: 'its name is taken by another contact (renaming)', problem_kind: 'waiting', machines: [{ eid: 'b0b2q2m4xyz', name: 'b0b2q2m4', left: false }] },
+  }),
+  receiveComponent("method.a2a.output.Contact", { ...ALICE, name: 'carol', id: 'r-carol', problem: 'a machine of carol follows a roster we never signed; one of ours may be compromised', problem_kind: 'alert', machines: [{ eid: 'e-tp', name: 'thinkpad', left: false }] }),
+  receiveComponent("method.a2a.output.Contact", { ...ALICE, name: 'dave', id: 'r-dave', exports: [], problem: "cannot verify this contact's machines", problem_kind: 'refused', machines: [{ eid: 'd4v3q2m4xyz', name: 'd4v3q2m4', left: false }] }),
+  receiveComponent("method.a2a.output.Contact", { ...BOB, id: 'r-bob-2', exports: [], problem: 'its name is taken by another contact (renaming)', problem_kind: 'waiting', machines: [{ eid: 'b0b2q2m4xyz', name: 'b0b2q2m4', left: false }] }),
 ]
 const rowOf = (text: string) => [...document.querySelectorAll<HTMLElement>('div.border-b')].find((d) => d.textContent?.includes(text))!
 const buttonsIn = (row: HTMLElement) => [...row.querySelectorAll('button')].map((b) => b.getAttribute('aria-label') ?? b.textContent?.trim())
@@ -546,7 +547,7 @@ test('Stop sharing is absent for a chat nobody can message', async () => {
   expect(body()).not.toContain('Stop sharing')
 })
 
-const FIRST: AttentionItem = {
+const FIRST: AttentionItem = receiveComponent("method.roster.output.AttentionItem", {
   id: 'contact_first:bob:research',
   kind: 'contact_first',
   title: "bob (Bob's MacBook) wants to reach research",
@@ -561,7 +562,7 @@ const FIRST: AttentionItem = {
   ask: null,
   turn: null,
   rank: 5,
-}
+})
 
 test('W-27 first contact: Allow once → ask, Always → allow, Block → block (contact and export from the id)', async () => {
   await mount(createElement(KindActions, { item: FIRST }))
@@ -576,7 +577,7 @@ test('W-27 first contact: Allow once → ask, Always → allow, Block → block 
 })
 
 test('ContactFirstScreen: who asks, what it wants to reach and the three answers; no share mode', async () => {
-  api.contact_first_waiting.mockImplementation(async () => [{ contact: 'bob', machine: "Bob's MacBook", export: 'research', session: 's1', since_ms: NOW, waiting: 1, preview: 'hi' }])
+  api.contact_first_waiting.mockImplementation(async () => [receiveComponent('method.a2a.output.FirstWaiting', { contact: 'bob', machine: "Bob's MacBook", export: 'research', session: 's1', since_ms: NOW, waiting: 1, preview: 'hi' })])
   await mount(createElement(ContactFirstScreen, { item: FIRST }))
   const t = body()
   expect(t).toContain("bob (Bob's MacBook) wants to reach research")
@@ -640,7 +641,7 @@ test('the chat banner names HTTP-peer exports only: a chat shared with a contact
   await vi.waitFor(() => expect(body()).toContain('Exported: docs → lab'))
 })
 
-const WAIT: FirstWaiting = { contact: 'bob', machine: "Bob's MacBook", export: 'ops-chat', session: 's-ops', since_ms: NOW, waiting: 1, preview: 'hello' }
+const WAIT: FirstWaiting = receiveComponent("method.a2a.output.FirstWaiting", { contact: 'bob', machine: "Bob's MacBook", export: 'ops-chat', session: 's-ops', since_ms: NOW, waiting: 1, preview: 'hello' })
 
 test('183 F3 Communication: a held first message sits under its export row; Allow once · Always · Block answer it; no machine, no parentheses; a queued row (186 engine) never shows', async () => {
   api.contact_first_waiting.mockImplementation(async () => [WAIT, { ...WAIT, contact: 'alice', machine: '' }, { ...WAIT, contact: 'carol', queued: true, position: 1 }])

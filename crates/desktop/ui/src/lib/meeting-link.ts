@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // A chat's meeting: meetings carry their own session id (`MeetingSummary.session`), and the list is the only
 // place the UI has that link (no session → meeting RPC), so the chat menus look the session up in the cached
 // `meeting_list`. Hidden when no meeting claims the session.
@@ -5,15 +6,16 @@
 import { useQuery } from '@tanstack/react-query'
 import { canPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
+import type { MeetingSummary } from "@/rpc/bindings/method.meeting.output"
 
 /** The meeting whose own chat is `session`, else `null`. */
 export const meetingForSession = (meetings: readonly MeetingSummary[] | undefined, session: string): string | null =>
   meetings?.find((m) => m.session === session)?.id ?? null
 
 export function useMeetingForSession(session: string): string | null {
+  const canQuery1 = useQuerySupport(["meeting_list"])
   const api = useApi()
-  const list = useQuery({ queryKey: queryKeys.meetings, queryFn: () => api.meeting_list(null) })
+  const list = useQuery({ enabled: canQuery1, queryKey: queryKeys.meetings, queryFn: () => api.meeting_list(null) })
   return meetingForSession(list.data, session)
 }
 
