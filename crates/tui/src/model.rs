@@ -137,9 +137,6 @@ pub struct Model {
     pub approvals_global: bool,
     /// The root session opted out of prompts (`/approvals off`).
     pub approvals_off: bool,
-    /// `Info.app_enabled`: the app plugin runs, so `/apps` is offered. Off,
-    /// app records stay readable under `/artifacts` (46 §9).
-    pub app_enabled: bool,
     /// The harness-wide vision fallback (52 §3): a text-only shown model
     /// says at attach time whether this model will inspect the image.
     /// Asked once at startup; `/vision` replies keep it current.
@@ -214,9 +211,6 @@ pub struct Model {
     pub(crate) widget_cursor: Option<usize>,
     /// Text queued to prepend without replacing a draft typed since dispatch.
     pub(crate) editor_prefixes: Vec<String>,
-    /// A loaded transcript holds `show` cards: the event loop asks
-    /// `list_artifacts` to join their artifacts back (35 §0.3).
-    pub refresh_artifacts: bool,
     /// Context revision of the shown transcript (`Loaded.context_revision`,
     /// 48 §3.1); empty until loaded. A `ContextChanged` with a newer one
     /// sets `refresh_context`; an older settled reload is dropped.
@@ -257,7 +251,7 @@ pub struct Model {
     pub refresh_advisor: bool,
     /// Effective project of the shown session's root (`Loaded.project`).
     pub project: Option<String>,
-    /// A `/sessions` or `/artifacts` menu is open and session metadata
+    /// A `/sessions` menu is open and session metadata
     /// changed: the event loop re-lists it.
     pub refresh_grouping: bool,
     /// The private root this view owns (51 §4): its id, lease secret and
@@ -282,7 +276,6 @@ pub struct Model {
 mod advisor;
 mod agents;
 mod approvals;
-mod artifacts;
 mod boards;
 mod catalog;
 mod credentials;
@@ -309,8 +302,6 @@ pub(crate) use advisor::{AdvisorReply};
 pub use agents::{AgentRow, sort_agents, agent_row, WATCH_GLYPH, source_tag, observed_word};
 use agents::{rank, harness_word};
 pub use approvals::Ask;
-pub use artifacts::{Owner, artifact_rows, Progress, progress_line};
-use artifacts::{SHOW, APP};
 pub use catalog::{PickTarget, ModelRow, EffortChips, rank_models, providers, provider_models, title_model_line, vision_model_line, aws_profile_line};
 #[cfg(test)]
 use catalog::{search_terms};
@@ -327,9 +318,9 @@ pub use menus::{window, Menu, Grouped, grouped_step, grouped_first, MenuKey};
 pub use paste::{Paste, paste_token};
 pub use prompts::{Prompt};
 pub use sessions::{Private, session_rows, TurnAction, ESC_TAPS_WINDOW, engine_chip, session_row, owner_offline_line, owner_turn_suffix, owner_unreachable, short, PRIVATE_WARNING};
-use sessions::{project_heading, project_order};
+pub(crate) use sessions::{project_heading, project_order};
 pub use lifecycle::removal_line;
-pub use slash::{COMMANDS, slash_matches, SlashRow};
+pub use slash::{COMMANDS, SlashRow};
 pub(crate) use slash::command_rank;
 pub(crate) use status::{now_ms, when, ago, on_off};
 pub use status::{Level, k};

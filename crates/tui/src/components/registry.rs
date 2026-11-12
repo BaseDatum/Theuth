@@ -4,7 +4,7 @@ use super::*;
 struct Slot { generation: u64, component: Option<Box<dyn ErasedComponent>> }
 /// The sole built-in composition list. Add a panel here only after deleting its
 /// residual enum/reducer/executor/render/print hooks.
-pub fn builtin() -> Registry {
+pub fn builtin(app_enabled: bool) -> Registry {
     let mut registry = Registry::empty();
     registry.register(update::Update::default()).expect("built-in component registration");
 
@@ -27,6 +27,7 @@ pub fn builtin() -> Registry {
     registry.register(double::Double::default()).expect("built-in component registration");
     registry.register(todos::Todos::default()).expect("built-in component registration");
     registry.register(shake::ShakePanel::default()).expect("built-in component registration");
+    registry.register(artifacts_apps::ArtifactsApps::new(app_enabled)).expect("built-in component registration");
 
     // Step-11 group t3 (jobs, terminals, speech and search): register below, in this block only.
     registry.register(jobs::Jobs::default()).expect("built-in component registration");

@@ -23,6 +23,12 @@
     }
 
     use crate::components::double::{Double, DoubleCmd, double_chip};
+    use crate::components::artifacts_apps::{ArtifactsApps, Card as ArtifactCard, Picker as ArtifactPicker, Request as ArtifactRequest, Msg as ArtifactMsg, Progress, progress_line, artifact_read_path};
+    fn artifact_body_reply(model: &mut Model, rx: &mut tokio::sync::mpsc::UnboundedReceiver<Command>) {
+        let ArtifactRequest::Read { artifact, call, generation, epoch } = component_request(rx).unwrap() else { panic!("expected source read") };
+        let bytes = artifact_read_path(&artifact).map_or_else(|| Ok(Vec::new()), |path| std::fs::read(path).map_err(|error| error.to_string()));
+        component_reply(model, "artifacts-apps", ArtifactMsg::Body { artifact, call, generation, epoch, bytes });
+    }
     use agent::{CostBucket, CostScope, Coverage, Money, SessionCost};
     use crate::components::costs::{cost_lines, cost_short, money_units};
     use agent::{CommunicationState, PeerOrigin, PeerRecord, PeerReceipt, PeerMessagePage, PeerMessageChanged, PeerScope};
@@ -59,16 +65,16 @@
         })
     }
     fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
-        let registry = crate::components::builtin();
+        let registry = crate::components::builtin(false);
         transcript::injected(text, |row| registry.wrapper(row))
     }
 
     fn user_entries(text: String, turn: Option<i64>) -> Vec<Entry> {
-        history::user_entries(text, turn, &crate::components::builtin())
+        history::user_entries(text, turn, &crate::components::builtin(false))
     }
 
     fn from_history(row: HistoryEntry, options: &markdown::Options) -> Vec<Entry> {
-        history::from_history(row, options, &crate::components::builtin())
+        history::from_history(row, options, &crate::components::builtin(false))
     }
 
 
@@ -125,9 +131,12 @@
             MenuKey::Input(String::new())
         );
         assert!(m.quit && m.menu.is_none());
-        assert_eq!(slash_matches("/", true).len(), COMMANDS.len());
-        assert_eq!(slash_matches("/", false).len(), COMMANDS.len() - 1);
-        assert!(slash_matches("/zzz", true).is_empty());
+        m.components = crate::components::builtin(true);
+        let declared = COMMANDS.len() + m.components.slash_specs().count();
+        assert_eq!(m.command_specs("/").len(), declared);
+        m.components.get_mut::<ArtifactsApps>().unwrap().enabled = false;
+        assert_eq!(m.command_specs("/").len(), declared - 1);
+        assert!(m.command_specs("/zzz").is_empty());
     }
 
     use crate::components::dictation_voice::{DictationVoice, Request as DictationRequest, Msg as DictationMsg, voice_cmd, voice_line};
@@ -3657,7 +3666,6 @@
             args: vec!["make".into()],
             result: None,
             expanded: None,
-            artifact: None,
         }
         .height(80);
         let tool = m
@@ -6278,36 +6286,55 @@
     }
 
     #[test]
+    fn unclaimed_tool_toggle_keeps_generic_output_and_skips_unfinished_calls() {
+        let mut model = Model::new(String::new(), false);
+        model.entries = vec![
+            Entry::Tool {
+                call_id: "finished".into(), name: "shell".into(), args: Vec::new(),
+                result: Some(("first\nsecond".into(), false)), expanded: None,
+            },
+            Entry::Tool {
+                call_id: "running".into(), name: "shell".into(), args: Vec::new(),
+                result: None, expanded: None,
+            },
+        ];
+        model.toggle_card();
+        assert!(matches!(&model.entries[0], Entry::Tool { expanded: Some(body), .. } if body.raw() == "```\nfirst\nsecond\n```"));
+        assert!(matches!(&model.entries[1], Entry::Tool { result: None, expanded: None, .. }));
+        model.toggle_card();
+        assert!(matches!(&model.entries[0], Entry::Tool { expanded: None, .. }));
+    }
+
+    #[test]
     fn show_card_joins_its_artifact_and_expands_the_markdown() {
+        let (tx, mut rx) = unbounded_channel();
         let s = SessionId::new();
         let turn = TurnId::new();
         let mut m = Model {
             session: Some(s),
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
+        m.component_commands = Some(tx.clone());
         // Progress before the call starts names the file from the partial JSON.
-        m.apply_agent(AgentEvent::ToolCallPending {
+        m.apply(wire_event("agent.events", AgentEvent::ToolCallPending {
             session: s,
             turn,
             call_id: "c1".into(),
             name: "show".into(),
-        });
-        m.apply_agent(AgentEvent::ToolCallProgress {
+        }));
+        m.apply(wire_event("agent.events", AgentEvent::ToolCallProgress {
             session: s,
             turn,
             call_id: "c1".into(),
             args: r##"{"name": "note.md", "content": "# Hel"##.into(),
-        });
+        }));
         assert!(matches!(
-            m.entries.last(),
-            Some(Entry::Pending { name, progress: Some(Progress { show: Some(s), bytes: 37 }), .. })
+            (m.entries.last(), m.components.get::<ArtifactsApps>().unwrap().progress.get("c1")),
+            (Some(Entry::Pending { name, .. }), Some(Progress { show: Some(s), bytes: 37 }))
                 if name == "show" && s.name.as_deref() == Some("note.md") && s.writing
         ));
-        let Some(Entry::Pending {
-            name,
-            progress: Some(p),
-            ..
-        }) = m.entries.last()
+        let (Some(Entry::Pending { name, .. }), Some(p)) =
+            (m.entries.last(), m.components.get::<ArtifactsApps>().unwrap().progress.get("c1"))
         else {
             unreachable!()
         };
@@ -6321,13 +6348,13 @@
         };
         assert_eq!(progress_line("show", &shown), "showing x.pdf…");
         assert_eq!(progress_line("shell", &shown), "preparing shell… 40 B");
-        m.apply_agent(AgentEvent::ToolCallStarted {
+        m.apply(wire_event("agent.events", AgentEvent::ToolCallStarted {
             session: s,
             turn,
             call_id: "c1".into(),
             name: "show".into(),
             args: serde_json::json!({"name": "note.md", "content": "# Hello\n\nbody"}),
-        });
+        }));
         let path =
             std::env::temp_dir().join(format!("theuth-tui-artifact-{}.md", std::process::id()));
         std::fs::write(&path, "# Hello\n\nbody\n").unwrap();
@@ -6349,38 +6376,38 @@
             created_at: 0,
         };
         // Another session's artifact is not ours.
-        m.apply(UiEvent::ArtifactShown(artifact::ArtifactShown {
+        m.apply(wire_event("artifact.shown", artifact::ArtifactShown {
             session: SessionId::new(),
             call_id: "c1".into(),
             artifact: artifact.clone(),
         }));
         assert!(matches!(
-            m.entries.last(),
-            Some(Entry::Tool { artifact: None, .. })
+            (m.entries.last(), m.components.get::<ArtifactsApps>().unwrap().cards.get("c1")),
+            (Some(Entry::Tool { .. }), None)
         ));
-        m.apply(UiEvent::ArtifactShown(artifact::ArtifactShown {
+        m.apply(wire_event("artifact.shown", artifact::ArtifactShown {
             session: s,
             call_id: "c1".into(),
             artifact,
         }));
-        m.apply_agent(AgentEvent::ToolCallFinished {
+        m.apply(wire_event("agent.events", AgentEvent::ToolCallFinished {
             session: s,
             turn,
             call_id: "c1".into(),
             output: "shown note.md (v1 · 3 lines · 14 B)".into(),
             is_error: false,
             files: Vec::new(),
-        });
+        }));
         let card = m.entries.last().unwrap();
-        assert!(matches!(card, Entry::Tool { artifact: Some(a), .. } if a.name == "note.md"));
-        assert_eq!(m.artifact_path(), Some(path.as_path()));
-        let collapsed = card.height(80);
+        assert!(matches!((card, m.components.get::<ArtifactsApps>().unwrap().cards.get("c1")), (Entry::Tool { .. }, Some(ArtifactCard { artifact: a, .. })) if a.name == "note.md"));
+        assert_eq!(m.components.get::<ArtifactsApps>().unwrap().artifact_path(&m.entries), Some(path.as_path()));
+        let collapsed = m.entry_height(card, 80);
         m.toggle_card();
+        artifact_body_reply(&mut m, &mut rx);
         let card = m.entries.last().unwrap();
-        assert!(card.height(80) > collapsed);
-        let Entry::Tool {
-            expanded: Some(t), ..
-        } = card
+        assert!(m.entry_height(card, 80) > collapsed);
+        let (Entry::Tool { .. }, Some(ArtifactCard { expanded: Some(t), .. })) =
+            (card, m.components.get::<ArtifactsApps>().unwrap().cards.get("c1"))
         else {
             panic!("expanded");
         };
@@ -6391,8 +6418,8 @@
         );
         m.toggle_card();
         assert!(matches!(
-            m.entries.last(),
-            Some(Entry::Tool { expanded: None, .. })
+            (m.entries.last(), m.components.get::<ArtifactsApps>().unwrap().cards.get("c1")),
+            (Some(Entry::Tool { .. }), Some(ArtifactCard { expanded: None, .. }))
         ));
         std::fs::remove_file(&path).unwrap();
     }
@@ -6404,38 +6431,36 @@
         let turn = TurnId::new();
         let mut m = Model {
             session: Some(s),
-            app_enabled: true,
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
+        m.component_commands = Some(tx.clone());
+        m.components.get_mut::<ArtifactsApps>().unwrap().enabled = true;
         // The streamed `name` names the app being built; no pretend render.
-        m.apply_agent(AgentEvent::ToolCallPending {
+        m.apply(wire_event("agent.events", AgentEvent::ToolCallPending {
             session: s,
             turn,
             call_id: "a1".into(),
             name: "app".into(),
-        });
-        m.apply_agent(AgentEvent::ToolCallProgress {
+        }));
+        m.apply(wire_event("agent.events", AgentEvent::ToolCallProgress {
             session: s,
             turn,
             call_id: "a1".into(),
             args: r#"{"name": "panel", "source": "root = Card("#.into(),
-        });
-        let Some(Entry::Pending {
-            name,
-            progress: Some(p),
-            ..
-        }) = m.entries.last()
+        }));
+        let (Some(Entry::Pending { name, .. }), Some(p)) =
+            (m.entries.last(), m.components.get::<ArtifactsApps>().unwrap().progress.get("a1"))
         else {
             unreachable!()
         };
         assert_eq!(progress_line(name, p), "building panel… 41 B");
-        m.apply_agent(AgentEvent::ToolCallStarted {
+        m.apply(wire_event("agent.events", AgentEvent::ToolCallStarted {
             session: s,
             turn,
             call_id: "a1".into(),
             name: "app".into(),
             args: serde_json::json!({"name": "panel", "source": "root = Card(TextContent(\"hi\"))"}),
-        });
+        }));
         let path =
             std::env::temp_dir().join(format!("theuth-tui-app-{}.openui", std::process::id()));
         std::fs::write(&path, "root = Card(TextContent(\"hi\"))\n").unwrap();
@@ -6457,29 +6482,29 @@
             created_at: 0,
         };
         // The app's `ArtifactShown` joins the `app` card by call_id like `show`.
-        m.apply(UiEvent::ArtifactShown(artifact::ArtifactShown {
+        m.apply(wire_event("artifact.shown", artifact::ArtifactShown {
             session: s,
             call_id: "a1".into(),
             artifact: app.clone(),
         }));
-        m.apply_agent(AgentEvent::ToolCallFinished {
+        m.apply(wire_event("agent.events", AgentEvent::ToolCallFinished {
             session: s,
             turn,
             call_id: "a1".into(),
             output: "published panel v1 (a1) · 1 statement".into(),
             is_error: false,
             files: Vec::new(),
-        });
+        }));
         assert!(matches!(
-            m.entries.last(),
-            Some(Entry::Tool { artifact: Some(a), .. }) if a.kind == artifact::Kind::App
+            (m.entries.last(), m.components.get::<ArtifactsApps>().unwrap().cards.get("a1")),
+            (Some(Entry::Tool { .. }), Some(ArtifactCard { artifact: a, .. })) if a.kind == artifact::Kind::App
         ));
         // `o` opens the source file; Ctrl+O reads it, saying where the app runs.
-        assert_eq!(m.artifact_path(), Some(path.as_path()));
+        assert_eq!(m.components.get::<ArtifactsApps>().unwrap().artifact_path(&m.entries), Some(path.as_path()));
         m.toggle_card();
-        let Some(Entry::Tool {
-            expanded: Some(t), ..
-        }) = m.entries.last()
+        artifact_body_reply(&mut m, &mut rx);
+        let (Some(Entry::Tool { .. }), Some(ArtifactCard { expanded: Some(t), .. })) =
+            (m.entries.last(), m.components.get::<ArtifactsApps>().unwrap().cards.get("a1"))
         else {
             panic!("expanded");
         };
@@ -6505,52 +6530,48 @@
                 ..Loaded::default()
             },
         ));
-        assert!(m.refresh_artifacts);
+        assert!(m.components.get::<ArtifactsApps>().unwrap().refresh);
         m.session = Some(s);
 
         // With the plugin off, `/apps` is not offered and asks nothing; the
         // source stays readable through `/artifacts` (the card above).
-        m.app_enabled = false;
-        assert!(slash_matches("/apps", false).is_empty());
+        m.components.get_mut::<ArtifactsApps>().unwrap().enabled = false;
+        assert!(m.command_specs("/apps").is_empty());
         m.submit("/apps", &tx);
         assert!(rx.try_recv().is_err());
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t.starts_with("apps are off")));
-        m.app_enabled = true;
+        m.components.get_mut::<ArtifactsApps>().unwrap().enabled = true;
 
         // `/apps` asks for the filtered list; the picker names it and `s` shows the source.
         m.submit("/apps", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::ListArtifacts { session, pick: true, apps: true }) if session == s
+            component_request::<ArtifactRequest>(&mut rx),
+            Ok(ArtifactRequest::ListArtifacts { session, pick: true, apps: true }) if session == s
         ));
-        m.apply(UiEvent::Artifacts {
-            items: vec![app],
-            pick: true,
-            apps: true,
-            sessions: Vec::new(),
+        let generation = m.components.get::<ArtifactsApps>().unwrap().generation;
+        component_reply(&mut m, "artifacts-apps", ArtifactMsg::Listed {
+            session: s, generation, pick: true, apps: true, result: Ok((vec![app], Vec::new())),
         });
-        assert!(matches!(m.menu, Some(Menu::Artifacts { apps: true, .. })));
-        m.menu_key(KeyCode::Char('s'), "", &tx);
-        assert!(m.menu.is_none());
+        assert!(matches!(m.components.get::<ArtifactsApps>().unwrap().menu, Some(ArtifactPicker { apps: true, .. })));
+        component_menu_key(&mut m, "artifacts-apps", KeyCode::Char('s'));
+        assert!(m.components.get::<ArtifactsApps>().unwrap().menu.is_none());
+        artifact_body_reply(&mut m, &mut rx);
         assert!(matches!(
             m.entries.last(),
-            Some(Entry::Card { kind: CardKind::Artifact, title, expanded: true, .. }) if title == "panel.openui"
+            Some(Entry::Card { kind: CardKind::Component { group: "artifacts-inline", .. }, title, expanded: true, .. }) if title == "panel.openui"
         ));
         // `/artifacts` stays every kind; an empty `/apps` says so.
         m.submit("/artifacts", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::ListArtifacts {
+            component_request::<ArtifactRequest>(&mut rx),
+            Ok(ArtifactRequest::ListArtifacts {
                 pick: true,
                 apps: false,
                 ..
             })
         ));
-        m.apply(UiEvent::Artifacts {
-            items: Vec::new(),
-            pick: true,
-            apps: true,
-            sessions: Vec::new(),
+        component_reply(&mut m, "artifacts-apps", ArtifactMsg::Listed {
+            session: s, generation, pick: true, apps: true, result: Ok((Vec::new(), Vec::new())),
         });
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "no apps"));
         std::fs::remove_file(&path).unwrap();

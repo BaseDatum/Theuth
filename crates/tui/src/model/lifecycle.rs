@@ -3,7 +3,7 @@ use super::*;
 impl Model {
     /// Fresh state showing `default_model` in the header.
     pub fn new(default_model: String, approvals: bool) -> Self {
-        Self::with_components(default_model, approvals, crate::components::builtin())
+        Self::with_components(default_model, approvals, crate::components::builtin(false))
     }
 
     /// Fresh core state with a boot-configured registry, without rebuilding its owners.
@@ -30,7 +30,7 @@ impl Model {
             viewport: self.viewport,
             components: std::mem::replace(&mut self.components, crate::components::Registry::empty()),
             component_commands: self.component_commands.take(),
-            app_enabled: self.app_enabled,
+
             advisor_default: std::mem::take(&mut self.advisor_default),
             vision_model: self.vision_model.take(),
             private: self.private.take(),
@@ -80,10 +80,6 @@ impl Model {
             .into_iter()
             .flat_map(|h| from_history(h, &opts, &self.components))
             .collect();
-        self.refresh_artifacts = self
-            .entries
-            .iter()
-            .any(|e| matches!(e, Entry::Tool { name, .. } if name == SHOW || name == APP));
         self.anchor = None;
         // An index into the old transcript is meaningless now.
         self.editing = None;

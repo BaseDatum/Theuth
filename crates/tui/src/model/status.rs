@@ -80,11 +80,6 @@ impl Model {
                 result: None,
                 ..
             } => Some(self.entry_summary(e).unwrap_or_else(|| format!("running {name}…"))),
-            Entry::Pending {
-                name,
-                progress: Some(p),
-                ..
-            } => Some(self.entry_summary(e).unwrap_or_else(|| progress_line(name, p))),
             Entry::Pending { name, .. } => Some(self.entry_summary(e).unwrap_or_else(|| format!("preparing {name}…"))),
             _ => None,
         });

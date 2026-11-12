@@ -212,7 +212,6 @@ pub(crate) fn from_history(h: HistoryEntry, opts: &markdown::Options, registry: 
                 args,
                 name: shown,
                 call_id,
-                artifact: None,
                 result,
                 expanded: None,
             });
