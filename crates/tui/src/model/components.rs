@@ -54,6 +54,11 @@ impl Model {
                 CoreAction::Notice(text) => self.entries.push(Entry::Info(text)),
                 CoreAction::Interject(text) => self.interject(Entry::Info(text)),
                 CoreAction::Error(text) => self.receive(UiEvent::Error(text), emit),
+                CoreAction::UseSkill { name, args } => {
+                    if let Some(commands) = self.component_commands.clone() {
+                        self.use_skill(name, args, &commands);
+                    }
+                }
                 CoreAction::Reject(text) => self.entries.push(Entry::Error(text)),
                 CoreAction::AppendCard(card) => self.entries.push(Entry::Card {
                     kind: CardKind::Component { group: card.group, key: card.key, glyph: card.glyph, color: card.color },

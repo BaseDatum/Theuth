@@ -531,14 +531,6 @@ impl Model {
                 }
             }
             UiEvent::Jobs(jobs) => self.entries.push(Entry::Info(tools::jobs::table(&jobs))),
-            UiEvent::Schedules(rows) => self.entries.push(Entry::Info(schedules_table(&rows))),
-            UiEvent::Tasks(project, rows) => self
-                .entries
-                .push(Entry::Info(tasks_table(project.as_deref(), &rows))),
-            UiEvent::Roster(rows) => self.entries.push(Entry::Info(agents_table(&rows))),
-            UiEvent::ScheduleHistory(name, info, rows) => self
-                .entries
-                .push(Entry::Info(schedule_history_table(&name, info.as_ref(), &rows))),
             UiEvent::ArtifactShown(ev) => {
                 self.search_invalidate(SearchCategory::Artifacts);
                 if self.session == Some(ev.session) {

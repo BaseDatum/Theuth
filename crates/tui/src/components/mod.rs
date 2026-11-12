@@ -14,11 +14,13 @@ pub mod computer;
 pub mod sandboxes;
 
 // Step-11 group t2 (boards, costs and artifacts): add modules below, in this block only.
+pub mod tasks;
+pub mod roster;
+pub mod routines;
 
 // Step-11 group t3 (jobs, terminals, speech and search): add modules below, in this block only.
 
 // Model-picker panels (after design 194): add modules below, in this block only.
-
 pub use registry::{Registry, builtin};
 
 #[cfg(test)]
@@ -321,6 +323,13 @@ pub enum CoreAction {
     Reject(String),
     /// Existing generic error semantics, including print-mode completion.
     Error(String),
+    /// Invoke the existing named skill path, including draft-session adoption.
+    UseSkill {
+        /// Catalog skill name.
+        name: String,
+        /// User-supplied arguments.
+        args: String,
+    },
     /// Append an owner-formatted card; this becomes the group's current card.
     AppendCard(TranscriptCard),
     /// Replace only the still-current card, leaving superseded cards frozen.

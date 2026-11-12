@@ -175,19 +175,6 @@ pub enum UiEvent {
     Jobs(Vec<JobView>),
     /// A background job started, wrote output or ended (bus event).
     Job(JobEvent),
-    /// Reply to [`Command::ListSchedules`].
-    Schedules(Vec<schedule::ScheduleInfo>),
-    /// Reply to [`Command::ScheduleHistory`]: the schedule's name, its info
-    /// when the file still exists, and its runs, newest first.
-    ScheduleHistory(
-        String,
-        Option<schedule::ScheduleInfo>,
-        Vec<schedule::RunInfo>,
-    ),
-    /// Reply to [`Command::ListTasks`]: the project asked for and its tasks (67 §12).
-    Tasks(Option<String>, Vec<tasks::Task>),
-    /// Reply to [`Command::ListRoster`] (67 §12).
-    Roster(Vec<roster::AgentSummary>),
     /// Reply to [`Command::LinkStatus`] and the link commands that change it.
     Link(link::LinkStatus),
     /// Reply to [`Command::LinkPair`]: the string the QR card encodes.
@@ -363,26 +350,12 @@ pub enum Command {
         /// Job id, e.g. `j3`.
         id: String,
     },
-    /// `list_schedules`.
-    ListSchedules,
-    /// `fire_schedule`: run a schedule now.
-    FireSchedule(String),
-    /// `schedule_history`: the schedule's last runs.
-    ScheduleHistory(String),
-    /// `enable_schedule`: `/schedules pause|resume <name>` (33 §3.5).
-    EnableSchedule(String, bool),
-    /// `test_schedule`: `/schedules test <name>` — the 40 §1.12 verdict.
-    TestSchedule(String),
     /// `autoresearch.list` / `autoresearch.get` + last 10 experiments: `/autoresearch [<slug>]` (140 §13.1).
     AutoresearchStatus(Option<String>),
     /// `autoresearch.control`: `/autoresearch pause|resume|stop|stop_now <slug>`.
     AutoresearchControl(String, autoresearch::ControlOp),
     /// `autoresearch.steer`: `/autoresearch steer <slug> <text>`.
     AutoresearchSteer(String, String),
-    /// `tasks_list` for one project (`None` = every project) (67 §12).
-    ListTasks(Option<String>),
-    /// `agents_list`: the roster (67 §12).
-    ListRoster,
     /// `session_take(id, "user")`: `/take` continues the open session on this engine (68 §10).
     TakeSession(SessionId),
     /// `compact`.
