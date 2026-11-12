@@ -1,0 +1,59 @@
+[
+  {
+    "input": {
+      "type": "Fired",
+      "name": "sample",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "at": "2026-01-02T03:04:05Z"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Fired",
+          "name": "sample",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "at": "2026-01-02T03:04:05Z"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Skipped",
+      "name": "sample",
+      "at": "2026-01-02T03:04:05Z",
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Skipped",
+          "name": "sample",
+          "at": "2026-01-02T03:04:05Z",
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed"
+        }
+      }
+    }
+  }
+]

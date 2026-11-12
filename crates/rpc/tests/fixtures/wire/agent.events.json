@@ -1,0 +1,6616 @@
+[
+  {
+    "input": {
+      "type": "TurnStarted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "model": "sample",
+      "turn_seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnStarted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "model": "sample",
+          "turn_seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnStarted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "model": "sample",
+      "turn_seq": 1,
+      "channel": {
+        "via": "slack",
+        "chat": "dm"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnStarted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "model": "sample",
+          "turn_seq": 1,
+          "channel": {
+            "via": "slack",
+            "chat": "dm"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnStarted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "model": "sample",
+      "turn_seq": 1,
+      "channel": {
+        "via": "slack",
+        "chat": "dm",
+        "from": "sample",
+        "title": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnStarted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "model": "sample",
+          "turn_seq": 1,
+          "channel": {
+            "via": "slack",
+            "chat": "dm",
+            "from": "sample",
+            "title": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnStarted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "model": "sample",
+      "turn_seq": 1,
+      "channel": {
+        "via": "signal",
+        "chat": "dm",
+        "from": "sample",
+        "title": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnStarted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "model": "sample",
+          "turn_seq": 1,
+          "channel": {
+            "via": "signal",
+            "chat": "dm",
+            "from": "sample",
+            "title": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnStarted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "model": "sample",
+      "turn_seq": 1,
+      "channel": {
+        "via": "telegram",
+        "chat": "dm",
+        "from": "sample",
+        "title": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnStarted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "model": "sample",
+          "turn_seq": 1,
+          "channel": {
+            "via": "telegram",
+            "chat": "dm",
+            "from": "sample",
+            "title": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnStarted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "model": "sample",
+      "turn_seq": 1,
+      "channel": {
+        "via": "slack",
+        "chat": "group",
+        "from": "sample",
+        "title": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnStarted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "model": "sample",
+          "turn_seq": 1,
+          "channel": {
+            "via": "slack",
+            "chat": "group",
+            "from": "sample",
+            "title": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnStarted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "model": "sample",
+      "turn_seq": 1,
+      "channel": {
+        "via": "slack",
+        "chat": "dm",
+        "from": null,
+        "title": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnStarted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "model": "sample",
+          "turn_seq": 1,
+          "channel": {
+            "via": "slack",
+            "chat": "dm",
+            "title": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnStarted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "model": "sample",
+      "turn_seq": 1,
+      "channel": {
+        "via": "slack",
+        "chat": "dm",
+        "from": "sample",
+        "title": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnStarted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "model": "sample",
+          "turn_seq": 1,
+          "channel": {
+            "via": "slack",
+            "chat": "dm",
+            "from": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnStarted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "model": "sample",
+      "turn_seq": 1,
+      "channel": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnStarted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "model": "sample",
+          "turn_seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TextDelta",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "text": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TextDelta",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "text": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ReasoningDelta",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "text": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ReasoningDelta",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "text": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ReasoningDone",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ReasoningDone",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ToolCallPending",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "name": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ToolCallPending",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "name": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ToolCallProgress",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "args": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ToolCallProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "args": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ToolCallStarted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "name": "sample",
+      "args": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ToolCallStarted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "name": "sample",
+          "args": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ToolCallStarted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "name": "sample",
+      "args": {
+        "text": "λ\n\"quoted\"",
+        "values": [
+          1,
+          false,
+          null
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ToolCallStarted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "name": "sample",
+          "args": {
+            "text": "λ\n\"quoted\"",
+            "values": [
+              1,
+              false,
+              null
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ToolCallFinished",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "output": "sample",
+      "is_error": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ToolCallFinished",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "output": "sample",
+          "is_error": false,
+          "files": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ToolCallFinished",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "output": "sample",
+      "is_error": false,
+      "files": []
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ToolCallFinished",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "output": "sample",
+          "is_error": false,
+          "files": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ToolCallFinished",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "output": "sample",
+      "is_error": true,
+      "files": []
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ToolCallFinished",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "output": "sample",
+          "is_error": true,
+          "files": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ToolCallFinished",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "output": "sample",
+      "is_error": false,
+      "files": [
+        "sample"
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ToolCallFinished",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "output": "sample",
+          "is_error": false,
+          "files": [
+            "sample"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnFinished",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "stop_reason": "sample",
+      "usage": {
+        "prompt": 1,
+        "completion": 1,
+        "cached": 1
+      },
+      "context": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnFinished",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "stop_reason": "sample",
+          "usage": {
+            "prompt": 1,
+            "completion": 1,
+            "cached": 1
+          },
+          "context": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Error",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "message": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Error",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": null,
+          "message": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Error",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "message": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Error",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "message": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Error",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": null,
+      "message": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Error",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": null,
+          "message": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "InputQueued",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "text": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "InputQueued",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "defer": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "InputQueued",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "defer": false,
+      "channel": {
+        "via": "slack",
+        "chat": "dm"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "InputQueued",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "defer": false,
+          "channel": {
+            "via": "slack",
+            "chat": "dm"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "InputQueued",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "defer": true,
+      "channel": {
+        "via": "slack",
+        "chat": "dm"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "InputQueued",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "defer": true,
+          "channel": {
+            "via": "slack",
+            "chat": "dm"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "InputQueued",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "defer": false,
+      "channel": {
+        "via": "slack",
+        "chat": "dm",
+        "from": "sample",
+        "title": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "InputQueued",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "defer": false,
+          "channel": {
+            "via": "slack",
+            "chat": "dm",
+            "from": "sample",
+            "title": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "InputQueued",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "defer": false,
+      "channel": {
+        "via": "signal",
+        "chat": "dm",
+        "from": "sample",
+        "title": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "InputQueued",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "defer": false,
+          "channel": {
+            "via": "signal",
+            "chat": "dm",
+            "from": "sample",
+            "title": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "InputQueued",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "defer": false,
+      "channel": {
+        "via": "telegram",
+        "chat": "dm",
+        "from": "sample",
+        "title": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "InputQueued",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "defer": false,
+          "channel": {
+            "via": "telegram",
+            "chat": "dm",
+            "from": "sample",
+            "title": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "InputQueued",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "defer": false,
+      "channel": {
+        "via": "slack",
+        "chat": "group",
+        "from": "sample",
+        "title": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "InputQueued",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "defer": false,
+          "channel": {
+            "via": "slack",
+            "chat": "group",
+            "from": "sample",
+            "title": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "InputQueued",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "defer": false,
+      "channel": {
+        "via": "slack",
+        "chat": "dm",
+        "from": null,
+        "title": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "InputQueued",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "defer": false,
+          "channel": {
+            "via": "slack",
+            "chat": "dm",
+            "title": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "InputQueued",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "defer": false,
+      "channel": {
+        "via": "slack",
+        "chat": "dm",
+        "from": "sample",
+        "title": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "InputQueued",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "defer": false,
+          "channel": {
+            "via": "slack",
+            "chat": "dm",
+            "from": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "InputQueued",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "text": "sample",
+      "defer": false,
+      "channel": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "InputQueued",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "text": "sample",
+          "defer": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "InputInjected",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "InputInjected",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "InputWithdrawn",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "InputWithdrawn",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "InputsParked",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "count": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "InputsParked",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "count": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SubagentSpawned",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SubagentSpawned",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "cap": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SubagentSpawned",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "cap": "read_only"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SubagentSpawned",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "cap": "read_only"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SubagentSpawned",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "cap": "mutating"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SubagentSpawned",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "cap": "mutating"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SubagentSpawned",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "cap": "destructive"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SubagentSpawned",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "cap": "destructive"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SubagentSpawned",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "cap": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SubagentSpawned",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "cap": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "pending",
+        "can_cancel": false,
+        "cost_rule": "counted"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": null,
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "pending",
+            "stop": null,
+            "can_cancel": false,
+            "description": null,
+            "tool_call": null,
+            "cost_rule": "counted",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "pending",
+        "can_cancel": false,
+        "cost_rule": "counted"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "pending",
+            "stop": null,
+            "can_cancel": false,
+            "description": null,
+            "tool_call": null,
+            "cost_rule": "counted",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": null,
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "pending",
+        "can_cancel": false,
+        "cost_rule": "counted"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": null,
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "pending",
+            "stop": null,
+            "can_cancel": false,
+            "description": null,
+            "tool_call": null,
+            "cost_rule": "counted",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "pending",
+        "stop": "sample",
+        "can_cancel": false,
+        "description": "sample",
+        "tool_call": "sample",
+        "cost_rule": "counted",
+        "detail": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "pending",
+            "stop": "sample",
+            "can_cancel": false,
+            "description": "sample",
+            "tool_call": "sample",
+            "cost_rule": "counted",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "opencode_ext",
+        "external": "sample",
+        "state": "pending",
+        "stop": "sample",
+        "can_cancel": false,
+        "description": "sample",
+        "tool_call": "sample",
+        "cost_rule": "counted",
+        "detail": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "opencode_ext",
+            "external": "sample",
+            "state": "pending",
+            "stop": "sample",
+            "can_cancel": false,
+            "description": "sample",
+            "tool_call": "sample",
+            "cost_rule": "counted",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "opencode_task",
+        "external": "sample",
+        "state": "pending",
+        "stop": "sample",
+        "can_cancel": false,
+        "description": "sample",
+        "tool_call": "sample",
+        "cost_rule": "counted",
+        "detail": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "opencode_task",
+            "external": "sample",
+            "state": "pending",
+            "stop": "sample",
+            "can_cancel": false,
+            "description": "sample",
+            "tool_call": "sample",
+            "cost_rule": "counted",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "omp_task",
+        "external": "sample",
+        "state": "pending",
+        "stop": "sample",
+        "can_cancel": false,
+        "description": "sample",
+        "tool_call": "sample",
+        "cost_rule": "counted",
+        "detail": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "omp_task",
+            "external": "sample",
+            "state": "pending",
+            "stop": "sample",
+            "can_cancel": false,
+            "description": "sample",
+            "tool_call": "sample",
+            "cost_rule": "counted",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "running",
+        "stop": "sample",
+        "can_cancel": false,
+        "description": "sample",
+        "tool_call": "sample",
+        "cost_rule": "counted",
+        "detail": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "running",
+            "stop": "sample",
+            "can_cancel": false,
+            "description": "sample",
+            "tool_call": "sample",
+            "cost_rule": "counted",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "requires_action",
+        "stop": "sample",
+        "can_cancel": false,
+        "description": "sample",
+        "tool_call": "sample",
+        "cost_rule": "counted",
+        "detail": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "requires_action",
+            "stop": "sample",
+            "can_cancel": false,
+            "description": "sample",
+            "tool_call": "sample",
+            "cost_rule": "counted",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "idle",
+        "stop": "sample",
+        "can_cancel": false,
+        "description": "sample",
+        "tool_call": "sample",
+        "cost_rule": "counted",
+        "detail": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "idle",
+            "stop": "sample",
+            "can_cancel": false,
+            "description": "sample",
+            "tool_call": "sample",
+            "cost_rule": "counted",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "completed",
+        "stop": "sample",
+        "can_cancel": false,
+        "description": "sample",
+        "tool_call": "sample",
+        "cost_rule": "counted",
+        "detail": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "completed",
+            "stop": "sample",
+            "can_cancel": false,
+            "description": "sample",
+            "tool_call": "sample",
+            "cost_rule": "counted",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "failed",
+        "stop": "sample",
+        "can_cancel": false,
+        "description": "sample",
+        "tool_call": "sample",
+        "cost_rule": "counted",
+        "detail": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "failed",
+            "stop": "sample",
+            "can_cancel": false,
+            "description": "sample",
+            "tool_call": "sample",
+            "cost_rule": "counted",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "cancelled",
+        "stop": "sample",
+        "can_cancel": false,
+        "description": "sample",
+        "tool_call": "sample",
+        "cost_rule": "counted",
+        "detail": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "cancelled",
+            "stop": "sample",
+            "can_cancel": false,
+            "description": "sample",
+            "tool_call": "sample",
+            "cost_rule": "counted",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "unknown",
+        "stop": "sample",
+        "can_cancel": false,
+        "description": "sample",
+        "tool_call": "sample",
+        "cost_rule": "counted",
+        "detail": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "unknown",
+            "stop": "sample",
+            "can_cancel": false,
+            "description": "sample",
+            "tool_call": "sample",
+            "cost_rule": "counted",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "pending",
+        "stop": null,
+        "can_cancel": false,
+        "description": "sample",
+        "tool_call": "sample",
+        "cost_rule": "counted",
+        "detail": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "pending",
+            "stop": null,
+            "can_cancel": false,
+            "description": "sample",
+            "tool_call": "sample",
+            "cost_rule": "counted",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "pending",
+        "stop": "sample",
+        "can_cancel": true,
+        "description": "sample",
+        "tool_call": "sample",
+        "cost_rule": "counted",
+        "detail": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "pending",
+            "stop": "sample",
+            "can_cancel": true,
+            "description": "sample",
+            "tool_call": "sample",
+            "cost_rule": "counted",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "pending",
+        "stop": "sample",
+        "can_cancel": false,
+        "description": null,
+        "tool_call": "sample",
+        "cost_rule": "counted",
+        "detail": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "pending",
+            "stop": "sample",
+            "can_cancel": false,
+            "description": null,
+            "tool_call": "sample",
+            "cost_rule": "counted",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "pending",
+        "stop": "sample",
+        "can_cancel": false,
+        "description": "sample",
+        "tool_call": null,
+        "cost_rule": "counted",
+        "detail": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "pending",
+            "stop": "sample",
+            "can_cancel": false,
+            "description": "sample",
+            "tool_call": null,
+            "cost_rule": "counted",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "pending",
+        "stop": "sample",
+        "can_cancel": false,
+        "description": "sample",
+        "tool_call": "sample",
+        "cost_rule": "inside_parent",
+        "detail": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "pending",
+            "stop": "sample",
+            "can_cancel": false,
+            "description": "sample",
+            "tool_call": "sample",
+            "cost_rule": "inside_parent",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "pending",
+        "stop": "sample",
+        "can_cancel": false,
+        "description": "sample",
+        "tool_call": "sample",
+        "cost_rule": "display_only",
+        "detail": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "pending",
+            "stop": "sample",
+            "can_cancel": false,
+            "description": "sample",
+            "tool_call": "sample",
+            "cost_rule": "display_only",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "pending",
+        "stop": "sample",
+        "can_cancel": false,
+        "description": "sample",
+        "tool_call": "sample",
+        "cost_rule": "unreported",
+        "detail": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "pending",
+            "stop": "sample",
+            "can_cancel": false,
+            "description": "sample",
+            "tool_call": "sample",
+            "cost_rule": "unreported",
+            "detail": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ObservedChildChanged",
+      "parent": "00000000-0000-0000-0000-000000000001",
+      "child": "00000000-0000-0000-0000-000000000001",
+      "name": "sample",
+      "model": "sample",
+      "observed": {
+        "source": "rfd",
+        "external": "sample",
+        "state": "pending",
+        "stop": "sample",
+        "can_cancel": false,
+        "description": "sample",
+        "tool_call": "sample",
+        "cost_rule": "counted",
+        "detail": {
+          "text": "λ\n\"quoted\"",
+          "values": [
+            1,
+            false,
+            null
+          ]
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ObservedChildChanged",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "child": "00000000-0000-0000-0000-000000000001",
+          "name": "sample",
+          "model": "sample",
+          "observed": {
+            "source": "rfd",
+            "external": "sample",
+            "state": "pending",
+            "stop": "sample",
+            "can_cancel": false,
+            "description": "sample",
+            "tool_call": "sample",
+            "cost_rule": "counted",
+            "detail": {
+              "text": "λ\n\"quoted\"",
+              "values": [
+                1,
+                false,
+                null
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "MessageDelivered",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "from": "sample",
+      "text": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "MessageDelivered",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "from": "sample",
+          "text": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ModelChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "model": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ModelChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "model": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DefaultModelChanged",
+      "model": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DefaultModelChanged",
+          "model": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "FavoriteModelsChanged",
+      "models": []
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "FavoriteModelsChanged",
+          "models": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "FavoriteModelsChanged",
+      "models": [
+        "sample"
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "FavoriteModelsChanged",
+          "models": [
+            "sample"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "HarnessModelChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "model": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "HarnessModelChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "model": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "HarnessCommandsChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "commands": []
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "HarnessCommandsChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "commands": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "HarnessCommandsChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "commands": [
+        {
+          "name": "sample",
+          "description": "sample"
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "HarnessCommandsChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "commands": [
+            {
+              "name": "sample",
+              "description": "sample"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "HarnessCommandsChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "commands": [
+        {
+          "name": "sample",
+          "description": "sample",
+          "hint": "sample"
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "HarnessCommandsChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "commands": [
+            {
+              "name": "sample",
+              "description": "sample",
+              "hint": "sample"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "HarnessCommandsChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "commands": [
+        {
+          "name": "sample",
+          "description": "sample",
+          "hint": null
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "HarnessCommandsChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "commands": [
+            {
+              "name": "sample",
+              "description": "sample"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "EffortChanged",
+      "session": "00000000-0000-0000-0000-000000000001"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EffortChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "effort": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "EffortChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "effort": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EffortChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "effort": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "EffortChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "effort": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EffortChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "effort": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DefaultEffortChanged"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DefaultEffortChanged",
+          "effort": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DefaultEffortChanged",
+      "effort": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DefaultEffortChanged",
+          "effort": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DefaultEffortChanged",
+      "effort": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DefaultEffortChanged",
+          "effort": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Compacting",
+      "session": "00000000-0000-0000-0000-000000000001"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Compacting",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Compacting",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Compacting",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Compacting",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Compacting",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Compacted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "epoch": 1,
+      "before": 1,
+      "after": 1,
+      "folded": 1,
+      "style": "summary"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Compacted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": null,
+          "epoch": 1,
+          "before": 1,
+          "after": 1,
+          "folded": 1,
+          "style": "summary"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Compacted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "epoch": 1,
+      "before": 1,
+      "after": 1,
+      "folded": 1,
+      "style": "summary"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Compacted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "epoch": 1,
+          "before": 1,
+          "after": 1,
+          "folded": 1,
+          "style": "summary"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Compacted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": null,
+      "epoch": 1,
+      "before": 1,
+      "after": 1,
+      "folded": 1,
+      "style": "summary"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Compacted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": null,
+          "epoch": 1,
+          "before": 1,
+          "after": 1,
+          "folded": 1,
+          "style": "summary"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Compacted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "epoch": 1,
+      "before": 1,
+      "after": 1,
+      "folded": 1,
+      "style": "cut"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Compacted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "epoch": 1,
+          "before": 1,
+          "after": 1,
+          "folded": 1,
+          "style": "cut"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Compacted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "epoch": 1,
+      "before": 1,
+      "after": 1,
+      "folded": 1,
+      "style": "snap"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Compacted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "epoch": 1,
+          "before": 1,
+          "after": 1,
+          "folded": 1,
+          "style": "snap"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Compacted",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "epoch": 1,
+      "before": 1,
+      "after": 1,
+      "folded": 1,
+      "style": "clear"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Compacted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "epoch": 1,
+          "before": 1,
+          "after": 1,
+          "folded": 1,
+          "style": "clear"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Harvesting",
+      "session": "00000000-0000-0000-0000-000000000001"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Harvesting",
+          "session": "00000000-0000-0000-0000-000000000001"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Harvested",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "added": 1,
+      "updated": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Harvested",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "added": 1,
+          "updated": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SkillsChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "skills": []
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SkillsChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "skills": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SkillsChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "skills": [
+        "sample"
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SkillsChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "skills": [
+            "sample"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TitleChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "title": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TitleChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "title": "sample",
+          "tags": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TitleChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "title": "sample",
+      "tags": []
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TitleChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "title": "sample",
+          "tags": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TitleChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "title": "sample",
+      "tags": [
+        "sample"
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TitleChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "title": "sample",
+          "tags": [
+            "sample"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SessionDeleted",
+      "session": "00000000-0000-0000-0000-000000000001"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SessionDeleted",
+          "session": "00000000-0000-0000-0000-000000000001"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SessionOwnerChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "owner": "sample",
+      "epoch": 1,
+      "here": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SessionOwnerChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "owner": "sample",
+          "epoch": 1,
+          "here": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SessionOwnerChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "owner": "sample",
+      "epoch": 1,
+      "here": false,
+      "moved_from": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SessionOwnerChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "owner": "sample",
+          "epoch": 1,
+          "here": false,
+          "moved_from": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SessionOwnerChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "owner": "sample",
+      "epoch": 1,
+      "here": true,
+      "moved_from": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SessionOwnerChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "owner": "sample",
+          "epoch": 1,
+          "here": true,
+          "moved_from": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SessionOwnerChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "owner": "sample",
+      "epoch": 1,
+      "here": false,
+      "moved_from": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SessionOwnerChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "owner": "sample",
+          "epoch": 1,
+          "here": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ContextChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "revision": "sample",
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ContextChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "revision": "sample",
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TodoChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "snapshot": {
+        "version": 1,
+        "source": "native",
+        "items": []
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TodoChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "snapshot": {
+            "version": 1,
+            "source": "native",
+            "items": []
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TodoChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "snapshot": {
+        "version": 1,
+        "source": "acp",
+        "items": []
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TodoChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "snapshot": {
+            "version": 1,
+            "source": "acp",
+            "items": []
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TodoChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "snapshot": {
+        "version": 1,
+        "source": "native",
+        "items": [
+          {
+            "text": "sample",
+            "status": "pending"
+          }
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TodoChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "snapshot": {
+            "version": 1,
+            "source": "native",
+            "items": [
+              {
+                "text": "sample",
+                "status": "pending",
+                "reason": null
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TodoChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "snapshot": {
+        "version": 1,
+        "source": "native",
+        "items": [
+          {
+            "text": "sample",
+            "status": "pending",
+            "reason": "sample"
+          }
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TodoChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "snapshot": {
+            "version": 1,
+            "source": "native",
+            "items": [
+              {
+                "text": "sample",
+                "status": "pending",
+                "reason": "sample"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TodoChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "snapshot": {
+        "version": 1,
+        "source": "native",
+        "items": [
+          {
+            "text": "sample",
+            "status": "in_progress",
+            "reason": "sample"
+          }
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TodoChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "snapshot": {
+            "version": 1,
+            "source": "native",
+            "items": [
+              {
+                "text": "sample",
+                "status": "in_progress",
+                "reason": "sample"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TodoChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "snapshot": {
+        "version": 1,
+        "source": "native",
+        "items": [
+          {
+            "text": "sample",
+            "status": "done",
+            "reason": "sample"
+          }
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TodoChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "snapshot": {
+            "version": 1,
+            "source": "native",
+            "items": [
+              {
+                "text": "sample",
+                "status": "done",
+                "reason": "sample"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TodoChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "snapshot": {
+        "version": 1,
+        "source": "native",
+        "items": [
+          {
+            "text": "sample",
+            "status": "dropped",
+            "reason": "sample"
+          }
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TodoChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "snapshot": {
+            "version": 1,
+            "source": "native",
+            "items": [
+              {
+                "text": "sample",
+                "status": "dropped",
+                "reason": "sample"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TodoChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "snapshot": {
+        "version": 1,
+        "source": "native",
+        "items": [
+          {
+            "text": "sample",
+            "status": "blocked",
+            "reason": "sample"
+          }
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TodoChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "snapshot": {
+            "version": 1,
+            "source": "native",
+            "items": [
+              {
+                "text": "sample",
+                "status": "blocked",
+                "reason": "sample"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TodoChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "snapshot": {
+        "version": 1,
+        "source": "native",
+        "items": [
+          {
+            "text": "sample",
+            "status": "pending",
+            "reason": null
+          }
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TodoChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "snapshot": {
+            "version": 1,
+            "source": "native",
+            "items": [
+              {
+                "text": "sample",
+                "status": "pending",
+                "reason": null
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "VisionProgress",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "stage": "questioning",
+      "model": "sample",
+      "sources": []
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "VisionProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": null,
+          "stage": "questioning",
+          "model": "sample",
+          "sources": [],
+          "seq": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "VisionProgress",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "stage": "questioning",
+      "model": "sample",
+      "sources": [],
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "VisionProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "stage": "questioning",
+          "model": "sample",
+          "sources": [],
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "VisionProgress",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": null,
+      "stage": "questioning",
+      "model": "sample",
+      "sources": [],
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "VisionProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": null,
+          "stage": "questioning",
+          "model": "sample",
+          "sources": [],
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "VisionProgress",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "stage": "inspecting",
+      "model": "sample",
+      "sources": [],
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "VisionProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "stage": "inspecting",
+          "model": "sample",
+          "sources": [],
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "VisionProgress",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "stage": "completed",
+      "model": "sample",
+      "sources": [],
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "VisionProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "stage": "completed",
+          "model": "sample",
+          "sources": [],
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "VisionProgress",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "stage": "failed",
+      "model": "sample",
+      "sources": [],
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "VisionProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "stage": "failed",
+          "model": "sample",
+          "sources": [],
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "VisionProgress",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "stage": "questioning",
+      "model": "sample",
+      "sources": [
+        {
+          "target": {
+            "kind": "message",
+            "seq": 1
+          },
+          "fingerprint": "sample",
+          "label": "sample"
+        }
+      ],
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "VisionProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "stage": "questioning",
+          "model": "sample",
+          "sources": [
+            {
+              "target": {
+                "kind": "message",
+                "seq": 1
+              },
+              "fingerprint": "sample",
+              "label": "sample"
+            }
+          ],
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "VisionProgress",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "stage": "questioning",
+      "model": "sample",
+      "sources": [
+        {
+          "target": {
+            "kind": "head",
+            "epoch": 1
+          },
+          "fingerprint": "sample",
+          "label": "sample"
+        }
+      ],
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "VisionProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "stage": "questioning",
+          "model": "sample",
+          "sources": [
+            {
+              "target": {
+                "kind": "head",
+                "epoch": 1
+              },
+              "fingerprint": "sample",
+              "label": "sample"
+            }
+          ],
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "VisionProgress",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "stage": "questioning",
+      "model": "sample",
+      "sources": [
+        {
+          "target": {
+            "kind": "binary",
+            "owner": {
+              "kind": "message",
+              "seq": 1
+            },
+            "part": 1
+          },
+          "fingerprint": "sample",
+          "label": "sample"
+        }
+      ],
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "VisionProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "stage": "questioning",
+          "model": "sample",
+          "sources": [
+            {
+              "target": {
+                "kind": "binary",
+                "owner": {
+                  "kind": "message",
+                  "seq": 1
+                },
+                "part": 1,
+                "image": null
+              },
+              "fingerprint": "sample",
+              "label": "sample"
+            }
+          ],
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "VisionProgress",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "stage": "questioning",
+      "model": "sample",
+      "sources": [
+        {
+          "target": {
+            "kind": "binary",
+            "owner": {
+              "kind": "message",
+              "seq": 1
+            },
+            "part": 1,
+            "image": 1
+          },
+          "fingerprint": "sample",
+          "label": "sample"
+        }
+      ],
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "VisionProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "stage": "questioning",
+          "model": "sample",
+          "sources": [
+            {
+              "target": {
+                "kind": "binary",
+                "owner": {
+                  "kind": "message",
+                  "seq": 1
+                },
+                "part": 1,
+                "image": 1
+              },
+              "fingerprint": "sample",
+              "label": "sample"
+            }
+          ],
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "VisionProgress",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "stage": "questioning",
+      "model": "sample",
+      "sources": [
+        {
+          "target": {
+            "kind": "binary",
+            "owner": {
+              "kind": "head",
+              "epoch": 1
+            },
+            "part": 1,
+            "image": 1
+          },
+          "fingerprint": "sample",
+          "label": "sample"
+        }
+      ],
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "VisionProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "stage": "questioning",
+          "model": "sample",
+          "sources": [
+            {
+              "target": {
+                "kind": "binary",
+                "owner": {
+                  "kind": "head",
+                  "epoch": 1
+                },
+                "part": 1,
+                "image": 1
+              },
+              "fingerprint": "sample",
+              "label": "sample"
+            }
+          ],
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "VisionProgress",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "stage": "questioning",
+      "model": "sample",
+      "sources": [
+        {
+          "target": {
+            "kind": "binary",
+            "owner": {
+              "kind": "message",
+              "seq": 1
+            },
+            "part": 1,
+            "image": null
+          },
+          "fingerprint": "sample",
+          "label": "sample"
+        }
+      ],
+      "seq": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "VisionProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "stage": "questioning",
+          "model": "sample",
+          "sources": [
+            {
+              "target": {
+                "kind": "binary",
+                "owner": {
+                  "kind": "message",
+                  "seq": 1
+                },
+                "part": 1,
+                "image": null
+              },
+              "fingerprint": "sample",
+              "label": "sample"
+            }
+          ],
+          "seq": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "VisionProgress",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "stage": "questioning",
+      "model": "sample",
+      "sources": [],
+      "seq": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "VisionProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "stage": "questioning",
+          "model": "sample",
+          "sources": [],
+          "seq": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SessionMetadataChanged",
+      "session": "00000000-0000-0000-0000-000000000001"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SessionMetadataChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "project": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SessionMetadataChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "project": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SessionMetadataChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "project": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SessionMetadataChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "project": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SessionMetadataChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "project": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ModelUsageChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "revision": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ModelUsageChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "revision": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ContextUsed",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "context": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ContextUsed",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "context": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ContextUsed",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "context": 1,
+      "size": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ContextUsed",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "context": 1,
+          "size": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ContextUsed",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "context": 1,
+      "size": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ContextUsed",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "context": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SessionClosing",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "generation": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SessionClosing",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "generation": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnResumed",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "kind": "interrupted",
+      "interrupted_at": "2026-01-02T03:04:05Z",
+      "resumed_at": "2026-01-02T03:04:05Z",
+      "partial_dropped": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnResumed",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "kind": "interrupted",
+          "interrupted_at": "2026-01-02T03:04:05Z",
+          "resumed_at": "2026-01-02T03:04:05Z",
+          "partial_dropped": false,
+          "cause": "crash",
+          "from": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnResumed",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "kind": "interrupted",
+      "interrupted_at": "2026-01-02T03:04:05Z",
+      "resumed_at": "2026-01-02T03:04:05Z",
+      "partial_dropped": false,
+      "cause": "crash",
+      "from": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnResumed",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "kind": "interrupted",
+          "interrupted_at": "2026-01-02T03:04:05Z",
+          "resumed_at": "2026-01-02T03:04:05Z",
+          "partial_dropped": false,
+          "cause": "crash",
+          "from": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnResumed",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "kind": "suspended",
+      "interrupted_at": "2026-01-02T03:04:05Z",
+      "resumed_at": "2026-01-02T03:04:05Z",
+      "partial_dropped": false,
+      "cause": "crash",
+      "from": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnResumed",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "kind": "suspended",
+          "interrupted_at": "2026-01-02T03:04:05Z",
+          "resumed_at": "2026-01-02T03:04:05Z",
+          "partial_dropped": false,
+          "cause": "crash",
+          "from": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnResumed",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "kind": "interrupted",
+      "interrupted_at": "2026-01-02T03:04:05Z",
+      "resumed_at": "2026-01-02T03:04:05Z",
+      "partial_dropped": true,
+      "cause": "crash",
+      "from": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnResumed",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "kind": "interrupted",
+          "interrupted_at": "2026-01-02T03:04:05Z",
+          "resumed_at": "2026-01-02T03:04:05Z",
+          "partial_dropped": true,
+          "cause": "crash",
+          "from": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnResumed",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "kind": "interrupted",
+      "interrupted_at": "2026-01-02T03:04:05Z",
+      "resumed_at": "2026-01-02T03:04:05Z",
+      "partial_dropped": false,
+      "cause": "shutdown",
+      "from": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnResumed",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "kind": "interrupted",
+          "interrupted_at": "2026-01-02T03:04:05Z",
+          "resumed_at": "2026-01-02T03:04:05Z",
+          "partial_dropped": false,
+          "cause": "shutdown",
+          "from": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnResumed",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "kind": "interrupted",
+      "interrupted_at": "2026-01-02T03:04:05Z",
+      "resumed_at": "2026-01-02T03:04:05Z",
+      "partial_dropped": false,
+      "cause": "update",
+      "from": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnResumed",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "kind": "interrupted",
+          "interrupted_at": "2026-01-02T03:04:05Z",
+          "resumed_at": "2026-01-02T03:04:05Z",
+          "partial_dropped": false,
+          "cause": "update",
+          "from": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnResumed",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "kind": "interrupted",
+      "interrupted_at": "2026-01-02T03:04:05Z",
+      "resumed_at": "2026-01-02T03:04:05Z",
+      "partial_dropped": false,
+      "cause": "transfer",
+      "from": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnResumed",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "kind": "interrupted",
+          "interrupted_at": "2026-01-02T03:04:05Z",
+          "resumed_at": "2026-01-02T03:04:05Z",
+          "partial_dropped": false,
+          "cause": "transfer",
+          "from": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnResumed",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "kind": "interrupted",
+      "interrupted_at": "2026-01-02T03:04:05Z",
+      "resumed_at": "2026-01-02T03:04:05Z",
+      "partial_dropped": false,
+      "cause": "takeover",
+      "from": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnResumed",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "kind": "interrupted",
+          "interrupted_at": "2026-01-02T03:04:05Z",
+          "resumed_at": "2026-01-02T03:04:05Z",
+          "partial_dropped": false,
+          "cause": "takeover",
+          "from": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnResumed",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "kind": "interrupted",
+      "interrupted_at": "2026-01-02T03:04:05Z",
+      "resumed_at": "2026-01-02T03:04:05Z",
+      "partial_dropped": false,
+      "cause": "crash",
+      "from": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnResumed",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "kind": "interrupted",
+          "interrupted_at": "2026-01-02T03:04:05Z",
+          "resumed_at": "2026-01-02T03:04:05Z",
+          "partial_dropped": false,
+          "cause": "crash",
+          "from": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ResumePending",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "from": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ResumePending",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "from": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ResumeReport",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "replayed": [],
+      "interrupted": [],
+      "lost_jobs": [],
+      "children_restored": 1,
+      "children_handed_off": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ResumeReport",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "replayed": [],
+          "interrupted": [],
+          "lost_jobs": [],
+          "children_restored": 1,
+          "children_handed_off": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ResumeReport",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "replayed": [
+        [
+          "sample",
+          "sample"
+        ]
+      ],
+      "interrupted": [],
+      "lost_jobs": [],
+      "children_restored": 1,
+      "children_handed_off": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ResumeReport",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "replayed": [
+            [
+              "sample",
+              "sample"
+            ]
+          ],
+          "interrupted": [],
+          "lost_jobs": [],
+          "children_restored": 1,
+          "children_handed_off": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ResumeReport",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "replayed": [],
+      "interrupted": [
+        [
+          "sample",
+          "sample"
+        ]
+      ],
+      "lost_jobs": [],
+      "children_restored": 1,
+      "children_handed_off": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ResumeReport",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "replayed": [],
+          "interrupted": [
+            [
+              "sample",
+              "sample"
+            ]
+          ],
+          "lost_jobs": [],
+          "children_restored": 1,
+          "children_handed_off": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ResumeReport",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "replayed": [],
+      "interrupted": [],
+      "lost_jobs": [
+        "sample"
+      ],
+      "children_restored": 1,
+      "children_handed_off": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ResumeReport",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "replayed": [],
+          "interrupted": [],
+          "lost_jobs": [
+            "sample"
+          ],
+          "children_restored": 1,
+          "children_handed_off": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TurnSuspended",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TurnSuspended",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "PartialDropped",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PartialDropped",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisorChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": {
+        "session": "00000000-0000-0000-0000-000000000001",
+        "state": "off",
+        "notes": {
+          "nit": 1,
+          "concern": 1,
+          "blocker": 1
+        },
+        "context_used": 1,
+        "context_limit": 1,
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "step": 1,
+        "backlog": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisorChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": {
+            "session": "00000000-0000-0000-0000-000000000001",
+            "advisor": null,
+            "state": "off",
+            "model": null,
+            "effort": null,
+            "notes": {
+              "nit": 1,
+              "concern": 1,
+              "blocker": 1
+            },
+            "context_used": 1,
+            "context_limit": 1,
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost": null,
+            "step": 1,
+            "backlog": 1,
+            "last_note": null,
+            "detail": null,
+            "consults": {
+              "turn": 0,
+              "total": 0,
+              "cap": 0
+            },
+            "warning": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisorChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": {
+        "session": "00000000-0000-0000-0000-000000000001",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "state": "off",
+        "model": "sample",
+        "effort": "sample",
+        "notes": {
+          "nit": 1,
+          "concern": 1,
+          "blocker": 1
+        },
+        "context_used": 1,
+        "context_limit": 1,
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "cost": {
+          "returned": [],
+          "estimated_for_unavailable": [],
+          "calls": 1,
+          "dispatched": 1,
+          "unavailable": 1,
+          "unresolved": 1,
+          "tokens": {
+            "input": 1,
+            "output": 1,
+            "cache_read": 1,
+            "cache_write": 1,
+            "unknown_calls": 1
+          }
+        },
+        "step": 1,
+        "backlog": 1,
+        "last_note": {
+          "severity": "advice",
+          "note": "sample"
+        },
+        "detail": "sample",
+        "consults": {
+          "turn": 1,
+          "total": 1,
+          "cap": 1
+        },
+        "warning": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisorChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": {
+            "session": "00000000-0000-0000-0000-000000000001",
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "state": "off",
+            "model": "sample",
+            "effort": "sample",
+            "notes": {
+              "nit": 1,
+              "concern": 1,
+              "blocker": 1
+            },
+            "context_used": 1,
+            "context_limit": 1,
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost": {
+              "returned": [],
+              "estimated_for_unavailable": [],
+              "calls": 1,
+              "dispatched": 1,
+              "unavailable": 1,
+              "unresolved": 1,
+              "tokens": {
+                "input": 1,
+                "output": 1,
+                "cache_read": 1,
+                "cache_write": 1,
+                "unknown_calls": 1
+              }
+            },
+            "step": 1,
+            "backlog": 1,
+            "last_note": {
+              "severity": "advice",
+              "note": "sample"
+            },
+            "detail": "sample",
+            "consults": {
+              "turn": 1,
+              "total": 1,
+              "cap": 1
+            },
+            "warning": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisorChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": {
+        "session": "00000000-0000-0000-0000-000000000001",
+        "advisor": null,
+        "state": "off",
+        "model": "sample",
+        "effort": "sample",
+        "notes": {
+          "nit": 1,
+          "concern": 1,
+          "blocker": 1
+        },
+        "context_used": 1,
+        "context_limit": 1,
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "cost": {
+          "returned": [],
+          "estimated_for_unavailable": [],
+          "calls": 1,
+          "dispatched": 1,
+          "unavailable": 1,
+          "unresolved": 1,
+          "tokens": {
+            "input": 1,
+            "output": 1,
+            "cache_read": 1,
+            "cache_write": 1,
+            "unknown_calls": 1
+          }
+        },
+        "step": 1,
+        "backlog": 1,
+        "last_note": {
+          "severity": "advice",
+          "note": "sample"
+        },
+        "detail": "sample",
+        "consults": {
+          "turn": 1,
+          "total": 1,
+          "cap": 1
+        },
+        "warning": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisorChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": {
+            "session": "00000000-0000-0000-0000-000000000001",
+            "advisor": null,
+            "state": "off",
+            "model": "sample",
+            "effort": "sample",
+            "notes": {
+              "nit": 1,
+              "concern": 1,
+              "blocker": 1
+            },
+            "context_used": 1,
+            "context_limit": 1,
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost": {
+              "returned": [],
+              "estimated_for_unavailable": [],
+              "calls": 1,
+              "dispatched": 1,
+              "unavailable": 1,
+              "unresolved": 1,
+              "tokens": {
+                "input": 1,
+                "output": 1,
+                "cache_read": 1,
+                "cache_write": 1,
+                "unknown_calls": 1
+              }
+            },
+            "step": 1,
+            "backlog": 1,
+            "last_note": {
+              "severity": "advice",
+              "note": "sample"
+            },
+            "detail": "sample",
+            "consults": {
+              "turn": 1,
+              "total": 1,
+              "cap": 1
+            },
+            "warning": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisorChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": {
+        "session": "00000000-0000-0000-0000-000000000001",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "state": "idle",
+        "model": "sample",
+        "effort": "sample",
+        "notes": {
+          "nit": 1,
+          "concern": 1,
+          "blocker": 1
+        },
+        "context_used": 1,
+        "context_limit": 1,
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "cost": {
+          "returned": [],
+          "estimated_for_unavailable": [],
+          "calls": 1,
+          "dispatched": 1,
+          "unavailable": 1,
+          "unresolved": 1,
+          "tokens": {
+            "input": 1,
+            "output": 1,
+            "cache_read": 1,
+            "cache_write": 1,
+            "unknown_calls": 1
+          }
+        },
+        "step": 1,
+        "backlog": 1,
+        "last_note": {
+          "severity": "advice",
+          "note": "sample"
+        },
+        "detail": "sample",
+        "consults": {
+          "turn": 1,
+          "total": 1,
+          "cap": 1
+        },
+        "warning": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisorChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": {
+            "session": "00000000-0000-0000-0000-000000000001",
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "state": "idle",
+            "model": "sample",
+            "effort": "sample",
+            "notes": {
+              "nit": 1,
+              "concern": 1,
+              "blocker": 1
+            },
+            "context_used": 1,
+            "context_limit": 1,
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost": {
+              "returned": [],
+              "estimated_for_unavailable": [],
+              "calls": 1,
+              "dispatched": 1,
+              "unavailable": 1,
+              "unresolved": 1,
+              "tokens": {
+                "input": 1,
+                "output": 1,
+                "cache_read": 1,
+                "cache_write": 1,
+                "unknown_calls": 1
+              }
+            },
+            "step": 1,
+            "backlog": 1,
+            "last_note": {
+              "severity": "advice",
+              "note": "sample"
+            },
+            "detail": "sample",
+            "consults": {
+              "turn": 1,
+              "total": 1,
+              "cap": 1
+            },
+            "warning": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisorChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": {
+        "session": "00000000-0000-0000-0000-000000000001",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "state": "reviewing",
+        "model": "sample",
+        "effort": "sample",
+        "notes": {
+          "nit": 1,
+          "concern": 1,
+          "blocker": 1
+        },
+        "context_used": 1,
+        "context_limit": 1,
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "cost": {
+          "returned": [],
+          "estimated_for_unavailable": [],
+          "calls": 1,
+          "dispatched": 1,
+          "unavailable": 1,
+          "unresolved": 1,
+          "tokens": {
+            "input": 1,
+            "output": 1,
+            "cache_read": 1,
+            "cache_write": 1,
+            "unknown_calls": 1
+          }
+        },
+        "step": 1,
+        "backlog": 1,
+        "last_note": {
+          "severity": "advice",
+          "note": "sample"
+        },
+        "detail": "sample",
+        "consults": {
+          "turn": 1,
+          "total": 1,
+          "cap": 1
+        },
+        "warning": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisorChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": {
+            "session": "00000000-0000-0000-0000-000000000001",
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "state": "reviewing",
+            "model": "sample",
+            "effort": "sample",
+            "notes": {
+              "nit": 1,
+              "concern": 1,
+              "blocker": 1
+            },
+            "context_used": 1,
+            "context_limit": 1,
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost": {
+              "returned": [],
+              "estimated_for_unavailable": [],
+              "calls": 1,
+              "dispatched": 1,
+              "unavailable": 1,
+              "unresolved": 1,
+              "tokens": {
+                "input": 1,
+                "output": 1,
+                "cache_read": 1,
+                "cache_write": 1,
+                "unknown_calls": 1
+              }
+            },
+            "step": 1,
+            "backlog": 1,
+            "last_note": {
+              "severity": "advice",
+              "note": "sample"
+            },
+            "detail": "sample",
+            "consults": {
+              "turn": 1,
+              "total": 1,
+              "cap": 1
+            },
+            "warning": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisorChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": {
+        "session": "00000000-0000-0000-0000-000000000001",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "state": "paused",
+        "model": "sample",
+        "effort": "sample",
+        "notes": {
+          "nit": 1,
+          "concern": 1,
+          "blocker": 1
+        },
+        "context_used": 1,
+        "context_limit": 1,
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "cost": {
+          "returned": [],
+          "estimated_for_unavailable": [],
+          "calls": 1,
+          "dispatched": 1,
+          "unavailable": 1,
+          "unresolved": 1,
+          "tokens": {
+            "input": 1,
+            "output": 1,
+            "cache_read": 1,
+            "cache_write": 1,
+            "unknown_calls": 1
+          }
+        },
+        "step": 1,
+        "backlog": 1,
+        "last_note": {
+          "severity": "advice",
+          "note": "sample"
+        },
+        "detail": "sample",
+        "consults": {
+          "turn": 1,
+          "total": 1,
+          "cap": 1
+        },
+        "warning": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisorChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": {
+            "session": "00000000-0000-0000-0000-000000000001",
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "state": "paused",
+            "model": "sample",
+            "effort": "sample",
+            "notes": {
+              "nit": 1,
+              "concern": 1,
+              "blocker": 1
+            },
+            "context_used": 1,
+            "context_limit": 1,
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost": {
+              "returned": [],
+              "estimated_for_unavailable": [],
+              "calls": 1,
+              "dispatched": 1,
+              "unavailable": 1,
+              "unresolved": 1,
+              "tokens": {
+                "input": 1,
+                "output": 1,
+                "cache_read": 1,
+                "cache_write": 1,
+                "unknown_calls": 1
+              }
+            },
+            "step": 1,
+            "backlog": 1,
+            "last_note": {
+              "severity": "advice",
+              "note": "sample"
+            },
+            "detail": "sample",
+            "consults": {
+              "turn": 1,
+              "total": 1,
+              "cap": 1
+            },
+            "warning": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisorChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": {
+        "session": "00000000-0000-0000-0000-000000000001",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "state": "halted",
+        "model": "sample",
+        "effort": "sample",
+        "notes": {
+          "nit": 1,
+          "concern": 1,
+          "blocker": 1
+        },
+        "context_used": 1,
+        "context_limit": 1,
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "cost": {
+          "returned": [],
+          "estimated_for_unavailable": [],
+          "calls": 1,
+          "dispatched": 1,
+          "unavailable": 1,
+          "unresolved": 1,
+          "tokens": {
+            "input": 1,
+            "output": 1,
+            "cache_read": 1,
+            "cache_write": 1,
+            "unknown_calls": 1
+          }
+        },
+        "step": 1,
+        "backlog": 1,
+        "last_note": {
+          "severity": "advice",
+          "note": "sample"
+        },
+        "detail": "sample",
+        "consults": {
+          "turn": 1,
+          "total": 1,
+          "cap": 1
+        },
+        "warning": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisorChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": {
+            "session": "00000000-0000-0000-0000-000000000001",
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "state": "halted",
+            "model": "sample",
+            "effort": "sample",
+            "notes": {
+              "nit": 1,
+              "concern": 1,
+              "blocker": 1
+            },
+            "context_used": 1,
+            "context_limit": 1,
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost": {
+              "returned": [],
+              "estimated_for_unavailable": [],
+              "calls": 1,
+              "dispatched": 1,
+              "unavailable": 1,
+              "unresolved": 1,
+              "tokens": {
+                "input": 1,
+                "output": 1,
+                "cache_read": 1,
+                "cache_write": 1,
+                "unknown_calls": 1
+              }
+            },
+            "step": 1,
+            "backlog": 1,
+            "last_note": {
+              "severity": "advice",
+              "note": "sample"
+            },
+            "detail": "sample",
+            "consults": {
+              "turn": 1,
+              "total": 1,
+              "cap": 1
+            },
+            "warning": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisorChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": {
+        "session": "00000000-0000-0000-0000-000000000001",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "state": "off",
+        "model": null,
+        "effort": "sample",
+        "notes": {
+          "nit": 1,
+          "concern": 1,
+          "blocker": 1
+        },
+        "context_used": 1,
+        "context_limit": 1,
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "cost": {
+          "returned": [],
+          "estimated_for_unavailable": [],
+          "calls": 1,
+          "dispatched": 1,
+          "unavailable": 1,
+          "unresolved": 1,
+          "tokens": {
+            "input": 1,
+            "output": 1,
+            "cache_read": 1,
+            "cache_write": 1,
+            "unknown_calls": 1
+          }
+        },
+        "step": 1,
+        "backlog": 1,
+        "last_note": {
+          "severity": "advice",
+          "note": "sample"
+        },
+        "detail": "sample",
+        "consults": {
+          "turn": 1,
+          "total": 1,
+          "cap": 1
+        },
+        "warning": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisorChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": {
+            "session": "00000000-0000-0000-0000-000000000001",
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "state": "off",
+            "model": null,
+            "effort": "sample",
+            "notes": {
+              "nit": 1,
+              "concern": 1,
+              "blocker": 1
+            },
+            "context_used": 1,
+            "context_limit": 1,
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost": {
+              "returned": [],
+              "estimated_for_unavailable": [],
+              "calls": 1,
+              "dispatched": 1,
+              "unavailable": 1,
+              "unresolved": 1,
+              "tokens": {
+                "input": 1,
+                "output": 1,
+                "cache_read": 1,
+                "cache_write": 1,
+                "unknown_calls": 1
+              }
+            },
+            "step": 1,
+            "backlog": 1,
+            "last_note": {
+              "severity": "advice",
+              "note": "sample"
+            },
+            "detail": "sample",
+            "consults": {
+              "turn": 1,
+              "total": 1,
+              "cap": 1
+            },
+            "warning": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisorChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": {
+        "session": "00000000-0000-0000-0000-000000000001",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "state": "off",
+        "model": "sample",
+        "effort": null,
+        "notes": {
+          "nit": 1,
+          "concern": 1,
+          "blocker": 1
+        },
+        "context_used": 1,
+        "context_limit": 1,
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "cost": {
+          "returned": [],
+          "estimated_for_unavailable": [],
+          "calls": 1,
+          "dispatched": 1,
+          "unavailable": 1,
+          "unresolved": 1,
+          "tokens": {
+            "input": 1,
+            "output": 1,
+            "cache_read": 1,
+            "cache_write": 1,
+            "unknown_calls": 1
+          }
+        },
+        "step": 1,
+        "backlog": 1,
+        "last_note": {
+          "severity": "advice",
+          "note": "sample"
+        },
+        "detail": "sample",
+        "consults": {
+          "turn": 1,
+          "total": 1,
+          "cap": 1
+        },
+        "warning": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisorChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": {
+            "session": "00000000-0000-0000-0000-000000000001",
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "state": "off",
+            "model": "sample",
+            "effort": null,
+            "notes": {
+              "nit": 1,
+              "concern": 1,
+              "blocker": 1
+            },
+            "context_used": 1,
+            "context_limit": 1,
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost": {
+              "returned": [],
+              "estimated_for_unavailable": [],
+              "calls": 1,
+              "dispatched": 1,
+              "unavailable": 1,
+              "unresolved": 1,
+              "tokens": {
+                "input": 1,
+                "output": 1,
+                "cache_read": 1,
+                "cache_write": 1,
+                "unknown_calls": 1
+              }
+            },
+            "step": 1,
+            "backlog": 1,
+            "last_note": {
+              "severity": "advice",
+              "note": "sample"
+            },
+            "detail": "sample",
+            "consults": {
+              "turn": 1,
+              "total": 1,
+              "cap": 1
+            },
+            "warning": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisorChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": {
+        "session": "00000000-0000-0000-0000-000000000001",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "state": "off",
+        "model": "sample",
+        "effort": "sample",
+        "notes": {
+          "nit": 1,
+          "concern": 1,
+          "blocker": 1
+        },
+        "context_used": 1,
+        "context_limit": 1,
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "cost": {
+          "returned": [
+            {
+              "currency": "sample",
+              "nanos": "1234"
+            }
+          ],
+          "estimated_for_unavailable": [],
+          "calls": 1,
+          "dispatched": 1,
+          "unavailable": 1,
+          "unresolved": 1,
+          "tokens": {
+            "input": 1,
+            "output": 1,
+            "cache_read": 1,
+            "cache_write": 1,
+            "unknown_calls": 1
+          }
+        },
+        "step": 1,
+        "backlog": 1,
+        "last_note": {
+          "severity": "advice",
+          "note": "sample"
+        },
+        "detail": "sample",
+        "consults": {
+          "turn": 1,
+          "total": 1,
+          "cap": 1
+        },
+        "warning": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisorChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": {
+            "session": "00000000-0000-0000-0000-000000000001",
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "state": "off",
+            "model": "sample",
+            "effort": "sample",
+            "notes": {
+              "nit": 1,
+              "concern": 1,
+              "blocker": 1
+            },
+            "context_used": 1,
+            "context_limit": 1,
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost": {
+              "returned": [
+                {
+                  "currency": "sample",
+                  "nanos": "1234"
+                }
+              ],
+              "estimated_for_unavailable": [],
+              "calls": 1,
+              "dispatched": 1,
+              "unavailable": 1,
+              "unresolved": 1,
+              "tokens": {
+                "input": 1,
+                "output": 1,
+                "cache_read": 1,
+                "cache_write": 1,
+                "unknown_calls": 1
+              }
+            },
+            "step": 1,
+            "backlog": 1,
+            "last_note": {
+              "severity": "advice",
+              "note": "sample"
+            },
+            "detail": "sample",
+            "consults": {
+              "turn": 1,
+              "total": 1,
+              "cap": 1
+            },
+            "warning": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisorChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": {
+        "session": "00000000-0000-0000-0000-000000000001",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "state": "off",
+        "model": "sample",
+        "effort": "sample",
+        "notes": {
+          "nit": 1,
+          "concern": 1,
+          "blocker": 1
+        },
+        "context_used": 1,
+        "context_limit": 1,
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "cost": {
+          "returned": [],
+          "estimated_for_unavailable": [
+            {
+              "currency": "sample",
+              "nanos": "1234"
+            }
+          ],
+          "calls": 1,
+          "dispatched": 1,
+          "unavailable": 1,
+          "unresolved": 1,
+          "tokens": {
+            "input": 1,
+            "output": 1,
+            "cache_read": 1,
+            "cache_write": 1,
+            "unknown_calls": 1
+          }
+        },
+        "step": 1,
+        "backlog": 1,
+        "last_note": {
+          "severity": "advice",
+          "note": "sample"
+        },
+        "detail": "sample",
+        "consults": {
+          "turn": 1,
+          "total": 1,
+          "cap": 1
+        },
+        "warning": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisorChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": {
+            "session": "00000000-0000-0000-0000-000000000001",
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "state": "off",
+            "model": "sample",
+            "effort": "sample",
+            "notes": {
+              "nit": 1,
+              "concern": 1,
+              "blocker": 1
+            },
+            "context_used": 1,
+            "context_limit": 1,
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost": {
+              "returned": [],
+              "estimated_for_unavailable": [
+                {
+                  "currency": "sample",
+                  "nanos": "1234"
+                }
+              ],
+              "calls": 1,
+              "dispatched": 1,
+              "unavailable": 1,
+              "unresolved": 1,
+              "tokens": {
+                "input": 1,
+                "output": 1,
+                "cache_read": 1,
+                "cache_write": 1,
+                "unknown_calls": 1
+              }
+            },
+            "step": 1,
+            "backlog": 1,
+            "last_note": {
+              "severity": "advice",
+              "note": "sample"
+            },
+            "detail": "sample",
+            "consults": {
+              "turn": 1,
+              "total": 1,
+              "cap": 1
+            },
+            "warning": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisorChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": {
+        "session": "00000000-0000-0000-0000-000000000001",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "state": "off",
+        "model": "sample",
+        "effort": "sample",
+        "notes": {
+          "nit": 1,
+          "concern": 1,
+          "blocker": 1
+        },
+        "context_used": 1,
+        "context_limit": 1,
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "cost": null,
+        "step": 1,
+        "backlog": 1,
+        "last_note": {
+          "severity": "advice",
+          "note": "sample"
+        },
+        "detail": "sample",
+        "consults": {
+          "turn": 1,
+          "total": 1,
+          "cap": 1
+        },
+        "warning": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisorChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": {
+            "session": "00000000-0000-0000-0000-000000000001",
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "state": "off",
+            "model": "sample",
+            "effort": "sample",
+            "notes": {
+              "nit": 1,
+              "concern": 1,
+              "blocker": 1
+            },
+            "context_used": 1,
+            "context_limit": 1,
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost": null,
+            "step": 1,
+            "backlog": 1,
+            "last_note": {
+              "severity": "advice",
+              "note": "sample"
+            },
+            "detail": "sample",
+            "consults": {
+              "turn": 1,
+              "total": 1,
+              "cap": 1
+            },
+            "warning": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisorChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": {
+        "session": "00000000-0000-0000-0000-000000000001",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "state": "off",
+        "model": "sample",
+        "effort": "sample",
+        "notes": {
+          "nit": 1,
+          "concern": 1,
+          "blocker": 1
+        },
+        "context_used": 1,
+        "context_limit": 1,
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "cost": {
+          "returned": [],
+          "estimated_for_unavailable": [],
+          "calls": 1,
+          "dispatched": 1,
+          "unavailable": 1,
+          "unresolved": 1,
+          "tokens": {
+            "input": 1,
+            "output": 1,
+            "cache_read": 1,
+            "cache_write": 1,
+            "unknown_calls": 1
+          }
+        },
+        "step": 1,
+        "backlog": 1,
+        "last_note": {
+          "severity": "nit",
+          "note": "sample"
+        },
+        "detail": "sample",
+        "consults": {
+          "turn": 1,
+          "total": 1,
+          "cap": 1
+        },
+        "warning": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisorChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": {
+            "session": "00000000-0000-0000-0000-000000000001",
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "state": "off",
+            "model": "sample",
+            "effort": "sample",
+            "notes": {
+              "nit": 1,
+              "concern": 1,
+              "blocker": 1
+            },
+            "context_used": 1,
+            "context_limit": 1,
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost": {
+              "returned": [],
+              "estimated_for_unavailable": [],
+              "calls": 1,
+              "dispatched": 1,
+              "unavailable": 1,
+              "unresolved": 1,
+              "tokens": {
+                "input": 1,
+                "output": 1,
+                "cache_read": 1,
+                "cache_write": 1,
+                "unknown_calls": 1
+              }
+            },
+            "step": 1,
+            "backlog": 1,
+            "last_note": {
+              "severity": "nit",
+              "note": "sample"
+            },
+            "detail": "sample",
+            "consults": {
+              "turn": 1,
+              "total": 1,
+              "cap": 1
+            },
+            "warning": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisorChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": {
+        "session": "00000000-0000-0000-0000-000000000001",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "state": "off",
+        "model": "sample",
+        "effort": "sample",
+        "notes": {
+          "nit": 1,
+          "concern": 1,
+          "blocker": 1
+        },
+        "context_used": 1,
+        "context_limit": 1,
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "cost": {
+          "returned": [],
+          "estimated_for_unavailable": [],
+          "calls": 1,
+          "dispatched": 1,
+          "unavailable": 1,
+          "unresolved": 1,
+          "tokens": {
+            "input": 1,
+            "output": 1,
+            "cache_read": 1,
+            "cache_write": 1,
+            "unknown_calls": 1
+          }
+        },
+        "step": 1,
+        "backlog": 1,
+        "last_note": {
+          "severity": "concern",
+          "note": "sample"
+        },
+        "detail": "sample",
+        "consults": {
+          "turn": 1,
+          "total": 1,
+          "cap": 1
+        },
+        "warning": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisorChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": {
+            "session": "00000000-0000-0000-0000-000000000001",
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "state": "off",
+            "model": "sample",
+            "effort": "sample",
+            "notes": {
+              "nit": 1,
+              "concern": 1,
+              "blocker": 1
+            },
+            "context_used": 1,
+            "context_limit": 1,
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost": {
+              "returned": [],
+              "estimated_for_unavailable": [],
+              "calls": 1,
+              "dispatched": 1,
+              "unavailable": 1,
+              "unresolved": 1,
+              "tokens": {
+                "input": 1,
+                "output": 1,
+                "cache_read": 1,
+                "cache_write": 1,
+                "unknown_calls": 1
+              }
+            },
+            "step": 1,
+            "backlog": 1,
+            "last_note": {
+              "severity": "concern",
+              "note": "sample"
+            },
+            "detail": "sample",
+            "consults": {
+              "turn": 1,
+              "total": 1,
+              "cap": 1
+            },
+            "warning": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisorChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": {
+        "session": "00000000-0000-0000-0000-000000000001",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "state": "off",
+        "model": "sample",
+        "effort": "sample",
+        "notes": {
+          "nit": 1,
+          "concern": 1,
+          "blocker": 1
+        },
+        "context_used": 1,
+        "context_limit": 1,
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "cost": {
+          "returned": [],
+          "estimated_for_unavailable": [],
+          "calls": 1,
+          "dispatched": 1,
+          "unavailable": 1,
+          "unresolved": 1,
+          "tokens": {
+            "input": 1,
+            "output": 1,
+            "cache_read": 1,
+            "cache_write": 1,
+            "unknown_calls": 1
+          }
+        },
+        "step": 1,
+        "backlog": 1,
+        "last_note": {
+          "severity": "blocker",
+          "note": "sample"
+        },
+        "detail": "sample",
+        "consults": {
+          "turn": 1,
+          "total": 1,
+          "cap": 1
+        },
+        "warning": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisorChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": {
+            "session": "00000000-0000-0000-0000-000000000001",
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "state": "off",
+            "model": "sample",
+            "effort": "sample",
+            "notes": {
+              "nit": 1,
+              "concern": 1,
+              "blocker": 1
+            },
+            "context_used": 1,
+            "context_limit": 1,
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost": {
+              "returned": [],
+              "estimated_for_unavailable": [],
+              "calls": 1,
+              "dispatched": 1,
+              "unavailable": 1,
+              "unresolved": 1,
+              "tokens": {
+                "input": 1,
+                "output": 1,
+                "cache_read": 1,
+                "cache_write": 1,
+                "unknown_calls": 1
+              }
+            },
+            "step": 1,
+            "backlog": 1,
+            "last_note": {
+              "severity": "blocker",
+              "note": "sample"
+            },
+            "detail": "sample",
+            "consults": {
+              "turn": 1,
+              "total": 1,
+              "cap": 1
+            },
+            "warning": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisorChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": {
+        "session": "00000000-0000-0000-0000-000000000001",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "state": "off",
+        "model": "sample",
+        "effort": "sample",
+        "notes": {
+          "nit": 1,
+          "concern": 1,
+          "blocker": 1
+        },
+        "context_used": 1,
+        "context_limit": 1,
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "cost": {
+          "returned": [],
+          "estimated_for_unavailable": [],
+          "calls": 1,
+          "dispatched": 1,
+          "unavailable": 1,
+          "unresolved": 1,
+          "tokens": {
+            "input": 1,
+            "output": 1,
+            "cache_read": 1,
+            "cache_write": 1,
+            "unknown_calls": 1
+          }
+        },
+        "step": 1,
+        "backlog": 1,
+        "last_note": null,
+        "detail": "sample",
+        "consults": {
+          "turn": 1,
+          "total": 1,
+          "cap": 1
+        },
+        "warning": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisorChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": {
+            "session": "00000000-0000-0000-0000-000000000001",
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "state": "off",
+            "model": "sample",
+            "effort": "sample",
+            "notes": {
+              "nit": 1,
+              "concern": 1,
+              "blocker": 1
+            },
+            "context_used": 1,
+            "context_limit": 1,
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost": {
+              "returned": [],
+              "estimated_for_unavailable": [],
+              "calls": 1,
+              "dispatched": 1,
+              "unavailable": 1,
+              "unresolved": 1,
+              "tokens": {
+                "input": 1,
+                "output": 1,
+                "cache_read": 1,
+                "cache_write": 1,
+                "unknown_calls": 1
+              }
+            },
+            "step": 1,
+            "backlog": 1,
+            "last_note": null,
+            "detail": "sample",
+            "consults": {
+              "turn": 1,
+              "total": 1,
+              "cap": 1
+            },
+            "warning": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisorChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": {
+        "session": "00000000-0000-0000-0000-000000000001",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "state": "off",
+        "model": "sample",
+        "effort": "sample",
+        "notes": {
+          "nit": 1,
+          "concern": 1,
+          "blocker": 1
+        },
+        "context_used": 1,
+        "context_limit": 1,
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "cost": {
+          "returned": [],
+          "estimated_for_unavailable": [],
+          "calls": 1,
+          "dispatched": 1,
+          "unavailable": 1,
+          "unresolved": 1,
+          "tokens": {
+            "input": 1,
+            "output": 1,
+            "cache_read": 1,
+            "cache_write": 1,
+            "unknown_calls": 1
+          }
+        },
+        "step": 1,
+        "backlog": 1,
+        "last_note": {
+          "severity": "advice",
+          "note": "sample"
+        },
+        "detail": null,
+        "consults": {
+          "turn": 1,
+          "total": 1,
+          "cap": 1
+        },
+        "warning": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisorChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": {
+            "session": "00000000-0000-0000-0000-000000000001",
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "state": "off",
+            "model": "sample",
+            "effort": "sample",
+            "notes": {
+              "nit": 1,
+              "concern": 1,
+              "blocker": 1
+            },
+            "context_used": 1,
+            "context_limit": 1,
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost": {
+              "returned": [],
+              "estimated_for_unavailable": [],
+              "calls": 1,
+              "dispatched": 1,
+              "unavailable": 1,
+              "unresolved": 1,
+              "tokens": {
+                "input": 1,
+                "output": 1,
+                "cache_read": 1,
+                "cache_write": 1,
+                "unknown_calls": 1
+              }
+            },
+            "step": 1,
+            "backlog": 1,
+            "last_note": {
+              "severity": "advice",
+              "note": "sample"
+            },
+            "detail": null,
+            "consults": {
+              "turn": 1,
+              "total": 1,
+              "cap": 1
+            },
+            "warning": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisorChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": {
+        "session": "00000000-0000-0000-0000-000000000001",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "state": "off",
+        "model": "sample",
+        "effort": "sample",
+        "notes": {
+          "nit": 1,
+          "concern": 1,
+          "blocker": 1
+        },
+        "context_used": 1,
+        "context_limit": 1,
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "cost": {
+          "returned": [],
+          "estimated_for_unavailable": [],
+          "calls": 1,
+          "dispatched": 1,
+          "unavailable": 1,
+          "unresolved": 1,
+          "tokens": {
+            "input": 1,
+            "output": 1,
+            "cache_read": 1,
+            "cache_write": 1,
+            "unknown_calls": 1
+          }
+        },
+        "step": 1,
+        "backlog": 1,
+        "last_note": {
+          "severity": "advice",
+          "note": "sample"
+        },
+        "detail": "sample",
+        "consults": {
+          "turn": 1,
+          "total": 1,
+          "cap": 1
+        },
+        "warning": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisorChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": {
+            "session": "00000000-0000-0000-0000-000000000001",
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "state": "off",
+            "model": "sample",
+            "effort": "sample",
+            "notes": {
+              "nit": 1,
+              "concern": 1,
+              "blocker": 1
+            },
+            "context_used": 1,
+            "context_limit": 1,
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost": {
+              "returned": [],
+              "estimated_for_unavailable": [],
+              "calls": 1,
+              "dispatched": 1,
+              "unavailable": 1,
+              "unresolved": 1,
+              "tokens": {
+                "input": 1,
+                "output": 1,
+                "cache_read": 1,
+                "cache_write": 1,
+                "unknown_calls": 1
+              }
+            },
+            "step": 1,
+            "backlog": 1,
+            "last_note": {
+              "severity": "advice",
+              "note": "sample"
+            },
+            "detail": "sample",
+            "consults": {
+              "turn": 1,
+              "total": 1,
+              "cap": 1
+            },
+            "warning": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisoryAdded",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "seq": 1,
+      "advisory": {
+        "kind": "review",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "step": 1,
+        "at_ms": 1,
+        "notes": []
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisoryAdded",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "seq": 1,
+          "advisory": {
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "step": 1,
+            "turn": null,
+            "at_ms": 1,
+            "notes": [],
+            "kind": "review"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisoryAdded",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "seq": 1,
+      "advisory": {
+        "kind": "consultation",
+        "question": "sample",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "step": 1,
+        "at_ms": 1,
+        "notes": []
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisoryAdded",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "seq": 1,
+          "advisory": {
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "step": 1,
+            "turn": null,
+            "at_ms": 1,
+            "notes": [],
+            "kind": "consultation",
+            "question": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisoryAdded",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "seq": 1,
+      "advisory": {
+        "kind": "review",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "step": 1,
+        "turn": 1,
+        "at_ms": 1,
+        "notes": []
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisoryAdded",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "seq": 1,
+          "advisory": {
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "step": 1,
+            "turn": 1,
+            "at_ms": 1,
+            "notes": [],
+            "kind": "review"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisoryAdded",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "seq": 1,
+      "advisory": {
+        "kind": "review",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "step": 1,
+        "turn": null,
+        "at_ms": 1,
+        "notes": []
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisoryAdded",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "seq": 1,
+          "advisory": {
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "step": 1,
+            "turn": null,
+            "at_ms": 1,
+            "notes": [],
+            "kind": "review"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisoryAdded",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "seq": 1,
+      "advisory": {
+        "kind": "review",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "step": 1,
+        "turn": 1,
+        "at_ms": 1,
+        "notes": [
+          {
+            "severity": "advice",
+            "note": "sample"
+          }
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisoryAdded",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "seq": 1,
+          "advisory": {
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "step": 1,
+            "turn": 1,
+            "at_ms": 1,
+            "notes": [
+              {
+                "severity": "advice",
+                "note": "sample"
+              }
+            ],
+            "kind": "review"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisoryAdded",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "seq": 1,
+      "advisory": {
+        "kind": "review",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "step": 1,
+        "turn": 1,
+        "at_ms": 1,
+        "notes": [
+          {
+            "severity": "nit",
+            "note": "sample"
+          }
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisoryAdded",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "seq": 1,
+          "advisory": {
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "step": 1,
+            "turn": 1,
+            "at_ms": 1,
+            "notes": [
+              {
+                "severity": "nit",
+                "note": "sample"
+              }
+            ],
+            "kind": "review"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisoryAdded",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "seq": 1,
+      "advisory": {
+        "kind": "review",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "step": 1,
+        "turn": 1,
+        "at_ms": 1,
+        "notes": [
+          {
+            "severity": "concern",
+            "note": "sample"
+          }
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisoryAdded",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "seq": 1,
+          "advisory": {
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "step": 1,
+            "turn": 1,
+            "at_ms": 1,
+            "notes": [
+              {
+                "severity": "concern",
+                "note": "sample"
+              }
+            ],
+            "kind": "review"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AdvisoryAdded",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "seq": 1,
+      "advisory": {
+        "kind": "review",
+        "advisor": "00000000-0000-0000-0000-000000000001",
+        "step": 1,
+        "turn": 1,
+        "at_ms": 1,
+        "notes": [
+          {
+            "severity": "blocker",
+            "note": "sample"
+          }
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AdvisoryAdded",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "seq": 1,
+          "advisory": {
+            "advisor": "00000000-0000-0000-0000-000000000001",
+            "step": 1,
+            "turn": 1,
+            "at_ms": 1,
+            "notes": [
+              {
+                "severity": "blocker",
+                "note": "sample"
+              }
+            ],
+            "kind": "review"
+          }
+        }
+      }
+    }
+  }
+]

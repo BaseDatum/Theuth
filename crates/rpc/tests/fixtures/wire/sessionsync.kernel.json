@@ -1,0 +1,58 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "method": "subscribe_events",
+    "params": {
+      "subscription": "<subscription>",
+      "result": {
+        "type": "A2aChanged"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "subscribe_events",
+    "params": {
+      "subscription": "<subscription>",
+      "result": {
+        "type": "JobOutput",
+        "session": "00000000-0000-0000-0000-000000000002",
+        "id": "golden-kernel",
+        "chunk": "sample"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "subscribe_events",
+    "params": {
+      "subscription": "<subscription>",
+      "result": {
+        "type": "A2aChanged"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "subscribe_events",
+    "params": {
+      "subscription": "<subscription>",
+      "result": {
+        "type": "JobOutput",
+        "session": "00000000-0000-0000-0000-000000000002",
+        "id": "golden-kernel",
+        "chunk": "sample"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "subscribe_events",
+    "params": {
+      "subscription": "<subscription>",
+      "result": {
+        "type": "A2aChanged"
+      }
+    }
+  }
+]

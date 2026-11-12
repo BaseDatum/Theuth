@@ -1,0 +1,404 @@
+[
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "event": {
+        "type": "plan",
+        "branches": []
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NotebookAsk",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "event": {
+            "type": "plan",
+            "branches": []
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "event": {
+        "type": "plan",
+        "branches": [
+          {
+            "n": 1,
+            "notebooks": [],
+            "query": "sample",
+            "instructions": "sample"
+          }
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NotebookAsk",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "event": {
+            "type": "plan",
+            "branches": [
+              {
+                "n": 1,
+                "notebooks": [],
+                "query": "sample",
+                "instructions": "sample"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "event": {
+        "type": "plan",
+        "branches": [
+          {
+            "n": 1,
+            "notebooks": [
+              "sample"
+            ],
+            "query": "sample",
+            "instructions": "sample"
+          }
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NotebookAsk",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "event": {
+            "type": "plan",
+            "branches": [
+              {
+                "n": 1,
+                "notebooks": [
+                  "sample"
+                ],
+                "query": "sample",
+                "instructions": "sample"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "event": {
+        "type": "branch",
+        "n": 1,
+        "hits": []
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NotebookAsk",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "event": {
+            "type": "branch",
+            "n": 1,
+            "hits": []
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "event": {
+        "type": "branch",
+        "n": 1,
+        "hits": [
+          {
+            "id": "sample",
+            "title": "sample",
+            "score": 1
+          }
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NotebookAsk",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "event": {
+            "type": "branch",
+            "n": 1,
+            "hits": [
+              {
+                "id": "sample",
+                "block": null,
+                "title": "sample",
+                "score": 1.0
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "event": {
+        "type": "branch",
+        "n": 1,
+        "hits": [
+          {
+            "id": "sample",
+            "block": "sample",
+            "title": "sample",
+            "score": 1
+          }
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NotebookAsk",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "event": {
+            "type": "branch",
+            "n": 1,
+            "hits": [
+              {
+                "id": "sample",
+                "block": "sample",
+                "title": "sample",
+                "score": 1.0
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "event": {
+        "type": "branch",
+        "n": 1,
+        "hits": [
+          {
+            "id": "sample",
+            "block": null,
+            "title": "sample",
+            "score": 1
+          }
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NotebookAsk",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "event": {
+            "type": "branch",
+            "n": 1,
+            "hits": [
+              {
+                "id": "sample",
+                "block": null,
+                "title": "sample",
+                "score": 1.0
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "event": {
+        "type": "partial",
+        "n": 1,
+        "answer": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NotebookAsk",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "event": {
+            "type": "partial",
+            "n": 1,
+            "answer": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "event": {
+        "type": "answer",
+        "markdown": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NotebookAsk",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "event": {
+            "type": "answer",
+            "markdown": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "event": {
+        "type": "done",
+        "ok": false
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NotebookAsk",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "event": {
+            "type": "done",
+            "ok": false,
+            "error": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "event": {
+        "type": "done",
+        "ok": false,
+        "error": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NotebookAsk",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "event": {
+            "type": "done",
+            "ok": false,
+            "error": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "event": {
+        "type": "done",
+        "ok": true,
+        "error": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NotebookAsk",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "event": {
+            "type": "done",
+            "ok": true,
+            "error": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "event": {
+        "type": "done",
+        "ok": false,
+        "error": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NotebookAsk",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "event": {
+            "type": "done",
+            "ok": false,
+            "error": null
+          }
+        }
+      }
+    }
+  }
+]

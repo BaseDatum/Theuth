@@ -1,0 +1,694 @@
+[
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "task_created",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "task_created",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "task_created",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "task_created",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "task_moved",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "task_moved",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "task_reassigned",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "task_reassigned",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "task_checked_out",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "task_checked_out",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "task_commented",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "task_commented",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "task_nudged",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "task_nudged",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "task_done",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "task_done",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "child_spawned",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "child_spawned",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "child_returned",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "child_returned",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "agent_hired",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "agent_hired",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "agent_paused",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "agent_paused",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "agent_proposed",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "agent_proposed",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "agent_removed",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "agent_removed",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "routine_fired",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "routine_fired",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "escalation_raised",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "escalation_raised",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "escalation_answered",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "escalation_answered",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "budget_threshold",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "budget_threshold",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "ask_answered",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "ask_answered",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "approval_resolved",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "approval_resolved",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": 1.0
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ActivityAppended",
+      "entry": {
+        "id": 1,
+        "ts_ms": 1,
+        "kind": "task_created",
+        "actor": "sample",
+        "subject": "sample",
+        "summary": "sample",
+        "cost": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ActivityAppended",
+          "entry": {
+            "id": 1,
+            "ts_ms": 1,
+            "kind": "task_created",
+            "actor": "sample",
+            "subject": "sample",
+            "summary": "sample",
+            "cost": null
+          }
+        }
+      }
+    }
+  }
+]

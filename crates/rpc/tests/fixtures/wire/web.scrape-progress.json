@@ -1,0 +1,82 @@
+[
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "inflight": [],
+      "done": [],
+      "limit": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ScrapeProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "inflight": [],
+          "done": [],
+          "limit": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "inflight": [
+        "sample"
+      ],
+      "done": [],
+      "limit": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ScrapeProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "inflight": [
+            "sample"
+          ],
+          "done": [],
+          "limit": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "inflight": [],
+      "done": [
+        "sample"
+      ],
+      "limit": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ScrapeProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "inflight": [],
+          "done": [
+            "sample"
+          ],
+          "limit": 1
+        }
+      }
+    }
+  }
+]

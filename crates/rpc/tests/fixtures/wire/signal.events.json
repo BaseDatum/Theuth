@@ -1,0 +1,100 @@
+[
+  {
+    "input": {
+      "type": "LinkUrl",
+      "url": "sample",
+      "expires_at_ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LinkUrl",
+          "url": "sample",
+          "expires_at_ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Linked",
+      "number": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Linked",
+          "number": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Connected"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Connected"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Disconnected",
+      "retry_in_secs": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Disconnected",
+          "retry_in_secs": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Unlinked"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Unlinked"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DaemonOnly"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DaemonOnly"
+        }
+      }
+    }
+  }
+]

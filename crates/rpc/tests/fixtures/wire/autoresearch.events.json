@@ -1,0 +1,1465 @@
+[
+  {
+    "input": {
+      "type": "StudyChanged",
+      "slug": "sample",
+      "state": {
+        "state": "draft"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyChanged",
+          "slug": "sample",
+          "state": {
+            "state": "draft"
+          },
+          "reason": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyChanged",
+      "slug": "sample",
+      "state": {
+        "state": "draft"
+      },
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyChanged",
+          "slug": "sample",
+          "state": {
+            "state": "draft"
+          },
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyChanged",
+      "slug": "sample",
+      "state": {
+        "state": "preparing"
+      },
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyChanged",
+          "slug": "sample",
+          "state": {
+            "state": "preparing"
+          },
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyChanged",
+      "slug": "sample",
+      "state": {
+        "state": "running"
+      },
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyChanged",
+          "slug": "sample",
+          "state": {
+            "state": "running"
+          },
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyChanged",
+      "slug": "sample",
+      "state": {
+        "state": "paused",
+        "reason": {
+          "kind": "user"
+        }
+      },
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyChanged",
+          "slug": "sample",
+          "state": {
+            "state": "paused",
+            "reason": {
+              "kind": "user"
+            }
+          },
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyChanged",
+      "slug": "sample",
+      "state": {
+        "state": "paused",
+        "reason": {
+          "kind": "crash_streak"
+        }
+      },
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyChanged",
+          "slug": "sample",
+          "state": {
+            "state": "paused",
+            "reason": {
+              "kind": "crash_streak"
+            }
+          },
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyChanged",
+      "slug": "sample",
+      "state": {
+        "state": "paused",
+        "reason": {
+          "kind": "custody_refusals"
+        }
+      },
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyChanged",
+          "slug": "sample",
+          "state": {
+            "state": "paused",
+            "reason": {
+              "kind": "custody_refusals"
+            }
+          },
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyChanged",
+      "slug": "sample",
+      "state": {
+        "state": "paused",
+        "reason": {
+          "kind": "review_flags"
+        }
+      },
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyChanged",
+          "slug": "sample",
+          "state": {
+            "state": "paused",
+            "reason": {
+              "kind": "review_flags"
+            }
+          },
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyChanged",
+      "slug": "sample",
+      "state": {
+        "state": "paused",
+        "reason": {
+          "kind": "budget_confirm"
+        }
+      },
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyChanged",
+          "slug": "sample",
+          "state": {
+            "state": "paused",
+            "reason": {
+              "kind": "budget_confirm"
+            }
+          },
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyChanged",
+      "slug": "sample",
+      "state": {
+        "state": "paused",
+        "reason": {
+          "kind": "launch_approval",
+          "n": 1
+        }
+      },
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyChanged",
+          "slug": "sample",
+          "state": {
+            "state": "paused",
+            "reason": {
+              "kind": "launch_approval",
+              "n": 1
+            }
+          },
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyChanged",
+      "slug": "sample",
+      "state": {
+        "state": "paused",
+        "reason": {
+          "kind": "other",
+          "reason": "sample"
+        }
+      },
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyChanged",
+          "slug": "sample",
+          "state": {
+            "state": "paused",
+            "reason": {
+              "kind": "other",
+              "reason": "sample"
+            }
+          },
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyChanged",
+      "slug": "sample",
+      "state": {
+        "state": "finalizing"
+      },
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyChanged",
+          "slug": "sample",
+          "state": {
+            "state": "finalizing"
+          },
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyChanged",
+      "slug": "sample",
+      "state": {
+        "state": "finished"
+      },
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyChanged",
+          "slug": "sample",
+          "state": {
+            "state": "finished"
+          },
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyChanged",
+      "slug": "sample",
+      "state": {
+        "state": "failed",
+        "reason": "sample"
+      },
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyChanged",
+          "slug": "sample",
+          "state": {
+            "state": "failed",
+            "reason": "sample"
+          },
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyChanged",
+      "slug": "sample",
+      "state": {
+        "state": "discarded"
+      },
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyChanged",
+          "slug": "sample",
+          "state": {
+            "state": "discarded"
+          },
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyChanged",
+      "slug": "sample",
+      "state": {
+        "state": "draft"
+      },
+      "reason": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyChanged",
+          "slug": "sample",
+          "state": {
+            "state": "draft"
+          },
+          "reason": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentStarted",
+      "slug": "sample",
+      "n": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentStarted",
+          "slug": "sample",
+          "n": 1,
+          "slot": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentStarted",
+      "slug": "sample",
+      "n": 1,
+      "slot": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentStarted",
+          "slug": "sample",
+          "n": 1,
+          "slot": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentStarted",
+      "slug": "sample",
+      "n": 1,
+      "slot": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentStarted",
+          "slug": "sample",
+          "n": 1,
+          "slot": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentProgress",
+      "slug": "sample",
+      "n": 1,
+      "phase": "novelty",
+      "sample": 1,
+      "of": 1,
+      "elapsed_ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentProgress",
+          "slug": "sample",
+          "n": 1,
+          "phase": "novelty",
+          "sample": 1,
+          "of": 1,
+          "elapsed_ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentProgress",
+      "slug": "sample",
+      "n": 1,
+      "phase": "custody",
+      "sample": 1,
+      "of": 1,
+      "elapsed_ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentProgress",
+          "slug": "sample",
+          "n": 1,
+          "phase": "custody",
+          "sample": 1,
+          "of": 1,
+          "elapsed_ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentProgress",
+      "slug": "sample",
+      "n": 1,
+      "phase": "waiting",
+      "sample": 1,
+      "of": 1,
+      "elapsed_ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentProgress",
+          "slug": "sample",
+          "n": 1,
+          "phase": "waiting",
+          "sample": 1,
+          "of": 1,
+          "elapsed_ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentProgress",
+      "slug": "sample",
+      "n": 1,
+      "phase": "sampling",
+      "sample": 1,
+      "of": 1,
+      "elapsed_ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentProgress",
+          "slug": "sample",
+          "n": 1,
+          "phase": "sampling",
+          "sample": 1,
+          "of": 1,
+          "elapsed_ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentProgress",
+      "slug": "sample",
+      "n": 1,
+      "phase": "checks",
+      "sample": 1,
+      "of": 1,
+      "elapsed_ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentProgress",
+          "slug": "sample",
+          "n": 1,
+          "phase": "checks",
+          "sample": 1,
+          "of": 1,
+          "elapsed_ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentProgress",
+      "slug": "sample",
+      "n": 1,
+      "phase": "review",
+      "sample": 1,
+      "of": 1,
+      "elapsed_ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentProgress",
+          "slug": "sample",
+          "n": 1,
+          "phase": "review",
+          "sample": 1,
+          "of": 1,
+          "elapsed_ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentProgress",
+      "slug": "sample",
+      "n": 1,
+      "phase": "cases",
+      "sample": 1,
+      "of": 1,
+      "elapsed_ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentProgress",
+          "slug": "sample",
+          "n": 1,
+          "phase": "cases",
+          "sample": 1,
+          "of": 1,
+          "elapsed_ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentProgress",
+      "slug": "sample",
+      "n": 1,
+      "phase": "judging",
+      "sample": 1,
+      "of": 1,
+      "elapsed_ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentProgress",
+          "slug": "sample",
+          "n": 1,
+          "phase": "judging",
+          "sample": 1,
+          "of": 1,
+          "elapsed_ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentProgress",
+      "slug": "sample",
+      "n": 1,
+      "phase": "window",
+      "sample": 1,
+      "of": 1,
+      "elapsed_ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentProgress",
+          "slug": "sample",
+          "n": 1,
+          "phase": "window",
+          "sample": 1,
+          "of": 1,
+          "elapsed_ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentFinished",
+      "slug": "sample",
+      "n": 1,
+      "verdict": {
+        "kind": "improved"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentFinished",
+          "slug": "sample",
+          "n": 1,
+          "verdict": {
+            "kind": "improved"
+          },
+          "metric": null,
+          "delta_pct": null,
+          "z": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentFinished",
+      "slug": "sample",
+      "n": 1,
+      "verdict": {
+        "kind": "improved"
+      },
+      "metric": 1,
+      "delta_pct": 1,
+      "z": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentFinished",
+          "slug": "sample",
+          "n": 1,
+          "verdict": {
+            "kind": "improved"
+          },
+          "metric": 1.0,
+          "delta_pct": 1.0,
+          "z": 1.0
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentFinished",
+      "slug": "sample",
+      "n": 1,
+      "verdict": {
+        "kind": "no_gain"
+      },
+      "metric": 1,
+      "delta_pct": 1,
+      "z": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentFinished",
+          "slug": "sample",
+          "n": 1,
+          "verdict": {
+            "kind": "no_gain"
+          },
+          "metric": 1.0,
+          "delta_pct": 1.0,
+          "z": 1.0
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentFinished",
+      "slug": "sample",
+      "n": 1,
+      "verdict": {
+        "kind": "worse"
+      },
+      "metric": 1,
+      "delta_pct": 1,
+      "z": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentFinished",
+          "slug": "sample",
+          "n": 1,
+          "verdict": {
+            "kind": "worse"
+          },
+          "metric": 1.0,
+          "delta_pct": 1.0,
+          "z": 1.0
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentFinished",
+      "slug": "sample",
+      "n": 1,
+      "verdict": {
+        "kind": "crash"
+      },
+      "metric": 1,
+      "delta_pct": 1,
+      "z": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentFinished",
+          "slug": "sample",
+          "n": 1,
+          "verdict": {
+            "kind": "crash"
+          },
+          "metric": 1.0,
+          "delta_pct": 1.0,
+          "z": 1.0
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentFinished",
+      "slug": "sample",
+      "n": 1,
+      "verdict": {
+        "kind": "checks_failed"
+      },
+      "metric": 1,
+      "delta_pct": 1,
+      "z": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentFinished",
+          "slug": "sample",
+          "n": 1,
+          "verdict": {
+            "kind": "checks_failed"
+          },
+          "metric": 1.0,
+          "delta_pct": 1.0,
+          "z": 1.0
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentFinished",
+      "slug": "sample",
+      "n": 1,
+      "verdict": {
+        "kind": "guard_failed"
+      },
+      "metric": 1,
+      "delta_pct": 1,
+      "z": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentFinished",
+          "slug": "sample",
+          "n": 1,
+          "verdict": {
+            "kind": "guard_failed"
+          },
+          "metric": 1.0,
+          "delta_pct": 1.0,
+          "z": 1.0
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentFinished",
+      "slug": "sample",
+      "n": 1,
+      "verdict": {
+        "kind": "refused",
+        "reason": "sample"
+      },
+      "metric": 1,
+      "delta_pct": 1,
+      "z": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentFinished",
+          "slug": "sample",
+          "n": 1,
+          "verdict": {
+            "kind": "refused",
+            "reason": "sample"
+          },
+          "metric": 1.0,
+          "delta_pct": 1.0,
+          "z": 1.0
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentFinished",
+      "slug": "sample",
+      "n": 1,
+      "verdict": {
+        "kind": "suspicious"
+      },
+      "metric": 1,
+      "delta_pct": 1,
+      "z": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentFinished",
+          "slug": "sample",
+          "n": 1,
+          "verdict": {
+            "kind": "suspicious"
+          },
+          "metric": 1.0,
+          "delta_pct": 1.0,
+          "z": 1.0
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentFinished",
+      "slug": "sample",
+      "n": 1,
+      "verdict": {
+        "kind": "keep_simpler"
+      },
+      "metric": 1,
+      "delta_pct": 1,
+      "z": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentFinished",
+          "slug": "sample",
+          "n": 1,
+          "verdict": {
+            "kind": "keep_simpler"
+          },
+          "metric": 1.0,
+          "delta_pct": 1.0,
+          "z": 1.0
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentFinished",
+      "slug": "sample",
+      "n": 1,
+      "verdict": {
+        "kind": "traded"
+      },
+      "metric": 1,
+      "delta_pct": 1,
+      "z": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentFinished",
+          "slug": "sample",
+          "n": 1,
+          "verdict": {
+            "kind": "traded"
+          },
+          "metric": 1.0,
+          "delta_pct": 1.0,
+          "z": 1.0
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentFinished",
+      "slug": "sample",
+      "n": 1,
+      "verdict": {
+        "kind": "pending",
+        "until": "sample"
+      },
+      "metric": 1,
+      "delta_pct": 1,
+      "z": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentFinished",
+          "slug": "sample",
+          "n": 1,
+          "verdict": {
+            "kind": "pending",
+            "until": "sample"
+          },
+          "metric": 1.0,
+          "delta_pct": 1.0,
+          "z": 1.0
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentFinished",
+      "slug": "sample",
+      "n": 1,
+      "verdict": {
+        "kind": "improved"
+      },
+      "metric": null,
+      "delta_pct": 1,
+      "z": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentFinished",
+          "slug": "sample",
+          "n": 1,
+          "verdict": {
+            "kind": "improved"
+          },
+          "metric": null,
+          "delta_pct": 1.0,
+          "z": 1.0
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentFinished",
+      "slug": "sample",
+      "n": 1,
+      "verdict": {
+        "kind": "improved"
+      },
+      "metric": 1,
+      "delta_pct": null,
+      "z": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentFinished",
+          "slug": "sample",
+          "n": 1,
+          "verdict": {
+            "kind": "improved"
+          },
+          "metric": 1.0,
+          "delta_pct": null,
+          "z": 1.0
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ExperimentFinished",
+      "slug": "sample",
+      "n": 1,
+      "verdict": {
+        "kind": "improved"
+      },
+      "metric": 1,
+      "delta_pct": 1,
+      "z": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ExperimentFinished",
+          "slug": "sample",
+          "n": 1,
+          "verdict": {
+            "kind": "improved"
+          },
+          "metric": 1.0,
+          "delta_pct": 1.0,
+          "z": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyFinished",
+      "slug": "sample",
+      "reason": {
+        "kind": "user"
+      },
+      "headline": "sample",
+      "report_doc": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyFinished",
+          "slug": "sample",
+          "reason": {
+            "kind": "user"
+          },
+          "headline": "sample",
+          "report_doc": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyFinished",
+      "slug": "sample",
+      "reason": {
+        "kind": "user_now"
+      },
+      "headline": "sample",
+      "report_doc": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyFinished",
+          "slug": "sample",
+          "reason": {
+            "kind": "user_now"
+          },
+          "headline": "sample",
+          "report_doc": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyFinished",
+      "slug": "sample",
+      "reason": {
+        "kind": "experiments"
+      },
+      "headline": "sample",
+      "report_doc": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyFinished",
+          "slug": "sample",
+          "reason": {
+            "kind": "experiments"
+          },
+          "headline": "sample",
+          "report_doc": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyFinished",
+      "slug": "sample",
+      "reason": {
+        "kind": "budget"
+      },
+      "headline": "sample",
+      "report_doc": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyFinished",
+          "slug": "sample",
+          "reason": {
+            "kind": "budget"
+          },
+          "headline": "sample",
+          "report_doc": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyFinished",
+      "slug": "sample",
+      "reason": {
+        "kind": "hours"
+      },
+      "headline": "sample",
+      "report_doc": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyFinished",
+          "slug": "sample",
+          "reason": {
+            "kind": "hours"
+          },
+          "headline": "sample",
+          "report_doc": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyFinished",
+      "slug": "sample",
+      "reason": {
+        "kind": "deadline"
+      },
+      "headline": "sample",
+      "report_doc": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyFinished",
+          "slug": "sample",
+          "reason": {
+            "kind": "deadline"
+          },
+          "headline": "sample",
+          "report_doc": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyFinished",
+      "slug": "sample",
+      "reason": {
+        "kind": "plateau"
+      },
+      "headline": "sample",
+      "report_doc": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyFinished",
+          "slug": "sample",
+          "reason": {
+            "kind": "plateau"
+          },
+          "headline": "sample",
+          "report_doc": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyFinished",
+      "slug": "sample",
+      "reason": {
+        "kind": "overfit"
+      },
+      "headline": "sample",
+      "report_doc": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyFinished",
+          "slug": "sample",
+          "reason": {
+            "kind": "overfit"
+          },
+          "headline": "sample",
+          "report_doc": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StudyFinished",
+      "slug": "sample",
+      "reason": {
+        "kind": "failed",
+        "reason": "sample"
+      },
+      "headline": "sample",
+      "report_doc": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StudyFinished",
+          "slug": "sample",
+          "reason": {
+            "kind": "failed",
+            "reason": "sample"
+          },
+          "headline": "sample",
+          "report_doc": "sample"
+        }
+      }
+    }
+  }
+]

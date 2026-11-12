@@ -1,0 +1,57 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "method": "subscribe_events",
+    "params": {
+      "subscription": "<subscription>",
+      "result": {
+        "type": "PendingPrompts",
+        "approvals": [
+          {
+            "type": "ApprovalRequested",
+            "id": "<approval-id>",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "tool": "shell",
+            "args": {
+              "command": "rm sample"
+            },
+            "risk": "destructive"
+          }
+        ],
+        "asks": [
+          {
+            "type": "AskRequested",
+            "id": "<ask-id>",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "questions": [
+              {
+                "id": "q",
+                "question": "Which?",
+                "options": []
+              }
+            ]
+          }
+        ],
+        "secrets": [
+          {
+            "type": "SecretRequested",
+            "id": "00000000-0000-0000-0000-000000000003",
+            "session": "00000000-0000-0000-0000-000000000001",
+            "name": "sample",
+            "note": "Credentials",
+            "current": null,
+            "title": "Credentials",
+            "fields": [
+              {
+                "name": "sample",
+                "label": "Token",
+                "masked": true,
+                "current": null
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+]

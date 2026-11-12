@@ -1,0 +1,15 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "method": "subscribe_events",
+    "params": {
+      "subscription": "<subscription>",
+      "result": {
+        "type": "PendingPrompts",
+        "approvals": [],
+        "asks": [],
+        "secrets": []
+      }
+    }
+  }
+]

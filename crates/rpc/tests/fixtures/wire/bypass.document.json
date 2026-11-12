@@ -1,0 +1,570 @@
+[
+  {
+    "input": {
+      "type": "Update",
+      "update": "sample",
+      "by": {
+        "who": "owner"
+      }
+    },
+    "item": {
+      "type": "Update",
+      "update": "sample",
+      "by": {
+        "who": "owner"
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Update",
+      "update": "sample",
+      "by": {
+        "who": "agent",
+        "session": "sample"
+      }
+    },
+    "item": {
+      "type": "Update",
+      "update": "sample",
+      "by": {
+        "who": "agent",
+        "session": "sample"
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Update",
+      "update": "sample",
+      "by": {
+        "who": "member",
+        "pub": "sample",
+        "name": "sample"
+      }
+    },
+    "item": {
+      "type": "Update",
+      "update": "sample",
+      "by": {
+        "who": "member",
+        "pub": "sample",
+        "name": "sample"
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Update",
+      "update": "sample",
+      "by": {
+        "who": "file"
+      }
+    },
+    "item": {
+      "type": "Update",
+      "update": "sample",
+      "by": {
+        "who": "file"
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Authored",
+      "blocks": [],
+      "by": {
+        "who": "owner"
+      }
+    },
+    "item": {
+      "type": "Authored",
+      "blocks": [],
+      "by": {
+        "who": "owner"
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Authored",
+      "blocks": [
+        "sample"
+      ],
+      "by": {
+        "who": "owner"
+      }
+    },
+    "item": {
+      "type": "Authored",
+      "blocks": [
+        "sample"
+      ],
+      "by": {
+        "who": "owner"
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Authored",
+      "blocks": [],
+      "by": {
+        "who": "agent",
+        "session": "sample"
+      }
+    },
+    "item": {
+      "type": "Authored",
+      "blocks": [],
+      "by": {
+        "who": "agent",
+        "session": "sample"
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Authored",
+      "blocks": [],
+      "by": {
+        "who": "member",
+        "pub": "sample",
+        "name": "sample"
+      }
+    },
+    "item": {
+      "type": "Authored",
+      "blocks": [],
+      "by": {
+        "who": "member",
+        "pub": "sample",
+        "name": "sample"
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Authored",
+      "blocks": [],
+      "by": {
+        "who": "file"
+      }
+    },
+    "item": {
+      "type": "Authored",
+      "blocks": [],
+      "by": {
+        "who": "file"
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Awareness",
+      "state": "sample"
+    },
+    "item": {
+      "type": "Awareness",
+      "state": "sample"
+    }
+  },
+  {
+    "input": {
+      "type": "Exported"
+    },
+    "item": {
+      "type": "Exported"
+    }
+  },
+  {
+    "input": {
+      "type": "Snapshot",
+      "label": "sample"
+    },
+    "item": {
+      "type": "Snapshot",
+      "label": "sample"
+    }
+  },
+  {
+    "input": {
+      "type": "Members",
+      "members": [],
+      "links": []
+    },
+    "item": {
+      "type": "Members",
+      "members": [],
+      "links": []
+    }
+  },
+  {
+    "input": {
+      "type": "Members",
+      "members": [
+        {
+          "pub": "sample",
+          "name": "sample",
+          "role": "editor",
+          "added_ms": 1,
+          "last_seen_ms": 1
+        }
+      ],
+      "links": []
+    },
+    "item": {
+      "type": "Members",
+      "members": [
+        {
+          "pub": "sample",
+          "name": "sample",
+          "color": "",
+          "role": "editor",
+          "added_ms": 1,
+          "via": null,
+          "last_seen_ms": 1
+        }
+      ],
+      "links": []
+    }
+  },
+  {
+    "input": {
+      "type": "Members",
+      "members": [
+        {
+          "pub": "sample",
+          "name": "sample",
+          "color": "sample",
+          "role": "editor",
+          "added_ms": 1,
+          "via": "sample",
+          "last_seen_ms": 1
+        }
+      ],
+      "links": []
+    },
+    "item": {
+      "type": "Members",
+      "members": [
+        {
+          "pub": "sample",
+          "name": "sample",
+          "color": "sample",
+          "role": "editor",
+          "added_ms": 1,
+          "via": "sample",
+          "last_seen_ms": 1
+        }
+      ],
+      "links": []
+    }
+  },
+  {
+    "input": {
+      "type": "Members",
+      "members": [
+        {
+          "pub": "sample",
+          "name": "sample",
+          "color": "sample",
+          "role": "viewer",
+          "added_ms": 1,
+          "via": "sample",
+          "last_seen_ms": 1
+        }
+      ],
+      "links": []
+    },
+    "item": {
+      "type": "Members",
+      "members": [
+        {
+          "pub": "sample",
+          "name": "sample",
+          "color": "sample",
+          "role": "viewer",
+          "added_ms": 1,
+          "via": "sample",
+          "last_seen_ms": 1
+        }
+      ],
+      "links": []
+    }
+  },
+  {
+    "input": {
+      "type": "Members",
+      "members": [
+        {
+          "pub": "sample",
+          "name": "sample",
+          "color": "sample",
+          "role": "editor",
+          "added_ms": 1,
+          "via": null,
+          "last_seen_ms": 1
+        }
+      ],
+      "links": []
+    },
+    "item": {
+      "type": "Members",
+      "members": [
+        {
+          "pub": "sample",
+          "name": "sample",
+          "color": "sample",
+          "role": "editor",
+          "added_ms": 1,
+          "via": null,
+          "last_seen_ms": 1
+        }
+      ],
+      "links": []
+    }
+  },
+  {
+    "input": {
+      "type": "Members",
+      "members": [],
+      "links": [
+        {
+          "id": "sample",
+          "role": "editor",
+          "created_ms": 1
+        }
+      ]
+    },
+    "item": {
+      "type": "Members",
+      "members": [],
+      "links": [
+        {
+          "id": "sample",
+          "role": "editor",
+          "name": null,
+          "created_ms": 1,
+          "expires_ms": null,
+          "revoked_ms": null
+        }
+      ]
+    }
+  },
+  {
+    "input": {
+      "type": "Members",
+      "members": [],
+      "links": [
+        {
+          "id": "sample",
+          "role": "editor",
+          "secret_hash_sealed": "sample",
+          "name": "sample",
+          "created_ms": 1,
+          "expires_ms": 1,
+          "revoked_ms": 1
+        }
+      ]
+    },
+    "item": {
+      "type": "Members",
+      "members": [],
+      "links": [
+        {
+          "id": "sample",
+          "role": "editor",
+          "secret_hash_sealed": "sample",
+          "name": "sample",
+          "created_ms": 1,
+          "expires_ms": 1,
+          "revoked_ms": 1
+        }
+      ]
+    }
+  },
+  {
+    "input": {
+      "type": "Members",
+      "members": [],
+      "links": [
+        {
+          "id": "sample",
+          "role": "viewer",
+          "secret_hash_sealed": "sample",
+          "name": "sample",
+          "created_ms": 1,
+          "expires_ms": 1,
+          "revoked_ms": 1
+        }
+      ]
+    },
+    "item": {
+      "type": "Members",
+      "members": [],
+      "links": [
+        {
+          "id": "sample",
+          "role": "viewer",
+          "secret_hash_sealed": "sample",
+          "name": "sample",
+          "created_ms": 1,
+          "expires_ms": 1,
+          "revoked_ms": 1
+        }
+      ]
+    }
+  },
+  {
+    "input": {
+      "type": "Members",
+      "members": [],
+      "links": [
+        {
+          "id": "sample",
+          "role": "editor",
+          "secret_hash_sealed": "sample",
+          "name": null,
+          "created_ms": 1,
+          "expires_ms": 1,
+          "revoked_ms": 1
+        }
+      ]
+    },
+    "item": {
+      "type": "Members",
+      "members": [],
+      "links": [
+        {
+          "id": "sample",
+          "role": "editor",
+          "secret_hash_sealed": "sample",
+          "name": null,
+          "created_ms": 1,
+          "expires_ms": 1,
+          "revoked_ms": 1
+        }
+      ]
+    }
+  },
+  {
+    "input": {
+      "type": "Members",
+      "members": [],
+      "links": [
+        {
+          "id": "sample",
+          "role": "editor",
+          "secret_hash_sealed": "sample",
+          "name": "sample",
+          "created_ms": 1,
+          "expires_ms": null,
+          "revoked_ms": 1
+        }
+      ]
+    },
+    "item": {
+      "type": "Members",
+      "members": [],
+      "links": [
+        {
+          "id": "sample",
+          "role": "editor",
+          "secret_hash_sealed": "sample",
+          "name": "sample",
+          "created_ms": 1,
+          "expires_ms": null,
+          "revoked_ms": 1
+        }
+      ]
+    }
+  },
+  {
+    "input": {
+      "type": "Members",
+      "members": [],
+      "links": [
+        {
+          "id": "sample",
+          "role": "editor",
+          "secret_hash_sealed": "sample",
+          "name": "sample",
+          "created_ms": 1,
+          "expires_ms": 1,
+          "revoked_ms": null
+        }
+      ]
+    },
+    "item": {
+      "type": "Members",
+      "members": [],
+      "links": [
+        {
+          "id": "sample",
+          "role": "editor",
+          "secret_hash_sealed": "sample",
+          "name": "sample",
+          "created_ms": 1,
+          "expires_ms": 1,
+          "revoked_ms": null
+        }
+      ]
+    }
+  },
+  {
+    "input": {
+      "type": "Meta",
+      "title": "sample"
+    },
+    "item": {
+      "type": "Meta",
+      "title": "sample"
+    }
+  },
+  {
+    "input": {
+      "type": "Server",
+      "server": "sample"
+    },
+    "item": {
+      "type": "Server",
+      "server": "sample",
+      "dual": null
+    }
+  },
+  {
+    "input": {
+      "type": "Server",
+      "server": "sample",
+      "dual": "sample"
+    },
+    "item": {
+      "type": "Server",
+      "server": "sample",
+      "dual": "sample"
+    }
+  },
+  {
+    "input": {
+      "type": "Server",
+      "server": "sample",
+      "dual": null
+    },
+    "item": {
+      "type": "Server",
+      "server": "sample",
+      "dual": null
+    }
+  },
+  {
+    "input": {
+      "type": "Closed",
+      "reason": "sample"
+    },
+    "item": {
+      "type": "Closed",
+      "reason": "sample"
+    }
+  }
+]

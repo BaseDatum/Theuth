@@ -1,0 +1,70 @@
+[
+  {
+    "input": {
+      "type": "reset",
+      "data": "sample",
+      "rows": 1,
+      "cols": 1
+    },
+    "item": {
+      "type": "reset",
+      "data": "sample",
+      "rows": 1,
+      "cols": 1
+    }
+  },
+  {
+    "input": {
+      "type": "data",
+      "data": "sample"
+    },
+    "item": {
+      "type": "data",
+      "data": "sample"
+    }
+  },
+  {
+    "input": {
+      "type": "exit",
+      "exit": {
+        "exited": 1
+      }
+    },
+    "item": {
+      "type": "exit",
+      "exit": {
+        "exited": 1
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "exit",
+      "exit": "timeout"
+    },
+    "item": {
+      "type": "exit",
+      "exit": "timeout"
+    }
+  },
+  {
+    "input": {
+      "type": "exit",
+      "exit": "killed"
+    },
+    "item": {
+      "type": "exit",
+      "exit": "killed"
+    }
+  },
+  {
+    "input": {
+      "type": "exit",
+      "exit": "lost"
+    },
+    "item": {
+      "type": "exit",
+      "exit": "lost"
+    }
+  }
+]

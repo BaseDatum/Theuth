@@ -1,0 +1,797 @@
+[
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "built": 1,
+      "total": 1,
+      "settling": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EndlessProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "built": 1,
+          "total": 1,
+          "settling": false,
+          "error": null,
+          "backfill": null,
+          "stalled": null,
+          "backlog": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "built": 1,
+      "total": 1,
+      "settling": false,
+      "error": "sample",
+      "backfill": {
+        "done": 1,
+        "total": 1,
+        "eta_secs": 1
+      },
+      "stalled": {
+        "failures": 1,
+        "error": "sample",
+        "model": "sample",
+        "blocking": false
+      },
+      "backlog": {
+        "lines": 1,
+        "folded": 1,
+        "eta_secs": 1,
+        "paused": false
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EndlessProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "built": 1,
+          "total": 1,
+          "settling": false,
+          "error": "sample",
+          "backfill": {
+            "done": 1,
+            "total": 1,
+            "eta_secs": 1,
+            "usd_estimate": 0.0
+          },
+          "stalled": {
+            "failures": 1,
+            "error": "sample",
+            "next_retry_at": null,
+            "model": "sample",
+            "blocking": false
+          },
+          "backlog": {
+            "lines": 1,
+            "folded": 1,
+            "eta_secs": 1,
+            "paused": false,
+            "paused_by": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "built": 1,
+      "total": 1,
+      "settling": true,
+      "error": "sample",
+      "backfill": {
+        "done": 1,
+        "total": 1,
+        "eta_secs": 1
+      },
+      "stalled": {
+        "failures": 1,
+        "error": "sample",
+        "model": "sample",
+        "blocking": false
+      },
+      "backlog": {
+        "lines": 1,
+        "folded": 1,
+        "eta_secs": 1,
+        "paused": false
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EndlessProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "built": 1,
+          "total": 1,
+          "settling": true,
+          "error": "sample",
+          "backfill": {
+            "done": 1,
+            "total": 1,
+            "eta_secs": 1,
+            "usd_estimate": 0.0
+          },
+          "stalled": {
+            "failures": 1,
+            "error": "sample",
+            "next_retry_at": null,
+            "model": "sample",
+            "blocking": false
+          },
+          "backlog": {
+            "lines": 1,
+            "folded": 1,
+            "eta_secs": 1,
+            "paused": false,
+            "paused_by": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "built": 1,
+      "total": 1,
+      "settling": false,
+      "error": null,
+      "backfill": {
+        "done": 1,
+        "total": 1,
+        "eta_secs": 1
+      },
+      "stalled": {
+        "failures": 1,
+        "error": "sample",
+        "model": "sample",
+        "blocking": false
+      },
+      "backlog": {
+        "lines": 1,
+        "folded": 1,
+        "eta_secs": 1,
+        "paused": false
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EndlessProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "built": 1,
+          "total": 1,
+          "settling": false,
+          "error": null,
+          "backfill": {
+            "done": 1,
+            "total": 1,
+            "eta_secs": 1,
+            "usd_estimate": 0.0
+          },
+          "stalled": {
+            "failures": 1,
+            "error": "sample",
+            "next_retry_at": null,
+            "model": "sample",
+            "blocking": false
+          },
+          "backlog": {
+            "lines": 1,
+            "folded": 1,
+            "eta_secs": 1,
+            "paused": false,
+            "paused_by": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "built": 1,
+      "total": 1,
+      "settling": false,
+      "error": "sample",
+      "backfill": {
+        "done": 1,
+        "total": 1,
+        "eta_secs": 1,
+        "usd_estimate": 1
+      },
+      "stalled": {
+        "failures": 1,
+        "error": "sample",
+        "model": "sample",
+        "blocking": false
+      },
+      "backlog": {
+        "lines": 1,
+        "folded": 1,
+        "eta_secs": 1,
+        "paused": false
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EndlessProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "built": 1,
+          "total": 1,
+          "settling": false,
+          "error": "sample",
+          "backfill": {
+            "done": 1,
+            "total": 1,
+            "eta_secs": 1,
+            "usd_estimate": 1.0
+          },
+          "stalled": {
+            "failures": 1,
+            "error": "sample",
+            "next_retry_at": null,
+            "model": "sample",
+            "blocking": false
+          },
+          "backlog": {
+            "lines": 1,
+            "folded": 1,
+            "eta_secs": 1,
+            "paused": false,
+            "paused_by": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "built": 1,
+      "total": 1,
+      "settling": false,
+      "error": "sample",
+      "backfill": null,
+      "stalled": {
+        "failures": 1,
+        "error": "sample",
+        "model": "sample",
+        "blocking": false
+      },
+      "backlog": {
+        "lines": 1,
+        "folded": 1,
+        "eta_secs": 1,
+        "paused": false
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EndlessProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "built": 1,
+          "total": 1,
+          "settling": false,
+          "error": "sample",
+          "backfill": null,
+          "stalled": {
+            "failures": 1,
+            "error": "sample",
+            "next_retry_at": null,
+            "model": "sample",
+            "blocking": false
+          },
+          "backlog": {
+            "lines": 1,
+            "folded": 1,
+            "eta_secs": 1,
+            "paused": false,
+            "paused_by": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "built": 1,
+      "total": 1,
+      "settling": false,
+      "error": "sample",
+      "backfill": {
+        "done": 1,
+        "total": 1,
+        "eta_secs": 1
+      },
+      "stalled": {
+        "failures": 1,
+        "error": "sample",
+        "next_retry_at": "sample",
+        "model": "sample",
+        "blocking": false
+      },
+      "backlog": {
+        "lines": 1,
+        "folded": 1,
+        "eta_secs": 1,
+        "paused": false
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EndlessProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "built": 1,
+          "total": 1,
+          "settling": false,
+          "error": "sample",
+          "backfill": {
+            "done": 1,
+            "total": 1,
+            "eta_secs": 1,
+            "usd_estimate": 0.0
+          },
+          "stalled": {
+            "failures": 1,
+            "error": "sample",
+            "next_retry_at": "sample",
+            "model": "sample",
+            "blocking": false
+          },
+          "backlog": {
+            "lines": 1,
+            "folded": 1,
+            "eta_secs": 1,
+            "paused": false,
+            "paused_by": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "built": 1,
+      "total": 1,
+      "settling": false,
+      "error": "sample",
+      "backfill": {
+        "done": 1,
+        "total": 1,
+        "eta_secs": 1
+      },
+      "stalled": {
+        "failures": 1,
+        "error": "sample",
+        "next_retry_at": null,
+        "model": "sample",
+        "blocking": false
+      },
+      "backlog": {
+        "lines": 1,
+        "folded": 1,
+        "eta_secs": 1,
+        "paused": false
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EndlessProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "built": 1,
+          "total": 1,
+          "settling": false,
+          "error": "sample",
+          "backfill": {
+            "done": 1,
+            "total": 1,
+            "eta_secs": 1,
+            "usd_estimate": 0.0
+          },
+          "stalled": {
+            "failures": 1,
+            "error": "sample",
+            "next_retry_at": null,
+            "model": "sample",
+            "blocking": false
+          },
+          "backlog": {
+            "lines": 1,
+            "folded": 1,
+            "eta_secs": 1,
+            "paused": false,
+            "paused_by": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "built": 1,
+      "total": 1,
+      "settling": false,
+      "error": "sample",
+      "backfill": {
+        "done": 1,
+        "total": 1,
+        "eta_secs": 1
+      },
+      "stalled": {
+        "failures": 1,
+        "error": "sample",
+        "next_retry_at": "sample",
+        "model": "sample",
+        "blocking": true
+      },
+      "backlog": {
+        "lines": 1,
+        "folded": 1,
+        "eta_secs": 1,
+        "paused": false
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EndlessProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "built": 1,
+          "total": 1,
+          "settling": false,
+          "error": "sample",
+          "backfill": {
+            "done": 1,
+            "total": 1,
+            "eta_secs": 1,
+            "usd_estimate": 0.0
+          },
+          "stalled": {
+            "failures": 1,
+            "error": "sample",
+            "next_retry_at": "sample",
+            "model": "sample",
+            "blocking": true
+          },
+          "backlog": {
+            "lines": 1,
+            "folded": 1,
+            "eta_secs": 1,
+            "paused": false,
+            "paused_by": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "built": 1,
+      "total": 1,
+      "settling": false,
+      "error": "sample",
+      "backfill": {
+        "done": 1,
+        "total": 1,
+        "eta_secs": 1
+      },
+      "stalled": null,
+      "backlog": {
+        "lines": 1,
+        "folded": 1,
+        "eta_secs": 1,
+        "paused": false
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EndlessProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "built": 1,
+          "total": 1,
+          "settling": false,
+          "error": "sample",
+          "backfill": {
+            "done": 1,
+            "total": 1,
+            "eta_secs": 1,
+            "usd_estimate": 0.0
+          },
+          "stalled": null,
+          "backlog": {
+            "lines": 1,
+            "folded": 1,
+            "eta_secs": 1,
+            "paused": false,
+            "paused_by": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "built": 1,
+      "total": 1,
+      "settling": false,
+      "error": "sample",
+      "backfill": {
+        "done": 1,
+        "total": 1,
+        "eta_secs": 1
+      },
+      "stalled": {
+        "failures": 1,
+        "error": "sample",
+        "model": "sample",
+        "blocking": false
+      },
+      "backlog": {
+        "lines": 1,
+        "folded": 1,
+        "eta_secs": 1,
+        "paused": false,
+        "paused_by": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EndlessProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "built": 1,
+          "total": 1,
+          "settling": false,
+          "error": "sample",
+          "backfill": {
+            "done": 1,
+            "total": 1,
+            "eta_secs": 1,
+            "usd_estimate": 0.0
+          },
+          "stalled": {
+            "failures": 1,
+            "error": "sample",
+            "next_retry_at": null,
+            "model": "sample",
+            "blocking": false
+          },
+          "backlog": {
+            "lines": 1,
+            "folded": 1,
+            "eta_secs": 1,
+            "paused": false,
+            "paused_by": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "built": 1,
+      "total": 1,
+      "settling": false,
+      "error": "sample",
+      "backfill": {
+        "done": 1,
+        "total": 1,
+        "eta_secs": 1
+      },
+      "stalled": {
+        "failures": 1,
+        "error": "sample",
+        "model": "sample",
+        "blocking": false
+      },
+      "backlog": {
+        "lines": 1,
+        "folded": 1,
+        "eta_secs": 1,
+        "paused": true,
+        "paused_by": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EndlessProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "built": 1,
+          "total": 1,
+          "settling": false,
+          "error": "sample",
+          "backfill": {
+            "done": 1,
+            "total": 1,
+            "eta_secs": 1,
+            "usd_estimate": 0.0
+          },
+          "stalled": {
+            "failures": 1,
+            "error": "sample",
+            "next_retry_at": null,
+            "model": "sample",
+            "blocking": false
+          },
+          "backlog": {
+            "lines": 1,
+            "folded": 1,
+            "eta_secs": 1,
+            "paused": true,
+            "paused_by": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "built": 1,
+      "total": 1,
+      "settling": false,
+      "error": "sample",
+      "backfill": {
+        "done": 1,
+        "total": 1,
+        "eta_secs": 1
+      },
+      "stalled": {
+        "failures": 1,
+        "error": "sample",
+        "model": "sample",
+        "blocking": false
+      },
+      "backlog": {
+        "lines": 1,
+        "folded": 1,
+        "eta_secs": 1,
+        "paused": false,
+        "paused_by": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EndlessProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "built": 1,
+          "total": 1,
+          "settling": false,
+          "error": "sample",
+          "backfill": {
+            "done": 1,
+            "total": 1,
+            "eta_secs": 1,
+            "usd_estimate": 0.0
+          },
+          "stalled": {
+            "failures": 1,
+            "error": "sample",
+            "next_retry_at": null,
+            "model": "sample",
+            "blocking": false
+          },
+          "backlog": {
+            "lines": 1,
+            "folded": 1,
+            "eta_secs": 1,
+            "paused": false,
+            "paused_by": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "built": 1,
+      "total": 1,
+      "settling": false,
+      "error": "sample",
+      "backfill": {
+        "done": 1,
+        "total": 1,
+        "eta_secs": 1
+      },
+      "stalled": {
+        "failures": 1,
+        "error": "sample",
+        "model": "sample",
+        "blocking": false
+      },
+      "backlog": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EndlessProgress",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "built": 1,
+          "total": 1,
+          "settling": false,
+          "error": "sample",
+          "backfill": {
+            "done": 1,
+            "total": 1,
+            "eta_secs": 1,
+            "usd_estimate": 0.0
+          },
+          "stalled": {
+            "failures": 1,
+            "error": "sample",
+            "next_retry_at": null,
+            "model": "sample",
+            "blocking": false
+          },
+          "backlog": null
+        }
+      }
+    }
+  }
+]

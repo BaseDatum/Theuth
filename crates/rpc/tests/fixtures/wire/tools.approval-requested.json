@@ -1,0 +1,112 @@
+[
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "tool": "sample",
+      "args": null,
+      "risk": "read_only"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ApprovalRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "tool": "sample",
+          "args": null,
+          "risk": "read_only"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "tool": "sample",
+      "args": {
+        "text": "λ\n\"quoted\"",
+        "values": [
+          1,
+          false,
+          null
+        ]
+      },
+      "risk": "read_only"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ApprovalRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "tool": "sample",
+          "args": {
+            "text": "λ\n\"quoted\"",
+            "values": [
+              1,
+              false,
+              null
+            ]
+          },
+          "risk": "read_only"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "tool": "sample",
+      "args": null,
+      "risk": "mutating"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ApprovalRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "tool": "sample",
+          "args": null,
+          "risk": "mutating"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "tool": "sample",
+      "args": null,
+      "risk": "destructive"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ApprovalRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "tool": "sample",
+          "args": null,
+          "risk": "destructive"
+        }
+      }
+    }
+  }
+]
