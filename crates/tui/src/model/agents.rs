@@ -75,7 +75,7 @@ impl Model {
             }
             // 125 §7.5: the hidden advisor child never reaches the board (the
             // event carries no `kind`; the link's id is the guard).
-            AgentEvent::SubagentSpawned { child, .. } if self.advisor.advisor == Some(*child) => {
+            AgentEvent::SubagentSpawned { child, .. } if self.components.session_hidden(*child) || self.advisor.advisor == Some(*child) => {
                 return;
             }
             AgentEvent::SubagentSpawned {
@@ -365,7 +365,7 @@ impl Model {
                 self.turn_seq = Some(turn_seq);
                 // 125 §7.4: a steer's row is already its card (by seq, or by
                 // the `<advisory>` wrapper when the card has not landed yet).
-                if self.advisory_seqs.contains(&turn_seq)
+                if self.components.turn_hidden(turn_seq) || self.advisory_seqs.contains(&turn_seq)
                     || injected(&text, |row| self.components.wrapper(row)).is_some()
                     || matches!(self.components.wrapper(crate::components::Wrapper {
                         tag: "user", open: "", body: &text, sender: None, origin: None, live: true,
