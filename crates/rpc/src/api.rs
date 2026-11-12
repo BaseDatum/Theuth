@@ -227,7 +227,7 @@ pub mod meetings;
 /// Kernels RPC server and client traits.
 pub mod kernels;
 /// Dreams RPC server and client traits.
-pub mod dreams;
+pub use dreaming::rpc_api as dreams;
 /// Research RPC server and client traits.
 pub mod research;
 /// Sandboxes RPC server and client traits.
