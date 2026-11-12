@@ -1,4 +1,9 @@
-use super::*;
+use crate as secrets;
+use std::collections::HashMap;
+use jsonrpsee::core::{RpcResult, async_trait};
+use jsonrpsee::proc_macros::rpc;
+use rpc_core::{Server, send};
+use secrets::rpc_support::secrets;
 
 #[rpc(server, client)]
 pub trait CredentialsApi {

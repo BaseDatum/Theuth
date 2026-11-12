@@ -21,6 +21,10 @@ const CRATES: &[&str] = &[
     "meeting",
     "talk",
     "autoresearch",
+    "nodes",
+    "schedule",
+    "secrets",
+    "roster",
 ];
 
 /// `Extended_Pictographic` ∪ `Emoji_Presentation` (Unicode 16) minus the arrows block and ™, which are

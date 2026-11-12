@@ -15,6 +15,9 @@
 
 /// Provider-owned helpers used by RPC method owners.
 pub mod rpc_support;
+/// Routine RPC methods and typed client.
+pub mod rpc;
+pub use rpc::{RoutinesApiClient, rpc_module};
 pub mod file;
 pub mod store;
 pub mod tools;
