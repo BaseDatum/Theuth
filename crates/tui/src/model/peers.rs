@@ -331,7 +331,7 @@ pub(super) fn contact_row(text: &str) -> Option<(String, String)> {
             Some((note, rest)) if note.starts_with("Messages in this session come from ") => rest,
             _ => rest,
         };
-        let mut cards = injected(rest)?;
+        let mut cards = injected(rest, |_| None)?;
         match cards.pop() {
             Some((CardKind::Peer, _, words)) if cards.is_empty() => (open, words),
             _ => return None,

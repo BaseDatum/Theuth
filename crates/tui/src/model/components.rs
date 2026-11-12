@@ -450,3 +450,49 @@ fn owner_plain_claim_prints_once_without_skipping_core_tail_bookkeeping() {
     assert!(matches!(model.entries[0], Entry::Reasoning { done: true, .. }));
     assert!(model.streaming, "harvesting is detached from turn completion");
 }
+
+#[test]
+fn wrapper_projection_is_tag_owned_and_shared_by_history_and_live_rows() {
+    use crate::components::{Component, Declaration, Input, Cx, Registry, Wrapper, WrapperView};
+    struct Projector(&'static str);
+    impl Component for Projector {
+        type Msg = ();
+        fn declaration(&self) -> Declaration { Declaration { id: self.0, interests: &[], slash: &[], bindings: &[] } }
+        fn decode(&self, _: &TopicEvent, _: &CoreView<'_>) -> Option<()> { None }
+        fn update(&mut self, _: Input<'_, ()>, _: &mut Cx<'_, '_, ()>) {}
+        fn view(&self, _: Surface<'_>, _: &ViewCx<'_>) -> Option<View> { None }
+        fn wrapper_tags(&self) -> &'static [&'static str] { &["message", "user"] }
+        fn wrapper(&self, row: Wrapper<'_>) -> WrapperView {
+            if row.tag == "user" && row.origin.is_none() { return WrapperView::Fallback }
+            if row.body == "duplicate" { return WrapperView::Hidden }
+            let from = row.origin.map(|origin| origin.from).or(row.sender)
+                .or_else(|| transcript::attr(row.open, "from=\"")).unwrap();
+            WrapperView::Card {
+                kind: CardKind::Component { group: "projection", key: Uuid::nil(), glyph: "⟵", color: iocraft::Color::Cyan, plain: false },
+                title: format!("owner:{from}"), body: row.body.to_owned(),
+            }
+        }
+    }
+    let mut model = Model::default();
+    model.components = Registry::empty();
+    let token = model.components.register(Projector("projection")).unwrap();
+    assert_eq!(model.components.register(Projector("ambiguous")), Err("duplicate wrapper tag"));
+    let parsed = injected("<message from=\"parsed\">\none\n</message>\n<message from=\"parsed\">\nduplicate\n</message>\n<job_idle id=\"j4\" quiet=\"5\">\nscreen\n</job_idle>", |row| model.components.wrapper(row)).unwrap();
+    assert_eq!(parsed.iter().map(|(_, title, body)| (title.as_str(), body.as_str())).collect::<Vec<_>>(),
+        [("owner:parsed", "one"), ("j4 idle 5s", "screen")]);
+    let history = from_history(HistoryEntry::User {
+        text: "history body".into(), turn: Some(1), context: None, vision: None, channel: None,
+        peer: Some(PeerOrigin { id: Uuid::nil(), from: "history".into(), reply_to: None, scope: None, contact_mode: None }),
+    }, &markdown::Options::default(), &model.components);
+    assert!(matches!(&history[0], Entry::Card { title, text, .. } if title == "owner:history" && text.raw() == "history body"));
+    let session = SessionId::new();
+    model.session = Some(session);
+    model.streaming = true;
+    model.apply(UiEvent::Agent(AgentEvent::TextDelta { session, turn: runtime::TurnId::new(), text: "streaming".into() }));
+    model.apply(UiEvent::Agent(AgentEvent::MessageDelivered { session, from: "live".into(), text: "live body".into() }));
+    assert!(matches!(&model.entries[0], Entry::Card { title, text, .. } if title == "owner:live" && text.raw() == "live body"));
+    assert!(matches!(&model.entries[1], Entry::Assistant(text) if text.raw() == "streaming" && !text.is_done()));
+    model.components.unmount(token);
+    let fallback = injected("<message from=\"unowned\">\noriginal\n</message>", |row| model.components.wrapper(row)).unwrap();
+    assert_eq!((fallback[0].1.as_str(), fallback[0].2.as_str()), ("unowned", "original"));
+}
