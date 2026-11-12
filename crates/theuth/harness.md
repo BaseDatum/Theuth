@@ -122,7 +122,8 @@ servers:
 
 Values: `read_only | mutating | destructive | off`. The user's `/mcp` menu
 writes this same file; hand edits are picked up within a second. Per-session
-hiding (`/mcp` ⏎ → `s`) is in memory only and not something you can set.
+hiding (`/mcp` or `/tools` ⏎ → `s`; on desktop the chat's ⋯ › Tools…, "Off
+here" or a tool's switch) is in memory only and not something you can set.
 
 ## Approvals
 

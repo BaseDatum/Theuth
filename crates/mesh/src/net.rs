@@ -43,6 +43,9 @@ pub const ALPN_MESH: &str = "theuth/mesh/1";
 /// handler ([`A2aGate`]) refuses family peers, then asks the installed [`ContactAlpn`] (the
 /// a2a plugin) whether the remote is a live contact or a stranger inside an open window.
 pub const ALPN_A2A: &str = "theuth/a2a/1";
+/// The close reason of a `theuth/a2a/1` connection the gate refused (not a contact, or no
+/// longer one): the request never reached the a2a router, so the dialer may try elsewhere.
+pub const A2A_NOT_A_CONTACT: &[u8] = b"not a contact";
 /// Live inbound `theuth/a2a/1` connections of one remote id.
 const A2A_CONNS_MAX: usize = 4;
 /// Concurrent `theuth/a2a/1` streams of one remote id (all its connections together).
@@ -939,7 +942,7 @@ impl Net {
             return;
         };
         for c in Self::lock(&self.a2a_conns).remove(&id).unwrap_or_default() {
-            c.close(0u32.into(), b"not a contact");
+            c.close(0u32.into(), A2A_NOT_A_CONTACT);
         }
     }
 
@@ -2047,12 +2050,12 @@ impl ProtocolHandler for A2aGate {
             return Ok(());
         }
         let Some(handler) = net.contacts.get().cloned() else {
-            connection.close(0u32.into(), b"not a contact");
+            connection.close(0u32.into(), A2A_NOT_A_CONTACT);
             return Ok(());
         };
         let remote = peer.to_string();
         if !handler.admit(&remote) {
-            connection.close(0u32.into(), b"not a contact");
+            connection.close(0u32.into(), A2A_NOT_A_CONTACT);
             return Ok(());
         }
         if !net.track_a2a(peer, &connection) {
@@ -2089,7 +2092,7 @@ async fn serve_a2a(
             .unwrap_or_else(|p| p.into_inner())
             .contains(&peer);
         if family || !handler.admit(&remote) {
-            connection.close(0u32.into(), b"not a contact");
+            connection.close(0u32.into(), A2A_NOT_A_CONTACT);
             break;
         }
         let Ok(permit) = streams.clone().try_acquire_owned() else {

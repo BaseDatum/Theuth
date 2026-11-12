@@ -558,7 +558,9 @@ impl Ctx {
         // 191 (D1): a mesh membership change is a reason to sign; this pass covers it.
         let peers_gen = self.net().map(|n| *n.peers_gen.borrow());
         let family = contacts::members::family(self.net().as_deref());
-        let base = contacts::records::stage_records(&records, &family, self.cfg.contact_cap);
+        let expired = self.rosters.lock().expired.clone();
+        let base =
+            contacts::records::stage_records(&records, &family, &expired, self.cfg.contact_cap);
         // The hash of what is staged, never a later read: a write landing during the rest
         // of this pass is not in it, so the next tick reconciles it.
         let staged_hash = records.content_hash();
@@ -831,36 +833,39 @@ impl Ctx {
         let notice = contacts::offers::changed(&prev.staged, &live.staged);
         // 191 (D2 steps 5, 6): a contact that is no longer admitted here (blocked, removed,
         // merged away or quarantined, wherever that was decided) loses its held first
-        // messages and its open connections.
-        let ended: Vec<(String, Vec<String>)> = prev
+        // messages and its open connections; an endpoint a still-admitted contact's roster
+        // dropped (rig 4a) loses its open connections and streams. An endpoint another live
+        // contact admits keeps them, unless it is denied or removed.
+        let gone = |e: &String| {
+            live.staged.deny.contains(e)
+                || live.staged.removed.contains(e)
+                || !live
+                    .staged
+                    .contacts
+                    .values()
+                    .any(|n| !n.blocked && n.eids.contains(e))
+        };
+        let mut ended: Vec<(String, Vec<String>)> = Vec::new();
+        let mut dropped: Vec<String> = Vec::new();
+        for (alias, f) in prev
             .staged
             .contacts
             .iter()
             .filter(|(alias, f)| !f.blocked && prev.bindings.contains_key(*alias))
-            .filter(|(alias, f)| {
-                live.staged
-                    .contacts
-                    .get(*alias)
-                    .is_none_or(|n| n.blocked || n.id != f.id)
-            })
-            .map(|(alias, f)| {
-                let gone = f
-                    .eids
-                    .iter()
-                    .filter(|e| {
-                        live.staged.deny.contains(*e)
-                            || live.staged.removed.contains(*e)
-                            || !live
-                                .staged
-                                .contacts
-                                .values()
-                                .any(|n| !n.blocked && n.eids.contains(e))
-                    })
-                    .cloned()
-                    .collect();
-                (alias.clone(), gone)
-            })
-            .collect();
+        {
+            match live.staged.contacts.get(alias) {
+                Some(n) if !n.blocked && n.id == f.id => dropped.extend(
+                    f.eids
+                        .iter()
+                        .filter(|e| !n.eids.contains(e) && gone(e))
+                        .cloned(),
+                ),
+                _ => ended.push((
+                    alias.clone(),
+                    f.eids.iter().filter(|e| gone(e)).cloned().collect(),
+                )),
+            }
+        }
         let joined = !live.staged.contacts.is_empty();
         *self.shared.write() = live;
         for (alias, eids) in ended {
@@ -878,6 +883,12 @@ impl Ctx {
                 for eid in eids {
                     net.close_a2a(&eid);
                 }
+            }
+        }
+        if let Some(net) = self.net() {
+            for eid in dropped {
+                tracing::info!(%eid, "191: a roster dropped this endpoint; its connections close");
+                net.close_a2a(&eid);
             }
         }
         if joined && let Some(net) = self.net() {
