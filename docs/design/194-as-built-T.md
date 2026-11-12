@@ -69,3 +69,20 @@ No existing key changes meaning on any other row.
 ## Left
 
 Nothing in row 22.
+
+## R1
+
+Review `review-194-t.md`; every finding fixed.
+
+- **[MAJOR] Draft effort on a model change (D4c): fixed.** `pick_model` (draft path, `catalog.rs`) drops the draft's effort when the catalog knows the new model and `validate_effort` refuses it, the same rule as the engine's `set_model` (an id the TUI catalog does not know keeps it, since the engine then checks only the word). The header goes back to `default_effort`, and `effort reset: not offered by <model>` is printed, the same words as the session path's `EffortChanged`. Test: `draft_model_change_drops_an_effort_the_new_model_does_not_take` (`xhigh` → `claude-opus-4-6` sends `draft.effort: None`; `high` → `gpt-5.4-mini` sends it).
+- **[MINOR] Chip visibility at narrow widths: fixed.** `effort_chips_row(c, chip, room)` shows a window around the focused chip (the highlighted one, else the active one), grown to the right, then to the left, within the row's width. `…` marks hidden chips on either side. Test: `focused_chip_stays_visible_at_narrow_widths` (width 40, Default/low/medium/high/xhigh/max, focus on `max`).
+- **[MINOR] Harness fallback row: fixed.** `open_harness` passes `harness_model`, else `model_id`. In `acp_harness_picker_has_chips_without_default`, `model_id` is now `"omp"` and `harness_model` is `"claude-x"`.
+- **[MINOR] Harness rows starred: fixed.** The ★ marker needs `target != PickTarget::Harness`. Test: `rows_tag_local_models_and_harness_rows_have_no_stars` (a harness row whose id is a normal favorite renders `●` and no `★`; the model picker still stars a favorite).
+- **[MINOR] Bare `/effort` with no levels: fixed.** The `(_, None) if chips` guard comes first. A mode-only harness and one with no options both print `<harness> has no reasoning effort levels` (both cases are in `acp_harness_picker_has_chips_without_default`).
+- **[MINOR] Local tag (D1): fixed.** A model row whose `ModelInfo.local` is set ends in ` · local`, styled like ` · vision` and clipped by the same row width rule. Harness rows are never local. Test: `rows_tag_local_models_and_harness_rows_have_no_stars`.
+- **Footprint.** The native bare `/effort` body is now `Model::effort_picker` in `catalog.rs`, and its `submission.rs` arm is one call. The `harness_groups` import moved from `model.rs` to `catalog.rs`.
+
+Gates (R1 final tree, `BUILD_LABEL=194t2`):
+- `cargo fmt -p tui`: only my hunks were kept (the catalog.rs import order and one ui.rs test line); every other file was restored.
+- `mbx check -p tui` and `mbx check -p tui --tests`: 0 errors, 0 warnings. `mbx clippy -p tui --tests --no-deps -- -D warnings`: clean.
+- `mbx test -p tui`: lib 182 passed (179 + 3 new), `no_emoji` 1, `dependency_limit` 1, 0 failed. The 5 new or changed tests ran a second time filtered: 5 passed.
