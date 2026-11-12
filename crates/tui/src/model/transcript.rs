@@ -128,6 +128,17 @@ pub enum CardKind {
     Moved,
     /// 183 §11.2: the `<engine_restart/>` note a resumed tool result opens with.
     EngineRestart,
+    /// Owner-formatted card with a stable identity and neutral presentation.
+    Component {
+        /// Newer cards freeze earlier cards in this named group.
+        group: &'static str,
+        /// Stable identity, independent of transcript position.
+        key: Uuid,
+        /// Header marker.
+        glyph: &'static str,
+        /// Header color.
+        color: iocraft::Color,
+    },
 }
 
 impl CardKind {
@@ -147,6 +158,7 @@ impl CardKind {
             CardKind::Memory => "∞",
             CardKind::Moved => "⇄",
             CardKind::EngineRestart => "↻",
+            CardKind::Component { glyph, .. } => glyph,
         }
     }
 }
