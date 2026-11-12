@@ -14,6 +14,7 @@ okf = { version = "0.2.7", default-features = false }
 gix = { version = "0.90", default-features = false, features = ["revision", "blob-diff", "sha1", "parallel"] }
 platform = { path = "crates/platform" }  # OS primitives: process trees, private files, open, service units, PTY program, ORT name, target matrix (design doc 58)
 runtime = { path = "crates/runtime" }
+wire = { path = "crates/wire" }
 models = { path = "crates/models" }
 markdown = { path = "crates/markdown" }
 oauth = { path = "crates/oauth" }

@@ -17980,6 +17980,7 @@ dependencies = [
  "figment",
  "kameo",
  "kameo_actors",
+ "parking_lot",
  "schemars 1.2.3",
  "serde",
  "tokio",
@@ -25693,6 +25694,22 @@ checksum = "3f3fd376f71958b862e7afb20cfe5a22830e1963462f3a17f49d82a6c1d1f42d"
 dependencies = [
  "bitflags 2.13.2",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "wire"
+version = "2.19.5"
+dependencies = [
+ "anyhow",
+ "figment",
+ "kameo",
+ "parking_lot",
+ "runtime",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

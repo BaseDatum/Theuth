@@ -18,6 +18,7 @@ kameo = { workspace = true }
 kameo_actors = { workspace = true }
 schemars = { workspace = true }
 ts-rs = { workspace = true, optional = true }
+parking_lot = { workspace = true }
 
 [features]
 ts = ["dep:ts-rs"]
