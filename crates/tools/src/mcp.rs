@@ -870,6 +870,11 @@ pub struct McpProgress {
     pub homes_problem: Option<String>,
 }
 
+impl wire::WireEvent for McpProgress {
+    const TOPIC: &'static str = "tools.mcp-progress";
+    const VERSION: u32 = 1;
+}
+
 /// The MCP actor. Look up with `ActorRef::<Mcp>::lookup(MCP_ACTOR)`.
 #[derive(kameo::Actor)]
 pub struct Mcp {
