@@ -32,6 +32,7 @@ pub struct Registry {
     by_slash: HashMap<&'static str, ComponentToken>,
     focus: Option<(ComponentToken, FocusClass)>,
     epoch: u64,
+    interactive: bool,
 }
 impl Default for Registry { fn default() -> Self { Self::empty() } }
 impl std::fmt::Debug for Registry {
@@ -47,9 +48,13 @@ impl Registry {
         ).expect("registered component");
         ComponentToken { slot, generation: self.slots[slot].generation }
     }
+    /// Set presentation mode before mounting components.
+    pub fn set_interactive(&mut self, interactive: bool) { self.interactive = interactive; }
+    /// Read presentation mode without borrowing the component slots.
+    pub fn interactive(&self) -> bool { self.interactive }
     /// Empty shell for fixed composition and isolated contract consumers.
     pub fn empty() -> Self {
-        Self { slots: Vec::new(), by_topic: HashMap::new(), by_slash: HashMap::new(), focus: None, epoch: 0 }
+        Self { slots: Vec::new(), by_topic: HashMap::new(), by_slash: HashMap::new(), focus: None, epoch: 0, interactive: true }
     }
     /// Reject duplicate ids, reserved slash/aliases and equal-class key chords.
     pub fn register<C: Component>(&mut self, component: C) -> Result<ComponentToken, &'static str> {

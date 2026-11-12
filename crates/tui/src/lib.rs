@@ -1298,6 +1298,7 @@ async fn line_printer(
     prompt: Option<String>,
 ) {
     let mut model = Model::new(String::new(), approvals);
+    model.components.set_interactive(false);
     model.app_enabled = app_enabled;
     model.mount_components(&commands);
     if let Some(id) = resume {
