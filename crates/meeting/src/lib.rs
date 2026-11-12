@@ -683,6 +683,9 @@ pub struct MeetingConfig {
     pub model: Option<String>,
     /// 158 §6.1 (W1): the summary turn's model; `None` → `model`. Carried, not yet read.
     pub summary_model: Option<String>,
+    /// 194: the summary turn's effort; only with `summary_model` (`None` = the
+    /// session's own effort, as before).
+    pub summary_effort: Option<String>,
     /// 158 §6.1 (W4): default note template slug when the start picks none and nothing is remembered.
     pub template: String,
     /// 158 §6.1: transcript language (BCP-47); stored, inert until the multilingual tier (§14).
@@ -705,6 +708,9 @@ pub struct MeetingSettings {
     pub model: Option<String>,
     /// `meeting.summary_model`.
     pub summary_model: Option<String>,
+    /// `meeting.summary_effort` (194).
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub summary_effort: Option<String>,
     /// `meeting.template`.
     pub template: String,
     /// `meeting.language`.
@@ -732,6 +738,7 @@ impl From<&MeetingConfig> for MeetingSettings {
         Self {
             model: c.model.clone(),
             summary_model: c.summary_model.clone(),
+            summary_effort: c.summary_effort.clone(),
             template: c.template.clone(),
             language: c.language.clone(),
             live_diarization: c.live_diarization,
@@ -772,6 +779,7 @@ impl MeetingSettings {
         for (k, v) in [
             ("model", j(&self.model)),
             ("summary_model", j(&self.summary_model)),
+            ("summary_effort", j(&self.summary_effort)),
             ("template", j(&self.template)),
             ("language", j(&self.language)),
             ("live_diarization", j(&self.live_diarization)),
@@ -801,6 +809,7 @@ impl MeetingSettings {
     fn apply_to(self, c: &mut MeetingConfig) {
         c.model = self.model;
         c.summary_model = self.summary_model;
+        c.summary_effort = self.summary_effort;
         c.template = self.template;
         c.language = self.language;
         c.live_diarization = self.live_diarization;
@@ -836,6 +845,8 @@ impl Message<SetSettings> for Meeting {
         m: SetSettings,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        // 194 D4b–d.
+        let m = SetSettings(checked_summary_effort(m.0, self.cfg.summary_model.as_deref()).await?);
         m.0.persist(&self.rt.data_dir.join("config.yaml"))
             .map_err(|e| format!("config.yaml: {e}"))?;
         m.0.apply_to(&mut self.cfg);
@@ -913,6 +924,7 @@ impl Default for MeetingConfig {
             live_hint_limit: 2,
             model: None,
             summary_model: None,
+            summary_effort: None,
             template: templates::DEFAULT.to_owned(),
             language: "en".to_owned(),
             project: None,
@@ -1453,8 +1465,88 @@ struct Summarizing {
     manifest: Manifest,
     input: InputId,
     turn: Option<TurnId>,
-    /// 158 §6.1: the model to put back on the session once the summary turn settles.
-    restore: Option<String>,
+    /// 158 §6.1: the model (194: and effort) to put back on the session once the summary
+    /// turn settles.
+    restore: Option<Restore>,
+}
+
+/// 158 §6.1 / 194: what the summary switch changed on the meeting session, to put back.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Restore {
+    /// The model before the switch.
+    model: Option<String>,
+    /// The effort before the switch (`Some(None)`: the session had none).
+    effort: Option<Option<String>>,
+}
+
+/// 194 D4e: what the summary turn switches the session to — `meeting.summary_model` when it
+/// differs from `prior_model`, `meeting.summary_effort` (only beside a summary model) when it
+/// differs from `prior_effort`. `(model, effort)`; `None` leaves that one alone.
+fn summary_switch(
+    cfg: &MeetingConfig,
+    prior_model: &str,
+    prior_effort: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let Some(model) = cfg.summary_model.clone() else {
+        return (None, None);
+    };
+    let effort = cfg
+        .summary_effort
+        .clone()
+        .filter(|e| Some(e.as_str()) != prior_effort);
+    ((model != prior_model).then_some(model), effort)
+}
+
+/// 194 D4b–d: `summary_effort` follows `summary_model` — cleared with it; `check` is
+/// `agent::CheckEffort` against it (`None`: unchecked, no agent actor); a failing effort is
+/// dropped when the model changed from `old_model`, else refused with the check's words.
+fn settle_summary_effort(
+    s: &mut MeetingSettings,
+    old_model: Option<&str>,
+    check: Option<Result<(), String>>,
+) -> Result<(), String> {
+    s.summary_effort = s
+        .summary_effort
+        .take()
+        .map(|e| e.trim().to_owned())
+        .filter(|e| !e.is_empty() && s.summary_model.is_some());
+    if s.summary_effort.is_some()
+        && let Some(Err(why)) = check
+    {
+        if s.summary_model.as_deref() == old_model {
+            return Err(format!("summary_effort: {why}"));
+        }
+        s.summary_effort = None;
+    }
+    Ok(())
+}
+
+/// [`settle_summary_effort`] with the live agent's check.
+async fn checked_summary_effort(
+    mut s: MeetingSettings,
+    old_model: Option<&str>,
+) -> Result<MeetingSettings, String> {
+    let check = match (&s.summary_model, &s.summary_effort) {
+        (Some(model), Some(effort)) => {
+            match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
+                Ok(Some(agents)) => match agents
+                    .ask(agent::CheckEffort {
+                        model: Some(model.clone()),
+                        effort: effort.trim().to_owned(),
+                    })
+                    .await
+                {
+                    Ok(()) => Some(Ok(())),
+                    Err(kameo::error::SendError::HandlerError(why)) => Some(Err(why)),
+                    Err(_) => None,
+                },
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    settle_summary_effort(&mut s, old_model, check)?;
+    Ok(s)
 }
 
 /// Wall clock on one summary from the form's delivery to its turn's end (04 §6). The
@@ -4167,8 +4259,9 @@ impl Meeting {
     /// 158 §6.1: the summary turn runs on `meeting.summary_model` when set — the session is
     /// switched here and the model to put back is returned (its own, else the default new
     /// sessions get: a session that followed the default stays pinned to that value after).
-    async fn summary_model_switch(&self, session: SessionId) -> Option<String> {
-        let model = self.cfg.summary_model.clone()?;
+    /// 194: with `meeting.summary_effort` too, then the session's own effort goes back after.
+    async fn summary_model_switch(&self, session: SessionId) -> Option<Restore> {
+        self.cfg.summary_model.as_ref()?;
         let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
             .ok()
             .flatten()?;
@@ -4180,26 +4273,50 @@ impl Meeting {
                 return None;
             }
         };
-        if prior == model {
-            return None;
-        }
-        match agents
-            .ask(agent::SetModel {
-                session: Some(session),
-                model,
-                manual: false,
-            })
-            .await
-        {
-            Ok(_) => Some(prior),
-            Err(e) => {
-                tracing::warn!(%session, "meeting: summary model: {e}");
-                None
+        let prior_effort = match self.cfg.summary_effort {
+            Some(_) => agents
+                .ask(agent::SessionEffort(session))
+                .await
+                .ok()
+                .flatten(),
+            None => None,
+        };
+        let (model, effort) = summary_switch(&self.cfg, &prior, prior_effort.as_deref());
+        let mut restore = Restore::default();
+        if let Some(model) = model {
+            match agents
+                .ask(agent::SetModel {
+                    session: Some(session),
+                    model,
+                    manual: false,
+                })
+                .await
+            {
+                Ok(_) => restore.model = Some(prior),
+                Err(e) => {
+                    tracing::warn!(%session, "meeting: summary model: {e}");
+                    return None;
+                }
             }
         }
+        if let Some(effort) = effort {
+            match agents
+                .ask(agent::SetEffort {
+                    session: Some(session),
+                    effort: Some(effort),
+                    manual: false,
+                })
+                .await
+            {
+                Ok(()) => restore.effort = Some(prior_effort),
+                Err(e) => tracing::warn!(%session, "meeting: summary effort: {e}"),
+            }
+        }
+        (restore != Restore::default()).then_some(restore)
     }
 
-    /// Release the slot matching `pred`; the session goes back to its own model (§6.1).
+    /// Release the slot matching `pred`; the session goes back to its own model (§6.1)
+    /// and effort (194).
     fn take_summarizing(&mut self, pred: impl Fn(&Summarizing) -> bool) -> Option<Summarizing> {
         let id = self
             .summarizing
@@ -4207,10 +4324,13 @@ impl Meeting {
             .find(|(_, s)| pred(s))
             .map(|(id, _)| *id)?;
         let s = self.summarizing.remove(&id)?;
-        if let Some(model) = s.restore.clone() {
+        if let Some(r) = s.restore.clone() {
             let session = s.manifest.session;
             tokio::spawn(async move {
-                if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+                let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
+                    return;
+                };
+                if let Some(model) = r.model
                     && let Err(e) = agents
                         .ask(agent::SetModel {
                             session: Some(session),
@@ -4220,6 +4340,17 @@ impl Meeting {
                         .await
                 {
                     tracing::warn!(%session, "meeting: restore model: {e}");
+                }
+                if let Some(effort) = r.effort
+                    && let Err(e) = agents
+                        .ask(agent::SetEffort {
+                            session: Some(session),
+                            effort,
+                            manual: false,
+                        })
+                        .await
+                {
+                    tracing::warn!(%session, "meeting: restore effort: {e}");
                 }
             });
         }
@@ -5263,6 +5394,95 @@ mod tests {
         assert_eq!(MeetingSettings::from(&cfg), s);
         assert_eq!(cfg.max_minutes, 90);
         assert!(!b.actor.ask(LiveDiarization).await.unwrap());
+    }
+
+    /// 194: `meeting.summary_effort` persists beside `summary_model` and is live (the next
+    /// summary reads `self.cfg`); `none` for the summary model clears it (D4d); a config
+    /// without the key loads with none.
+    #[tokio::test]
+    async fn summary_effort_persists_and_clears_with_its_model() {
+        let b = bench().await;
+        let path = b._dir.path().join("config.yaml");
+        std::fs::write(&path, "meeting:\n  summary_model: anthropic/claude\n").unwrap();
+        use figment::providers::Format as _;
+        let old: MeetingConfig = figment::Figment::new()
+            .merge(figment::providers::Yaml::file(&path))
+            .extract_inner("meeting")
+            .unwrap();
+        assert_eq!(old.summary_effort, None);
+        let s = MeetingSettings {
+            summary_model: Some("anthropic/claude".into()),
+            summary_effort: Some("8000".into()),
+            ..MeetingSettings::default()
+        };
+        assert_eq!(b.actor.ask(SetSettings(s.clone())).await.unwrap(), s);
+        let cfg: MeetingConfig = figment::Figment::new()
+            .merge(figment::providers::Yaml::file(&path))
+            .extract_inner("meeting")
+            .unwrap();
+        assert_eq!(cfg.summary_effort.as_deref(), Some("8000"));
+        let cleared = b
+            .actor
+            .ask(SetSettings(MeetingSettings {
+                summary_model: None,
+                ..s
+            }))
+            .await
+            .unwrap();
+        assert_eq!(cleared.summary_effort, None);
+    }
+
+    /// 194 D4b/D4c: an effort the summary model does not take is refused while the model
+    /// stays, dropped when the model changed; unchecked (no agent) it is kept.
+    #[test]
+    fn summary_effort_is_checked_against_its_model() {
+        let s = |model: &str| MeetingSettings {
+            summary_model: Some(model.into()),
+            summary_effort: Some(" high ".into()),
+            ..MeetingSettings::default()
+        };
+        let no = Some(Err("p/m accepts low".to_owned()));
+        let mut same = s("p/m");
+        assert_eq!(
+            settle_summary_effort(&mut same, Some("p/m"), no.clone()),
+            Err("summary_effort: p/m accepts low".into())
+        );
+        let mut changed = s("p/m");
+        settle_summary_effort(&mut changed, Some("p/other"), no).unwrap();
+        assert_eq!(changed.summary_effort, None);
+        let mut ok = s("p/m");
+        settle_summary_effort(&mut ok, Some("p/m"), Some(Ok(()))).unwrap();
+        assert_eq!(ok.summary_effort.as_deref(), Some("high"));
+        let mut unchecked = s("p/m");
+        settle_summary_effort(&mut unchecked, None, None).unwrap();
+        assert_eq!(unchecked.summary_effort.as_deref(), Some("high"));
+    }
+
+    /// 194 D4e: the summary turn switches to the summary model and its effort, each only
+    /// when it differs from the session's; no summary model, no switch (D4a).
+    #[test]
+    fn the_summary_switch_carries_the_summary_effort() {
+        let cfg = |model: Option<&str>, effort: Option<&str>| MeetingConfig {
+            summary_model: model.map(str::to_owned),
+            summary_effort: effort.map(str::to_owned),
+            ..MeetingConfig::default()
+        };
+        assert_eq!(
+            summary_switch(&cfg(Some("p/s"), Some("high")), "p/m", Some("low")),
+            (Some("p/s".into()), Some("high".into()))
+        );
+        assert_eq!(
+            summary_switch(&cfg(Some("p/m"), Some("high")), "p/m", Some("high")),
+            (None, None)
+        );
+        assert_eq!(
+            summary_switch(&cfg(Some("p/s"), None), "p/m", Some("low")),
+            (Some("p/s".into()), None)
+        );
+        assert_eq!(
+            summary_switch(&cfg(None, Some("high")), "p/m", None),
+            (None, None)
+        );
     }
 
     /// 158 D13: a manifest the last run left `Recording` with a track on disk is `Stopping`

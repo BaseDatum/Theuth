@@ -80,6 +80,15 @@ describe('reduceSettings', () => {
     expect(reduceSettings(SETTINGS, { kind: 'model', tier: 'triage', model: null })).toBeNull()
   })
 
+  test('194: efforts: one tier at a time beside the models, null = Default; an older engine without `efforts` gets the full object', () => {
+    const next = reduceSettings(SETTINGS, { kind: 'effort', tier: 'judge', effort: 'high' })
+    expect(next?.efforts).toEqual({ triage: null, tidy: null, propose: null, judge: 'high' })
+    expect(next?.models).toEqual(SETTINGS.models)
+    expect(reduceSettings(next!, { kind: 'effort', tier: 'judge', effort: null })?.efforts?.judge).toBeNull()
+    expect(reduceSettings(next!, { kind: 'effort', tier: 'judge', effort: 'high' })).toBeNull()
+    expect(reduceSettings(SETTINGS, { kind: 'effort', tier: 'tidy', effort: null })).toBeNull()
+  })
+
   test('digest day and time write the one string', () => {
     expect(reduceSettings(SETTINGS, { kind: 'digest_day', day: 'Sun' })?.digest).toBe('Sun 08:00')
     expect(reduceSettings(SETTINGS, { kind: 'digest_time', time: '19:30' })?.digest).toBe('Mon 19:30')

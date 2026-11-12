@@ -2163,6 +2163,7 @@ mod tests {
                 memory: None,
                 view_bytes: None,
                 memory_model: None,
+                memory_effort: None,
                 body: "x".into(),
             },
             status,

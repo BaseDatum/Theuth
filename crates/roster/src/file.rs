@@ -28,6 +28,7 @@ struct FrontMatter {
     memory: Option<String>,
     view_bytes: Option<u32>,
     memory_model: Option<String>,
+    memory_effort: Option<String>,
 }
 
 /// Parse one file's text as the agent `name`. `Err` is the user-facing reason
@@ -89,6 +90,7 @@ pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
         memory,
         view_bytes: fm.view_bytes,
         memory_model: trimmed(fm.memory_model),
+        memory_effort: trimmed(fm.memory_effort),
         body: body.to_owned(),
     })
 }
@@ -144,6 +146,9 @@ pub fn render(f: &AgentFile) -> String {
     }
     if let Some(m) = &f.memory_model {
         s.push_str(&format!("memory_model: {}\n", m.trim()));
+    }
+    if let Some(e) = &f.memory_effort {
+        s.push_str(&format!("memory_effort: {}\n", yaml_str(e.trim())));
     }
     if !s.is_empty() {
         s.insert_str(0, "---\n");
@@ -239,6 +244,7 @@ pub fn default_agent(data_dir: &Path, model: Option<String>) -> AgentFile {
         memory: None,
         view_bytes: None,
         memory_model: None,
+        memory_effort: None,
         body: body.to_owned(),
     }
 }
@@ -430,12 +436,21 @@ mod tests {
             memory: Some(agent::MemoryMode::Endless),
             view_bytes: Some(96_000),
             memory_model: Some("anthropic/claude-haiku-5-5".into()),
+            memory_effort: Some("8000".into()),
             body: "You are Ops.\n\nYour charter is production.".into(),
         };
         assert_eq!(parse("ops", &render(&f)).unwrap(), f);
         let minimal = parse("qa", "Test things.").unwrap();
         assert_eq!(render(&minimal), "Test things.\n");
         assert_eq!(parse("qa", &render(&minimal)).unwrap(), minimal);
+        // 194: a file older than `memory_effort:` loads with none; a written
+        // budget stays a string.
+        let old = parse("qa", "---\nmemory_model: p/m\n---\nTest things.").unwrap();
+        assert_eq!(
+            (old.memory_model.as_deref(), old.memory_effort),
+            (Some("p/m"), None)
+        );
+        assert!(render(&f).contains("memory_effort: \"8000\"\n"));
     }
 
     #[test]

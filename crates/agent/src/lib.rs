@@ -942,7 +942,9 @@ pub struct ResolveModel {
 /// `ask` → `Result<(), String>` (194 D4b): `effort` against what `model`
 /// resolves to — `Model::validate_effort`'s message for a catalog model;
 /// for `None` or an id with no catalog entry, only that the word is a known
-/// effort. No side effects: the roster validates `roster.theuth_effort`.
+/// effort. No side effects: the roster validates `roster.theuth_effort`, the
+/// meeting and dreaming settings check their efforts with it and drop one a
+/// changed model does not take (D4c).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ValidateEffort {
     /// The setting's effective model, if any.
@@ -1085,6 +1087,12 @@ pub struct SetDeskModel {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct SessionModel(pub SessionId);
 
+/// `ask` → `Option<String>` (194): the effort stored on `session`'s row —
+/// the meeting summary turn's switch puts it back afterwards; `None` for no
+/// effort or an unknown session.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SessionEffort(pub SessionId);
+
 /// `ask` → `Option<SessionId>`: the session marked as the bare-named agent's
 /// desk on this engine (STALE-WAKE-DESKS: one desk per agent, reused across
 /// episodes and restarts; `sessions_desk_owner` keeps it unique).
@@ -1198,6 +1206,17 @@ pub struct SetSessionCompactorModel {
     pub model: Option<String>,
 }
 
+/// `ask` → `Result<SessionMemory, String>` (194 `set_session_compactor_effort`):
+/// this chat's own compactor effort (`None` = the choosing link's); refused
+/// when the model in force does not take it; persisted and live.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetSessionCompactorEffort {
+    /// Target session.
+    pub session: SessionId,
+    /// Effort keyword or token budget; `None` clears the chat's own.
+    pub effort: Option<String>,
+}
+
 /// `ask` → `Result<SessionMemory, String>` (137G): the desk agent's
 /// `memory_model` for its desk session — the roster sends it at desk open.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1206,6 +1225,9 @@ pub struct SetAgentCompactorModel {
     pub session: SessionId,
     /// The agent file's `memory_model`; `None` clears it.
     pub model: Option<String>,
+    /// 194: the agent file's `memory_effort`; dropped with `model: None`.
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 /// `ask` → `Result<Vec<ViewLine>, String>` (137 §9 `zoom`): the two lines

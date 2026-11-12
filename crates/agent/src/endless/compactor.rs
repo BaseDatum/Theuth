@@ -1011,8 +1011,13 @@ pub struct ModelCompactor {
     pub(crate) backend: Backend,
     /// The COMPACT prompt with `{agent}` substituted.
     pub system: String,
-    /// The reasoning setting off the Anthropic transport ([`thinking_off`]).
+    /// The reasoning setting off the Anthropic transport ([`thinking_off`]),
+    /// or the setting's own pick when `chosen`.
     pub effort: Option<ReasoningEffort>,
+    /// 194 D4e: `effort` is the user's pick for this compactor (Settings ›
+    /// Memory, the chat's own, the agent's `memory_effort`), sent on every
+    /// transport with its thinking budget; `false` = thinking off (R1 Q1).
+    pub chosen: bool,
     /// 137F E6: `Some(queue key)` for a local compactor ([`local_endpoint`]).
     pub local: Option<String>,
     /// 177 E2: a local OpenAI-protocol server — thinking off by
@@ -1103,7 +1108,7 @@ impl ModelCompactor {
         }
         // 177 E3: a local single unit gets the local cap; a batch keeps the
         // cloud formula (600 per line).
-        let cap = if anthropic {
+        let cap = if anthropic && !self.chosen {
             batch_reply_tokens(MAX_TOKENS, lines)
         } else if lines <= 1 {
             self.reply_tokens()
@@ -1141,12 +1146,12 @@ impl ModelCompactor {
         // and never gets an effort keyword (genai's omlx adapter would turn
         // it into `enable_thinking: true`); genai's own Ollama adapter keeps
         // its `think: false`.
-        let kwargs = !anthropic && self.quiet;
+        let kwargs = !anthropic && self.quiet && !self.chosen;
         if kwargs {
             opts = crate::backend::thinking_off(opts);
         }
         // R2-7 / R2-8: thinking off by transport, not by model id.
-        let effort = if anthropic {
+        let effort = if anthropic && !self.chosen {
             let slug = self
                 .model
                 .genai
@@ -1512,6 +1517,7 @@ mod tests {
                 &crate::supervisor::Auth::stub(&dir.0),
             ),
             effort: thinking_off(&model),
+            chosen: false,
             model,
             system: prompt("theuth"),
             local: None,
@@ -1547,6 +1553,44 @@ mod tests {
         let (_, opts) = plain.request(Transport::OpenAiLike, "<chat>\n</chat>", &[]);
         assert!(opts.reasoning_effort.is_none());
         assert_eq!(opts.max_tokens, Some(MAX_TOKENS));
+    }
+
+    /// 194 D4e: a compactor effort the user picked rides every request — the
+    /// Anthropic transport too (no `anthropic_off`), with its thinking budget
+    /// on top of the reply cap — and a local OpenAI-protocol server gets the
+    /// effort instead of the thinking-off kwargs.
+    #[test]
+    fn a_chosen_compactor_effort_rides_every_transport() {
+        let dir = crate::TestDir::new("compactor-chosen");
+        let model = Resolved {
+            id: "anthropic/claude-haiku-5-5".into(),
+            genai: "anthropic::claude-haiku-5-5".into(),
+            provider: None,
+            model: None,
+        };
+        let c = |quiet: bool| ModelCompactor {
+            session: runtime::SessionId::new(),
+            backend: crate::backend::Backend::for_model(
+                &model,
+                &genai::Client::builder().build().unwrap(),
+                &crate::supervisor::Auth::stub(&dir.0),
+            ),
+            effort: Some(ReasoningEffort::High),
+            chosen: true,
+            model: model.clone(),
+            system: prompt("theuth"),
+            local: None,
+            quiet,
+            cfg: Default::default(),
+        };
+        let (_, opts) = c(false).request(Transport::Anthropic, "<chat>\n</chat>", &[]);
+        assert!(matches!(opts.reasoning_effort, Some(ReasoningEffort::High)));
+        assert_eq!(opts.max_tokens, Some(MAX_TOKENS + 24_000));
+        let (_, opts) = c(false).request(Transport::OpenAiLike, "<chat>\n</chat>", &[]);
+        assert!(matches!(opts.reasoning_effort, Some(ReasoningEffort::High)));
+        let (_, opts) = c(true).request(Transport::OpenAiLike, "<chat>\n</chat>", &[]);
+        assert!(matches!(opts.reasoning_effort, Some(ReasoningEffort::High)));
+        assert!(opts.extra_body.is_none(), "no thinking-off kwargs");
     }
 
     /// Tries exhausted with no passing candidate: the shortest wins, flagged negative.
@@ -1728,6 +1772,7 @@ mod tests {
             ),
             system: prompt("theuth"),
             effort: None,
+            chosen: false,
             local: None,
             quiet: false,
             cfg: std::sync::Arc::new(parking_lot::RwLock::new(super::super::EndlessConfig {

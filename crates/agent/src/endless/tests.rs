@@ -1372,7 +1372,7 @@ async fn compactor_chain_chat_agent_settings_title_session() {
     let m = endless.memory(id).await.unwrap();
     assert_eq!(source(&m), ("fake/settings".into(), "settings".into()));
     let m = endless
-        .set_agent_model(id, Some("fake/desk".into()))
+        .set_agent_model(id, Some("fake/desk".into()), None)
         .await
         .unwrap();
     assert_eq!(source(&m), ("fake/desk".into(), "agent".into()));
@@ -2143,4 +2143,174 @@ async fn endless_off_with_5000_unbuilt_writes_a_bounded_head() {
         &head[..300]
     );
     assert_eq!(s.calls.lock().len(), 0);
+}
+
+/// 194: the real compactor chain (no scripted factory) over a catalog with an
+/// effort-taking `ollama/think-194` (low|high) and an effortless
+/// `ollama/flat-194` (`ollama` needs no key, so a chat may pick either); an
+/// epochs session on the flat one, so no compactor call ever goes out.
+async fn effort_harness(cfg: EndlessConfig) -> (crate::TestDir, Endless, SessionId) {
+    let scratch = crate::TestDir::new("endless-effort");
+    let dir = scratch.0.clone();
+    let model = |id: &str, efforts: &[&str]| {
+        let mut m = serde_json::json!({
+            "id": id, "name": id, "limit": { "context": 100_000, "output": 4_096 }
+        });
+        if !efforts.is_empty() {
+            m["reasoning"] = true.into();
+            m["reasoning_options"] = serde_json::json!([{ "type": "effort", "values": efforts }]);
+        }
+        m
+    };
+    let catalog = serde_json::json!({ "ollama": { "id": "ollama", "name": "Ollama", "models": {
+        "think-194": model("think-194", &["low", "high"]),
+        "flat-194": model("flat-194", &[]),
+    }}});
+    std::fs::write(dir.join("models.json"), catalog.to_string()).unwrap();
+    let store = Store::open(&dir.join("sessions.sqlite"), None)
+        .await
+        .unwrap();
+    let catalog = Arc::new(models::Catalog::load(&dir));
+    let session_model = catalog.resolve("ollama/flat-194", &|_| true).unwrap();
+    let endless = Endless::new(
+        store.clone(),
+        Runtime::new(figment::Figment::new(), dir.clone()),
+        genai::Client::builder().build().unwrap(),
+        crate::supervisor::Auth::stub(&dir),
+        catalog,
+        cfg,
+        None,
+    );
+    let id = SessionId::new();
+    store
+        .create_session(id, "ollama/flat-194", None, None, None)
+        .await
+        .unwrap();
+    let attached = Attached {
+        model: session_model,
+        effort: None,
+        agent: "theuth".into(),
+        store: None,
+    };
+    endless.attach(id, attached).await.unwrap();
+    (scratch, endless, id)
+}
+
+/// 194 rows 11–13 (D4e, D4f): each link's effort rides the compactor that
+/// link chose, live — `agent.endless.effort` beside the settings model, the
+/// desk agent's `memory_effort` beside its `memory_model` — and this chat's
+/// own effort wins over either; with none the compactor keeps thinking off.
+#[tokio::test]
+async fn compactor_efforts_follow_the_chain_live() {
+    let (_dir, endless, id) = effort_harness(EndlessConfig::default()).await;
+    let key = || super::pump::compactor_key_for_tests(&endless.inner, id);
+    let effort = || async { endless.memory(id).await.unwrap().effort };
+    assert!(key().starts_with("ollama/flat-194|"), "{}", key());
+    assert_eq!(effort().await, None);
+
+    // Settings › Memory: model and effort, in force at once (row 11).
+    endless.set_config(EndlessConfig {
+        model: Some("ollama/think-194".into()),
+        effort: Some("high".into()),
+        ..EndlessConfig::default()
+    });
+    assert!(
+        key().starts_with("ollama/think-194|Some(High)|"),
+        "{}",
+        key()
+    );
+    assert_eq!(effort().await.as_deref(), Some("high"));
+
+    // The desk agent's `memory_model` with its `memory_effort` (row 13) …
+    let m = endless
+        .set_agent_model(id, Some("ollama/think-194".into()), Some("low".into()))
+        .await
+        .unwrap();
+    assert_eq!(m.effort.as_deref(), Some("low"));
+    assert!(
+        key().starts_with("ollama/think-194|Some(Low)|"),
+        "{}",
+        key()
+    );
+    // … goes with its model: the settings link (and its effort) again.
+    let m = endless
+        .set_agent_model(id, None, Some("low".into()))
+        .await
+        .unwrap();
+    assert_eq!(m.effort.as_deref(), Some("high"));
+
+    // This chat's own effort (row 12) wins over the settings link's.
+    let m = endless.set_effort(id, Some("low".into())).await.unwrap();
+    assert_eq!(m.effort.as_deref(), Some("low"));
+    assert!(
+        key().starts_with("ollama/think-194|Some(Low)|"),
+        "{}",
+        key()
+    );
+
+    // Settings without an effort: thinking off unless the chat picked one.
+    endless.set_effort(id, None).await.unwrap();
+    endless.set_config(EndlessConfig {
+        model: Some("ollama/think-194".into()),
+        ..EndlessConfig::default()
+    });
+    assert_eq!(effort().await, None);
+    assert!(!key().contains("|Some(High)|"), "{}", key());
+}
+
+/// 194 row 12 (D4b–d, persistence): this chat's own compactor effort is
+/// refused when the model in force does not take it, persisted
+/// (`sessions.endless_effort`), dropped when the chat's own new model does
+/// not take it and cleared with the chat's own model.
+#[tokio::test]
+async fn the_chats_own_compactor_effort_is_checked_kept_and_dropped() {
+    let (_dir, endless, id) = effort_harness(EndlessConfig::default()).await;
+    // In force: the session's flat model — no effort at all.
+    let e = endless
+        .set_effort(id, Some("low".into()))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("accepts no reasoning effort"), "{e}");
+    endless
+        .set_model(id, Some("ollama/think-194".into()))
+        .await
+        .unwrap();
+    let e = endless
+        .set_effort(id, Some("max".into()))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("accepts off|low|high"), "{e}");
+    endless.set_effort(id, Some("high".into())).await.unwrap();
+    let meta = endless.inner.store.endless_meta(id).await.unwrap();
+    assert_eq!(meta.effort_override.as_deref(), Some("high"));
+    // A model that takes it keeps it (D4c: only an incompatible one drops).
+    let m = endless
+        .set_model(id, Some("ollama/think-194".into()))
+        .await
+        .unwrap();
+    assert_eq!(m.effort.as_deref(), Some("high"));
+    // D4c: the chat's new model takes no effort — dropped and persisted so.
+    let m = endless
+        .set_model(id, Some("ollama/flat-194".into()))
+        .await
+        .unwrap();
+    assert_eq!(m.effort, None);
+    let meta = endless.inner.store.endless_meta(id).await.unwrap();
+    assert_eq!(meta.effort_override, None);
+    // D4d: "Use default" clears the chat's effort with its model.
+    endless
+        .set_model(id, Some("ollama/think-194".into()))
+        .await
+        .unwrap();
+    endless.set_effort(id, Some("low".into())).await.unwrap();
+    endless.set_model(id, None).await.unwrap();
+    let meta = endless.inner.store.endless_meta(id).await.unwrap();
+    assert_eq!((meta.model_override, meta.effort_override), (None, None));
+}
+
+/// 194: a config written before `agent.endless.effort` loads with none.
+#[test]
+fn an_endless_section_without_effort_loads() {
+    let c: EndlessConfig = serde_json::from_value(serde_json::json!({ "model": "p/m" })).unwrap();
+    assert_eq!((c.model.as_deref(), c.effort), (Some("p/m"), None));
 }

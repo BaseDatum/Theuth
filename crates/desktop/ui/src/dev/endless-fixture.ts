@@ -201,6 +201,10 @@ export function endlessFixture(api: Api): Api {
       changed = { ...current(), model: model ?? memory.model, model_override: model, model_source: model ? 'chat' : 'settings' }
       return Promise.resolve(changed)
     },
+    set_session_compactor_effort: (_s, effort) => {
+      changed = { ...current(), effort }
+      return Promise.resolve(changed)
+    },
     endless_zoom: (_s, id, n) => Promise.resolve(children(id, n)),
     endless_recall: (_s, query) => {
       const q = query.toLowerCase()

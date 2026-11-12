@@ -110,6 +110,7 @@ use crate::{
     UnloadSession, cost::CallKind, polish,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
+use crate::{CheckEffort, SessionEffort, SetSessionCompactorEffort};
 use crate::{
     EndlessConfigChanged, EndlessFold, EndlessPause, EndlessRecall, EndlessRetry, EndlessZoom,
     GetEndlessSettings, RenderMemoryView, SessionMemoryQuery, SetAgentCompactorModel,
@@ -5090,6 +5091,23 @@ impl Message<ResolveModel> for Agents {
     }
 }
 
+impl Agents {
+    /// 194 D4b: `effort` against the catalog entry `model` resolves to
+    /// (`None`, or an unknown id: only that the word is an effort).
+    fn check_effort(&self, model: Option<&str>, effort: &str) -> Result<(), String> {
+        let known = model.and_then(|m| self.catalog.resolve(m, &*self.configured).ok());
+        crate::endless::pump::check_effort(known.as_ref().and_then(|r| r.model.as_ref()), effort)
+    }
+}
+
+impl Message<CheckEffort> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: CheckEffort, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.check_effort(m.model.as_deref(), &m.effort)
+    }
+}
+
 impl Message<SideCallable> for Agents {
     type Reply = Result<(), String>;
 
@@ -8950,6 +8968,23 @@ impl Message<SetSessionCompactorModel> for Agents {
     }
 }
 
+impl Message<SetSessionCompactorEffort> for Agents {
+    type Reply = Result<SessionMemory, String>;
+
+    /// 194: any session this engine knows, like [`SetSessionCompactorModel`].
+    async fn handle(
+        &mut self,
+        m: SetSessionCompactorEffort,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.stored(m.session).await?;
+        self.endless
+            .set_effort(m.session, m.effort)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
 impl Message<SetAgentCompactorModel> for Agents {
     type Reply = Result<SessionMemory, String>;
 
@@ -8961,7 +8996,7 @@ impl Message<SetAgentCompactorModel> for Agents {
     ) -> Self::Reply {
         self.stored(m.session).await?;
         self.endless
-            .set_agent_model(m.session, m.model)
+            .set_agent_model(m.session, m.model, m.effort)
             .await
             .map_err(|e| format!("{e:#}"))
     }
@@ -9093,7 +9128,7 @@ impl Message<SetEndlessSettings> for Agents {
         m: SetEndlessSettings,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        let c = m.config;
+        let mut c = m.config;
         if !(16_000..=256_000).contains(&c.view_bytes) {
             return Err(format!(
                 "view_bytes {} out of range 16000..=256000",
@@ -9116,6 +9151,23 @@ impl Message<SetEndlessSettings> for Agents {
             && let Err(e) = self.catalog.resolve(id, &*self.configured)
         {
             return Err(format!("model: {e}"));
+        }
+        // 194 D4b–d: the effort follows `model` — cleared with it, dropped
+        // when a changed model does not take it, refused otherwise.
+        c.effort = c
+            .effort
+            .map(|e| e.trim().to_owned())
+            .filter(|e| !e.is_empty());
+        if c.model.is_none() {
+            c.effort = None;
+        } else if let Some(e) = c.effort.clone()
+            && let Err(why) = self.check_effort(c.model.as_deref(), &e)
+        {
+            if c.model != self.endless.config().model {
+                c.effort = None;
+            } else {
+                return Err(format!("effort: {why}"));
+            }
         }
         let path = self.rt.data_dir.join("config.yaml");
         if !(16_000..=256_000).contains(&c.meeting_view_bytes) {
@@ -9152,7 +9204,7 @@ impl Message<SetEndlessSettings> for Agents {
                 c.max_usd_per_session_day
             ));
         }
-        let keys: [(&str, String); 23] = [
+        let keys: [(&str, String); 24] = [
             ("default_chat", c.default_chat.to_string()),
             ("default_desk", c.default_desk.to_string()),
             ("default_meeting", c.default_meeting.to_string()),
@@ -9182,6 +9234,13 @@ impl Message<SetEndlessSettings> for Agents {
                 "model",
                 c.model.clone().unwrap_or_else(|| "null".to_owned()),
             ),
+            // Quoted so a bare budget (`"8000"`) stays a YAML string.
+            (
+                "effort",
+                c.effort
+                    .as_ref()
+                    .map_or_else(|| "null".to_owned(), |e| format!("\"{e}\"")),
+            ),
         ];
         for (key, value) in &keys {
             runtime::write_nested_config_value(&path, "agent", "endless", key, value)
@@ -9192,7 +9251,7 @@ impl Message<SetEndlessSettings> for Agents {
         // meeting plugin over the bus.
         self.endless.set_config(c.clone());
         self.rt.publish(EndlessConfigChanged(c.clone())).await;
-        tracing::info!(default_chat = c.default_chat, default_desk = c.default_desk, default_meeting = c.default_meeting, view_bytes = c.view_bytes, model = ?c.model, "endless settings written");
+        tracing::info!(default_chat = c.default_chat, default_desk = c.default_desk, default_meeting = c.default_meeting, view_bytes = c.view_bytes, model = ?c.model, effort = ?c.effort, "endless settings written");
         Ok(c)
     }
 }
@@ -9322,6 +9381,23 @@ impl Message<SessionModel> for Agents {
             .ok()
             .flatten()
             .map(|row| row.model)
+    }
+}
+
+impl Message<SessionEffort> for Agents {
+    type Reply = Option<String>;
+
+    async fn handle(
+        &mut self,
+        m: SessionEffort,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<String> {
+        self.store_for(m.0)
+            .session(m.0)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|row| row.effort)
     }
 }
 
@@ -16404,6 +16480,93 @@ pub(crate) mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("view_bytes"), "{e}");
+    }
+
+    /// 194 row 11: `agent.endless.effort` is written beside `agent.endless.model`
+    /// (quoted), refused when the model does not take it (D4b), dropped when a
+    /// new model does not (D4c), cleared with the model (D4d), and in force at
+    /// once (`Endless::config`, D4f); `CheckEffort` is the same check.
+    #[tokio::test]
+    async fn endless_settings_effort_follows_its_model() {
+        let (_scratch, mut a) = agents_with(false).await;
+        let dir = a.rt.data_dir.clone();
+        let model = |id: &str, efforts: &[&str]| {
+            serde_json::json!({
+                "id": id, "name": id, "limit": { "context": 100_000, "output": 4_096 },
+                "reasoning": !efforts.is_empty(),
+                "reasoning_options": if efforts.is_empty() {
+                    serde_json::json!([])
+                } else {
+                    serde_json::json!([{ "type": "effort", "values": efforts }])
+                }
+            })
+        };
+        let user = serde_json::json!({ "testfx": { "id": "testfx", "name": "FX", "models": {
+            "think": model("think", &["low", "high"]),
+            "flat": model("flat", &[]),
+        }}});
+        std::fs::write(dir.join("models.json"), user.to_string()).unwrap();
+        a.catalog = Arc::new(Catalog::load(&dir));
+        let endless = a.endless.clone();
+        let agents = Agents::spawn(a);
+        let base = agents.ask(GetEndlessSettings).await.unwrap();
+        assert_eq!(base.effort, None);
+        let set = |model: Option<&str>, effort: Option<&str>| SetEndlessSettings {
+            config: EndlessConfig {
+                model: model.map(str::to_owned),
+                effort: effort.map(str::to_owned),
+                ..base.clone()
+            },
+        };
+        let got = agents
+            .ask(set(Some("testfx/think"), Some("high")))
+            .await
+            .unwrap();
+        assert_eq!(got.effort.as_deref(), Some("high"));
+        assert_eq!(endless.config().effort.as_deref(), Some("high"));
+        let yaml = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+        assert!(yaml.contains("effort: \"high\""), "{yaml}");
+        // D4b: the same model, a level it does not take.
+        let e = agents
+            .ask(set(Some("testfx/think"), Some("max")))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("effort: think accepts off|low|high"), "{e}");
+        assert_eq!(endless.config().effort.as_deref(), Some("high"));
+        // D4c: a new model that takes no effort drops it, persisted.
+        let got = agents
+            .ask(set(Some("testfx/flat"), Some("high")))
+            .await
+            .unwrap();
+        assert_eq!(
+            (got.model.as_deref(), got.effort),
+            (Some("testfx/flat"), None)
+        );
+        let yaml = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+        assert!(yaml.contains("effort: null"), "{yaml}");
+        // D4d: no model, no effort.
+        let got = agents.ask(set(None, Some("low"))).await.unwrap();
+        assert_eq!(got.effort, None);
+        // The shared check, as meeting and dreaming ask it.
+        assert!(
+            agents
+                .ask(CheckEffort {
+                    model: Some("testfx/think".into()),
+                    effort: "low".into(),
+                })
+                .await
+                .is_ok()
+        );
+        let e = agents
+            .ask(CheckEffort {
+                model: None,
+                effort: "loud".into(),
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("unknown effort loud"), "{e}");
     }
 
     /// 183 §12.5 (Z live proof): a chat created in a folder that exists here

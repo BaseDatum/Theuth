@@ -13,9 +13,12 @@ vi.mock('@/components/sidebar/ProjectStyle', () => ({ ProjectIcon: () => null })
 
 // Static markup drops handlers: the model comboboxes and switches register theirs by label so a test can "use" them.
 const handlers: Record<string, ((v: never) => void) | undefined> = {}
+type Effort = { levels: string[]; current?: string | null; onSelect(level: string | null): void }
+const chips: Record<string, Effort | undefined> = {}
 vi.mock('@/components/chat/ModelCombobox', () => ({
-  ModelCombobox: ({ value, none, onChange, 'aria-label': label }: { value: string | null | undefined; none?: { label: string }; onChange(id: string | null): void; 'aria-label': string }) => {
+  ModelCombobox: ({ value, none, onChange, effort, 'aria-label': label }: { value: string | null | undefined; none?: { label: string }; onChange(id: string | null): void; effort?: Effort; 'aria-label': string }) => {
     handlers[label] = onChange
+    chips[label] = effort
     return createElement('span', { 'aria-label': label }, value ?? none?.label)
   },
 }))
@@ -106,6 +109,20 @@ test('round-trip: each control writes the whole block with one field changed (§
   await render(MeetingDetection)
   handlers['Detect meetings']?.(false as never)
   expect(await write(3)).toEqual({ ...block, detect: { ...block.detect, enabled: false } })
+})
+
+test('194: the summary model carries its effort chips at meeting.summary_effort and a chip writes it into the whole block; none while it follows the meeting model', async () => {
+  await render(MeetingDefaults)
+  expect(chips['Summary model']).toBeUndefined()
+  const think = { id: 'anthropic/claude-haiku-5-5', name: 'Claude Haiku 5.5', efforts: ['low', 'high'] } as ModelInfo
+  const picked = { ...block, summary_model: think.id, summary_effort: 'low' }
+  api.meeting_settings_get.mockResolvedValueOnce(picked)
+  api.list_models.mockResolvedValueOnce([haiku, think])
+  await render(MeetingDefaults)
+  expect(chips['Summary model']?.levels).toEqual(['low', 'high'])
+  expect(chips['Summary model']?.current).toBe('low')
+  chips['Summary model']?.onSelect('high')
+  expect(await write(1)).toEqual({ ...picked, summary_effort: 'high' })
 })
 
 test('the ignore list and live tools: Reset writes the default list; added() trims, drops blanks and repeats', async () => {

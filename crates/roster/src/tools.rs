@@ -67,6 +67,9 @@ pub struct AgentProposeArgs {
     /// Compactor model of its endless desk sessions (137G); default: the engine's chain.
     #[serde(default)]
     pub memory_model: Option<String>,
+    /// The effort of `memory_model` (194); default: none (thinking off).
+    #[serde(default)]
+    pub memory_effort: Option<String>,
 }
 
 /// The file `a` describes, active and unproposed (the caller sets `paused` /
@@ -108,6 +111,7 @@ fn file_of(
         memory: None,
         view_bytes: None,
         memory_model: a.memory_model,
+        memory_effort: a.memory_effort,
         body: a.charter,
     })
 }
@@ -342,6 +346,7 @@ mod tests {
             mcp: None,
             capabilities: None,
             memory_model: Some("anthropic/claude-haiku-5-5".into()),
+            memory_effort: Some("low".into()),
         }
     }
 
@@ -358,8 +363,8 @@ mod tests {
             ("theuth", "Ops", Some("gpt-5"))
         );
         assert_eq!(
-            cto.memory_model.as_deref(),
-            Some("anthropic/claude-haiku-5-5")
+            (cto.memory_model.as_deref(), cto.memory_effort.as_deref()),
+            (Some("anthropic/claude-haiku-5-5"), Some("low"))
         );
         assert_eq!(
             cto.budget,

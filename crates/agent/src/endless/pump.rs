@@ -607,16 +607,14 @@ impl Live {
 
 impl Live {
     fn new(meta: crate::store::endless::EndlessMeta) -> Self {
+        let picks = Picks::of(&meta);
         Self {
             mode: meta.mode,
             filter: meta.filter,
             base: meta.base,
             view_bytes: meta.view_bytes,
             paused_by: meta.paused_by,
-            picks: Picks {
-                chat: meta.model_override,
-                agent: meta.agent_model,
-            },
+            picks,
             units: Vec::new(),
             tree: Tree::default(),
             fold: None,
@@ -650,36 +648,81 @@ struct Picks {
     chat: Option<String>,
     /// The desk agent's `memory_model` (`sessions.endless_agent_model`).
     agent: Option<String>,
+    /// 194: this chat's own effort (`sessions.endless_effort`), over any link's.
+    chat_effort: Option<String>,
+    /// 194: the desk agent's `memory_effort` (`sessions.endless_agent_effort`).
+    agent_effort: Option<String>,
+}
+
+impl Picks {
+    fn of(meta: &crate::store::endless::EndlessMeta) -> Self {
+        Self {
+            chat: meta.model_override.clone(),
+            agent: meta.agent_model.clone(),
+            chat_effort: meta.effort_override.clone(),
+            agent_effort: meta.agent_effort.clone(),
+        }
+    }
 }
 
 /// 137G chain: chat override → agent default → `agent.endless.model` →
-/// `agent.title_model` → the session's model (`None`), with the link's name.
-fn chosen(inner: &Inner, picks: &Picks) -> (Option<String>, &'static str) {
-    if let Some(m) = &picks.chat {
-        return (Some(m.clone()), "chat");
-    }
-    if let Some(m) = &picks.agent {
-        return (Some(m.clone()), "agent");
-    }
-    if let Some(m) = inner.cfg.read().model.clone() {
-        return (Some(m), "settings");
-    }
-    match inner.title_model.read().clone() {
-        Some(m) => (Some(m), "title"),
-        None => (None, "session"),
+/// `agent.title_model` → the session's model (`None`), with the link's name
+/// and (194) the effort: this chat's own, else the choosing link's own —
+/// `memory_effort`, `agent.endless.effort`; none for the title and session
+/// links (thinking off, R1 Q1).
+fn chosen(inner: &Inner, picks: &Picks) -> (Option<String>, &'static str, Option<String>) {
+    let settings = {
+        let cfg = inner.cfg.read();
+        cfg.model.clone().map(|m| (m, cfg.effort.clone()))
+    };
+    let (model, source, effort) = if let Some(m) = &picks.chat {
+        (Some(m.clone()), "chat", None)
+    } else if let Some(m) = &picks.agent {
+        (Some(m.clone()), "agent", picks.agent_effort.clone())
+    } else if let Some((m, e)) = settings {
+        (Some(m), "settings", e)
+    } else {
+        match inner.title_model.read().clone() {
+            Some(m) => (Some(m), "title", None),
+            None => (None, "session", None),
+        }
+    };
+    (model, source, picks.chat_effort.clone().or(effort))
+}
+
+/// 194 D4b: `effort` against what `model` resolves to
+/// (`models::Model::validate_effort`'s words); an id the catalog does not
+/// know checks only that the word is an effort ([`crate::effort_of`]).
+pub(crate) fn check_effort(model: Option<&models::Model>, effort: &str) -> Result<(), String> {
+    match model {
+        Some(m) => m.validate_effort(effort),
+        None if crate::effort_of(effort).is_none() => Err(format!("unknown effort {effort}")),
+        None => Ok(()),
     }
 }
 
-/// The compactor for a session ([`chosen`]; R1-D3 + 137G) with the session's
-/// effort when it is the session's own model — every link read live (137F
-/// E1). Keyed by model id + effort.
+/// 194: the chain's effort as `model` can run it — one it does not take
+/// (its link's model changed under a chat's own effort) is dropped, warned.
+fn usable_effort(model: &models::Resolved, effort: Option<String>) -> Option<String> {
+    let e = effort?;
+    match check_effort(model.model.as_ref(), &e) {
+        Ok(()) => Some(e),
+        Err(why) => {
+            tracing::warn!(model = %model.id, effort = %e, "endless compactor: effort dropped: {why}");
+            None
+        }
+    }
+}
+
+/// The compactor for a session ([`chosen`]; R1-D3 + 137G) with the chain's
+/// effort (194) — every link read live (137F E1). Keyed by model id + effort.
 fn compactor_for(
     inner: &Inner,
     session: SessionId,
     attached: &Attached,
     picks: &Picks,
 ) -> (String, Arc<dyn Compactor>) {
-    let (chosen, source) = chosen(inner, picks);
+    let (chosen, source, effort) = chosen(inner, picks);
     if let Some(f) = &inner.compactor_for_tests {
         let id = chosen.unwrap_or_else(|| attached.model.id.clone());
         let c = f(&id);
@@ -699,7 +742,10 @@ fn compactor_for(
         },
         None => attached.model.clone(),
     };
-    let c = model_compactor(inner, session, model, &attached.agent);
+    let effort = usable_effort(&model, effort)
+        .as_deref()
+        .and_then(crate::effort_of);
+    let c = model_compactor(inner, session, model, &attached.agent, effort);
     // 177 E6: new limits (a refresh, `set_model_limits`) make a new compactor.
     let limits = c
         .model
@@ -713,12 +759,14 @@ fn compactor_for(
 }
 
 /// The real compactor for `model` — the request options of every summary
-/// call: locality (137F E6), thinking off (R1 Q1).
+/// call: locality (137F E6), thinking off (R1 Q1) unless the user `chosen`
+/// an effort for it (194).
 pub(crate) fn model_compactor(
     inner: &Inner,
     session: SessionId,
     model: models::Resolved,
     agent: &str,
+    chosen: Option<genai::chat::ReasoningEffort>,
 ) -> ModelCompactor {
     let base =
         crate::backend::target_for(&model, &inner.auth).map(|t| t.endpoint.base_url().to_owned());
@@ -729,7 +777,10 @@ pub(crate) fn model_compactor(
     // R1 Q1: the compactor never thinks, whatever the session's effort (E8:
     // `think: false` only through genai's own Ollama adapter, not a gateway,
     // R1-14; 177 E2: never an effort keyword next to the kwargs).
-    let effort = if quiet || (base.is_some() && crate::loop_::ns(&model.genai) == "ollama") {
+    let picked = chosen.is_some();
+    let effort = if picked {
+        chosen
+    } else if quiet || (base.is_some() && crate::loop_::ns(&model.genai) == "ollama") {
         None
     } else {
         compactor::thinking_off(&model)
@@ -740,6 +791,7 @@ pub(crate) fn model_compactor(
         model,
         system: compactor::prompt(agent),
         effort,
+        chosen: picked,
         local,
         quiet,
         cfg: inner.cfg.clone(),
@@ -802,7 +854,7 @@ pub(crate) async fn test_summary(inner: &Inner, model: &str) -> crate::SummaryTe
         }
     };
     out.model = resolved.id.clone();
-    let c = model_compactor(inner, SessionId::new(), resolved, "theuth");
+    let c = model_compactor(inner, SessionId::new(), resolved, "theuth", None);
     let (node_bytes, attempt) = {
         let cfg = inner.cfg.read();
         let secs = if c.local.is_some() {
@@ -962,19 +1014,13 @@ pub(crate) async fn attach(
             live.base = meta.base;
             live.view_bytes = meta.view_bytes;
             live.paused_by = meta.paused_by.clone();
-            live.picks = Picks {
-                chat: meta.model_override.clone(),
-                agent: meta.agent_model.clone(),
-            };
+            live.picks = Picks::of(&meta);
             live.invalidate();
             drop(live);
             state
         }
         None => {
-            let picks = Picks {
-                chat: meta.model_override.clone(),
-                agent: meta.agent_model.clone(),
-            };
+            let picks = Picks::of(&meta);
             let current = compactor_for(inner, session, &attached, &picks);
             let state = Arc::new(State::new(session, store, inner, current, meta));
             load(&state).await?;
@@ -2594,6 +2640,7 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
         } else {
             String::new()
         },
+        effort: usable_effort(state.compactor().model(), chosen(inner, &live.picks).2),
         spend_today_usd,
     })
 }
@@ -2724,12 +2771,16 @@ pub(crate) async fn pause(
 /// RPC `set_session_compactor_model` (`agent = false`) and the roster's
 /// desk default (`agent = true`), 137G: an id must resolve (`None` clears);
 /// persisted, then live — re-resolve, cancel the old model's calls, reset
-/// backoff, kick the pump (137F E2).
+/// backoff, kick the pump (137F E2). 194: the agent link carries
+/// `agent_effort` (its `memory_effort`; cleared with the model); a chat's
+/// own effort is cleared with its model (D4d) and dropped when the new model
+/// does not take it (D4c).
 pub(crate) async fn set_model(
     inner: &Inner,
     session: SessionId,
     model: Option<String>,
     agent: bool,
+    agent_effort: Option<String>,
 ) -> anyhow::Result<SessionMemory> {
     let model = model.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty());
     // The chat's pick must resolve to a model this engine can reach: a
@@ -2756,25 +2807,99 @@ pub(crate) async fn set_model(
             "compactor model {id:?}: no configured provider serves it"
         );
     }
-    inner
-        .store_for(session)
+    let store = inner.store_for(session);
+    let effort = if agent {
+        model.as_ref().and(
+            agent_effort
+                .map(|e| e.trim().to_owned())
+                .filter(|e| !e.is_empty()),
+        )
+    } else {
+        let own = store.endless_meta(session).await?.effort_override;
+        own.filter(|e| {
+            model
+                .as_deref()
+                .is_some_and(|id| check_effort_for(inner, id, e).is_ok())
+        })
+    };
+    store
         .set_endless_model(session, model.as_deref(), agent)
+        .await?;
+    store
+        .set_endless_effort(session, effort.as_deref(), agent)
         .await?;
     if let Some(state) = state_of(inner, session) {
         {
             let mut live = state.live.lock();
-            let slot = if agent {
-                &mut live.picks.agent
+            let picks = &mut live.picks;
+            if agent {
+                picks.agent = model.clone();
+                picks.agent_effort = effort.clone();
             } else {
-                &mut live.picks.chat
-            };
-            *slot = model.clone();
+                picks.chat = model.clone();
+                picks.chat_effort = effort.clone();
+            }
             live.dirty = true;
         }
         reresolve(inner, Some(session));
     }
-    tracing::info!(%session, model = ?model, agent, "endless: compactor pick set");
+    tracing::info!(%session, model = ?model, effort = ?effort, agent, "endless: compactor pick set");
     memory(inner, session).await
+}
+
+/// RPC `set_session_compactor_effort` (194): this chat's own compactor
+/// effort (`None` clears = the choosing link's), checked against the model
+/// in force (D4b); persisted in `sessions.endless_effort`; live.
+pub(crate) async fn set_effort(
+    inner: &Inner,
+    session: SessionId,
+    effort: Option<String>,
+) -> anyhow::Result<SessionMemory> {
+    let effort = effort
+        .map(|e| e.trim().to_owned())
+        .filter(|e| !e.is_empty());
+    let store = inner.store_for(session);
+    if let Some(e) = &effort {
+        let checked = match state_of(inner, session) {
+            Some(state) => check_effort(state.compactor().model().model.as_ref(), e),
+            None => {
+                let meta = store.endless_meta(session).await?;
+                let id = match chosen(inner, &Picks::of(&meta)).0 {
+                    Some(id) => id,
+                    None => store
+                        .session(session)
+                        .await?
+                        .map(|row| row.model)
+                        .unwrap_or_default(),
+                };
+                check_effort_for(inner, &id, e)
+            }
+        };
+        checked.map_err(|why| anyhow::anyhow!(why))?;
+    }
+    store
+        .set_endless_effort(session, effort.as_deref(), false)
+        .await?;
+    if let Some(state) = state_of(inner, session) {
+        {
+            let mut live = state.live.lock();
+            live.picks.chat_effort = effort.clone();
+            live.dirty = true;
+        }
+        reresolve(inner, Some(session));
+    }
+    tracing::info!(%session, effort = ?effort, "endless: compactor effort set");
+    memory(inner, session).await
+}
+
+/// 194 D4b: [`check_effort`] against the catalog entry `id` resolves to.
+fn check_effort_for(inner: &Inner, id: &str, effort: &str) -> Result<(), String> {
+    let m = inner
+        .catalog
+        .read()
+        .resolve(id, &*crate::supervisor::configured(inner.auth.clone()))
+        .ok();
+    check_effort(m.as_ref().and_then(|m| m.model.as_ref()), effort)
 }
 
 /// R1-15: the frontier keeps failing — why `settle` returned early.
@@ -2785,6 +2910,14 @@ pub(crate) fn frontier_failing(inner: &Inner, session: SessionId) -> bool {
     let mut live = state.live.lock();
     let cfg = live.fold_cfg(&state.cfg.read());
     live.frontier_stalled(cfg)
+}
+
+/// Test seam (194): the key of the session's compactor in force — its model
+/// id and the effort its requests carry (`{id}|{effort:?}|{limits:?}`).
+#[cfg(test)]
+pub(crate) fn compactor_key_for_tests(inner: &Inner, session: SessionId) -> String {
+    let state = state_of(inner, session).expect("attached");
+    state.current.read().key.clone()
 }
 
 /// Test seam: a state over an in-memory store with a scripted compactor is

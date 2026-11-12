@@ -33,6 +33,10 @@ pub struct EndlessMeta {
     pub model_override: Option<String>,
     /// `sessions.endless_agent_model` (137G): the desk agent's `memory_model`.
     pub agent_model: Option<String>,
+    /// `sessions.endless_effort` (194): this chat's own compactor effort.
+    pub effort_override: Option<String>,
+    /// `sessions.endless_agent_effort` (194): the desk agent's `memory_effort`.
+    pub agent_effort: Option<String>,
 }
 
 /// One `endless_units` row (the unit without its text).
@@ -123,16 +127,19 @@ impl Store {
             Option<String>,
             Option<String>,
             Option<String>,
+            Option<String>,
+            Option<String>,
         );
         let row: Option<Row> = sqlx::query_as(
             "SELECT memory, endless_filter, endless_base, endless_view_bytes, endless_paused, \
-             endless_spend_override, endless_model, endless_agent_model FROM sessions WHERE id = ?",
+             endless_spend_override, endless_model, endless_agent_model, endless_effort, \
+             endless_agent_effort FROM sessions WHERE id = ?",
         )
         .bind(id.to_string())
         .fetch_optional(&self.read)
         .await?;
         Ok(row
-            .map(|(m, f, b, v, p, o, cm, am)| EndlessMeta {
+            .map(|(m, f, b, v, p, o, cm, am, ce, ae)| EndlessMeta {
                 mode: m.parse().unwrap_or_default(),
                 filter: f.parse().unwrap_or_default(),
                 base: u64::try_from(b).unwrap_or(0),
@@ -141,6 +148,8 @@ impl Store {
                 spend_override: o,
                 model_override: cm.filter(|m| !m.is_empty()),
                 agent_model: am.filter(|m| !m.is_empty()),
+                effort_override: ce.filter(|e| !e.is_empty()),
+                agent_effort: ae.filter(|e| !e.is_empty()),
             })
             .unwrap_or_default())
     }
@@ -182,6 +191,28 @@ impl Store {
         let mut tx = self.begin_write().await?;
         sqlx::query(sql)
             .bind(model)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
+    }
+
+    /// 194: this chat's compactor effort (`None` clears) or, with `agent`,
+    /// the desk agent's `memory_effort`.
+    pub async fn set_endless_effort(
+        &self,
+        id: SessionId,
+        effort: Option<&str>,
+        agent: bool,
+    ) -> anyhow::Result<()> {
+        let sql = if agent {
+            "UPDATE sessions SET endless_agent_effort = ? WHERE id = ?"
+        } else {
+            "UPDATE sessions SET endless_effort = ? WHERE id = ?"
+        };
+        let mut tx = self.begin_write().await?;
+        sqlx::query(sql)
+            .bind(effort)
             .bind(id.to_string())
             .execute(&mut *tx)
             .await?;
@@ -675,6 +706,14 @@ mod tests {
             .set_endless_model(id, Some("p/desk"), true)
             .await
             .unwrap();
+        store
+            .set_endless_effort(id, Some("high"), false)
+            .await
+            .unwrap();
+        store
+            .set_endless_effort(id, Some("low"), true)
+            .await
+            .unwrap();
         assert_eq!(
             store.endless_meta(id).await.unwrap(),
             EndlessMeta {
@@ -686,10 +725,14 @@ mod tests {
                 spend_override: Some("2026-11-05".into()),
                 model_override: Some("p/chat".into()),
                 agent_model: Some("p/desk".into()),
+                effort_override: Some("high".into()),
+                agent_effort: Some("low".into()),
             }
         );
         store.set_endless_model(id, None, false).await.unwrap();
         assert_eq!(store.endless_meta(id).await.unwrap().model_override, None);
+        store.set_endless_effort(id, None, false).await.unwrap();
+        assert_eq!(store.endless_meta(id).await.unwrap().effort_override, None);
         assert_eq!(store.endless_sessions().await.unwrap().len(), 1);
         assert_eq!(
             store.session(id).await.unwrap().unwrap().memory,
