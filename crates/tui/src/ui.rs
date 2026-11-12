@@ -11,6 +11,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tools::{Decision, Risk};
 
 use crate::clip;
+use crate::components::artifacts_apps::{APP_WHERE, artifact_size, artifact_row};
 use crate::dictation::{self, Dictating, Phase};
 use crate::components::{FocusClass, Lifecycle, Surface};
 use crate::model::{
@@ -18,8 +19,8 @@ use crate::model::{
     advisory_title, providers, session_row, severity_name,
 };
 use crate::model::{
-    APP_WHERE, AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch,
-    TodoCard, TurnAction, UiEvent, action_name, artifact_row, artifact_size, describe, gate_name,
+    AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch,
+    TodoCard, TurnAction, UiEvent, action_name, describe, gate_name,
     k, meta_line, now_ms, progress_line, result_line, short, window,
 };
 use crate::pathac;
