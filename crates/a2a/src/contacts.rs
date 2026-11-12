@@ -1,6 +1,7 @@
 //! 183 Phase 3 (§7, §14.4): contacts — separate harnesses reached over A2A on
-//! `theuth/a2a/1`. The contact store is `peers.yaml` ([`crate::config::PeersFile`], W-24,
-//! [`store`]); this module holds what the contact RPCs return, the invite ticket, the
+//! `theuth/a2a/1`. 191 (D2): the contact store is the mesh-wide record tables in
+//! `sessions.sqlite` ([`records`]; `peers.yaml`, [`store`], keeps HTTP peers and is imported
+//! once); this module holds what the contact RPCs return, the invite ticket, the
 //! ceremony's state and frames ([`ceremony`]), the Agent Card theuth signs, the Add contact
 //! window and its LAN discovery ([`discovery`]), the `theuth/a2a/1` reach ([`reach`]) and the
 //! actor messages behind `contact_*` / `a2a_export*`.
@@ -16,14 +17,17 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::A2aActor;
-use crate::config::{ExportEntry, FirstContact, PeerEntry, PeersFile, ShareMode};
+use crate::config::{FirstContact, PeersFile, ShareMode};
 
 pub mod ceremony;
 pub mod discovery;
 #[cfg(test)]
 pub(crate) mod e2e_tests;
+pub mod members;
 pub mod offers;
 pub mod reach;
+pub mod records;
+pub mod rosters;
 pub mod store;
 
 /// 183 §7.2 (W-21): the contact ALPN, one HTTP/1.1 request (or one ceremony) per bi stream.
@@ -72,7 +76,7 @@ pub const OFF: &str = "contacts are unavailable: the a2a plugin is not running";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Contact {
-    /// Owner alias: the `peer:<name>` address and the `peers.yaml` key.
+    /// Owner alias: the `peer:<name>` address; 191: the record's alias, unique in the mesh.
     pub name: String,
     /// The contact's machine, from its card.
     pub machine: String,
@@ -98,6 +102,15 @@ pub struct Contact {
     pub shared: Vec<agent::communication::network::ContactOffer>,
     /// 186 (D10): its card advertises [`EXT_FULL`]. Shown only: a share never depends on it.
     pub full_capable: bool,
+    /// 191 (D2): its record id (the same on every machine of the mesh).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<String>", optional))]
+    pub id: String,
+    /// 191 (D2): why this machine quarantined the record (it is refused, its endpoints
+    /// denied); `None` for a sound one.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub problem: Option<String>,
 }
 
 /// 183 F3, F11: one (contact, export) whose first message waits for the owner's answer
@@ -227,7 +240,12 @@ pub enum ExportTarget {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Export {
-    /// Export name: the `peers.yaml` key, `[a-z0-9_-]`.
+    /// 191 (D2): its replicated id; `None` on a new export (`a2a_export_put` mints one).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub id: Option<String>,
+    /// Export name: the card skill and the `/agents/<name>` path, `[a-z0-9_-]`, unique in
+    /// the mesh (191: a second one is renamed `<name>-2`).
     pub name: String,
     /// What it publishes.
     pub target: ExportTarget,
@@ -866,7 +884,8 @@ impl crate::Ctx {
     /// §7.2: what `theuth/a2a/1` lets `remote` do.
     pub(crate) fn gate(&self, remote: &str) -> crate::server::IrohGate {
         let open = self.window_open();
-        crate::server::iroh_gate(&self.shared.read(), remote, open)
+        let ready = self.ready.load(std::sync::atomic::Ordering::SeqCst);
+        crate::server::iroh_gate(&self.shared.read(), remote, open, ready)
     }
 
     /// §7.4: may `remote` start a ceremony now? One at a time (the slot is taken here, and
@@ -933,7 +952,9 @@ impl crate::Ctx {
             .staged
             .contacts
             .values()
-            .any(|c| c.display == shown && c.eid != peer);
+            // 191: a machine the contact's roster already lists is that contact, not a
+            // lookalike.
+            .any(|c| c.display == shown && c.eid != peer && !c.eids.iter().any(|e| e == peer));
         if lookalike {
             tracing::warn!(%shown, %peer, "a2a: ceremony peer has the name of an existing contact but another key");
         }
@@ -1032,14 +1053,17 @@ impl crate::Ctx {
         ceremony::publish(self, r.view).await;
     }
 
-    /// Both accepted: pin the other side's endpoint id (TOFU) in `peers.yaml`; the
-    /// inviter's window closes. A known endpoint keeps its alias and settings. 183 F1: then
-    /// fetch what the new contact shares with us.
+    /// Both accepted: pin the other side's endpoint id (TOFU) as an anchor of a contact
+    /// record (191 D2, replicated to every machine of the mesh); the inviter's window closes.
+    /// A live record with that anchor keeps its alias and settings (a blocked one is unblocked
+    /// under a fresh binding); otherwise a new record is made. 183 F1: then fetch what the
+    /// new contact shares with us.
     pub(crate) async fn pin(
         self: &std::sync::Arc<Self>,
         id: Uuid,
         card: &AgentCard,
     ) -> Result<(), String> {
+        use agent::store::contacts::{Cell, RecordTable, RecordWrite};
         let (eid, role) = {
             let s = self.contacts.lock();
             let r = s.ceremonies.get(&id).ok_or("the ceremony ended")?;
@@ -1047,44 +1071,114 @@ impl crate::Ctx {
         };
         let machine = card_machine(card).0;
         let display = card_name(card);
-        let now = mesh::identity::now_ms();
-        self.edit(|file| {
-            let known = file
-                .peers
-                .iter()
-                .find(|(_, p)| p.endpoint.as_deref() == Some(eid.as_str()))
-                .map(|(k, _)| k.clone());
-            let alias = known.unwrap_or_else(|| {
+        let now = mesh::identity::now_ms() as i64;
+        let r = self.records().await?;
+        let a = records::analyze(&r);
+        // A live record whose anchor is `eid`, else (191 D1: "an endpoint that already belongs
+        // to a live record") the contact whose current roster admits it: Pair again adds a
+        // pin to it, never a second record.
+        let listed = {
+            let live = self.shared.read();
+            live.staged
+                .contact_by_eid(&eid)
+                .map(|alias| live.staged.contacts[alias].id.clone())
+        };
+        let known = records::record_with_eid(&r, &eid, false)
+            .or_else(|| listed.and_then(|id| r.contacts.iter().find(|c| c.id == id)))
+            .map(|c| records::group_of(&a, &c.id).map_or(vec![c], |g| g.members.clone()));
+        let mut w = Vec::new();
+        let record = match known {
+            Some(members) => {
+                let root = members[0];
+                let blocked = members.iter().any(|m| m.blocked.is_some_and(|b| b != 0));
+                for m in members.iter().filter(|m| m.blocked.is_some_and(|b| b != 0)) {
+                    w.push(RecordWrite::new(
+                        RecordTable::Contacts,
+                        m.id.clone(),
+                        vec![("blocked", Cell::Int(0))],
+                    ));
+                }
+                let mut set = vec![("name", Cell::Text(display.clone()))];
+                if !machine.is_empty() {
+                    set.push(("machine", Cell::Text(machine.clone())));
+                }
+                // Unblock writes a fresh binding: the blocked one stays revoked everywhere;
+                // so does a re-pair into a record whose binding this machine revoked (a
+                // removed duplicate's), which a replica never un-revokes.
+                let revoked = root
+                    .binding
+                    .as_deref()
+                    .and_then(records::binding_id)
+                    .is_none_or(|b| r.revoked.contains(&b.to_string()));
+                if blocked || revoked {
+                    set.push(("binding", Cell::Text(records::fresh_binding())));
+                }
+                w.push(RecordWrite::new(
+                    RecordTable::Contacts,
+                    root.id.clone(),
+                    set,
+                ));
+                root.id.clone()
+            }
+            None => {
                 // 183 Z3-R2: a card named like an existing contact but with another key is
                 // not silently "bob-2": its alias says so, as does the ceremony it came from.
-                let lookalike = file.peers.values().any(|p| {
-                    p.is_contact()
-                        && p.name.as_deref() == Some(display.as_str())
-                        && p.endpoint.as_deref() != Some(eid.as_str())
-                });
+                let lookalike = r
+                    .contacts
+                    .iter()
+                    .any(|c| c.removed_ms.is_none() && c.name.as_deref() == Some(display.as_str()));
                 let mut base = crate::config::alias_of(&display);
                 if lookalike {
                     let shown = display.as_str();
                     tracing::warn!(name = %shown, %eid, "a2a: new contact has the name of an existing one but another key");
                     base = format!("{base}-new-key");
                 }
+                let live = self.shared.read().clone();
+                let taken = |alias: &str| {
+                    r.contacts
+                        .iter()
+                        .any(|c| c.removed_ms.is_none() && c.alias.as_deref() == Some(alias))
+                        || live.staged.peers.contains_key(alias)
+                };
                 let mut alias = base.clone();
                 let mut n = 2;
-                while file.peers.contains_key(&alias) {
+                while taken(&alias) {
                     alias = format!("{base}-{n}");
                     n += 1;
                 }
-                alias
-            });
-            let e = file.peers.entry(alias).or_default();
-            e.endpoint = Some(eid.clone());
-            e.name = Some(display.clone());
-            e.machine = Some(machine.clone()).filter(|m| !m.is_empty());
-            e.blocked = false;
-            e.paired_ms = Some(now);
-            Ok(())
-        })
-        .await?;
+                let record = Uuid::now_v7().to_string();
+                w.push(RecordWrite::new(
+                    RecordTable::Contacts,
+                    record.clone(),
+                    vec![
+                        ("alias", Cell::Text(alias)),
+                        ("name", Cell::Text(display.clone())),
+                        ("machine", Cell::Text(machine.clone())),
+                        ("binding", Cell::Text(records::fresh_binding())),
+                        ("paired_ms", Cell::Int(now)),
+                        ("paired_on", Cell::Text(r.me.clone())),
+                        ("blocked", Cell::Int(0)),
+                    ],
+                ));
+                record
+            }
+        };
+        let pin_id = format!("{record}|{eid}");
+        // 191 (D1): this machine joins the pins the contact holds of us; a machine that pinned
+        // this endpoint before stays one (a set: a third ceremony forgets nobody).
+        let pinned_by = records::pinned_by_with(&r, &pin_id, &r.me);
+        w.push(RecordWrite::new(
+            RecordTable::Endpoints,
+            pin_id,
+            vec![
+                ("contact", Cell::Text(record.clone())),
+                ("eid", Cell::Text(eid.clone())),
+                ("paired_ms", Cell::Int(now)),
+                ("barred_ms", Cell::Null),
+                ("pinned_by", pinned_by),
+            ],
+        ));
+        self.commit_records(w).await?;
         if role == Role::Inviter {
             self.close_window();
         }
@@ -1098,6 +1192,11 @@ impl crate::Ctx {
     /// `contact_window(true)`: open (or return the open) Add contact window: its ticket,
     /// the advert and the browse; it closes itself after `a2a.contact_window_secs`.
     pub(crate) async fn open_window(self: &std::sync::Arc<Self>) -> Result<ContactWindow, String> {
+        // 191 (D1): version 1 never comes from a stale view: no ceremony before the first
+        // reconcile after the mesh latch.
+        if !self.ready.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(agent::communication::network::CONTACTS_WAITING.into());
+        }
         let now = mesh::identity::now_ms();
         if let Some(w) = self
             .contacts
@@ -1247,6 +1346,9 @@ impl crate::Ctx {
         self: &std::sync::Arc<Self>,
         target: ContactTarget,
     ) -> Result<mesh::PairCeremony, String> {
+        if !self.ready.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(agent::communication::network::CONTACTS_WAITING.into());
+        }
         let me = self.me()?;
         let (lan, private_ok) = self.dial_policy();
         let (eid, hints, ticket) = match target {
@@ -1583,7 +1685,29 @@ fn contact_view(
         paired_ms: c.paired_ms,
         shared,
         full_capable,
+        id: c.id.clone(),
+        problem: None,
     })
+}
+
+/// 191 (D2): a quarantined record as `contact_list` shows it: refused, its problem said.
+fn quarantined_view(q: &crate::config::Quarantined, cap: tools::Risk) -> Contact {
+    Contact {
+        name: q.alias.clone(),
+        machine: clip(&q.machine),
+        endpoint: q.eid.clone(),
+        fingerprint: fingerprint(&q.eid),
+        path: mesh::PeerPath::Offline,
+        cap,
+        exports: Vec::new(),
+        first_contact: BTreeMap::new(),
+        blocked: false,
+        paired_ms: q.paired_ms,
+        shared: Vec::new(),
+        full_capable: false,
+        id: q.id.clone(),
+        problem: Some(q.problem.clone()),
+    }
 }
 
 /// Drop export `name` and every grant and first-contact answer naming it.
@@ -1595,14 +1719,6 @@ pub(crate) fn drop_export(file: &mut PeersFile, name: &str) {
     }
 }
 
-/// The contact entry `name` of `file`, or why not.
-fn entry<'a>(file: &'a mut PeersFile, name: &str) -> Result<&'a mut PeerEntry, String> {
-    file.peers
-        .get_mut(name)
-        .filter(|p| p.is_contact())
-        .ok_or_else(|| format!("no contact named {name}"))
-}
-
 impl Message<ContactsList> for A2aActor {
     type Reply = Vec<Contact>;
 
@@ -1612,19 +1728,88 @@ impl Message<ContactsList> for A2aActor {
 }
 
 impl crate::Ctx {
-    /// [`ContactsList`].
+    /// [`ContactsList`]: every contact of the mesh (the replicated records), quarantined
+    /// ones with their problem. 191 (D1 note 2): an inflation alert on a record is its
+    /// problem too (alert only: the contact stays admitted).
     pub(crate) fn contact_list(&self) -> Vec<Contact> {
         let live = self.shared.read().clone();
         let net = self.net();
-        live.staged
+        let alerts = self.rosters.lock().alerts.clone();
+        let mut out: Vec<Contact> = live
+            .staged
             .contacts
             .keys()
             .filter_map(|alias| {
-                contact_view(&live.staged, alias, net.as_deref(), |eid| {
-                    (self.offers_of(eid), self.full_of(eid))
-                })
+                let mut c = contact_view(&live.staged, alias, net.as_deref(), |eid| {
+                    let eid = self.offers_eid(eid);
+                    (self.offers_of(&eid), self.full_of(&eid))
+                })?;
+                c.problem = alerts.get(&c.id).map(|(_, text, _)| text.clone());
+                Some(c)
             })
-            .collect()
+            .collect();
+        out.extend(
+            live.staged
+                .quarantined
+                .iter()
+                .map(|q| quarantined_view(q, self.cfg.contact_cap)),
+        );
+        out
+    }
+
+    /// 191 (D2): the replicated contact records, as the agent's store reads them now. `me`
+    /// is this engine's mesh id (the store's own, unless a test's store has none).
+    pub(crate) async fn records(&self) -> Result<agent::store::contacts::Records, String> {
+        let agents = self.agents()?;
+        let mut r = self
+            .ask(&agents, agent::communication::network::ContactRecords)
+            .await?;
+        if let Some(net) = self.net() {
+            r.me.clone_from(&net.id.0);
+        }
+        Ok(r)
+    }
+
+    /// 191 (D2): write record columns, then run the reconcile at once (the RPC's answer
+    /// reflects it) and tell the UI.
+    pub(crate) async fn commit_records(
+        &self,
+        writes: Vec<agent::store::contacts::RecordWrite>,
+    ) -> Result<(), String> {
+        if !writes.is_empty() {
+            let agents = self.agents()?;
+            self.ask(
+                &agents,
+                agent::communication::network::WriteContactRecords(writes),
+            )
+            .await?;
+        }
+        self.reconcile_now().await
+    }
+
+    /// The live group a contact RPC names (its alias), or its quarantined records (alias or
+    /// record id): every record it writes. Root first.
+    fn targets<'r>(
+        a: &'r records::Analysis<'r>,
+        r: &'r agent::store::contacts::Records,
+        name: &str,
+        quarantined_too: bool,
+    ) -> Result<Vec<&'r agent::store::contacts::ContactRow>, String> {
+        if let Some(g) = records::root_by_alias(a, name) {
+            return Ok(g.members.clone());
+        }
+        if quarantined_too {
+            let rows: Vec<_> = r
+                .contacts
+                .iter()
+                .filter(|c| c.removed_ms.is_none())
+                .filter(|c| c.id == name || c.alias.as_deref() == Some(name))
+                .collect();
+            if !rows.is_empty() {
+                return Ok(rows);
+            }
+        }
+        Err(format!("no contact named {name}"))
     }
 }
 
@@ -1641,9 +1826,63 @@ impl Message<ContactUpdate> for A2aActor {
     }
 }
 
+/// 191 (D2): the writes that set export `xid`'s grant (and, with `answer`, its first-contact
+/// answer) for a group: every member that has a row for it is written, so the strictest read
+/// never pins an old value; with no row anywhere, the root gets one.
+fn grant_writes(
+    r: &agent::store::contacts::Records,
+    members: &[&agent::store::contacts::ContactRow],
+    xid: &str,
+    granted: Option<bool>,
+    answer: impl Fn(Option<&str>) -> Option<FirstContact>,
+) -> Vec<agent::store::contacts::RecordWrite> {
+    use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+    let rows: Vec<_> = r
+        .grants
+        .iter()
+        .filter(|g| g.export.as_deref() == Some(xid))
+        .filter(|g| {
+            members
+                .iter()
+                .any(|m| g.contact.as_deref() == Some(m.id.as_str()))
+        })
+        .collect();
+    let write = |id: String, contact: &str, old: Option<&str>| {
+        let mut set = vec![
+            ("contact", Cell::Text(contact.to_owned())),
+            ("export", Cell::Text(xid.to_owned())),
+        ];
+        if let Some(g) = granted {
+            set.push(("granted", Cell::Int(i64::from(g))));
+        }
+        if let Some(a) = answer(old) {
+            set.push((
+                "first_contact",
+                Cell::Text(records::answer_text(a).to_owned()),
+            ));
+        }
+        RecordWrite::new(RecordTable::Grants, id, set)
+    };
+    if rows.is_empty() {
+        let root = &members[0].id;
+        return vec![write(format!("{root}|{xid}"), root, None)];
+    }
+    rows.iter()
+        .map(|g| {
+            write(
+                g.id.clone(),
+                g.contact.as_deref().unwrap_or_default(),
+                g.first_contact.as_deref(),
+            )
+        })
+        .collect()
+}
+
 impl crate::Ctx {
-    /// [`ContactUpdate`].
+    /// [`ContactUpdate`]: 191 (D2): writes the contact's records (every record of a merged
+    /// group), so every machine of the mesh sees it.
     pub(crate) async fn update_contact(&self, m: ContactUpdate) -> Result<Contact, String> {
+        use agent::store::contacts::{Cell, RecordTable, RecordWrite};
         let ContactUpdate { name, patch } = m;
         // 190 (D2): every share is full; `cap` is inert (accepted and ignored). Review 1: a
         // share is never refused for the contact's version (no compatibility with older builds).
@@ -1655,42 +1894,108 @@ impl crate::Ctx {
         {
             return Err("cautious shares are gone: every share is full".into());
         }
-        let alias = self
-            .edit(|file| {
-                let mut e = entry(file, &name)?.clone();
-                let exports = patch.exports.clone().unwrap_or_else(|| e.exports.clone());
-                if patch.exports.is_some() {
-                    // 183 F2: sharing counts as allowing: a newly granted export starts on
-                    // "Always allow"; a stored answer (Ask first included) is kept.
-                    for x in exports.iter().filter(|x| !e.exports.contains(x)) {
-                        e.first_contact
-                            .entry(x.clone())
-                            .or_insert(FirstContact::Allow);
-                    }
-                }
-                e.exports = exports;
-                if let Some(blocked) = patch.blocked {
-                    e.blocked = blocked;
-                }
-                let alias = match patch.name {
-                    Some(new) if new != name => {
-                        crate::config::check_alias(&new)?;
-                        if file.peers.contains_key(&new) {
-                            return Err(format!("a peer named {new} already exists"));
-                        }
-                        file.peers.remove(&name);
-                        new
-                    }
-                    _ => name.clone(),
-                };
-                file.peers.insert(alias.clone(), e);
-                Ok(alias)
-            })
-            .await?;
+        let r = self.records().await?;
+        let a = records::analyze(&r);
+        let members = Self::targets(&a, &r, &name, false)?;
+        let root = members[0];
         let live = self.shared.read().clone();
-        if live.staged.contacts.get(&alias).is_some_and(|f| f.blocked) {
-            self.contact_gone(&alias, &live.staged.contacts[&alias].eid.clone(), false)
-                .await;
+        let mut w = Vec::new();
+        if let Some(list) = &patch.exports {
+            // What the group holds now, from its rows (never this machine's routes, which
+            // leave out an export whose chat is not here).
+            let held: std::collections::BTreeSet<&str> = r
+                .grants
+                .iter()
+                .filter(|g| g.granted == Some(1))
+                .filter(|g| {
+                    members
+                        .iter()
+                        .any(|m| g.contact.as_deref() == Some(m.id.as_str()))
+                })
+                .filter_map(|g| g.export.as_deref())
+                .collect();
+            let mut ids = BTreeMap::new();
+            for x in list {
+                let id = live
+                    .staged
+                    .export_ids
+                    .get(x)
+                    .ok_or_else(|| format!("peer {name}: unknown export {x:?}"))?;
+                if let Some(other) = live.staged.exports.get(x).and_then(|e| e.peer.as_ref())
+                    && *other != name
+                {
+                    return Err(format!(
+                        "export {x} is granted to both {other} and {name}; one principal per exported session"
+                    ));
+                }
+                ids.insert(id.clone(), x.clone());
+            }
+            // Every export the group has a grant row for, and every one asked for now.
+            let mut all: std::collections::BTreeSet<String> = r
+                .grants
+                .iter()
+                .filter(|g| g.granted.is_some())
+                .filter(|g| {
+                    members
+                        .iter()
+                        .any(|m| g.contact.as_deref() == Some(m.id.as_str()))
+                })
+                .filter_map(|g| g.export.clone())
+                .collect();
+            all.extend(ids.keys().cloned());
+            for xid in all {
+                let want = ids.contains_key(&xid);
+                // 183 F2: sharing counts as allowing: a newly granted export starts on "Always
+                // allow"; a stored answer (Ask first included) is kept.
+                let fresh = want && !held.contains(xid.as_str());
+                w.extend(grant_writes(&r, &members, &xid, Some(want), |old| {
+                    (fresh && old.is_none()).then_some(FirstContact::Allow)
+                }));
+            }
+        }
+        if let Some(blocked) = patch.blocked {
+            let was = members.iter().any(|m| m.blocked.is_some_and(|b| b != 0));
+            for m in &members {
+                w.push(RecordWrite::new(
+                    RecordTable::Contacts,
+                    m.id.clone(),
+                    vec![("blocked", Cell::Int(i64::from(blocked)))],
+                ));
+            }
+            // Unblock writes a fresh binding: the blocked one stays revoked everywhere.
+            if was && !blocked {
+                w.push(RecordWrite::new(
+                    RecordTable::Contacts,
+                    root.id.clone(),
+                    vec![("binding", Cell::Text(records::fresh_binding()))],
+                ));
+            }
+        }
+        let alias = match patch.name {
+            Some(new) if new != name => {
+                crate::config::check_alias(&new)?;
+                let taken =
+                    r.contacts.iter().any(|c| {
+                        c.removed_ms.is_none() && c.alias.as_deref() == Some(new.as_str())
+                    }) || live.staged.peers.contains_key(&new);
+                if taken {
+                    return Err(format!("a peer named {new} already exists"));
+                }
+                w.push(RecordWrite::new(
+                    RecordTable::Contacts,
+                    root.id.clone(),
+                    vec![("alias", Cell::Text(new.clone()))],
+                ));
+                new
+            }
+            _ => name.clone(),
+        };
+        self.commit_records(w).await?;
+        let live = self.shared.read().clone();
+        if let Some(f) = live.staged.contacts.get(&alias).filter(|f| f.blocked) {
+            for eid in f.eids.clone() {
+                self.contact_gone(&alias, &eid, false).await;
+            }
         }
         contact_view(&live.staged, &alias, self.net().as_deref(), |eid| {
             (self.offers_of(eid), self.full_of(eid))
@@ -1708,26 +2013,45 @@ impl Message<ContactRemove> for A2aActor {
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let c = self.ctx.clone();
-        off_mailbox(ctx, async move {
-            let eid = c
-                .edit(|file| {
-                    let e = entry(file, &m.name)?;
-                    let eid = e.endpoint.clone();
-                    if m.block {
-                        e.blocked = true;
-                    } else {
-                        file.peers.remove(&m.name);
-                    }
-                    Ok(eid)
-                })
-                .await?;
-            // The reload revoked the binding and retired its grant epoch (its tasks end); the
-            // other side hears it best effort.
-            if let Some(eid) = eid {
-                c.contact_gone(&m.name, &eid, true).await;
-            }
-            Ok(())
-        })
+        off_mailbox(ctx, async move { c.remove_contact(m).await })
+    }
+}
+
+impl crate::Ctx {
+    /// [`ContactRemove`]: 191 (D2): a block writes `blocked` on every record of the group; a
+    /// removal tombstones them (`removed_ms`, never cleared). A quarantined record can be
+    /// removed by its alias or id.
+    pub(crate) async fn remove_contact(&self, m: ContactRemove) -> Result<(), String> {
+        use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+        let r = self.records().await?;
+        let a = records::analyze(&r);
+        let members = Self::targets(&a, &r, &m.name, !m.block)?;
+        let ids: Vec<String> = members.iter().map(|c| c.id.clone()).collect();
+        let eids: Vec<String> = r
+            .endpoints
+            .iter()
+            .filter(|e| e.contact.as_ref().is_some_and(|c| ids.contains(c)))
+            .filter_map(|e| e.eid.clone())
+            .collect();
+        let now = mesh::identity::now_ms() as i64;
+        let w = ids
+            .iter()
+            .map(|id| {
+                let set = if m.block {
+                    vec![("blocked", Cell::Int(1))]
+                } else {
+                    vec![("removed_ms", Cell::Int(now))]
+                };
+                RecordWrite::new(RecordTable::Contacts, id.clone(), set)
+            })
+            .collect();
+        self.commit_records(w).await?;
+        // The reconcile revoked the binding and retired its grant epoch (its tasks end); the
+        // other side hears a removal best effort.
+        for eid in eids {
+            self.contact_gone(&m.name, &eid, !m.block).await;
+        }
+        Ok(())
     }
 }
 
@@ -1744,27 +2068,44 @@ impl Message<ExportsList> for A2aActor {
     }
 }
 
+/// 191: [`crate::Ctx::exports`]'s pause for a chat export whose session this machine does
+/// not hold (yet: it may still be replicating).
+pub const PAUSED_ELSEWHERE: &str = "chat not on this machine";
+
 impl crate::Ctx {
-    /// `a2a_exports`: agent and chat exports; a chat's pause is read now (W-41), and a chat
-    /// deleted since is dropped from `peers.yaml` (opening the export picker cleans up).
+    /// `a2a_exports`: every export of the mesh; a chat's pause is read now (W-41), and a
+    /// chat deleted since is tombstoned when this machine made its export (opening the export
+    /// picker cleans up). An export made elsewhere whose chat this machine lacks is listed
+    /// paused ([`PAUSED_ELSEWHERE`]): its session may still be on its way.
     pub(crate) async fn exports(&self) -> Vec<Export> {
         let live = self.shared.read().clone();
         let agents = self.agents().ok();
+        let r = self.records().await.unwrap_or_default();
         let mut out = Vec::new();
         let mut gone = Vec::new();
         for e in live.staged.exports.values() {
+            let id = live.staged.export_ids.get(&e.name).cloned();
             let paused = match &agents {
                 Some(a) => match self.ask(a, ChatPaused { session: e.session }).await {
                     Ok(p) => p,
                     Err(err) if err.starts_with(UNKNOWN_SESSION) => {
-                        gone.push(e.name.clone());
-                        continue;
+                        let home = r
+                            .exports
+                            .iter()
+                            .find(|x| Some(&x.id) == id.as_ref())
+                            .and_then(|x| x.home.clone());
+                        if home.as_deref() == Some(r.me.as_str()) {
+                            gone.extend(id.clone());
+                            continue;
+                        }
+                        Some(PAUSED_ELSEWHERE.to_owned())
                     }
                     Err(_) => None,
                 },
                 None => None,
             };
             out.push(Export {
+                id,
                 name: e.name.clone(),
                 target: ExportTarget::Chat { session: e.session },
                 description: e.description.clone(),
@@ -1772,6 +2113,7 @@ impl crate::Ctx {
             });
         }
         out.extend(live.staged.agents.values().map(|a| Export {
+            id: live.staged.export_ids.get(&a.name).cloned(),
             name: a.name.clone(),
             target: ExportTarget::Agent {
                 agent: a.agent.clone(),
@@ -1780,17 +2122,22 @@ impl crate::Ctx {
             paused: None,
         }));
         out.sort_by(|a, b| a.name.cmp(&b.name));
-        if !gone.is_empty()
-            && let Err(e) = self
-                .edit(|file| {
-                    for name in &gone {
-                        drop_export(file, name);
-                    }
-                    Ok(())
+        if !gone.is_empty() {
+            use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+            let now = mesh::identity::now_ms() as i64;
+            let w = gone
+                .into_iter()
+                .map(|id| {
+                    RecordWrite::new(
+                        RecordTable::Exports,
+                        id,
+                        vec![("removed_ms", Cell::Int(now))],
+                    )
                 })
-                .await
-        {
-            tracing::warn!("a2a: drop deleted chat exports: {e}");
+                .collect();
+            if let Err(e) = self.commit_records(w).await {
+                tracing::warn!("a2a: drop deleted chat exports: {e}");
+            }
         }
         out
     }
@@ -1806,35 +2153,64 @@ impl Message<ExportPut> for A2aActor {
 }
 
 impl crate::Ctx {
-    /// [`ExportPut`].
+    /// [`ExportPut`]: 191 (D2): by its id, else by its name (create or replace); a new one
+    /// gets a fresh id and this machine as its home. A name another live export holds is
+    /// refused.
     pub(crate) async fn put_export(&self, exp: Export) -> Result<(), String> {
+        use agent::store::contacts::{Cell, RecordTable, RecordWrite};
         let Export {
+            id,
             name,
             target,
             description,
             ..
         } = exp;
         crate::config::check_alias(&name)?;
+        let r = self.records().await?;
+        let live: Vec<_> = r
+            .exports
+            .iter()
+            .filter(|x| x.removed_ms.is_none())
+            .collect();
+        let existing = match &id {
+            Some(id) => Some(
+                *live
+                    .iter()
+                    .find(|x| x.id == *id)
+                    .ok_or_else(|| format!("no export {id}"))?,
+            ),
+            None => live
+                .iter()
+                .find(|x| x.name.as_deref() == Some(name.as_str()))
+                .copied(),
+        };
+        if live.iter().any(|x| {
+            x.name.as_deref() == Some(name.as_str()) && Some(&x.id) != existing.map(|e| &e.id)
+        }) {
+            return Err(format!("an export named {name} already exists"));
+        }
         let (session, agent) = match target {
-            ExportTarget::Chat { session } => (Some(session), None),
-            ExportTarget::Agent { agent } => (None, Some(agent)),
+            ExportTarget::Chat { session } => (Cell::Text(session.to_string()), Cell::Null),
+            ExportTarget::Agent { agent } => (Cell::Null, Cell::Text(agent)),
         };
         // 190 (D8): a re-pointed export (another chat or agent) stays shared, in full; its
         // grant epoch rotates (`Staged::same_grant`), so a held first message fails.
-        self.edit(|file| {
-            file.exports.insert(
-                name.clone(),
-                ExportEntry {
-                    session,
-                    agent,
-                    name: name.clone(),
-                    description,
-                    tools: Vec::new(),
-                },
-            );
-            Ok(())
-        })
-        .await
+        let mut set = vec![
+            ("name", Cell::Text(name.clone())),
+            ("session", session),
+            ("agent", agent),
+            ("title", Cell::Text(name.clone())),
+            ("description", Cell::Text(description)),
+        ];
+        let id = match existing {
+            Some(x) => x.id.clone(),
+            None => {
+                set.push(("home", Cell::Text(r.me.clone())));
+                Uuid::now_v7().to_string()
+            }
+        };
+        self.commit_records(vec![RecordWrite::new(RecordTable::Exports, id, set)])
+            .await
     }
 }
 
@@ -1847,16 +2223,29 @@ impl Message<ExportRemove> for A2aActor {
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let c = self.ctx.clone();
-        off_mailbox(ctx, async move {
-            c.edit(|file| {
-                if !file.exports.contains_key(&m.name) {
-                    return Err(format!("no export named {}", m.name));
-                }
-                drop_export(file, &m.name);
-                Ok(())
-            })
-            .await
-        })
+        off_mailbox(ctx, async move { c.remove_export(&m.name).await })
+    }
+}
+
+impl crate::Ctx {
+    /// [`ExportRemove`] (by id or name): 191: tombstoned (`removed_ms`); grants naming it
+    /// stop counting.
+    pub(crate) async fn remove_export(&self, name: &str) -> Result<(), String> {
+        use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+        let r = self.records().await?;
+        let x = r
+            .exports
+            .iter()
+            .filter(|x| x.removed_ms.is_none())
+            .find(|x| x.id == name || x.name.as_deref() == Some(name))
+            .ok_or_else(|| format!("no export named {name}"))?;
+        let now = mesh::identity::now_ms() as i64;
+        self.commit_records(vec![RecordWrite::new(
+            RecordTable::Exports,
+            x.id.clone(),
+            vec![("removed_ms", Cell::Int(now))],
+        )])
+        .await
     }
 }
 
@@ -1917,6 +2306,28 @@ impl Message<ContactFirstAnswer> for A2aActor {
 }
 
 impl crate::Ctx {
+    /// 191 (D2): write `answer` as the group's first-contact answer for `export`.
+    async fn write_answer(
+        &self,
+        contact: &str,
+        export: &str,
+        answer: FirstContact,
+    ) -> Result<(), String> {
+        let r = self.records().await?;
+        let a = records::analyze(&r);
+        let members = Self::targets(&a, &r, contact, false)?;
+        let xid = self
+            .shared
+            .read()
+            .staged
+            .export_ids
+            .get(export)
+            .cloned()
+            .ok_or_else(|| format!("no export named {export}"))?;
+        let w = grant_writes(&r, &members, &xid, None, |_| Some(answer));
+        self.commit_records(w).await
+    }
+
     /// W-27: the owner answered a `contact_first` item. Allow once lets the waiting tasks
     /// through and keeps asking; Always writes `first_contact: allow` first; Block writes
     /// `blocked: true` (the gate refuses the contact from now on, its waiting tasks fail).
@@ -1924,6 +2335,7 @@ impl crate::Ctx {
     /// only that export's standing default (§9.4): `ask`, `allow`, `block`, each stored, so an
     /// owner's explicit Ask first survives taking the share back and giving it again (F2,
     /// review 1; an absent entry also reads Ask first, and a new grant writes Always allow).
+    /// 191: the answer is a record write, seen by every machine.
     async fn first_answer(&self, m: ContactFirstAnswer) -> Result<(), String> {
         let ContactFirstAnswer {
             contact,
@@ -1940,38 +2352,21 @@ impl crate::Ctx {
             Err(_) => false,
         };
         if !waiting {
-            return self
-                .edit(|file| {
-                    entry(file, &contact)?
-                        .first_contact
-                        .insert(export.clone(), answer);
-                    Ok(())
-                })
-                .await;
+            return self.write_answer(&contact, &export, answer).await;
         }
         match answer {
             FirstContact::Ask => {}
             FirstContact::Allow => {
-                self.edit(|file| {
-                    entry(file, &contact)?
-                        .first_contact
-                        .insert(export.clone(), FirstContact::Allow);
-                    Ok(())
-                })
-                .await?;
+                self.write_answer(&contact, &export, FirstContact::Allow)
+                    .await?;
             }
             FirstContact::Block => {
-                let eid = self
-                    .edit(|file| {
-                        let e = entry(file, &contact)?;
-                        e.blocked = true;
-                        Ok(e.endpoint.clone())
+                return self
+                    .remove_contact(ContactRemove {
+                        name: contact,
+                        block: true,
                     })
-                    .await?;
-                if let Some(eid) = eid {
-                    self.contact_gone(&contact, &eid, false).await;
-                }
-                return Ok(());
+                    .await;
             }
         }
         let agents = self.agents()?;
@@ -1987,17 +2382,20 @@ impl crate::Ctx {
         .map(|_| ())
     }
 
-    /// 183 §7.2: write each contact's direct addresses from its live `theuth/a2a/1`
-    /// connection into `peers.yaml` when they differ from the stored ones, so a LAN-only
-    /// pair dials them after a restart. Nothing is written without a live connection.
+    /// 183 §7.2: keep each contact's direct addresses from its live `theuth/a2a/1`
+    /// connection (191: in this machine's local `contact_addrs`) when they differ from the
+    /// stored ones, so a LAN-only pair dials them after a restart. Nothing is written without
+    /// a live connection.
     pub(crate) async fn remember_addrs(&self) {
-        /// 183 Z3-R2: at most one rewrite a minute per contact (path churn must not turn
-        /// into disk churn; also bounds a broken hand edit's retries).
+        /// 183 Z3-R2: at most one write a minute per contact (path churn must not turn
+        /// into disk churn).
         const EVERY: std::time::Duration = std::time::Duration::from_secs(60);
         let Some(net) = self.net() else { return };
         let live = self.shared.read().clone();
         let now_at = std::time::Instant::now();
-        let changed: Vec<(String, Vec<String>)> = {
+        // 191 (D3): every machine of a contact, each with its own addresses: (alias, eid,
+        // addresses).
+        let changed: Vec<(String, String, Vec<String>)> = {
             let s = self.state.lock();
             live.staged
                 .contacts
@@ -2008,32 +2406,34 @@ impl crate::Ctx {
                         .get(*alias)
                         .is_none_or(|t| now_at.duration_since(*t) >= EVERY)
                 })
-                .filter_map(|(alias, f)| {
-                    let now = net.a2a_direct_addrs(&f.eid);
-                    (!now.is_empty() && now != f.addrs)
-                        .then(|| (alias.clone(), now.iter().map(|a| a.to_string()).collect()))
+                .flat_map(|(alias, f)| f.eids.iter().map(move |eid| (alias, eid)))
+                .filter_map(|(alias, eid)| {
+                    let now = net.a2a_direct_addrs(eid);
+                    (!now.is_empty() && live.staged.addrs.get(eid) != Some(&now)).then(|| {
+                        let addrs = now.iter().map(ToString::to_string).collect();
+                        (alias.clone(), eid.clone(), addrs)
+                    })
                 })
                 .collect()
         };
-        {
-            let mut s = self.state.lock();
-            for (alias, _) in &changed {
-                s.addr_written.insert(alias.clone(), now_at);
-            }
-        }
         if changed.is_empty() {
             return;
         }
-        let result = self
-            .edit(|file| {
-                for (alias, addrs) in changed {
-                    if let Some(p) = file.peers.get_mut(&alias) {
-                        p.addrs = addrs;
-                    }
-                }
-                Ok(())
-            })
-            .await;
+        let Ok(agents) = self.agents() else { return };
+        let mut result = Ok(());
+        for (alias, eid, addrs) in changed {
+            self.state.lock().addr_written.insert(alias, now_at);
+            if let Err(e) = self
+                .ask(
+                    &agents,
+                    agent::communication::network::SetContactAddrs { eid, addrs },
+                )
+                .await
+            {
+                result = Err(e);
+            }
+        }
+        let _ = self.reconcile_now().await;
         let mut s = self.state.lock();
         match result {
             Ok(()) => s.addr_error = None,
@@ -2139,7 +2539,8 @@ impl Message<ContactsWaiting> for A2aActor {
 }
 
 /// 183 W-27: the `contact_first` Attention items, one per (contact, export) with a task
-/// waiting ([`crate::Ctx::first_waiting`]).
+/// waiting ([`crate::Ctx::first_waiting`]). 191 (D1 note 2): and one per raised inflation
+/// alert (`contact_roster:<record>`; an alert, nothing is denied).
 pub(crate) struct FirstContactItems(pub std::sync::Weak<crate::Ctx>);
 
 #[async_trait::async_trait]
@@ -2148,45 +2549,70 @@ impl roster::attention::Source for FirstContactItems {
         let Some(c) = self.0.upgrade() else {
             return Vec::new();
         };
-        c.first_waiting()
-            .await
+        let alerts = c.rosters.lock().alerts.clone();
+        let mut items: Vec<roster::attention::AttentionItem> = alerts
             .into_iter()
-            .map(|w| {
-                let who = if w.machine.is_empty() {
-                    w.contact.clone()
-                } else {
-                    format!("{} ({})", w.contact, w.machine)
-                };
-                roster::attention::AttentionItem {
-                    id: format!("contact_first:{}:{}", w.contact, w.export),
-                    kind: roster::attention::AttentionKind::ContactFirst,
-                    title: format!(
-                        "{who} wants to reach {} — Allow once · Always · Block",
-                        w.export
-                    ),
-                    detail: Some(format!(
-                        "{} waiting · a contact outside your mesh",
-                        w.waiting
-                    )),
-                    at_ms: w.since_ms,
-                    task: None,
-                    agent: None,
-                    session: Some(w.session.to_string()),
-                    approval: None,
-                    decision: None,
-                    packet: None,
-                    ask: None,
-                    turn: None,
-                    waiting_since_ms: Some(w.since_ms),
-                    summary: None,
-                    next_steps: Vec::new(),
-                    context: None,
-                    priority: None,
-                    rank: 5,
-                    alert: None,
-                }
+            .map(|(record, (alias, text, at))| roster::attention::AttentionItem {
+                id: format!("contact_roster:{record}"),
+                kind: roster::attention::AttentionKind::Node,
+                title: text,
+                detail: Some(format!(
+                    "remove that machine from your mesh, then ask {alias} to remove you and pair again"
+                )),
+                at_ms: at,
+                task: None,
+                agent: None,
+                session: None,
+                approval: None,
+                decision: None,
+                packet: None,
+                ask: None,
+                turn: None,
+                waiting_since_ms: None,
+                summary: None,
+                next_steps: Vec::new(),
+                context: None,
+                priority: None,
+                rank: 4,
+                alert: None,
             })
-            .collect()
+            .collect();
+        items.extend(c.first_waiting().await.into_iter().map(|w| {
+            let who = if w.machine.is_empty() {
+                w.contact.clone()
+            } else {
+                format!("{} ({})", w.contact, w.machine)
+            };
+            roster::attention::AttentionItem {
+                id: format!("contact_first:{}:{}", w.contact, w.export),
+                kind: roster::attention::AttentionKind::ContactFirst,
+                title: format!(
+                    "{who} wants to reach {} — Allow once · Always · Block",
+                    w.export
+                ),
+                detail: Some(format!(
+                    "{} waiting · a contact outside your mesh",
+                    w.waiting
+                )),
+                at_ms: w.since_ms,
+                task: None,
+                agent: None,
+                session: Some(w.session.to_string()),
+                approval: None,
+                decision: None,
+                packet: None,
+                ask: None,
+                turn: None,
+                waiting_since_ms: Some(w.since_ms),
+                summary: None,
+                next_steps: Vec::new(),
+                context: None,
+                priority: None,
+                rank: 5,
+                alert: None,
+            }
+        }));
+        items
     }
 }
 
@@ -2198,6 +2624,7 @@ mod tests {
     #[test]
     fn contact_shapes_keep_their_wire_names() {
         let chat = Export {
+            id: None,
             name: "ops-chat".into(),
             target: ExportTarget::Chat {
                 session: SessionId::new(),

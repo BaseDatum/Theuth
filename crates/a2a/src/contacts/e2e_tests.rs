@@ -61,17 +61,29 @@ pub(crate) async fn node(name: &str, dir: &std::path::Path) -> Arc<mesh::net::Ne
     .unwrap()
 }
 
-/// One engine; `live` gives it an agent (then `peers.yaml` reloads, ceremonies pin).
+/// One engine; `live` gives it an agent (then `peers.yaml` reloads, ceremonies pin). 191: its
+/// own `contacts_ready`, shared by its agent; a live engine's first reload sets it, one with
+/// no agent is taken as past its first pass. The mesh latch is done.
 async fn engine(name: &str, lan: &Lan, live: bool, cfg: A2aConfig) -> Engine {
     let dir = tempfile::tempdir().unwrap();
     let net = node(name, dir.path()).await;
+    let ready = Arc::new(std::sync::atomic::AtomicBool::new(!live));
     let agents = if live {
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
-        Some(agent::spawn_engine_agents(rt).await)
+        Some(agent::spawn_engine_agents(rt, ready.clone()).await)
     } else {
         None
     };
-    let ctx = crate::test_ctx(dir.path(), net.clone(), Arc::new(lan.clone()), cfg, agents).await;
+    let ctx = crate::test_ctx(
+        dir.path(),
+        net.clone(),
+        Arc::new(lan.clone()),
+        cfg,
+        agents,
+        ready,
+        Arc::new(|| true),
+    )
+    .await;
     if live {
         ctx.reload().await.unwrap();
     }
@@ -259,8 +271,16 @@ async fn a_ticket_ceremony_pins_both_sides_after_both_accept() {
     assert!(!a.ctx.window_open(), "success closes the inviter's window");
     assert!(matches!(a.ctx.gate(&b.eid()), IrohGate::Contact { alias: x, .. } if x == alias));
     assert!(matches!(b.ctx.gate(&a.eid()), IrohGate::Contact { .. }));
-    let text = std::fs::read_to_string(a._dir.path().join(crate::config::PEERS_FILE)).unwrap();
-    assert!(text.contains(&format!("endpoint: {}", b.eid())), "{text}");
+    // 191 (D2): the pin is a replicated record: the other side's endpoint is its anchor.
+    let records = a.ctx.records().await.unwrap();
+    assert!(
+        records
+            .endpoints
+            .iter()
+            .any(|e| e.eid.as_deref() == Some(b.eid().as_str()) && e.barred_ms.is_none()),
+        "{records:?}"
+    );
+    assert_eq!(records.contacts[0].alias.as_deref(), Some(alias.as_str()));
 }
 
 /// W-23: a Reject ends it on both sides with nothing pinned; the ticket is single use; a
@@ -430,30 +450,25 @@ async fn a_contact_reaches_its_export_first_contact_waits_and_block_refuses_at_t
     .await;
     // A publishes its default agent as `research`, `zeta` and `zulu` and grants them to B.
     let names = ["research", "zeta", "zulu"];
-    a.ctx
-        .edit(|file| {
-            for name in names {
-                file.exports.insert(
-                    name.into(),
-                    ExportEntry {
-                        session: None,
-                        agent: Some("theuth".into()),
-                        name: name.into(),
-                        description: "Answers research questions".into(),
-                        tools: crate::config::default_contact_tools(),
-                    },
-                );
-            }
-            file.peers.get_mut(&alias).unwrap().exports = names.map(String::from).to_vec();
-            Ok(())
-        })
-        .await
-        .unwrap();
+    for name in names {
+        publish(
+            &a,
+            name,
+            ExportTarget::Agent {
+                agent: "theuth".into(),
+            },
+            "Answers research questions",
+        )
+        .await;
+    }
+    grant_ask(&a, &alias, &names).await;
 
     let client_for = |export: Option<&str>| {
         a2a_client::A2AClient::new(Box::new(reach::IrohTransport {
             net: b.net.clone(),
             eid: a.eid(),
+            members: Vec::new(),
+            answered: Default::default(),
             hints: reach::Hints {
                 addrs: a.addrs(),
                 relay: None,
@@ -658,22 +673,7 @@ async fn archiving_an_exported_chat_fires_a2a_changed() {
         })
     };
     let (chat, other) = (root().await.unwrap(), root().await.unwrap());
-    a.ctx
-        .edit(|file| {
-            file.exports.insert(
-                "ops-chat".into(),
-                ExportEntry {
-                    session: Some(chat),
-                    agent: None,
-                    name: "ops-chat".into(),
-                    description: String::new(),
-                    tools: crate::config::default_contact_tools(),
-                },
-            );
-            Ok(())
-        })
-        .await
-        .unwrap();
+    publish(&a, "ops-chat", ExportTarget::Chat { session: chat }, "").await;
     let heard = Arc::new(parking_lot::Mutex::new(0));
     let rec = kameo::actor::Spawn::spawn(Changes(heard.clone()));
     a.ctx.rt.subscribe::<Changes, crate::A2aChanged>(&rec).await;
@@ -707,26 +707,21 @@ async fn the_side_that_dialed_is_reached_on_its_own_connection() {
         b.ctx.shared.read().staged.contacts.keys().next().cloned()
     })
     .await;
-    b.ctx
-        .edit(|file| {
-            file.exports.insert(
-                "research".into(),
-                ExportEntry {
-                    session: None,
-                    agent: Some("theuth".into()),
-                    name: "research".into(),
-                    description: String::new(),
-                    tools: crate::config::default_contact_tools(),
-                },
-            );
-            file.peers.get_mut(&alias_of_a).unwrap().exports = vec!["research".into()];
-            Ok(())
-        })
-        .await
-        .unwrap();
+    publish(
+        &b,
+        "research",
+        ExportTarget::Agent {
+            agent: "theuth".into(),
+        },
+        "",
+    )
+    .await;
+    grant_ask(&b, &alias_of_a, &["research"]).await;
     let client = a2a_client::A2AClient::new(Box::new(reach::IrohTransport {
         net: a.net.clone(),
         eid: b.eid(),
+        members: Vec::new(),
+        answered: Default::default(),
         hints: reach::Hints::default(),
         export: None,
     }) as Box<dyn a2a_client::Transport>);
@@ -791,16 +786,17 @@ async fn a_contacts_last_direct_addresses_are_kept_and_offered_to_the_dial() {
         "B's own direct addresses, from the live connection: {stored:?} vs {:?}",
         b.addrs()
     );
-    let path = a._dir.path().join(crate::config::PEERS_FILE);
-    let file = std::fs::read_to_string(&path).unwrap();
-    assert!(file.contains(&stored[0].to_string()), "{file}");
+    // 191 (D2): this machine's own `contact_addrs`, never replicated.
+    let kept = a.ctx.records().await.unwrap().addrs[&b.eid()].clone();
+    let want: Vec<String> = stored.iter().map(ToString::to_string).collect();
+    assert_eq!(kept, want);
     assert_eq!(gate.hints(&b.eid()), stored, "the dial gets them");
 
     // Unchanged: no rewrite.
-    let before = crate::contacts::store::stamp(&path);
+    let before = a.ctx.state.lock().addr_written[&alias_of_b];
     tokio::time::sleep(Duration::from_millis(20)).await;
     a.ctx.remember_addrs().await;
-    assert_eq!(crate::contacts::store::stamp(&path), before);
+    assert_eq!(a.ctx.state.lock().addr_written[&alias_of_b], before);
 }
 
 /// Z3-R2: the one ceremony slot is taken at `admit_request` (a second handshake is refused
@@ -993,10 +989,14 @@ async fn a_broken_http_peer_does_not_block_a_contact_edit() {
     .unwrap();
     assert!(a.ctx.reload().await.is_err(), "the full file is refused");
 
+    // 191: a contact edit is a record write; the reconcile runs with the last good HTTP peers.
     a.ctx
-        .edit(|file| {
-            file.peers.get_mut("bob").unwrap().blocked = true;
-            Ok(())
+        .update_contact(ContactUpdate {
+            name: "bob".into(),
+            patch: ContactPatch {
+                blocked: Some(true),
+                ..ContactPatch::default()
+            },
         })
         .await
         .unwrap();
@@ -1019,7 +1019,9 @@ async fn a_broken_http_peer_does_not_block_a_contact_edit() {
     );
 }
 
-/// Pair `a` (inviter) and `b` by ticket; A's alias for B and B's alias for A.
+/// Pair `a` (inviter) and `b` by ticket; A's alias for B and B's alias for A. 191 (P2): it
+/// returns once each side based its record on the other's version 1 (the pushes and card
+/// fetches of the pairing have landed, so no background pass races the caller's).
 async fn paired(a: &Engine, b: &Engine) -> (String, String) {
     let w = a.ctx.open_window().await.unwrap();
     let vb = b
@@ -1041,6 +1043,25 @@ async fn paired(a: &Engine, b: &Engine) -> (String, String) {
     };
     let a_alias = until("A pinned B", || of(a, b)).await;
     let b_alias = until("B pinned A", || of(b, a)).await;
+    for (e, alias) in [(a, &a_alias), (b, &b_alias)] {
+        let record = e.ctx.shared.read().staged.contacts[alias].id.clone();
+        let mut based = false;
+        for _ in 0..400 {
+            if e.ctx
+                .records()
+                .await
+                .is_ok_and(|r| r.local.iter().any(|l| l.record == record))
+            {
+                based = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(based, "{alias} based on the other side's roster");
+        // The pass that basing started has finished.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        drop(e.ctx.reload_lock.lock().await);
+    }
     (a_alias, b_alias)
 }
 
@@ -1057,6 +1078,7 @@ async fn a_granted_export_is_a_discover_peers_row_on_the_contacts_side_until_rev
     let (a_alias, b_alias) = paired(&a, &b).await;
     a.ctx
         .put_export(Export {
+            id: None,
             name: "research".into(),
             target: ExportTarget::Agent {
                 agent: "theuth".into(),
@@ -1218,6 +1240,7 @@ async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
     for name in ["research", "zeta"] {
         a.ctx
             .put_export(Export {
+                id: None,
                 name: name.into(),
                 target: ExportTarget::Agent {
                     agent: "theuth".into(),
@@ -1250,6 +1273,8 @@ async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
     let client = a2a_client::A2AClient::new(Box::new(reach::IrohTransport {
         net: b.net.clone(),
         eid: a.eid(),
+        members: Vec::new(),
+        answered: Default::default(),
         hints: reach::Hints {
             addrs: a.addrs(),
             relay: None,
@@ -1284,6 +1309,7 @@ async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
     assert_eq!(a.ctx.first_waiting().await.len(), 1, "still waiting");
     a.ctx
         .put_export(Export {
+            id: None,
             name: "research".into(),
             target: ExportTarget::Agent {
                 agent: "theuth".into(),
@@ -1350,6 +1376,7 @@ async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
     assert_eq!(second.status.state, a2a_types::TaskState::AuthRequired);
     a.ctx
         .put_export(Export {
+            id: None,
             name: "research".into(),
             target: ExportTarget::Agent {
                 agent: "theuth@elsewhere".into(),
@@ -1476,6 +1503,7 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
     let origin = chat_of(b_agents.clone()).await;
     a.ctx
         .put_export(Export {
+            id: None,
             name: "proj".into(),
             target: ExportTarget::Chat { session: chat },
             description: "The project chat".into(),
@@ -1721,6 +1749,8 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
         let client = a2a_client::A2AClient::new(Box::new(reach::IrohTransport {
             net: b.net.clone(),
             eid: a.eid(),
+            members: Vec::new(),
+            answered: Default::default(),
             hints: reach::Hints {
                 addrs: a.addrs(),
                 relay: None,
@@ -1770,6 +1800,8 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
     let ret = a2a_client::A2AClient::new(Box::new(reach::IrohTransport {
         net: a.net.clone(),
         eid: b.eid(),
+        members: Vec::new(),
+        answered: Default::default(),
         hints: reach::Hints {
             addrs: b.addrs(),
             relay: None,
@@ -1801,6 +1833,7 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
     let other = chat_of(a_agents.clone()).await;
     a.ctx
         .put_export(Export {
+            id: None,
             name: "proj".into(),
             target: ExportTarget::Chat { session: other },
             description: "The project chat".into(),
@@ -1822,3 +1855,375 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
         "re-pointed: full on the card"
     );
 }
+
+/// 191: what the record replica does between two machines of one mesh: every contact row
+/// of `from`, applied on `to` column by column (the heads rows too with [`replicate_rows`]).
+async fn replicate(from: &Engine, to: &Engine) {
+    replicate_rows(from, to, false).await;
+}
+
+/// [`replicate`], `heads` with the `contact_roster_heads` rows (P2).
+async fn replicate_rows(from: &Engine, to: &Engine, heads: bool) {
+    use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+    let r = from.ctx.records().await.unwrap();
+    let t = |v: &Option<String>| v.clone().map_or(Cell::Null, Cell::Text);
+    let i = |v: &Option<i64>| v.map_or(Cell::Null, Cell::Int);
+    let mut w = Vec::new();
+    for c in &r.contacts {
+        w.push(RecordWrite::new(
+            RecordTable::Contacts,
+            c.id.clone(),
+            vec![
+                ("alias", t(&c.alias)),
+                ("name", t(&c.name)),
+                ("machine", t(&c.machine)),
+                ("binding", t(&c.binding)),
+                ("paired_ms", i(&c.paired_ms)),
+                ("paired_on", t(&c.paired_on)),
+                ("blocked", i(&c.blocked)),
+                ("removed_ms", i(&c.removed_ms)),
+                ("merged_into", t(&c.merged_into)),
+            ],
+        ));
+    }
+    for e in &r.endpoints {
+        w.push(RecordWrite::new(
+            RecordTable::Endpoints,
+            e.id.clone(),
+            vec![
+                ("contact", t(&e.contact)),
+                ("eid", t(&e.eid)),
+                ("paired_ms", i(&e.paired_ms)),
+                ("barred_ms", i(&e.barred_ms)),
+                ("pinned_by", t(&e.pinned_by)),
+            ],
+        ));
+    }
+    for g in &r.grants {
+        w.push(RecordWrite::new(
+            RecordTable::Grants,
+            g.id.clone(),
+            vec![
+                ("contact", t(&g.contact)),
+                ("export", t(&g.export)),
+                ("granted", i(&g.granted)),
+                ("first_contact", t(&g.first_contact)),
+            ],
+        ));
+    }
+    for x in &r.exports {
+        w.push(RecordWrite::new(
+            RecordTable::Exports,
+            x.id.clone(),
+            vec![
+                ("name", t(&x.name)),
+                ("session", t(&x.session)),
+                ("agent", t(&x.agent)),
+                ("title", t(&x.title)),
+                ("description", t(&x.description)),
+                ("home", t(&x.home)),
+                ("removed_ms", i(&x.removed_ms)),
+            ],
+        ));
+    }
+    // 191 (P2): our signed copies and the heads rows (a machine's own row is its own: never
+    // written back over it); `contact_roster_local` never travels.
+    for x in &r.rosters.rows {
+        w.push(RecordWrite::new(
+            RecordTable::Rosters,
+            x.id.clone(),
+            vec![
+                ("contact", t(&x.contact)),
+                ("chain", t(&x.chain)),
+                ("version", i(&x.version)),
+                ("signer", t(&x.signer)),
+                ("hash", t(&x.hash)),
+                ("roster", t(&x.roster)),
+            ],
+        ));
+    }
+    let dest = to.eid();
+    for h in r
+        .heads
+        .iter()
+        .filter(|h| heads && h.machine.as_deref() != Some(dest.as_str()))
+    {
+        w.push(RecordWrite::new(
+            RecordTable::Heads,
+            h.id.clone(),
+            vec![
+                ("record", t(&h.record)),
+                ("machine", t(&h.machine)),
+                ("chain", t(&h.chain)),
+                ("version", i(&h.version)),
+                ("hash", t(&h.hash)),
+                ("history", t(&h.history)),
+                ("members", t(&h.members)),
+                ("conflict", i(&h.conflict)),
+                ("at_ms", i(&h.at_ms)),
+            ],
+        ));
+    }
+    let agents = to.ctx.agents().unwrap();
+    agents
+        .ask(agent::communication::network::WriteContactRecords(w))
+        .await
+        .unwrap();
+}
+
+/// 191 (D2, the rig's "paired on n1, listed on n2"): a contact paired on one machine is a
+/// record; another machine of the mesh, once the rows reach it, lists and admits the same
+/// contact under the same record and binding id, with no ceremony of its own.
+#[tokio::test]
+async fn a_contact_paired_on_one_machine_is_listed_and_admitted_on_another() {
+    let lan = Lan::default();
+    let n1 = engine("n1", &lan, true, cfg(600)).await;
+    let c = engine("c", &lan, true, cfg(600)).await;
+    let n2 = engine("n2", &lan, true, cfg(600)).await;
+    let (alias, _) = paired(&n1, &c).await;
+    assert!(n2.ctx.contact_list().is_empty());
+    replicate(&n1, &n2).await;
+    assert!(
+        n2.ctx.tick().await,
+        "the arrived rows change the content: a reconcile"
+    );
+    let (on1, on2) = (n1.ctx.contact_list(), n2.ctx.contact_list());
+    assert_eq!(on2.len(), 1, "{on2:?}");
+    assert_eq!(
+        (&on2[0].name, &on2[0].endpoint, &on2[0].id, &on2[0].problem),
+        (&alias, &c.eid(), &on1[0].id, &None)
+    );
+    let binding = |e: &Engine| match e.ctx.gate(&c.eid()) {
+        IrohGate::Contact { binding, .. } => binding,
+        other => panic!("not admitted: {other:?}"),
+    };
+    assert_eq!(
+        binding(&n2),
+        binding(&n1),
+        "one binding id on every machine"
+    );
+    // The commit's own binding changes allow one more idempotent pass; then it settles.
+    let _ = n2.ctx.tick().await;
+    assert!(!n2.ctx.tick().await, "nothing changed since");
+    assert_eq!(binding(&n2), binding(&n1));
+}
+
+/// 191 (D2, M1): a block another machine wrote arrives as one column of an existing row (no
+/// `hlc` this machine keys on moves): the content hash catches it at the next tick, and the
+/// gate refuses the contact.
+#[tokio::test]
+async fn a_block_written_elsewhere_applies_at_the_next_tick() {
+    use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+    let lan = Lan::default();
+    let n1 = engine("n1", &lan, true, cfg(600)).await;
+    let c = engine("c", &lan, true, cfg(600)).await;
+    let (alias, _) = paired(&n1, &c).await;
+    assert!(matches!(n1.ctx.gate(&c.eid()), IrohGate::Contact { .. }));
+    let id = n1.ctx.contact_list()[0].id.clone();
+    n1.ctx
+        .agents()
+        .unwrap()
+        .ask(agent::communication::network::WriteContactRecords(vec![
+            RecordWrite::new(RecordTable::Contacts, id, vec![("blocked", Cell::Int(1))]),
+        ]))
+        .await
+        .unwrap();
+    assert!(n1.ctx.tick().await, "the content changed");
+    assert!(n1.ctx.shared.read().staged.contacts[&alias].blocked);
+    assert_eq!(n1.ctx.gate(&c.eid()), IrohGate::Refuse);
+}
+
+/// 191 (D2, D7, M2): before the mesh latch nothing is staged and the gate refuses every
+/// contact; the first reconcile after the latch revokes every local binding the synced
+/// records do not hold (a contact removed elsewhere while this machine was down) before
+/// `contacts_ready` is set and the contact is admitted.
+#[tokio::test]
+async fn contacts_are_refused_until_the_latch_and_the_first_reconcile() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let lan = Lan::default();
+    let n1 = engine("n1", &lan, true, cfg(600)).await;
+    let c = engine("c", &lan, true, cfg(600)).await;
+    paired(&n1, &c).await;
+    let dir = tempfile::tempdir().unwrap();
+    let net = node("n2", dir.path()).await;
+    let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+    let (ready, latch) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let agents = agent::spawn_engine_agents(rt, ready.clone()).await;
+    let l = latch.clone();
+    let ctx = crate::test_ctx(
+        dir.path(),
+        net.clone(),
+        Arc::new(lan.clone()),
+        cfg(600),
+        Some(agents.clone()),
+        ready.clone(),
+        Arc::new(move || l.load(Ordering::SeqCst)),
+    )
+    .await;
+    let n2 = Engine {
+        ctx,
+        net,
+        _dir: dir,
+    };
+    // A binding this machine still holds for a contact the mesh removed while it was down.
+    agents
+        .ask(agent::communication::network::BindPeer {
+            alias: "stale".into(),
+            endpoint: agent::communication::network::contact_endpoint("stale-eid"),
+        })
+        .await
+        .unwrap();
+    replicate(&n1, &n2).await;
+    n2.ctx.reload().await.unwrap();
+    assert!(!ready.load(Ordering::SeqCst), "not before the latch");
+    assert_eq!(
+        n2.ctx.contact_list().len(),
+        1,
+        "listed from the local rows, never admitted"
+    );
+    assert!(
+        n2.ctx.shared.read().bindings.is_empty(),
+        "no route committed"
+    );
+    assert_eq!(n2.ctx.gate(&c.eid()), IrohGate::Refuse);
+
+    latch.store(true, Ordering::SeqCst);
+    assert!(n2.ctx.tick().await, "the first pass after the latch runs");
+    assert!(ready.load(Ordering::SeqCst));
+    assert!(matches!(n2.ctx.gate(&c.eid()), IrohGate::Contact { .. }));
+    assert!(
+        !agents
+            .ask(agent::communication::network::RevokePeerBinding {
+                alias: "stale".into()
+            })
+            .await
+            .unwrap(),
+        "already revoked by the first reconcile"
+    );
+}
+
+/// Publish `target` as export `name` (an `a2a_export_put`).
+async fn publish(e: &Engine, name: &str, target: ExportTarget, description: &str) {
+    e.ctx
+        .put_export(Export {
+            id: None,
+            name: name.into(),
+            target,
+            description: description.into(),
+            paused: None,
+        })
+        .await
+        .unwrap();
+}
+
+/// 191: grant `names` to contact `alias` as an earlier build's `peers.yaml` grant did (no
+/// first-contact answer: ask first), as record rows.
+async fn grant_ask(e: &Engine, alias: &str, names: &[&str]) {
+    use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+    let live = e.ctx.shared.read().clone();
+    let id = live.staged.contacts[alias].id.clone();
+    let w = names
+        .iter()
+        .map(|n| {
+            let x = live.staged.export_ids[*n].clone();
+            RecordWrite::new(
+                RecordTable::Grants,
+                format!("{id}|{x}"),
+                vec![
+                    ("contact", Cell::Text(id.clone())),
+                    ("export", Cell::Text(x)),
+                    ("granted", Cell::Int(1)),
+                ],
+            )
+        })
+        .collect();
+    e.ctx.commit_records(w).await.unwrap();
+}
+
+/// 191 (D2): a block that lands while a pass runs (after it staged its snapshot) is not in
+/// the hash the pass keeps, so the next tick reconciles it and the gate refuses the contact.
+#[tokio::test]
+async fn a_block_landing_mid_pass_is_reconciled_at_the_next_tick() {
+    use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+    let lan = Lan::default();
+    let n1 = engine("n1", &lan, true, cfg(600)).await;
+    let c = engine("c", &lan, true, cfg(600)).await;
+    paired(&n1, &c).await;
+    let id = n1.ctx.contact_list()[0].id.clone();
+    let agents = n1.ctx.agents().unwrap();
+    *n1.ctx.mid_pass.lock() = Some(Box::new(move || {
+        Box::pin(async move {
+            agents
+                .ask(agent::communication::network::WriteContactRecords(vec![
+                    RecordWrite::new(RecordTable::Contacts, id, vec![("blocked", Cell::Int(1))]),
+                ]))
+                .await
+                .unwrap();
+        })
+    }));
+    n1.ctx.reload().await.unwrap();
+    assert!(
+        matches!(n1.ctx.gate(&c.eid()), IrohGate::Contact { .. }),
+        "the pass installed its snapshot, from before the block"
+    );
+    assert!(
+        n1.ctx.tick().await,
+        "the block is not in the hash the pass kept"
+    );
+    assert_eq!(n1.ctx.gate(&c.eid()), IrohGate::Refuse);
+}
+
+/// 191 (D2): a `peers.yaml` that no longer parses never stops the records: a block written
+/// elsewhere applies at the next tick, the file's problem is in status, and a contact RPC
+/// still applies and answers.
+#[tokio::test]
+async fn a_broken_peers_yaml_never_stops_a_block() {
+    use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+    let lan = Lan::default();
+    let n1 = engine("n1", &lan, true, cfg(600)).await;
+    let c = engine("c", &lan, true, cfg(600)).await;
+    let (alias, _) = paired(&n1, &c).await;
+    let path = n1._dir.path().join(crate::config::PEERS_FILE);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "peers: [not, a, map\n").unwrap();
+    let id = n1.ctx.contact_list()[0].id.clone();
+    n1.ctx
+        .agents()
+        .unwrap()
+        .ask(agent::communication::network::WriteContactRecords(vec![
+            RecordWrite::new(RecordTable::Contacts, id, vec![("blocked", Cell::Int(1))]),
+        ]))
+        .await
+        .unwrap();
+    assert!(n1.ctx.tick().await);
+    assert_eq!(n1.ctx.gate(&c.eid()), IrohGate::Refuse, "the block applied");
+    assert!(
+        n1.ctx
+            .state
+            .lock()
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("peers.yaml")),
+        "the file's problem is reported"
+    );
+    // One more idempotent pass may follow the commit's own binding changes; then it settles.
+    let _ = n1.ctx.tick().await;
+    assert!(
+        !n1.ctx.tick().await,
+        "an unchanged broken file does not run every tick"
+    );
+    n1.ctx
+        .remove_contact(ContactRemove {
+            name: alias,
+            block: false,
+        })
+        .await
+        .unwrap();
+    assert!(n1.ctx.contact_list().is_empty(), "the RPC applied");
+}
+
+mod owners;
+mod rosters;

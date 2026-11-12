@@ -901,21 +901,70 @@ async fn fail_scope_in(
     Ok(())
 }
 
-/// [`Store::bind_peer`]'s body inside the caller's transaction.
+/// 191 (D2): how [`Store::commit_peer_bindings`] refuses a replicated binding id this machine
+/// has revoked: a replica never un-revokes it.
+pub const BINDING_REVOKED: &str = "binding revoked here";
+
+/// [`Store::bind_peer`]'s body inside the caller's transaction. 191 (D2): with `id` (a
+/// contact record's replicated binding) the id is taken, never minted: a live row with it is
+/// renamed in place (a rename never revokes), a missing one is inserted after the alias's
+/// other live row is revoked, and a revoked one stays revoked ([`BINDING_REVOKED`]).
 async fn bind_peer_in(
     conn: &mut SqliteConnection,
     alias: &str,
     endpoint: &str,
+    id: Option<Uuid>,
 ) -> anyhow::Result<PeerBinding> {
     bounded("alias", alias, ALIAS_MAX)?;
     bounded("endpoint", endpoint, EXTERNAL_ID_MAX)?;
+    let ts = now();
+    if let Some(id) = id {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT revoked_at FROM peer_bindings WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&mut *conn)
+                .await?;
+        if matches!(row, Some((Some(_),))) {
+            anyhow::bail!("{BINDING_REVOKED}: {id}");
+        }
+        sqlx::query(
+            "UPDATE peer_bindings SET revoked_at = ? WHERE alias = ? AND id != ? AND revoked_at IS NULL",
+        )
+        .bind(&ts)
+        .bind(alias)
+        .bind(id.to_string())
+        .execute(&mut *conn)
+        .await?;
+        if row.is_some() {
+            sqlx::query("UPDATE peer_bindings SET alias = ?, endpoint = ? WHERE id = ?")
+                .bind(alias)
+                .bind(endpoint)
+                .bind(id.to_string())
+                .execute(&mut *conn)
+                .await?;
+        } else {
+            sqlx::query(
+                "INSERT INTO peer_bindings (id, alias, endpoint, created_at) VALUES (?, ?, ?, ?)",
+            )
+            .bind(id.to_string())
+            .bind(alias)
+            .bind(endpoint)
+            .bind(&ts)
+            .execute(&mut *conn)
+            .await?;
+        }
+        return Ok(PeerBinding {
+            id,
+            alias: alias.to_owned(),
+            endpoint: endpoint.to_owned(),
+        });
+    }
     let live: Option<(String, String)> = sqlx::query_as(
         "SELECT id, endpoint FROM peer_bindings WHERE alias = ? AND revoked_at IS NULL",
     )
     .bind(alias)
     .fetch_optional(&mut *conn)
     .await?;
-    let ts = now();
     if let Some((id, ep)) = live {
         if ep == endpoint {
             return Ok(PeerBinding {
@@ -1083,18 +1132,19 @@ impl Store {
     /// minted (revoking the old row) when the endpoint changed or none is live.
     pub async fn bind_peer(&self, alias: &str, endpoint: &str) -> anyhow::Result<PeerBinding> {
         let mut tx = self.begin_write().await?;
-        let b = bind_peer_in(&mut tx, alias, endpoint).await?;
+        let b = bind_peer_in(&mut tx, alias, endpoint, None).await?;
         tx.commit().await?;
         Ok(b)
     }
 
     /// One reload's binding changes in one transaction (50 §6.1: nothing is
     /// partially installed): `revoke` aliases first, then every `(alias,
-    /// endpoint)` bound as [`Store::bind_peer`] would, in order. Any failure
-    /// leaves every row as it was.
+    /// endpoint, id)` bound as [`bind_peer_in`] does, in order. 191: the live rows of the
+    /// given ids step out of their aliases first, so a rename onto an alias another of them
+    /// held never revokes that other one. Any failure leaves every row as it was.
     pub async fn commit_peer_bindings(
         &self,
-        bind: &[(&str, &str)],
+        bind: &[(&str, &str, Option<Uuid>)],
         revoke: &[&str],
     ) -> anyhow::Result<Vec<PeerBinding>> {
         let mut tx = self.begin_write().await?;
@@ -1108,12 +1158,39 @@ impl Store {
             .execute(&mut *tx)
             .await?;
         }
+        for id in bind.iter().filter_map(|(_, _, id)| *id) {
+            sqlx::query(
+                "UPDATE peer_bindings SET alias = '~' || id WHERE id = ? AND revoked_at IS NULL",
+            )
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        }
         let mut out = Vec::with_capacity(bind.len());
-        for (alias, endpoint) in bind {
-            out.push(bind_peer_in(&mut tx, alias, endpoint).await?);
+        for (alias, endpoint, id) in bind {
+            out.push(bind_peer_in(&mut tx, alias, endpoint, *id).await?);
         }
         tx.commit().await?;
         Ok(out)
+    }
+
+    /// 191 (D2): the live rows of `ids` step out of their aliases (`~<id>`), so another
+    /// binding taking the alias never revokes them; a later bind under the id renames it back.
+    pub async fn hold_peer_bindings(&self, ids: &[Uuid]) -> anyhow::Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.begin_write().await?;
+        for id in ids {
+            sqlx::query(
+                "UPDATE peer_bindings SET alias = '~' || id WHERE id = ? AND revoked_at IS NULL",
+            )
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Revoke the live binding of `alias`; `Ok(false)` when none is live.
@@ -1587,16 +1664,15 @@ impl Store {
     }
 
     /// 186 review 1: forget conversations quiet since before `stale_before_ms` (their return
-    /// grant has lapsed) and those of revoked bindings (unpaired, re-pinned).
+    /// grant has lapsed). 191: by staleness only: `contact_threads` replicates, so a delete is
+    /// mesh-wide, and a binding revoked here may be live elsewhere; a revoked binding's
+    /// thread is unusable (no route) and lapses with the rest.
     pub async fn gc_contact_threads(&self, stale_before_ms: i64) -> anyhow::Result<u64> {
-        Ok(sqlx::query(
-            "DELETE FROM contact_threads WHERE last_ms < ? \
-             OR binding IN (SELECT id FROM peer_bindings WHERE revoked_at IS NOT NULL)",
-        )
-        .bind(stale_before_ms)
-        .execute(&self.write)
-        .await?
-        .rows_affected())
+        Ok(sqlx::query("DELETE FROM contact_threads WHERE last_ms < ?")
+            .bind(stale_before_ms)
+            .execute(&self.write)
+            .await?
+            .rows_affected())
     }
 
     /// 186 (D5): open (or touch) the conversation `context` with the contact `binding`:
@@ -1612,9 +1688,10 @@ impl Store {
     ) -> anyhow::Result<()> {
         bounded("context_id", context, EXTERNAL_ID_MAX)?;
         sqlx::query(
-            "INSERT INTO contact_threads (binding, context_id, session, export, outbound, last_ms) \
-             VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (binding, context_id) DO UPDATE SET last_ms = excluded.last_ms",
+            "INSERT INTO contact_threads (id, binding, context_id, session, export, outbound, last_ms) \
+             VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET last_ms = excluded.last_ms",
         )
+        .bind(format!("{binding}|{context}"))
         .bind(binding.to_string())
         .bind(context)
         .bind(session.to_string())
@@ -3128,8 +3205,8 @@ mod tests {
         let e = store
             .commit_peer_bindings(
                 &[
-                    ("new", "https://new.example"),
-                    (&long, "https://bad.example"),
+                    ("new", "https://new.example", None),
+                    (&long, "https://bad.example", None),
                 ],
                 &["old"],
             )
@@ -3143,8 +3220,8 @@ mod tests {
         let out = store
             .commit_peer_bindings(
                 &[
-                    ("new", "https://new.example"),
-                    ("lab", "https://lab.example/a"),
+                    ("new", "https://new.example", None),
+                    ("lab", "https://lab.example/a", None),
                 ],
                 &["old"],
             )
@@ -3155,11 +3232,61 @@ mod tests {
         assert_eq!(out[1].id, lab.id);
         assert!(store.peer_binding("old").await.unwrap().is_none());
         let rotated = store
-            .commit_peer_bindings(&[("lab", "https://lab.example/b")], &[])
+            .commit_peer_bindings(&[("lab", "https://lab.example/b", None)], &[])
             .await
             .unwrap();
         assert_ne!(rotated[0].id, lab.id);
         assert!(store.peer_binding_by_id(lab.id).await.unwrap().is_none());
+    }
+
+    /// 191 (D2): a contact record's replicated binding id is taken, never minted: a rename
+    /// keeps it, two ids trade aliases in one commit without revoking each other, and once
+    /// revoked here the id stays revoked however often it arrives again.
+    #[tokio::test]
+    async fn a_replicated_binding_id_renames_in_place_and_is_never_unrevoked() {
+        let (store, _, _dir) = fresh().await;
+        let (id, other) = (Uuid::now_v7(), Uuid::now_v7());
+        let old = store.bind_peer("bob", "iroh:x").await.unwrap();
+        let b = store
+            .commit_peer_bindings(&[("bob", "contact:r1", Some(id))], &[])
+            .await
+            .unwrap();
+        assert_eq!(b[0].id, id);
+        assert!(
+            store.peer_binding_by_id(old.id).await.unwrap().is_none(),
+            "the alias's previous row is revoked"
+        );
+        store
+            .commit_peer_bindings(&[("robert", "contact:r1", Some(id))], &[])
+            .await
+            .unwrap();
+        assert_eq!(store.peer_binding("robert").await.unwrap().unwrap().id, id);
+        let both = |a: &'static str, b: &'static str| {
+            [(a, "contact:r1", Some(id)), (b, "contact:r2", Some(other))]
+        };
+        store
+            .commit_peer_bindings(&both("robert", "bob"), &[])
+            .await
+            .unwrap();
+        store
+            .commit_peer_bindings(&both("bob", "robert"), &[])
+            .await
+            .unwrap();
+        assert_eq!(store.peer_binding("bob").await.unwrap().unwrap().id, id);
+        assert_eq!(
+            store.peer_binding("robert").await.unwrap().unwrap().id,
+            other
+        );
+        store.revoke_peer_bindings_except(&[other]).await.unwrap();
+        for _ in 0..2 {
+            let e = store
+                .commit_peer_bindings(&[("bob", "contact:r1", Some(id))], &[])
+                .await
+                .unwrap_err();
+            assert!(e.to_string().contains(BINDING_REVOKED), "{e}");
+        }
+        assert!(store.peer_binding_by_id(id).await.unwrap().is_none());
+        assert!(store.peer_binding("bob").await.unwrap().is_none());
     }
 
     #[tokio::test]

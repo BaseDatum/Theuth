@@ -343,6 +343,10 @@ pub struct Agents {
     /// roster installs it with [`InstallIdentitySource`]. `None`: every
     /// session is theuth's.
     pub(crate) identity: Option<Arc<dyn IdentitySource>>,
+    /// 191 (D2): the flag the a2a plugin sets once the mesh latch and its first contact
+    /// reconcile are done ([`crate::communication::network::CONTACTS_READY`]; a test's own).
+    /// Read, never asked for: the agent never waits on the a2a actor.
+    pub(crate) contacts_ready: Arc<std::sync::atomic::AtomicBool>,
     /// 125 §4.2: ids of advisor sessions seen by this process — never a
     /// peer, told nothing about peers, speaking as the advisor.
     pub(crate) advisors: HashSet<SessionId>,
@@ -11431,6 +11435,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             transport: None,
             inbound_chain: None,
             identity: None,
+            contacts_ready: crate::communication::network::CONTACTS_READY.clone(),
             advisors: HashSet::new(),
             advisor_cfg: cfg.advisor.clone(),
             activity: crate::activity::Monitor::default(),
@@ -12538,6 +12543,9 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         transport: None,
         inbound_chain: None,
         identity: None,
+        // A test rig is past the latch unless it says otherwise (its own flag, never the
+        // process-wide one).
+        contacts_ready: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         advisors: HashSet::new(),
         advisor_cfg: AdvisorConfig::default(),
         activity: crate::activity::Monitor::default(),
@@ -12562,11 +12570,16 @@ pub async fn spawn_test_agents(
 
 /// 183 (`test-support`): one engine's live [`Agents`] with agent communication on and no
 /// keyed provider, spawned but not registered, so a test can run two engines in one process
-/// (the a2a contact tests).
+/// (the a2a contact tests). 191: `ready` is that engine's own `contacts_ready` (its a2a
+/// context holds the same one), never the process-wide flag another engine sets.
 #[cfg(feature = "test-support")]
-pub async fn spawn_engine_agents(rt: Runtime) -> ActorRef<Agents> {
+pub async fn spawn_engine_agents(
+    rt: Runtime,
+    ready: Arc<std::sync::atomic::AtomicBool>,
+) -> ActorRef<Agents> {
     let mut a = bare_agents(rt, None, true).await;
     a.configured = Arc::new(|_| false);
+    a.contacts_ready = ready;
     Agents::spawn(a)
 }
 

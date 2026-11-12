@@ -120,6 +120,28 @@ fn gone() -> A2AError {
     A2AError::task_not_found("conversation")
 }
 
+/// 191 (D3, S4): [`super::NOT_OWNER_CODE`] "not owner": the session is not this engine's
+/// (another machine owns it, its owner is empty on a mesh engine, its row is unknown or
+/// unreadable here). The contact's client tries its next member (P3 forwards instead).
+pub(crate) fn not_owner() -> A2AError {
+    A2AError::new(super::NOT_OWNER_CODE, super::NOT_OWNER_TEXT)
+}
+
+impl Agents {
+    /// 191 (D3, S4): the strict owner predicate of every contact path: the row exists and
+    /// reads here and this engine owns it (never "unknown or empty reads as local"); else
+    /// [`not_owner`].
+    pub(crate) async fn contact_owned(&self, session: SessionId) -> Result<(), A2AError> {
+        match self.store.owned_here(session).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(%session, "a2a: session row unreadable: {e:#}"),
+        }
+        tracing::info!(%session, "191: contact path refused: not owner");
+        Err(not_owner())
+    }
+}
+
 impl Agents {
     /// 186 (D5): the open message `re` names, which `from` sent to `to`: the `reply_to` of an
     /// answer. `re` is that message's A2A `messageId` (its idempotency key). `None` when it
@@ -270,6 +292,10 @@ impl Agents {
     /// 186 (D4): a full contact's task: it waits aside (`working`, the session's slot stays
     /// free), its message goes in like a mesh peer's, and it completes on consumption.
     pub(super) async fn deliver_full(&mut self, task: A2aTask, generation: Generation) -> A2aTask {
+        // 191 (D3, S4): never delivered into a session that is not strictly this engine's.
+        if let Err(e) = self.contact_owned(task.session).await {
+            return self.fail_task(&task, &e.message).await.unwrap_or(task);
+        }
         let Some(exchange) = task.dedup_exchange else {
             return self
                 .fail_task(&task, "task has no initiating exchange")
@@ -363,13 +389,18 @@ impl Agents {
     /// 186 (D4, D5): one full message into its local recipient as a mesh peer's (unscoped,
     /// shown as `from`). An answer to a message whose `send_message` awaits it completes that
     /// call instead (`Ok(true)`: consumed directly, no turn).
-    async fn full_intake(
+    pub(super) async fn full_intake(
         &mut self,
         mut record: PeerRecord,
         from: String,
         generation: Generation,
         chain: u32,
     ) -> Result<bool, String> {
+        // 191 (D3, S4): a contact's message never reaches a session that is not strictly this
+        // engine's (another's, an empty owner, an unknown row); an unreadable owner refuses too.
+        self.contact_owned(record.session)
+            .await
+            .map_err(|e| e.message)?;
         if let Some(q) = record.receipt.reply_to
             && let Ok(Some(mut orig)) = self.store.exchange_receipt(q).await
             && orig.state == PeerMessageState::Replied
@@ -521,7 +552,13 @@ impl Agents {
     /// inbox at once; an agent gone caps it). One whose contact is in no route (before the
     /// first reload, or gone) is left to its actor start and the reload.
     pub(crate) async fn refresh_full_inboxes(&mut self) {
-        if self.identity.is_none() {
+        // 191 (D7): no cap is lifted before `contacts_ready` (the a2a plugin tells
+        // `InboxPersonasChanged` right after the flip).
+        if self.identity.is_none()
+            || !self
+                .contacts_ready
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
             return;
         }
         let rows = match self.store.full_a2a_inboxes().await {
@@ -643,6 +680,9 @@ impl Agents {
             .map_err(internal)?
             .filter(|t| t.outbound && now - t.last_ms <= THREAD_TTL.as_millis() as i64)
             .ok_or_else(gone)?;
+        // 191 (D3, S4): `~return` into a session that is not strictly this engine's is
+        // `NOT_OWNER`; the contact tries the next member.
+        self.contact_owned(thread.session).await?;
         let full = self.network.offers.get(&alias).is_some_and(|o| {
             o.iter()
                 .any(|o| o.name == thread.export && o.mode == ShareMode::Full)

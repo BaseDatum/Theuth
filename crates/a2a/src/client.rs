@@ -335,10 +335,14 @@ enum Link {
         allow_private: bool,
     },
     /// 183 §7.2: a contact over `theuth/a2a/1`, authenticated by its pinned endpoint id.
+    /// 191 (D3): dialled first at `eid`, then its other admitted machines (`members`, as
+    /// the last reconcile staged them).
     Iroh {
         net: Arc<mesh::net::Net>,
         eid: String,
         display: String,
+        members: parking_lot::Mutex<Vec<String>>,
+        answered: Arc<parking_lot::Mutex<Option<String>>>,
     },
 }
 
@@ -384,10 +388,12 @@ impl PeerClient {
         ))
     }
 
-    /// 183 §7.7: the client of a contact (`peer.eid` set), over `net`.
+    /// 183 §7.7: the client of a contact (`peer.eid` set), over `net`; 191: `members` are
+    /// every machine of it that is admitted.
     pub fn contact(
         peer: &Peer,
         display: &str,
+        members: Vec<String>,
         net: Arc<mesh::net::Net>,
         agents: ActorRef<Agents>,
         vault: Option<Arc<Vault>>,
@@ -403,11 +409,21 @@ impl PeerClient {
                 net,
                 eid,
                 display: display.to_owned(),
+                members: parking_lot::Mutex::new(members),
+                answered: Arc::default(),
             },
             agents,
             vault,
             generation,
         ))
+    }
+
+    /// 191: the contact's admitted machines changed (a roster); the client and its followers
+    /// stay.
+    pub fn set_members(&self, members: Vec<String>) {
+        if let Link::Iroh { members: m, .. } = &self.link {
+            *m.lock() = members;
+        }
     }
 
     fn with(
@@ -520,13 +536,21 @@ impl PeerClient {
                 allow_private,
             } => (base, token, *allow_private),
             // The card was verified at the ceremony; the channel is the pin.
-            Link::Iroh { net, eid, display } => {
+            Link::Iroh {
+                net,
+                eid,
+                display,
+                members,
+                answered,
+            } => {
                 let transport: Box<dyn Transport> =
                     Box::new(crate::contacts::reach::IrohTransport {
                         net: net.clone(),
                         eid: eid.clone(),
                         hints: Default::default(),
                         export: export.map(str::to_owned),
+                        members: members.lock().clone(),
+                        answered: answered.clone(),
                     });
                 return Ok(Arc::new(Connected {
                     client: a2a_client::A2AClient::new(transport),
@@ -828,6 +852,14 @@ impl PeerClient {
                     "peer {}: {}",
                     self.name,
                     self.remote_text(&e.message)
+                )))
+            }
+            // 191 (D3, S4): every machine of the contact said `not owner`.
+            Ok(Err(e)) if e.code == agent::communication::network::NOT_OWNER_CODE => {
+                Err(RemoteSendError::Refused(format!(
+                    "peer {} refused: {} on every machine of it",
+                    self.name,
+                    agent::communication::network::NOT_OWNER_TEXT
                 )))
             }
             Ok(Err(e)) => Err(RemoteSendError::Refused(format!(

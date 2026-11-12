@@ -60,6 +60,7 @@ pub mod accounting;
 pub mod advisor;
 mod capture;
 pub mod communication;
+pub mod contacts;
 pub mod dreaming;
 pub mod durability;
 pub mod endless;
@@ -659,15 +660,18 @@ const ROOT_HOPS: usize = 32;
 /// 183 R1/R2 (E-M3): the schema of the replicated session tables, as
 /// sessionsync sends it in `Hello` and `Release`: a peer on an older value
 /// is not shipped rows whose columns it cannot apply, and its takes are
-/// refused. Named after the migration that last changed them (0053).
+/// refused. Named after the migration that last changed them (0059: 191's
+/// `sessions.contact_inbox`).
 ///
 /// **Bump rule:** set this to a new migration's number exactly when that
 /// migration adds, drops or renames a column of a table the session log
 /// replicates (`sessions`, `messages`, `turn_steps`, … — the tables the
 /// `sqlite3session` attaches, see [`Store::open`]). A migration that touches
 /// only local tables leaves it alone; bumping it holds session sync between
-/// mixed versions for nothing.
-pub const SESSIONS_WIRE_SCHEMA: u32 = 53;
+/// mixed versions for nothing. Never a lower or an unrelated number: a peer
+/// whose value reads as newer is shipped rows its schema cannot apply, and
+/// `sqlite3changeset_apply` skips the table while the cursor advances.
+pub const SESSIONS_WIRE_SCHEMA: u32 = 59;
 
 impl Store {
     /// Open (creating) the database in WAL mode and run migrations. Two
@@ -902,15 +906,18 @@ impl Store {
     /// 68 decision 8: `projects` and `cost_owners` are global records, not
     /// session rows — they join the stage-1 record replica (per-column LWW)
     /// on the write connection, so a replica that takes a session already
-    /// holds the accounting owner its `model_calls` rows reference. Neither
-    /// table is in the capture session, so replicated rows never echo into
+    /// holds the accounting owner its `model_calls` rows reference. 191 (D2): so
+    /// do the mesh-wide contact records ([`contacts::RECORD_TABLES`]). None of
+    /// these tables is in the capture session, so replicated rows never echo into
     /// the session log. Rows the replica has not stamped yet (every row of a
     /// pre-68 store; rows written since the last start — the accounting
     /// writers never stamp) are announced and stamped once. Returns how many
     /// were. Errors on a private store or without the replica plugin.
     pub async fn replicate_records(&self) -> anyhow::Result<u64> {
         anyhow::ensure!(!self.private, "a private store never replicates");
-        let handle = replica::attach(&self.write, &["projects", "cost_owners"]).await?;
+        let mut tables = vec!["projects", "cost_owners"];
+        tables.extend(contacts::RECORD_TABLES);
+        let handle = replica::attach(&self.write, &tables).await?;
         handle.announce_unstamped().await
     }
 
@@ -4262,8 +4269,8 @@ mod tests {
     #[tokio::test]
     async fn sessions_wire_schema_tracks_the_replicated_columns() {
         const SNAPSHOT: (u32, &str) = (
-            53,
-            "sessions: id,created_at,title,model,parent,name,effort,cut_at,agent,acp_session,cwd,updated_at,pinned,todo_version,context_revision,scope,alias,project,archived,tags,harness_model,unattended,owner,epoch,desk,harness_commands,context_size,acp_skills,last_stop,finished_at,kind,memory,endless_base,endless_filter,endless_view_bytes,budget,observed_source,observed_state,observed_stop,observed_cancel,observed_description,observed_tool_call,observed_detail,observed_cursor,observed_cost_rule,notebook,acp_previous,endless_paused,endless_spend_override,endless_model,endless_agent_model,approvals,communication
+            59,
+            "sessions: id,created_at,title,model,parent,name,effort,cut_at,agent,acp_session,cwd,updated_at,pinned,todo_version,context_revision,scope,alias,project,archived,tags,harness_model,unattended,owner,epoch,desk,harness_commands,context_size,acp_skills,last_stop,finished_at,kind,memory,endless_base,endless_filter,endless_view_bytes,budget,observed_source,observed_state,observed_stop,observed_cancel,observed_description,observed_tool_call,observed_detail,observed_cursor,observed_cost_rule,notebook,acp_previous,endless_paused,endless_spend_override,endless_model,endless_agent_model,approvals,communication,contact_inbox
 messages: session_id,seq,body,excluded,vision,at,thinking_ms,advisory,channel,moved
 epochs: session_id,n,at_seq,tail_from,head,created_at,excluded
 todo_snapshots: session_id,at_seq,k,source,items

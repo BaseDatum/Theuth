@@ -144,6 +144,17 @@ struct ContactGrant {
 }
 
 impl Live {
+    /// 191 (D2): `staged` listed (`contact_list`) but nothing installed: no binding, no
+    /// route, no principal; the gate admits no contact.
+    pub fn display(staged: Staged) -> Self {
+        Self {
+            staged,
+            ..Self::empty()
+        }
+    }
+}
+
+impl Live {
     /// Nothing installed: every request is 404/401.
     pub fn empty() -> Self {
         Self {
@@ -184,10 +195,22 @@ impl Live {
             .values()
             .filter_map(|p| Some((p.inbound.clone()?, principal(p)?)))
             .collect();
+        // 191 (D2): every anchor of a contact's group is its principal; a denied or removed
+        // endpoint never is.
         let contacts: HashMap<String, Arc<Principal>> = staged
             .peers
             .values()
-            .filter_map(|p| Some((p.eid.clone()?, principal(p)?)))
+            .filter(|p| p.eid.is_some())
+            .filter_map(|p| {
+                let principal = principal(p)?;
+                let eids = staged
+                    .contacts
+                    .get(&p.name)
+                    .map_or_else(|| p.eid.iter().cloned().collect(), |f| f.eids.clone());
+                Some(eids.into_iter().map(move |e| (e, principal.clone())))
+            })
+            .flatten()
+            .filter(|(e, _)| !staged.deny.contains(e) && !staged.removed.contains(e))
             .collect();
         let epochs: Arc<HashMap<Uuid, CancellationToken>> = Arc::new(
             principals
@@ -229,6 +252,7 @@ impl Live {
             let prefix = format!("/agents/{name}");
             let handler = Arc::new(Handler {
                 export: name.clone(),
+                export_id: staged.export_ids.get(name).cloned(),
                 target,
                 agents: agents.clone(),
                 subscribers: subscribers.clone(),
@@ -251,6 +275,7 @@ impl Live {
         if !contacts.is_empty() {
             let handler = Arc::new(Handler {
                 export: RETURN_ROUTE.to_owned(),
+                export_id: None,
                 target: Target::Return,
                 agents: agents.clone(),
                 subscribers: subscribers.clone(),
@@ -561,6 +586,8 @@ enum Target {
 /// Application seam per export: typed requests → agent commands (§4).
 struct Handler {
     export: String,
+    /// 191 (D2): its replicated id (the inbox marker names it).
+    export_id: Option<String>,
     target: Target,
     agents: ActorRef<Agents>,
     subscribers: Arc<Semaphore>,
@@ -593,7 +620,8 @@ impl Handler {
         Ok((binding, route))
     }
 
-    async fn admit(&self, params: &ServiceParams) -> Result<A2aPrincipal, A2AError> {
+    /// `send`: a `SendMessage` or the streaming send (191 S4: a read never opens an inbox).
+    async fn admit(&self, params: &ServiceParams, send: bool) -> Result<A2aPrincipal, A2AError> {
         let (binding, route) = self.caller(params)?;
         // 183 §7.6: a contact's origin rides with every admission: the first-contact hold, and
         // (W-40) what a chat owned by another engine of the mesh caps the contact's turn at.
@@ -628,6 +656,8 @@ impl Handler {
                     binding,
                     agent: agent.clone(),
                     origin: origin.clone(),
+                    export_id: self.export_id.clone(),
+                    send,
                 })
                 .await?
             }
@@ -650,6 +680,18 @@ impl Handler {
             contact,
             ask_first,
         })
+    }
+
+    /// 191 (D3, S4): the strict session resolve of a contact's message, before any task
+    /// exists: served only by the machine that owns the session (its row here, its owner
+    /// this engine), else the A2A error `not owner` (`NOT_OWNER_CODE`), and the contact's
+    /// client tries its next roster member.
+    async fn owned(&self, p: &A2aPrincipal) -> Result<(), A2AError> {
+        if p.contact.is_some() {
+            self.ask(agent::communication::network::ContactOwned(p.session))
+                .await?;
+        }
+        Ok(())
     }
 
     /// Ask the agent; the supervisor answers some commands through a
@@ -737,7 +779,8 @@ impl RequestHandler for Handler {
                 })
                 .await;
         }
-        let principal = self.admit(params).await?;
+        let principal = self.admit(params, true).await?;
+        self.owned(&principal).await?;
         validate_send(&req)?;
         let history_length = req.configuration.as_ref().and_then(|c| c.history_length);
         let mut response = self
@@ -757,7 +800,8 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: SendMessageRequest,
     ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
-        let principal = self.admit(params).await?;
+        let principal = self.admit(params, true).await?;
+        self.owned(&principal).await?;
         validate_send(&req)?;
         let stream = self
             .ask(A2aStream {
@@ -773,7 +817,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: GetTaskRequest,
     ) -> Result<Task, A2AError> {
-        let principal = self.admit(params).await?;
+        let principal = self.admit(params, false).await?;
         let history_length = req.history_length;
         let mut task = self
             .ask(A2aGet {
@@ -790,7 +834,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: ListTasksRequest,
     ) -> Result<ListTasksResponse, A2AError> {
-        let principal = self.admit(params).await?;
+        let principal = self.admit(params, false).await?;
         let history_length = req.history_length;
         let include_artifacts = req.include_artifacts == Some(true);
         let mut page = self
@@ -813,7 +857,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: CancelTaskRequest,
     ) -> Result<Task, A2AError> {
-        let principal = self.admit(params).await?;
+        let principal = self.admit(params, false).await?;
         self.ask(A2aCancel {
             principal,
             request: req,
@@ -826,7 +870,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: SubscribeToTaskRequest,
     ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
-        let principal = self.admit(params).await?;
+        let principal = self.admit(params, false).await?;
         let stream = self
             .ask(A2aSubscribe {
                 principal: principal.clone(),
@@ -841,7 +885,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         _req: TaskPushNotificationConfig,
     ) -> Result<TaskPushNotificationConfig, A2AError> {
-        self.admit(params).await?;
+        self.admit(params, false).await?;
         Err(A2AError::push_notification_not_supported())
     }
 
@@ -850,7 +894,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         _req: GetTaskPushNotificationConfigRequest,
     ) -> Result<TaskPushNotificationConfig, A2AError> {
-        self.admit(params).await?;
+        self.admit(params, false).await?;
         Err(A2AError::push_notification_not_supported())
     }
 
@@ -859,7 +903,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         _req: ListTaskPushNotificationConfigsRequest,
     ) -> Result<ListTaskPushNotificationConfigsResponse, A2AError> {
-        self.admit(params).await?;
+        self.admit(params, false).await?;
         Err(A2AError::push_notification_not_supported())
     }
 
@@ -868,7 +912,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         _req: DeleteTaskPushNotificationConfigRequest,
     ) -> Result<(), A2AError> {
-        self.admit(params).await?;
+        self.admit(params, false).await?;
         Err(A2AError::push_notification_not_supported())
     }
 
@@ -877,7 +921,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         _req: GetExtendedAgentCardRequest,
     ) -> Result<AgentCard, A2AError> {
-        self.admit(params).await?;
+        self.admit(params, false).await?;
         Err(A2AError::unsupported_operation(
             "extended agent card not supported",
         ))
@@ -915,20 +959,28 @@ pub enum IrohGate {
 
 /// The gate for the remote endpoint id `remote` (family peers never get here: the mesh
 /// refuses them first). A live contact is its binding; a blocked one is refused even inside
-/// a window; a stranger passes only for the ceremony while a window is open.
-pub fn iroh_gate(live: &Live, remote: &str, window_open: bool) -> IrohGate {
+/// a window; a stranger passes only for the ceremony while a window is open. 191 (D2): an
+/// endpoint in the deny set (a quarantined or blocked record's) is refused before anything
+/// else; a removed record's endpoint is never admitted as a contact (it may pair again in a
+/// window), and nothing is admitted before `contacts_ready`, a ceremony included (the deny
+/// set is whole only after the first pass).
+pub fn iroh_gate(live: &Live, remote: &str, window_open: bool, ready: bool) -> IrohGate {
+    if live.staged.deny.contains(remote) {
+        return IrohGate::Refuse;
+    }
     match live.staged.contact_by_eid(remote) {
         Some(alias) => match (
+            ready && !live.staged.removed.contains(remote),
             live.staged.contacts[alias].blocked,
             live.bindings.get(alias),
         ) {
-            (false, Some(binding)) => IrohGate::Contact {
+            (true, false, Some(binding)) => IrohGate::Contact {
                 binding: *binding,
                 alias: alias.to_owned(),
             },
             _ => IrohGate::Refuse,
         },
-        None if window_open => IrohGate::Pair,
+        None if window_open && ready => IrohGate::Pair,
         None => IrohGate::Refuse,
     }
 }
@@ -1336,7 +1388,7 @@ mod tests {
 
     impl mesh::net::ContactAlpn for TestGate {
         fn admit(&self, remote: &str) -> bool {
-            iroh_gate(&self.0.read(), remote, self.1) != IrohGate::Refuse
+            iroh_gate(&self.0.read(), remote, self.1, true) != IrohGate::Refuse
         }
 
         fn stream(
@@ -1350,7 +1402,7 @@ mod tests {
                     return;
                 };
                 if matches!(
-                    iroh_gate(&shared.read(), &remote, false),
+                    iroh_gate(&shared.read(), &remote, false, true),
                     IrohGate::Contact { .. }
                 ) {
                     let io = crate::contacts::reach::Prefixed::new(line, stream);
@@ -1431,7 +1483,9 @@ mod tests {
             staged.contacts.insert(
                 "bob".into(),
                 crate::config::ContactFacts {
+                    id: String::new(),
                     eid: b.id.0.clone(),
+                    eids: vec![b.id.0.clone()],
                     display: "bob".into(),
                     machine: "Bob's MacBook".into(),
                     cap: tools::Risk::ReadOnly,
@@ -1490,5 +1544,48 @@ mod tests {
             rpc_over_iroh(&b, &blocked).await.is_err(),
             "a blocked contact is refused, window or not"
         );
+    }
+
+    /// 191 (D2, D7): before `contacts_ready` a staged contact with a live binding is refused,
+    /// and so is a ceremony (the deny set is whole only after the first pass); after it the
+    /// contact is admitted and a stranger in a window may pair; a denied endpoint is refused
+    /// even for a ceremony, a removed one only as a contact.
+    #[test]
+    fn the_gate_refuses_everyone_before_contacts_ready_and_denied_endpoints_first() {
+        let mut staged = Staged::default();
+        staged.contacts.insert(
+            "bob".into(),
+            crate::config::ContactFacts {
+                id: "r1".into(),
+                eid: "bob-eid".into(),
+                eids: vec!["bob-eid".into()],
+                display: "bob".into(),
+                machine: String::new(),
+                cap: tools::Risk::ReadOnly,
+                first_contact: BTreeMap::new(),
+                blocked: false,
+                paired_ms: 1,
+                addrs: Vec::new(),
+            },
+        );
+        let mut live = Live::display(staged);
+        live.bindings.insert("bob".into(), Uuid::from_u128(7));
+        assert_eq!(iroh_gate(&live, "bob-eid", true, false), IrohGate::Refuse);
+        assert_eq!(iroh_gate(&live, "stranger", true, false), IrohGate::Refuse);
+        assert!(matches!(
+            iroh_gate(&live, "bob-eid", false, true),
+            IrohGate::Contact { alias, .. } if alias == "bob"
+        ));
+        assert_eq!(iroh_gate(&live, "stranger", true, true), IrohGate::Pair);
+        live.staged.deny.insert("stranger".into());
+        assert_eq!(iroh_gate(&live, "stranger", true, true), IrohGate::Refuse);
+        live.staged.removed.insert("gone".into());
+        assert_eq!(
+            iroh_gate(&live, "gone", true, true),
+            IrohGate::Pair,
+            "it may pair again"
+        );
+        live.staged.removed.insert("bob-eid".into());
+        assert_eq!(iroh_gate(&live, "bob-eid", true, true), IrohGate::Refuse);
     }
 }
