@@ -46,9 +46,16 @@ impl Model {
             }
         }
         self.component_finish(out, emit);
+        self.component_reconcile_core_focus();
     }
 
     fn component_finish(&mut self, out: Outbox, emit: &mut impl FnMut(Output<'_>)) {
+        if out.claimed.is_some_and(|class| matches!(class,
+            FocusClass::Modal | FocusClass::Secret | FocusClass::Search))
+        {
+            self.menu = None;
+            self.prompt = None;
+        }
         for effect in out.effects {
             if let Some(commands) = &self.component_commands {
                 let _ = commands.send(Command::Component(effect));
@@ -90,6 +97,16 @@ impl Model {
         let out = self.component_lifecycle(event);
         self.component_finish(out, &mut |_| {});
     }
+    /// Residual modal acquisition displaces, rather than hides, a component surface.
+    pub(super) fn component_reconcile_core_focus(&mut self) {
+        if self.components.focused()
+            && (self.prompt.is_some() || self.menu.as_ref().is_some_and(|menu| !matches!(menu, Menu::Slash { .. })))
+        {
+            let core = CoreView { session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+            let out = self.components.release_focus(&core);
+            self.component_finish(out, &mut |_| {});
+        }
+    }
     pub(crate) fn mount_components(&mut self, commands: &UnboundedSender<Command>) {
         self.component_commands = Some(commands.clone());
         self.component_notify(Lifecycle::Mount);
@@ -98,12 +115,14 @@ impl Model {
         self.component_tick_with(now_ms, &mut |_| {});
     }
     pub(crate) fn component_tick_with(&mut self, now_ms: u64, emit: &mut impl FnMut(Output<'_>)) {
+        self.component_reconcile_core_focus();
         let core = CoreView { session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let out = self.components.tick(now_ms, self.frame, &core);
         for plain in &out.plain { emit(Output::Plain(plain)); }
         self.component_finish(out, emit);
     }
     pub(crate) fn component_key(&mut self, class: FocusClass, key: &iocraft::KeyEvent) -> bool {
+        self.component_reconcile_core_focus();
         let core = CoreView { session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let out = self.components.key(class, key, &core);
         let consumed = out.consumed();
@@ -111,6 +130,7 @@ impl Model {
         consumed
     }
     pub(crate) fn component_paste(&mut self, text: &str) -> bool {
+        self.component_reconcile_core_focus();
         let core = CoreView { session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let out = self.components.paste(text, &core);
         let consumed = out.consumed();
@@ -118,6 +138,7 @@ impl Model {
         consumed
     }
     pub(crate) fn component_submit(&mut self, text: &str) -> bool {
+        self.component_reconcile_core_focus();
         let core = CoreView { session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let out = self.components.submit(text, &core);
         let consumed = out.consumed();
@@ -201,7 +222,6 @@ impl Model {
                 self.refresh_artifacts = self.session.is_some();
                 self.refresh_advisor = self.session.is_some();
                 self.refresh_communication = true;
-                self.refresh_link = self.link.is_some();
                 self.refresh_nodes = self.nodes.is_some();
                 self.refresh_secrets = self.secrets.is_some();
                 self.component_notify(Lifecycle::Resync);
@@ -226,13 +246,13 @@ fn component_plain_output_precedes_core_actions_and_errors_keep_global_effects()
     assert!(matches!(&model.entries[..], [Entry::Info(text)] if text == "counter=4"));
     model.compacting = true;
     model.awaiting_cost = true;
-    model.awaiting_link = true;
+    model.components.get_mut::<crate::components::link::Link>().unwrap().awaiting = true;
     let mut completed = false;
     model.receive(UiEvent::Component(reply(token, 0, Msg::Fail("request failed".into()))), &mut |output| {
         completed |= crate::print_output(&mut bytes, output).0;
     });
     assert!(completed);
-    assert!(!model.compacting && !model.awaiting_cost && !model.awaiting_link);
+    assert!(!model.compacting && !model.awaiting_cost && !model.components.get::<crate::components::link::Link>().unwrap().awaiting);
     assert!(matches!(model.entries.last(), Some(Entry::Error(text)) if text == "request failed"));
 }
 
@@ -266,4 +286,55 @@ fn header_slots_preserve_order_across_core_and_reverse_registered_owners() {
     let catalog = Catalog::load(std::env::temp_dir().join("theuth-tui-no-user-file").as_path());
     assert_eq!(model.header(&catalog).0,
         "nobody/nothing  ·  ctx 0  ·  costs  ·  advisor  ·  approvals off  ·  communication  ·  link  ·  nodes  ·  update");
+}
+
+#[cfg(test)]
+#[test]
+fn modal_replacement_closes_displaced_surface_without_losing_cache() {
+    use crate::components::{Component, Cx, Declaration, Input, Registry};
+    struct Modal { id: &'static str, open: bool, cached: usize }
+    impl Component for Modal {
+        type Msg = ();
+        fn declaration(&self) -> Declaration {
+            Declaration { id: self.id, interests: &[], bindings: &[],
+                slash: if self.id == "first" { &[("/first", "", "")] } else { &[("/second", "", "")] } }
+        }
+        fn decode(&self, _: &TopicEvent, _: &CoreView<'_>) -> Option<()> { None }
+        fn update(&mut self, input: Input<'_, ()>, cx: &mut Cx<'_, '_, ()>) {
+            match input {
+                Input::Slash { .. } => { self.open = true; self.cached += 1; cx.focus(FocusClass::Modal); }
+                Input::Lifecycle(Lifecycle::FocusLost) => self.open = false,
+                Input::Key(key) if key.code == KeyCode::Esc => {
+                    self.open = false; cx.close(); cx.consume_key();
+                }
+                _ => {}
+            }
+        }
+        fn view(&self, at: Surface<'_>, _: &ViewCx<'_>) -> Option<View> {
+            (self.open && matches!(at, Surface::Modal)).then(|| View::Text(self.id.into()))
+        }
+    }
+    let mut model = Model::default();
+    model.components = Registry::empty();
+    for id in ["first", "second"] {
+        model.components.register(Modal { id, open: false, cached: 0 }).unwrap();
+    }
+    model.menu = Some(Menu::Sessions { items: Vec::new(), cursor: 0 });
+    model.prompt = Some(Prompt::ProviderName);
+    model.component_slash("/first", "");
+    assert!(model.menu.is_none() && model.prompt.is_none());
+    model.component_slash("/second", "");
+    assert!(!model.components.get::<Modal>().unwrap().open);
+    assert_eq!(model.components.get::<Modal>().unwrap().cached, 1);
+    let visible: Vec<_> = model.component_views(Surface::Modal, 80, 24).into_iter()
+        .filter_map(|view| match view { View::Text(text) => Some(text), _ => None }).collect();
+    assert_eq!(visible, ["second"]);
+    model.component_key(FocusClass::Modal, &iocraft::KeyEvent::new(iocraft::KeyEventKind::Press, KeyCode::Esc));
+    assert!(model.component_views(Surface::Modal, 80, 24).is_empty());
+    model.component_slash("/first", "");
+    model.menu = Some(Menu::Sessions { items: Vec::new(), cursor: 0 });
+    model.component_tick(0);
+    assert!(!model.components.focused() && !model.components.get::<Modal>().unwrap().open);
+    assert_eq!(model.components.get::<Modal>().unwrap().cached, 2);
+    assert!(matches!(model.menu, Some(Menu::Sessions { .. })));
 }

@@ -107,11 +107,6 @@ pub enum Menu {
         /// What ⏎ does with the highlighted turn.
         action: TurnAction,
     },
-    /// `/link`: paired devices over [`Model::link`] (31 §6.5).
-    Link {
-        /// Highlighted device.
-        cursor: usize,
-    },
     /// `/nodes`: paired nodes over [`Model::nodes`] (32 §6.7).
     Nodes {
         /// Highlighted node.
@@ -273,7 +268,6 @@ impl Model {
             Some(Menu::Skills { .. }) => self.skills_key(code, tx),
             Some(Menu::Logins { .. }) => self.logins_key(code, tx),
             Some(Menu::Turns { .. }) => self.turns_key(code, tx),
-            Some(Menu::Link { .. }) => self.link_key(code, tx),
             Some(Menu::Nodes { .. }) => self.nodes_key(code, tx),
             Some(Menu::Secrets { .. }) => self.secrets_key(code, tx),
             Some(Menu::Artifacts { .. }) => self.artifacts_key(code, tx),

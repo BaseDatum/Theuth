@@ -70,118 +70,10 @@ fn set_card(entries: &mut [Entry], kind: CardKind, body: &str) {
     }
 }
 
-impl Model {
 
-    /// Replace the body of the newest `/link pair` card, if any.
-    pub(super) fn set_link_card(&mut self, body: &str) {
-        set_card(&mut self.entries, CardKind::Link, body);
-    }
-}
 
 impl Model {
 
-    /// Fold a link bus event into the local status and the pairing card.
-    /// What the copy cannot absorb (a device it has not seen) re-asks.
-    pub(super) fn apply_link(&mut self, ev: link::LinkEvent) {
-        use link::LinkEvent::*;
-        match ev {
-            LinkRelay { connected } => match &mut self.link {
-                Some(s) => s.connected = connected,
-                None => self.refresh_link = true,
-            },
-            LinkPairing { key: None, .. } => {
-                if self.pairing.take().is_some() {
-                    self.set_link_card("pairing expired");
-                }
-                if let Some(s) = &mut self.link {
-                    s.pairing = None;
-                }
-            }
-            LinkPairing {
-                key: Some(key),
-                expires_at_ms,
-            } => {
-                if let Some(s) = &mut self.link {
-                    s.pairing = Some(link::Pairing {
-                        key,
-                        expires_at_ms: expires_at_ms.unwrap_or(0),
-                    });
-                }
-            }
-            LinkPaired { device } => {
-                if self.pairing.take().is_some() {
-                    self.set_link_card(&format!("paired: {}", device.name));
-                }
-                match &mut self.link {
-                    Some(s) => {
-                        s.pairing = None;
-                        s.devices.retain(|d| d.id != device.id);
-                        s.devices.push(device);
-                    }
-                    None => self.refresh_link = true,
-                }
-            }
-            LinkDevice { id, online } => {
-                match self
-                    .link
-                    .as_mut()
-                    .and_then(|s| s.devices.iter_mut().find(|d| d.id == id))
-                {
-                    Some(d) => {
-                        d.online = online;
-                        if !online {
-                            d.last_seen_ms = now_ms();
-                        }
-                    }
-                    None => self.refresh_link = true,
-                }
-            }
-            LinkRevoked { id } => {
-                if let Some(s) = &mut self.link {
-                    s.devices.retain(|d| d.id != id);
-                }
-            }
-            // 69: the mesh identity's uplink and its replicated registry; the
-            // status snapshot carries both, so re-ask.
-            MeshRelay { .. } | DevicePaired { .. } | DevicesChanged => self.refresh_link = true,
-        }
-    }
-}
-
-impl Model {
-
-    /// `/link` menu | `on` | `off` | `pair` | `cancel` | `rm <id>` |
-    /// `name <id> <name…>` | `relay <url>` (31 §6.5).
-    pub(super) fn link_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
-        let (sub, rest) = arg
-            .split_once(char::is_whitespace)
-            .map_or((arg, ""), |(s, r)| (s, r.trim()));
-        match (sub, rest) {
-            ("", _) => {
-                self.awaiting_link = true;
-                send(tx, Command::LinkStatus);
-            }
-            ("on", _) => {
-                self.awaiting_link = true;
-                send(tx, Command::LinkEnable(true));
-            }
-            ("off", _) => send(tx, Command::LinkEnable(false)),
-            ("pair", _) => send(tx, Command::LinkPair),
-            ("cancel", _) => send(tx, Command::LinkCancelPair),
-            ("rm", id) if !id.is_empty() => send(tx, Command::LinkRevoke(id.to_owned())),
-            ("name", rest) if rest.contains(char::is_whitespace) => {
-                let (id, name) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-                send(
-                    tx,
-                    Command::LinkRenameDevice(id.to_owned(), name.trim().to_owned()),
-                );
-            }
-            ("relay", url) if !url.is_empty() => send(tx, Command::LinkRelay(url.to_owned())),
-            _ => self.entries.push(Entry::Error(
-                "usage: /link [on|off|pair|cancel|rm <id>|name <id> <name>|relay <url>]".into(),
-            )),
-        }
-    }
 
 
     /// `/mesh devices [list|add [name]|rm <id>|name <id> <name…>]` (69 §7), the CLI's `t mesh devices`.
@@ -215,102 +107,6 @@ impl Model {
         }
     }
 
-    /// `/link` menu title: the status line, then the keys.
-    pub fn link_title(&self) -> String {
-        let Some(s) = &self.link else {
-            return "link".into();
-        };
-        let state = match (s.enabled, s.connected) {
-            (false, _) => "off",
-            (true, true) => "connected",
-            (true, false) => "disconnected",
-        };
-        let id: String = s
-            .harness_id
-            .as_deref()
-            .map_or_else(|| "no identity".into(), |id| id.chars().take(8).collect());
-        format!(
-            "link · {} · {state} · {} ({id}…)   p pair  r rename  x revoke  n node name  e {}  esc",
-            relay_host(&s.relay),
-            s.name,
-            if s.enabled { "disable" } else { "enable" }
-        )
-    }
-
-    /// `/link` menu rows: `● name  platform  paired <ago>  online|seen <ago>`
-    /// per device, or one hint row when none is paired.
-    pub fn link_rows(&self) -> Vec<String> {
-        let now = now_ms();
-        let since = |ms: u64| ago(chrono::Duration::milliseconds(now.saturating_sub(ms) as i64));
-        let rows: Vec<String> = self
-            .link
-            .iter()
-            .flat_map(|s| &s.devices)
-            .map(|d| {
-                let seen = match (d.online, d.last_seen_ms) {
-                    (true, _) => "online".to_owned(),
-                    (false, 0) => "never seen".to_owned(),
-                    (false, ms) => format!("seen {}", since(ms)),
-                };
-                format!(
-                    "{} {:<20} {:<8} paired {:<10} {seen}",
-                    if d.online { "●" } else { "○" },
-                    d.name.chars().take(20).collect::<String>(),
-                    platform_name(&d.platform),
-                    since(d.paired_at_ms),
-                )
-            })
-            .collect();
-        if rows.is_empty() {
-            return vec!["no devices paired · p pairs one".into()];
-        }
-        rows
-    }
-
-    /// `/link`: `p` pairs (card in the transcript), `r`/`n`/`x` open a
-    /// prompt, `e` flips `link.enabled` in place.
-    pub(super) fn link_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
-        let Some(Menu::Link { cursor }) = &mut self.menu else {
-            return MenuKey::Consumed;
-        };
-        let Some(s) = &self.link else {
-            self.menu = None;
-            return MenuKey::Consumed;
-        };
-        let device = s
-            .devices
-            .get(*cursor)
-            .map(|d| (d.id.clone(), d.name.clone()));
-        let enabled = s.enabled;
-        match code {
-            KeyCode::Up => *cursor = cursor.saturating_sub(1),
-            KeyCode::Down => *cursor = (*cursor + 1).min(s.devices.len().saturating_sub(1)),
-            KeyCode::Esc => self.menu = None,
-            KeyCode::Char('p') => {
-                self.menu = None;
-                send(tx, Command::LinkPair);
-            }
-            KeyCode::Char('e') => send(tx, Command::LinkEnable(!enabled)),
-            KeyCode::Char('n') => {
-                self.menu = None;
-                self.prompt = Some(Prompt::LinkName);
-            }
-            KeyCode::Char('r') => {
-                if let Some((id, name)) = device {
-                    self.menu = None;
-                    self.prompt = Some(Prompt::LinkDeviceName { id, name });
-                }
-            }
-            KeyCode::Char('x') => {
-                if let Some((id, name)) = device {
-                    self.menu = None;
-                    self.prompt = Some(Prompt::LinkRevoke { id, name });
-                }
-            }
-            _ => {}
-        }
-        MenuKey::Consumed
-    }
 
     /// `/nodes` menu | `add <key>` | `rm <n>` | `name <n> <name…>` |
     /// `invite <n>` (32 §6.7). `<n>` is a node name or id prefix, resolved
@@ -459,11 +255,6 @@ pub fn find_node<'a>(list: &'a [nodes::Node], n: &str) -> Option<&'a nodes::Node
     })
 }
 
-/// Host part of a relay origin: `wss://relay.theuth.io/x` → `relay.theuth.io`.
-fn relay_host(relay: &str) -> &str {
-    let rest = relay.split_once("://").map_or(relay, |(_, r)| r);
-    rest.split('/').next().unwrap_or(rest)
-}
 
 /// `ios` → `iOS`, `macos` → `macOS`; anything else as sent.
 fn platform_name(p: &str) -> &str {
@@ -474,24 +265,6 @@ fn platform_name(p: &str) -> &str {
     }
 }
 
-/// One-line `link_status`: `link off` or `link on · <host> · connected · 2 devices (1 online)`.
-pub fn link_line(s: &link::LinkStatus) -> String {
-    if !s.enabled {
-        return "link off".into();
-    }
-    format!(
-        "link on · {} · {} · {} device{} ({} online)",
-        relay_host(&s.relay),
-        if s.connected {
-            "connected"
-        } else {
-            "disconnected"
-        },
-        s.devices.len(),
-        if s.devices.len() == 1 { "" } else { "s" },
-        s.devices.iter().filter(|d| d.online).count()
-    )
-}
 
 
 /// One `/mesh devices` row: `<id>  <name>  <platform>  paired 2d ago · seen 3h ago | never seen | revoked`.

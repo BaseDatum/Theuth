@@ -203,11 +203,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "encrypted secrets the agent uses by name",
     ),
     (
-        "/link",
-        "[on|off|pair|rm <n>|name <n> <name>|relay <url>]",
-        "pair and manage phones",
-    ),
-    (
         "/mesh",
         "devices [list|add [name]|rm <id>|name <id> <name>]",
         "devices paired with the mesh (any node serves them)",
