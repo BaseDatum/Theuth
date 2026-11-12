@@ -20,7 +20,7 @@ impl Private {
 }
 
 /// Heading for a project label; labels are display data, control characters dropped.
-pub(super) fn project_heading(project: Option<&str>) -> String {
+pub(crate) fn project_heading(project: Option<&str>) -> String {
     match project {
         Some(p) => p.chars().filter(|c| !c.is_control()).collect(),
         None => "Ungrouped".to_owned(),
@@ -28,7 +28,7 @@ pub(super) fn project_heading(project: Option<&str>) -> String {
 }
 
 /// Projects in first-seen order over `roots` (the pinned/newest list order), `None` last (51 §3).
-pub(super) fn project_order<'a>(roots: impl Iterator<Item = Option<&'a str>>) -> Vec<Option<&'a str>> {
+pub(crate) fn project_order<'a>(roots: impl Iterator<Item = Option<&'a str>>) -> Vec<Option<&'a str>> {
     let mut order: Vec<Option<&str>> = Vec::new();
     let mut ungrouped = false;
     for p in roots {
@@ -595,30 +595,4 @@ impl Model {
         }
     }
 
-    /// What `/artifacts` knows about `id`: a listed durable session, the
-    /// shown session or a roster member (the owned private tree included).
-    /// `None` is a missing durable owner (51 §3).
-    pub(super) fn owner(&self, sessions: &[SessionSummary], id: SessionId) -> Option<Owner> {
-        if let Some(s) = sessions.iter().find(|s| s.id == id) {
-            let title: String = s.title.chars().take(40).collect();
-            return Some(Owner {
-                project: s.project.clone(),
-                label: format!("{}  {title}", short(id)),
-            });
-        }
-        if self.session == Some(id) {
-            return Some(Owner {
-                project: self.project.clone(),
-                label: format!(
-                    "{}  {}",
-                    short(id),
-                    self.session_name.as_deref().unwrap_or("this session")
-                ),
-            });
-        }
-        self.agents.get(&id).map(|a| Owner {
-            project: a.info.project.clone().or_else(|| self.project.clone()),
-            label: format!("{}  {}", short(id), a.info.name),
-        })
-    }
 }

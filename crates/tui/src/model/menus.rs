@@ -92,15 +92,6 @@ pub enum Menu {
         /// What ⏎ does with the highlighted turn.
         action: TurnAction,
     },
-    /// `/artifacts` picker (35 §6.2); `/apps` when `apps` (46 §8.2).
-    Artifacts {
-        /// Project and session headings, then the rows by name and version (51 §3).
-        items: Vec<Grouped<artifact::Artifact>>,
-        /// Highlighted row.
-        cursor: usize,
-        /// Rows are apps: the title says so and where they run.
-        apps: bool,
-    },
 }
 
 /// A picker row that may be a heading: the cursor skips headings.
@@ -175,7 +166,7 @@ impl Model {
             Some(Menu::Skills { .. }) => self.skills_key(code, tx),
             Some(Menu::Logins { .. }) => self.logins_key(code, tx),
             Some(Menu::Turns { .. }) => self.turns_key(code, tx),
-            Some(Menu::Artifacts { .. }) => self.artifacts_key(code, tx),
+
         }
     }
 }

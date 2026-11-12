@@ -302,7 +302,7 @@ impl Model {
                 }
                 self.refresh_grouping |= matches!(
                     self.menu,
-                    Some(Menu::Sessions { .. } | Menu::Artifacts { .. })
+                    Some(Menu::Sessions { .. })
                 );
                 return;
             }
@@ -428,21 +428,10 @@ impl Model {
                 self.entries.push(Entry::Pending {
                     call_id,
                     name,
-                    progress: None,
                 });
             }
-            AgentEvent::ToolCallProgress { call_id, args, .. } => {
-                if let Some(Entry::Pending { progress, .. }) = self
-                    .entries
-                    .iter_mut()
-                    .find(|e| matches!(e, Entry::Pending { call_id: c, .. } if *c == call_id))
-                {
-                    *progress = Some(Progress {
-                        show: surface::partial_show(&args),
-                        bytes: args.len(),
-                    });
-                }
-            }
+            // Progress is admitted here; owners retain their argument projection.
+            AgentEvent::ToolCallProgress { .. } => {}
             AgentEvent::ToolCallStarted {
                 call_id,
                 name,
@@ -458,7 +447,6 @@ impl Model {
                     name: if inner { format!("↳ {name}") } else { name },
                     result: None,
                     expanded: None,
-                    artifact: None,
                 };
                 match self
                     .entries

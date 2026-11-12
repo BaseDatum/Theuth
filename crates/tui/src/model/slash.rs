@@ -131,30 +131,9 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "[add [name [url [key]]] | refresh <name> | rm <name> | limits <provider> <model> <context> [output] | find]",
         "providers: built-in opencode (Zen) / openrouter keyed via /secrets add; add prompts for a custom provider's name, url, key (no key for a local server); refresh lists a provider's models again; limits sets a model's context/output (0 = unknown); find probes local model servers",
     ),
-    (
-        "/artifacts",
-        "",
-        "files the agent showed (picker: ⏎ opens, s shows inline, e exports to ~/Downloads)",
-    ),
-    (
-        "/apps",
-        "",
-        "interactive apps the agent built, run on desktop/web (picker: ⏎ opens, s shows source, e exports to ~/Downloads)",
-    ),
+
     ("/exit", "", "same as /quit"),
 ];
-
-/// Commands whose name starts with the typed word (`/mo` → `/model`);
-/// `/apps` only while the app plugin runs.
-pub fn slash_matches(
-    word: &str,
-    app_enabled: bool,
-) -> Vec<&'static (&'static str, &'static str, &'static str)> {
-    COMMANDS
-        .iter()
-        .filter(|c| c.0.starts_with(word) && (app_enabled || c.0 != "/apps"))
-        .collect()
-}
 
 /// One slash popup row (`Model::slash_rows`): a theuth command, or a harness
 /// command (`raw`) that is sent as typed when picked (141 D15 c).
@@ -225,7 +204,7 @@ impl Model {
     /// Builtin vocabulary in its original presentation order, before harness rows.
     pub(crate) fn command_specs(&self, word: &str) -> Vec<&'static crate::components::SlashSpec> {
         let mut specs: Vec<_> = COMMANDS.iter().chain(self.components.slash_specs())
-            .filter(|spec| spec.0.starts_with(word) && (self.app_enabled || spec.0 != "/apps"))
+            .filter(|spec| spec.0.starts_with(word))
             .collect();
         specs.sort_unstable_by_key(|spec| (command_rank(spec.0), spec.0));
         specs

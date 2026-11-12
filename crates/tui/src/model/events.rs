@@ -116,22 +116,6 @@ pub enum UiEvent {
     /// Reply to [`Command::Redo`]: first line of the turn restored.
     Redone(String),
 
-    /// A `show` call produced a file (bus event, design doc 35).
-    ArtifactShown(artifact::ArtifactShown),
-    /// Reply to [`Command::ListArtifacts`]: the session subtree's artifacts, newest first;
-    /// `pick` opens the `/artifacts` (`/apps` when `apps`) menu, else the rows
-    /// only join their `show` / `app` cards.
-    Artifacts {
-        /// The rows.
-        items: Vec<artifact::Artifact>,
-        /// Open the picker.
-        pick: bool,
-        /// Only [`artifact::Kind::App`] records (`/apps`, 46 §8.2).
-        apps: bool,
-        /// `list_sessions` when picking: the owners whose project the rows
-        /// group under (51 §3); empty otherwise.
-        sessions: Vec<SessionSummary>,
-    },
     /// Reply to [`Command::CreateSession`].
     SessionOpened(SessionOpen),
     /// Reply to [`Command::LeaveSession`]: the root left and how far its cleanup got.
@@ -444,27 +428,7 @@ pub enum Command {
     },
     /// `list_providers`.
     ListProviders,
-    /// `list_artifacts(session, descendants: true)`; `pick` opens the `/artifacts`
-    /// menu, `apps` keeps only [`artifact::Kind::App`] records (`/apps`).
-    ListArtifacts {
-        /// Session.
-        session: SessionId,
-        /// Open the picker on reply.
-        pick: bool,
-        /// Filter to apps.
-        apps: bool,
-    },
-    /// `export_artifact(id, ~/Downloads/<name>, session)`.
-    ExportArtifact {
-        /// The artifact.
-        id: String,
-        /// Its file name.
-        name: String,
-        /// The owned private session it belongs to; `None` when durable.
-        session: Option<SessionId>,
-    },
-    /// Open a local file with the OS default handler ([`platform::open::open_path`], detached).
-    OpenPath(PathBuf),
+
     /// `set_session_project`: label or clear the root's project (51 §3).
     SetSessionProject {
         /// Any session of the tree.

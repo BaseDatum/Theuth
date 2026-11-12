@@ -206,20 +206,6 @@ impl Model {
                     },
                 ),
             },
-            "/apps" if !self.app_enabled => self.entries.push(Entry::Info(
-                "apps are off (app.enabled); /artifacts lists their sources".into(),
-            )),
-            "/artifacts" | "/apps" => match self.session {
-                Some(session) => send(
-                    tx,
-                    Command::ListArtifacts {
-                        session,
-                        pick: true,
-                        apps: cmd == "/apps",
-                    },
-                ),
-                None => self.entries.push(Entry::Info("no session".into())),
-            },
             "/compact" => self.compact_cmd(arg, tx),
             "/endless" => self.endless_cmd(arg, tx),
             "/clear" => match self.session {
