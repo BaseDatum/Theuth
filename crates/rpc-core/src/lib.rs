@@ -1,6 +1,7 @@
 //! Plugin-free RPC contracts shared by transports and method owners.
 
 mod client;
+pub mod compatibility;
 mod discovery;
 pub use discovery::{Audience, DescribedModule, Descriptors, Discovery, MethodDescriptor, ParamDescriptor, SchemaFn, SubscriptionDescriptor, merge_described, schema_for};
 mod follow;
