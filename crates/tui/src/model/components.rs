@@ -174,6 +174,7 @@ impl Model {
         let cx = ViewCx {
             core: CoreView { session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries },
             width, height, frame: self.frame,
+            commands: self.component_commands.as_ref(), endpoint: None,
         };
         self.components.views(surface, &cx).collect()
     }
@@ -181,6 +182,7 @@ impl Model {
         let cx = ViewCx {
             core: CoreView { session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries },
             width: self.width, height: 0, frame: self.frame,
+            commands: self.component_commands.as_ref(), endpoint: None,
         };
         let mut text = String::new();
         for view in self.components.views(surface, &cx) {
