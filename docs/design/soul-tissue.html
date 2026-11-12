@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>theuth · the shape of attention</title>
+<style>
+  :root{
+    --bg:#05070a; --ink:#e9e7e1; --mut:#8b909a; --faint:#565b64; --line:rgba(255,255,255,.07);
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    --sans: ui-sans-serif, -apple-system, "SF Pro Text", Inter, system-ui, sans-serif;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink)}
+  body{font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  .wrap{max-width:900px;margin:0 auto;padding:26px 18px 26px}
+  .kicker{font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);display:flex;align-items:center;gap:8px}
+  .kicker .dot{width:5px;height:5px;border-radius:50%;background:#7dd3c0;box-shadow:0 0 8px #7dd3c0}
+  h1{font-family:var(--serif);font-weight:400;font-size:clamp(28px,4.4vw,42px);letter-spacing:-.02em;margin:12px 0 8px;line-height:1.04}
+  .lede{max-width:640px;color:var(--mut);font-size:13.5px;line-height:1.6;margin:0}
+  .stage{position:relative;margin-top:18px;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#05070a}
+  canvas#tissue{display:block;width:100%;height:620px}
+  @media(max-width:640px){canvas#tissue{height:460px}}
+  .overlay{position:absolute;left:0;right:0;bottom:0;display:flex;align-items:flex-end;justify-content:space-between;gap:14px;padding:16px 16px 14px;pointer-events:none;
+           background:linear-gradient(180deg,rgba(5,7,10,0) 0%,rgba(5,7,10,.82) 55%,rgba(5,7,10,.95) 100%)}
+  .legend{display:flex;flex-wrap:wrap;gap:5px 9px;max-width:520px}
+  .legend span{font-family:var(--mono);font-size:8.5px;letter-spacing:.08em;color:var(--faint);display:inline-flex;align-items:center;gap:4px}
+  .legend i{width:5px;height:5px;border-radius:50%;display:block;opacity:.85}
+  .hint{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);text-align:right;line-height:1.8}
+  .feed{pointer-events:auto;font-family:var(--mono);font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink);
+        background:rgba(10,14,16,.6);border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:6px 12px;cursor:pointer;margin-top:7px}
+  .feed:hover{border-color:rgba(255,255,255,.3)}
+  .read{margin-top:12px;display:flex;flex-wrap:wrap;gap:8px 20px;justify-content:space-between;font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
+  .read b{color:var(--ink);font-weight:400}
+  .foot{margin-top:16px;display:flex;flex-wrap:wrap;gap:8px 18px;justify-content:space-between;font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);border-top:1px solid var(--line);padding-top:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="kicker"><span class="dot"></span> theuth · soul study · proposal 06</div>
+    <h1>The shape of attention</h1>
+    <p class="lede">Not a chart of the bus. A body. Each message type owns a direction; activity extends a lobe that way, silence lets it relax, errors make it flinch. What grows is the harness's attention, in real time — a tissue that folds into itself the way cabbage and coral do.</p>
+  </header>
+
+  <div class="stage" id="stage">
+    <canvas id="tissue"></canvas>
+    <div class="overlay">
+      <div class="legend" id="legend"></div>
+      <div class="hint">move the cursor close · it pulls back<br><button class="feed" id="feed">feed it</button></div>
+    </div>
+  </div>
+
+  <div class="read">
+    <span>lobes: <b id="lobes">—</b></span>
+    <span>nodes: <b id="nodes">—</b></span>
+    <span>state: <b id="state">—</b></span>
+    <span>synthetic bus · no chart, no axes</span>
+  </div>
+
+  <div class="foot"><span>2d canvas · no dependencies</span><span>differential growth · cursor-repelled · error contractions</span></div>
+</div>
+
+<script>
+const TAU = Math.PI * 2;
+const TYPES = [
+  {key:'session',  color:'#2dd4bf'},
+  {key:'tool',     color:'#38bdf8'},
+  {key:'agent',    color:'#6366f1'},
+  {key:'message',  color:'#a855f7'},
+  {key:'approval', color:'#e879f9'},
+  {key:'job',      color:'#4ade80'},
+  {key:'reminder', color:'#fbbf24'},
+  {key:'error',    color:'#f87171'}
+];
+const CAP = 900;
+const REST = 5.4;
+const REP = 9;
+
+function rgba(hex, a){
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + ((n>>16)&255) + ',' + ((n>>8)&255) + ',' + (n&255) + ',' + Math.max(0,Math.min(1,a)).toFixed(3) + ')';
+}
+
+class Tissue {
+  constructor(canvas){
+    this.canvas = canvas; this.ctx = canvas.getContext('2d');
+    this.nodes = [];
+    this.typeAngle = TYPES.map((_,i)=> i*TAU/8 - Math.PI/2);
+    this.mouse = {x:-9999, y:-9999, on:false};
+    this.lastEvent = 0; this.energy = 0; this.flinch = 0;
+    this.ready = false;
+    this.resize();
+  }
+  resize(){
+    const r = this.canvas.getBoundingClientRect();
+    if(r.width < 20 || r.height < 20) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.canvas.width = Math.round(r.width*dpr);
+    this.canvas.height = Math.round(r.height*dpr);
+    this.ctx.setTransform(dpr,0,0,dpr,0,0);
+    this.w = r.width; this.h = r.height;
+    this.cx = r.width/2; this.cy = r.height/2;
+    this.maxR = Math.min(this.w, this.h) * 0.46;
+    this.seed();
+    this.ready = true;
+  }
+  seed(){
+    this.nodes = [];
+    const n = 90;
+    for(let i=0;i<n;i++){
+      const a = i/n*TAU;
+      const r = 22 + Math.sin(a*3)*3;
+      this.nodes.push({x:this.cx+Math.cos(a)*r, y:this.cy+Math.sin(a)*r, vx:0, vy:0, type:-1, heat:0});
+    }
+    // grow a body before the first frame so it is never a bare ring
+    let k = 0;
+    for(let s=0;s<2600;s++){
+      this.physics();
+      if(s%2===0){ this.grow(Math.floor(Math.random()*8)); k++; }
+    }
+    for(const nd of this.nodes) nd.heat = 0;
+  }
+  grow(type){
+    const n = this.nodes.length;
+    if(!n) return;
+    const target = this.typeAngle[type] + (Math.random()-0.5)*0.34;
+    let best = -1, bestR = -1;
+    for(let i=0;i<n;i++){
+      const nd = this.nodes[i];
+      const a = Math.atan2(nd.y-this.cy, nd.x-this.cx);
+      const da = Math.atan2(Math.sin(a-target), Math.cos(a-target));
+      if(Math.abs(da) < 0.42){
+        const r = Math.hypot(nd.x-this.cx, nd.y-this.cy);
+        if(r > bestR){ bestR = r; best = i; }
+      }
+    }
+    if(best < 0) best = Math.floor(Math.random()*n);
+    const a = this.nodes[best], b = this.nodes[(best+1)%n];
+    const mx = (a.x+b.x)/2, my = (a.y+b.y)/2;
+    let dx = mx-this.cx, dy = my-this.cy;
+    const d = Math.hypot(dx,dy) || 1;
+    const push = 0.4 + Math.random()*1.1;
+    this.nodes.splice(best+1, 0, {
+      x: mx + dx/d*push, y: my + dy/d*push,
+      vx: dx/d*0.5, vy: dy/d*0.5, type, heat: 1
+    });
+    if(this.nodes.length > CAP) this.trim();
+  }
+  trim(){
+    let idx = -1, best = 1e9;
+    for(let i=1;i<this.nodes.length-1;i++){
+      const nd = this.nodes[i];
+      if(nd.heat < 0.18 && nd.type >= 0 && nd.heat < best){ best = nd.heat; idx = i; }
+    }
+    if(idx < 0) idx = 1 + Math.floor(Math.random()*(this.nodes.length-2));
+    this.nodes.splice(idx,1);
+  }
+  physics(){
+    const n = this.nodes.length;
+    if(n < 3) return;
+    for(let i=0;i<n;i++){
+      const a = this.nodes[i], b = this.nodes[(i+1)%n];
+      let dx = b.x-a.x, dy = b.y-a.y;
+      let d = Math.hypot(dx,dy) || 0.001;
+      const f = (d - REST) * 0.09;
+      const ux = dx/d, uy = dy/d;
+      a.vx += ux*f; a.vy += uy*f;
+      b.vx -= ux*f; b.vy -= uy*f;
+    }
+    const cell = REP, grid = new Map();
+    for(let i=0;i<n;i++){
+      const nd = this.nodes[i];
+      const k = ((nd.x/cell)|0) + ',' + ((nd.y/cell)|0);
+      let arr = grid.get(k); if(!arr){ arr = []; grid.set(k, arr); }
+      arr.push(i);
+    }
+    for(let i=0;i<n;i++){
+      const a = this.nodes[i];
+      const gx = (a.x/cell)|0, gy = (a.y/cell)|0;
+      for(let ox=-1;ox<=1;ox++){
+        for(let oy=-1;oy<=1;oy++){
+          const arr = grid.get((gx+ox)+','+(gy+oy));
+          if(!arr) continue;
+          for(let q=0;q<arr.length;q++){
+            const j = arr[q];
+            if(j <= i) continue;
+            const b = this.nodes[j];
+            let dx = b.x-a.x, dy = b.y-a.y;
+            let d = Math.hypot(dx,dy);
+            if(d < 0.001){ d = 0.001; dx = 0.001; dy = 0; }
+            if(d < REP){
+              const f = (1 - d/REP) * 0.55;
+              const ux = dx/d, uy = dy/d;
+              a.vx -= ux*f; a.vy -= uy*f;
+              b.vx += ux*f; b.vy += uy*f;
+            }
+          }
+        }
+      }
+    }
+    if(this.mouse.on){
+      const mx = this.mouse.x, my = this.mouse.y;
+      for(const nd of this.nodes){
+        const dx = nd.x-mx, dy = nd.y-my;
+        const d = Math.hypot(dx,dy);
+        if(d < 86 && d > 0.01){
+          const f = (1 - d/86) * 1.5;
+          nd.vx += dx/d*f; nd.vy += dy/d*f;
+        }
+      }
+    }
+    for(const nd of this.nodes){
+      const dx = nd.x-this.cx, dy = nd.y-this.cy;
+      const r = Math.hypot(dx,dy) || 1;
+      if(r > this.maxR){ nd.vx -= dx/r*1.2; nd.vy -= dy/r*1.2; }
+      nd.vx *= 0.80; nd.vy *= 0.80;
+      const sp = Math.hypot(nd.vx, nd.vy);
+      if(sp > 3){ nd.vx *= 3/sp; nd.vy *= 3/sp; }
+      nd.x += nd.vx; nd.y += nd.vy;
+      nd.heat *= 0.9995;
+    }
+  }
+  onEvent(type, s, t){
+    this.lastEvent = t;
+    this.energy = Math.min(6, this.energy + 0.5*s);
+    const node = this.grow(type);
+    if(type === 7){
+      this.flinch = 1;
+      for(const nd of this.nodes){
+        const dx = nd.x-this.cx, dy = nd.y-this.cy;
+        const d = Math.hypot(dx,dy) || 1;
+        nd.vx -= dx/d * 1.4 * s;
+        nd.vy -= dy/d * 1.4 * s;
+      }
+    }
+    return node;
+  }
+  draw(t, dt){
+    if(!this.ready) return;
+    const ctx = this.ctx;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = '#05070a';
+    ctx.fillRect(0,0,this.w,this.h);
+
+    const asleep = (t - this.lastEvent) > 9;
+    const pulse = 0.5 + 0.5*Math.sin(t*(asleep?0.35:0.9));
+
+    const g = ctx.createRadialGradient(this.cx,this.cy,0,this.cx,this.cy,this.maxR*0.85);
+    g.addColorStop(0,'rgba(120,220,200,' + ((asleep?0.05:0.10) + pulse*0.05).toFixed(3) + ')');
+    g.addColorStop(0.35,'rgba(70,150,145,0.035)');
+    g.addColorStop(1,'rgba(70,150,145,0)');
+    ctx.fillStyle = g; ctx.fillRect(0,0,this.w,this.h);
+
+    const n = this.nodes.length;
+    if(n < 3) return;
+
+    // soft membrane glow
+    ctx.beginPath();
+    ctx.moveTo(this.nodes[0].x, this.nodes[0].y);
+    for(let i=1;i<n;i++) ctx.lineTo(this.nodes[i].x, this.nodes[i].y);
+    ctx.closePath();
+    ctx.strokeStyle = 'rgba(150,220,205,0.05)';
+    ctx.lineWidth = 12; ctx.stroke();
+    ctx.strokeStyle = 'rgba(150,220,205,0.06)';
+    ctx.lineWidth = 5; ctx.stroke();
+
+    // cytoplasm: a faint fill so folds read as tissue, not wire
+    ctx.fillStyle = 'rgba(16,34,34,0.26)';
+    ctx.fill();
+
+    // segments
+    for(let i=0;i<n;i++){
+      const a = this.nodes[i], b = this.nodes[(i+1)%n];
+      const heat = Math.max(a.heat, b.heat);
+      let col, lw;
+      if(heat > 0.03 && a.type >= 0){
+        col = rgba(TYPES[a.type].color, 0.22 + Math.min(1,heat)*0.72);
+        lw = 1.8 + Math.min(1,heat)*1.8;
+      } else {
+        col = 'rgba(186,220,212,0.26)';
+        lw = 1.7;
+      }
+      ctx.strokeStyle = col; ctx.lineWidth = lw;
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    }
+
+    // nucleus
+    const nr = 3.2 + pulse*1.4 + this.energy*0.6;
+    const ng = ctx.createRadialGradient(this.cx,this.cy,0,this.cx,this.cy,nr*7);
+    ng.addColorStop(0,'rgba(255,252,246,' + (asleep?0.55:0.9) + ')');
+    ng.addColorStop(0.16,'rgba(190,240,225,' + (asleep?0.16:0.30) + ')');
+    ng.addColorStop(0.5,'rgba(120,210,195,0.06)');
+    ng.addColorStop(1,'rgba(120,210,195,0)');
+    ctx.fillStyle = ng;
+    ctx.beginPath(); ctx.arc(this.cx,this.cy,nr*7,0,TAU); ctx.fill();
+    ctx.fillStyle = 'rgba(255,253,248,0.92)';
+    ctx.beginPath(); ctx.arc(this.cx,this.cy,nr,0,TAU); ctx.fill();
+
+    // flinch ring
+    if(this.flinch > 0.01){
+      ctx.strokeStyle = rgba(TYPES[7].color, this.flinch*0.35);
+      ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.arc(this.cx,this.cy,this.maxR*(1.05-this.flinch*0.5),0,TAU); ctx.stroke();
+      this.flinch *= 0.97;
+    }
+    this.energy *= 0.995;
+  }
+}
+
+/* ---- page ---- */
+const canvas = document.getElementById('tissue');
+const tissue = new Tissue(canvas);
+
+const legend = document.getElementById('legend');
+TYPES.forEach(t=>{
+  const s = document.createElement('span');
+  s.innerHTML = '<i style="background:'+t.color+'"></i>'+t.key;
+  legend.appendChild(s);
+});
+
+const stage = document.getElementById('stage');
+stage.addEventListener('mousemove', (e)=>{
+  const r = canvas.getBoundingClientRect();
+  tissue.mouse.x = e.clientX - r.left;
+  tissue.mouse.y = e.clientY - r.top;
+  tissue.mouse.on = true;
+});
+stage.addEventListener('mouseleave', ()=>{ tissue.mouse.on = false; });
+stage.addEventListener('click', ()=>{ feed(14); });
+document.getElementById('feed').addEventListener('click', (e)=>{ e.stopPropagation(); feed(14); });
+
+let burst = 0;
+function feed(n){ burst += n; }
+
+const nodesEl = document.getElementById('nodes');
+const stateEl = document.getElementById('state');
+const lobesEl = document.getElementById('lobes');
+
+let active = [0,1,2,3];
+setInterval(()=>{
+  const k = 2 + Math.floor(Math.random()*3);
+  const pick = [];
+  while(pick.length < k){ const v = Math.floor(Math.random()*8); if(pick.indexOf(v)<0) pick.push(v); }
+  active = pick;
+}, 14000);
+
+let last = 0, start = 0, acc = 0, nowT = 0;
+function frame(now){
+  const t = now/1000;
+  nowT = t;
+  if(!start){ start = t; last = t; }
+  let dt = Math.min(0.05, Math.max(0.001, t-last)); last = t;
+
+  if(burst > 0){
+    acc += dt*22;
+    let guard = 0;
+    while(burst > 0 && acc >= 1 && guard++ < 6){
+      acc -= 1; burst--;
+      const type = active[Math.floor(Math.random()*active.length)];
+      tissue.onEvent(type, 0.6+Math.random()*0.6, t);
+    }
+  }
+  acc += dt*5.6;
+  let guard2 = 0;
+  while(acc >= 1 && guard2++ < 8){
+    acc -= 1;
+    const type = active[Math.floor(Math.random()*active.length)];
+    tissue.onEvent(type, 0.5+Math.random()*0.7, t);
+  }
+
+  tissue.physics();
+  tissue.draw(t, dt);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+setInterval(()=>{
+  nodesEl.textContent = tissue.nodes.length;
+  const asleep = (nowT - tissue.lastEvent) > 9;
+  stateEl.textContent = asleep ? 'resting' : 'growing';
+  const seen = {};
+  for(const nd of tissue.nodes){ if(nd.heat>0.15 && nd.type>=0) seen[nd.type]=1; }
+  const k = Object.keys(seen).length;
+  lobesEl.textContent = k ? k + ' active' : 'quiet';
+}, 600);
+
+let rz = null;
+const ro = new ResizeObserver(()=>{ if(rz) return; rz = requestAnimationFrame(()=>{ rz=null; tissue.resize(); }); });
+ro.observe(stage);
+</script>
+</body>
+</html>

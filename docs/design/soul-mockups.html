@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>theuth · soul mockups</title>
+<style>
+  :root{
+    --bg:#050608; --ink:#e9e6e0; --mut:#8b909a; --faint:#565b64; --line:rgba(255,255,255,.07);
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    --sans: ui-sans-serif, -apple-system, "SF Pro Text", Inter, system-ui, sans-serif;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink)}
+  body{font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 20px 30px}
+  .kicker{font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);display:flex;align-items:center;gap:8px}
+  .kicker .dot{width:5px;height:5px;border-radius:50%;background:#2dd4bf;box-shadow:0 0 8px #2dd4bf}
+  h1{font-family:var(--serif);font-weight:400;font-size:clamp(30px,4.6vw,46px);letter-spacing:-.02em;margin:14px 0 10px;line-height:1.02}
+  .lede{max-width:640px;color:var(--mut);font-size:14px;line-height:1.6;margin:0}
+  .bar{display:flex;flex-wrap:wrap;align-items:center;gap:14px 20px;padding:22px 0 12px;margin-top:8px}
+  .ctl{display:flex;align-items:center;gap:9px}
+  .lbl{font-family:var(--mono);font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint)}
+  .val{font-family:var(--mono);font-size:10px;color:var(--ink);min-width:22px;text-align:right}
+  input[type=range]{-webkit-appearance:none;appearance:none;width:110px;height:2px;background:#262a30;border-radius:2px;outline:none}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:11px;height:11px;border-radius:50%;background:#e9e6e0;border:0;cursor:pointer}
+  input[type=range]::-moz-range-thumb{width:11px;height:11px;border-radius:50%;background:#e9e6e0;border:0;cursor:pointer}
+  .btn{font-family:var(--mono);font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink);background:transparent;border:1px solid var(--line);border-radius:999px;padding:6px 12px;cursor:pointer;transition:border-color .2s,color .2s}
+  .btn:hover{border-color:rgba(255,255,255,.24)}
+  .btn.off{color:var(--faint)}
+  .hud{margin-left:auto;font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
+  .hud b{color:var(--ink);font-weight:400}
+  .chips{display:flex;flex-wrap:wrap;gap:6px 8px;padding:0 0 20px}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:9px;letter-spacing:.08em;color:var(--faint);border:1px solid transparent;border-radius:999px;padding:3px 7px;opacity:.35;transition:opacity .35s,color .35s,border-color .35s}
+  .chip i{width:5px;height:5px;border-radius:50%;display:block;background:currentColor}
+  .chip.on{opacity:1;color:var(--ink);border-color:var(--line)}
+  .chip.on i{box-shadow:0 0 7px currentColor}
+  .grid{display:grid;grid-template-columns:1fr;gap:16px}
+  @media(min-width:880px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  .panel{margin:0;background:linear-gradient(180deg,#08090c,#050608);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  .ph{display:flex;align-items:baseline;gap:10px;padding:14px 16px 11px}
+  .num{font-family:var(--mono);font-size:9px;letter-spacing:.1em;color:var(--faint)}
+  .ph h2{font-size:14.5px;font-weight:500;letter-spacing:-.01em;margin:0;flex:1}
+  .tag{font-family:var(--mono);font-size:8.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint)}
+  canvas{display:block;width:100%;height:320px;background:#050608}
+  @media(max-width:520px){canvas{height:240px}}
+  figcaption{padding:11px 16px 13px;border-top:1px solid var(--line);font-size:11.5px;line-height:1.55;color:var(--mut)}
+  .foot{margin-top:22px;display:flex;flex-wrap:wrap;gap:10px 18px;justify-content:space-between;font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);border-top:1px solid var(--line);padding-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="kicker"><span class="dot"></span> theuth · event bus · soul study</div>
+    <h1>Four ways to be alive</h1>
+    <p class="lede">One synthetic bus, eight message types, four organisms. Drop variety and each one simplifies toward a single hue; raise activity and it starts talking to itself. Every panel is fed by the same events.</p>
+  </header>
+
+  <section class="bar">
+    <div class="ctl"><span class="lbl">variety</span><input id="variety" type="range" min="1" max="8" step="1" value="8"><span class="val" id="vv">8</span></div>
+    <div class="ctl"><span class="lbl">activity</span><input id="activity" type="range" min="0" max="2" step="0.05" value="0.9"><span class="val" id="av">0.9</span></div>
+    <button id="burst" class="btn">burst</button>
+    <button id="pause" class="btn">pause</button>
+    <div class="hud"><b id="rate">0.0</b> ev/s · simulated</div>
+  </section>
+  <div class="chips" id="chips"></div>
+
+  <main class="grid">
+    <figure class="panel">
+      <div class="ph"><span class="num">01</span><h2>Multi-Species Ecosystem</h2><span class="tag">field</span></div>
+      <canvas id="c1"></canvas>
+      <figcaption>Each type owns bodies and a movement instinct — pulse, trail, orbit, dart. Events flare, split or startle them; variety is read as colour in the dark.</figcaption>
+    </figure>
+    <figure class="panel">
+      <div class="ph"><span class="num">02</span><h2>Layered Living Rings</h2><span class="tag">orbits</span></div>
+      <canvas id="c2"></canvas>
+      <figcaption>Types become orbits around a breathing core. Silence thins a ring until it is almost gone; an event sends a pulse racing around its band.</figcaption>
+    </figure>
+    <figure class="panel">
+      <div class="ph"><span class="num">03</span><h2>Typed Branching Organism</h2><span class="tag">growth</span></div>
+      <canvas id="c3"></canvas>
+      <figcaption>The bus written as growth: colour, thickness and node density are the record. It sways even when idle, so it never reads as static.</figcaption>
+    </figure>
+    <figure class="panel">
+      <div class="ph"><span class="num">04</span><h2>Multi-Channel Heartbeat</h2><span class="tag">traces</span></div>
+      <canvas id="c4"></canvas>
+      <figcaption>Types become parallel channels. Events are spikes, plateaus and noise; quiet channels fade toward invisibility while active ones stay vivid.</figcaption>
+    </figure>
+  </main>
+
+  <div class="foot"><span>mockup · 2d canvas · no dependencies</span><span>synthetic traffic — nothing is wired to the harness yet</span></div>
+</div>
+
+<script>
+const TAU = Math.PI * 2;
+const BG = '#050608';
+const MONO = 'ui-monospace, Menlo, monospace';
+const TYPES = [
+  {key:'session',  color:'#2dd4bf', pers:'pulse', sig:{taper:.80,spread:.95,len:1.00,branch:.45,node:.15,thick:0.9}},
+  {key:'tool',     color:'#38bdf8', pers:'dart',  sig:{taper:.86,spread:1.15,len:0.95,branch:.60,node:.10,thick:1.0}},
+  {key:'agent',    color:'#6366f1', pers:'orbit', sig:{taper:.95,spread:.40,len:0.80,branch:.25,node:.10,thick:1.5}},
+  {key:'message',  color:'#a855f7', pers:'trail', sig:{taper:.82,spread:.85,len:1.15,branch:.50,node:.20,thick:0.8}},
+  {key:'approval', color:'#e879f9', pers:'pulse', sig:{taper:.84,spread:.70,len:0.90,branch:.40,node:.85,thick:0.9}},
+  {key:'job',      color:'#4ade80', pers:'trail', sig:{taper:.90,spread:.55,len:0.85,branch:.30,node:.15,thick:1.2}},
+  {key:'reminder', color:'#fbbf24', pers:'orbit', sig:{taper:.85,spread:1.05,len:1.00,branch:.50,node:.30,thick:0.95}},
+  {key:'error',    color:'#f87171', pers:'dart',  sig:{taper:.88,spread:1.30,len:1.10,branch:.55,node:.40,thick:1.1}}
+];
+const state = { variety: 8, activity: 0.9, paused: false };
+const fade = new Float32Array(8);
+const bus = { last: new Array(8).fill(-999) };
+let nowT = 0, burstUntil = -1;
+
+function rgba(hex, a){
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  return 'rgba(' + r + ',' + g + ',' + b + ',' + Math.max(0, Math.min(1, a)).toFixed(3) + ')';
+}
+class Vis {
+  constructor(canvas){ this.canvas = canvas; this.ctx = canvas.getContext('2d'); this.w = 0; this.h = 0; this.ready = false; }
+  fit(){
+    const r = this.canvas.getBoundingClientRect();
+    if(r.width < 20 || r.height < 20) return false;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.canvas.width = Math.round(r.width * dpr);
+    this.canvas.height = Math.round(r.height * dpr);
+    this.ctx.setTransform(dpr,0,0,dpr,0,0);
+    this.w = r.width; this.h = r.height;
+    return true;
+  }
+  reset(){ if(this.fit()){ this.init(); this.ready = true; } }
+}
+
+/* ---------- 01 ecosystem ---------- */
+class Eco extends Vis {
+  constructor(c){ super(c); }
+  init(){
+    this.parts = []; this.kids = [];
+    for(let i=0;i<8;i++) for(let k=0;k<7;k++) this.parts.push(this.make(i));
+    this.vig = null;
+    const g = this.ctx.createRadialGradient(this.w/2,this.h/2,Math.min(this.w,this.h)*0.18,this.w/2,this.h/2,Math.max(this.w,this.h)*0.72);
+    g.addColorStop(0,'rgba(0,0,0,0)'); g.addColorStop(1,'rgba(0,0,0,0.50)');
+    this.vig = g;
+  }
+  make(type){
+    const t = TYPES[type];
+    return {
+      type, pers: t.pers, x: Math.random()*this.w, y: Math.random()*this.h,
+      vx: (Math.random()-0.5)*5, vy: (Math.random()-0.5)*5,
+      r: 0.9 + Math.random()*1.4, phase: Math.random()*TAU, sp: 0.5 + Math.random()*1.1,
+      flare: 0, ang: Math.random()*TAU, rad: 10 + Math.random()*44,
+      ax: Math.random()*this.w, ay: Math.random()*this.h,
+      avx: (Math.random()-0.5)*3, avy: (Math.random()-0.5)*3,
+      trail: []
+    };
+  }
+  child(p){
+    return { type:p.type, x:p.x, y:p.y, vx:(Math.random()-0.5)*22, vy:(Math.random()-0.5)*22,
+      life: 2.2 + Math.random()*1.6, max: 3.8, r: 0.8 + Math.random()*1.1 };
+  }
+  glow(type, x, y, size, a){
+    const ctx = this.ctx;
+    const col = TYPES[type].color;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, size);
+    g.addColorStop(0, 'rgba(255,255,255,0.90)');
+    g.addColorStop(0.12, rgba(col, 0.95));
+    g.addColorStop(0.42, rgba(col, 0.30));
+    g.addColorStop(1, rgba(col, 0));
+    ctx.globalAlpha = a;
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, size, 0, TAU); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  onEvent(i, s){
+    for(const p of this.parts){
+      if(p.type !== i) continue;
+      const r = Math.random();
+      if(r < 0.55) p.flare = Math.min(1.15, p.flare + 0.9*s);
+      else if(r < 0.82){ if(this.kids.length < 110) this.kids.push(this.child(p)); }
+      else { p.vx += (Math.random()-0.5)*70*s; p.vy += (Math.random()-0.5)*70*s; }
+    }
+  }
+  tick(dt, t){
+    const ctx = this.ctx;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgba(5,6,8,0.22)';
+    ctx.fillRect(0,0,this.w,this.h);
+    ctx.globalCompositeOperation = 'lighter';
+
+    for(const p of this.parts){
+      const fa = fade[p.type];
+      p.phase += dt * p.sp;
+      p.flare = Math.max(0, p.flare - dt*1.5);
+      if(fa < 0.02 && p.flare < 0.02) continue;
+
+      if(p.pers === 'orbit'){
+        p.ang += dt * p.sp * 0.55;
+        p.ax += p.avx*dt; p.ay += p.avy*dt;
+        if(p.ax < -40) p.ax = this.w+40; if(p.ax > this.w+40) p.ax = -40;
+        if(p.ay < -40) p.ay = this.h+40; if(p.ay > this.h+40) p.ay = -40;
+        p.x = p.ax + Math.cos(p.ang)*p.rad;
+        p.y = p.ay + Math.sin(p.ang)*p.rad;
+      } else {
+        p.vx += (Math.random()-0.5)*5*dt;
+        p.vy += (Math.random()-0.5)*5*dt;
+        if(p.pers === 'dart' && Math.random() < dt*0.55){
+          p.vx += (Math.random()-0.5)*46; p.vy += (Math.random()-0.5)*46;
+        }
+        p.vx *= (1 - 1.3*dt); p.vy *= (1 - 1.3*dt);
+        p.x += p.vx*dt; p.y += p.vy*dt;
+        if(p.x < -12) p.x = this.w+12; if(p.x > this.w+12) p.x = -12;
+        if(p.y < -12) p.y = this.h+12; if(p.y > this.h+12) p.y = -12;
+      }
+      if(p.pers === 'trail'){
+        p.trail.push(p.x, p.y);
+        if(p.trail.length > 30) p.trail.splice(0,2);
+        if(p.trail.length > 6 && fa > 0.05){
+          ctx.strokeStyle = rgba(TYPES[p.type].color, 0.22*fa);
+          ctx.lineWidth = 1.4;
+          ctx.beginPath(); ctx.moveTo(p.trail[0], p.trail[1]);
+          for(let k=2;k<p.trail.length;k+=2) ctx.lineTo(p.trail[k], p.trail[k+1]);
+          ctx.stroke();
+        }
+      }
+      const pulse = p.pers === 'pulse' ? 0.55 + 0.45*Math.sin(p.phase*2.2) : 0.8;
+      const a = Math.min(1, fa*(0.24 + 0.40*pulse) + p.flare*0.9*Math.max(fa, 0.2));
+      const size = p.r * (9 + p.flare*10);
+      this.glow(p.type, p.x, p.y, size, a);
+    }
+
+    for(let i=this.kids.length-1;i>=0;i--){
+      const k = this.kids[i];
+      k.life -= dt;
+      if(k.life <= 0){ this.kids.splice(i,1); continue; }
+      k.vx *= (1 - 0.7*dt); k.vy *= (1 - 0.7*dt);
+      k.x += k.vx*dt; k.y += k.vy*dt;
+      const a = Math.min(1, (k.life / k.max) * 0.85 * Math.max(fade[k.type], 0.2));
+      this.glow(k.type, k.x, k.y, k.r * 8, a);
+    }
+
+    ctx.globalCompositeOperation = 'source-over';
+    if(this.vig){ ctx.fillStyle = this.vig; ctx.fillRect(0,0,this.w,this.h); }
+  }
+}
+
+/* ---------- 02 rings ---------- */
+class Rings extends Vis {
+  init(){
+    this.rings = TYPES.map((t,i) => ({
+      ang: Math.random()*TAU,
+      sp: (i % 2 ? -1 : 1) * (0.15 + Math.random()*0.06),
+      heat: 0, last: -999
+    }));
+    this.pulses = []; this.flashes = []; this.core = 0;
+  }
+  onEvent(i, s, t){
+    const ring = this.rings[i];
+    ring.heat = Math.min(1, ring.heat + 0.55*s);
+    ring.last = t;
+    this.core = Math.min(1, this.core + 0.45*s);
+    this.pulses.push({ i, ang: ring.ang + Math.random()*TAU, dir: Math.random() < 0.5 ? -1 : 1,
+      life: 1, len: 0.35 + Math.random()*0.35, sp: 3.6 + Math.random()*1.6 });
+    this.flashes.push({ i, life: 1 });
+    if(this.pulses.length > 90) this.pulses.splice(0, this.pulses.length - 90);
+    if(this.flashes.length > 40) this.flashes.splice(0, this.flashes.length - 40);
+  }
+  tick(dt, t){
+    const ctx = this.ctx, w = this.w, h = this.h;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = BG; ctx.fillRect(0,0,w,h);
+    const cx = w/2, cy = h*0.5, maxR = Math.min(w,h)*0.46;
+    this.core = Math.max(0, this.core - dt*1.2);
+    const breath = 0.5 + 0.5*Math.sin(t*0.5);
+    const cr = 14 + 5*breath + this.core*10;
+
+    ctx.globalCompositeOperation = 'lighter';
+    const g = ctx.createRadialGradient(cx,cy,0,cx,cy,Math.max(48, cr*5));
+    g.addColorStop(0, 'rgba(255,250,242,' + (0.45 + this.core*0.35).toFixed(3) + ')');
+    g.addColorStop(0.10, 'rgba(255,236,214,0.18)');
+    g.addColorStop(0.32, 'rgba(168,196,255,0.05)');
+    g.addColorStop(1, 'rgba(120,150,255,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx,cy,Math.max(48, cr*5),0,TAU); ctx.fill();
+    ctx.fillStyle = 'rgba(255,252,246,0.95)';
+    ctx.beginPath(); ctx.arc(cx,cy,Math.max(2.2, cr*0.30),0,TAU); ctx.fill();
+
+    for(let i=0;i<8;i++){
+      const fa = fade[i];
+      if(fa < 0.01) continue;
+      const ring = this.rings[i];
+      const r = maxR * (0.30 + 0.62 * i / 7);
+      ring.heat = Math.max(0, ring.heat - dt*0.22);
+      ring.ang += dt * ring.sp * 0.25;
+      const quiet = Math.min(1, Math.max(0, (t - ring.last) / 16));
+      const base = (0.12 + ring.heat*0.55) * fa * (1 - 0.72*quiet);
+      const lw = 0.7 + ring.heat*1.2;
+      ctx.strokeStyle = rgba(TYPES[i].color, Math.max(0.02, base*0.5));
+      ctx.lineWidth = lw;
+      ctx.beginPath(); ctx.arc(cx,cy,r,0,TAU); ctx.stroke();
+      ctx.strokeStyle = rgba(TYPES[i].color, Math.max(0.02, base*1.5));
+      ctx.lineWidth = lw*1.4;
+      ctx.beginPath(); ctx.arc(cx,cy,r, ring.ang, ring.ang + 0.5 + ring.heat*0.25); ctx.stroke();
+    }
+
+    for(let k=this.pulses.length-1;k>=0;k--){
+      const p = this.pulses[k];
+      p.life -= dt*0.85;
+      if(p.life <= 0){ this.pulses.splice(k,1); continue; }
+      p.ang += p.dir * p.sp * dt;
+      const r = maxR * (0.30 + 0.62 * p.i / 7);
+      const a = p.life * fade[p.i];
+      ctx.strokeStyle = rgba(TYPES[p.i].color, a*0.9);
+      ctx.lineWidth = 2.4;
+      ctx.beginPath(); ctx.arc(cx,cy,r, p.ang, p.ang + p.len); ctx.stroke();
+      ctx.strokeStyle = rgba(TYPES[p.i].color, a*0.25);
+      ctx.lineWidth = 7;
+      ctx.beginPath(); ctx.arc(cx,cy,r, p.ang, p.ang + p.len); ctx.stroke();
+    }
+
+    for(let k=this.flashes.length-1;k>=0;k--){
+      const f = this.flashes[k];
+      f.life -= dt*0.9;
+      if(f.life <= 0){ this.flashes.splice(k,1); continue; }
+      const rr = (1 - f.life) * maxR * 1.05;
+      const a = f.life * 0.30 * fade[f.i];
+      ctx.strokeStyle = rgba(TYPES[f.i].color, a);
+      ctx.lineWidth = 0.6 + f.life*1.6;
+      ctx.beginPath(); ctx.arc(cx,cy,Math.max(1,rr),0,TAU); ctx.stroke();
+    }
+  }
+}
+
+/* ---------- 03 branching ---------- */
+class Branch extends Vis {
+  init(){
+    this.segs = []; this.ids = 1; this.cap = 900;
+    const root = { id:0, parent:null, angle:0, len:0, width:0, type:-1, glow:0, seed:Math.random()*100, children:[], depth:0 };
+    this.segs.push(root);
+    let cur = root;
+    const segLen = this.h * 0.062;
+    for(let k=0;k<7;k++){
+      const s = { id:this.ids++, parent:cur, angle:(k === 0 ? 0 : (Math.random()-0.5)*0.14),
+        len: segLen, width: 7*(1 - k*0.07), type:-1, glow:0, seed:Math.random()*100,
+        children:[], depth:k+1, node:false };
+      cur.children.push(s); this.segs.push(s); cur = s;
+    }
+    this.trunkTip = cur;
+    this.neutral = this.segs.filter(s => s.type < 0);
+    for(let n=0;n<320;n++) this.grow(Math.floor(Math.random()*Math.min(8, state.variety)), 0.55, true);
+  }
+  grow(typeIdx, energy, quiet){
+    const sig = TYPES[typeIdx].sig;
+    const cands = this.segs.filter(s => s.type === typeIdx && s.children.length < 2 && s.depth < 24);
+    let parent = null;
+    if(cands.length) parent = cands[Math.floor(Math.random()*cands.length)];
+    else {
+      const pool = this.segs.filter(s => s.type < 0 && s.depth < 6);
+      parent = pool.length ? pool[Math.floor(Math.random()*pool.length)] : this.trunkTip;
+    }
+    if(!parent) return;
+    let p = parent;
+    const n = 1 + (Math.random() < sig.branch ? 1 : 0);
+    const base = this.h * 0.042;
+    for(let k=0;k<n;k++){
+      const ang = (Math.random()-0.5)*sig.spread + (k ? 0.22 : 0);
+      const len = base * sig.len * (0.65 + Math.random()*0.7) * (0.7 + energy*0.5);
+      const w = Math.max(0.65, (p.width || 3.4) * sig.taper);
+      const s = { id:this.ids++, parent:p, angle:ang, len, width:w, type:typeIdx,
+        glow: quiet ? 0.25 : 0.95, seed:Math.random()*100, children:[], depth:p.depth+1,
+        node: Math.random() < sig.node };
+      p.children.push(s); this.segs.push(s); p = s;
+    }
+    this.trim();
+  }
+  trim(){
+    while(this.segs.length > this.cap){
+      let idx = -1;
+      for(let i=1;i<this.segs.length;i++){ if(this.segs[i].children.length === 0){ idx = i; break; } }
+      if(idx < 0) break;
+      const s = this.segs[idx];
+      if(s.parent){ const arr = s.parent.children; const j = arr.indexOf(s); if(j >= 0) arr.splice(j,1); }
+      this.segs.splice(idx,1);
+    }
+  }
+  onEvent(i, s){
+    this.grow(i, 0.55 + s*0.5, false);
+  }
+  tick(dt, t){
+    const ctx = this.ctx;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = BG; ctx.fillRect(0,0,this.w,this.h);
+    const cx = this.w*0.5, by = this.h*0.98;
+
+    const bg = ctx.createRadialGradient(cx,by,0,cx,by,this.h*0.22);
+    bg.addColorStop(0,'rgba(226,236,232,0.07)');
+    bg.addColorStop(1,'rgba(226,236,232,0)');
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = bg;
+    ctx.fillRect(cx - this.h*0.32, by - this.h*0.32, this.h*0.64, this.h*0.64);
+
+    ctx.lineCap = 'round';
+    const walk = (seg, x, y, angle, depth) => {
+      const sway = Math.sin(t*0.42 + depth*0.6 + seg.seed) * 0.010 * (1 + depth*0.12);
+      const a = angle + seg.angle + sway;
+      const nx = x + Math.cos(a)*seg.len;
+      const ny = y + Math.sin(a)*seg.len;
+      const col = seg.type < 0 ? '#c9d4cf' : TYPES[seg.type].color;
+      const fa = seg.type < 0 ? 0.55 : Math.max(0.05, fade[seg.type]);
+      const glow = seg.glow;
+      seg.glow = Math.max(0, seg.glow - dt*0.9);
+      if(seg.len > 0){
+        ctx.strokeStyle = rgba(col, Math.min(1, fa*(0.42 + 0.5*glow)));
+        ctx.lineWidth = seg.width;
+        ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(nx,ny); ctx.stroke();
+        if(glow > 0.03){
+          ctx.strokeStyle = rgba(col, glow*0.20*fa);
+          ctx.lineWidth = seg.width + 4;
+          ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(nx,ny); ctx.stroke();
+        }
+      }
+      if(seg.node && seg.len > 0){
+        ctx.fillStyle = rgba(col, Math.min(1, fa*(0.45 + glow*0.55)));
+        ctx.beginPath(); ctx.arc(nx,ny,Math.max(1.1, seg.width*0.7),0,TAU); ctx.fill();
+        ctx.fillStyle = rgba(col, 0.09*fa);
+        ctx.beginPath(); ctx.arc(nx,ny,Math.max(3, seg.width*2.8),0,TAU); ctx.fill();
+      }
+      for(const c of seg.children) walk(c, nx, ny, a, depth+1);
+    };
+    walk(this.segs[0], cx, by, -Math.PI/2, 0);
+  }
+}
+
+/* ---------- 04 heartbeat ---------- */
+class Beat extends Vis {
+  init(){
+    this.bands = TYPES.map(() => ({ phase: Math.random()*TAU, last: -999, imp: [] }));
+  }
+  onEvent(i, s, t){
+    const b = this.bands[i];
+    b.last = t;
+    b.imp.push({
+      x: this.w - 2,
+      age: 0,
+      amp: 18 + s*26,
+      sigma: 4 + Math.random()*7,
+      kind: Math.floor(Math.random()*3),
+      w: 12 + Math.random()*18,
+      ph: Math.random()*TAU
+    });
+    if(b.imp.length > 70) b.imp.splice(0, b.imp.length - 70);
+  }
+  shape(im, x){
+    const d = x - im.x;
+    if(Math.abs(d) > 120) return 0;
+    const env = Math.exp(-(d*d)/(2*im.sigma*im.sigma));
+    if(im.kind === 0) return env * im.amp;
+    if(im.kind === 1){
+      const f = v => 1/(1 + Math.exp(-v/2.2));
+      return (f(d + im.w) - f(d - im.w)) * im.amp * 0.62;
+    }
+    return env * (Math.sin(d*0.26 + im.ph)*0.62 + Math.sin(d*0.11 - im.ph)*0.38) * im.amp * 0.8;
+  }
+  tick(dt, t){
+    const ctx = this.ctx, w = this.w, h = this.h;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = BG; ctx.fillRect(0,0,w,h);
+    ctx.globalCompositeOperation = 'lighter';
+    const top = 20, bottom = 20, spacing = (h - top - bottom) / 8;
+
+    for(let i=0;i<8;i++){
+      const b = this.bands[i];
+      const fa = fade[i];
+      if(fa < 0.01) continue;
+      const y0 = top + spacing*(i + 0.5);
+      for(const im of b.imp){ im.x -= dt*26; im.age += dt; }
+      b.imp = b.imp.filter(im => im.age < 15 && im.x > -120);
+      const silence = Math.min(1, Math.max(0, (t - b.last) / 15));
+      const vivid = fa * (0.92 - 0.80*silence);
+
+      const x0 = 64;
+      ctx.strokeStyle = rgba(TYPES[i].color, 0.05*fa);
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(w, y0); ctx.stroke();
+
+      ctx.beginPath();
+      for(let x=x0;x<=w;x+=2.5){
+        const u = x - x0;
+        const bx = ((u + t*20 + b.phase*40) % 96) / 96;
+        let v = Math.sin(u*0.011 + t*0.9 + b.phase)*2.0
+              + Math.sin(u*0.005 - t*0.5 + b.phase*2.1)*2.6
+              + Math.sin(u*0.031 + t*1.7 + b.phase*3)*0.7
+              + Math.exp(-Math.pow((bx-0.16)/0.030,2))*3.4
+              + Math.exp(-Math.pow((bx-0.29)/0.045,2))*1.5;
+        for(const im of b.imp) v += this.shape(im, x);
+        const y = y0 + v*0.9;
+        if(x === x0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.strokeStyle = rgba(TYPES[i].color, Math.max(0.02, vivid*0.16));
+      ctx.lineWidth = 8;
+      ctx.stroke();
+      ctx.strokeStyle = rgba(TYPES[i].color, Math.max(0.03, vivid*0.9));
+      ctx.lineWidth = 1.25;
+      ctx.stroke();
+
+      ctx.fillStyle = rgba(TYPES[i].color, Math.max(0.35, vivid*0.9));
+      ctx.font = '9px ' + MONO;
+      ctx.fillText(TYPES[i].key.toUpperCase(), 8, y0 + 3);
+    }
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(w-1, 12); ctx.lineTo(w-1, h-12); ctx.stroke();
+  }
+}
+
+/* ---------- wiring ---------- */
+const visuals = [
+  new Eco(document.getElementById('c1')),
+  new Rings(document.getElementById('c2')),
+  new Branch(document.getElementById('c3')),
+  new Beat(document.getElementById('c4'))
+];
+for(const v of visuals) v.reset();
+
+const chips = document.getElementById('chips');
+TYPES.forEach((t, i) => {
+  const el = document.createElement('span');
+  el.className = 'chip' + (i < state.variety ? ' on' : '');
+  el.style.color = i < state.variety ? t.color : '';
+  el.innerHTML = '<i></i>' + t.key;
+  chips.appendChild(el);
+});
+function syncChips(){
+  const els = chips.children;
+  for(let i=0;i<els.length;i++){
+    const on = i < state.variety;
+    els[i].classList.toggle('on', on);
+    els[i].style.color = on ? TYPES[i].color : '';
+  }
+}
+
+const vEl = document.getElementById('variety');
+const aEl = document.getElementById('activity');
+const vv = document.getElementById('vv');
+const av = document.getElementById('av');
+const rateEl = document.getElementById('rate');
+const pauseBtn = document.getElementById('pause');
+const burstBtn = document.getElementById('burst');
+
+vEl.addEventListener('input', () => { state.variety = +vEl.value; vv.textContent = state.variety; syncChips(); });
+aEl.addEventListener('input', () => { state.activity = +aEl.value; av.textContent = (+aEl.value).toFixed(2).replace(/0$/,''); });
+burstBtn.addEventListener('click', () => { burstUntil = nowT + 2.2; });
+pauseBtn.addEventListener('click', () => {
+  state.paused = !state.paused;
+  pauseBtn.textContent = state.paused ? 'resume' : 'pause';
+  pauseBtn.classList.toggle('off', state.paused);
+});
+
+let rz = null;
+const ro = new ResizeObserver(() => {
+  if(rz) return;
+  rz = requestAnimationFrame(() => { rz = null; for(const v of visuals) v.reset(); });
+});
+ro.observe(document.querySelector('.grid'));
+
+let lastT = 0, acc = 0, statN = 0, statT = 0, shownRate = 0;
+
+function frame(now){
+  const t = now/1000;
+  if(!lastT) lastT = t;
+  let dt = Math.min(0.05, Math.max(0.001, t - lastT));
+  lastT = t;
+  nowT = t;
+
+  for(let i=0;i<8;i++){
+    const target = i < state.variety ? 1 : 0;
+    fade[i] += (target - fade[i]) * Math.min(1, dt*1.8);
+  }
+
+  if(!state.paused){
+    const mul = t < burstUntil ? 9 : 1;
+    const rate = state.activity * (0.6 + 0.55*state.variety) * mul;
+    acc += dt * rate;
+    let guard = 0;
+    while(acc >= 1 && guard++ < 48){
+      acc -= 1;
+      const ti = Math.floor(Math.random()*state.variety);
+      const s = 0.5 + Math.random()*0.7;
+      bus.last[ti] = t; statN++;
+      for(const v of visuals) v.onEvent(ti, s, t);
+    }
+    if(acc > 6) acc = 0;
+    for(const v of visuals) if(v.ready) v.tick(dt, t);
+  }
+
+  if(t - statT > 0.5){
+    shownRate = (statN / (t - statT)) || 0;
+    rateEl.textContent = shownRate.toFixed(1);
+    statN = 0; statT = t;
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

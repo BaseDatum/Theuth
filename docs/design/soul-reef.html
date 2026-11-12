@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>theuth · the reef remembers</title>
+<style>
+  :root{
+    --bg:#05070a; --ink:#e9e7e1; --mut:#8b909a; --faint:#565b64; --line:rgba(255,255,255,.07);
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    --sans: ui-sans-serif, -apple-system, "SF Pro Text", Inter, system-ui, sans-serif;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink)}
+  body{font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 20px 32px}
+  .kicker{font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);display:flex;align-items:center;gap:8px}
+  .kicker .dot{width:5px;height:5px;border-radius:50%;background:#7dd3c0;box-shadow:0 0 8px #7dd3c0}
+  h1{font-family:var(--serif);font-weight:400;font-size:clamp(30px,4.6vw,46px);letter-spacing:-.02em;margin:14px 0 10px;line-height:1.02}
+  .lede{max-width:660px;color:var(--mut);font-size:14px;line-height:1.6;margin:0}
+  .grid{display:grid;grid-template-columns:minmax(0,1fr) 348px;gap:20px;margin-top:26px;align-items:start}
+  @media(max-width:980px){.grid{grid-template-columns:1fr}}
+  .specimen{margin:0;background:linear-gradient(180deg,#080a0e,#05070a);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  .ph{display:flex;align-items:baseline;gap:10px;padding:13px 16px 10px}
+  .num{font-family:var(--mono);font-size:9px;letter-spacing:.1em;color:var(--faint)}
+  .ph h2{font-size:14.5px;font-weight:500;letter-spacing:-.01em;margin:0;flex:1}
+  .tag{font-family:var(--mono);font-size:8.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint)}
+  .stage{position:relative;display:flex;justify-content:center;padding:4px 0 0}
+  canvas#reef{display:block;width:100%;max-width:560px;height:640px}
+  .tip{position:absolute;left:0;top:0;pointer-events:none;background:rgba(7,9,12,.95);border:1px solid rgba(255,255,255,.13);
+       border-radius:8px;padding:8px 10px;font-family:var(--mono);font-size:10px;line-height:1.65;color:var(--ink);
+       opacity:0;transition:opacity .12s;min-width:150px}
+  .tip .d{color:#c9d4d0}
+  .tip .m{color:var(--mut)}
+  .tip .sw{display:inline-block;width:5px;height:5px;border-radius:50%;margin-right:4px;vertical-align:1px}
+  figcaption{padding:11px 16px 13px;border-top:1px solid var(--line);font-size:11.5px;line-height:1.55;color:var(--mut)}
+  aside{display:flex;flex-direction:column;gap:14px}
+  .card{background:linear-gradient(180deg,#080a0e,#06080b);border:1px solid var(--line);border-radius:12px;padding:14px 15px}
+  .card h3{font-family:var(--mono);font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin:0 0 10px;font-weight:400}
+  .read{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+  .read li{display:grid;grid-template-columns:12px 1fr;gap:9px;font-size:11.5px;line-height:1.5;color:var(--mut)}
+  .read b{color:var(--ink);font-weight:500}
+  .sw{width:10px;height:10px;border-radius:3px;margin-top:2px}
+  .why p{margin:0 0 9px;font-size:11.5px;line-height:1.55;color:var(--mut)}
+  .why p:last-child{margin-bottom:0}
+  .why em{color:var(--ink);font-style:normal}
+  .why code{font-family:var(--mono);font-size:10.5px;color:#a8d8cd}
+  .mini{margin:0;border:1px solid var(--line);border-radius:12px;background:#06080b;overflow:hidden}
+  .mini .mh{display:flex;justify-content:space-between;padding:10px 12px 8px;font-family:var(--mono);font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+  .mini .mstage{display:flex;justify-content:center;padding:0 12px}
+  canvas#mini{display:block;width:120px;height:400px}
+  .mini figcaption{border:0;padding:10px 12px 12px;font-size:10.5px;line-height:1.5}
+  .types{display:flex;flex-wrap:wrap;gap:5px 7px;margin-top:10px}
+  .types span{font-family:var(--mono);font-size:8.5px;letter-spacing:.06em;color:var(--faint);display:inline-flex;align-items:center;gap:4px}
+  .types i{width:5px;height:5px;border-radius:50%;display:block}
+  .hint{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-top:10px}
+  .foot{margin-top:22px;display:flex;flex-wrap:wrap;gap:10px 18px;justify-content:space-between;font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);border-top:1px solid var(--line);padding-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="kicker"><span class="dot"></span> theuth · soul study · proposal 05</div>
+    <h1>The reef remembers</h1>
+    <p class="lede">The first four are instruments: they measure the bus as it happens. This one is a body. It accretes the present at a living surface and keeps every day underneath it — the soul as a biography you can read, not a pulse you watch.</p>
+  </header>
+
+  <div class="grid">
+    <figure class="specimen">
+      <div class="ph"><span class="num">05</span><h2>Reef specimen · 150 days</h2><span class="tag">accretion</span></div>
+      <div class="stage" id="stage">
+        <canvas id="reef"></canvas>
+        <div class="tip" id="tip"></div>
+      </div>
+      <figcaption>Living fringe at the surface, skeleton below. Hover a band to read that day; click to pin it. The body is drawn from the record, not simulated.</figcaption>
+    </figure>
+
+    <aside>
+      <section class="card">
+        <h3>How to read it</h3>
+        <ul class="read">
+          <li><span class="sw" style="background:linear-gradient(180deg,#7dd3c0,#a78bfa)"></span><div><b>Living fringe</b> — the last few minutes. Vivid, moving, always growing.</div></li>
+          <li><span class="sw" style="background:linear-gradient(180deg,#4a5a63,#2c3a44)"></span><div><b>Growth bands</b> — one per day. The colour is that day's mix of message types.</div></li>
+          <li><span class="sw" style="background:#1a1114;border:1px solid #7f3b3b"></span><div><b>Fractures</b> — error clusters. Dark cracks with a red edge.</div></li>
+          <li><span class="sw" style="background:#0d1117"></span><div><b>Gaps</b> — silent days, almost translucent.</div></li>
+          <li><span class="sw" style="background:linear-gradient(180deg,#7dd3c0,#0f2a28)"></span><div><b>The pulse</b> — when a type fires, a vein lights down through every day that colour appears. Its depth is how far back that kind of event goes.</div></li>
+        </ul>
+        <div class="types" id="types"></div>
+        <div class="hint">hover a band · click to pin</div>
+      </section>
+
+      <section class="card why">
+        <h3>Why it is a different object</h3>
+        <p>Cost is <em>O(days)</em>, not <em>O(events)</em>. The past is inert geometry; only the fringe is simulated. It can run for years without getting heavier.</p>
+        <p>It survives restarts. One append-only record per day under <code>~/.theuth/soul/</code>, and the body is rebuilt from it — the soul has a home and a memory.</p>
+        <p>It is the only one you can read backwards. Not a pulse you watch, a biography you open.</p>
+      </section>
+
+      <figure class="mini">
+        <div class="mh"><span>in the app</span><span>120 px column</span></div>
+        <div class="mstage"><canvas id="mini"></canvas></div>
+        <figcaption>Always present at the edge of the workspace, never in the way. The fringe moves; the body is still.</figcaption>
+      </figure>
+    </aside>
+  </div>
+
+  <div class="foot"><span>synthetic 150-day history · 2d canvas · no dependencies</span><span>hover and click are live</span></div>
+</div>
+
+<script>
+const TAU = Math.PI * 2;
+const TYPES = [
+  {key:'session',  color:'#2dd4bf'},
+  {key:'tool',     color:'#38bdf8'},
+  {key:'agent',    color:'#6366f1'},
+  {key:'message',  color:'#a855f7'},
+  {key:'approval', color:'#e879f9'},
+  {key:'job',      color:'#4ade80'},
+  {key:'reminder', color:'#fbbf24'},
+  {key:'error',    color:'#f87171'}
+];
+const DAYS = 150;
+
+function rgba(hex, a){
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + ((n>>16)&255) + ',' + ((n>>8)&255) + ',' + (n&255) + ',' + Math.max(0,Math.min(1,a)).toFixed(3) + ')';
+}
+function rgbOf(hex){ const n=parseInt(hex.slice(1),16); return [(n>>16)&255,(n>>8)&255,n&255]; }
+function stone(hex, k, alpha){
+  const c = rgbOf(hex);
+  const r = Math.round(c[0]*k + 74*(1-k));
+  const g = Math.round(c[1]*k + 78*(1-k));
+  const b = Math.round(c[2]*k + 86*(1-k));
+  return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+}
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+function hash(n){ const x=Math.sin(n*127.1+311.7)*43758.5453; return x-Math.floor(x); }
+
+/* ---- the record (synthetic, shaped like a life) ---- */
+const rnd = mulberry32(20261111);
+const today = new Date();
+const history = [];
+for(let i=0;i<DAYS;i++){
+  const age = DAYS-1-i;
+  let act, varN, errP;
+  if(age>125){ act=30+rnd()*70; varN=1+(rnd()<0.3?1:0); errP=0.01; }
+  else if(age>95){ act=100+rnd()*170; varN=3+Math.floor(rnd()*3); errP=0.02; }
+  else if(age>80){ act=230+rnd()*240; varN=6+Math.floor(rnd()*3); errP=0.03; }
+  else if(age>65){ act=150+rnd()*170; varN=2+Math.floor(rnd()*2); errP=0.35; }
+  else if(age>45){ act=12+rnd()*44; varN=1+Math.floor(rnd()*2); errP=0.01; }
+  else if(age>20){ act=110+rnd()*180; varN=4+Math.floor(rnd()*3); errP=0.03; }
+  else { act=190+rnd()*280; varN=5+Math.floor(rnd()*4); errP=0.05; }
+  if(rnd()<0.15) act*=0.4;
+  act = Math.round(act);
+  const counts = new Array(8).fill(0);
+  const idxs = [];
+  while(idxs.length < Math.min(varN,8)){ const k=Math.floor(rnd()*8); if(idxs.indexOf(k)<0) idxs.push(k); }
+  const ws = idxs.map(()=>0.3+rnd());
+  const sum = ws.reduce((a,b)=>a+b,0);
+  idxs.forEach((k,j)=>{ counts[k]=Math.round(act*ws[j]/sum); });
+  let errors = 0;
+  if(rnd()<errP){ errors=1+Math.floor(rnd()*3); counts[7]=Math.max(counts[7],Math.round(act*0.18)); }
+  if(age>65 && age<=80){ counts[7]=Math.max(counts[7],Math.round(act*0.12)); if(!errors) errors=1; }
+  history.push({
+    age, date: new Date(today.getTime()-age*86400000), events: act, counts,
+    errors, silence: act<55, variety: counts.filter(c=>c>0).length
+  });
+}
+
+/* ---- reef renderer ---- */
+class Reef {
+  constructor(canvas, opts){
+    this.canvas = canvas; this.ctx = canvas.getContext('2d');
+    this.opts = opts || {};
+    this.mini = !!this.opts.mini;
+    this.polyps = []; this.filaments = []; this.live = [];
+    this.hoverDay = -1; this.pinned = -1;
+    this.ready = false;
+    this.resize();
+  }
+  resize(){
+    const r = this.canvas.getBoundingClientRect();
+    if(r.width < 10 || r.height < 10) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.canvas.width = Math.round(r.width*dpr);
+    this.canvas.height = Math.round(r.height*dpr);
+    this.ctx.setTransform(dpr,0,0,dpr,0,0);
+    this.w = r.width; this.h = r.height;
+    this.build();
+    this.ready = true;
+  }
+  surfaceBump(x){
+    const k = this.mini ? 0.45 : 1;
+    return (Math.sin(x*0.06+1.1)*2.2 + Math.sin(x*0.17+3.4)*1.1) * k;
+  }
+  build(){
+    const top = this.mini ? 34 : 88;
+    const bottom = this.mini ? 12 : 22;
+    const bandH = (this.h-top-bottom)/DAYS;
+    const cx = this.w*0.5;
+    const baseW = this.mini ? this.w*0.70 : Math.min(this.w*0.54, 300);
+    const left=[], right=[], ys=[];
+    for(let i=0;i<DAYS;i++){
+      const n1 = Math.sin(i*0.11+1.3)*0.6 + Math.sin(i*0.037+0.4)*0.4;
+      const n2 = Math.sin(i*0.09+2.7)*0.55 + Math.sin(i*0.043+1.1)*0.45;
+      const lobe = Math.max(0, Math.sin(i*0.045+0.8))*(this.mini?5:14) + Math.max(0, Math.sin(i*0.031+2.2))*(this.mini?3:9);
+      const half = baseW/2*(0.88+0.12*n1) + lobe;
+      left.push(cx-half+n1*6);
+      right.push(cx+half+n2*6);
+      ys.push(this.h-bottom-(i+1)*bandH);
+    }
+    this.g = {top,bottom,bandH,cx,baseW,left,right,y:ys};
+
+    const p = new Path2D();
+    p.moveTo(left[0], this.h-bottom);
+    for(let i=0;i<DAYS;i++) p.lineTo(left[i], ys[i]);
+    const tl=left[DAYS-1], tr=right[DAYS-1], ty=ys[DAYS-1];
+    const steps=14;
+    for(let k=0;k<=steps;k++){ const x=tl+(tr-tl)*k/steps; p.lineTo(x, ty+this.surfaceBump(x)); }
+    for(let i=DAYS-1;i>=0;i--) p.lineTo(right[i], ys[i]);
+    p.closePath();
+    this.outline = p;
+    this.surfaceY = ty;
+
+    this.base = []; this.streaks = []; this.grains = []; this.holes = []; this.scars = [];
+    for(let i=0;i<DAYS;i++){
+      const d = history[i], l=left[i], r=right[i], y=ys[i];
+      let dom=0, best=-1;
+      d.counts.forEach((c,k)=>{ if(c>best){ best=c; dom=k; } });
+      const kk = d.silence ? 0.16 : 0.30;
+      const aa = d.silence ? 0.30 : 0.95;
+      this.base.push(stone(TYPES[dom].color, kk, aa));
+
+      const st=[];
+      if(!d.silence){
+        d.counts.forEach((c,k)=>{
+          if(k===dom || c<=0) return;
+          const share=c/Math.max(1,d.events);
+          if(share<0.06) return;
+          st.push({y:y+hash(i*29+k*13+7)*Math.max(0.5,bandH-1), h:0.8+share*1.7,
+                   c:stone(TYPES[k].color, 0.55, (0.18+share*0.5).toFixed(3))});
+        });
+      }
+      this.streaks.push(st);
+
+      const gs=[];
+      const n = this.mini ? 3 : (d.silence?2:12);
+      for(let j=0;j<n;j++){
+        const t = Math.floor(hash(i*31+j*7+3)*8);
+        const share = d.counts[t]/Math.max(1,d.events);
+        if(share < 0.02 && Math.random() > 0.25) continue;
+        const gx = l+2+hash(i*17+j*5+1)*(r-l-4);
+        const gy = y+hash(i*23+j*11+9)*Math.max(1,bandH-1);
+        const gw = 1+hash(i*13+j*3+5)*2.4;
+        const gh = Math.min(1.6, Math.max(0.7, bandH*0.35));
+        const al = (0.16 + share*0.55) * (d.silence?0.5:1);
+        gs.push({x:gx,y:gy,w:gw,h:gh,c:stone(TYPES[t].color,0.72,al.toFixed(3))});
+      }
+      this.grains.push(gs);
+
+      const hs=[];
+      if(hash(i*7+2) > 0.55){
+        const hx = l+(r-l)*(0.2+hash(i*5+1)*0.6);
+        const hy = y+bandH*0.5;
+        hs.push({x:hx,y:hy,rx:1.2+hash(i*3+2)*(this.mini?1.4:2.6),ry:0.7+hash(i*9+4)*1.2});
+      }
+      this.holes.push(hs);
+
+      if(d.errors>0){
+        const pts=[]; const n2=5;
+        for(let j=0;j<n2;j++){
+          const x = l+(r-l)*(j/(n2-1));
+          pts.push([x, y+bandH*0.5 + (hash(i*19+j*7+1)-0.5)*bandH*1.1]);
+        }
+        this.scars.push(pts);
+      } else this.scars.push(null);
+    }
+
+    // polyps on the living surface
+    this.polyps = [];
+    const count = this.mini ? 22 : 46;
+    const todayCounts = history[DAYS-1].counts;
+    const palette = [];
+    todayCounts.forEach((c,k)=>{ if(c>0) palette.push(k); });
+    if(!palette.length) palette.push(0);
+    for(let k=0;k<count;k++){
+      const x = tl+3 + (tr-tl-6)*(k/(count-1));
+      this.polyps.push({
+        x, y: ty+this.surfaceBump(x), type: palette[k%palette.length],
+        ph: Math.random()*TAU, flare: 0, sway: 0.5+Math.random()*0.9, size: 0.9+Math.random()*0.8
+      });
+    }
+    // how far back each colour goes
+    this.depth = TYPES.map((_,ti)=>{
+      let d=0;
+      for(let i=DAYS-1;i>=0;i--){ if(history[i].counts[ti]>0) d++; else break; }
+      return d;
+    });
+    this.filaments = [];
+    this.live = [];
+  }
+  onEvent(type, s, t){
+    const cands = this.polyps.filter(p=>p.type===type);
+    const p = cands.length ? cands[Math.floor(Math.random()*cands.length)] : this.polyps[Math.floor(Math.random()*this.polyps.length)];
+    if(!p) return;
+    p.flare = Math.min(1.2, p.flare + 0.7*s);
+    this.live.push({x:p.x+(Math.random()-0.5)*4, y:p.y, vy:6+Math.random()*10, life:1, col:TYPES[type].color});
+    if(this.live.length>90) this.live.splice(0,this.live.length-90);
+    if(!this.mini && Math.random()<0.4){
+      const d = Math.min(this.depth[type] || 1, Math.floor((this.h-this.g.top-this.g.bottom)/this.g.bandH));
+      this.filaments.push({
+        x0:p.x, y0:this.surfaceY, head:0, maxY:Math.max(18, d*this.g.bandH),
+        ph:Math.random()*TAU, drift:(Math.random()-0.5)*0.06, age:0, life:1.9+Math.random()*0.8,
+        col:TYPES[type].color, w:1.2+Math.random()*0.8
+      });
+      if(this.filaments.length>26) this.filaments.splice(0,this.filaments.length-26);
+    }
+  }
+  tick(dt, t){
+    if(!this.ready) return;
+    const ctx=this.ctx, g=this.g;
+    ctx.globalCompositeOperation='source-over';
+    ctx.clearRect(0,0,this.w,this.h);
+    const bg=ctx.createLinearGradient(0,0,0,this.h);
+    bg.addColorStop(0,'#080b10'); bg.addColorStop(0.25,'#05070a'); bg.addColorStop(1,'#04060a');
+    ctx.fillStyle=bg; ctx.fillRect(0,0,this.w,this.h);
+
+    // water glow above the surface
+    const wg=ctx.createRadialGradient(this.w*0.5,this.surfaceY-6,0,this.w*0.5,this.surfaceY-6,this.w*0.55);
+    wg.addColorStop(0,'rgba(125,211,192,0.07)');
+    wg.addColorStop(0.5,'rgba(90,140,160,0.025)');
+    wg.addColorStop(1,'rgba(90,140,160,0)');
+    ctx.fillStyle=wg; ctx.fillRect(0,0,this.w,this.surfaceY+20);
+
+    // body
+    ctx.save(); ctx.clip(this.outline);
+    ctx.fillStyle='#070a0e'; ctx.fillRect(0,0,this.w,this.h);
+    for(let i=0;i<DAYS;i++){
+      const y=g.y[i], l=g.left[i], r=g.right[i], d=history[i];
+      ctx.fillStyle=this.base[i];
+      ctx.fillRect(l,y,r-l,g.bandH+0.7);
+      const st=this.streaks[i];
+      for(let k=0;k<st.length;k++){ ctx.fillStyle=st[k].c; ctx.fillRect(l+1,st[k].y,r-l-2,st[k].h); }
+      const gs=this.grains[i];
+      for(let k=0;k<gs.length;k++){ const q=gs[k]; ctx.fillStyle=q.c; ctx.fillRect(q.x,q.y,q.w,q.h); }
+      // growth seam
+      ctx.fillStyle='rgba(214,226,222,0.045)';
+      ctx.fillRect(l,y,r-l,0.55);
+      // weekly ring
+      if(d.age%7===0){ ctx.fillStyle='rgba(220,232,228,0.05)'; ctx.fillRect(l,y+g.bandH-0.6,r-l,0.6); }
+      // holes
+      const hs=this.holes[i];
+      for(let k=0;k<hs.length;k++){
+        const q=hs[k];
+        ctx.fillStyle='rgba(4,6,9,0.85)';
+        ctx.beginPath(); ctx.ellipse(q.x,q.y,q.rx,q.ry,0,0,TAU); ctx.fill();
+      }
+      // fractures
+      const sc=this.scars[i];
+      if(sc){
+        ctx.strokeStyle='rgba(6,4,6,0.85)'; ctx.lineWidth=1.8;
+        ctx.beginPath(); ctx.moveTo(sc[0][0],sc[0][1]);
+        for(let k=1;k<sc.length;k++) ctx.lineTo(sc[k][0],sc[k][1]);
+        ctx.stroke();
+        ctx.strokeStyle='rgba(248,113,113,0.30)'; ctx.lineWidth=0.7;
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+    ctx.strokeStyle='rgba(196,214,208,0.16)'; ctx.lineWidth=1;
+    ctx.stroke(this.outline);
+    ctx.strokeStyle='rgba(150,200,190,0.05)'; ctx.lineWidth=7;
+    ctx.stroke(this.outline);
+    // living crust along the surface
+    const tl=g.left[DAYS-1], tr=g.right[DAYS-1];
+    ctx.strokeStyle='rgba(232,246,240,0.22)'; ctx.lineWidth=1.1;
+    ctx.beginPath();
+    for(let k=0;k<=44;k++){ const x=tl+(tr-tl)*k/44; const yy=this.surfaceY+this.surfaceBump(x); if(k) ctx.lineTo(x,yy); else ctx.moveTo(x,yy); }
+    ctx.stroke();
+
+    // memory veins
+    ctx.save(); ctx.clip(this.outline);
+    for(let k=this.filaments.length-1;k>=0;k--){
+      const f=this.filaments[k];
+      f.age += dt; f.head += dt*150;
+      if(f.age > f.life){ this.filaments.splice(k,1); continue; }
+      const head = Math.min(f.head, f.maxY);
+      const fade = Math.max(0, 1 - f.age/f.life);
+      ctx.beginPath();
+      let first=true;
+      for(let yy=0; yy<=head; yy+=4){
+        const xx = f.x0 + Math.sin(yy*0.07+f.ph)*3.2 + yy*f.drift;
+        if(first){ ctx.moveTo(xx, f.y0+yy); first=false; } else ctx.lineTo(xx, f.y0+yy);
+      }
+      ctx.strokeStyle=rgba(f.col, 0.10*fade); ctx.lineWidth=f.w*5; ctx.stroke();
+      ctx.strokeStyle=rgba(f.col, 0.55*fade); ctx.lineWidth=f.w; ctx.stroke();
+      const hx = f.x0 + Math.sin(head*0.07+f.ph)*3.2 + head*f.drift;
+      const hy = f.y0+head;
+      const hg=ctx.createRadialGradient(hx,hy,0,hx,hy,9);
+      hg.addColorStop(0,'rgba(255,255,255,'+(0.85*fade)+')');
+      hg.addColorStop(0.35,rgba(f.col,0.55*fade));
+      hg.addColorStop(1,rgba(f.col,0));
+      ctx.fillStyle=hg; ctx.beginPath(); ctx.arc(hx,hy,9,0,TAU); ctx.fill();
+    }
+    ctx.restore();
+
+    // living fringe
+    for(const p of this.polyps){
+      p.flare = Math.max(0, p.flare - dt*1.1);
+      const y = p.y + Math.sin(t*0.6+p.ph)*1.1;
+      const R = (this.mini?2.8:4.2) + p.flare*9;
+      const glow = ctx.createRadialGradient(p.x,y,0,p.x,y,R*2.6);
+      glow.addColorStop(0,'rgba(255,255,255,'+(0.55+p.flare*0.4)+')');
+      glow.addColorStop(0.28,rgba(TYPES[p.type].color,0.55+p.flare*0.4));
+      glow.addColorStop(1,rgba(TYPES[p.type].color,0));
+      ctx.fillStyle=glow; ctx.beginPath(); ctx.arc(p.x,y,R*2.6,0,TAU); ctx.fill();
+      ctx.strokeStyle=rgba(TYPES[p.type].color, 0.30+p.flare*0.4);
+      ctx.lineWidth=0.6;
+      for(let k=0;k<3;k++){
+        const a = -Math.PI/2 + (k-1)*0.5 + Math.sin(t*0.8+p.ph+k)*0.25;
+        ctx.beginPath(); ctx.moveTo(p.x,y);
+        ctx.lineTo(p.x+Math.cos(a)*R*2.4, y+Math.sin(a)*R*2.4);
+        ctx.stroke();
+      }
+    }
+
+    // live grains falling into the surface
+    for(let k=this.live.length-1;k>=0;k--){
+      const q=this.live[k];
+      q.life -= dt*0.7; q.y += q.vy*dt; q.vy *= (1-0.5*dt);
+      if(q.life<=0){ this.live.splice(k,1); continue; }
+      const a=Math.min(1,q.life)*0.9;
+      const gg=ctx.createRadialGradient(q.x,q.y,0,q.x,q.y,3.4);
+      gg.addColorStop(0,'rgba(255,255,255,'+(a*0.9)+')');
+      gg.addColorStop(0.4,rgba(q.col,a*0.6));
+      gg.addColorStop(1,rgba(q.col,0));
+      ctx.fillStyle=gg; ctx.beginPath(); ctx.arc(q.x,q.y,3.4,0,TAU); ctx.fill();
+    }
+
+    // hover / pinned rule
+    const day = this.pinned>=0 ? this.pinned : this.hoverDay;
+    if(day>=0 && day<DAYS){
+      const y = g.y[day]+g.bandH*0.5;
+      ctx.strokeStyle='rgba(230,240,236,0.30)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(g.left[day]-10,y); ctx.lineTo(g.right[day]+10,y); ctx.stroke();
+      ctx.fillStyle='rgba(230,240,236,0.8)';
+      ctx.beginPath(); ctx.arc(g.left[day]-10,y,1.6,0,TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(g.right[day]+10,y,1.6,0,TAU); ctx.fill();
+    }
+  }
+}
+
+/* ---- page wiring ---- */
+const stage = document.getElementById('stage');
+const tip = document.getElementById('tip');
+const reef = new Reef(document.getElementById('reef'), {});
+const mini = new Reef(document.getElementById('mini'), {mini:true});
+
+const typesEl = document.getElementById('types');
+TYPES.forEach(t=>{
+  const s=document.createElement('span');
+  s.innerHTML = '<i style="background:'+t.color+'"></i>'+t.key;
+  typesEl.appendChild(s);
+});
+
+function tipFor(day){
+  const d = history[day];
+  const top = d.counts.map((c,k)=>({c,k})).filter(o=>o.c>0).sort((a,b)=>b.c-a.c).slice(0,3);
+  const date = d.date.toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+  const ago = d.age===0 ? 'today' : d.age+' days ago';
+  let html = '<div class="d">'+date+' · '+ago+'</div>';
+  html += '<div class="m"><b>'+d.events+'</b> events · variety <b>'+d.variety+'</b>/8</div>';
+  if(d.errors) html += '<div class="m">'+d.errors+' error'+(d.errors>1?'s':'')+'</div>';
+  html += '<div class="m">'+top.map(o=>'<span class="sw" style="background:'+TYPES[o.k].color+'"></span>'+TYPES[o.k].key).join(' · ')+'</div>';
+  return html;
+}
+function dayAt(y){
+  const g = reef.g;
+  const i = Math.floor((reef.h - g.bottom - y)/g.bandH);
+  return Math.max(0, Math.min(DAYS-1, i));
+}
+if(stage){
+  stage.addEventListener('mousemove', (e)=>{
+    const r = stage.getBoundingClientRect();
+    const c = reef.canvas.getBoundingClientRect();
+    const x = e.clientX - c.left, y = e.clientY - c.top;
+    if(x<0||y<0||x>c.width||y>c.height){ tip.style.opacity=0; reef.hoverDay=-1; return; }
+    reef.hoverDay = dayAt(y);
+    tip.innerHTML = tipFor(reef.hoverDay);
+    tip.style.opacity = 1;
+    let lx = e.clientX - r.left + 14, ly = e.clientY - r.top + 14;
+    lx = Math.min(lx, r.width - tip.offsetWidth - 8);
+    ly = Math.min(ly, r.height - tip.offsetHeight - 8);
+    tip.style.left = lx+'px'; tip.style.top = ly+'px';
+  });
+  stage.addEventListener('mouseleave', ()=>{ tip.style.opacity=0; reef.hoverDay=-1; });
+  stage.addEventListener('click', (e)=>{
+    const c = reef.canvas.getBoundingClientRect();
+    const y = e.clientY - c.top;
+    if(y<0||y>c.height) return;
+    const d = dayAt(y);
+    reef.pinned = (reef.pinned===d) ? -1 : d;
+    reef.hoverDay = d;
+    tip.innerHTML = tipFor(d);
+    tip.style.opacity = reef.pinned>=0 ? 1 : 0;
+  });
+}
+
+let rz=null;
+const ro = new ResizeObserver(()=>{ if(rz) return; rz=requestAnimationFrame(()=>{ rz=null; reef.resize(); mini.resize(); }); });
+ro.observe(document.querySelector('.grid'));
+
+// synthetic live bus, weighted by today's mix
+const todayCounts = history[DAYS-1].counts;
+const pool = [];
+todayCounts.forEach((c,k)=>{ for(let n=0;n<Math.max(1,Math.round(c/24));n++) pool.push(k); });
+if(!pool.length) pool.push(0);
+
+let acc=0, lastT=0, start=0;
+function frame(now){
+  const t = now/1000;
+  if(!start){ start=t; lastT=t; }
+  let dt = Math.min(0.05, Math.max(0.001, t-lastT)); lastT=t;
+  acc += dt*4.2;
+  let guard=0;
+  while(acc>=1 && guard++<24){
+    acc-=1;
+    const type = pool[Math.floor(Math.random()*pool.length)];
+    const s = 0.5+Math.random()*0.7;
+    reef.onEvent(type, s, t); mini.onEvent(type, s*0.8, t);
+  }
+  reef.tick(dt,t); mini.tick(dt,t);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

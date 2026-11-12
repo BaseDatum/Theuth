@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>theuth · flow cell</title>
+<style>
+  :root{
+    --bg:#070909; --ink:#e6e8e6; --mut:#8b949a; --faint:#5a6369; --line:rgba(255,255,255,.08);
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    --sans: ui-sans-serif, -apple-system, "SF Pro Text", Inter, system-ui, sans-serif;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink)}
+  body{font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1040px;margin:0 auto;padding:26px 18px 28px}
+  .kicker{font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);display:flex;align-items:center;gap:8px}
+  .kicker .dot{width:5px;height:5px;border-radius:50%;background:#7dd3c0;box-shadow:0 0 8px #7dd3c0}
+  h1{font-family:var(--serif);font-weight:400;font-size:clamp(28px,4.2vw,40px);letter-spacing:-.02em;margin:12px 0 8px;line-height:1.05}
+  .lede{max-width:690px;color:var(--mut);font-size:13.5px;line-height:1.6;margin:0}
+  .device{margin:18px 0 0;background:#080b0c;border:1px solid #20262a;border-radius:10px;overflow:hidden;box-shadow:0 22px 60px rgba(0,0,0,.55)}
+  .dhead{display:flex;align-items:center;justify-content:space-between;padding:8px 13px;background:linear-gradient(180deg,#12171a,#0b0f11);border-bottom:1px solid #1e2427}
+  .dhead .nm{font-family:var(--mono);font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:#8f9a9d}
+  .dhead .nm b{color:#e2e8e5;font-weight:500}
+  .leds{display:flex;gap:12px;font-family:var(--mono);font-size:8px;letter-spacing:.12em;color:#6b757a}
+  .leds span{display:inline-flex;align-items:center;gap:5px}
+  .leds i{width:5px;height:5px;border-radius:50%;display:block}
+  canvas#cell{display:block;width:100%;aspect-ratio:1000/400;height:auto;background:#060809}
+  .ctl{display:flex;flex-wrap:wrap;align-items:center;gap:12px 22px;margin-top:14px}
+  .ctl label{display:flex;align-items:center;gap:9px}
+  .ctl .lbl{font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+  .ctl .val{font-family:var(--mono);font-size:10px;color:var(--ink);min-width:26px;text-align:right}
+  input[type=range]{-webkit-appearance:none;appearance:none;width:120px;height:2px;background:#262c30;border-radius:2px;outline:none}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:11px;height:11px;border-radius:50%;background:#cfd8d6;border:0;cursor:pointer}
+  .btn{font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink);background:transparent;border:1px solid var(--line);border-radius:999px;padding:6px 12px;cursor:pointer}
+  .btn:hover{border-color:rgba(255,255,255,.26)}
+  .note{margin-top:16px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+  @media(max-width:760px){.note{grid-template-columns:1fr}}
+  .note div{border:1px solid var(--line);border-radius:9px;padding:10px 12px;background:#080b0d}
+  .note h4{margin:0 0 5px;font-family:var(--mono);font-size:8px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);font-weight:400}
+  .note p{margin:0;font-size:11.5px;line-height:1.5;color:var(--mut)}
+  .foot{margin-top:16px;display:flex;flex-wrap:wrap;gap:8px 18px;justify-content:space-between;font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);border-top:1px solid var(--line);padding-top:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="kicker"><span class="dot"></span> theuth · soul study · proposal 07</div>
+    <h1>Flow cell</h1>
+    <p class="lede">Looking straight at the harness. The tube comes out of the port toward you, bends ninety degrees and runs across the face, then bends back into the second port. The legs hide behind the elbows — you see the glass run standing off the wall, and the events that rise out of the depth, cross, and sink back in.</p>
+  </header>
+
+  <figure class="device">
+    <div class="dhead">
+      <span class="nm"><b>FLOW CELL</b> · FC-16 · 28 mm ID</span>
+      <span class="leds"><span><i style="background:#4ade80;box-shadow:0 0 6px #4ade80"></i>PWR</span><span><i style="background:#7dd3c0;box-shadow:0 0 6px #7dd3c0"></i>LINK</span><span><i style="background:#3a3324" id="almled"></i>ALM</span></span>
+    </div>
+    <canvas id="cell"></canvas>
+  </figure>
+
+  <div class="ctl">
+    <label><span class="lbl">flow</span><input id="activity" type="range" min="0" max="2" step="0.05" value="1.1"><span class="val" id="av">1.1</span></label>
+    <label><span class="lbl">variety</span><input id="variety" type="range" min="1" max="12" step="1" value="8"><span class="val" id="vv">8</span></label>
+    <button class="btn" id="burst">bolus</button>
+  </div>
+
+  <div class="note">
+    <div><h4>what flows</h4><p>One particle per event. Hue is hashed into 166–224° (teal → blue); alerts break the band in red and carry a ring.</p></div>
+    <div><h4>depth</h4><p>Particles rise out of the port behind the left elbow and sink into the right one. They ride a laminar profile — fast at the centre, slow at the wall — and swirl slowly around the axis, front and back of the bore.</p></div>
+    <div><h4>the glimpse</h4><p>You only ever see the crossing. Everything else happens inside the harness.</p></div>
+  </div>
+
+  <div class="foot"><span>2d canvas · no dependencies</span><span>deterministic hue · orthographic, view normal to the face</span></div>
+</div>
+
+<script>
+const TAU = Math.PI * 2;
+const VW = 1000, VH = 400;
+
+function hsl2rgb(h,s,l){
+  h = ((h%360)+360)%360; s/=100; l/=100;
+  const k = n => (n + h/30) % 12;
+  const a = s * Math.min(l, 1-l);
+  const f = n => l - a * Math.max(-1, Math.min(Math.min(k(n)-3, 9-k(n)), 1));
+  return [Math.round(255*f(0)), Math.round(255*f(8)), Math.round(255*f(4))];
+}
+function hsla(h,s,l,a){ const c = hsl2rgb(h,s,l); return 'rgba('+c[0]+','+c[1]+','+c[2]+','+Math.max(0,Math.min(1,a)).toFixed(3)+')'; }
+function smooth(e0,e1,x){ const t = Math.max(0, Math.min(1, (x-e0)/(e1-e0))); return t*t*(3-2*t); }
+
+const canvas = document.getElementById('cell');
+const ctx = canvas.getContext('2d');
+function fit(){
+  const r = canvas.getBoundingClientRect();
+  if(r.width < 20) return;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = Math.round(r.width*dpr);
+  canvas.height = Math.round(r.height*dpr);
+  const sc = r.width / VW;
+  ctx.setTransform(dpr*sc, 0, 0, dpr*sc, 0, 0);
+}
+fit();
+new ResizeObserver(()=>fit()).observe(canvas);
+
+/* ---------- geometry (orthographic, looking along -z at the wall) ---------- */
+const YC = 196;          // tube axis height on screen
+const R  = 27;           // tube outer radius
+const RI = R - 4;        // bore radius
+const RB = 36;           // bend radius of the axis
+const LEG = 48;          // standoff leg from the wall to the start of the bend
+const XL = 196, XR = 804;          // port centres = leg axes
+const ZMAX = LEG + RB;             // axis depth of the front run
+const A = LEG, B = A + RB*Math.PI/2;
+const STRAIGHT = (XR - RB) - (XL + RB);
+const C = B + STRAIGHT, D = C + RB*Math.PI/2, TOTAL = D + LEG;
+
+// axis point at arc length s: x on screen, z distance off the wall, k = how "straight" (0 leg .. 1 run)
+function axis(s){
+  if(s < A) return {x:XL, z:s, k:0};
+  if(s < B){ const f=(s-A)/RB; return {x:XL + RB*(1-Math.cos(f)), z:LEG + RB*Math.sin(f), k:f/(Math.PI/2)}; }
+  if(s < C) return {x:XL + RB + (s-B), z:ZMAX, k:1};
+  if(s < D){ const f=(s-C)/RB; return {x:XR - RB + RB*Math.sin(f), z:LEG + RB*Math.cos(f), k:1-f/(Math.PI/2)}; }
+  return {x:XR, z:Math.max(0, LEG - (s-D)), k:0};
+}
+
+function capsule(r){
+  const p = new Path2D();
+  p.moveTo(XL, YC - r);
+  p.lineTo(XR, YC - r);
+  p.arc(XR, YC, r, -Math.PI/2, Math.PI/2, false);
+  p.lineTo(XL, YC + r);
+  p.arc(XL, YC, r, Math.PI/2, Math.PI*1.5, false);
+  p.closePath();
+  return p;
+}
+const TUBE = capsule(R), BORE = capsule(RI), OUTER = capsule(R+1.2);
+
+// shadow of the axis on the wall: light from upper-left, offset grows with distance off the wall
+const SHX = 0.30, SHY = 0.44;
+const SHADOW = (()=>{
+  const p = new Path2D();
+  let first = true;
+  for(let s=0; s<=TOTAL; s+=4){
+    const a = axis(s);
+    const x = a.x + a.z*SHX, y = YC + a.z*SHY;
+    if(first){ p.moveTo(x,y); first=false; } else p.lineTo(x,y);
+  }
+  return p;
+})();
+
+/* ---------- particles ---------- */
+let activity = 1.1, variety = 8;
+let particles = [], seq = 1, alarms = 0, alarmFlash = 0, spawnAcc = 0, bolus = 0;
+
+function hash(n){ const x = Math.sin(n*127.1+311.7)*43758.5453; return x - Math.floor(x); }
+function hueFor(id){
+  const bucket = Math.floor(hash(id*1.37)*variety);
+  const jitter = (hash(id*8.9)-0.5) * (58/variety) * 0.5;
+  return 166 + (bucket+0.5)*(58/variety) + jitter;
+}
+function isAlert(id){ return hash(id*7.13) < 0.03; }
+
+function spawn(){
+  const id = seq++;
+  const alert = isAlert(id);
+  const big = hash(id*4.7) < 0.08;
+  const rho = Math.sqrt(hash(id*5.7)) * 0.92;
+  particles.push({
+    id, s: 0,
+    v: 150 + hash(id*3.1)*40,
+    rho,
+    th: hash(id*6.3)*TAU,
+    om: (hash(id*2.9)-0.5)*1.6,
+    hue: alert ? 3 : hueFor(id),
+    alert,
+    size: alert ? 3.4 : (big ? 3.0 : 1.5 + hash(id*2.3)*1.5),
+    px: null, py: null
+  });
+  if(particles.length > 420) particles.shift();
+  if(alert){ alarms++; alarmFlash = 1; }
+}
+
+function place(p){
+  const a = axis(p.s);
+  const off = p.rho * (RI - 2);
+  const sx = Math.cos(p.th), sy = Math.sin(p.th);
+  // in the run the cross-section is the y-z plane; in the leg it is the x-y plane
+  const x = a.x + off*sx*(1-a.k);
+  const y = YC + off*sy;
+  const front = p.rho*sx*a.k;                       // -1 back .. +1 front of the bore
+  const zf = a.z / ZMAX;                            // 0 at the wall .. 1 at the run
+  const vis = smooth(0.12, 0.92, zf) * Math.min(1, (TOTAL - p.s)/24 + 0.0001) * Math.min(1, p.s/6 + 0.0001);
+  return {x, y, front, zf, vis};
+}
+
+/* ---------- scene ---------- */
+function drawWall(){
+  const g = ctx.createLinearGradient(0,0,0,VH);
+  g.addColorStop(0,'#0d1214');
+  g.addColorStop(0.55,'#0a0e10');
+  g.addColorStop(1,'#07090b');
+  ctx.fillStyle = g; ctx.fillRect(0,0,VW,VH);
+
+  ctx.strokeStyle = 'rgba(140,175,180,0.024)'; ctx.lineWidth = 1;
+  for(let x=40;x<VW;x+=40){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,VH); ctx.stroke(); }
+  for(let y=40;y<VH;y+=40){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(VW,y); ctx.stroke(); }
+
+  // panel seams
+  ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 2;
+  for(const y of [78, 344]){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(VW,y); ctx.stroke(); }
+  ctx.strokeStyle = 'rgba(255,255,255,0.045)'; ctx.lineWidth = 1;
+  for(const y of [79, 345]){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(VW,y); ctx.stroke(); }
+
+  for(const [x,y] of [[30,30],[970,30],[30,370],[970,370]]){
+    ctx.fillStyle = '#1a2124';
+    ctx.beginPath(); ctx.arc(x,y,4,0,TAU); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+    ctx.beginPath(); ctx.arc(x,y,4,0,TAU); ctx.stroke();
+  }
+
+  ctx.fillStyle = '#0b1012';
+  ctx.fillRect(410,26,180,30);
+  ctx.strokeStyle = '#242c30'; ctx.strokeRect(410.5,26.5,179,29);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(205,222,218,0.66)';
+  ctx.font = '600 9px ui-monospace, Menlo, monospace';
+  ctx.fillText('THEUTH · EVENT BUS', 500, 40);
+  ctx.fillStyle = 'rgba(140,165,163,0.48)';
+  ctx.font = '7px ui-monospace, Menlo, monospace';
+  ctx.fillText('SURFACE A / PORT PAIR 1', 500, 50);
+  ctx.textAlign = 'left';
+}
+
+function drawPort(x, label){
+  // machined flange on the wall, centred on the leg
+  const g = ctx.createLinearGradient(x-50, YC-50, x+50, YC+50);
+  g.addColorStop(0,'#323d42'); g.addColorStop(0.5,'#1d2528'); g.addColorStop(1,'#12181b');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(x, YC, 50, 0, TAU); ctx.fill();
+  ctx.strokeStyle = '#3e4b50'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(x, YC, 50, 0, TAU); ctx.stroke();
+  ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+  ctx.beginPath(); ctx.arc(x, YC, 36, 0, TAU); ctx.stroke();
+  for(let k=0;k<8;k++){
+    const a = k*TAU/8 + 0.2;
+    const bx = x + Math.cos(a)*43, by = YC + Math.sin(a)*43;
+    ctx.fillStyle = '#20282b';
+    ctx.beginPath(); ctx.arc(bx,by,3,0,TAU); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.beginPath(); ctx.arc(bx,by,3,0,TAU); ctx.stroke();
+  }
+  // glow leaking from the aperture onto the flange
+  const ag = ctx.createRadialGradient(x, YC, R*0.6, x, YC, 50);
+  ag.addColorStop(0,'rgba(110,220,215,0.10)');
+  ag.addColorStop(1,'rgba(110,220,215,0)');
+  ctx.fillStyle = ag;
+  ctx.beginPath(); ctx.arc(x, YC, 50, 0, TAU); ctx.fill();
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(170,196,194,0.58)';
+  ctx.font = '8px ui-monospace, Menlo, monospace';
+  ctx.fillText(label, x, YC - 60);
+  ctx.textAlign = 'left';
+}
+
+function drawShadow(){
+  ctx.save();
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for(let k=0;k<7;k++){
+    ctx.strokeStyle = 'rgba(0,0,0,' + (0.11 - k*0.012).toFixed(3) + ')';
+    ctx.lineWidth = 2*R + k*7;
+    ctx.stroke(SHADOW);
+  }
+  ctx.restore();
+}
+
+function drawSpill(n){
+  // light from the stream falling on the wall behind and below the run
+  const k = Math.min(1, n/70);
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(70,190,190,' + (0.020 + 0.035*k).toFixed(3) + ')';
+  ctx.lineWidth = 130;
+  ctx.beginPath(); ctx.moveTo(XL+40, YC+18); ctx.lineTo(XR-40, YC+18); ctx.stroke();
+  ctx.strokeStyle = 'rgba(80,200,200,' + (0.025 + 0.04*k).toFixed(3) + ')';
+  ctx.lineWidth = 64;
+  ctx.beginPath(); ctx.moveTo(XL+30, YC+26); ctx.lineTo(XR-30, YC+26); ctx.stroke();
+  ctx.restore();
+}
+
+function glassBack(){
+  // what you see through the glass: the bore, a faint fluid tint, the back wall of the tube
+  const g = ctx.createLinearGradient(0, YC-R, 0, YC+R);
+  g.addColorStop(0,'rgba(24,46,48,0.70)');
+  g.addColorStop(0.45,'rgba(10,22,24,0.80)');
+  g.addColorStop(1,'rgba(6,14,16,0.86)');
+  ctx.fillStyle = g;
+  ctx.fill(TUBE);
+  // back inner wall reflection
+  ctx.strokeStyle = 'rgba(150,220,220,0.06)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(XL, YC+RI*0.55); ctx.lineTo(XR, YC+RI*0.55); ctx.stroke();
+}
+
+function glassFront(){
+  ctx.save();
+  ctx.clip(TUBE);
+
+  // cylindrical shading: bright rim, broad sheen, dark core band, caustic, bottom rim
+  const g = ctx.createLinearGradient(0, YC-R, 0, YC+R);
+  g.addColorStop(0.00,'rgba(230,250,250,0.30)');
+  g.addColorStop(0.07,'rgba(230,250,250,0.05)');
+  g.addColorStop(0.20,'rgba(230,250,250,0.13)');
+  g.addColorStop(0.34,'rgba(230,250,250,0.02)');
+  g.addColorStop(0.62,'rgba(0,0,0,0.10)');
+  g.addColorStop(0.84,'rgba(110,230,220,0.10)');
+  g.addColorStop(0.93,'rgba(0,0,0,0.22)');
+  g.addColorStop(1.00,'rgba(210,240,240,0.24)');
+  ctx.fillStyle = g;
+  ctx.fillRect(XL-R-2, YC-R-2, (XR-XL)+2*R+4, 2*R+4);
+
+  // elbows turn away from the viewer: darken toward the outer rim of each end
+  for(const [x,dir] of [[XL,-1],[XR,1]]){
+    ctx.save();
+    ctx.beginPath();
+    if(dir < 0) ctx.rect(XL-R-2, YC-R-2, R+2+RB*0.5, 2*R+4);
+    else ctx.rect(XR-RB*0.5, YC-R-2, R+2+RB*0.5, 2*R+4);
+    ctx.clip();
+    const rg = ctx.createRadialGradient(x, YC, R*0.15, x, YC, R+1);
+    rg.addColorStop(0,'rgba(0,0,0,0)');
+    rg.addColorStop(0.55,'rgba(0,0,0,0.10)');
+    rg.addColorStop(1,'rgba(0,0,0,0.45)');
+    ctx.fillStyle = rg;
+    ctx.fillRect(x-R-2, YC-R-2, 2*R+4, 2*R+4);
+    ctx.restore();
+  }
+  ctx.restore();
+
+  // specular highlight running the length and wrapping around both elbows
+  ctx.lineCap = 'round';
+  const hy = R*0.60;
+  for(const [w,a] of [[7,0.06],[2.2,0.42]]){
+    ctx.strokeStyle = 'rgba(240,253,253,' + a + ')';
+    ctx.lineWidth = w;
+    ctx.beginPath();
+    ctx.arc(XL, YC, hy, Math.PI*1.16, Math.PI*1.5, false);
+    ctx.lineTo(XR, YC - hy);
+    ctx.arc(XR, YC, hy, Math.PI*1.5, Math.PI*1.84, false);
+    ctx.stroke();
+  }
+  // secondary glint near the top rim
+  ctx.strokeStyle = 'rgba(240,253,253,0.22)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(XL+12, YC-R+3.5); ctx.lineTo(XR-12, YC-R+3.5); ctx.stroke();
+  // caustic: light focused through the far wall
+  ctx.strokeStyle = 'rgba(140,240,230,0.22)';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(XL+14, YC+R*0.74); ctx.lineTo(XR-14, YC+R*0.74); ctx.stroke();
+
+  // glass edges
+  ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 1.2; ctx.stroke(OUTER);
+  ctx.strokeStyle = 'rgba(214,242,242,0.36)'; ctx.lineWidth = 1.1; ctx.stroke(TUBE);
+  ctx.strokeStyle = 'rgba(214,242,242,0.08)'; ctx.lineWidth = 1; ctx.stroke(BORE);
+}
+
+function drawParticleSet(list, t){
+  ctx.save();
+  ctx.clip(BORE);
+  ctx.globalCompositeOperation = 'lighter';
+  for(const q of list){
+    const p = q.p, s = q.pos;
+    if(s.vis <= 0.01) continue;
+    const depthA = 0.50 + 0.50*(0.5 + 0.5*s.front);           // back of the bore is dimmer
+    const persp = 0.62 + 0.38*s.zf;                            // nearer the wall is smaller
+    const a = s.vis * depthA;
+    const sz = p.size * persp * (s.front < 0 ? 1.12 : 1.0);    // refracted, a little softer behind
+
+    if(p.px !== null){
+      ctx.strokeStyle = hsla(p.hue, 88, 62, 0.20*a);
+      ctx.lineWidth = Math.max(0.8, sz*0.85);
+      ctx.beginPath(); ctx.moveTo(p.px, p.py); ctx.lineTo(s.x, s.y); ctx.stroke();
+    }
+
+    const r = sz*4.4;
+    const g = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, r);
+    g.addColorStop(0, hsla(p.hue, 95, 94, 0.98*a));
+    g.addColorStop(0.17, hsla(p.hue, 95, 70, 0.85*a));
+    g.addColorStop(0.5, hsla(p.hue, 90, 58, 0.28*a));
+    g.addColorStop(1, hsla(p.hue, 90, 55, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(s.x, s.y, r, 0, TAU); ctx.fill();
+
+    if(s.front >= 0){
+      ctx.fillStyle = hsla(p.hue, 100, 97, 0.92*a);
+      ctx.beginPath(); ctx.arc(s.x, s.y, Math.max(0.6, sz*0.45), 0, TAU); ctx.fill();
+    }
+    if(p.alert){
+      ctx.strokeStyle = hsla(3, 85, 62, 0.55*a);
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(s.x, s.y, sz*3.8, 0, TAU); ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function drawReadout(n){
+  let hmin=999, hmax=-999;
+  for(const p of particles){ if(p.alert) continue; if(p.hue<hmin)hmin=p.hue; if(p.hue>hmax)hmax=p.hue; }
+  const mix = hmin<999 ? ((hmax-hmin)/58).toFixed(2) : '0.00';
+  ctx.font = '8px ui-monospace, Menlo, monospace';
+  ctx.fillStyle = 'rgba(150,178,178,0.40)';
+  ctx.textAlign = 'left';
+  ctx.fillText('FLOW CELL · FC-16 · 28 mm ID', 30, VH-24);
+  ctx.fillText('STANDOFF 84 mm · REV C', 30, VH-11);
+  ctx.fillStyle = 'rgba(140,205,200,0.62)';
+  ctx.textAlign = 'right';
+  ctx.fillText('FLOW ' + (activity*13).toFixed(1) + '/s   ·   VISIBLE ' + n + '   ·   MIX ' + mix + '   ·   ALM ' + alarms, VW-30, VH-11);
+  ctx.textAlign = 'left';
+}
+
+/* ---------- loop ---------- */
+let last = 0;
+function frame(now){
+  const t = now/1000;
+  if(!last) last = t;
+  const dt = Math.min(0.05, Math.max(0.001, t-last)); last = t;
+
+  let rate = activity*13;
+  if(bolus > 0){ rate += 34; bolus -= dt; if(bolus < 0) bolus = 0; }
+  spawnAcc += dt*rate;
+  let guard = 0;
+  while(spawnAcc >= 1 && guard++ < 50){
+    spawnAcc -= 1;
+    spawn();
+    if(hash(seq*3.3) < 0.10){ for(let k=0;k<3;k++) spawn(); }
+  }
+
+  const placed = [];
+  let visible = 0;
+  for(let i=particles.length-1;i>=0;i--){
+    const p = particles[i];
+    const lam = 0.42 + 0.58*(1 - p.rho*p.rho);   // laminar: centre fast, wall slow
+    p.s += p.v*lam*dt;
+    p.th += p.om*dt;
+    if(p.s >= TOTAL){ particles.splice(i,1); continue; }
+    const pos = place(p);
+    if(pos.vis > 0.3) visible++;
+    placed.push({p, pos});
+  }
+  placed.sort((a,b)=>a.pos.front - b.pos.front);
+  const back = placed.filter(q=>q.pos.front < 0);
+  const front = placed.filter(q=>q.pos.front >= 0);
+
+  drawWall();
+  drawSpill(visible);
+  drawPort(XL, 'OUT');
+  drawPort(XR, 'IN');
+  drawShadow();
+  glassBack();
+  drawParticleSet(back, t);
+  ctx.fillStyle = 'rgba(30,70,72,0.10)'; ctx.fill(BORE);   // fluid between back and front
+  drawParticleSet(front, t);
+  glassFront();
+  drawReadout(visible);
+
+  for(const q of placed){ q.p.px = q.pos.x; q.p.py = q.pos.y; }
+
+  const led = document.getElementById('almled');
+  if(alarmFlash > 0.02){
+    led.style.boxShadow = '0 0 8px rgba(251,191,36,'+alarmFlash.toFixed(2)+')';
+    led.style.background = '#fbbf24';
+    alarmFlash *= 0.96;
+  } else { led.style.boxShadow='none'; led.style.background='#3a3324'; }
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+const aEl=document.getElementById('activity'), vEl=document.getElementById('variety');
+const av=document.getElementById('av'), vv=document.getElementById('vv');
+aEl.addEventListener('input', ()=>{ activity=+aEl.value; av.textContent=(+aEl.value).toFixed(2).replace(/0$/,''); });
+vEl.addEventListener('input', ()=>{ variety=+vEl.value; vv.textContent=vEl.value; });
+document.getElementById('burst').addEventListener('click', ()=>{ bolus=1; });
+</script>
+</body>
+</html>
