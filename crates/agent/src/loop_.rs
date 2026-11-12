@@ -2470,12 +2470,13 @@ impl Message<crate::SideCall> for Session {
         let side = self.shared.side(self.entered.flatten());
         tokio::spawn(async move {
             let out = match model {
-                Ok(model) => {
+                Ok((model, effort)) => {
                     // R2-6: a title-model title (notebook note titles) is short;
                     // other roles (insights, ask, polish, escalate) keep thinking.
                     let short =
                         m.kind == CallKind::Title && matches!(m.role, crate::ModelRole::Title);
                     side.short(short)
+                        .effort(&model, effort.as_deref())
                         .call(model, &m.system, m.user, m.budget, m.kind)
                         .await
                 }
@@ -6076,7 +6077,7 @@ impl Turn {
         ) {
             return;
         }
-        let model = match self.shared.role_model(&crate::ModelRole::Title) {
+        let (model, effort) = match self.shared.role_model(&crate::ModelRole::Title) {
             Ok(m) => m,
             Err(e) => return tracing::warn!(session = %self.shared.id, "title model: {e}"),
         };
@@ -6111,7 +6112,10 @@ impl Turn {
         let closed = self.shared.closed.clone();
         let generation = self.shared.resources.generation;
         let private = self.shared.resources.is_private();
-        let side = self.shared.side(self.turn);
+        let side = self
+            .shared
+            .side(self.turn)
+            .effort(&model, effort.as_deref());
         self.state.title_task = Some(tokio::spawn(async move {
             let chars = |s: &str| (!private).then(|| s.chars().count());
             let reply = match side
@@ -11885,7 +11889,7 @@ mod tests {
         let (base_url, _hits, _) = fake_openai(vec![]).await;
         let (turn, _, _, _events) = gateway_turn(&dir, store, SessionId::new(), base_url).await;
         let shared = &turn.shared;
-        let id_of = |role: ModelRole| shared.role_model(&role).map(|r| r.id);
+        let id_of = |role: ModelRole| shared.role_model(&role).map(|(r, _)| r.id);
 
         assert_eq!(id_of(ModelRole::Escalate).unwrap(), "fake/m");
         assert_eq!(id_of(ModelRole::Title).unwrap(), "fake/m");
@@ -11921,7 +11925,7 @@ mod tests {
         let (base_url, _hits, _) = fake_openai(vec![]).await;
         let (turn, _, _, _events) = gateway_turn(&dir, store, SessionId::new(), base_url).await;
         let shared = &turn.shared;
-        let id_of = |role: ModelRole| shared.role_model(&role).map(|r| r.id);
+        let id_of = |role: ModelRole| shared.role_model(&role).map(|(r, _)| r.id);
 
         assert_eq!(id_of(ModelRole::Polish).unwrap(), "fake/m");
         *shared.escalate_model.write().unwrap() = Some(resolved("cheap/e"));
@@ -12018,5 +12022,73 @@ mod tests {
             (rows[1].2.as_str(), rows[1].3.as_str()),
             ("escalate", "failed")
         );
+    }
+
+    /// 194 S1: `NamedWithEffort` resolves like `Named` and its effort rides
+    /// the request as `reasoning_effort`; `effort: None` is `Named` exactly;
+    /// an effort the model does not take is dropped, not sent.
+    #[tokio::test]
+    async fn named_with_effort_carries_its_effort() {
+        let scratch = crate::TestDir::new("side-effort");
+        let dir = scratch.0.clone();
+        let store = Store::open_memory().await.unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "fake/m", None, None, None)
+            .await
+            .unwrap();
+        let usage = r#"{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}"#;
+        let (base_url, _, bodies) = fake_openai(vec![sse(usage), sse(usage), sse(usage)]).await;
+        let (turn, _, _, _events) = gateway_turn(&dir, store, id, base_url).await;
+        let shared = &turn.shared;
+        let with = |effort: Option<&str>| ModelRole::NamedWithEffort {
+            model: "fake/m".into(),
+            effort: effort.map(str::to_owned),
+        };
+        let (model, effort) = shared.role_model(&with(Some("high"))).unwrap();
+        assert_eq!(
+            (model.id.as_str(), effort.as_deref()),
+            ("fake/m", Some("high"))
+        );
+        let key = |role: ModelRole| {
+            let (m, e) = shared.role_model(&role).unwrap();
+            (m.id, m.genai, m.provider, m.model.map(|m| m.id), e)
+        };
+        assert_eq!(key(with(None)), key(ModelRole::Named("fake/m".into())));
+
+        let send = |model: Resolved, effort: Option<String>| {
+            let side = shared.side(turn.turn).effort(&model, effort.as_deref());
+            async move {
+                side.call(
+                    model,
+                    "s",
+                    "q".into(),
+                    Duration::from_secs(5),
+                    CallKind::Escalate,
+                )
+                .await
+                .unwrap();
+            }
+        };
+        let wire =
+            |i: usize| -> serde_json::Value { serde_json::from_str(&bodies.lock()[i]).unwrap() };
+        send(model.clone(), effort).await;
+        assert_eq!(wire(0)["reasoning_effort"], "high", "{}", wire(0));
+        send(model.clone(), None).await;
+        assert!(wire(1).get("reasoning_effort").is_none(), "{}", wire(1));
+        // The model lists only `low`: `high` is dropped with a warning.
+        let low_only = Resolved {
+            model: Some(
+                serde_json::from_value(serde_json::json!({
+                    "id": "m", "name": "m", "limit": {"context": 200000, "output": 8192},
+                    "reasoning": true,
+                    "reasoning_options": [{"type": "effort", "values": ["low"]}]
+                }))
+                .unwrap(),
+            ),
+            ..model
+        };
+        send(low_only, Some("high".into())).await;
+        assert!(wire(2).get("reasoning_effort").is_none(), "{}", wire(2));
     }
 }
