@@ -246,3 +246,40 @@ fn empty_pending_replaces_categories_and_loss_resync_preserves_inspection() {
     assert!(model.refresh_context);
 }
 
+
+#[test]
+fn component_prompt_keeps_composer_focus_and_accepts_empty_answer() {
+    struct PromptOwner;
+    impl Component for PromptOwner {
+        type Msg = ();
+        fn declaration(&self) -> Declaration {
+            Declaration { id: "prompt-test", interests: &[], bindings: &[], slash: &[("/prompt-test", "", "test")] }
+        }
+        fn decode(&self, _: &TopicEvent, _: &CoreView<'_>) -> Option<()> { None }
+        fn update(&mut self, input: Input<'_, ()>, cx: &mut Cx<'_, '_, ()>) {
+            match input {
+                Input::Slash { .. } => cx.focus(FocusClass::Modal),
+                Input::Submit(text) => {
+                    cx.core(CoreAction::Notice(format!("answer:{text}")));
+                    cx.consume_key();
+                    cx.close();
+                }
+                _ => {}
+            }
+        }
+        fn editor(&self) -> Option<Editor> {
+            Some(Editor { hint: "secret note".into(), masked: true, submit_empty: true })
+        }
+        fn view(&self, _: Surface<'_>, _: &ViewCx<'_>) -> Option<View> { None }
+    }
+    let mut model = Model::default();
+    model.components.register(PromptOwner).unwrap();
+    let (tx, _) = tokio::sync::mpsc::unbounded_channel();
+    model.submit("/prompt-test", &tx);
+    assert!(model.input_focused());
+    assert!(!model.modal_menu());
+    assert!(model.components.editor().unwrap().1.masked);
+    model.submit("", &tx);
+    assert!(matches!(model.entries.last(), Some(Entry::Info(text)) if text == "answer:"));
+    assert!(model.components.editor().is_none());
+}

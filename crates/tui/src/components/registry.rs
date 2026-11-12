@@ -216,4 +216,13 @@ impl Registry {
     }
     /// Whether a component, rather than the chat editor, currently owns input.
     pub fn focused(&self) -> bool { self.focus.is_some() }
+    /// The exclusive focus owner's composer port and its input-precedence class.
+    pub fn editor(&self) -> Option<(FocusClass, Editor)> {
+        let (token, class) = self.focus?;
+        Some((class, self.slots[token.slot].component.as_ref()?.editor()?))
+    }
+    /// Modal capture excludes composer-backed prompts, just like the core prompt.
+    pub fn modal(&self) -> bool {
+        self.focus.is_some_and(|(_, class)| class == FocusClass::Modal) && self.editor().is_none()
+    }
 }

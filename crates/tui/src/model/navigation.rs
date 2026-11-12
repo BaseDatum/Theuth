@@ -7,12 +7,15 @@ impl Model {
     /// shown `secret_request` types into the box (masked).
     pub fn input_focused(&self) -> bool {
         if self.approval().is_some()
-            || self.components.focused()
+            || (self.components.focused() && self.components.editor().is_none())
             || self.dictation.is_some()
             || self.suggestion.is_some()
             || self.talk_view
         {
             return false;
+        }
+        if self.components.editor().is_some_and(|(class, _)| class == crate::components::FocusClass::Secret) {
+            return true;
         }
         if self.secret_request().is_some() {
             return true;
@@ -54,7 +57,7 @@ impl Model {
 
     /// A menu that takes the keys is open: every menu but the slash popup.
     pub fn modal_menu(&self) -> bool {
-        !matches!(self.menu, None | Some(Menu::Slash { .. }))
+        self.components.modal() || !matches!(self.menu, None | Some(Menu::Slash { .. }))
     }
 
     /// The `/search` menu is up (49 §6).
