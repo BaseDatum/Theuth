@@ -617,8 +617,8 @@ The RPC layer is generic glue, not a second protocol:
   40 ms delta flush), not durable replay or bounded producer backpressure.
   Artifact/update count external RPC stream leases, never local feed receivers.
 - Params/results and event payloads remain owner types. Owner-trait descriptors
-  and registered event schemas define discovery, not a curated TypeScript list.
-  The legacy `ts-rs` export remains transitional under `rpc-compose`.
+  and registered event schemas define discovery and the generated TypeScript
+  client; there is no central RPC `ts-rs` catalog.
 - Communication (50 §10; implemented 2026-09-18, verification pending):
   `get_communication`/`set_communication`/`set_peer_scope`, `list_peers`,
   `list_peer_messages`/`peer_message`, `answer_peer_request`,
@@ -762,9 +762,9 @@ just wire-schema-accept
 
 The binary export uses the production declaration pass and merge list with
 `engine_plugins(true, true)`, exporting the full mesh view. It also writes
-sorted `bindings/methods.json` and the two surface catalogs. `just ts` invokes
-that same binary export plus transitional legacy TS roots; `just ts-desktop`
-copies its outputs into the frontend. No second export-only owner list exists.
+sorted `bindings/methods.json`, both surface catalogs and
+`bindings/client-auxiliary.json` for owner-supplied client error/surface schemas.
+No second export-only owner list exists.
 
 ### In-process and ACP consumers
 
@@ -791,8 +791,102 @@ surface stays for the TUI and config menus. Design: doc 06 §4.
 
 ### Generated desktop/iOS client
 
-Step 10, generating the Tauri desktop/shared iOS TypeScript client from this
-schema, is still in progress; its client-cutover section is left for follow-up.
+Desktop and iOS use the same generated TypeScript client in the shared Tauri
+webview, over the existing local WebSocket and authenticated Noise relay
+transports. Generation replaces handwritten wire catalogs, not transport or
+reconnect logic; native companions remain separate consumers of the wire ABI.
+
+**Generation.** `crates/desktop/ui/scripts/generate-wire.mjs` requires the
+checked-out composition's `bindings/openrpc.json` and
+`bindings/client-auxiliary.json`; missing inputs fail. The pinned dev dependency
+`json-schema-to-typescript` 15.0.4 emits owner/direction-scoped modules into
+ignored `bindings/typescript/`. Generated `client.ts` exports `MethodMap`,
+`Api`, `makeApi`, ordered positional argument tuples, topic/version payloads,
+raw receiver types and subscription metadata. `receive.ts` holds receiver
+adapters; `components.json` maps schema identities to scoped exports.
+Unknown remotely advertised methods never become generated executable bindings.
+
+```sh
+just ts-desktop
+```
+
+Its `just ts` dependency runs the declaration-only `just wire-schema` export,
+installs UI dependencies and invokes `bun run wire:generate`; `ts-desktop`
+stages the generated modules into `crates/desktop/ui/src/rpc/bindings/` with
+`methods.json` and both surface catalogs. These ignored outputs are generated
+before UI compilation, not committed mirrors. The handwritten RPC
+`api.ts`, `events.ts`, `extra.ts` and central `rpc-compose` TS exporter are gone;
+unrelated owner `ts-rs` derives remain.
+
+Owner schemas account for actual serde bytes:
+`wire::serde_type_tag::<Self>` supplies the required serialized `type` constant
+that schemars otherwise omits for named tagged structs, without changing
+serialization. The generator normalizes object properties beside schema
+combiners into an explicit conjunction before TS compilation.
+JSON integers remain JavaScript numbers, with the existing
+`Number.MAX_SAFE_INTEGER` precision ceiling; this is not a bigint/string
+protocol migration.
+
+**Receiving.** `scripts/receive-adapters.mjs` under the desktop UI emits one
+walker and generated shape/profile tables from bundled output/receiver pairs.
+Raw receiver types preserve optional serde-defaultable and Option fields;
+`makeApi` returns normalized emitted-shape models. The walker fills only
+missing fields required by the emitted shape, using declared serde defaults
+or implicit missing-Option-to-null semantics. Optional emitted fields stay
+optional, explicit null survives, and object defaults are cloned only on
+omission. It walks nested arrays/maps/tuples and conservatively selected union
+branches, updates parsed values in place, and retains extra fields.
+The same profiles serve method results, topic payloads, direct stream items
+and typed `receiveComponent` calls for optimistic/UI models. They do not reject
+unknown payloads or guess ambiguous union branches, and do not replace owner
+validators. Remote discovery stays inert support
+metadata, never a source of executable adapters.
+
+**Connection readiness.** `crates/desktop/ui/src/rpc/client.ts::RpcClient`
+puts one readiness barrier above both transports. Every authenticated open
+starts a generation and raw internal `rpc.capabilities`; `rpc.discover`
+runs only on a hash miss. The client's private cache retains at most two
+verified documents for its fixed transport/engine context, not a global
+engine catalog. Hash verification uses the raw canonical result bytes, not
+JSON parse/stringify, which would round numeric lexical forms.
+`rpc/discovery.ts` validates protocol major, OpenRPC framing, unique identities,
+local references and summary/document agreement. Auth, framing, hash, protocol
+and transport failures fail readiness; only discovery `-32601` selects explicit
+legacy mode. Ordinary calls, subscription reissue and initial info publication
+wait for readiness. Reconnect rejects old barriers/work and clears subscription
+IDs; generation checks fence negotiation, asynchronous hashing and replies.
+Each engine's connection store mirrors its discovery state. Missing advertised
+methods fail locally with `UnsupportedCapability`; an ordinary remote `-32601`
+marks that method unavailable without downgrading the whole connection.
+
+**Topics and feature requirements.** `rpc/topics.ts` validates routing
+discriminants, then selects generated `TOPICS` by exact topic/version before
+interpreting inner tags; the queued store event retains that identity.
+Known untagged families do not acquire a mandatory synthetic tag.
+Unknown notification methods/IDs/topics/versions/variants are ignored;
+malformed routing has bounded diagnostics. Legacy bare tags route only when
+their bundled ownership is unambiguous. Direct PTY/document/cell items use
+the same receiver profiles while keeping their independent streams and initial
+snapshots; subscription IDs bind before resolving the response promise so an
+immediately following item is not lost.
+
+Panels declare `Requirements` beside their UI in feature-local
+`requirements.ts` modules: methods, topic/version keys and schema field/enum
+requirements, not a transport feature matrix or guessed engine version.
+`rpc/capabilities.tsx` supplies `useSupported`, `useQuerySupport`, `Capability`
+and `withCapability`: unsupported entry points hide, queries are disabled,
+and direct routes render the accessible `Unavailable` state before mounting
+the panel. Index/detail requirements remain separate; independent queries
+retain independent guards. Explicit legacy mode permits targeted ordinary
+query probes but fabricates no complete capability set. Core chat stays
+available independently of advanced features; private/endless session modes
+require their actual input fields/values and are checked again before creation,
+never silently downgraded.
+
+Step 10a/10b's client cutover is built; step 10c desktop/iOS packaging and live
+reconnect smoke remain unperformed. Clients and engines move together under
+Sky's coordinated-upgrade ruling: mixed old/new-version smoke is not a release
+gate, while the client's tolerance machinery remains.
 
 ## 8. Terminal UI plugin
 
@@ -826,29 +920,40 @@ topic/version and optional inner variants; matching recipients receive the
 borrowed frame once in registration order. Unknown topics/versions/variants
 do not reset the connection.
 
-`crates/tui/src/components/registry.rs::builtin_with` is the fixed registration
-list, configured with app capability and interactive mode; `builtin` supplies
-the default composition. Its insertion blocks group built-in panels; they
+`crates/tui/src/components/registry.rs::compose` is the sole fixed registration
+list. `configured` seeds model/advisor defaults from startup info and runtime;
+`builtin_with` supplies app/interactive options and `builtin` supplies defaults.
+Its insertion blocks group all 34 built-in panels; they
 are composition locations, not presentation priority. Registration rejects
 duplicate ids, slash names/aliases, equal-class bindings and wrapper ownership.
 Explicit `HeaderSlot` and `StatusSlot` positions preserve chrome order;
 `model::command_rank` orders help/completion/dictation vocabulary independently
 of registration order.
 
-`Model` owns transcript, composer, sessions/private membership, approvals/asks
-and the registry shell. The extraction is not complete at this HEAD: model/
-provider/ACP/skills pickers, advisor and agent-board presentation still live
-in `crates/tui/src/model/`; the corresponding model-picker insertion block is
-empty. `crates/tui/src/topics.rs::residual` decodes the shared agent stream,
-core prompt streams and login completion; it never republishes them to the
-bus. Components own the migrated network/vault/peer, task/roster/routine,
-cost/todo/context-review, artifact/app/progress, job/terminal, knowledge/search,
-MCP and speech panels. No schema-generated Rust DTO cutover is implied:
-the aggregate `tui` crate still depends on owner crates, under its ratchet.
+All 34 assigned panels are components under `crates/tui/src/components/`,
+including the final `models`, `aws`, `vision_settings`, `advisor`,
+`skills_prompt`, `acp`, `providers_login` and `agents_board` owners.
+Picker caches, provider wizard/login state, advisor cards, board rows, RPC
+effects and feature rendering/plain output live with those owners, not in
+central model events/commands or render branches.
+
+`Model` retains transcript/composer, applied model/effort/harness metadata,
+canonical `AgentInfo` membership, approvals/asks, private-tree admission,
+turn/cancel state, navigation and watch/read-only labels. The board borrows
+canonical descendants; unmounting it cannot remove membership, prune prompts
+or change subtree cancellation. `crates/tui/src/topics.rs::residual` decodes
+only the shared agent stream and core approval/ask streams; login completion
+belongs to `providers_login`. No bus republishing or schema-generated Rust
+DTO cutover is implied: the aggregate `tui` crate still depends on owner
+crates, under its ratchet.
 
 `CoreView` borrows selected session/project, accepted membership and prompt
 identities, transcript and applied settings, including the once-decoded core
-agent event. Owners do not receive `&mut Model`. `CoreAction` defers core
+agent event. Its `descendant_event` flag uses core's canonical admission
+predicate, not visible board rows, so ignored hidden-child spawns and unknown
+observed parents cannot reset owner chrome. `SessionMembers::agent_info` and
+`visit` lend existing canonical metadata without a second inventory cache.
+Owners do not receive `&mut Model`. `CoreAction` defers
 navigation, session adoption, editor and transcript mutations until registry
 borrows end. `Cx::spawn` and `Cx::spawn_request` queue generic effects against
 the current engine; owner-local request/reply enums stay in components.
@@ -859,9 +964,13 @@ tombstones the slot and removes its interests. `Cx::send_to<C>` and
 `Model::component_message<C>` deliver typed addressed messages without mutable
 peer access; delivery resolves a mounted owner in the same engine epoch.
 
-The ports cover layout and interaction without feature DTOs in the shell:
+The ports separate owner presentation from canonical core state:
 - `Surface::Header`, `Status`, `SessionBadge`, `PromptBadge` and `Activity`
   place chrome among existing core segments, not in mount order.
+  `StatusSlot::BeforeQueue` puts the idle-agent contribution before queued
+  input; `Surface::BeforePinned` reserves the live board's rows after queued
+  input and before pinned content. `ViewCx::session_badge` projects existing
+  session badge text read-only, without registry/peer access.
 - `ComposerMode::{Default, ReadOnly, Hidden}` keeps App's editor mounted.
   Intrinsic capture orders Hidden before ReadOnly before Default; replacement
   composer headings give ReadOnly precedence over Hidden.
@@ -876,25 +985,47 @@ The ports cover layout and interaction without feature DTOs in the shell:
   replacement; `CoreAction::InterjectCard` inserts above the live tail.
   Wrapper owners project accepted history and live injected rows through the
   same registry port, preserving source order and unowned fallback.
+- `Component::history_entry` and `history_plain` project owned canonical history
+  rows; unclaimed rows retain core formatting. `session_hidden`, `turn_hidden`
+  and `entry_toggleable` expose admission/disclosure decisions without owner
+  DTOs. `CoreAction::Descendants` installs refreshed membership through core's
+  existing reseed/private-tree/prompt-pruning policy; `InterjectError` preserves
+  streaming-tail insertion without generic command-failure transitions.
+- `View::Element` gets a fixed-height, non-shrinking wrapper in `ui.rs`.
+  `View::IntrinsicElement` reserves the same explicit row budget but preserves
+  the widget's size-to-content/default-shrink behavior: a sole intrinsic view
+  is returned directly; mixed/multiple views use an intrinsic outer column.
+  The live agents board uses this port, not the fixed wrapper.
 
 Focus remains at the existing imperative input boundaries: terminal capture
 precedes global Ctrl-C, spoken capture preserves its existing approval/key
-predicates, and secret input precedes ask-user. Intrinsic captures need not
-displace modal focus;
+predicates, and secret input precedes ask-user. `Registry::modal` also honors
+`captures(FocusClass::Modal)` at the existing modal keyboard boundary, so a
+provider login menu can capture keys while retaining its masked wizard/editor.
+Intrinsic captures need not displace exclusive focus;
 `Lifecycle::FocusLost` closes a displaced surface without discarding its cache.
-Lifecycle notifications handle session reset/read/history acceptance, prompt
-changes, engine replacement and shutdown. Generic errors intentionally retain
-cross-panel pending-state effects; an inline error claim suppresses only the
-final transcript entry, not the existing failure transitions.
+`Lifecycle::SessionRefreshRequested` marks existing selected-session membership
+refresh points on resume, engine reselect and loss recovery; the board owner
+performs the list effect and returns canonical descendants through core.
+Other lifecycle notifications handle session reset/read/history acceptance,
+prompt changes, image attachment, engine replacement and shutdown. Generic
+errors retain cross-panel pending-state effects; an inline error claim
+suppresses only the final transcript entry, not existing failure transitions.
 
 **Adding a panel.** Put state, local messages, typed RPC effects, topic/legacy
 decoding, slash/bindings and view/plain formatting in its component module.
-Register it once in `builtin_with`'s appropriate insertion block and declare
-only the topics it consumes. Reuse the neutral core/layout ports and explicit
-order keys; do not add feature variants to `UiEvent`/`Command` or extend the
-residual decoder. Remove the old reducer/executor/render/print hooks when
-moving an existing responsibility. Keep generation/session guards on late
-replies, keyboard precedence, shared measured rows and value-free secret output.
+Register it once in `registry.rs::compose`'s appropriate insertion block and
+declare only the topics it consumes. Reuse the neutral core/layout ports and
+explicit order keys; do not add feature variants to `UiEvent`/`Command` or
+extend the residual decoder. Choose `View::IntrinsicElement` when preserving
+an old widget sized to content/default shrink, and `View::Element` only when
+fixed-height, non-shrinking allocation is intended; `rows` is the actual
+reserved budget, not a zero-for-intrinsic sentinel. Remove old
+reducer/executor/render/print hooks when moving a responsibility. Keep
+generation/session guards on late replies, canonical membership independent
+of presentation, keyboard precedence and value-free secret output.
+
+Known open layout issue: the wire-refactor notes' `s11t5/intrinsic-audit.md` reports 29 `Element` surface bindings across 22 owners still using fixed wrappers, with short-terminal allocation/clipping risk and visual impact unverified.
 
 The line printer emits `Plain` output against pre-event state, not appended
 entries; `-p` ends on its selected root TurnFinished, generic Error or
@@ -1076,7 +1207,7 @@ crates/
   rpc-core-macros/     proc macro: descriptors from owner RPC traits (§7)
   rpc-core/           library: shared RPC state/identity, streams, schemas/discovery (§4, §7)
   rpc/                library: generic transport/auth, clients, engine discovery and infrastructure RPC (§7)
-  rpc-compose/        library: cross-plugin RPC, startup/ACP/topic intake, unified search + SearchToolsPlugin, transitional TS export (§7; 49 §4)
+  rpc-compose/        library: cross-plugin RPC, startup/ACP/topic intake, unified search + SearchToolsPlugin (§7; 49 §4)
   link/               plugin: relay uplink, Noise pairing and sessions, device registry (31)
   nodes/              plugin: paired remote harnesses — control conns, dial transport for ACP children (32)
   schedule/           plugin: scheduled runs from `schedules/*.md` — tick, one session per schedule, delivery (34)
@@ -1171,7 +1302,7 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | schemars | 1.2 | tool schemas and owner RPC/event discovery |
 | serde / serde_json | 1 | wire |
 | figment (yaml, env) | 0.10 | config |
-| ts-rs | 12 | transitional legacy TS bindings (feature-gated) |
+| ts-rs | 12 | remaining owner derives (feature-gated), not the RPC client pipeline |
 | gray_matter | 0.3 | skill front matter (phase 2) |
 | tracing / tracing-subscriber | 0.1 / 0.3 | logs |
 | anyhow / thiserror | 1 / 2 | errors |
