@@ -95,6 +95,10 @@ pub struct FenceSnapshotRequested {
     pub scale: u32,
 }
 
+impl wire::WireEvent for FenceSnapshotRequested {
+    const TOPIC: &'static str = "artifact.fence-snapshot-requested";
+}
+
 /// Event: the request was answered or timed out; clients drop late renders.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -102,6 +106,10 @@ pub struct FenceSnapshotRequested {
 pub struct FenceSnapshotResolved {
     /// The request.
     pub id: FenceSnapshotId,
+}
+
+impl wire::WireEvent for FenceSnapshotResolved {
+    const TOPIC: &'static str = "artifact.fence-snapshot-resolved";
 }
 
 /// A client's answer (`crate::preview::Client`).

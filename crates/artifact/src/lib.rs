@@ -186,6 +186,10 @@ pub struct ArtifactShown {
     pub artifact: Artifact,
 }
 
+impl wire::WireEvent for ArtifactShown {
+    const TOPIC: &'static str = "artifact.shown";
+}
+
 /// `ask` → `Result<Artifact, String>`: snapshot, render, record, publish
 /// [`ArtifactShown`]. Runs off the mailbox: a compile takes seconds.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -749,6 +753,17 @@ impl Message<::tools::CloseTree> for ArtifactActor {
     }
 }
 
+/// Declare artifact wire contracts even when rendering is disabled.
+pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<ArtifactShown>().await?;
+    rt.register_wire_event::<preview::PagePreviewRequested>().await?;
+    rt.register_wire_event::<preview::PagePreviewResolved>().await?;
+    rt.register_wire_event::<snapshot::FenceSnapshotRequested>().await?;
+    rt.register_wire_event::<snapshot::FenceSnapshotResolved>().await?;
+    Ok(())
+}
+
 /// The plugin (35 §0.10): reads `artifact`, opens the store, spawns
 /// [`ArtifactActor`] as [`ARTIFACT_ACTOR`], subscribes it to
 /// [`agent::AgentEvent`], sweeps orphan blobs, and registers `show`, the
@@ -763,6 +778,7 @@ impl runtime::Plugin for ArtifactPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: ArtifactConfig = rt.section("artifact").unwrap_or_else(|e| {
             tracing::debug!("no [artifact] config section, using defaults: {e}");
             ArtifactConfig::default()

@@ -218,6 +218,10 @@ pub struct CostCubeChanged {
     pub rev: u64,
 }
 
+impl wire::WireEvent for CostCubeChanged {
+    const TOPIC: &'static str = "agent.cost-cube";
+}
+
 /// Keyset position in the calls ledger (exclusive).
 #[derive(
     Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,

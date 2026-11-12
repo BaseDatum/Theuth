@@ -107,6 +107,10 @@ pub struct PagePreviewRequested {
     pub appearance: Option<Appearance>,
 }
 
+impl wire::WireEvent for PagePreviewRequested {
+    const TOPIC: &'static str = "artifact.page-preview-requested";
+}
+
 /// Event: the request was answered or timed out. Clients still rendering
 /// tear their frame down.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -115,6 +119,10 @@ pub struct PagePreviewRequested {
 pub struct PagePreviewResolved {
     /// The request.
     pub id: PreviewId,
+}
+
+impl wire::WireEvent for PagePreviewResolved {
+    const TOPIC: &'static str = "artifact.page-preview-resolved";
 }
 
 /// A client's answer to a [`PagePreviewRequested`].

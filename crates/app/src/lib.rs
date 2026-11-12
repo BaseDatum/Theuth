@@ -309,9 +309,20 @@ pub struct AppCallChanged {
     pub ms: u64,
 }
 
+impl wire::WireEvent for AppCallChanged {
+    const TOPIC: &'static str = "app.calls";
+}
+
+/// Declare app wire contracts even when the app service is disabled.
+pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<AppCallChanged>().await?;
+    Ok(())
+}
+
 /// The plugin (46 §2, §9): reads `app`, spawns [`Apps`] as [`APP_ACTOR`], and
 /// registers `app` plus its prompt block once the registry is up. Disabled
-/// → nothing is registered.
+/// → only wire contracts are declared.
 pub struct AppPlugin;
 
 #[async_trait::async_trait]
@@ -321,6 +332,7 @@ impl runtime::Plugin for AppPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: AppConfig = rt.section("app").unwrap_or_else(|e| {
             tracing::debug!("no [app] config section, using defaults: {e}");
             AppConfig::default()

@@ -274,6 +274,10 @@ pub enum BrowserEvent {
     },
 }
 
+impl wire::WireEvent for BrowserEvent {
+    const TOPIC: &'static str = "browser.events";
+}
+
 /// `data` of the first `type == "image"` block of an obscura-mcp result.
 pub(crate) fn image_data(result: &Value) -> Option<&str> {
     result
@@ -453,6 +457,13 @@ impl Message<CloseTree> for Browsers {
     }
 }
 
+/// Declare browser wire contracts even when the browser service is disabled.
+pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<BrowserEvent>().await?;
+    Ok(())
+}
+
 /// The plugin (23 §3.1): reads `browser`, runs the sweeper, spawns
 /// [`Browsers`] as [`BROWSER_ACTOR`], registers the tools once the registry
 /// is up and the render provider once `web` is up.
@@ -465,6 +476,7 @@ impl runtime::Plugin for BrowserPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: BrowserConfig = rt.section("browser").unwrap_or_else(|e| {
             tracing::debug!("no [browser] config section, using defaults: {e}");
             BrowserConfig::default()

@@ -2355,6 +2355,10 @@ pub struct LoginFinished {
     pub error: Option<String>,
 }
 
+impl wire::WireEvent for LoginFinished {
+    const TOPIC: &'static str = "agent.login";
+}
+
 /// `ask` → `Vec<ProviderInfo>`: the built-in key providers (`opencode`, `openrouter`;
 /// 85 §0.9) first, then the custom providers by name.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -3727,6 +3731,21 @@ pub enum AgentEvent {
     },
 }
 
+impl wire::WireEvent for AgentEvent {
+    const TOPIC: &'static str = "agent.events";
+
+    fn policy(json: &serde_json::Value) -> wire::EventPolicy {
+        let mut policy = wire::EventPolicy::legacy_fields(json);
+        match json.get("type").and_then(serde_json::Value::as_str) {
+            Some("SubagentSpawned" | "ObservedChildChanged") => policy.announces_child = true,
+            Some("TextDelta" | "ReasoningDelta") => policy.delta = wire::Delta::AppendText,
+            Some("ToolCallProgress" | "VisionProgress") => policy.delta = wire::Delta::Replace,
+            _ => {}
+        }
+        policy
+    }
+}
+
 impl AgentEvent {
     /// Session the event belongs to; `None` for global events.
     pub fn session(&self) -> Option<SessionId> {
@@ -4126,6 +4145,20 @@ impl Default for SubagentsConfig {
     }
 }
 
+/// Declare the agent's wire contracts before starting any producers.
+pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<AgentEvent>().await?;
+    rt.register_wire_event::<LoginFinished>().await?;
+    rt.register_wire_event::<CommunicationChanged>().await?;
+    rt.register_wire_event::<PeerMessageChanged>().await?;
+    rt.register_wire_event::<PeerDelivered>().await?;
+    rt.register_wire_event::<ask::NotebookAsk>().await?;
+    rt.register_wire_event::<EndlessProgress>().await?;
+    rt.register_wire_event::<CostCubeChanged>().await?;
+    Ok(())
+}
+
 /// The plugin.
 pub struct AgentPlugin;
 
@@ -4136,6 +4169,7 @@ impl runtime::Plugin for AgentPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         // 144 §13.2 (E1): `notebook_context_set` / `notebook_context_estimate` ride the agent's store.
         notebook_context::register(rt);
         supervisor::start(rt).await
