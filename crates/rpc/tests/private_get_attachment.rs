@@ -10,7 +10,7 @@ use base64::Engine as _;
 use jsonrpsee::core::server::MethodsError;
 use jsonrpsee::types::ErrorObjectOwned;
 use rpc::into_rpc_module;
-use rpc_core::Server;
+
 use runtime::{Runtime, SessionId};
 
 /// `ask` failed: a handler error, here `authorize` refusing or the path

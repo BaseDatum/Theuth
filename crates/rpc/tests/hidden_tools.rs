@@ -10,7 +10,7 @@ use std::sync::Arc;
 use agent::{CreateSessionOptions, DurableStore, PinTitle, SessionOpen, UnloadSession};
 use kameo::actor::ActorRef;
 use rpc::into_rpc_module;
-use rpc_core::Server;
+
 use runtime::{Runtime, SessionId};
 use tools::{HiddenTools, ListTools, RestoreHidden, ToolRegistry};
 

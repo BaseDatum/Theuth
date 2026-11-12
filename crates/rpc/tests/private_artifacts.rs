@@ -14,7 +14,7 @@ use jsonrpsee::core::server::MethodsError;
 use jsonrpsee::types::ErrorObjectOwned;
 use kameo::actor::{ActorRef, Spawn};
 use rpc::into_rpc_module;
-use rpc_core::Server;
+
 use runtime::{Runtime, SessionId};
 use serde::de::DeserializeOwned;
 

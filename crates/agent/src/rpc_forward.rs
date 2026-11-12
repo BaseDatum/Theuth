@@ -44,6 +44,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
+/// Async artifact fetch using the borrowed transport and forwarding preference.
+pub type FetchAttachment = for<'a> fn(
+    &'a dyn Transport, &'a Path, &'a str, Option<&'a PeerId>,
+) -> futures::future::BoxFuture<'a, anyhow::Result<PathBuf>>;
+
 /// Reverse-plugin operations installed once before RPC dispatch.
 pub struct ForwardHooks {
     /// Whether the sessions plugin is registered now.
@@ -55,9 +60,7 @@ pub struct ForwardHooks {
     /// Attachment directory for this request's data directory.
     pub attachments_dir: fn(&Path) -> PathBuf,
     /// Fetch an actual attachment marker, preferring the forwarder.
-    pub fetch_attachment: for<'a> fn(
-        &'a dyn Transport, &'a Path, &'a str, Option<&'a PeerId>,
-    ) -> futures::future::BoxFuture<'a, anyhow::Result<PathBuf>>,
+    pub fetch_attachment: FetchAttachment,
 }
 
 static HOOKS: std::sync::OnceLock<ForwardHooks> = std::sync::OnceLock::new();
