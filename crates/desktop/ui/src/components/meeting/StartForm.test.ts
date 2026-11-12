@@ -69,6 +69,13 @@ test('startOptions always sends consent: true, memory only with the switch on, p
   expect(dflt.template).toBeUndefined()
 })
 
+test('194 row 17: `session_effort` rides with a picked `session_model` only', () => {
+  const base = { pid: 0, title: '', context: '', endless: false, project: null }
+  expect(startOptions({ ...base, model: 'a/b', effort: 'high' })).toMatchObject({ session_model: 'a/b', session_effort: 'high' })
+  expect(startOptions({ ...base, model: 'a/b', effort: null }).session_effort).toBeUndefined()
+  expect(startOptions({ ...base, model: null, effort: 'high' }).session_effort).toBeUndefined()
+})
+
 test('158 §11.1: the Note template row sits under the session model, Automatic by default', async () => {
   const html = await render()
   expect(html).toMatch(/Session model.*Note template.*aria-label="Note template"/s)

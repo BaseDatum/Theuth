@@ -74,6 +74,8 @@ export function MeetingDefaults() {
     const saved = useMeetingSettings.getState().model
     offerMeetingDefault({ block: s, saved, label: models.data.find((m) => m.id === saved)?.name, write: (next) => save.mutate(next) })
   }, [s, models.data, save.mutate])
+  // 194 row 16: `meeting.effort` beside `meeting.model`; the engine drops it on a model change or the none row.
+  const meetingModel = models.data?.find((m) => m.id === s?.model)
   // W4 fills `meeting_templates`; until then the one slug on file reads "General".
   const templateRows = templates.data?.length ? templates.data : [{ slug: s?.template ?? 'meeting', name: 'General' }]
   return (
@@ -85,6 +87,7 @@ export function MeetingDefaults() {
           className="max-w-64 max-md:w-full max-md:max-w-none"
           models={models.data ?? []}
           value={s?.model}
+          effort={meetingModel && meetingModel.efforts.length > 0 ? { levels: meetingModel.efforts, current: s?.effort, onSelect: (effort) => set({ effort }) } : undefined}
           none={SAME_AS_NEW}
           disabled={busy}
           onChange={(model) => set({ model })}

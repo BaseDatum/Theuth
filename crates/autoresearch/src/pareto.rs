@@ -1856,6 +1856,7 @@ mod tests {
             _: &StudyRecord,
             _: u32,
             _: &str,
+            _: Option<&str>,
             _: &runtime::Runtime,
         ) -> Result<ReviewVerdict> {
             Ok(ReviewVerdict::Clean {
@@ -1866,6 +1867,7 @@ mod tests {
             &self,
             _: &Store,
             _: &StudyRecord,
+            _: Option<&str>,
             _: Option<&str>,
             _: &runtime::Runtime,
         ) -> Result<Vec<crate::types::IdeaDraft>> {

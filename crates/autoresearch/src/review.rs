@@ -209,6 +209,7 @@ pub async fn review(
     study: &StudyRecord,
     n: u32,
     model: &str,
+    effort: Option<&str>,
     _rt: &runtime::Runtime,
 ) -> Result<ReviewVerdict> {
     let e = store
@@ -224,7 +225,10 @@ pub async fn review(
         }
     };
     let rubric = prompt(study, &e, &diff);
-    let role = runtime::ModelRole::Named(model.to_owned());
+    let role = runtime::ModelRole::NamedWithEffort {
+        model: model.to_owned(),
+        effort: effort.map(str::to_owned),
+    };
     let first = match call(study, role.clone(), REVIEW_SYSTEM, rubric.clone()).await {
         Ok(t) => t,
         Err(reason) => return Ok(ReviewVerdict::Error { reason }),
@@ -423,11 +427,13 @@ pub fn parse_ideas(reply: &str) -> Vec<IdeaDraft> {
 }
 
 /// The plateau consult (140 §9.2): five materially different ideas.
-/// `model` None → `advisor.model` (125) when set, else the study session's model.
+/// `model` None → `advisor.model` (125) at `advisor.effort` when set, else the study session's
+/// model; a picked `model` brings the role's `effort` (194).
 pub async fn advise(
     store: &Store,
     study: &StudyRecord,
     model: Option<&str>,
+    effort: Option<&str>,
     rt: &runtime::Runtime,
 ) -> Result<Vec<IdeaDraft>> {
     let all = store.list_experiments(&study.slug, None, u32::MAX).await?;
@@ -458,13 +464,16 @@ pub async fn advise(
     };
     let user = advisor_prompt(study, &summarise_diff(&diff, ADVISOR_DIFF), &kept, &dead);
     let role = match model.map(str::trim).filter(|m| !m.is_empty()) {
-        Some(m) => runtime::ModelRole::Named(m.to_owned()),
-        None => match rt
-            .section::<agent::AdvisorConfig>("advisor")
-            .ok()
-            .and_then(|a| a.model)
-        {
-            Some(m) if !m.trim().is_empty() => runtime::ModelRole::Named(m),
+        Some(m) => runtime::ModelRole::NamedWithEffort {
+            model: m.to_owned(),
+            effort: effort.map(str::to_owned),
+        },
+        None => match rt.section::<agent::AdvisorConfig>("advisor").ok() {
+            Some(agent::AdvisorConfig {
+                model: Some(m),
+                effort,
+                ..
+            }) if !m.trim().is_empty() => runtime::ModelRole::NamedWithEffort { model: m, effort },
             _ => runtime::ModelRole::Session,
         },
     };
@@ -655,19 +664,22 @@ not an idea
         store.create_study(&s).await.unwrap();
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
         // No experiment row.
-        assert!(review(&store, &s, 1, "openai/x", &rt).await.is_err());
+        assert!(review(&store, &s, 1, "openai/x", None, &rt).await.is_err());
         let mut e = ExperimentRecord::open("sort-speed", 1, 0, "base");
         e.state = ExperimentState::Kept;
         e.commit_sha = Some("c1".into());
         store.insert_experiment(&e).await.unwrap();
         // No worktree → the diff is unavailable → fail open.
-        match review(&store, &s, 1, "openai/x", &rt).await.unwrap() {
+        match review(&store, &s, 1, "openai/x", None, &rt).await.unwrap() {
             ReviewVerdict::Error { reason } => {
                 assert!(reason.starts_with("diff unavailable:"), "{reason}")
             }
             v => panic!("{v:?}"),
         }
-        let err = advise(&store, &s, None, &rt).await.unwrap_err().to_string();
+        let err = advise(&store, &s, None, None, &rt)
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("no bound session"), "{err}");
     }
 }

@@ -6,7 +6,8 @@ import type * as Router from '@tanstack/react-router'
 import type * as Rpc from '@/lib/rpc'
 import type { DraftField } from '@/rpc/bindings/DraftField'
 import type { DraftView } from '@/rpc/bindings/DraftView'
-import { DraftPanel, footerText } from './DraftPanel'
+import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import { DraftPanel, LeafModel, footerText } from './DraftPanel'
 import { studies } from './fixtures'
 import { KEY } from './queries'
 import { ADVANCED } from './setup'
@@ -114,4 +115,23 @@ test('draft panel: skeleton rows before the first draft; the status card from au
   expect(started).toContain('Open study')
   expect(started).toMatch(/Pause|Resume/)
   expect(started).toContain('Stop')
+})
+
+test('194 row 20: a `models.*` leaf picker carries its `_effort` leaf as chips; a model that does not take the level drops it, Default clears both', () => {
+  const sonnet = { id: 's/sonnet', name: 'Sonnet', efforts: ['low', 'high'] } as ModelInfo
+  const plain = { id: 'p/plain', name: 'Plain', efforts: [] as string[] } as ModelInfo
+  type Props = { effort?: { levels: string[]; current: string | null; onSelect(l: string | null): void }; onChange(id: string | null): void }
+  const values = { 'models.executor': sonnet.id, 'models.executor_effort': 'high' }
+  const setValues = vi.fn()
+  const picker = (v: Record<string, string>) => (LeafModel({ leaf: 'models.executor', values: v, setValues, models: [sonnet, plain] }) as ReactElement<Props>).props
+  expect(picker(values).effort).toMatchObject({ levels: ['low', 'high'], current: 'high' })
+  picker(values).effort!.onSelect('low')
+  expect(setValues).toHaveBeenLastCalledWith({ ...values, 'models.executor_effort': 'low' })
+  picker(values).onChange(plain.id)
+  expect(setValues).toHaveBeenLastCalledWith({ 'models.executor': plain.id, 'models.executor_effort': '' })
+  picker(values).onChange(null)
+  expect(setValues).toHaveBeenLastCalledWith({ 'models.executor': '', 'models.executor_effort': '' })
+  expect(picker({ ...values, 'models.executor': plain.id }).effort).toBeUndefined()
+  // A row without the effort leaf (a kind row's model) gets no chips.
+  expect(picker({ 'models.executor': sonnet.id }).effort).toBeUndefined()
 })

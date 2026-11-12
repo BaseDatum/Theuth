@@ -255,6 +255,77 @@ pub(crate) struct PrivateRoot {
     pub closing: bool,
 }
 
+/// 194 D4b–d: the effort a model setting stores beside `model` (a session-model setting: a
+/// meeting, a routine, an autoresearch role). `info` is what [`effort_model`] found for `model`.
+/// - `None`, blank or `default` is the Default chip: `Ok(None)`.
+/// - No model (the setting's `none` row) clears the effort too (D4d): `Ok(None)`.
+/// - A catalog model checks it the way `models::Model::validate_effort` does, with its message;
+///   a model the catalog does not know (or no agent) accepts any known effort word (`effort_of`).
+/// - A refused effort is dropped (`Ok(None)`) when `model_changed` (D4c), else `Err` (D4b).
+pub fn settle_effort(
+    model: Option<&str>,
+    info: Option<&crate::ModelInfo>,
+    effort: Option<&str>,
+    model_changed: bool,
+) -> Result<Option<String>, String> {
+    let Some(e) = effort
+        .map(str::trim)
+        .filter(|e| !e.is_empty() && *e != "default")
+    else {
+        return Ok(None);
+    };
+    if model.is_none_or(|m| m.trim().is_empty()) {
+        return Ok(None);
+    }
+    let known =
+        info.filter(|i| !(i.efforts.is_empty() && i.budget_min.is_none() && i.context == 0));
+    let checked = match known {
+        Some(i) => {
+            let budget = i.budget_min.map(|min| (min, i.budget_max));
+            let in_budget = |(min, max): (u32, Option<u32>)| {
+                e.parse::<u32>()
+                    .is_ok_and(|n| n >= min && n <= max.unwrap_or(u32::MAX))
+            };
+            if i.efforts.iter().any(|x| x == e) || budget.is_some_and(in_budget) {
+                Ok(())
+            } else {
+                let mut accepted = i.efforts.join("|");
+                if let Some((min, max)) = budget {
+                    let max = max.map(|m| m.to_string()).unwrap_or_default();
+                    let sep = if accepted.is_empty() { "" } else { " " };
+                    accepted = format!("{accepted}{sep}or a token budget {min}..{max}");
+                }
+                if accepted.is_empty() {
+                    accepted.push_str("no reasoning effort");
+                }
+                Err(format!("{} accepts {accepted}", i.id))
+            }
+        }
+        None if crate::effort_of(e).is_none() => Err(format!("unknown effort {e}")),
+        None => Ok(()),
+    };
+    match checked {
+        Ok(()) => Ok(Some(e.to_owned())),
+        Err(_) if model_changed => Ok(None),
+        Err(why) => Err(why),
+    }
+}
+
+/// 194: the catalog row [`settle_effort`] checks `model` against (`ResolveModel`); `None`
+/// without a model, without a running agent, or when it does not resolve.
+pub async fn effort_model(model: Option<&str>) -> Option<crate::ModelInfo> {
+    let model = model.map(str::trim).filter(|m| !m.is_empty())?;
+    let agents = kameo::actor::ActorRef::<crate::Agents>::lookup(crate::AGENT_ACTOR)
+        .ok()
+        .flatten()?;
+    agents
+        .ask(crate::ResolveModel {
+            model: model.to_owned(),
+        })
+        .await
+        .ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

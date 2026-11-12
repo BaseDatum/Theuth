@@ -44,7 +44,7 @@ const REQUIRED: [&str; 6] = ["goal", "repo", "metric", "bench", "checks", "scope
 const DEFAULTABLE: [&str; 3] = ["budget", "parallel", "models"];
 
 /// Every leaf `draft_edit.field` accepts (§4.3).
-pub const LEAVES: [&str; 32] = [
+pub const LEAVES: [&str; 35] = [
     "goal",
     "repo",
     "base",
@@ -74,8 +74,11 @@ pub const LEAVES: [&str; 32] = [
     "parallel",
     "secondary_guards",
     "models.executor",
+    "models.executor_effort",
     "models.review",
+    "models.review_effort",
     "models.advisor",
+    "models.advisor_effort",
     "include_dirty",
 ];
 
@@ -405,15 +408,17 @@ pub fn value(spec: &StudySpec, row: &str) -> String {
         "models" => {
             let m = &spec.models;
             let parts: Vec<String> = [
-                ("executor", &m.executor),
-                ("review", &m.review),
-                ("advisor", &m.advisor),
+                ("executor", &m.executor, &m.executor_effort),
+                ("review", &m.review, &m.review_effort),
+                ("advisor", &m.advisor, &m.advisor_effort),
             ]
             .into_iter()
-            .filter_map(|(k, v)| {
-                v.as_deref()
-                    .filter(|v| non_empty(v))
-                    .map(|v| format!("{k} {v}"))
+            .filter_map(|(k, v, e)| {
+                let v = v.as_deref().filter(|v| non_empty(v))?;
+                Some(match e.as_deref().filter(|e| non_empty(e)) {
+                    Some(e) => format!("{k} {v} · effort {e}"),
+                    None => format!("{k} {v}"),
+                })
             })
             .collect();
             if parts.is_empty() {
@@ -805,6 +810,15 @@ fn opt(v: &str) -> Option<String> {
     non_empty(v).then(|| v.trim().to_owned())
 }
 
+/// 194: an effort leaf; empty = Default, else a known effort word (the model's own levels are
+/// the panel's chips; a level that model does not take is dropped at the call, with a warning).
+fn effort(v: &str) -> std::result::Result<Option<String>, String> {
+    match opt(v) {
+        Some(e) if agent::effort_of(&e).is_none() => Err(format!("unknown effort `{e}`")),
+        e => Ok(e),
+    }
+}
+
 fn humantime(v: &str) -> std::result::Result<String, String> {
     humantime::parse_duration(v.trim()).map_err(|e| format!("`{}`: {e}", v.trim()))?;
     Ok(v.trim().to_owned())
@@ -894,9 +908,28 @@ pub fn set_leaf(spec: &mut StudySpec, leaf: &str, v: &str) -> std::result::Resul
                 })
                 .collect::<std::result::Result<_, _>>()?;
         }
-        "models.executor" => spec.models.executor = opt(v),
-        "models.review" => spec.models.review = opt(v),
-        "models.advisor" => spec.models.advisor = opt(v),
+        // 194 D4d: emptying a model leaf (Default) clears its effort too.
+        "models.executor" => {
+            spec.models.executor = opt(v);
+            spec.models
+                .executor_effort
+                .take_if(|_| spec.models.executor.is_none());
+        }
+        "models.review" => {
+            spec.models.review = opt(v);
+            spec.models
+                .review_effort
+                .take_if(|_| spec.models.review.is_none());
+        }
+        "models.advisor" => {
+            spec.models.advisor = opt(v);
+            spec.models
+                .advisor_effort
+                .take_if(|_| spec.models.advisor.is_none());
+        }
+        "models.executor_effort" => spec.models.executor_effort = effort(v)?,
+        "models.review_effort" => spec.models.review_effort = effort(v)?,
+        "models.advisor_effort" => spec.models.advisor_effort = effort(v)?,
         // R1: the panel's "Start with my uncommitted changes" (= `tools::mark_include_dirty`);
         // not a row, so `edit` marks nothing user-set or confirmed.
         "include_dirty" => spec.include_dirty = parse_bool(v)?,
@@ -1563,7 +1596,7 @@ mod tests {
     #[test]
     fn edit_parses_every_leaf() {
         let mut s = StudySpec::default();
-        let cases: [(&str, &str); 32] = [
+        let cases: [(&str, &str); 35] = [
             ("goal", " faster "),
             ("repo", "/r"),
             ("base", ""),
@@ -1593,8 +1626,11 @@ mod tests {
             ("parallel", "3"),
             ("secondary_guards", "alloc_mb 5%\nhit_rate 0.01 higher"),
             ("models.executor", "x/y"),
+            ("models.executor_effort", "high"),
             ("models.review", "off"),
+            ("models.review_effort", ""),
             ("models.advisor", ""),
+            ("models.advisor_effort", "low"),
             ("include_dirty", "true"),
         ];
         for (leaf, v) in cases {
@@ -1621,6 +1657,25 @@ mod tests {
         assert_eq!(s.models.review.as_deref(), Some("off"));
         assert_eq!(s.models.advisor, None);
         assert!(s.include_dirty);
+        // 194 row 20: an effort leaf beside its model; an unknown word is refused, and emptying
+        // the model (Default) clears its effort.
+        assert_eq!(s.models.executor_effort.as_deref(), Some("high"));
+        assert_eq!(
+            value(&s, "models"),
+            "executor x/y · effort high · review off"
+        );
+        assert_eq!(
+            set_leaf(&mut s, "models.executor_effort", "loud").unwrap_err(),
+            "unknown effort `loud`"
+        );
+        set_leaf(&mut s, "models.executor", "").unwrap();
+        assert_eq!(
+            (
+                s.models.executor.as_deref(),
+                s.models.executor_effort.as_deref()
+            ),
+            (None, None)
+        );
         // Emptying optional leaves clears them; bad values are refused with the leaf named.
         set_leaf(&mut s, "checks.command", "").unwrap();
         assert!(s.checks.is_none());

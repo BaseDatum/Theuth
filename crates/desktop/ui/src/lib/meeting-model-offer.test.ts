@@ -4,6 +4,7 @@ import { OFFERED_KEY, offerMeetingDefault } from './meeting-model-offer'
 
 const block: MeetingSettings = {
   model: null,
+  effort: null,
   summary_model: null,
   template: 'meeting',
   language: 'en',
