@@ -593,6 +593,15 @@ pub enum View {
         /// Replace earlier content in this slot instead of appending.
         replace: bool,
     },
+    /// Preserve an owner's intrinsic widget sizing while reserving its exact rows.
+    IntrinsicElement {
+        /// No borrowed model/component state survives rendering.
+        element: AnyElement<'static>,
+        /// The same row budget core reserves.
+        rows: usize,
+        /// Replace earlier content in this slot instead of appending.
+        replace: bool,
+    },
     /// Owner-built chrome around a shell-rendered separate input widget.
     Editor {
         /// Value, focus and typed edit callback, never a mutable handle.
