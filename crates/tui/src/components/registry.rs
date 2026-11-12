@@ -295,7 +295,8 @@ impl Registry {
             if matches!(at, Surface::Modal)
                 && !self.focus.is_some_and(|(token, _)| token.slot == index)
             { return None; }
-            slot.component.as_ref()?.view(at, cx)
+            let cx = ViewCx { endpoint: Some((ComponentToken { slot: index, generation: slot.generation }, self.epoch)), ..*cx };
+            slot.component.as_ref()?.view(at, &cx)
         })
     }
     /// Earliest deadline, without a second scheduler or per-component task.

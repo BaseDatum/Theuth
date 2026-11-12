@@ -60,7 +60,7 @@ pub(crate) fn topic(name: &str, version: u32, event: serde_json::Value) -> Topic
     TopicEvent::Remote(Arc::new(TopicNotification { topic: name.into(), version, event }))
 }
 fn shown(registry: &Registry) -> Vec<String> {
-    let cx = ViewCx { core: core(), width: 80, height: 24, frame: 0 };
+    let cx = ViewCx { core: core(), width: 80, height: 24, frame: 0, commands: None, endpoint: None };
     registry.views(Surface::Status(StatusSlot::Work), &cx).filter_map(|v| match v { View::Text(t) => Some(t), _ => None }).collect()
 }
 pub(crate) fn reply(to: ComponentToken, engine_epoch: u64, message: Msg) -> LocalReply {
