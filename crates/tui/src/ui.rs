@@ -95,8 +95,6 @@ const SKILL: Color = OCHRE;
 const PROMPT: Color = SAND;
 /// Finished background job cards.
 const JOB: Color = MALACHITE;
-/// `/link pair` and `/nodes` invite QR cards.
-const LINK: Color = FAIENCE;
 
 /// Run the fullscreen UI until the user quits. Mouse capture stays off so
 /// the terminal's own selection (and copy-on-select) keeps working. Ctrl+C
@@ -251,9 +249,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 if std::mem::take(&mut m.refresh_mcp) {
                     let _ = commands.send(Command::ListMcp(m.session));
-                }
-                if std::mem::take(&mut m.refresh_nodes) {
-                    let _ = commands.send(Command::ListNodes);
                 }
                 if std::mem::take(&mut m.refresh_secrets) {
                     let _ = commands.send(Command::ListSecrets);
@@ -1445,7 +1440,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 .collect(),
             *cursor,
         ),
-        Menu::Nodes { cursor } => (m.nodes_title(), m.nodes_rows(), *cursor),
         Menu::Secrets { cursor, history } => {
             (m.secrets_title(), m.secrets_rows(), history.unwrap_or(*cursor))
         }
@@ -2060,7 +2054,6 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
                 CardKind::Skill => SKILL,
                 CardKind::Prompt => PROMPT,
                 CardKind::Job | CardKind::Schedule => JOB,
-                CardKind::Node => LINK,
                 CardKind::Component { color, .. } => *color,
                 CardKind::Artifact => TOOL,
                 CardKind::Removed => PROMPT,

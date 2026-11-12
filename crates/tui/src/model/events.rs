@@ -179,12 +179,6 @@ pub enum UiEvent {
     MeshDevices(Vec<link::DeviceInfo>),
     /// Reply to [`Command::MeshDevicesAdd`]: the 4-part string a device scans and its pending id (69 decision 4).
     MeshDevicePairing(link::PairingPayload),
-    /// Reply to [`Command::ListNodes`] and the node commands that change the list.
-    Nodes(Vec<nodes::Node>),
-    /// Reply to [`Command::InviteNode`]: the node's name and the string its QR card encodes.
-    NodeInvite(String, link::Pairing),
-    /// Nodes plugin traffic (bus event).
-    NodeEvent(nodes::NodeEvent),
     /// A `show` call produced a file (bus event, design doc 35).
     ArtifactShown(artifact::ArtifactShown),
     /// Live URLs of a `crawl` / `map_site` / `scrape_url` call (bus event, design doc 38).
@@ -661,16 +655,6 @@ pub enum Command {
     MeshDevicesRevoke(String),
     /// `device_rename(id, name)`, then `devices_list`.
     MeshDevicesRename(String, String),
-    /// `list_nodes`.
-    ListNodes,
-    /// `add_node(key, name)`, then `list_nodes`.
-    AddNode(String, Option<String>),
-    /// `remove_node(<resolved id>)`, then `list_nodes`. Holds a name or id prefix.
-    RemoveNode(String),
-    /// `rename_node(<resolved id>, name)`, then `list_nodes`. Holds a name or id prefix.
-    RenameNode(String, String),
-    /// `invite_node(<resolved id>)`. Holds a name or id prefix.
-    InviteNode(String),
     /// `list_artifacts(session, descendants: true)`; `pick` opens the `/artifacts`
     /// menu, `apps` keeps only [`artifact::Kind::App`] records (`/apps`).
     ListArtifacts {

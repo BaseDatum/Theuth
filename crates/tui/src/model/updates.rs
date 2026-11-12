@@ -693,27 +693,6 @@ impl Model {
             // The transcript reload that follows pushes the notice (`History`).
             UiEvent::Undone(t) => self.notice = Some(format!("undone: {t} — /redo restores")),
             UiEvent::Redone(t) => self.notice = Some(format!("restored: {t}")),
-            UiEvent::Nodes(list) => {
-                // Never a transcript line: every node event refetches, and a
-                // presence flip is not worth a row. The verbs report themselves.
-                if self.awaiting_nodes && !matches!(self.menu, Some(Menu::Nodes { .. })) {
-                    self.menu = Some(Menu::Nodes { cursor: 0 });
-                }
-                self.awaiting_nodes = false;
-                self.nodes = Some(list);
-            }
-            UiEvent::NodeInvite(name, p) => {
-                // ponytail: one countdown at a time; an older invite card
-                // freezes at its last second. Per-card slots if two are common.
-                let card = PairingCard::new(p);
-                self.entries.push(Entry::Card {
-                    kind: CardKind::Node,
-                    title: format!("node invite · {name}"),
-                    text: Box::new(markdown::Text::complete(&card.body())),
-                    expanded: true,
-                });
-                self.invite = Some(card);
-            }
             UiEvent::MeshDevices(list) => {
                 if list.is_empty() {
                     self.entries.push(Entry::Info("mesh devices: none paired".into()));
@@ -731,15 +710,13 @@ impl Model {
                     expires_at_ms: p.expires_ms,
                 });
                 self.entries.push(Entry::Card {
-                    kind: CardKind::Node,
+                    kind: CardKind::Component { group: "node-invite", key: card.id, glyph: "⌁", color: crate::ui::FAIENCE },
                     title: format!("mesh device pairing · pending {}", p.pending_id),
                     text: Box::new(markdown::Text::complete(&card.body())),
                     expanded: true,
                 });
                 self.invite = Some(card);
             }
-            // Added, removed, online, revoked: all reshape the rows; re-ask.
-            UiEvent::NodeEvent(_) => self.refresh_nodes = true,
             UiEvent::Secrets(list) => {
                 if self.awaiting_secrets && !matches!(self.menu, Some(Menu::Secrets { .. })) {
                     self.menu = Some(Menu::Secrets {
@@ -760,7 +737,6 @@ impl Model {
                 self.awaiting_effort = false;
                 self.awaiting_vision = false;
                 self.awaiting_secrets = false;
-                self.awaiting_nodes = false;
                 self.awaiting_cost = false;
                 self.notice = None;
                 // A knowledge request that was in flight failed: the menu

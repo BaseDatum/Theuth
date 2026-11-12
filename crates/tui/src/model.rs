@@ -229,17 +229,10 @@ pub struct Model {
     /// Fixed feature registry; feature state never leaks into the core enum.
     pub(crate) components: crate::components::Registry,
     component_commands: Option<UnboundedSender<Command>>,
-    /// Latest `list_nodes` (badge and `/nodes` menu); `None` until fetched.
-    pub nodes: Option<Vec<nodes::Node>>,
-    /// `/nodes` was typed (or a flow that reopens it ran); the next
-    /// `UiEvent::Nodes` opens the menu.
-    awaiting_nodes: bool,
-    /// A node event arrived: the event loop re-asks `list_nodes`.
-    pub refresh_nodes: bool,
     /// A loaded transcript holds `show` cards: the event loop asks
     /// `list_artifacts` to join their artifacts back (35 §0.3).
     pub refresh_artifacts: bool,
-    /// The live `/nodes` invite card, redrawn each second by [`Model::tick`].
+    /// The residual mesh-device pairing card, redrawn by [`Model::tick`].
     invite: Option<PairingCard>,
     /// Latest `list_secrets` (the `/secrets` menu, the `replaces vN` hint); `None` until fetched.
     pub secrets: Option<secrets::SecretsList>,
@@ -433,7 +426,7 @@ pub use jobs::{JOB_LINES, JobTail};
 pub use menus::{window, Menu, Grouped, grouped_step, grouped_first, MenuKey};
 pub(crate) use network::{PairingCard};
 use network::{tick_card};
-pub use network::{NodesArg, parse_nodes_arg, find_node, mesh_device_line};
+pub use network::mesh_device_line;
 pub use paste::{Paste, paste_token};
 use peers::{on_off, short_uuid, peer_card, contact_row};
 pub(crate) use peers::{clean, outside_card};

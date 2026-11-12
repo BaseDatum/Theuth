@@ -12,6 +12,7 @@ pub fn builtin() -> Registry {
     registry.register(computer::Computer).expect("built-in component registration");
     registry.register(sandboxes::Sandboxes).expect("built-in component registration");
     registry.register(link::Link::default()).expect("built-in component registration");
+    registry.register(nodes::Nodes::default()).expect("built-in component registration");
 
     // Step-11 group t2 (boards, costs and artifacts): register below, in this block only.
     registry.register(tasks::Tasks).expect("built-in component registration");
