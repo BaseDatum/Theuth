@@ -11,7 +11,6 @@ use tools::{Decision, Risk};
 
 use crate::clip;
 use crate::components::search_attach::state as search;
-use crate::dictation::{self, Dictating, Phase};
 use crate::components::{FocusClass, Lifecycle, Surface};
 use crate::model::{
     ADVISORY_COLLAPSED, EffortChips, Grouped, ModelRow, PickTarget, advisory_rows,
@@ -179,8 +178,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             // The harness-wide vision fallback, so attaching an image to a
             // text-only model can say who will look at it (52 §3.2).
             let _ = commands.send(Command::GetVisionModel);
-            // The streaming STT model: loaded now so Ctrl+D is instant (54 §0.5).
-            let _ = commands.send(Command::DictationPrewarm);
             let mut frames = tokio::time::interval(std::time::Duration::from_millis(16));
             frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut pending = Vec::new();
@@ -195,8 +192,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 // Owner deadlines and core editor helpers wake the idle loop.
                 let now = now_ms();
-                let due = model.read().path.wake().is_some_and(|t| t <= now)
-                    || model.read().suggestion_wake().is_some_and(|t| t <= now);
+                let due = model.read().path.wake().is_some_and(|t| t <= now);
                 let due = due || model.read().components.wake().is_some_and(|at| at <= now);
                 if pending.is_empty() && !model.read().animating() && !due {
                     continue;
@@ -225,7 +221,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         format!("{text}\n{typed}")
                     });
                 }
-                m.expire_suggestion(now);
                 // A dictation ended: the spliced value, then the caret in the
                 // same tick (an external value change alone sends it to the end).
                 if let Some((value, caret)) = m.pending_input.take() {
@@ -324,7 +319,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 m.quit = true;
                 return;
             }
-            if m.component_key(FocusClass::Spoken, &key) { return; }
             // Talk (76 §0.12, §5.2): the pane owns the keys — Esc cancels the
             // agent's turn while it thinks or speaks, else leaves the pane (the
             // talk runs on); Ctrl+T stops it; the rest is swallowed; an
@@ -346,40 +340,13 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 return;
             }
-            if ctrl_t && m.dictation.is_none() && m.menu.is_none() && !m.components.editor().is_some_and(|(class, _)| class == FocusClass::Secret) {
+            if ctrl_t && !m.components.captures(FocusClass::Spoken) && m.menu.is_none() && !m.components.editor().is_some_and(|(class, _)| class == FocusClass::Secret) {
                 if let Some(cmd) = m.toggle_talk(true) {
                     let _ = commands.send(cmd);
                 }
                 return;
             }
-            // Dictation (54 §6): the box is busy; Ctrl+D keeps, Esc discards, ⏎
-            // during the "send it" settle sends now (153 §3.1), every other key
-            // is swallowed — and drops an armed "send it" (keep editing).
-            let ctrl_d = code == KeyCode::Char('d') && modifiers.contains(KeyModifiers::CONTROL);
-            if let Some(d) = &m.dictation {
-                let armed = d.send;
-                let cmd = match code {
-                    _ if ctrl_d => m.toggle_dictation(String::new(), String::new()),
-                    KeyCode::Esc => m.discard_dictation(),
-                    KeyCode::Enter if armed => m.stop_dictation(true),
-                    KeyCode::Char(_) if armed => m.stop_dictation(false),
-                    _ => None,
-                };
-                if let Some(cmd) = cmd {
-                    let _ = commands.send(cmd);
-                }
-                return;
-            }
-            // Idle: anchor the caret (a byte offset, on a char boundary) and start.
-            if ctrl_d && m.input_focused() && m.menu.is_none() && !m.components.editor().is_some_and(|(class, _)| class == FocusClass::Secret) {
-                let v = input.read();
-                let at = handle.read().cursor_offset();
-                let at = if v.is_char_boundary(at) { at } else { v.len() };
-                if let Some(cmd) = m.toggle_dictation(v[..at].to_owned(), v[at..].to_owned()) {
-                    let _ = commands.send(cmd);
-                }
-                return;
-            }
+            if m.component_key_with_editor(FocusClass::Spoken, &key, &input.read(), handle.read().cursor_offset()) { return; }
             // Chat-only: a search menu on top must not toggle transcript cards.
             if code == KeyCode::Char('o')
                 && modifiers.contains(KeyModifiers::CONTROL)
@@ -417,27 +384,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             }
             if m.component_key(FocusClass::Secret, &key) { return; }
             if m.component_key(FocusClass::Suggestion, &key) { return; }
-            // The dictionary suggestion line (153 §6.4): `y` add · `n` not now ·
-            // `N` never · `p` is the desktop's; Esc = not now; the rest is swallowed.
-            if m.suggestion.is_some() {
-                use voice::SuggestionAnswer::*;
-                let cmd = match code {
-                    KeyCode::Char('y') => m.answer_suggestion(Add),
-                    KeyCode::Char('n') | KeyCode::Esc => m.answer_suggestion(NotNow),
-                    KeyCode::Char('N') => m.answer_suggestion(Never),
-                    KeyCode::Char('p') => {
-                        m.entries.push(Entry::Info(
-                            "play what you said: in the desktop's suggestion card".into(),
-                        ));
-                        None
-                    }
-                    _ => None,
-                };
-                if let Some(cmd) = cmd {
-                    let _ = commands.send(cmd);
-                }
-                return;
-            }
             if m.ask().is_some() {
                 let text = input.read().to_string();
                 if let Some(text) = m.ask_key(code, &text, &commands) {
@@ -618,9 +564,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let (width, height) = terminal_size;
     let pinned = component_slot(&m, Surface::Pinned, width, height, None);
     let composer = component_slot(&m, Surface::Composer, width, height, None);
+    let composer_header = component_slot(&m, Surface::ComposerHeader, width, height, None);
+    let composer_mode = m.components.composer_mode();
     let hint = component_slot(&m, Surface::Hint, width, height, None);
     let badge = component_slot(&m, Surface::PromptBadge, width, height, None);
-    let extra_rows = pinned.rows + composer.rows + hint.rows + badge.rows;
+    // The composer body/hint replace the existing editor presentation, not its viewport budget.
+    let extra_rows = pinned.rows + badge.rows;
     *component_rows.write() = extra_rows;
     let modal = modal
         .or_else(|| component_slot(&m, Surface::Prompt(FocusClass::Secret), width, height, None).element())
@@ -726,11 +675,9 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
             )))
             View(height: 1, padding_left: 1) {
-                #(match (&m.dictation, m.talk_view) {
-                    (Some(d), _) => element!(MixedText(contents: dictation_header(d, m.frame), wrap: TextWrap::NoWrap)).into_any(),
-                    (None, true) => element!(Text(content: "● talk  (Esc cancels / leaves · Ctrl+T stops)", color: SAND)).into_any(),
-                    (None, false) => element!(Text(content: header, color: header_color)).into_any(),
-                })
+                #(composer_header.element().unwrap_or_else(|| if m.talk_view {
+                    element!(Text(content: "● talk  (Esc cancels / leaves · Ctrl+T stops)", color: SAND)).into_any()
+                } else { element!(Text(content: header, color: header_color)).into_any() }))
             }
             // `flex_shrink: 0`: once the transcript fills the screen the box
             // would otherwise be squeezed back to `min_height` as it grows.
@@ -740,8 +687,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             // talk pane (76) drops the border and the editor the same way —
             // never `display: None` on a bordered view: iocraft draws a border
             // of width 0 - 2 and panics.
-            View(border_style: if m.talk_view { BorderStyle::None } else { BorderStyle::Round }, border_color: if m.dictation.is_some() { FAIENCE } else { OCHRE }, min_height: if m.talk_view { 0 } else { 3 }, flex_shrink: 0.0, flex_direction: FlexDirection::Column) {
-                View(width: 100pct, display: if m.dictation.is_some() || m.talk_view { Display::None } else { Display::Flex }) {
+            View(border_style: if m.talk_view || composer_mode == crate::components::ComposerMode::Hidden { BorderStyle::None } else { BorderStyle::Round }, border_color: if composer_mode == crate::components::ComposerMode::ReadOnly { FAIENCE } else { OCHRE }, min_height: if m.talk_view || composer_mode == crate::components::ComposerMode::Hidden { 0 } else { 3 }, flex_shrink: 0.0, flex_direction: FlexDirection::Column) {
+                View(width: 100pct, display: if m.talk_view || composer_mode != crate::components::ComposerMode::Default { Display::None } else { Display::Flex }) {
                     TextInput(
                         handle,
                         has_focus,
@@ -760,25 +707,14 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                             // inserted run, or the point of deletion.
                             let caret = pathac::caret_after_edit(&input.read(), &v);
                             m.path.edit(&v, caret, now_ms());
-                            // An emptied editor no longer carries the dictation (153 §6.1).
-                            if v.is_empty() {
-                                m.dictated = None;
-                            }
                             drop(m);
                             input.set(v);
                         },
                     )
                 }
-                #(m.dictation.as_ref().map(|d| element!(MixedText(contents: dictation_region(d), wrap: TextWrap::Wrap))))
+                #(composer.element())
             }
-            #(composer.element())
             #(hint.element())
-            // The dictionary suggestion (153 §6.4): one line under the composer.
-            #(m.suggestion.as_ref().map(|s| {
-                element!(View(height: 1, padding_left: 1) {
-                    Text(content: s.line(), color: OCHRE, wrap: TextWrap::NoWrap)
-                })
-            }))
             #(path_box(&m, width))
             View(height: 1, padding_left: 1, padding_right: 1, justify_content: JustifyContent::SpaceBetween) {
                 View() {
@@ -878,63 +814,6 @@ fn talk_pane(t: &Talking, frame: usize, width: u16, height: usize) -> AnyElement
     .into_any()
 }
 
-/// Header row while dictating (54 §6): a blinking `●`, the level meter in
-/// cyan, the elapsed clock, the mic note (153 §8.2) and the keys in grey.
-/// An armed "send it" (153 §3.1) names the settle and its two keys.
-fn dictation_header(d: &Dictating, frame: usize) -> Vec<MixedTextContent> {
-    let dot = if (frame / 30).is_multiple_of(2) {
-        "● "
-    } else {
-        "  "
-    };
-    let state = match d.phase {
-        Phase::Starting => "starting",
-        Phase::Dictating if d.send => "sending…",
-        Phase::Dictating => "dictating",
-        Phase::Stopping => "stopping",
-    };
-    let keys = if d.send {
-        " (⏎ send now · any key keeps editing · Esc discard)"
-    } else {
-        " (Ctrl+D stop · Esc discard)"
-    };
-    let mut out = vec![
-        MixedTextContent::new(format!("{dot}{state}  ")).color(FAIENCE),
-        MixedTextContent::new(dictation::meter(&d.levels, dictation::METER_CELLS)).color(FAIENCE),
-        MixedTextContent::new(format!("  {}", d.clock())),
-    ];
-    if let Some(mic) = &d.mic {
-        out.push(MixedTextContent::new(format!("  {mic}")).color(OCHRE));
-    }
-    out.push(MixedTextContent::new(keys).color(SAND));
-    out
-}
-
-/// The composer while dictating (54 §5.1): `before`, `lead`, each utterance
-/// (grey until the VAD closes it), `trail`, `after`. Empty utterances are
-/// skipped, so the joins mirror `splice`.
-fn dictation_region(d: &Dictating) -> Vec<MixedTextContent> {
-    let mut out = vec![MixedTextContent::new(&d.before)];
-    let mut first = true;
-    for u in d.utts.iter().filter(|u| !u.text.is_empty()) {
-        out.push(MixedTextContent::new(if first { d.lead() } else { " " }));
-        first = false;
-        let mut c = MixedTextContent::new(&u.text);
-        if !u.is_final {
-            c = c.color(SAND);
-        }
-        out.push(c);
-    }
-    if !first {
-        out.push(MixedTextContent::new(d.trail()));
-    }
-    out.push(MixedTextContent::new(&d.after));
-    if d.before.is_empty() && d.after.is_empty() && first {
-        // An empty box still needs a row for the border to wrap.
-        out.push(MixedTextContent::new(" "));
-    }
-    out
-}
 
 
 /// The shown `ask_user` question: options with the cursor, a "type your own"

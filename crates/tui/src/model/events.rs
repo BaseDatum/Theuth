@@ -120,14 +120,10 @@ pub enum UiEvent {
     SessionOpened(SessionOpen),
     /// Reply to [`Command::LeaveSession`]: the root left and how far its cleanup got.
     SessionLeft(SessionId, CloseResult),
-    /// Voice plugin bus event; the `Dictation*` variants (54 §6) and `SpeechFinished` for the talk subtitle (76 §5.2).
+    /// Voice completion still consumed by the not-yet-migrated talk owner.
     Voice(voice::VoiceEvent),
     /// Talk plugin bus event (76 §5.2): the `/talk` view.
     Talk(talk::TalkEvent),
-    /// Reply to [`Command::DictationStart`]: the daemon opened a dictation for us.
-    DictationStarting(voice::DictationId),
-    /// [`Command::DictationStart`] was refused (already dictating, voice disabled, model missing).
-    DictationFailed(String),
     /// Reply to [`Command::TalkStart`]: the daemon opened a talk for us.
     TalkStarting(talk::TalkId),
     /// [`Command::TalkStart`] was refused (already talking, talk disabled, model missing).
@@ -447,38 +443,6 @@ pub enum Command {
         /// Its lease secret.
         secret: String,
     },
-    /// `dictation_prewarm`: load the streaming STT model once at startup (54 §0.5).
-    DictationPrewarm,
-    /// `dictation_start(None, opts)` (153 §14.1: `Surface::Tui`, `AgentPrompt`, the slash commands,
-    /// `press_ago_ms` from `pressed`); the reply is [`UiEvent::DictationStarting`] or [`UiEvent::DictationFailed`].
-    DictationStart {
-        /// When Ctrl+D was pressed (153 §8.7).
-        pressed: std::time::Instant,
-        /// One completion/help vocabulary, including component commands.
-        commands: Vec<String>,
-    },
-    /// `dictation_stop(id)`: close the mic; `DictationFinished` follows on the bus.
-    DictationStop(voice::DictationId),
-    /// `dictation_correction(id, sent_text)` (153 §6.1): fire-and-forget at send.
-    DictationCorrection {
-        /// The dictation that contributed to the message.
-        id: voice::DictationId,
-        /// What went out.
-        text: String,
-    },
-    /// `dictionary_suggestion_answer(id, answer)` (153 §6.3).
-    SuggestionAnswer {
-        /// The suggestion shown.
-        id: voice::SuggestionId,
-        /// `y` add · `n` not now · `N` never.
-        answer: voice::SuggestionAnswer,
-    },
-    /// `/voice`: `voice_status` + `dictation_status` + `list_input_devices` → one `Info` (153 §8.1/8.7).
-    VoiceStatus,
-    /// `/voice mic <name|default>` → `set_input_devices` (153 §8.1).
-    SetInputDevices(Vec<String>),
-    /// `/voice shape <full|plain|off>` → `set_shape(Surface::Tui, preset)` (153 §4.5).
-    SetShape(voice::Preset),
     /// `talk_start(session, "device", null)`: a live spoken conversation (76 §5.1);
     /// `session: None` = no session yet: one is created first (`SessionOpened`), as the desktop's
     /// Talk entry does, on the draft's pending model/effort when there is one (148 R1).

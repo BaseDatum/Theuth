@@ -35,7 +35,6 @@ use tools::{
 use uuid::Uuid;
 
 use crate::clip::Image;
-use crate::dictation::{self, Dictating, Phase, Suggestion};
 use crate::pathac::PathState;
 use crate::talk::Talking;
 
@@ -260,21 +259,10 @@ pub struct Model {
     pub private: Option<Private>,
     /// The retention warning was shown once this run.
     private_warned: bool,
-    /// The dictation in progress (54 §6); the editor is read-only while `Some`.
-    pub dictation: Option<Dictating>,
-    /// `before`/`after` snapshot taken at Ctrl+D, waiting for `dictation_start`'s reply.
-    dictation_pending: Option<(String, String)>,
-    /// Streaming STT model state (`DictationModel` events); Ctrl+D needs `Ready`.
-    pub dictation_model: voice::ModelState,
-    /// `(value, caret)` the editor must take this frame: a dictation stopped or was discarded.
+    /// Complete editor replacement and byte caret, consumed atomically by App.
     pub pending_input: Option<(String, usize)>,
-    /// The spliced value to submit this frame: a dictation ended on "send it" (153 §7.4).
+    /// Editor text to submit exactly once through the existing input path.
     pub pending_send: Option<String>,
-    /// The last dictation that landed in the editor, until the editor is sent or emptied
-    /// (153 §6.1: its `dictation_correction` goes with the send).
-    pub dictated: Option<voice::DictationId>,
-    /// The dictionary suggestion shown under the composer (153 §6.4), until answered or 20 s.
-    pub suggestion: Option<Suggestion>,
     /// The talk this view started (76 §0.12); `Some` whether or not the view is open.
     pub talk: Option<Talking>,
     /// The `/talk` pane covers the transcript; Esc closes it, the talk keeps running.
@@ -333,7 +321,7 @@ pub use sessions::{Private, session_rows, TurnAction, ESC_TAPS_WINDOW, engine_ch
 pub(crate) use sessions::{project_heading, project_order};
 pub use lifecycle::removal_line;
 pub use slash::{COMMANDS, SlashRow};
-pub use speech::{voice_cmd, voice_line};
+pub(crate) use slash::command_rank;
 pub(crate) use status::{now_ms, when, ago, on_off};
 pub use status::{Level, k};
 pub(crate) use status::elapsed;

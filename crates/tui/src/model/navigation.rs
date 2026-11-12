@@ -8,8 +8,8 @@ impl Model {
     pub fn input_focused(&self) -> bool {
         if self.approval().is_some()
             || (self.components.focused() && self.components.editor().is_none())
-            || self.dictation.is_some()
-            || self.suggestion.is_some()
+            || self.components.composer_mode() != crate::components::ComposerMode::Default
+            || self.components.captures(crate::components::FocusClass::Suggestion)
             || self.talk_view
         {
             return false;
