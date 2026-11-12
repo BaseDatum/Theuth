@@ -464,9 +464,12 @@ async fn block_of(
     want_strings: bool,
 ) -> anyhow::Result<(usize, usize, Block)> {
     let (a, b) = resolve(session, doc, anchor, p).await?;
-    // A failed hook protects nothing (the receipt says so).
+    // A failed hook refuses (its own message); no parser at all is a note.
     let strings = if want_strings {
-        interior(syntax(doc, p).await.ok().flatten(), a, b)
+        let info = syntax(doc, p)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}: multi-line strings cannot be protected"))?;
+        interior(info, a, b)
     } else {
         None
     };
