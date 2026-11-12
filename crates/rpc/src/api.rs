@@ -190,8 +190,6 @@ pub mod turns;
 pub mod settings;
 /// Tooling RPC server and client traits.
 pub mod tooling;
-/// Skills RPC server and client traits.
-pub use agent::rpc_skills as skills;
 /// Screens RPC server and client traits.
 pub mod screens;
 /// Mcp RPC server and client traits.
@@ -234,7 +232,6 @@ pub use sessions::{SessionsApiClient, SessionsApiServer};
 pub use turns::{TurnsApiClient, TurnsApiServer};
 pub use settings::{SettingsApiClient, SettingsApiServer};
 pub use tooling::{SESSION_TOOLS, ToolingApiClient, ToolingApiServer};
-pub use skills::{SkillsApiClient, SkillsApiServer};
 pub use screens::{ScreensApiClient, ScreensApiServer};
 pub use mcp::{McpApiClient, McpApiServer};
 pub use concepts::{ConceptsApiClient, ConceptsApiServer};
@@ -256,12 +253,13 @@ pub use sandboxes::{SandboxesApiClient, SandboxesApiServer};
 
 /// All domain client traits for typed methods on any jsonrpsee client.
 pub mod clients {
+    pub use agent::rpc_jobs::JobsApiClient;
     pub use super::hub::CoreApiClient;
     pub use super::sessions::SessionsApiClient;
     pub use super::turns::TurnsApiClient;
     pub use super::settings::SettingsApiClient;
     pub use super::tooling::ToolingApiClient;
-    pub use super::skills::SkillsApiClient;
+    pub use agent::rpc_skills::SkillsApiClient;
     pub use super::screens::ScreensApiClient;
     pub use super::mcp::McpApiClient;
     pub use super::concepts::ConceptsApiClient;
@@ -290,7 +288,6 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         sessions::rpc_module(server.clone()),
         turns::rpc_module(server.clone()),
         agent::rpc_module(server.clone()),
-        skills::rpc_module(server.clone()),
         tooling::rpc_module(server.clone()),
         screens::rpc_module(server.clone()),
         mcp::rpc_module(server.clone()),

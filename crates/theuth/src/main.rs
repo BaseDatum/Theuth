@@ -1995,7 +1995,6 @@ fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server
         rpc::api::sessions::rpc_module(server.clone()),
         rpc::api::turns::rpc_module(server.clone()),
         agent::rpc_module(server.clone()),
-        rpc::api::skills::rpc_module(server.clone()),
         rpc::api::tooling::rpc_module(server.clone()),
         rpc::api::screens::rpc_module(server.clone()),
         rpc::api::mcp::rpc_module(server.clone()),

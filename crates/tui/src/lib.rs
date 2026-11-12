@@ -16,7 +16,6 @@ use std::io::{IsTerminal, Write};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use agent::rpc_jobs::JobsApiClient;
 use agent::{AgentConfig, AgentEvent, CompactStyle, LoginFinished};
 use futures::future::BoxFuture;
 use jsonrpsee::core::client::Error as ClientError;
