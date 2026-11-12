@@ -3172,14 +3172,23 @@ impl Agents {
         let inbox = match self.inbox_of(&m, scope).await {
             Ok(Inbox::Here(id)) => Inbox::Here(id),
             Ok(_) | Err(_) if !m.send => {
-                let me = self.store.engine();
-                return match self.store.inbox_rows(scope.principal, scope.export).await {
-                    Ok(rows) => match rows.into_iter().next() {
-                        Some((s, owner, _)) if !owner.is_empty() && owner != me => Ok(s),
-                        _ => Err(read_refused()),
-                    },
+                // Read-only: the local row, then the strict owner of its session. Nothing
+                // below this match runs for a read that is not owned here.
+                let local = match self.store.inbox_rows(scope.principal, scope.export).await {
+                    Ok(rows) => rows.into_iter().next().map(|(s, _, _)| s),
                     Err(e) => {
                         tracing::warn!(export = %m.origin.export, "a2a: inbox read: {e:#}");
+                        None
+                    }
+                };
+                let Some(s) = local else {
+                    return Err(read_refused());
+                };
+                return match self.store.owner_strict(s).await {
+                    Ok(crate::store::contacts::Owner::Elsewhere(_)) => Ok(s),
+                    Ok(_) => Err(read_refused()),
+                    Err(e) => {
+                        tracing::warn!(session = %s, "a2a: inbox read: session row unreadable: {e:#}");
                         Err(read_refused())
                     }
                 };
@@ -7865,6 +7874,7 @@ mod full_inbox_tests {
             export: "research",
         };
         let sessions = a.store.list_sessions().await.unwrap().len();
+        let marker = a.store.contact_inbox(inbox).await.unwrap();
         for (what, send, want) in [
             ("GetTask", false, Ok(inbox)),
             ("CancelTask", false, Ok(inbox)),
@@ -7884,8 +7894,20 @@ mod full_inbox_tests {
                 "{what}: not marked"
             );
             assert!(
-                !a.caps.contains_key(&inbox) && !a.network.inbox_personas.contains_key(&inbox),
+                !a.caps.contains_key(&inbox)
+                    && !a.network.inbox_personas.contains_key(&inbox)
+                    && !a.network.inbox_limits.contains_key(&inbox),
                 "{what}: no limits installed"
+            );
+            assert_eq!(
+                a.store.contact_inbox(inbox).await.unwrap(),
+                marker,
+                "{what}: marker untouched"
+            );
+            assert_eq!(
+                a.store.owner_strict(inbox).await.unwrap(),
+                crate::store::contacts::Owner::Elsewhere("other-engine".into()),
+                "{what}: still another machine's"
             );
         }
         // A read from a contact with no inbox here: none opened.
@@ -7906,6 +7928,8 @@ mod full_inbox_tests {
         assert_eq!(a.store.list_sessions().await.unwrap().len(), sessions);
         // An unreadable row proves nothing either.
         a.store.break_session_for_test(inbox).await;
+        let r = a.handle_inbox(ask(binding.id, false)).await;
+        assert_eq!(r.err().map(|e| e.code), Some(TASK_NOT_FOUND), "a read");
         let r = a.handle_inbox(ask(binding.id, true)).await;
         assert_eq!(r.err().map(|e| e.code), Some(NOT_OWNER_CODE));
         assert!(!a.caps.contains_key(&inbox));

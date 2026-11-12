@@ -319,28 +319,32 @@ Holds was merged into routing on `feat/191-p3`. Both branches already held main 
    - Completing the task failed the scope's exchange ("task completed") while C read `consumed`, so the message was lost under a success receipt.
    - **Now:** a task whose exchange reads `consumed` or `replied` (linked into the history, which moves) completes as a receipt, as before. Any other, including an exchange that does not read, fails `HOLD_MOVED` ("the chat moved; send again"), as a hold does, and its exchange fails with it. The contact's resend reaches the new owner.
 2. **After the move, the old owner could not read its own tasks.** The task id carries n1's prefix, so the forwarder routes C's `GetTask` to n1. There, `handle_inbox` answered every read of an inbox owned elsewhere TASK_NOT_FOUND, which the client treats as final, so C's receipt went `unknown` ("remote task no longer exists").
-   - **Now:** a read (`send` unset) whose local inbox row is strictly another machine's resolves to that session and returns at once, before any side effect. A2aGet/A2aList/A2aCancel then read this machine's own rows, scoped by principal and export. A chat export's reads were already served this way.
-   - An empty owner, no row or a store error (logged) is still TASK_NOT_FOUND.
+   - **Now:** a read (`send` unset) takes the local inbox row's session and checks it with `owner_strict`. Only `Owner::Elsewhere` resolves to that session, and it returns at once, before any side effect: no adoption, unmark, cap, `mark_a2a_inbox`, marker write, `new_root` or limit change.
+   - A2aGet, A2aList and A2aCancel then read this machine's own rows through `A2aScope { principal, export }`; that code is unchanged. A chat export's reads were already served this way.
+   - An empty owner (`Unknown`), an unreadable session row, no row or a store error (logged) is still TASK_NOT_FOUND.
 
 ### Deviations from the doc
-1. **D3, "On drain, the old owner completes the session's `full_inbound` tasks as receipts: the message already sits in the queue that moved"**, is built only for a consumed message. A waiting one is not in anything that moves, so it fails `HOLD_MOVED` (seam 1).
+1. **D3, "On drain, the old owner completes the session's `full_inbound` tasks as receipts: the message already sits in the queue that moved"**, is built only for a consumed message. A waiting one is not in anything that moves, so it fails `HOLD_MOVED` (seam 1). Rig 15w, the evidence:
+   - before the fix, the waiting message's exchange on n1 was `failed (task completed)` while C read `consumed`, and n2 had 0 exchanges and 0 history rows for it;
+   - after it, C reads `failed` "the chat moved; send again", and its next message is adopted on n2.
+   - Agreed with the lead (keep the honest failure).
 2. **D3/S4 and the routing row "A read … only an inbox owned here"** now also serves a read of an inbox that moved away, from this machine's own task rows only (seam 2).
 
 ### Fail-closed, path by path
 | Path | How it stays closed |
 |---|---|
 | A full task on a release drain | A receipt only when its exchange reads `consumed`/`replied`. Waiting, missing or unreadable: the task fails `HOLD_MOVED` and its exchange fails with it; never a success for a message no turn will read, never carried. |
-| A read of an agent export whose inbox moved away | Only a local row whose owner is non-empty and not this engine. It returns before any side effect (no marker, mark, persona, cap or run), and it reads only this machine's task rows for that principal and export. An empty owner, no row or a store error is TASK_NOT_FOUND; a send there is still `not owner` naming the owner. |
+| A read of an agent export whose inbox moved away | Only a local row whose session `owner_strict` reads as `Elsewhere`. It returns before any side effect (no adoption, unmark, cap, mark, marker, persona, root or run), and it reads only this machine's task rows for that principal and export. An empty owner, an unreadable row, no row or a store error is TASK_NOT_FOUND; a send there is still `not owner` naming the owner. |
 
 ### Proof
 Tests:
 - `a_drain_fails_a_hold_and_a_waiting_full_task`, formerly `…_and_completes_full_tasks`.
   - It holds `PEER_INTAKE` across admission and drain, so the message waits: the task fails `HOLD_MOVED` and the exchange is `failed`.
   - It then waits for a second message to be consumed and drains again: that task completes as a receipt. 5 of 5 alone.
-- `a_non_owner_inbox_resolve_changes_nothing`: GetTask and CancelTask now resolve the moved session, and still change nothing.
+- `a_non_owner_inbox_resolve_changes_nothing`: GetTask and CancelTask resolve the moved session. After each read and send, these are unchanged: the context count, the session count, the stored ceiling (not marked), caps, personas and limits, the marker, and the owner. An unreadable row refuses a read TASK_NOT_FOUND.
 - `an_empty_owner_on_a_mesh_engine_is_never_here`: a read is TASK_NOT_FOUND too.
 
-Rig: copies of the builders' rigs in `/tmp/d191/p3/int/{route-rig,holds-rig}` (other ports). Binary: `t` from 5385db58. Evidence: `/tmp/d191/p3/int-evidence.txt`.
+Rig: copies of the builders' rigs in `/tmp/d191/p3/int/{route-rig,holds-rig}` (other ports). Binary: `t` from the final code (the read on `owner_strict`). Evidence: `/tmp/d191/p3/int-evidence.txt`.
 - Rigs 1, 3, 15, 16, 17 and 18 gave the builders' results.
 - **15w**
   - C's first message to the marked inbox W of agent export E2 on n1 was consumed, and n1's model call was latched.
@@ -353,7 +357,7 @@ Gates:
 - `mbx check` and `clippy --tests --no-deps -D warnings` on that set: clean.
 - Tests, built `--no-run`, then run bare on the same set (`--no-fail-fast`, `THEUTH_MONTY_WORKER`/`THEUTH_WORKER` = this tree's `t`):
   - a2a 112/112, mesh 70/70, rpc 97/97 (+ 6), sessionsync 47/47 (+ 2), tools 241/241 (+ 1).
-  - agent 882/883 (+ 9 integration). The one failure is `monty_budgets_and_allowlist`, a listed flake, which passes alone.
-  - An earlier run under load average 20+ also failed `advisors_contract`, `human_input_releases_parked_items_as_steers` and tools' `registration_adopts_a_running_untracked_invocation` / `slow_call_is_promoted_to_a_job`. Each passes alone, and all four passed in the final run.
+  - agent 881/883 (+ 9 integration). The two failures, `monty_budgets_and_allowlist` and `human_input_releases_parked_items_as_steers`, are listed flakes; each passes alone.
+  - Earlier runs, one at load average 20+, also failed `advisors_contract` and tools' `registration_adopts_a_running_untracked_invocation` / `slow_call_is_promoted_to_a_job`. Each passes alone and in the later full runs.
 - TS bindings regenerated (1037 files; the integration changes no exported type); `tsc -b --noEmit` 0 errors; vitest `Contacts`, `ContactAllowStrip`, `Hud`, `api` 49/49.
 - `grep -rn "W-40 only" crates`: nothing.
