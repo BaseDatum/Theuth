@@ -46,6 +46,7 @@ const ALLOWED: &[&str] = &[
     "voice",
     "web",
 ];
+// `wire` is the plugin-neutral event contract (step 8 design §2).
 const ALLOWED_DEV: &[&str] = &["agent", "wire"];
 
 #[test]

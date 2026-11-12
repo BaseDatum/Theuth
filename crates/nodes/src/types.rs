@@ -78,6 +78,11 @@ pub enum NodeEvent {
     },
 }
 
+impl wire::WireEvent for NodeEvent {
+    const TOPIC: &'static str = "nodes.events";
+    const VERSION: u32 = 1;
+}
+
 /// `ask` → `Vec<Node>`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Status;

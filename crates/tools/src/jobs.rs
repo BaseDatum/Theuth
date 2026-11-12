@@ -346,6 +346,11 @@ pub enum JobEvent {
     },
 }
 
+impl wire::WireEvent for JobEvent {
+    const TOPIC: &'static str = "tools.jobs";
+    const VERSION: u32 = 1;
+}
+
 /// One row of [`ListJobs`].
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]

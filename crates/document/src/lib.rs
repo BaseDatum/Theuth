@@ -200,6 +200,14 @@ impl Handle {
     }
 }
 
+/// Declare wire contracts before starting producers, including disabled services.
+pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<DocumentChanged>().await?;
+    rt.register_wire_event::<CellLatestChanged>().await?;
+    rt.register_wire_event::<SourceEvent>().await
+}
+
 /// The plugin: open the store, start the helper client, spawn and register
 /// the actor, start the tick and the derived-file watcher (§3.1).
 pub struct DocumentPlugin;
@@ -211,6 +219,7 @@ impl runtime::Plugin for DocumentPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: DocumentsConfig = rt.section("documents").unwrap_or_else(|e| {
             tracing::debug!("no [documents] config section, using defaults: {e}");
             DocumentsConfig::default()

@@ -479,6 +479,11 @@ pub enum SourceEvent {
     },
 }
 
+impl wire::WireEvent for SourceEvent {
+    const TOPIC: &'static str = "document.sources";
+    const VERSION: u32 = 1;
+}
+
 /// `notebook_get` reply: the notebook and its live items.
 #[derive(
     Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,

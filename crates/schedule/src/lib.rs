@@ -614,6 +614,17 @@ pub enum ScheduleEvent {
     Changed,
 }
 
+impl wire::WireEvent for ScheduleEvent {
+    const TOPIC: &'static str = "schedule.events";
+    const VERSION: u32 = 1;
+}
+
+/// Declare wire contracts before starting producers, including disabled services.
+pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<ScheduleEvent>().await
+}
+
 /// Ceiling on the tick sleep (34 §1.3): the suspended-clock case.
 const TICK: Duration = Duration::from_secs(60);
 
@@ -3227,6 +3238,7 @@ impl runtime::Plugin for SchedulePlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: ScheduleConfig = rt.section("schedule").unwrap_or_else(|e| {
             tracing::debug!("no [schedule] config section, using defaults: {e}");
             ScheduleConfig::default()

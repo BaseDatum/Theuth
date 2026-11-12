@@ -319,6 +319,32 @@ impl Message<Peers> for SessionSync {
 /// the replica plugin has one. Starts after `agent` and `replica`.
 pub struct SessionSyncPlugin;
 
+/// Declare the follow payload and relay adapter without starting replication.
+pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
+    use wire::{RuntimeWire as _, WireEvent as _, WireIngress};
+
+    rt.register_wire_event::<events::FollowState>().await?;
+    rt.register_wire_source::<events::Relayed, _>(|relayed| {
+        let topic = match relayed.kind.as_str() {
+            "ApprovalRequested" => Some(tools::ApprovalRequested::TOPIC),
+            "ApprovalResolved" => Some(tools::ApprovalResolved::TOPIC),
+            "AskRequested" => Some(tools::AskRequested::TOPIC),
+            "AskResolved" => Some(tools::AskResolved::TOPIC),
+            "JobEvent" => Some(tools::JobEvent::TOPIC),
+            // Declared by the cell owner, not by this transport adapter.
+            "CellEvent" => Some("cells.events"),
+            "FollowState" => Some(events::FollowState::TOPIC),
+            _ => None,
+        };
+        let event = relayed.event.clone();
+        Ok(Some(match topic {
+            Some(topic) => WireIngress::Registered { topic, event },
+            None => WireIngress::Legacy { event },
+        }))
+    })
+    .await
+}
+
 #[async_trait::async_trait]
 impl runtime::Plugin for SessionSyncPlugin {
     fn name(&self) -> &'static str {
@@ -326,6 +352,7 @@ impl runtime::Plugin for SessionSyncPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let config: SessionsConfig = rt.section("sessions").unwrap_or_else(|e| {
             tracing::debug!("no [sessions] config section, using defaults: {e}");
             SessionsConfig::default()

@@ -7,6 +7,7 @@ description = "Files the agent makes for the user, shown in chat: `show` tool, c
 
 [dependencies]
 runtime = { workspace = true }
+wire = { workspace = true }
 tools = { workspace = true }
 agent = { workspace = true }
 search = { workspace = true }

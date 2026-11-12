@@ -7,6 +7,7 @@ description = "Documents: the Yjs authority (yrs) behind every BlockNote editor,
 
 [dependencies]
 runtime = { workspace = true }
+wire = { workspace = true }
 tools = { workspace = true }
 platform = { workspace = true }
 search = { workspace = true }

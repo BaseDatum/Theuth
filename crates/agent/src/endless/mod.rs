@@ -446,6 +446,10 @@ pub struct EndlessProgress {
     pub backlog: Option<Backlog>,
 }
 
+impl wire::WireEvent for EndlessProgress {
+    const TOPIC: &'static str = "agent.endless-progress";
+}
+
 /// Reply of [`Endless::set_mode`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct SetMode {
