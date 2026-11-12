@@ -57,9 +57,6 @@ pub enum Entry {
         /// The file a `show` call produced (`ArtifactShown`, design doc 35);
         /// the card renders as an artifact card once set.
         artifact: Option<Box<artifact::Artifact>>,
-        /// Spinner row of a running `crawl` / `map_site` / `scrape_url`
-        /// (`ScrapeProgress`, design doc 38); cleared when the result lands.
-        scrape: Option<String>,
     },
     /// A compaction boundary (design doc 07 §8.4): a divider, expandable with
     /// Ctrl+O to the summary when loaded from history (the live event has none).

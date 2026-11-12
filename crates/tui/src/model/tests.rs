@@ -13,6 +13,10 @@
     use crate::components::nodes::{NodesArg, parse_nodes_arg, find_node};
 
 
+    fn wire_event(topic: &str, event: impl serde::Serialize) -> UiEvent {
+        UiEvent::Wire(crate::components::tests::topic(topic, 1, serde_json::to_value(event).unwrap()))
+    }
+
     fn cost_reply(model: &Model, session: SessionId, cost: SessionCost) -> UiEvent {
         UiEvent::Component(crate::components::LocalReply {
             to: model.components.token("costs"), engine_epoch: 0,
@@ -3500,7 +3504,6 @@
             result: None,
             expanded: None,
             artifact: None,
-            scrape: None,
         }
         .height(80);
         let tool = m
@@ -6241,20 +6244,21 @@
 
     #[test]
     fn scrape_progress_rides_the_running_card_and_clears_on_finish() {
+        use crate::components::web_progress::{WebProgress, scrape_line};
         let s = SessionId::new();
         let turn = TurnId::new();
         let mut m = Model {
             session: Some(s),
             streaming: true,
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
-        m.apply_agent(AgentEvent::ToolCallStarted {
+        m.apply(wire_event("agent.events", AgentEvent::ToolCallStarted {
             session: s,
             turn,
             call_id: "c1".into(),
             name: "crawl".into(),
             args: serde_json::json!({"url": "https://example.com"}),
-        });
+        }));
         let ev = |session| web::progress::ScrapeProgress {
             session,
             call_id: "c1".into(),
@@ -6266,15 +6270,15 @@
             limit: 50,
         };
         // Another session's crawl is not ours.
-        m.apply(UiEvent::ScrapeProgress(ev(SessionId::new())));
+        m.apply(wire_event("web.scrape-progress", ev(SessionId::new())));
         assert!(matches!(
-            m.entries.last(),
-            Some(Entry::Tool { scrape: None, .. })
+            (m.entries.last(), m.components.get::<WebProgress>().unwrap().progress.get("c1")),
+            (Some(Entry::Tool { .. }), None)
         ));
-        m.apply(UiEvent::ScrapeProgress(ev(s)));
+        m.apply(wire_event("web.scrape-progress", ev(s)));
         assert!(matches!(
-            m.entries.last(),
-            Some(Entry::Tool { scrape: Some(row), .. }) if row == "crawling… 2/50 · example.com"
+            (m.entries.last(), m.components.get::<WebProgress>().unwrap().progress.get("c1")),
+            (Some(Entry::Tool { .. }), Some(row)) if row == "crawling… 2/50 · example.com"
         ));
         assert_eq!(
             m.activity().as_deref(),
@@ -6292,21 +6296,17 @@
             ..ev(s)
         };
         assert_eq!(scrape_line("search_web", &idle), "searching…");
-        m.apply_agent(AgentEvent::ToolCallFinished {
+        m.apply(wire_event("agent.events", AgentEvent::ToolCallFinished {
             session: s,
             turn,
             call_id: "c1".into(),
             output: "# https://example.com/".into(),
             is_error: false,
             files: Vec::new(),
-        });
+        }));
         assert!(matches!(
-            m.entries.last(),
-            Some(Entry::Tool {
-                result: Some(_),
-                scrape: None,
-                ..
-            })
+            (m.entries.last(), m.components.get::<WebProgress>().unwrap().progress.get("c1")),
+            (Some(Entry::Tool { result: Some(_), .. }), None)
         ));
     }
 

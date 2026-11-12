@@ -178,8 +178,6 @@ pub enum UiEvent {
     MeshDevicePairing(link::PairingPayload),
     /// A `show` call produced a file (bus event, design doc 35).
     ArtifactShown(artifact::ArtifactShown),
-    /// Live URLs of a `crawl` / `map_site` / `scrape_url` call (bus event, design doc 38).
-    ScrapeProgress(web::progress::ScrapeProgress),
     /// Reply to [`Command::ListArtifacts`]: the session subtree's artifacts, newest first;
     /// `pick` opens the `/artifacts` (`/apps` when `apps`) menu, else the rows
     /// only join their `show` / `app` cards.

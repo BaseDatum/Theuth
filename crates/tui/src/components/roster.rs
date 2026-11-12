@@ -2,11 +2,20 @@
 use rpc::api::clients::BoardsApiClient;
 use super::*;
 
+/// Read-only agent roster listing.
 #[derive(Default)]
 pub struct Roster;
+/// Typed roster owner request.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Request { ListRoster }
-pub enum Msg { Loaded(Result<Vec<::roster::AgentSummary>, String>) }
+pub enum Request {
+    /// List all roster agents.
+    ListRoster,
+}
+/// Roster request completion.
+pub enum Msg {
+    /// Returned summaries or owner error.
+    Loaded(Result<Vec<::roster::AgentSummary>, String>),
+}
 impl Component for Roster {
     type Msg = Msg;
     fn declaration(&self) -> Declaration {

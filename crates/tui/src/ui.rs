@@ -779,7 +779,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 Entry::Tool { call_id, artifact: None, .. } => m.component_views(Surface::Entry { key: call_id, skipped: 0 }, usize::from(width), 0),
                 _ => Vec::new(),
             };
-            entry(e, m.spinner(), if i == 0 { win.skip } else { 0 }, width, decorations)
+            entry(e, m.spinner(), if i == 0 { win.skip } else { 0 }, width, decorations, m.entry_summary(e))
         });
     let transcript = if let (true, Some(t)) = (m.talk_view, &m.talk) {
         talk_pane(t, m.frame, width, view)
@@ -1871,7 +1871,7 @@ fn queued_text(text: &str) -> String {
 
 /// One transcript entry. `skip` drops that many leading rendered lines of a
 /// reply (`Model::window`): the part that cannot reach the screen.
-fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<crate::components::View>) -> AnyElement<'static> {
+fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<crate::components::View>, summary: Option<String>) -> AnyElement<'static> {
     match e {
         // Human turns: the same card shape as tools and peers, own colour and glyph.
         // A live-talk utterance shows its `[spoken, N s]` marker as a muted tag line.
@@ -1951,10 +1951,10 @@ fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<cr
             plain(&shown, TextWrap::Wrap, |c| c.color(SAND).italic())
         }
         Entry::Pending { name, progress, .. } => {
-            let row = match progress {
+            let row = summary.unwrap_or_else(|| match progress {
                 Some(p) => progress_line(name, p),
                 None => format!("preparing {name}…"),
-            };
+            });
             element! {
                 View(margin_top: 1) {
                     Text(content: format!("{spinner} {row}"), color: SAND, italic: true)
@@ -2024,12 +2024,11 @@ fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<cr
             args,
             result,
             expanded,
-            scrape,
             ..
         } => {
             let summary = match result {
                 None => (
-                    format!("{spinner} {}", scrape.as_deref().unwrap_or("running…")),
+                    format!("{spinner} {}", summary.as_deref().unwrap_or("running…")),
                     SAND,
                 ),
                 Some((output, is_error)) => {
@@ -2473,7 +2472,7 @@ mod tests {
             ] {
                 let frame = element! {
                     View(flex_direction: FlexDirection::Column, width, height: 20u16) {
-                        #(Some(entry(&e, "⠋", 0, width, Vec::new())))
+                        #(Some(entry(&e, "⠋", 0, width, Vec::new(), None)))
                     }
                 }
                 .to_string();
@@ -2530,7 +2529,7 @@ mod tests {
             ] {
                 let frame = element! {
                     View(flex_direction: FlexDirection::Column, width, height: 20u16) {
-                        #(Some(entry(&e, "⠋", 0, width, Vec::new())))
+                        #(Some(entry(&e, "⠋", 0, width, Vec::new(), None)))
                     }
                 }
                 .to_string();
@@ -2764,7 +2763,7 @@ mod tests {
         };
         let frame = element! {
             View(flex_direction: FlexDirection::Column, width: 60u16) {
-                #(entry(&e, "", 0, 60, Vec::new()))
+                #(entry(&e, "", 0, 60, Vec::new(), None))
             }
         }
         .to_string();
@@ -2788,7 +2787,7 @@ mod tests {
             };
             element! {
                 View(flex_direction: FlexDirection::Column, width: 60u16) {
-                    #(entry(&e, "", 0, 60, Vec::new()))
+                    #(entry(&e, "", 0, 60, Vec::new(), None))
                 }
             }
             .to_string()
@@ -2818,7 +2817,7 @@ mod tests {
             let e = Entry::Divider(label.into());
             let frame = element! {
                 View(flex_direction: FlexDirection::Column, width: 60u16) {
-                    #(entry(&e, "", 0, 60, Vec::new()))
+                    #(entry(&e, "", 0, 60, Vec::new(), None))
                 }
             }
             .to_string();

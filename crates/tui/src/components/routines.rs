@@ -3,17 +3,28 @@ use rpc::api::clients::RoutinesApiClient;
 use crate::model::elapsed;
 use super::*;
 
+/// Existing schedule text commands.
 #[derive(Default)]
 pub struct Routines;
+/// Typed schedule owner operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
+    /// List registered schedules.
     ListSchedules,
+    /// Run the named schedule now.
     FireSchedule(String),
+    /// Read the named schedule and its recent runs.
     ScheduleHistory(String),
+    /// Pause or resume the named loop.
     EnableSchedule(String, bool),
+    /// Test the named schedule.
     TestSchedule(String),
 }
-pub enum Msg { Loaded(Result<String, String>) }
+/// Formatted schedule request completion.
+pub enum Msg {
+    /// Existing display text or owner error.
+    Loaded(Result<String, String>),
+}
 impl Component for Routines {
     type Msg = Msg;
     fn declaration(&self) -> Declaration {

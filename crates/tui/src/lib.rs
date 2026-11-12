@@ -1546,7 +1546,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             ev.artifact.name,
             ev.artifact.path.display()
         ),
-        UiEvent::ScrapeProgress(_) => Ok(()),
         UiEvent::Artifacts { items, apps, .. } if items.is_empty() => {
             writeln!(out, "{}", if *apps { "no apps" } else { "no artifacts" })
         }
