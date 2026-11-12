@@ -6112,6 +6112,26 @@
     }
 
     #[test]
+    fn unclaimed_tool_toggle_keeps_generic_output_and_skips_unfinished_calls() {
+        let mut model = Model::new(String::new(), false);
+        model.entries = vec![
+            Entry::Tool {
+                call_id: "finished".into(), name: "shell".into(), args: Vec::new(),
+                result: Some(("first\nsecond".into(), false)), expanded: None,
+            },
+            Entry::Tool {
+                call_id: "running".into(), name: "shell".into(), args: Vec::new(),
+                result: None, expanded: None,
+            },
+        ];
+        model.toggle_card();
+        assert!(matches!(&model.entries[0], Entry::Tool { expanded: Some(body), .. } if body.raw() == "```\nfirst\nsecond\n```"));
+        assert!(matches!(&model.entries[1], Entry::Tool { result: None, expanded: None, .. }));
+        model.toggle_card();
+        assert!(matches!(&model.entries[0], Entry::Tool { expanded: None, .. }));
+    }
+
+    #[test]
     fn show_card_joins_its_artifact_and_expands_the_markdown() {
         let (tx, mut rx) = unbounded_channel();
         let s = SessionId::new();
