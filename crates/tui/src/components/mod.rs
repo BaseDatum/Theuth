@@ -339,6 +339,8 @@ pub enum Lifecycle<'a> {
     ComposerEdited(&'a str),
     /// Core composer accepted a submission.
     ComposerSubmitted(&'a str),
+    /// Core is holding a new image, at the existing attachment-notice boundary.
+    ImageAttached,
     /// Selected pending categories replace state, including empty arrays.
     Prompts(&'a serde_json::Value),
     /// Preserve the old cross-panel generic-error transitions.

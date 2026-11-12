@@ -79,6 +79,7 @@ impl Model {
     /// text-only shown model gets a notice so the user can `/model` before
     /// Enter (17 §4.4).
     pub fn attach(&mut self, img: Image) -> String {
+        self.component_notify(crate::components::Lifecycle::ImageAttached);
         let text_only = self
             .catalog
             .as_ref()
