@@ -5,8 +5,8 @@ use jsonrpsee::Extensions;
 use jsonrpsee::core::RpcResult;
 
 use rpc_core::peer;
-use crate::cells::cells_err;
-use ::cells;
+use crate::kernel_rpc::cells_err;
+use crate as cells;
 
 /// Invariant 1, a human press: an authenticated peer that is not a guest and not the internal
 /// peer — unless the request carries [`agent::rpc_forward::Forwarded`], in which case the engine

@@ -52,8 +52,6 @@ pub mod acp;
 #[allow(clippy::too_many_arguments)]
 pub mod api;
 pub mod bridge;
-mod cells; // 171:C (E1 owns the file)
-mod cells_latest; // 171:C (E2 owns the file)
 pub mod client;
 pub mod engine;
 use agent::rpc_forward as forward;

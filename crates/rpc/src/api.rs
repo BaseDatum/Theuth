@@ -225,7 +225,7 @@ pub mod speech;
 /// Meetings RPC server and client traits.
 pub mod meetings;
 /// Kernels RPC server and client traits.
-pub mod kernels;
+pub use ::cells::rpc as kernels;
 /// Dreams RPC server and client traits.
 pub mod dreams;
 /// Research RPC server and client traits.

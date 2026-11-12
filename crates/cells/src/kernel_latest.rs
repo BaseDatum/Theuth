@@ -10,7 +10,7 @@ use jsonrpsee::core::RpcResult;
 use rpc_core::Server;
 
 use rpc_core::{ask, peer};
-use crate::cells::Latest;
+use crate::kernel_rpc::Latest;
 
 /// `cell_latest`.
 pub(crate) async fn latest(
@@ -68,7 +68,7 @@ pub(crate) async fn latest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::new_server as make_test_server;
+    use crate::rpc_test_support::new_server as make_test_server;
     use rpc_core::{NOT_RUNNING, UNAUTHORIZED};
 
     #[tokio::test]

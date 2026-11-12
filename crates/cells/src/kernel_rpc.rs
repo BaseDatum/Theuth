@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use ::cells;
+use crate as cells;
 use cells::{
     CellLatest, CellRef, CellRun, CellsError, DocId, Interpreter, KernelId, OutputPage,
     RunAllRequest, RunGet, RunId, RunMode, RunRequest, Scope, SessionId, StateReply,
@@ -645,8 +645,8 @@ pub(crate) type Latest = Vec<CellLatest>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::KernelsApiServer;
-    use crate::new_server as make_test_server;
+    use crate::rpc::KernelsApiServer;
+    use crate::rpc_test_support::new_server as make_test_server;
 
     fn server() -> Server {
         let rt = runtime::Runtime::new(figment::Figment::new(), std::env::temp_dir());

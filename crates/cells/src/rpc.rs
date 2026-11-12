@@ -4,7 +4,8 @@ use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::server::PendingSubscriptionSink;
 use rpc_core::Server;
 use tools::PtyChunk;
-use crate::{cells as kernel_rpc, cells_latest as kernel_latest};
+use crate as cells;
+use crate::{kernel_rpc, kernel_latest};
 
 #[rpc(server, client)]
 pub trait KernelsApi {
