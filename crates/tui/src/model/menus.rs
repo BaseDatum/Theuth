@@ -16,13 +16,6 @@ pub enum Menu {
         /// Highlighted match.
         cursor: usize,
     },
-    /// `/aws` picker.
-    AwsProfiles {
-        /// The harness's profiles and selection; row 0 is the default chain.
-        info: AwsProfiles,
-        /// Highlighted row.
-        cursor: usize,
-    },
     /// `/sessions` picker.
     Sessions {
         /// Project headings, then roots with their children under them (51 §3).
@@ -135,7 +128,6 @@ impl Model {
         match &self.menu {
             None => MenuKey::Consumed,
             Some(Menu::Slash { .. }) => self.slash_key(code, input, tx),
-            Some(Menu::AwsProfiles { .. }) => self.aws_key(code, tx),
             Some(Menu::Sessions { .. }) => self.sessions_key(code, tx),
             Some(Menu::Agents { .. }) => self.agents_key(code, tx),
             Some(Menu::Acp { .. }) => self.acp_key(code, tx),

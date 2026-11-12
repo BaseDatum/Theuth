@@ -172,53 +172,6 @@ impl Model {
 }
 
 
-impl Model {
-
-
-    /// `/aws`: Enter selects the highlighted profile for the whole harness;
-    /// row 0 restores the AWS default credential chain.
-    pub(super) fn aws_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
-        let Some(Menu::AwsProfiles { info, cursor }) = &mut self.menu else {
-            return MenuKey::Consumed;
-        };
-        match code {
-            KeyCode::Up => *cursor = cursor.saturating_sub(1),
-            KeyCode::Down => *cursor = (*cursor + 1).min(info.profiles.len()),
-            KeyCode::Esc => self.menu = None,
-            KeyCode::Enter => {
-                let picked = cursor.checked_sub(1).map(|i| info.profiles.get(i).cloned());
-                self.menu = None;
-                match picked {
-                    None => send(tx, Command::SetAwsProfile(None)),
-                    Some(Some(p)) => send(tx, Command::SetAwsProfile(Some(p))),
-                    Some(None) => {}
-                }
-            }
-            _ => {}
-        }
-        MenuKey::Consumed
-    }
-
-    /// `/aws` picker rows: the default chain, then every SDK-discovered
-    /// profile; `●` marks the selection in force.
-    pub fn aws_rows(&self) -> Vec<String> {
-        let Some(Menu::AwsProfiles { info, .. }) = &self.menu else {
-            return Vec::new();
-        };
-        let mark = |on: bool| if on { "●" } else { " " };
-        std::iter::once(format!(
-            "{} default credential chain ({})",
-            mark(info.selected.is_none()),
-            info.default_profile
-        ))
-        .chain(
-            info.profiles
-                .iter()
-                .map(|p| format!("{} {p}", mark(info.selected.as_deref() == Some(p.as_str())))),
-        )
-        .collect()
-    }
-}
 
 
 /// The `/vision` reply: the model that inspects images for a text-only main
@@ -233,24 +186,3 @@ pub fn vision_model_line(m: Option<&ModelInfo>) -> String {
     }
 }
 
-/// The `/aws` reply: which AWS profile Bedrock calls use, harness-wide.
-pub fn aws_profile_line(p: &AwsProfiles) -> String {
-    let now = match &p.selected {
-        Some(s) if p.profiles.contains(s) => s.clone(),
-        Some(s) => {
-            format!("{s} (not found by the AWS SDK; `/aws clear` restores the default chain)")
-        }
-        None => format!(
-            "default credential chain ({}), unless a Bedrock API key is configured",
-            p.default_profile
-        ),
-    };
-    let found = if p.profiles.is_empty() {
-        "none found".to_owned()
-    } else {
-        p.profiles.join(", ")
-    };
-    format!(
-        "aws profile: {now} — applies to every session's Bedrock calls from the next request\n  profiles: {found}"
-    )
-}

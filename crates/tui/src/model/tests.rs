@@ -4616,8 +4616,10 @@
 
     #[test]
     fn aws_picks_sets_and_clears_the_harness_profile() {
+        use crate::components::aws::{Aws, Msg as AwsMsg, Request as AwsRequest};
+        use agent::AwsProfiles;
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         let info = |profiles: &[&str], selected: Option<&str>| AwsProfiles {
             profiles: profiles.iter().map(|p| (*p).to_owned()).collect(),
             selected: selected.map(str::to_owned),
@@ -4625,47 +4627,47 @@
         };
         // Bare `/aws` asks; two profiles open the picker: default chain first, then names.
         m.submit("/aws", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListAwsProfiles)));
-        m.apply(UiEvent::AwsProfiles {
+        assert!(matches!(component_request::<AwsRequest>(&mut rx), Ok(AwsRequest::ListAwsProfiles)));
+        m.component_message::<Aws>(AwsMsg::Profiles {
             info: info(&["dev", "prod"], Some("prod")),
             pick: true,
         });
-        assert!(matches!(m.menu, Some(Menu::AwsProfiles { .. })) && !m.input_focused());
-        let rows = m.aws_rows();
+        assert!(matches!(m.components.get::<Aws>().unwrap().picker, Some((_, _))) && !m.input_focused());
+        let rows = m.components.get::<Aws>().unwrap().rows();
         assert_eq!(rows.len(), 3);
         assert!(rows[0].starts_with("  default") && rows[2].starts_with("● prod"));
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
-        assert!(m.menu.is_none());
-        assert!(matches!(rx.try_recv(), Ok(Command::SetAwsProfile(Some(p))) if p == "dev"));
+        component_menu_key(&mut m, "aws", KeyCode::Down);
+        component_menu_key(&mut m, "aws", KeyCode::Enter);
+        assert!(m.components.get::<Aws>().unwrap().picker.is_none());
+        assert!(matches!(component_request::<AwsRequest>(&mut rx), Ok(AwsRequest::SetAwsProfile(Some(p))) if p == "dev"));
         // Row 0 clears; so does `/aws clear`; `/aws name` sets directly.
-        m.apply(UiEvent::AwsProfiles {
+        m.component_message::<Aws>(AwsMsg::Profiles {
             info: info(&["dev", "prod"], Some("dev")),
             pick: true,
         });
-        m.menu_key(KeyCode::Enter, "", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::SetAwsProfile(None))));
+        component_menu_key(&mut m, "aws", KeyCode::Enter);
+        assert!(matches!(component_request::<AwsRequest>(&mut rx), Ok(AwsRequest::SetAwsProfile(None))));
         m.submit("/aws clear", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::SetAwsProfile(None))));
+        assert!(matches!(component_request::<AwsRequest>(&mut rx), Ok(AwsRequest::SetAwsProfile(None))));
         m.submit("/aws prod", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::SetAwsProfile(Some(p))) if p == "prod"));
+        assert!(matches!(component_request::<AwsRequest>(&mut rx), Ok(AwsRequest::SetAwsProfile(Some(p))) if p == "prod"));
         // A set reply is status only; one profile and nothing selected needs no picker.
-        m.apply(UiEvent::AwsProfiles {
+        m.component_message::<Aws>(AwsMsg::Profiles {
             info: info(&["dev"], None),
             pick: false,
         });
-        assert!(m.menu.is_none());
-        m.apply(UiEvent::AwsProfiles {
+        assert!(m.components.get::<Aws>().unwrap().picker.is_none());
+        m.component_message::<Aws>(AwsMsg::Profiles {
             info: info(&["dev"], None),
             pick: true,
         });
-        assert!(m.menu.is_none());
+        assert!(m.components.get::<Aws>().unwrap().picker.is_none());
         // A stale explicit selection still opens the picker so row 0 can clear it.
-        m.apply(UiEvent::AwsProfiles {
+        m.component_message::<Aws>(AwsMsg::Profiles {
             info: info(&[], Some("gone")),
             pick: true,
         });
-        assert!(matches!(m.menu, Some(Menu::AwsProfiles { .. })));
+        assert!(matches!(m.components.get::<Aws>().unwrap().picker, Some((_, _))));
     }
 
     #[test]
