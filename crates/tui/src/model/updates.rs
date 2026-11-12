@@ -756,20 +756,6 @@ impl Model {
                     self.entries.push(Entry::Info(mesh_device_line(&d, now)));
                 }
             }
-            UiEvent::Sandboxes(list) => {
-                if list.is_empty() {
-                    self.entries.push(Entry::Info("sandboxes: none".into()));
-                }
-                for i in list {
-                    self.entries.push(Entry::Info(sandbox_line(&i)));
-                }
-            }
-            UiEvent::SandboxDesktop(name, d) => {
-                self.entries.push(Entry::Info(format!(
-                    "{name} desktop: {} (password in the vault as sandbox/{name}/vnc; `t sandbox desktop {name}` prints it)",
-                    d.http_url
-                )));
-            }
             UiEvent::MeshDevicePairing(p) => {
                 // The QR any engine may show; the hub accepts (69 decision 4). Shares the
                 // node-invite countdown slot: one ticking invite card at a time.

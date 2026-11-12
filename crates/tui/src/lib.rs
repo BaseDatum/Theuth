@@ -1009,10 +1009,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             UiEvent::Link(msg(api.link_status().await)?)
         }
         Command::MeshDevicesList => UiEvent::MeshDevices(msg(api.devices_list().await)?),
-        Command::SandboxList => UiEvent::Sandboxes(msg(api.sandboxes_list().await)?),
-        Command::SandboxDesktop(name) => {
-            UiEvent::SandboxDesktop(name.clone(), msg(api.sandbox_desktop_access(name).await)?)
-        }
         Command::MeshDevicesAdd(name) => {
             UiEvent::MeshDevicePairing(msg(api.device_pair_start(name).await)?)
         }
@@ -2020,11 +2016,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::NodeInvite(name, p) => {
             writeln!(out, "node invite · {name}\n{}\n{}", link::qr(&p.key), p.key)
         }
-        UiEvent::Sandboxes(list) if list.is_empty() => writeln!(out, "sandboxes: none"),
-        UiEvent::Sandboxes(list) => list
-            .iter()
-            .try_for_each(|i| writeln!(out, "{}", model::sandbox_line(i))),
-        UiEvent::SandboxDesktop(name, d) => writeln!(out, "{name} desktop: {}", d.http_url),
         UiEvent::MeshDevices(list) if list.is_empty() => writeln!(out, "mesh devices: none paired"),
         UiEvent::MeshDevices(list) => {
             let now = model::now_ms();
