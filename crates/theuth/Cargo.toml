@@ -78,5 +78,8 @@ mcp-server = { workspace = true }  # 158 §12: the HTTP MCP server's boot hook +
 schemars = { workspace = true }
 serde = { workspace = true }
 
+[features]
+ts = ["rpc-compose/ts"]
+
 [lints]
 workspace = true

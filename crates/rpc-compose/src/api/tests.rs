@@ -23,7 +23,7 @@ use document::rpc_support::join_outcome;
 use link::rpc_sharing::{link_ids, link_origin};
 use base64::Engine as _;
 
-/// Unit-test/export composition only; production assembly belongs to main.
+/// Unit-test composition only; export and production assembly belong to main.
 pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
     rpc_core::merge_described([
         rpc::rpc_module(server.clone()),

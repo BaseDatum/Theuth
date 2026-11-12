@@ -460,7 +460,7 @@ async fn add(ctx: Arc<Ctx>, m: Add) -> Result<Node, String> {
         Err(HandshakeError::Offline) => return Err(format!("{} is offline", parsed.name)),
         Err(HandshakeError::Other(e)) => return Err(format!("pairing failed: {e:#}")),
     };
-    // The node enrols us on the first decrypted record (31 §4.3): `info` is it.
+    // The first decrypted record enrols us (31 §4.3); discovery now precedes info.
     let rpc = Rpc::new(Channel::new(sock, transport));
     let info = rpc
         .info()
@@ -677,6 +677,10 @@ impl Message<LinkEvent> for NodesActor {
 impl runtime::Plugin for NodesPlugin {
     fn name(&self) -> &'static str {
         "nodes"
+    }
+
+    async fn declare_wire(&mut self, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {

@@ -8,6 +8,8 @@ mod mcp;
 mod secret_cli;
 mod service;
 mod worker;
+#[cfg(test)]
+mod wire_discovery_tests;
 
 use std::path::{Path, PathBuf};
 
@@ -1993,8 +1995,7 @@ fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server
     rpc_composition(server).0
 }
 
-/// Assemble dispatch and discovery from the production owner list, without
-/// starting plugins. Step 9c supplies the declaration pass before this snapshot.
+/// Assemble dispatch and inert discovery from the production owner list.
 fn rpc_composition(server: rpc_core::Server) -> (jsonrpsee::RpcModule<rpc_core::Server>, rpc_core::Discovery) {
     use wire::RuntimeWire as _;
     let rt = server.rt.clone();
@@ -2035,9 +2036,45 @@ fn rpc_composition(server: rpc_core::Server) -> (jsonrpsee::RpcModule<rpc_core::
     let discovery = rpc_core::Discovery {
         descriptors: composition.descriptors,
         events: rt.wire_schema(),
-        plugins: engine_plugins(true, true).iter().map(|plugin| plugin.name().to_owned()).collect(),
+        plugins: rt.extension(DeclaredPlugins::default).0.get().cloned().unwrap_or_default(),
     };
     (composition.module, discovery)
+}
+
+#[derive(Clone, Default)]
+struct DeclaredPlugins(std::sync::Arc<std::sync::OnceLock<Vec<String>>>);
+
+/// The same selected plugins declare before any start hook can open a service.
+async fn declare_plugins(rt: &Runtime, plugins: &mut [Box<dyn Plugin>]) -> anyhow::Result<jsonrpsee::RpcModule<rpc_core::Server>> {
+    use wire::RuntimeWire as _;
+    let names = plugins.iter().map(|plugin| plugin.name().to_owned()).collect();
+    anyhow::ensure!(rt.extension(DeclaredPlugins::default).0.set(names).is_ok(), "plugin declarations are frozen");
+    for plugin in plugins {
+        let name = plugin.name();
+        plugin.declare_wire(rt).await
+            .map_err(|e| anyhow::anyhow!("plugin {name} failed to declare: {e:#}"))?;
+    }
+    rt.freeze_wire().await?;
+    let (module, discovery) = rpc_composition(rpc_core::Server::new(rt.clone()));
+    rpc_core::freeze_discovery(rt, &discovery, env!("CARGO_PKG_VERSION"))?;
+    Ok(module)
+}
+
+/// Export uses precisely the production plugin/owner lists, without start hooks.
+#[cfg(test)]
+async fn export_wire_contract(out: &Path) -> anyhow::Result<()> {
+    let rt = Runtime::new(Figment::new(), std::env::temp_dir());
+    let module = declare_plugins(&rt, &mut engine_plugins(true, true)).await?;
+    let mut names: Vec<_> = module.method_names().collect();
+    names.sort_unstable();
+    std::fs::create_dir_all(out)?;
+    let cached = rpc_core::discovery_document(&rt, rpc_core::DiscoveryView::Mesh)?;
+    let document: serde_json::Value = serde_json::from_str(cached.document.0.get())?;
+    std::fs::write(out.join("openrpc.json"), serde_json::to_string_pretty(&document)? + "\n")?;
+    std::fs::write(out.join("methods.json"), serde_json::to_string_pretty(&names)?)?;
+    std::fs::write(out.join("surface-catalog.json"), serde_json::to_string_pretty(&surface::catalog_schema())?)?;
+    std::fs::write(out.join("surface-catalog-compact.txt"), surface::catalog_compact())?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2045,9 +2082,19 @@ mod wire_contract_tests {
     use super::*;
     use std::collections::BTreeSet;
 
+    /// Generation entry point used by `just ts` and `just wire-schema`.
+    #[tokio::test]
+    async fn export_bindings() {
+        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bindings");
+        export_wire_contract(&out).await.unwrap();
+        #[cfg(feature = "ts")]
+        rpc_compose::export::typescript(out.to_str().unwrap());
+    }
+
     #[tokio::test]
     async fn real_composition_descriptors_match_served_methods() {
         let rt = Runtime::new(Figment::new(), std::env::temp_dir());
+        declare_plugins(&rt, &mut engine_plugins(true, true)).await.unwrap();
         let (module, discovery) = rpc_composition(rpc_core::Server::new(rt));
         discovery.descriptors.validate_methods(module.method_names()).unwrap();
         // 194's source-scan uniqueness check belongs at the real composition:
@@ -2080,6 +2127,9 @@ mod wire_contract_tests {
             .map(|method| method["name"].as_str().unwrap()).collect();
         let served: BTreeSet<_> = module.method_names().collect();
         assert_eq!(described, served);
+        assert!(described.contains("new_session"));
+        assert!(document["x-theuth"]["events"].as_array().unwrap().iter()
+            .any(|event| event["topic"] == "agent.events"));
     }
 }
 
@@ -2148,7 +2198,8 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
 /// must hear from before a private root may open — every lifecycle
 /// participant whose plugin runs here (each plugin honours its own
 /// `<section>.enabled`, default on). Jobs is registry-internal.
-async fn start_plugins(rt: &Runtime, plugins: Vec<Box<dyn Plugin>>) -> anyhow::Result<()> {
+async fn start_plugins(rt: &Runtime, mut plugins: Vec<Box<dyn Plugin>>) -> anyhow::Result<()> {
+    declare_plugins(rt, &mut plugins).await?;
     let owners: Vec<&'static str> = [
         "artifact", "app", "browser", "computer", "voice", "talk", "routes",
     ]

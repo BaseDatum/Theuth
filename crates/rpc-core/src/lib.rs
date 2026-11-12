@@ -3,6 +3,10 @@
 mod client;
 pub mod compatibility;
 mod discovery;
+mod catalog;
+pub use catalog::{Capabilities, DeclaredPlugin, ProtocolVersion, DiscoveryView, DiscoveryDocument, OpenRpcDocument, GUEST_METHODS, canonical_document, document_hash, freeze_discovery, discovery_document, discovery_view};
+mod discovery_client;
+pub use discovery_client::{DiscoveryCache, NegotiatedDiscovery};
 pub use discovery::{Audience, DescribedModule, Descriptors, Discovery, MethodDescriptor, ParamDescriptor, SchemaFn, SubscriptionDescriptor, merge_described, schema_for};
 pub use rpc_core_macros::rpc_descriptors;
 mod follow;
