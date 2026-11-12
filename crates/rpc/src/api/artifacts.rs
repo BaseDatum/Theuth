@@ -1,4 +1,17 @@
-use super::*;
+use std::path::{Path, PathBuf};
+use agent::context::save_blob;
+use app::{AppDoc, AppToolResult, CallArgs, CallStatusOf, CallTool, CloseApp, PublishFromUi};
+use artifact::search::ArtifactMatchContext;
+use jsonrpsee::Extensions;
+use jsonrpsee::core::{RpcResult, async_trait};
+use jsonrpsee::proc_macros::rpc;
+use jsonrpsee::types::ErrorObjectOwned;
+use runtime::SessionId;
+use agent::rpc_forward as forward;
+use rpc_core::{send, failed, peer, owner, ASK_FAILED, Server};
+use super::{apps, artifact, decode_attachment};
+use agent::rpc_support::RpcServerExt;
+use base64::Engine as _;
 
 #[rpc(server, client)]
 pub trait ArtifactsApi {

@@ -1,4 +1,11 @@
-use super::*;
+use jsonrpsee::Extensions;
+use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
+use jsonrpsee::proc_macros::rpc;
+use jsonrpsee::server::{PendingSubscriptionSink, SubscriptionMessage};
+use jsonrpsee::types::ErrorObjectOwned;
+use rpc_core::{failed, peer, owner, UNAUTHORIZED, Server};
+use super::{doc_forward, doc_send, documents, join_outcome, member_outcome, principal};
+use base64::Engine as _;
 
 #[rpc(server, client)]
 pub trait DocumentsApi {

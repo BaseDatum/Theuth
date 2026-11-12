@@ -48,7 +48,8 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tools::{ApprovalRequested, Decision, Risk};
 
 use crate::api::clients::*;
-use crate::client::{Engine, Local};
+use crate::client::{Engine, Local, mirror};
+use crate::methods;
 
 /// Registry name of the process-wide [`Relay`].
 pub const ACP_RELAY_ACTOR: &str = "acp.relay";
@@ -80,7 +81,7 @@ impl runtime::Plugin for AcpPlugin {
         if let Some(ws) = self.remote {
             let (rt, shutdown) = (rt.clone(), rt.shutdown.clone());
             tokio::spawn(async move {
-                if let Err(e) = crate::client::mirror(&rt, &ws).await {
+                if let Err(e) = mirror(&rt, &ws).await {
                     tracing::warn!(error = %e, "acp: engine event stream");
                 }
                 tracing::info!("acp: engine gone; exiting");
@@ -183,7 +184,7 @@ pub async fn serve_mesh(rt: Runtime, module: rpc_core::ModuleFactory) {
     tokio::spawn(agent::rpc_forward::serve(
         rt.clone(),
         transport.clone(),
-        crate::methods(rt.clone(), module).await,
+        methods(rt.clone(), module).await,
     ));
     let relay = relay(&rt, None, module).await;
     let api = relay

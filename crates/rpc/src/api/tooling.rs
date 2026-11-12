@@ -1,4 +1,13 @@
-use super::*;
+use agent::{Agents, ShowPrompt, rpc_forward as forward};
+use jsonrpsee::Extensions;
+use jsonrpsee::core::{RpcResult, async_trait};
+use jsonrpsee::proc_macros::rpc;
+use jsonrpsee::types::ErrorObjectOwned;
+use runtime::SessionId;
+use tools::{ApprovalsState, ListTools, SetApprovals, SetHidden, ToolRegistry, ToolSpec};
+use uuid::Uuid;
+use rpc_core::{ask, Server};
+use agent::rpc_support::RpcServerExt;
 
 /// 193 §7: the registry tools `session_call_tool` runs for an ACP child's MCP shim; the shim
 /// lists exactly these (with the registry's own specs from `list_tools`).

@@ -3,101 +3,45 @@
 
 use std::collections::HashSet;
 use std::fmt::Display;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-
-use ::search::SearchCategory;
-use a2a::{A2A_ACTOR, A2aActor, A2aStatus};
-use agent::SetModelFavorite;
-use agent::context::save_blob;
-use agent::supervisor::{ChildResumed, HarnessOptions, ResumeChild, SetHarnessOption};
-use agent::{
-    AddAcp, AddProvider, AgentInfo, Agents, AnswerPeerRequest,
-    ArchiveSession,
-    CommunicationState, CompactStyle,
-    DeleteSession,
-    EscalateModel, GetCommunication, GetCompactStyle,
-    GetEscalateModel, GetPeerMessage, GetSubagentModel, GetTitleModel, GetVisionModel,
-    Harvest, ListAcp, ListAgents, ListLogins, ListModels, ListPeerMessages,
-    ListPeers, ListProviders, ListRegistry, ListSessions, LoadSession,
-    Loaded, Login, LoginInfo, Logout, ModelInfo, PeerMessagePage,
-    PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo,
-    RefreshProviderModels, RefreshedModels, RemoveAcp, RemoveProvider,
-    RenameSession,
-    SessionSummary, SetCommunication, SetCompactStyle, SetEffort, SetEscalateModel, SetMaxSalvages,
-    SetMaxToolRounds, SetModel, SetPeerScope, SetStreamIdle, SetSubagentModel, SetSubagentTimeout,
-    SetTitleModel, SetVisionModel, ShowPrompt,
-};
-use agent::{
-    AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, SetAdvisor, SetAdvisorDefaults, SyncBacklog,
-};
-use agent::{
-    CloseResult, CreateSession, CreateSessionOptions, LeaveSession,
-    ListProjectStyles, PrivateTrees, ProjectStyle, ResumePrivate,
-    SessionCost, SessionCostQuery, SessionOpen, SetProjectStyle, SetSessionProject, SpendReport,
-    SpendReportQuery,
-};
-use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
-use agent::EndlessConfig;
-use agent::{GetPolishModel, SetPolishModel};
-use app::{
-    AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi,
-};
-use artifact::search::ArtifactMatchContext;
-use base64::Engine as _;
+use a2a::{A2A_ACTOR, A2aActor};
+use agent::{Agents, CommunicationState, CompactStyle, AdvisorDefaults, rpc_forward as forward};
+#[cfg(test)]
+use agent::SpendReport;
+use app::Apps;
 use jsonrpsee::Extensions;
-use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
-use jsonrpsee::proc_macros::rpc;
-use jsonrpsee::server::{PendingSubscriptionSink, SubscriptionMessage};
+use jsonrpsee::core::RpcResult;
 use jsonrpsee::types::ErrorObjectOwned;
 use kameo::actor::ActorRef;
 use kameo::error::SendError;
 use kameo::message::Message;
 use kameo::reply::Reply;
-use knowledge::search::HistoricalConcept;
-use knowledge::{
-    Change, Concept, Delete, Get, HarvestResult, History, HistoryOf, Hit, KNOWLEDGE_ACTOR,
-    KnowledgeActor, List, Meta, Put, PutConcept, Restore, Revision, RevisionOf, Search, Source,
-    SyncNow, Write,
-};
-use link::{LinkConfig, LinkStatus};
-
+use knowledge::{KNOWLEDGE_ACTOR, KnowledgeActor};
+use link::LinkStatus;
 use runtime::{Runtime, SessionId};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use sessionsync::types::{SessionOrphan, SessionOwner, SessionsStatus};
-use signal::{Allow, Link, RemoveAllowed, SIGNAL_ACTOR, Signal, SignalStatus, Status, Unlink};
-use slack::{SLACK_ACTOR, Slack, SlackStatus};
-use telegram::{PairingLink, TelegramStatus};
+#[cfg(test)]
 use tokio::sync::broadcast;
-use tokio::time::Instant;
-use tools::{
-    Answer, Approval, ApprovalId, ApprovalRequested, ApprovalsState, AskId,
-    AskRequested, Decision, GetApprovals, GetPtyIdle, JOBS_ACTOR,
-    Jobs, ListTools, Resolve, SetApprovals, SetHidden, SetPtyIdle, ToolRegistry, ToolSpec,
-};
-use tools::{
-    ListTerminals, Retention, TerminalSummary,
-};
+use tools::{Approval, ApprovalRequested, ApprovalsState, AskRequested};
+#[cfg(test)]
+use tools::{Answer, ApprovalId, AskId, Decision};
 use uuid::Uuid;
-
+use rpc_core::{ask, send, lookup, failed, peer, NOT_RUNNING};
+#[cfg(test)]
+use rpc_core::{ASK_FAILED, UNAUTHORIZED};
+use link::rpc_support::{link, mint_as_holder};
+use mesh::rpc_support::mesh_actor;
+use wire::EventPolicy;
+#[cfg(test)]
+use wire::WireFrame;
+use base64::Engine as _;
+#[cfg(test)]
+use wire::WireEvent as _;
 #[cfg(test)]
 use agent::rpc_support::session_draining;
 #[cfg(test)]
 use rpc_core::{FocusMap, BACKLOG};
-use agent::rpc_forward as forward;
-use crate::pathac::PathCompletion;
-use crate::search::SearchResponse;
-use rpc_core::{is_delta, Stream, Backlog, Next, ask, send, lookup, failed, peer, owner, ASK_FAILED, NOT_RUNNING, UNAUTHORIZED};
-use agent::rpc_support::{owner_root, RpcServerExt};
-use link::rpc_support::{link, mint_as_holder};
-use mesh::rpc_support::mesh_actor;
-use roster::rpc_support::{roster_actor, attention_actor, mask_alerts};
-use schedule::rpc_support::schedule;
-use secrets::rpc_support::secrets;
-use wire::{RuntimeWire as _, WireEvent as _, WireFrame, EventPolicy};
-
 /// 191: `a2a_forward` from a machine `mesh.messaging_off` lists: the words the contact hears
 /// (through the receiving machine), naming no machine.
 const A2A_FORWARD_MESSAGING_OFF: &str = "export unavailable: messages are off between our machines";
@@ -423,7 +367,9 @@ pub struct ConfigFlag {
     pub restart_required: bool,
 }
 
-use rpc_core::{Server, PrivateMap};
+use rpc_core::PrivateMap;
+#[cfg(test)]
+use rpc_core::Server;
 
 
 

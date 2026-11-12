@@ -1,4 +1,13 @@
-use super::*;
+use agent::{SetModelFavorite, AddAcp, AddProvider, Agents, CompactStyle, EscalateModel, GetCompactStyle, GetEscalateModel, GetSubagentModel, GetTitleModel, GetVisionModel, ListAcp, ListLogins, ListModels, ListProviders, ListRegistry, Login, LoginInfo, Logout, ModelInfo, ProviderInfo, RefreshProviderModels, RefreshedModels, RemoveAcp, RemoveProvider, SetCompactStyle, SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetVisionModel, AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, SetAdvisor, SetAdvisorDefaults, SyncBacklog, AwsProfiles, ListAwsProfiles, SetAwsProfile, EndlessConfig, GetPolishModel, SetPolishModel, rpc_forward as forward};
+use agent::supervisor::{ChildResumed, HarnessOptions, ResumeChild, SetHarnessOption};
+use jsonrpsee::Extensions;
+use jsonrpsee::core::{RpcResult, async_trait};
+use jsonrpsee::proc_macros::rpc;
+use runtime::SessionId;
+use tools::{SetPtyIdle, ToolRegistry};
+use rpc_core::{ask, send, failed, Server};
+use super::{ConfigFlag, ConfigFlagKey, update_actor};
+use agent::rpc_support::RpcServerExt;
 
 #[rpc(server, client)]
 pub trait SettingsApi {

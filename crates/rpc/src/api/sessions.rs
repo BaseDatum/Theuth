@@ -1,4 +1,16 @@
-use super::*;
+use agent::{AgentInfo, Agents, DeleteSession, ListAgents, ListSessions, LoadSession, Loaded, PinSession, RenameSession, SessionSummary, CloseResult, LeaveSession, ListProjectStyles, ProjectStyle, ResumePrivate, SessionCost, SessionCostQuery, SessionOpen, SetProjectStyle, SetSessionProject, SpendReport, SpendReportQuery, rpc_forward as forward};
+use jsonrpsee::Extensions;
+use jsonrpsee::core::{RpcResult, async_trait};
+use jsonrpsee::proc_macros::rpc;
+use jsonrpsee::types::ErrorObjectOwned;
+use runtime::SessionId;
+use sessionsync::types::{SessionOwner, SessionsStatus};
+use tokio::time::Instant;
+use tools::Retention;
+use rpc_core::{ask, failed, peer, Server};
+use agent::rpc_support::owner_root;
+use super::{cost_service};
+use agent::rpc_support::RpcServerExt;
 
 #[rpc(server, client)]
 pub trait SessionsApi {
@@ -350,12 +362,15 @@ impl SessionsApiServer for Server {
     }
 }
 
-pub(super) trait SessionStateExt {
+pub(super) trait RpcSessionTrackExt {
     fn track(&self, open: &SessionOpen, peer: u64);
-    fn wait_for_row<'a>(&'a self, session: SessionId, engine: &'a str)-> impl std::future::Future<Output = ()> + Send + 'a;
 }
 
-impl SessionStateExt for Server {
+pub(super) trait RpcSessionWaitExt {
+    fn wait_for_row<'a>(&'a self, session: SessionId, engine: &'a str)-> impl Future<Output = ()> + Send + 'a;
+}
+
+impl RpcSessionTrackExt for Server {
     /// Record a freshly opened private tree as `peer`'s: every known member
     /// of its root moves to `peer` (a resume rebinds the whole tree), and
     /// the opened session and root join.
@@ -373,6 +388,9 @@ impl SessionStateExt for Server {
         map.insert(open.session, (open.root, peer));
     }
 
+}
+
+impl RpcSessionWaitExt for Server {
     /// 183 §5.6: wait, at most [`CREATED_ROW_WAIT`], for a session `engine`
     /// just created to replicate here (§13 row 11: on timeout the caller
     /// answers anyway; calls for it are forwarded by id meanwhile). A row

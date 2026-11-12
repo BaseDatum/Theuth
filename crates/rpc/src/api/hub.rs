@@ -1,6 +1,39 @@
-use super::*;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use ::search::SearchCategory;
+use agent::{Agents, ArchiveSession, ListAgents, CreateSession, CreateSessionOptions, PrivateTrees, SessionOpen, GetPolishModel, rpc_forward as forward};
+use app::{AppDoc, GetApp};
+use jsonrpsee::Extensions;
+use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
+use jsonrpsee::proc_macros::rpc;
+use jsonrpsee::server::{PendingSubscriptionSink, SubscriptionMessage};
+use jsonrpsee::types::ErrorObjectOwned;
+use knowledge::Get;
+use link::{LinkConfig, LinkStatus};
+use runtime::SessionId;
+use serde::Serialize;
+use sessionsync::types::{SessionOrphan, SessionOwner};
+use tokio::sync::broadcast;
+use tokio::time::Instant;
+use tools::{Answer, Approval, ApprovalId, ApprovalsState, AskId, Decision, GetApprovals, GetPtyIdle, JOBS_ACTOR, Jobs, Resolve, ToolRegistry, ListTerminals, Retention, TerminalSummary};
+use crate::pathac::PathCompletion;
+use crate::search::SearchResponse;
+use rpc_core::{is_delta, Stream, Backlog, Next, ask, send, failed, peer, owner, ASK_FAILED, UNAUTHORIZED, Server, PrivateMap};
+use link::rpc_support::link;
+use mesh::rpc_support::mesh_actor;
+use roster::rpc_support::{roster_actor, attention_actor, mask_alerts};
+use schedule::rpc_support::schedule;
+use secrets::rpc_support::secrets;
+use wire::{WireFrame, EventPolicy};
+use super::{A2A_FORWARD_MESSAGING_OFF, Info, LINK_OFF, StreamControl, a2a, admitted, apps, artifact, doc_forward, doc_link_create_in_mesh, doc_send, documents, knowledge, link_ids, link_origin, machine_name, member_outcome, named, nb_result, principal, route_question, to_doc_server, wanted};
+use agent::rpc_support::RpcServerExt;
+use base64::Engine as _;
+use wire::{RuntimeWire as _, WireEvent as _};
+use super::sessions::SessionsApiServer;
+use crate::{diag, pathac, search, topics};
 use sessionsync::rpc_support::RpcSessionMoveExt;
-use super::sessions::SessionStateExt;
+use super::sessions::{RpcSessionTrackExt, RpcSessionWaitExt};
 use talk::rpc_support::dictation;
 use roster::rpc_support::tasks_actor;
 
@@ -419,7 +452,7 @@ impl CoreApiServer for Server {
             .or_else(|| std::env::current_dir().ok())
             .or_else(std::env::home_dir)
             .unwrap_or_default();
-        Ok(crate::pathac::complete(&cwd, &input, cursor).await)
+        Ok(pathac::complete(&cwd, &input, cursor).await)
     }
 
     async fn session_move(
@@ -533,7 +566,7 @@ impl CoreApiServer for Server {
         limit: Option<u32>,
     ) -> RpcResult<SearchResponse> {
         tracing::debug!(%query, ?categories, ?limit, "rpc search");
-        crate::search::run(&self.rt, query, categories, limit)
+        search::run(&self.rt, query, categories, limit)
             .await
             .map_err(|e| {
                 ErrorObjectOwned::owned(jsonrpsee::types::error::INVALID_PARAMS_CODE, e, None::<()>)
@@ -541,7 +574,7 @@ impl CoreApiServer for Server {
     }
 
     async fn search_refresh(&self, categories: Option<Vec<SearchCategory>>) -> RpcResult<()> {
-        crate::search::refresh(categories)
+        search::refresh(categories)
             .await
             .map_err(|e| ErrorObjectOwned::owned(ASK_FAILED, e, None::<()>))
     }
@@ -1166,7 +1199,7 @@ impl CoreApiServer for Server {
         message: String,
     ) -> RpcResult<()> {
         let conn = ext.get::<rpc_core::ConnId>().map_or(0, |c| c.0);
-        crate::diag::client_log(&peer(ext)?, conn, &level, &source, &message);
+        diag::client_log(&peer(ext)?, conn, &level, &source, &message);
         Ok(())
     }
 }
@@ -1242,7 +1275,7 @@ async fn subscribe(
             return Ok(());
         }
         // 126 §4.4: the chips and countdowns of pending cards follow the snapshot.
-        crate::topics::republish().await;
+        topics::republish().await;
         // 129 §3.1: the ring is read by one task and the sink written by
         // another, joined by `Stream`: a client that stops reading never makes
         // `rx.recv()` fall behind; what waits merges (deltas) or queues
@@ -1312,14 +1345,14 @@ async fn subscribe(
                     Next::Lagged(n) => {
                         // Dropped events may include a `*Resolved`: the snapshot after
                         // `Lagged` puts the client's pending set right again.
-                        let lagged = crate::topics::lagged(n);
+                        let lagged = topics::lagged(n);
                         if let Ok(message) = mode.control(&lagged)
                             && sink.send(message).await.is_err()
                         {
                             return;
                         }
                         // Do not hold the tree lock across snapshot actor requests.
-                        let snapshot = crate::topics::pending(|v| {
+                        let snapshot = topics::pending(|v| {
                             let policy = EventPolicy::legacy_fields(v);
                             let pass = wanted(&policy, session.as_deref(), state.lock().tree.as_mut());
                             pass && admitted(&policy, peer, &private)
@@ -1412,7 +1445,7 @@ impl EventSink {
         session: Option<&str>,
         mut tree: Option<&mut HashSet<String>>,
     ) -> serde_json::Value {
-        crate::topics::pending(|v| {
+        topics::pending(|v| {
             let policy = EventPolicy::legacy_fields(v);
             wanted(&policy, session, tree.as_deref_mut()) && admitted(&policy, peer, private)
         }, |topic| self.topic(topic)).await

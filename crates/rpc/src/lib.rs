@@ -189,7 +189,7 @@ pub async fn serve(rt: &Runtime, cfg: RpcConfig, module: ModuleFactory) -> anyho
 /// [`rpc_core::RpcPeer::closed`] therefore cannot hold its own peer open. On
 /// server stop jsonrpsee drains in-flight calls first, so the peer is
 /// closed at stop, before that drain.
-async fn accept(
+pub async fn accept(
     listener: TcpListener,
     methods: Methods,
     token: Arc<str>,

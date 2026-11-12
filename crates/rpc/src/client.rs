@@ -20,6 +20,8 @@ use std::sync::Arc;
 
 use rpc_core::ModuleFactory;
 use crate::engine::Running;
+use crate::api::PendingPrompts;
+use crate::new_server;
 
 /// The in-process client: the owner console's peer on every call.
 pub struct Local(Methods);
@@ -27,7 +29,7 @@ pub struct Local(Methods);
 impl Local {
     /// The full API over `rt`'s actors, every call as the owner console.
     pub fn new(rt: Runtime, module: ModuleFactory) -> Self {
-        let mut methods: Methods = module(crate::new_server(rt)).into();
+        let mut methods: Methods = module(new_server(rt)).into();
         methods.extensions_mut().insert(rpc_core::RpcPeer::internal());
         Self(methods)
     }
@@ -230,7 +232,7 @@ pub async fn mirror(rt: &Runtime, client: &WsClient) -> anyhow::Result<()> {
 /// one, so in-process consumers (the TUI) see the pending cards as
 /// `*Requested` events.
 async fn publish(rt: &Runtime, v: &serde_json::Value) {
-    if let Ok(p) = <crate::api::PendingPrompts as serde::Deserialize>::deserialize(v) {
+    if let Ok(p) = <PendingPrompts as serde::Deserialize>::deserialize(v) {
         for a in p.approvals {
             rt.publish(a).await;
         }
