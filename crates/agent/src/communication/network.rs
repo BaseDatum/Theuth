@@ -3163,11 +3163,27 @@ impl Agents {
         // P3: naming its owner when that is another machine, which the receiving machine
         // forwards to) and TASK_NOT_FOUND to a read, as an unknown task is; a read never opens
         // or adopts an inbox. P3 (D4): the resolve is [`Agents::inbox_of`] (the marker, then
-        // the local row, then the marker's session, then the home).
+        // the local row, then the marker's session, then the home). P3 integration: an inbox
+        // that moved away (its local row strictly another machine's) keeps its tasks here, and
+        // their ids carry this engine's prefix, so the forwarder routes their reads here: a
+        // read resolves to that session to read this machine's own rows (the receipt a drain
+        // completed, a hold it failed) and writes nothing. An unknown owner is still refused.
         let read_refused = || A2AError::task_not_found("task");
         let inbox = match self.inbox_of(&m, scope).await {
             Ok(Inbox::Here(id)) => Inbox::Here(id),
-            Ok(_) | Err(_) if !m.send => return Err(read_refused()),
+            Ok(_) | Err(_) if !m.send => {
+                let me = self.store.engine();
+                return match self.store.inbox_rows(scope.principal, scope.export).await {
+                    Ok(rows) => match rows.into_iter().next() {
+                        Some((s, owner, _)) if !owner.is_empty() && owner != me => Ok(s),
+                        _ => Err(read_refused()),
+                    },
+                    Err(e) => {
+                        tracing::warn!(export = %m.origin.export, "a2a: inbox read: {e:#}");
+                        Err(read_refused())
+                    }
+                };
+            }
             Ok(other) => other,
             Err(e) => return Err(e),
         };
@@ -3804,8 +3820,10 @@ impl Agents {
     /// 191 (D3): `session` was drained for a release (another machine takes it). Its held
     /// first messages fail [`HOLD_MOVED`]: never started and never carried anywhere (the Allow
     /// they wait for was never given; the contact's resend reaches the new owner, which holds
-    /// it afresh). Its full contact messages, already in the queue that moves, complete as
-    /// receipts.
+    /// it afresh). P3 integration: its full contact messages still in `full_inbound` were never
+    /// consumed (consumption removes them), and their exchange rows and steers are this
+    /// machine's alone, so nothing carries them to the taker: they fail [`HOLD_MOVED`] too,
+    /// never a receipt for a message no turn will read.
     pub(crate) async fn network_session_drained(&mut self, session: SessionId) {
         let mut gone = Vec::new();
         for tasks in self.network.held.values_mut() {
@@ -3832,7 +3850,14 @@ impl Agents {
         for (exchange, r) in inbound {
             match r.load(&self.store).await {
                 Ok(t) if t.session == session => {
-                    self.full_consumed(exchange).await;
+                    self.network.full_inbound.remove(&exchange);
+                    if t.status.is_terminal() {
+                        continue;
+                    }
+                    tracing::info!(task = %t.id, %session, "191: drained: a waiting full message fails");
+                    if let Err(e) = self.fail_task(&t, HOLD_MOVED).await {
+                        tracing::warn!(task = %t.id, "a2a: fail full task: {e:#}");
+                    }
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!(%exchange, "a2a: drained: full task: {}", e.message),
@@ -5793,9 +5818,10 @@ mod tests {
 
     /// 191 (D3, D4): the owner mirrors a hold as a `contact_holds` row (its machine cleaned
     /// and cut); a drain for a release fails the hold "the chat moved; send again", never
-    /// starting it, deletes the row, and completes the chat's full contact task as a receipt.
+    /// starting it, deletes the row, and fails the chat's waiting full contact task the same
+    /// way (P3 integration: never consumed, nothing carries it), its exchange failed with it.
     #[tokio::test]
-    async fn a_drain_fails_a_hold_and_completes_full_tasks() {
+    async fn a_drain_fails_a_hold_and_a_waiting_full_task() {
         let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
         a.communication.0.write().set_network(true, true);
         let binding = a
@@ -5873,9 +5899,20 @@ mod tests {
             a.store.contact_holds().await.unwrap().is_empty(),
             "its row went"
         );
-        let done = a.store.a2a_task(s, &full.id).await.unwrap().unwrap();
-        assert_eq!(done.status, A2aTaskStatus::Completed);
-        assert!(full::task_is_receipt(&snapshot(&done)), "a receipt");
+        let gone = a.store.a2a_task(s, &full.id).await.unwrap().unwrap();
+        assert_eq!(gone.status, A2aTaskStatus::Failed, "never a receipt");
+        assert_eq!(gone.error.as_deref(), Some(HOLD_MOVED));
+        let receipt = a
+            .store
+            .exchange_receipt(full.dedup_exchange.unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            receipt.state,
+            PeerMessageState::Failed,
+            "not left to a turn"
+        );
         assert!(a.network.full_inbound.is_empty());
     }
 
@@ -7746,10 +7783,12 @@ mod full_inbox_tests {
     }
 
     /// 191 (S4, P2 review SHOULD 1): at a machine whose inbox's session is no longer its own
-    /// (moved), the router's resolve answers a read (`GetTask`, `CancelTask`: `send` unset)
-    /// TASK_NOT_FOUND and a send `not owner`, before any side effect: no inbox opened, the row
-    /// not marked (its stored ceiling kept though the live one is higher), no limits installed
-    /// (no cap lifted). A read from a contact with no inbox here opens none.
+    /// (moved), the router's resolve answers a send `not owner` and a read (`GetTask`,
+    /// `CancelTask`: `send` unset) with that session, to read this machine's own task rows
+    /// (P3 integration: the receipts its drain completed), before any side effect: no inbox
+    /// opened, the row not marked (its stored ceiling kept though the live one is higher), no
+    /// limits installed (no cap lifted). An unknown owner refuses a read TASK_NOT_FOUND; a read
+    /// from a contact with no inbox here opens none.
     #[tokio::test]
     async fn a_non_owner_inbox_resolve_changes_nothing() {
         use a2a_types::error_code::TASK_NOT_FOUND;
@@ -7780,13 +7819,13 @@ mod full_inbox_tests {
             export: "research",
         };
         let sessions = a.store.list_sessions().await.unwrap().len();
-        for (what, send, code) in [
-            ("GetTask", false, TASK_NOT_FOUND),
-            ("CancelTask", false, TASK_NOT_FOUND),
-            ("SendMessage", true, NOT_OWNER_CODE),
+        for (what, send, want) in [
+            ("GetTask", false, Ok(inbox)),
+            ("CancelTask", false, Ok(inbox)),
+            ("SendMessage", true, Err(NOT_OWNER_CODE)),
         ] {
             let r = a.handle_inbox(ask(binding.id, send)).await;
-            assert_eq!(r.err().map(|e| e.code), Some(code), "{what}");
+            assert_eq!(r.map_err(|e| e.code), want, "{what}");
             assert_eq!(a.store.a2a_context_count_for_test(scope).await, 1, "{what}");
             assert_eq!(a.store.list_sessions().await.unwrap().len(), sessions);
             assert_eq!(
@@ -7803,6 +7842,14 @@ mod full_inbox_tests {
                 "{what}: no limits installed"
             );
         }
+        a.store.owned_elsewhere(inbox, "").await;
+        let r = a.handle_inbox(ask(binding.id, false)).await;
+        assert_eq!(
+            r.err().map(|e| e.code),
+            Some(TASK_NOT_FOUND),
+            "unknown owner"
+        );
+        a.store.owned_elsewhere(inbox, "other-engine").await;
         // A read from a contact with no inbox here: none opened.
         let carol = a
             .store

@@ -242,8 +242,8 @@ impl Message<SessionDrained> for Agents {
 
 impl Agents {
     /// [`SessionDrained`] without its timer: the live entry and the queue go. 191 (D3):
-    /// only a `release` drain moves the session: its first-contact holds fail ("the chat
-    /// moved; send again"), never released, and its full contact tasks complete as receipts.
+    /// only a `release` drain moves the session: its first-contact holds and its waiting full
+    /// contact messages fail ("the chat moved; send again"), never released or carried.
     /// A desk pause drains too, and keeps its holds.
     pub(crate) async fn session_drained(&mut self, session: SessionId, release: bool) {
         if release {
