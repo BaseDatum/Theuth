@@ -354,6 +354,7 @@ pub use sessions::{Private, session_rows, TurnAction, ESC_TAPS_WINDOW, engine_ch
 use sessions::{project_heading, project_order};
 pub use lifecycle::removal_line;
 pub use slash::{COMMANDS, slash_matches, SlashRow};
+pub(crate) use slash::command_rank;
 pub use speech::{voice_cmd, voice_line};
 pub(crate) use status::{now_ms, when, ago, on_off};
 pub use status::{Level, k};

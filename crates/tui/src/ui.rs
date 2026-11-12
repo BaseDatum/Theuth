@@ -359,7 +359,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 m.quit = true;
                 return;
             }
-            if m.component_key(FocusClass::Spoken, &key) { return; }
+            if m.component_key_with_editor(FocusClass::Spoken, &key, &input.read(), handle.read().cursor_offset()) { return; }
             // Talk (76 §0.12, §5.2): the pane owns the keys — Esc cancels the
             // agent's turn while it thinks or speaks, else leaves the pane (the
             // talk runs on); Ctrl+T stops it; the rest is swallowed; an

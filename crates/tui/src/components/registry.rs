@@ -44,6 +44,7 @@ pub struct Registry {
     slots: Vec<Slot>,
     by_topic: HashMap<&'static str, Vec<ComponentToken>>,
     by_slash: HashMap<&'static str, ComponentToken>,
+    commands: Vec<SlashSpec>,
     by_wrapper: HashMap<&'static str, ComponentToken>,
     focus: Option<(ComponentToken, FocusClass)>,
     epoch: u64,
@@ -69,7 +70,7 @@ impl Registry {
     pub fn interactive(&self) -> bool { self.interactive }
     /// Empty shell for fixed composition and isolated contract consumers.
     pub fn empty() -> Self {
-        Self { slots: Vec::new(), by_topic: HashMap::new(), by_slash: HashMap::new(), by_wrapper: HashMap::new(), focus: None, epoch: 0, interactive: true }
+        Self { slots: Vec::new(), by_topic: HashMap::new(), by_slash: HashMap::new(), commands: crate::model::COMMANDS.to_vec(), by_wrapper: HashMap::new(), focus: None, epoch: 0, interactive: true }
     }
     /// Reject duplicate ids, reserved slash/aliases and equal-class key chords.
     pub fn register<C: Component>(&mut self, component: C) -> Result<ComponentToken, &'static str> {
@@ -106,6 +107,8 @@ impl Registry {
             if !recipients.contains(&token) { recipients.push(token); }
         }
         for slash in declaration.slash { self.by_slash.insert(slash.0, token); }
+        self.commands.extend(declaration.slash.iter().copied().filter(|spec| component.slash_visible(spec.0)));
+        self.commands.sort_unstable_by_key(|spec| (crate::model::command_rank(spec.0), spec.0));
         for &tag in tags { self.by_wrapper.insert(tag, token); }
         self.slots.push(Slot { generation: 0, component: Some(Box::new(Mounted(component))) });
         Ok(token)
@@ -118,6 +121,7 @@ impl Registry {
         slot.generation = slot.generation.wrapping_add(1);
         self.by_topic.retain(|_, tokens| { tokens.retain(|to| *to != token); !tokens.is_empty() });
         self.by_slash.retain(|_, to| *to != token);
+        self.commands.retain(|spec| crate::model::COMMANDS.iter().any(|core| core.0 == spec.0) || self.by_slash.contains_key(spec.0));
         self.by_wrapper.retain(|_, owner| *owner != token);
         if self.focus.is_some_and(|(owner, _)| owner == token) { self.focus = None; }
     }
@@ -182,11 +186,12 @@ impl Registry {
     /// Drop stale/removed/wrong-owner replies before the typed adapter sees them.
     pub fn reply(&mut self, reply: LocalReply, core: &CoreView<'_>) -> Outbox {
         let mut out = Outbox::default();
+        let owner_core = CoreView { commands: &self.commands, ..*core };
         if reply.engine_epoch == self.epoch
             && let Some(slot) = self.slots.get_mut(reply.to.slot)
             && slot.generation == reply.to.generation
             && let Some(component) = &mut slot.component
-        { component.reply(reply, core, &mut out); }
+        { component.reply(reply, &owner_core, &mut out); }
         self.finish(&mut out, core);
         out
     }
@@ -246,6 +251,7 @@ impl Registry {
     /// Dispatch at one fixed precedence boundary, stopping after consumption.
     pub fn key(&mut self, class: FocusClass, key: &KeyEvent, core: &CoreView<'_>) -> Outbox {
         let mut out = Outbox::default();
+        let owner_core = CoreView { commands: &self.commands, ..*core };
         // Intrinsic capture precedes exclusive focus and declared chords.
         let blocked = self.focus.is_some_and(|(_, focused_class)| {
             class != focused_class
@@ -266,7 +272,7 @@ impl Registry {
                             binding.class == class && binding.code == key.code && binding.modifiers == key.modifiers
                         ),
                     };
-                    if selected { component.input(Input::Key(key), core, token, self.epoch, &mut out); }
+                    if selected { component.input(Input::Key(key), &owner_core, token, self.epoch, &mut out); }
                     if out.consumed { break 'delivery; }
                 }
             }
@@ -298,7 +304,8 @@ impl Registry {
         let &token = self.by_slash.get(name)?;
         let component = self.slots[token.slot].component.as_mut()?;
         let mut out = Outbox::default();
-        component.input(Input::Slash { name, args }, core, token, self.epoch, &mut out);
+        let owner_core = CoreView { commands: &self.commands, ..*core };
+        component.input(Input::Slash { name, args }, &owner_core, token, self.epoch, &mut out);
         self.finish(&mut out, core);
         Some(out)
     }

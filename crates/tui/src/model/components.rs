@@ -28,6 +28,13 @@ macro_rules! core_view {
             viewport: $model.viewport,
             terminal_height: $model.terminal_height,
             modal_open: $model.modal_menu() || $model.components.captures(FocusClass::Secret),
+            editor: None,
+            commands: &[],
+            input_focused: $model.input_focused(),
+            menu_open: $model.menu.is_some() || $model.components.modal(),
+            secret_editor: $model.components.editor().is_some_and(|(class, _)| class == FocusClass::Secret),
+            approval: $model.approval().is_some(),
+            awaiting_session: $model.awaiting_session,
         }
     };
 }
@@ -203,8 +210,15 @@ impl Model {
         self.component_finish(out, emit);
     }
     pub(crate) fn component_key(&mut self, class: FocusClass, key: &iocraft::KeyEvent) -> bool {
+        self.component_key_snapshot(class, key, None)
+    }
+    pub(crate) fn component_key_with_editor(&mut self, class: FocusClass, key: &iocraft::KeyEvent, text: &str, caret: usize) -> bool {
+        self.component_key_snapshot(class, key, Some((text, caret)))
+    }
+    fn component_key_snapshot(&mut self, class: FocusClass, key: &iocraft::KeyEvent, editor: Option<(&str, usize)>) -> bool {
         self.component_reconcile_core_focus();
         let core = core_view!(self, None);
+        let core = CoreView { editor, ..core };
         let out = self.components.key(class, key, &core);
         let consumed = out.consumed();
         self.component_finish(out, &mut |_| {});

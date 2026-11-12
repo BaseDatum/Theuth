@@ -218,6 +218,20 @@ pub struct CoreView<'a> {
     // Step-11 group t3 CoreView fields: add below, in this block only.
     /// Measured transcript row budget at the current key dispatch boundary.
     pub viewport: usize,
+    /// Borrowed composer bytes and byte caret, present at editor-aware input dispatch.
+    pub editor: Option<(&'a str, usize)>,
+    /// Core and registered command declarations in their existing speech order.
+    pub commands: &'a [SlashSpec],
+    /// Whether the core editor currently accepts ordinary text.
+    pub input_focused: bool,
+    /// Any core popup or component modal is open.
+    pub menu_open: bool,
+    /// A masked composer-backed editor has priority over idle shortcuts.
+    pub secret_editor: bool,
+    /// A tool approval is currently shown.
+    pub approval: bool,
+    /// Core session creation or a first send is awaiting adoption.
+    pub awaiting_session: bool,
 }
 /// Read-only identity metadata shared by core session membership.
 pub struct SessionMember<'a> {
