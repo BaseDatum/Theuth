@@ -404,7 +404,7 @@ impl Component for Knowledge {
                 cx.plain(Plain::Line(format!("{}  {}  {}  parent {}\n{}", revision.change.commit, revision.change.time, revision.change.message, revision.parent.as_deref().unwrap_or("none"), revision_rows(&revision).join("\n"))));
                 if card {
                     let title = format!("knowledge {}  {}{}", revision.change.commit, revision.change.message, id.map_or(String::new(), |id| format!("  ({id})")));
-                    cx.core(CoreAction::AppendCard(TranscriptCard { group: "knowledge", key: uuid::Uuid::new_v4(), glyph: "◇", color: crate::ui::OCHRE, title, body: markdown::Text::complete(&format!("```diff\n{}\n```", revision_rows(&revision).join("\n"))), expanded: false, plain: false }));
+                    cx.core(CoreAction::AppendCard(TranscriptCard { entry_key: None, group: "knowledge", key: uuid::Uuid::new_v4(), glyph: "◇", color: crate::ui::OCHRE, title, body: markdown::Text::complete(&format!("```diff\n{}\n```", revision_rows(&revision).join("\n"))), expanded: false, plain: false }));
                 } else if let Some(Menu::KnowledgeHistory { id: open, pending, revision: shown, .. }) = &mut self.menu
                     && *open == id && pending.as_deref() == Some(revision.change.commit.as_str()) {
                     *pending = None; *shown = Some((revision, 0, 0));

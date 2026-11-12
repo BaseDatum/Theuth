@@ -20,6 +20,7 @@ impl Model {
     /// Expand or collapse the most recent card or finished tool call (Ctrl+O).
     pub fn toggle_card(&mut self) {
         let Some(index) = self.entries.iter().rposition(|e| {
+            if let Some(toggleable) = e.key().and_then(|key| self.components.entry_toggleable(key)) { return toggleable; }
             matches!(
                 e,
                 Entry::Card { .. }
@@ -74,6 +75,8 @@ pub enum Entry {
     /// Collapsible card: a peer message, a skill body, or the system prompt.
     /// One line until toggled with Ctrl+O.
     Card {
+        /// Optional TUI-local entry-decoration identity; never serialized.
+        entry_key: Option<String>,
         /// Glyph and colour family.
         kind: CardKind,
         /// Peer name, skill name, or `prompt`.
@@ -237,12 +240,10 @@ pub(super) fn split_engine_restart(output: &str) -> Option<(Entry, &str)> {
 
 /// A collapsed [`Entry::Card`] over `text`.
 pub(super) fn card(kind: CardKind, title: String, text: &str) -> Entry {
-    Entry::Card {
-        kind,
-        title,
-        text: Box::new(markdown::Text::complete(text)),
-        expanded: false,
-    }
+    Entry::Card { entry_key: None, kind,
+    title,
+    text: Box::new(markdown::Text::complete(text)),
+    expanded: false, }
 }
 
 /// Rows a string of `chars` occupies at `width` columns (at least one).
@@ -261,9 +262,13 @@ fn text_rows(text: &str, width: usize) -> usize {
 }
 
 impl Entry {
-    /// Stable raw-call identity for neutral owner decorations.
+    /// Stable TUI card or raw-call identity for neutral owner decorations.
     pub(crate) fn key(&self) -> Option<&str> {
-        match self { Self::Pending { call_id, .. } | Self::Tool { call_id, .. } => Some(call_id), _ => None }
+        match self {
+            Self::Pending { call_id, .. } | Self::Tool { call_id, .. } => Some(call_id),
+            Self::Card { entry_key, .. } => entry_key.as_deref(),
+            _ => None,
+        }
     }
     /// Rows this entry draws at `width` columns (borders, headers and
     /// wrapping included; an estimate — the terminal's wrap is the truth).
@@ -284,6 +289,7 @@ impl Entry {
                 title: _,
                 text,
                 expanded,
+                ..
             } => {
                 4 + match (*expanded, kind.plain()) {
                     (false, _) => 0,

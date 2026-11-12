@@ -638,6 +638,8 @@ pub struct TranscriptCard {
     pub group: &'static str,
     /// Stable identity within the current transcript, never a Vec index.
     pub key: uuid::Uuid,
+    /// Optional TUI-only identity for entry presentation, layout and actions.
+    pub entry_key: Option<String>,
     /// Header marker.
     pub glyph: &'static str,
     /// Header color.
@@ -654,6 +656,7 @@ pub struct TranscriptCard {
 impl From<TranscriptCard> for crate::model::Entry {
     fn from(card: TranscriptCard) -> Self {
         Self::Card {
+            entry_key: card.entry_key,
             kind: crate::model::CardKind::Component { group: card.group, key: card.key,
                 glyph: card.glyph, color: card.color, plain: card.plain },
             title: card.title, text: Box::new(card.body), expanded: card.expanded,
@@ -969,6 +972,8 @@ pub trait Component: Send + Sync + 'static {
     fn session_hidden(&self, _session: SessionId) -> bool { false }
     /// Suppress the echoed input of an already presented turn.
     fn turn_hidden(&self, _seq: i64) -> bool { false }
+    /// Override disclosure eligibility for an owned entry; None keeps core policy.
+    fn entry_toggleable(&self, _key: &str) -> Option<bool> { None }
 }
 
 trait ErasedComponent: Send + Sync {
@@ -990,6 +995,7 @@ trait ErasedComponent: Send + Sync {
     fn slash_visible(&self, name: &str) -> bool;
     fn session_hidden(&self, session: SessionId) -> bool;
     fn turn_hidden(&self, seq: i64) -> bool;
+    fn entry_toggleable(&self, key: &str) -> Option<bool>;
     fn as_any(&self) -> &dyn Any;
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -1026,6 +1032,7 @@ impl<C: Component> ErasedComponent for Mounted<C> {
     fn slash_visible(&self, name: &str) -> bool { self.0.slash_visible(name) }
     fn session_hidden(&self, session: SessionId) -> bool { self.0.session_hidden(session) }
     fn turn_hidden(&self, seq: i64) -> bool { self.0.turn_hidden(seq) }
+    fn entry_toggleable(&self, key: &str) -> Option<bool> { self.0.entry_toggleable(key) }
     fn as_any(&self) -> &dyn Any { &self.0 }
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn Any { &mut self.0 }

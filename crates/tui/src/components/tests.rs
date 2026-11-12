@@ -318,10 +318,8 @@ fn replacement_group_freezes_older_cards_without_crossing_groups() {
         to: token, engine_epoch: 0, body: Box::new(action),
     }));
     for (group, key, title) in [("shared", old, "old"), ("shared", new, "new"), ("separate", separate, "separate")] {
-        apply(CoreAction::AppendCard(TranscriptCard {
-            group, key, title: title.into(), body: markdown::Text::complete(title), expanded: true, plain: false,
-            glyph: "⌁", color: iocraft::Color::Cyan,
-        }));
+        apply(CoreAction::AppendCard(TranscriptCard { entry_key: None, group, key, title: title.into(), body: markdown::Text::complete(title), expanded: true, plain: false,
+        glyph: "⌁", color: iocraft::Color::Cyan, }));
     }
     apply(CoreAction::ReplaceCard { group: "shared", key: old, body: "stale tick".into() });
     apply(CoreAction::ReplaceCard { group: "shared", key: new, body: "current tick".into() });
