@@ -2,16 +2,26 @@
 use rpc::api::clients::ResearchApiClient;
 use super::*;
 
+/// Direct study controls and goal handoff.
 #[derive(Default)]
 pub struct Autoresearch;
+/// Parsed owner operation or existing skill fallback.
 #[derive(Clone)]
 pub enum Request {
+    /// List studies or inspect one slug.
     Status(Option<String>),
+    /// Apply an explicit control to a slug.
     Control(String, ::autoresearch::ControlOp),
+    /// Deliver steering text to a slug.
     Steer(String, String),
+    /// Hand unrecognized arguments to the autoresearch skill.
     Goal(String),
 }
-pub enum Msg { Loaded(Result<String, String>) }
+/// Study request completion.
+pub enum Msg {
+    /// Existing owner display text or failure.
+    Loaded(Result<String, String>),
+}
 fn request(args: &str) -> Request {
     match args.split_once(' ').map_or((args, ""), |(a, b)| (a, b.trim())) {
         ("", _) | ("list", "") | ("status", "") => Request::Status(None),
