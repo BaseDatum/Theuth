@@ -137,9 +137,9 @@ impl Respond for Fake {
     }
 }
 
-struct Harness {
-    bodies: Arc<Mutex<Vec<Value>>>,
-    client: Client,
+pub(crate) struct Harness {
+    pub(crate) bodies: Arc<Mutex<Vec<Value>>>,
+    pub(crate) client: Client,
     catalog: models::Catalog,
     dir: crate::TestDir,
     _server: MockServer,
@@ -156,7 +156,7 @@ impl Harness {
     }
 
     /// A harness whose fake replies with text after the thinking (91).
-    async fn texting() -> Self {
+    pub(crate) async fn texting() -> Self {
         Self::build(0, true, false).await
     }
 
@@ -520,6 +520,96 @@ async fn endless_compactor_turns_thinking_off_per_model() {
     for b in [haiku, fable] {
         assert_eq!(b["max_tokens"], MAX_TOKENS, "{b}");
     }
+}
+
+/// One compactor request of `lines` lines on `id` with the user's `pick`,
+/// built as the pump builds it (thinking off, then
+/// [`ModelCompactor::with_pick`]), as Anthropic receives it.
+async fn compactor_body(h: &Harness, id: &str, pick: Option<ReasoningEffort>, lines: u32) -> Value {
+    use crate::endless::compactor::{ModelCompactor, prompt, thinking_off};
+    let model = h.resolve(id);
+    let c = ModelCompactor {
+        session: SessionId(uuid::Uuid::from_u128(0x194)),
+        backend: crate::backend::Backend::for_model(
+            &model,
+            &h.client,
+            &crate::supervisor::Auth::stub(&h.dir.0),
+        ),
+        effort: thinking_off(&model),
+        chosen: false,
+        model: model.clone(),
+        system: prompt("theuth"),
+        local: None,
+        quiet: false,
+        cfg: Default::default(),
+    }
+    .with_pick(pick);
+    let step = [ChatMessage::user(
+        "Compress this message into one line, in at most 512 bytes:\nhello",
+    )];
+    let (req, opts) = c.request_lines(Transport::Anthropic, "<chat>\n</chat>", &step, lines);
+    let mut stream = h
+        .client
+        .exec_chat_stream(model.genai.as_str(), req, Some(&opts))
+        .await
+        .unwrap()
+        .stream;
+    while let Some(ev) = stream.next().await {
+        ev.unwrap();
+    }
+    h.bodies.lock().pop().unwrap()
+}
+
+/// 194 R1: an explicit Off is today's thinking off, byte for byte — Haiku
+/// 5.5 `disabled`, Fable adaptive at `low` (it rejects `disabled` and
+/// answers empty when nothing is sent) — and a picked `low` rides as
+/// picked, its thinking budget beside the 600-token reply.
+#[tokio::test]
+async fn compactor_off_is_thinking_off_and_a_pick_rides_on_the_wire() {
+    use crate::endless::compactor::MAX_TOKENS;
+    let h = Harness::texting().await;
+    let mut defaults = Vec::new();
+    for id in ["anthropic/claude-haiku-5-5", "anthropic/claude-fable-5-1"] {
+        let default = compactor_body(&h, id, None, 1).await;
+        let off = compactor_body(&h, id, Some(ReasoningEffort::Zero), 1).await;
+        assert_eq!(off, default, "{id}");
+        assert_eq!(default["max_tokens"], MAX_TOKENS, "{default}");
+        let low = compactor_body(&h, id, Some(ReasoningEffort::Low), 1).await;
+        assert_eq!(low["thinking"], json!({"type": "adaptive"}), "{low}");
+        assert_eq!(low["output_config"]["effort"], "low", "{low}");
+        assert_eq!(low["max_tokens"], MAX_TOKENS + 1_024, "{low}");
+        defaults.push(default);
+    }
+    let [haiku, fable] = &defaults[..] else {
+        unreachable!()
+    };
+    assert_eq!(haiku["thinking"], json!({"type": "disabled"}), "{haiku}");
+    assert_eq!(fable["thinking"], json!({"type": "adaptive"}), "{fable}");
+    assert_eq!(fable["output_config"]["effort"], "low", "{fable}");
+}
+
+/// 194 R1: a thinking budget rides beside the reply, not inside it — a
+/// batch at High on a budget-thinking model, and a numeric budget past any
+/// limit (clamped, no overflow), keep `max_tokens` above `budget_tokens` and
+/// within the model's output limit.
+#[tokio::test]
+async fn compactor_thinking_budgets_fit_the_request() {
+    use crate::endless::compactor::MAX_TOKENS;
+    let h = Harness::texting().await;
+    let id = "anthropic/claude-sonnet-4-5";
+    let out = u64::from(h.resolve(id).model.unwrap().limit.output);
+    for pick in [ReasoningEffort::High, ReasoningEffort::Budget(u32::MAX)] {
+        for lines in [1, 2, 40] {
+            let b = compactor_body(&h, id, Some(pick.clone()), lines).await;
+            assert_eq!(b["thinking"]["type"], "enabled", "{b}");
+            let budget = b["thinking"]["budget_tokens"].as_u64().unwrap();
+            let max = b["max_tokens"].as_u64().unwrap();
+            assert!(budget < max && max <= out, "{pick:?} × {lines}: {b}");
+        }
+    }
+    let b = compactor_body(&h, id, Some(ReasoningEffort::High), 2).await;
+    assert_eq!(b["thinking"]["budget_tokens"], 24_000, "{b}");
+    assert_eq!(b["max_tokens"], 2 * MAX_TOKENS + 24_000, "{b}");
 }
 
 #[tokio::test]

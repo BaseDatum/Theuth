@@ -293,7 +293,7 @@ test('the summary model picker shows the model in force and which link chose it'
   expect(local).toMatch(/LFM3<\/span><span[^>]*>local<\/span>/)
 })
 
-test('194: the summary picker carries the effort chips of the model in force, at the effort in force; none for a model without efforts', () => {
+test("194: the summary chips belong to the chat's own pick, at its own stored effort; none on \"Use default\" or for a model without efforts", () => {
   const paint = (m: SessionMemory, efforts: string[]) => {
     const qc = new QueryClient()
     qc.setQueryData(queryKeys.models, [{ id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5', provider: 'anthropic', context: 200_000, efforts }])
@@ -301,11 +301,15 @@ test('194: the summary picker carries the effort chips of the model in force, at
     renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(SummaryModel, { session: 's1', m }) as ReactNode }))
     return pickers.find((p) => p['aria-label'] === 'Summary model')
   }
-  const chips = paint({ ...memory, effort: 'high' }, ['low', 'high'])?.effort
+  const own: SessionMemory = { ...memory, model_override: 'anthropic/claude-haiku-4-5', effort_override: 'high', effort: 'high' }
+  const chips = paint(own, ['low', 'high'])?.effort
   expect(chips?.levels).toEqual(['low', 'high'])
   expect(chips?.current).toBe('high')
-  expect(paint({ ...memory, effort: null }, ['low', 'high'])?.effort?.current).toBeNull()
-  expect(paint(memory, [])?.effort).toBeUndefined()
+  // The effort in force is another link's: this chat's own is the Default chip.
+  expect(paint({ ...own, effort_override: null, effort: 'low' }, ['low', 'high'])?.effort?.current).toBeNull()
+  // "Use default": the inherited model's chips are not this chat's to set.
+  expect(paint({ ...memory, model_override: null, effort: 'high' }, ['low', 'high'])?.effort).toBeUndefined()
+  expect(paint(own, [])?.effort).toBeUndefined()
 })
 
 test('both placeholder kinds are muted italic notes; a mechanical line carries the excerpt tag, a model line none', () => {

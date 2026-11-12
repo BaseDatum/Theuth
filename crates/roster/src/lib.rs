@@ -348,8 +348,8 @@ async fn resolve_configured(
 /// 194 D4b–d: `memory_effort` follows `memory_model` — cleared with it,
 /// dropped when a changed `memory_model` does not take it, refused with
 /// `agent::ValidateEffort`'s words otherwise (a new file, the same model).
-/// Unchecked while the agent actor is down (its compactor drops an effort
-/// the model does not take at use).
+/// R1: with the agent actor unreachable the word alone is checked
+/// (`agent::effort_of`), never stored unchecked.
 async fn settle_memory_effort(f: &mut AgentFile, old: Option<&AgentFile>) -> Result<(), String> {
     f.memory_effort = f
         .memory_effort
@@ -362,23 +362,35 @@ async fn settle_memory_effort(f: &mut AgentFile, old: Option<&AgentFile>) -> Res
     let Some(effort) = f.memory_effort.clone() else {
         return Ok(());
     };
-    let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
-        return Ok(());
+    let word = |e: &str| {
+        agent::effort_of(e)
+            .map(|_| ())
+            .ok_or_else(|| format!("unknown effort {e}"))
     };
-    let check = agent::ValidateEffort {
-        model: f.memory_model.clone(),
-        effort,
-    };
-    match agents.ask(check).await {
-        Err(kameo::error::SendError::HandlerError(why)) => {
-            if old.is_some_and(|o| o.memory_model != f.memory_model) {
-                f.memory_effort = None;
-                Ok(())
-            } else {
-                Err(format!("memory_effort: {why}"))
+    let checked = match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
+        Ok(Some(agents)) => {
+            let check = agent::ValidateEffort {
+                model: f.memory_model.clone(),
+                effort: effort.clone(),
+            };
+            match agents.ask(check).await {
+                Ok(()) => Ok(()),
+                Err(kameo::error::SendError::HandlerError(why)) => Err(why),
+                Err(e) => {
+                    tracing::warn!("roster: effort check unavailable ({e}): the word alone");
+                    word(&effort)
+                }
             }
         }
-        _ => Ok(()),
+        _ => word(&effort),
+    };
+    match checked {
+        Err(_) if old.is_some_and(|o| o.memory_model != f.memory_model) => {
+            f.memory_effort = None;
+            Ok(())
+        }
+        Err(why) => Err(format!("memory_effort: {why}")),
+        Ok(()) => Ok(()),
     }
 }
 
@@ -3232,6 +3244,8 @@ impl Message<ProposeAgent> for Roster {
         }
         f.paused = true;
         f.proposed_by = Some(m.proposed_by.clone());
+        // 194 R1: the same `memory_effort` rules as `PutAgent` (a new file).
+        settle_memory_effort(&mut f, None).await?;
         file::parse(f.name.as_str(), &file::render(&f))?;
         self.write_file(&f).await?;
         // 67 §6.5: the hire task, owned by the proposer's manager, is the
@@ -5608,6 +5622,75 @@ mod tests {
                 .unwrap();
             assert!(kept, "the claim is not released for a second delivery");
             assert!(judged, "the wake was judged handled");
+            actor.kill();
+            agents.kill();
+            unregister(&[agent::AGENT_ACTOR]);
+            let _ = std::fs::remove_dir_all(&data);
+        });
+    }
+
+    /// 194 R1: `ProposeAgent` (the `agent_propose` tool's handler) runs
+    /// `PutAgent`'s `memory_effort` rules: a level the memory model does not
+    /// take and an unknown word are refused, an effort without a
+    /// `memory_model` is cleared; with no agent actor the word alone is checked.
+    #[test]
+    fn propose_checks_the_memory_effort() {
+        with_engine_lock(async {
+            let data = tmp("propose-effort");
+            std::fs::write(
+                data.join("models.json"),
+                r#"{"testvis":{"id":"testvis","name":"Test Vision","models":{
+                    "eyes":{"id":"eyes","name":"eyes","reasoning":true,
+                    "reasoning_options":[{"type":"effort","values":["low","high"]}],
+                    "limit":{"context":100000,"output":4096}}}}}"#,
+            )
+            .unwrap();
+            let propose = |name: &str, front: &str| ProposeAgent {
+                file: file::parse(name, &format!("---\n{front}---\nBody.\n")).unwrap(),
+                proposed_by: "user".into(),
+            };
+            let refused = |r: Result<String, kameo::error::SendError<ProposeAgent, String>>| match r
+            {
+                Err(kameo::error::SendError::HandlerError(e)) => e,
+                other => panic!("{other:?}"),
+            };
+            let eyes = "memory_model: testvis/eyes\n";
+
+            let actor = Roster::spawn(roster(&data).await);
+            let e = refused(
+                actor
+                    .ask(propose("alpha", &format!("{eyes}memory_effort: warp\n")))
+                    .await,
+            );
+            assert_eq!(e, "memory_effort: unknown effort warp");
+            actor.kill();
+
+            let rt = Runtime::new(figment::Figment::new(), data.clone());
+            let agents = agent::spawn_test_agents(rt.clone(), |_: &str| true)
+                .await
+                .unwrap();
+            let actor = Roster::spawn(roster_on(rt.clone(), &data).await);
+            for (name, effort) in [("bravo", "max"), ("charlie", "warp")] {
+                let e = refused(
+                    actor
+                        .ask(propose(name, &format!("{eyes}memory_effort: {effort}\n")))
+                        .await,
+                );
+                assert!(e.starts_with("memory_effort: "), "{e}");
+                assert!(!data.join(file::DIR).join(format!("{name}.md")).exists());
+            }
+            actor
+                .ask(propose("delta", "memory_effort: high\n"))
+                .await
+                .unwrap();
+            let delta = actor.ask(GetAgent("delta".into())).await.unwrap();
+            assert_eq!(delta.memory_effort, None, "no memory_model, no effort");
+            actor
+                .ask(propose("echo", &format!("{eyes}memory_effort: low\n")))
+                .await
+                .unwrap();
+            let echo = actor.ask(GetAgent("echo".into())).await.unwrap();
+            assert_eq!(echo.memory_effort.as_deref(), Some("low"));
             actor.kill();
             agents.kill();
             unregister(&[agent::AGENT_ACTOR]);

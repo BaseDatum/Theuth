@@ -2226,7 +2226,11 @@ async fn compactor_efforts_follow_the_chain_live() {
         .set_agent_model(id, Some("ollama/think-194".into()), Some("low".into()))
         .await
         .unwrap();
-    assert_eq!(m.effort.as_deref(), Some("low"));
+    assert_eq!(
+        (m.effort.as_deref(), m.effort_override),
+        (Some("low"), None),
+        "the agent's effort is not this chat's own"
+    );
     assert!(
         key().starts_with("ollama/think-194|Some(Low)|"),
         "{}",
@@ -2241,7 +2245,10 @@ async fn compactor_efforts_follow_the_chain_live() {
 
     // This chat's own effort (row 12) wins over the settings link's.
     let m = endless.set_effort(id, Some("low".into())).await.unwrap();
-    assert_eq!(m.effort.as_deref(), Some("low"));
+    assert_eq!(
+        (m.effort.as_deref(), m.effort_override.as_deref()),
+        (Some("low"), Some("low"))
+    );
     assert!(
         key().starts_with("ollama/think-194|Some(Low)|"),
         "{}",
@@ -2256,6 +2263,77 @@ async fn compactor_efforts_follow_the_chain_live() {
     });
     assert_eq!(effort().await, None);
     assert!(!key().contains("|Some(High)|"), "{}", key());
+}
+
+/// 194 R1: Default ↔ a picked `low` switch the compactor in force on a model
+/// whose thinking-off default is its listed `low` (same effort, another
+/// request) — on the wire: `disabled` at Default, adaptive `low` once picked,
+/// `disabled` again once cleared.
+#[tokio::test]
+async fn default_and_a_picked_low_switch_the_compactor_request() {
+    let h = crate::loop_::thinking_tests::Harness::texting().await;
+    let scratch = crate::TestDir::new("endless-pick-low");
+    let dir = scratch.0.clone();
+    let catalog = serde_json::json!({ "anthropic": { "id": "anthropic", "name": "Anthropic", "models": {
+        "claude-haiku-5-5": {
+            "id": "claude-haiku-5-5", "name": "Haiku 5.5", "reasoning": true,
+            "limit": { "context": 200_000, "output": 64_000 },
+            "reasoning_options": [{ "type": "effort", "values": ["low", "medium", "high"] }]
+        }
+    }}});
+    std::fs::write(dir.join("models.json"), catalog.to_string()).unwrap();
+    let store = Store::open(&dir.join("sessions.sqlite"), None)
+        .await
+        .unwrap();
+    let catalog = Arc::new(models::Catalog::load(&dir));
+    let model = catalog
+        .resolve("anthropic/claude-haiku-5-5", &|_| true)
+        .unwrap();
+    let endless = Endless::new(
+        store.clone(),
+        Runtime::new(figment::Figment::new(), dir.clone()),
+        h.client.clone(),
+        crate::supervisor::Auth::stub(&dir),
+        catalog,
+        EndlessConfig::default(),
+        None,
+    );
+    let id = SessionId::new();
+    store
+        .create_session(id, "anthropic/claude-haiku-5-5", None, None, None)
+        .await
+        .unwrap();
+    let attached = Attached {
+        model,
+        effort: None,
+        agent: "theuth".into(),
+        store: None,
+    };
+    endless.attach(id, attached).await.unwrap();
+    let body = || async {
+        let step = [ChatMessage::user(
+            "Compress this message into one line:\nhello",
+        )];
+        super::pump::compactor_in_force_for_tests(&endless.inner, id)
+            .compress("<chat>\n</chat>", &step)
+            .await
+            .unwrap();
+        h.bodies.lock().pop().unwrap()
+    };
+    let disabled = serde_json::json!({"type": "disabled"});
+    let b = body().await;
+    assert_eq!(b["thinking"], disabled, "{b}");
+    endless.set_effort(id, Some("low".into())).await.unwrap();
+    let b = body().await;
+    assert_eq!(
+        b["thinking"],
+        serde_json::json!({"type": "adaptive"}),
+        "{b}"
+    );
+    assert_eq!(b["output_config"]["effort"], "low", "{b}");
+    endless.set_effort(id, None).await.unwrap();
+    let b = body().await;
+    assert_eq!(b["thinking"], disabled, "{b}");
 }
 
 /// 194 row 12 (D4b–d, persistence): this chat's own compactor effort is

@@ -189,7 +189,7 @@ export const modelMutation = (api: Api, qc: QueryClient, session: string) => mem
 /** 194: this chat's own summary effort; the reply (the fresh memory) also carries the effort a model change dropped. */
 export const effortMutation = (api: Api, qc: QueryClient, session: string) => memoryMutation(qc, session, (effort: string | null) => api.set_session_compactor_effort(session, effort))
 
-/** 137G: this chat's summary model on the regular picker (124 §5); "Use default" clears the chat's own pick. 194: its effort chips (the Default chip clears the chat's own effort). */
+/** 137G: this chat's summary model on the regular picker (124 §5); "Use default" clears the chat's own pick. 194: the chips belong to the chat's own pick — shown only beside it, at its own stored effort (the Default chip clears it). */
 export function SummaryModel({ session, m }: { session: string; m: SessionMemory }) {
   const api = useApi()
   const qc = useQueryClient()
@@ -197,7 +197,7 @@ export function SummaryModel({ session, m }: { session: string; m: SessionMemory
   const setModel = useMutation(modelMutation(api, qc, session))
   const setEffort = useMutation(effortMutation(api, qc, session))
   const hint = m.model_source ? SOURCE_HINT[m.model_source] : undefined
-  const current = models.data?.find((x) => x.id === m.model)
+  const current = m.model_override ? models.data?.find((x) => x.id === m.model_override) : undefined
   return (
     <span className="flex min-w-0 items-center gap-1.5">
       <ModelCombobox
@@ -210,7 +210,7 @@ export function SummaryModel({ session, m }: { session: string; m: SessionMemory
         none={{ label: 'Use default' }}
         disabled={setModel.isPending || setEffort.isPending}
         onChange={(id) => setModel.mutate(id)}
-        effort={current && current.efforts.length > 0 ? { levels: current.efforts, current: m.effort, onSelect: (level) => setEffort.mutate(level) } : undefined}
+        effort={current && current.efforts.length > 0 ? { levels: current.efforts, current: m.effort_override ?? null, onSelect: (level) => setEffort.mutate(level) } : undefined}
       />
       {hint && <span className="shrink-0 text-fg-tertiary">{hint}</span>}
     </span>
