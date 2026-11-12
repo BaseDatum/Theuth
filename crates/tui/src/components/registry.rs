@@ -344,6 +344,10 @@ impl Registry {
     pub fn composer_mode(&self) -> ComposerMode {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()).map(|component| component.composer_mode()).max().unwrap_or_default()
     }
+    /// A read-only region remains active even beneath a hidden editor presentation.
+    pub fn composer_read_only(&self) -> bool {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).any(|component| component.composer_mode() == ComposerMode::ReadOnly)
+    }
     /// Earliest deadline, without a second scheduler or per-component task.
     pub fn wake(&self) -> Option<u64> {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()?.wake()).min()
