@@ -206,6 +206,8 @@ installation. Method assembly is an explicit `rpc_core::ModuleFactory` function
 pointer, supplied by `main` and threaded through socket, Noise, mesh, ACP,
 `Local` and attached-TUI takeover paths. Transports never silently choose the
 aggregate factory; domain bodies and wire names remain unchanged.
+Kernel adapters use owner-independent imports; their isolated cells fixtures
+construct core state with explicit no-session/no-attachment forwarding hooks.
 Authorization belongs to `agent::rpc_support::RpcServerExt`, not inherent
 `Server` methods. `decision::rpc_support::RpcDecisionExt` and
 `sessionsync::rpc_support::RpcSessionMoveExt` expose the real owner operations;
@@ -222,6 +224,13 @@ the voice config extension and their actor/history helpers. Hub imports the
 shared dictation lookup from `talk::rpc_support`; main registers
 `talk::rpc_module`. Generated clients remain available through
 `rpc::api::clients` without adding consumer dependencies on the owners.
+
+RPC method ownership includes kernels → `cells` (with `kernel_rpc`,
+`kernel_latest` and the guard adapter), MCP → `mcp-server`, sandboxes →
+`sandbox`, screens → `computer`, and codemap → `codeindex`. Each exports
+`rpc_module` for main's composition list; sandbox/codeindex actor lookups live
+in their owner's `rpc_support`. The `rpc::api::clients` collection imports
+their generated client traits without adding owner dependencies to the TUI.
 
 Events: a plugin may publish one struct per event or one `#[serde(tag =
 "type")]` enum per event *stream* — `agent::AgentEvent` is the latter because

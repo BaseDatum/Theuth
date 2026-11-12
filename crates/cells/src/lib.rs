@@ -30,6 +30,14 @@ pub mod shell;
 pub mod store;
 pub mod tools;
 pub mod types;
+#[cfg(test)]
+mod rpc_test_support;
+/// Kernel RPC server and client traits.
+#[allow(clippy::too_many_arguments)]
+pub mod rpc;
+mod kernel_rpc;
+mod kernel_latest;
+pub use rpc::rpc_module;
 
 pub use actor::{CELLS_ACTOR, Cells, CellsActor};
 pub use config::CellsConfig;
