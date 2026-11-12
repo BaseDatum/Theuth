@@ -1,8 +1,12 @@
 //! `t mcp --session <id>`: the stdio MCP server an ACP child gets in
-//! `session/new.mcpServers` (design doc 75 §9). Three tools, each one RPC
+//! `session/new.mcpServers` (design doc 75 §9). Nine tools, each one RPC
 //! call on the running engine with the child's theuth session id:
 //! `list_skills`, `load_skill(name)`, `send_message(text)` → the parent's
-//! `<message from=…>` input. Nothing outlives either side (176 A3): it exits
+//! `<message from=…>` input; and (193 §7) the registry's `read_file`, `edit`,
+//! `move_text`, `copy_text`, `indent` and `clip`, listed from `list_tools`
+//! with the registry's own specs and run by `session_call_tool` in that
+//! session (its cwd, approval policy and secret handling). Nothing outlives
+//! either side (176 A3): it exits
 //! when stdin closes (the harness is gone), within [`PARENT_POLL`] of its
 //! parent process going away, when the engine says the session does not
 //! exist, or after the engine was unreachable for [`ENGINE_DOWN`] — it
@@ -27,6 +31,8 @@ use rmcp::model::{
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData, ServerHandler, ServiceExt};
+use rpc::api::SESSION_TOOLS;
+use rpc::api::clients::ToolingApiClient;
 use serde::Deserialize;
 use tokio::sync::watch;
 
@@ -34,6 +40,9 @@ use tokio::sync::watch;
 const PARENT_POLL: Duration = Duration::from_secs(2);
 /// 176 A3 (d): the engine unreachable this long, continuously → exit.
 const ENGINE_DOWN: Duration = Duration::from_secs(60);
+/// 193 B2: the shim's request timeout: above the 300 s default `tools.approval_timeout_secs` a
+/// `session_call_tool` can wait on a human, +30 s (the shim cannot cheaply read the config).
+const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_secs(330);
 /// Longest pause between redials.
 const REDIAL_MAX: Duration = Duration::from_secs(10);
 
@@ -70,6 +79,14 @@ impl Shim {
     ) -> Result<T, String> {
         let client = self.client.borrow().clone();
         client.request(method, params).await.map_err(|e| match e {
+            jsonrpsee::core::ClientError::Call(e) => e.message().to_owned(),
+            e => format!("engine unreachable: {e}"),
+        })
+    }
+
+    /// Map a typed-client result as [`Shim::call`] does.
+    fn mapped<T>(r: Result<T, jsonrpsee::core::ClientError>) -> Result<T, String> {
+        r.map_err(|e| match e {
             jsonrpsee::core::ClientError::Call(e) => e.message().to_owned(),
             e => format!("engine unreachable: {e}"),
         })
@@ -113,6 +130,30 @@ impl Shim {
             r.get("id").and_then(|v| v.as_str()).unwrap_or("?")
         ))
     }
+
+    /// 193 §7: one registry tool in the child's theuth session (cwd, approvals, secrets as for
+    /// the session's own calls); a refusal or failure is the tool's error text.
+    async fn session_tool(
+        &self,
+        name: &str,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<String, String> {
+        let client = self.client.borrow().clone();
+        let session = self
+            .session
+            .parse()
+            .map_err(|e| format!("bad session id: {e}"))?;
+        let out = Self::mapped(
+            client
+                .session_call_tool(session, name.to_owned(), serde_json::Value::Object(args))
+                .await,
+        )?;
+        if out.is_error {
+            Err(out.content)
+        } else {
+            Ok(out.content)
+        }
+    }
 }
 
 fn args<T: serde::de::DeserializeOwned>(req: &CallToolRequestParams) -> Result<T, ErrorData> {
@@ -125,7 +166,7 @@ fn args<T: serde::de::DeserializeOwned>(req: &CallToolRequestParams) -> Result<T
 impl ServerHandler for Shim {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Tools of the theuth session that spawned you. `send_message` reaches your parent.",
+            "Tools of the theuth session that spawned you. `send_message` reaches your parent; `read_file`, `edit`, `move_text`, `copy_text`, `indent` and `clip` run in that session (its working directory and approvals).",
         )
     }
 
@@ -134,7 +175,22 @@ impl ServerHandler for Shim {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult::with_all_items(vec![
+        let client = self.client.borrow().clone();
+        // A failed `list_tools` still lists the shim's own three tools, never an error.
+        let specs =
+            Self::mapped(ToolingApiClient::list_tools(&*client).await).unwrap_or_else(|e| {
+                eprintln!("t mcp: list_tools failed: {e}");
+                Vec::new()
+            });
+        // 193 §7: the six registry tools, with the registry's own descriptions and schemas.
+        let registry = specs
+            .into_iter()
+            .filter(|s| SESSION_TOOLS.contains(&s.name.as_str()))
+            .filter_map(|s| match s.schema {
+                serde_json::Value::Object(o) => Some(Tool::new(s.name, s.description, Arc::new(o))),
+                _ => None,
+            });
+        let own = [
             Tool::new(
                 "list_skills",
                 "The parent theuth's skills: one `name: description` line each.",
@@ -150,7 +206,10 @@ impl ServerHandler for Shim {
                 "Send a message to the parent session (a question, a status, a result); it arrives as `<message from=…>` and the parent may answer with a new prompt.",
                 schema_for_type::<SendMessage>(),
             ),
-        ]))
+        ];
+        Ok(ListToolsResult::with_all_items(
+            own.into_iter().chain(registry).collect(),
+        ))
     }
 
     async fn call_tool(
@@ -162,6 +221,10 @@ impl ServerHandler for Shim {
             "list_skills" => self.list_skills().await,
             "load_skill" => self.load_skill(args(&req)?).await,
             "send_message" => self.send_message(args(&req)?).await,
+            name if SESSION_TOOLS.contains(&name) => {
+                self.session_tool(name, req.arguments.clone().unwrap_or_default())
+                    .await
+            }
             other => {
                 return Err(ErrorData::invalid_params(
                     format!("unknown tool {other}"),
@@ -182,7 +245,8 @@ impl ServerHandler for Shim {
 /// catalogue bridge — every tool call is `mcp_server_call` on the engine,
 /// which redacts and audits (158 §12.5).
 pub async fn run(data_dir: &Path, listen: &str, session: Option<String>) -> anyhow::Result<()> {
-    let client = Arc::new(dial(data_dir, listen).await?);
+    let timeout = session.is_some().then_some(SESSION_REQUEST_TIMEOUT);
+    let client = Arc::new(dial_with(data_dir, listen, timeout).await?);
     let parent = parent_gone(ppid, PARENT_POLL);
     let stdio = rmcp::transport::stdio();
     match session {
@@ -224,12 +288,24 @@ pub async fn run(data_dir: &Path, listen: &str, session: Option<String>) -> anyh
 /// The engine connection, tagged `client=mcp-bridge` (176 C3); `listen` is
 /// re-read from the engine record so a restarted engine is found.
 async fn dial(data_dir: &Path, listen: &str) -> anyhow::Result<WsClient> {
+    dial_with(data_dir, listen, None).await
+}
+
+/// [`dial`]; `Some(timeout)` is the `--session` shim's request timeout (193 B2).
+async fn dial_with(
+    data_dir: &Path,
+    listen: &str,
+    timeout: Option<Duration>,
+) -> anyhow::Result<WsClient> {
     let listen = rpc::engine::discover(data_dir)
         .and_then(|r| r.record.listen)
         .unwrap_or_else(|| listen.to_owned());
-    crate::link_cli::connect(data_dir, &format!("{listen}/?client=mcp-bridge"))
-        .await
-        .map_err(|e| anyhow::anyhow!("no engine on {listen}: {e}"))
+    let url = format!("{listen}/?client=mcp-bridge");
+    match timeout {
+        Some(t) => crate::link_cli::connect_with_timeout(data_dir, &url, t).await,
+        None => crate::link_cli::connect(data_dir, &url).await,
+    }
+    .map_err(|e| anyhow::anyhow!("no engine on {listen}: {e}"))
 }
 
 /// 176 A3 (c): the engine answers that `session` has no row. Any other
@@ -266,7 +342,7 @@ async fn keep_engine(
             }
             tokio::time::sleep(pause.min(left)).await;
             pause = (pause * 2).min(REDIAL_MAX);
-            if let Ok(c) = dial(data_dir, listen).await {
+            if let Ok(c) = dial_with(data_dir, listen, Some(SESSION_REQUEST_TIMEOUT)).await {
                 if no_such_session(&c, &session).await {
                     return format!("session {session} does not exist");
                 }
@@ -344,7 +420,10 @@ mod tests {
     use jsonrpsee::ws_client::WsClientBuilder;
     use serde_json::json;
 
-    /// The three tools over a real MCP connection against a fake engine:
+    /// A well-formed session id (the typed client parses it).
+    const SID: &str = "0190d7b0-0000-7000-8000-000000000001";
+
+    /// The nine tools over a real MCP connection against a fake engine:
     /// each maps to the right RPC method and params, and its text back.
     #[tokio::test]
     async fn tools_proxy_to_the_engine() {
@@ -364,9 +443,47 @@ mod tests {
             let (session, to, text): (String, String, String) = p.parse().unwrap();
             assert_eq!(
                 (session.as_str(), to.as_str(), text.as_str()),
-                ("s1", "parent", "hi")
+                (SID, "parent", "hi")
             );
             json!({"id": "m1", "to": "session:x", "state": "accepted"})
+        })
+        .unwrap();
+        // The registry's list: the six, plus one the shim must not offer.
+        m.register_method("list_tools", |_, _, _| {
+            let spec = |name: &str, desc: &str| {
+                json!({
+                    "name": name, "description": desc, "risk": "mutating", "direct": false,
+                    "returns": "str",
+                    "schema": {"type": "object", "required": ["path", "range"], "properties": {}},
+                })
+            };
+            let mut specs: Vec<_> = ["read_file", "edit", "move_text", "copy_text", "clip"]
+                .map(|n| spec(n, "x"))
+                .into();
+            specs.push(spec("indent", "Re-indent lines."));
+            specs.push(spec("shell", "must not be offered"));
+            json!(specs)
+        })
+        .unwrap();
+        m.register_method("session_call_tool", |p, _, _| {
+            let (session, name, args): (String, String, serde_json::Value) = p.parse().unwrap();
+            assert_eq!(session, SID);
+            assert_ne!(name, "shell");
+            let out = |content: &str, is_error: bool| {
+                json!({"content": content, "is_error": is_error, "structured": null, "files": []})
+            };
+            match name.as_str() {
+                "indent" => {
+                    assert_eq!(args["range"], "L1-L2@1a2b3c4d");
+                    out("indented a.rs:1-2 by +1", false)
+                }
+                // 193 §7: array-valued `edits` reach the engine unchanged.
+                "edit" => {
+                    assert_eq!(args["edits"], json!([{"at": "a.rs#L1@1a2b3c4d", "text": "x"}]));
+                    out("edited", false)
+                }
+                _ => out("clip: no such ref", true),
+            }
         })
         .unwrap();
         let handle = server.start(m);
@@ -379,7 +496,7 @@ mod tests {
         // Both `serve`s block on the initialize handshake: run them together.
         let (server, mcp) = tokio::join!(
             Shim {
-                session: "s1".into(),
+                session: SID.into(),
                 client: watch::channel(Arc::new(client)).1
             }
             .serve(tokio::io::split(a)),
@@ -395,7 +512,30 @@ mod tests {
             .map(|t| t.name.into_owned())
             .collect();
         names.sort();
-        assert_eq!(names, ["list_skills", "load_skill", "send_message"]);
+        assert_eq!(
+            names,
+            [
+                "clip",
+                "copy_text",
+                "edit",
+                "indent",
+                "list_skills",
+                "load_skill",
+                "move_text",
+                "read_file",
+                "send_message"
+            ]
+        );
+        // The registry's own description and schema, not the shim's.
+        let indent = mcp
+            .list_all_tools()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|t| t.name == "indent")
+            .unwrap();
+        assert_eq!(indent.description.as_deref(), Some("Re-indent lines."));
+        assert_eq!(indent.input_schema["required"], json!(["path", "range"]));
 
         let text = |r: CallToolResult| {
             assert_ne!(r.is_error, Some(true), "{r:?}");
@@ -424,6 +564,37 @@ mod tests {
             text(call("send_message", json!({"text": "hi"})).await.unwrap()),
             "sent (id m1)"
         );
+        // 193 §7: a registry tool runs in the child's session; the output text comes back,
+        // and an `is_error` output is the tool's error text.
+        assert_eq!(
+            text(
+                call(
+                    "indent",
+                    json!({"path": "a.rs", "range": "L1-L2@1a2b3c4d", "by": 1})
+                )
+                .await
+                .unwrap()
+            ),
+            "indented a.rs:1-2 by +1"
+        );
+        assert_eq!(
+            text(
+                call(
+                    "edit",
+                    json!({"edits": [{"at": "a.rs#L1@1a2b3c4d", "text": "x"}]})
+                )
+                .await
+                .unwrap()
+            ),
+            "edited"
+        );
+        let r = call("clip", json!({"name": "x", "src": "nope"}))
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(true));
+        assert_eq!(r.content[0].as_text().unwrap().text, "clip: no such ref");
+        // A tool outside the allowlist is not offered and not forwarded.
+        assert!(call("shell", json!({"command": "ls"})).await.is_err());
         // Bad arguments are a protocol error, not a call on the engine.
         assert!(call("load_skill", json!({})).await.is_err());
 
@@ -454,10 +625,33 @@ mod tests {
             .await
             .unwrap();
         let shim = Shim {
-            session: "s1".into(),
+            session: SID.into(),
             client: watch::channel(Arc::new(client)).1,
         };
         (shim, handle)
+    }
+
+    /// 193 §7: a failed `list_tools` still lists exactly the shim's own three tools.
+    #[tokio::test]
+    async fn failed_list_tools_lists_only_the_own_three() {
+        let (shim, _engine) = idle_shim().await;
+        let (a, b) = tokio::io::duplex(1 << 16);
+        let (server, mcp) = tokio::join!(
+            shim.serve(tokio::io::split(a)),
+            ().serve(tokio::io::split(b)),
+        );
+        let (server, mcp) = (server.unwrap(), mcp.unwrap());
+        let mut names: Vec<_> = mcp
+            .list_all_tools()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name.into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["list_skills", "load_skill", "send_message"]);
+        mcp.cancel().await.unwrap();
+        server.waiting().await.unwrap();
     }
 
     /// 176 A3 (a): the harness closing its end (stdin EOF) ends the bridge.

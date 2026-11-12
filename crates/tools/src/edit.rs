@@ -495,14 +495,20 @@ pub fn unified(orig: &str, new: &str, path: &str) -> Diff {
     }
 }
 
-/// One replacement in [`EditArgs::edits`].
+/// One replacement in [`EditArgs::edits`]: `old` or `range`, the same kind
+/// in every entry of one list.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct EditOp {
     /// Text to replace.
-    pub old: String,
+    #[serde(default)]
+    pub old: Option<String>,
+    /// Whole lines to replace instead of `old`: `L<n>@<id>`, `L<n>-L<m>@<id>`
+    /// (the id from the read_file header or a receipt) or a symbol name.
+    #[serde(default)]
+    pub range: Option<String>,
     /// Replacement text.
     pub new: String,
-    /// Replace every occurrence; default: the top-level `all`.
+    /// Replace every occurrence; default: the top-level `all`. `old` only.
     #[serde(default)]
     pub all: Option<bool>,
 }
@@ -512,18 +518,27 @@ pub struct EditOp {
 pub struct EditArgs {
     /// File path, absolute or relative to the session's working directory (no `~`).
     pub path: PathBuf,
-    /// Text to replace (single-edit form). Mutually exclusive with `edits`.
+    /// Text to replace (single-edit form). Mutually exclusive with `edits`
+    /// and `range`.
     #[serde(default)]
     pub old: Option<String>,
+    /// Whole lines to replace (single-edit form), instead of `old`:
+    /// `L<n>@<id>`, `L<n>-L<m>@<id>` (the id from the read_file header or a
+    /// receipt; numbers follow your own later edits) or a symbol name
+    /// (`Reader.load`, with its doc comments and attributes). `new` replaces
+    /// the lines, line breaks included; `new=""` deletes them.
+    #[serde(default)]
+    pub range: Option<String>,
     /// Replacement text (single-edit form).
     #[serde(default)]
     pub new: Option<String>,
     /// Replace every occurrence instead of requiring exactly one (single-edit
-    /// form, or the default for `edits` entries that omit it).
+    /// form, or the default for `edits` entries that omit it). `old` only.
     #[serde(default)]
     pub all: bool,
-    /// Several replacements applied in order to the same file, all-or-nothing:
-    /// each sees the previous one's result.
+    /// Several replacements to the same file, all-or-nothing: `old` entries
+    /// apply in order, each seeing the previous one's result; `range`
+    /// entries name lines of the file as read and apply together.
     #[serde(default)]
     pub edits: Option<Vec<EditOp>>,
 }
@@ -535,47 +550,103 @@ struct Op {
     all: bool,
 }
 
+/// Validated range replacement (193 §4 `edit`).
+struct RangeOp {
+    anchor: crate::textref::Anchor,
+    new: String,
+}
+
+/// What one call asks for.
+enum Ops {
+    Old(Vec<Op>),
+    Range(Vec<RangeOp>),
+}
+
 impl EditArgs {
     /// Validate into the ordered list of replacements.
-    fn ops(self) -> anyhow::Result<Vec<Op>> {
-        let ops = match (self.old, self.new, self.edits) {
-            (None, None, Some(edits)) => {
+    fn ops(self) -> anyhow::Result<Ops> {
+        let entries: Vec<EditOp> = match (self.old, self.range, self.new, self.edits) {
+            (None, None, None, Some(edits)) => {
                 anyhow::ensure!(
                     !edits.is_empty(),
-                    "`edits` is empty; list at least one {{old, new}} or pass `old` and `new`"
+                    "`edits` is empty; list at least one {{old, new}} or {{range, new}}, or pass `old`/`range` and `new`"
                 );
                 edits
-                    .into_iter()
-                    .map(|e| Op {
-                        old: e.old,
-                        new: e.new,
-                        all: e.all.unwrap_or(self.all),
-                    })
-                    .collect()
             }
-            (Some(old), Some(new), None) => vec![Op {
-                old,
-                new,
-                all: self.all,
-            }],
-            (_, _, Some(_)) => {
-                anyhow::bail!("pass either `old`+`new` or `edits`, not both")
+            (_, _, _, Some(_)) => {
+                anyhow::bail!("pass either `old`+`new` / `range`+`new` or `edits`, not both")
             }
-            (old, _, None) => anyhow::bail!(
-                "pass both `old` and `new` (missing `{}`), or `edits`",
+            (Some(_), Some(_), _, None) => {
+                anyhow::bail!("pass `old` or `range`, not both")
+            }
+            (old, range, Some(new), None) if old.is_some() || range.is_some() => {
+                vec![EditOp {
+                    old,
+                    range,
+                    new,
+                    all: None,
+                }]
+            }
+            (None, Some(_), None, None) => {
+                anyhow::bail!("`range` needs `new` (\"\" deletes the lines)")
+            }
+            (old, _, _, None) => anyhow::bail!(
+                "pass both `old` and `new` (missing `{}`), `range` and `new`, or `edits`",
                 if old.is_none() { "old" } else { "new" }
             ),
         };
-        let n = ops.len();
+        let n = entries.len();
+        let ranged = entries.iter().filter(|e| e.range.is_some()).count();
+        if ranged > 0 {
+            anyhow::ensure!(
+                ranged == n && entries.iter().all(|e| e.old.is_none()),
+                "one `edits` list uses one kind: every entry `old` or every entry `range`"
+            );
+            anyhow::ensure!(
+                !self.all && entries.iter().all(|e| e.all.is_none()),
+                "`all` applies to `old` edits only"
+            );
+            let mut ops = Vec::with_capacity(n);
+            for (i, e) in entries.into_iter().enumerate() {
+                let check = || -> anyhow::Result<RangeOp> {
+                    refuse_read_output(&e.new)?;
+                    let anchor = crate::textref::parse_anchor(e.range.as_deref().unwrap_or(""))?;
+                    anyhow::ensure!(
+                        !matches!(
+                            anchor,
+                            crate::textref::Anchor::Start | crate::textref::Anchor::End
+                        ),
+                        "`range` names lines (L<n>-L<m>@<id>) or a symbol, not start/end"
+                    );
+                    Ok(RangeOp {
+                        anchor,
+                        new: e.new.replace("\r\n", "\n"),
+                    })
+                };
+                ops.push(check().map_err(|e| label(e, i, n))?);
+            }
+            return Ok(Ops::Range(ops));
+        }
+        let ops: Vec<Op> = entries
+            .into_iter()
+            .map(|e| Op {
+                old: e.old.unwrap_or_default(),
+                new: e.new,
+                all: e.all.unwrap_or(self.all),
+            })
+            .collect();
         for (i, op) in ops.iter().enumerate() {
             let check = || -> anyhow::Result<()> {
-                anyhow::ensure!(!op.old.is_empty(), "`old` must not be empty");
+                anyhow::ensure!(
+                    !op.old.is_empty(),
+                    "`old` must not be empty (or pass `range`)"
+                );
                 anyhow::ensure!(op.old != op.new, "no-op: old and new are identical");
                 refuse_read_output(&op.new)
             };
             check().map_err(|e| label(e, i, n))?;
         }
-        Ok(ops)
+        Ok(Ops::Old(ops))
     }
 }
 
@@ -599,14 +670,19 @@ impl Tool for Edit {
     const RETURNS: &'static str = "dict";
 
     fn description(&self) -> String {
-        "Replace `old` with `new` in a text file, or apply several `edits` in order (each sees the previous result; any failure writes nothing). Matching is exact first, then tolerant of trailing whitespace and a uniform indentation offset, then of any whitespace differences on whole lines, and as a last resort `cat -n` line-number prefixes (`N<tab>`, as read_file prints them) are stripped from `old` (and from `new` when every line has them); a match at more than one place is an error unless `all` is true, and a miss reports the closest region as a diff with its line numbers. Returns a unified diff of what changed. A `new` carrying a read_file header or truncation marker is refused; paths are relative to the working directory, `~` is not expanded.".into()
+        "Replace `old` with `new` in a text file, or apply several `edits` in order (each sees the previous result; any failure writes nothing). Matching is exact first, then tolerant of trailing whitespace and a uniform indentation offset, then of any whitespace differences on whole lines, and as a last resort `cat -n` line-number prefixes (`N<tab>`, as read_file prints them) are stripped from `old` (and from `new` when every line has them); a match at more than one place is an error unless `all` is true, and a miss reports the closest region as a diff with its line numbers. Returns a unified diff of what changed, then `<path> @<id>`, the file's new snapshot id. Instead of quoting `old`, `range` names whole lines without retyping them: `L40-L52@<id>` (the id from the read_file header or a receipt; the numbers follow your own later edits, and a change to those very lines is refused with their current text) or a symbol name (`Reader.load`, with its doc comments and attributes); `new` replaces those lines, `new=\"\"` deletes them; `edits` entries may all use `range` instead (applied together, no overlaps); a range edit answers with a one-line receipt. A `new` carrying a read_file header or truncation marker is refused; paths are relative to the working directory, `~` is not expanded.".into()
     }
 
     async fn call(&self, a: EditArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let path = crate::seat::writable(cx.session, &a.path)?;
         crate::seat::refuse_cell_record(&cx.resources.root, &path)?;
-        let ops = a.ops()?;
-        edit_file(&path, &ops).await
+        match a.ops()? {
+            Ops::Old(ops) => edit_file(&path, &ops, cx.session).await,
+            Ops::Range(ops) => {
+                let ops: Vec<_> = ops.into_iter().map(|o| (o.anchor, o.new)).collect();
+                crate::text::edit_ranges(cx.session, &path, ops).await
+            }
+        }
     }
 }
 
@@ -617,25 +693,19 @@ const BOM: &str = "\u{feff}";
 /// atomically (tmp + rename, permissions kept). CRLF files are matched as LF
 /// and written back as CRLF; a BOM and the presence or absence of a final
 /// newline are preserved.
-async fn edit_file(path: &Path, ops: &[Op]) -> anyhow::Result<ToolOutput> {
+async fn edit_file(
+    path: &Path,
+    ops: &[Op],
+    session: runtime::SessionId,
+) -> anyhow::Result<ToolOutput> {
     let shown = path.display().to_string();
     let bytes = tokio::fs::read(path)
         .await
         .map_err(|e| anyhow::anyhow!("{shown}: {e}"))?;
     let raw = String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("{shown}: not UTF-8"))?;
-    let (bom, body) = match raw.strip_prefix(BOM) {
-        Some(rest) => (true, rest),
-        None => (false, raw.as_str()),
-    };
-    let crlf = {
-        let crlf = body.matches("\r\n").count();
-        crlf > 0 && crlf * 2 >= body.matches('\n').count()
-    };
-    let orig = if crlf {
-        body.replace("\r\n", "\n")
-    } else {
-        body.to_owned()
-    };
+    // One CRLF-majority rule for `edit` and the text-ref tools.
+    let (bom, crlf, body) = crate::textref::normalize(&raw);
+    let orig = body.into_owned();
 
     let mut text = orig.clone();
     let (mut replacements, mut tier) = (0, Tier::Exact);
@@ -662,6 +732,7 @@ async fn edit_file(path: &Path, ops: &[Op]) -> anyhow::Result<ToolOutput> {
             "{shown}: no changes ({replacements} replacements left the text identical)"
         ));
         o.structured = Some(structured(&shown, replacements, tier, &diff));
+        crate::textref::stamp(&mut o, session, path, &shown, raw.as_bytes());
         return Ok(o);
     }
     write_atomic(path, out.as_bytes()).await?;
@@ -676,6 +747,7 @@ async fn edit_file(path: &Path, ops: &[Op]) -> anyhow::Result<ToolOutput> {
         diff.added, diff.removed, diff.text
     ));
     o.structured = Some(structured(&shown, replacements, tier, &diff));
+    crate::textref::stamp(&mut o, session, path, &shown, out.as_bytes());
     Ok(o)
 }
 
@@ -747,6 +819,7 @@ mod tests {
         EditArgs {
             path: path.to_owned(),
             old: Some(old.into()),
+            range: None,
             new: Some(new.into()),
             all,
             edits: None,
@@ -757,12 +830,14 @@ mod tests {
         EditArgs {
             path: path.to_owned(),
             old: None,
+            range: None,
             new: None,
             all: false,
             edits: Some(
                 ops.iter()
                     .map(|(o, n)| EditOp {
-                        old: (*o).into(),
+                        old: Some((*o).into()),
+                        range: None,
                         new: (*n).into(),
                         all: None,
                     })
@@ -1114,11 +1189,14 @@ mod tests {
         let s = out.structured.unwrap();
         assert_eq!(s["truncated"], true);
         assert!(s["diff"].as_str().unwrap().ends_with(&tail));
+        // 193 §4: the diff is followed by the `<path> @<id>` line.
+        let (body, id) = out.content.rsplit_once('\n').unwrap();
         assert!(
-            out.content.ends_with(&tail),
+            format!("{body}\n").ends_with(&tail),
             "{}",
             &out.content[out.content.len() - 60..]
         );
+        assert!(id.starts_with(&format!("{} @", p.display())), "{id}");
     }
 
     #[cfg(unix)]

@@ -95,13 +95,35 @@ pub async fn pair(client: &WsClient, wait_for_parent: bool) -> anyhow::Result<()
 
 /// A WebSocket client authenticated with the daemon's bearer token.
 pub(crate) async fn connect(data_dir: &Path, listen: &str) -> anyhow::Result<WsClient> {
+    connect_with(data_dir, listen, WsClientBuilder::default()).await
+}
+
+/// [`connect`] with a per-request timeout (jsonrpsee's default is 60 s).
+pub(crate) async fn connect_with_timeout(
+    data_dir: &Path,
+    listen: &str,
+    timeout: std::time::Duration,
+) -> anyhow::Result<WsClient> {
+    connect_with(
+        data_dir,
+        listen,
+        WsClientBuilder::default().request_timeout(timeout),
+    )
+    .await
+}
+
+async fn connect_with(
+    data_dir: &Path,
+    listen: &str,
+    builder: WsClientBuilder,
+) -> anyhow::Result<WsClient> {
     let token = std::fs::read_to_string(data_dir.join("token"))?;
     let mut headers = HeaderMap::new();
     headers.insert(
         "Authorization",
         HeaderValue::from_str(&format!("Bearer {}", token.trim()))?,
     );
-    Ok(WsClientBuilder::default()
+    Ok(builder
         .set_headers(headers)
         .build(format!("ws://{listen}"))
         .await?)

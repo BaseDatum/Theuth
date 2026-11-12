@@ -124,6 +124,20 @@ pub fn parse<'c>(
     lang: Language,
     src: &[u8],
 ) -> Option<ParsedFile<'c>> {
+    parse_tree(p, cfg, lang, src).map(|(file, _)| file)
+}
+
+/// [`parse`], also returning the tree parsed for the import query so a caller
+/// that needs the syntax tree (the text-ref hook) does not parse again. The
+/// tags runner exposes no tree, so a file is still parsed twice; the tree is
+/// `None` only when the language has no import query or its grammar fails to
+/// load.
+pub(crate) fn parse_tree<'c>(
+    p: &mut Parsers,
+    cfg: &'c TagsConfiguration,
+    lang: Language,
+    src: &[u8],
+) -> Option<(ParsedFile<'c>, Option<tree_sitter::Tree>)> {
     if src[..src.len().min(NUL_CHECK)].contains(&0) || std::str::from_utf8(src).is_err() {
         return None;
     }
@@ -132,23 +146,28 @@ pub fn parse<'c>(
     } else {
         src.iter().filter(|&&b| b == b'\n').count() as i64 + i64::from(src[src.len() - 1] != b'\n')
     };
-    let imports = match imports::query(lang) {
-        Some(q) if p.tree.set_language(&cfg.language).is_ok() => p
-            .tree
-            .parse(src, None)
-            .map_or_else(Vec::new, |t| imports::imports(lang, q, t.root_node(), src)),
+    let query = imports::query(lang);
+    let tree = match query {
+        Some(_) if p.tree.set_language(&cfg.language).is_ok() => p.tree.parse(src, None),
+        _ => None,
+    };
+    let imports = match (query, &tree) {
+        (Some(q), Some(t)) => imports::imports(lang, q, t.root_node(), src),
         _ => Vec::new(),
     };
     let (tags, has_errors) = match p.tags.generate_tags(cfg, src, None) {
         Ok(t) => t,
         Err(e) => {
             tracing::debug!(error = %e, "tags failed");
-            return Some(ParsedFile {
-                lines,
-                imports,
-                has_errors: true,
-                ..Default::default()
-            });
+            return Some((
+                ParsedFile {
+                    lines,
+                    imports,
+                    has_errors: true,
+                    ..Default::default()
+                },
+                tree,
+            ));
         }
     };
     let mut defs = Vec::new();
@@ -231,13 +250,16 @@ pub fn parse<'c>(
             from: open.last().map(|&(i, _)| i),
         });
     }
-    Some(ParsedFile {
-        symbols,
-        refs: out_refs,
-        imports,
-        lines,
-        has_errors,
-    })
+    Some((
+        ParsedFile {
+            symbols,
+            refs: out_refs,
+            imports,
+            lines,
+            has_errors,
+        },
+        tree,
+    ))
 }
 
 /// Rust `impl` blocks are not definition tags, so methods have no parent

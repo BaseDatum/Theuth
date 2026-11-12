@@ -45,6 +45,8 @@ mod schema;
 pub mod seat;
 pub mod secrets;
 pub mod shell;
+pub mod text;
+pub mod textref;
 
 pub use activity::{
     Activity, ActivitySink, Admission, Admit, Kind, Notice, Operation, OperationId, Rejected,

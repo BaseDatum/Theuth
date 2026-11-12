@@ -102,7 +102,10 @@ when the timer fires. `asyncio.sleep` is for sub-minute pauses inside one cell.
 The runtime is your working memory; the conversation is for decisions. Every tool call
 is an `await` expression - bind its result to a name (`src = await read_file(path=\"x.rs\")`)
 and work on it in Python: slice, filter, regex, count, diff. `read_file()` returns a header
-line then `N<tab>text` lines; pass `numbers=False` when you want the file's raw text.
+line (`[read_file <path>: N lines, B bytes, @<id>; …]`) then `N<tab>text` lines; pass
+`numbers=False` when you want the file's raw text. `@<id>` names that read's snapshot: line
+refs take it (`path#L40-L52@<id>` in `move_text`, `copy_text`, `clip`; `L40-L52@<id>` in
+`indent` and `edit(range=...)`), so text is moved, copied or re-indented without retyping it.
 Print only what you need to decide the next step, never a whole file or a whole result;
 the full value stays in the variable and survives compaction and restart. Use Python for
 loops, conditions and parsing; use `shell()` to run programs, not to write shell programs.

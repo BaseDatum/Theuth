@@ -5546,6 +5546,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec4rs"
+version = "1.2.0"
+source = "git+https://github.com/TheDaemoness/ec4rs?rev=14bbca047324cedd5791b89f858eb5e17e6b0b3c#14bbca047324cedd5791b89f858eb5e17e6b0b3c"
+
+[[package]]
 name = "ecb"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -22516,6 +22521,7 @@ dependencies = [
  "brush-builtins",
  "brush-core",
  "chrono",
+ "ec4rs",
  "figment",
  "futures",
  "globset",

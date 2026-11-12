@@ -108,9 +108,9 @@ pub fn risk(kind: ToolKind) -> Risk {
 #[must_use]
 pub fn kind(tool_name: &str, risk: Risk) -> ToolKind {
     match tool_name {
-        "read_file" | "list_dir" => ToolKind::Read,
+        "read_file" | "list_dir" | "clip" => ToolKind::Read,
         "grep" | "glob" | "knowledge_search" | "knowledge_list" => ToolKind::Search,
-        "write_file" | "edit" => ToolKind::Edit,
+        "write_file" | "edit" | "move_text" | "copy_text" | "indent" => ToolKind::Edit,
         "shell" | "python" => ToolKind::Execute,
         "spawn_subagent" | "send_message" => ToolKind::Other,
         _ if risk == Risk::ReadOnly => ToolKind::Other,
@@ -168,6 +168,10 @@ mod tests {
         assert_eq!(kind("read_file", Risk::ReadOnly), ToolKind::Read);
         assert_eq!(kind("grep", Risk::ReadOnly), ToolKind::Search);
         assert_eq!(kind("edit", Risk::Mutating), ToolKind::Edit);
+        for t in ["move_text", "copy_text", "indent"] {
+            assert_eq!(kind(t, Risk::Mutating), ToolKind::Edit);
+        }
+        assert_eq!(kind("clip", Risk::ReadOnly), ToolKind::Read);
         assert_eq!(kind("shell", Risk::Destructive), ToolKind::Execute);
         assert_eq!(kind("spawn_subagent", Risk::ReadOnly), ToolKind::Other);
         assert_eq!(kind("mcp_lookup", Risk::ReadOnly), ToolKind::Other);
