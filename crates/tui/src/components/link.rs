@@ -191,7 +191,7 @@ impl Link {
             LinkRevoked { id } => if let Some(s) = &mut self.link { s.devices.retain(|d| d.id != id); },
             MeshRelay { .. } | DevicePaired { .. } | DevicesChanged => refresh = true,
         }
-        if refresh { self.request(Request::Status, cx); }
+        if refresh && cx.core.interactive { self.request(Request::Status, cx); }
     }
 }
 impl Component for Link {
@@ -239,7 +239,7 @@ impl Component for Link {
             Input::Lifecycle(Lifecycle::TranscriptReplaced) => self.pairing = None,
             Input::Lifecycle(Lifecycle::EngineChanged | Lifecycle::Resync) => {
                 self.awaiting = false;
-                if self.link.is_some() { self.request(Request::Status, cx); }
+                if self.link.is_some() && cx.core.interactive { self.request(Request::Status, cx); }
                 if self.menu.is_some() || self.prompt.is_some() { cx.focus(FocusClass::Modal); }
             }
             _ => {}
@@ -265,7 +265,7 @@ impl Component for Link {
             _ => None,
         }
     }
-    fn wake(&self) -> Option<u64> { self.pairing.as_ref().map(|card| card.wake) }
+    fn wake(&self) -> Option<u64> { self.pairing.as_ref().map(Countdown::wake) }
 }
 
 /// A stable, owner-local countdown for one named transcript replacement group.
