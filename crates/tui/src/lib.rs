@@ -510,83 +510,9 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             session,
             msg(api.leave_session(session, Some(secret)).await)?,
         ),
-        Command::ListSchedules => UiEvent::Schedules(msg(api.list_schedules().await)?),
-        Command::ListTasks(project) => {
-            let filter = tasks::TaskFilter {
-                project: project.clone(),
-                ..Default::default()
-            };
-            UiEvent::Tasks(project, msg(api.tasks_list(filter).await)?)
-        }
-        Command::ListRoster => UiEvent::Roster(msg(api.agents_list().await)?),
         Command::TakeSession(id) => {
             let o = msg(api.session_take(id, "user".into()).await)?;
             UiEvent::Info(format!("taking session here (epoch {})", o.epoch))
-        }
-        Command::FireSchedule(name) => {
-            let id = msg(api.fire_schedule(name.clone()).await)?;
-            UiEvent::Info(format!("fired {name} → session {id}"))
-        }
-        Command::ScheduleHistory(name) => {
-            let rows = msg(api.schedule_history(name.clone(), 20).await)?;
-            // ponytail: a second round trip for the loop header; fold into
-            // `schedule_history` if the RPC ever grows a combined reply.
-            let info = msg(api.list_schedules().await)?
-                .into_iter()
-                .find(|s| s.name == name);
-            UiEvent::ScheduleHistory(name, info, rows)
-        }
-        Command::EnableSchedule(name, enabled) => {
-            msg(api.enable_schedule(name.clone(), enabled).await)?;
-            UiEvent::Info(format!(
-                "{name} {}",
-                if enabled { "resumed" } else { "paused" }
-            ))
-        }
-        Command::TestSchedule(name) => {
-            let v = msg(api.test_schedule(name).await)?;
-            UiEvent::Info(schedule::validate::render(&v))
-        }
-        // 140 §13.1: the TUI's direct forms render as text (no chart).
-        Command::AutoresearchStatus(slug) => {
-            let studies = msg(api.autoresearch_list().await)?;
-            let mut text = match &slug {
-                Some(s) => {
-                    let Some(info) = studies.iter().find(|i| &i.slug == s) else {
-                        return Err(anyhow::anyhow!("no autoresearch study `{s}`"));
-                    };
-                    autoresearch::tools::render_info(info)
-                }
-                None if studies.is_empty() => {
-                    "no autoresearch studies (start one: /autoresearch <goal>)".to_owned()
-                }
-                None => studies
-                    .iter()
-                    .map(autoresearch::tools::render_info)
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            };
-            if let Some(s) = slug {
-                let rows = msg(api.autoresearch_experiments(s, None, 10).await)?;
-                if !rows.is_empty() {
-                    text.push_str("\nLast experiments (newest first):");
-                    for e in &rows {
-                        text.push('\n');
-                        text.push_str(&autoresearch::tools::render_row(e));
-                    }
-                }
-            }
-            UiEvent::Info(text)
-        }
-        Command::AutoresearchControl(slug, op) => {
-            let info = msg(api.autoresearch_control(slug, op).await)?;
-            UiEvent::Info(autoresearch::tools::render_info(&info))
-        }
-        Command::AutoresearchSteer(slug, text) => {
-            let id = msg(api.autoresearch_steer(slug.clone(), text).await)?;
-            UiEvent::Info(format!(
-                "steer #{id} queued: the next experiment of `{slug}` reads it; the loop does not pause"
-            ))
         }
         Command::CancelJob { session, id } => {
             msg(api.cancel_job(session, tools::JobId(id.clone())).await)?;
@@ -1771,18 +1697,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         },
         UiEvent::Prompt(text) | UiEvent::Info(text) => writeln!(out, "{text}"),
         UiEvent::Jobs(jobs) => writeln!(out, "{}", tools::jobs::table(jobs)),
-        UiEvent::Schedules(rows) => writeln!(out, "{}", model::schedules_table(rows)),
-        UiEvent::Tasks(project, rows) => {
-            writeln!(out, "{}", model::tasks_table(project.as_deref(), rows))
-        }
-        UiEvent::Roster(rows) => writeln!(out, "{}", model::agents_table(rows)),
-        UiEvent::ScheduleHistory(name, info, rows) => {
-            writeln!(
-                out,
-                "{}",
-                model::schedule_history_table(name, info.as_ref(), rows)
-            )
-        }
         UiEvent::Job(_) => Ok(()),
         UiEvent::Withdrawn { text, .. } => writeln!(out, "withdrawn: {text}"),
         // The `Error` line that follows names the failure; there is no editor to refill.

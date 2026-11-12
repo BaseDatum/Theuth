@@ -25,7 +25,7 @@
 
 ### 4 `feat(ui): Mesh settings; TUI /tasks and /agents`
 - `components/settings/Mesh.tsx`, tab **Mesh** in `SettingsDialog.tsx` (`TABS`, `Pane`, `Share2` icon) and `slash.ts`'s `SettingsTab` union: this engine's id (copyable) and name (from `info().name`), hub preference `Select` → `mesh_set_hub`, current lease holder with reason and age, the peer list (reachable dot, name, hub marker, hub pref, last seen, first address) with remove → `mesh_remove`, **Pair another engine**: `mesh_pairing_string()` as text + `QRCodeSVG` (the Link pane's QR), and an input to paste one → `mesh_add`.
-- TUI (`crates/tui/src/model.rs`): `/tasks` → `Command::ListTasks(self.project)` → `UiEvent::Tasks` → `tasks_table` (`id · state · owner · title`, heading names the project or `all projects`); `/roster` → `Command::ListRoster` → `UiEvent::Roster` → `agents_table` (`name · status · open`). Both in the `/help` list. Test `tasks_and_agents_slash_use_the_session_project_and_render_tables`.
+- TUI: `/tasks` and `/roster` are registered by `components/tasks.rs` and `components/roster.rs`. Their owner-local effects call `tasks_list` with the selected session's project and `agents_list`, respectively. `tasks_table` renders `id · state · owner · title`, heading names the project or `all projects`; `agents_table` renders `name · status · open`. Both in the `/help` list. Test `tasks_and_agents_slash_use_the_session_project_and_render_tables`.
 
 ## Deviations
 1. **Blocked-by on create**: `TaskCreate` has no `blockers`; the sheet calls `task_create` then `task_update(id, {blockers})` when any were picked. Adding `blockers` to `TaskCreate` in the tasks crate would make it one call.
