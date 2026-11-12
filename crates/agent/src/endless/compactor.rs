@@ -391,9 +391,10 @@ pub trait Compactor: Send + Sync {
     fn local(&self) -> Option<String> {
         local_endpoint(self.model(), None)
     }
-    /// The reply cap in tokens (E8 prompt fitting).
-    fn out_tokens(&self) -> u32 {
-        MAX_TOKENS
+    /// The reply cap in tokens of a reply of `lines` lines (E8 prompt
+    /// fitting; G6 batch).
+    fn out_tokens(&self, lines: u32) -> u32 {
+        batch_reply_tokens(MAX_TOKENS, lines)
     }
     /// 137G G6: [`Compactor::compress`] for a reply of `lines` lines (a
     /// batch): the real compactor raises its reply cap to match.
@@ -499,8 +500,8 @@ impl Compactor for Tally<'_> {
     fn local(&self) -> Option<String> {
         self.inner.local()
     }
-    fn out_tokens(&self) -> u32 {
-        self.inner.out_tokens()
+    fn out_tokens(&self, lines: u32) -> u32 {
+        self.inner.out_tokens(lines)
     }
     fn compress_lines<'a>(
         &'a self,
@@ -1043,18 +1044,73 @@ impl ModelCompactor {
         }
     }
 
-    /// A single unit's `max_tokens`: 600 (177 E3: a local compactor 2048,
-    /// within the model's own output limit) plus the effort's thinking budget.
+    /// A single unit's reply cap, without thinking: 600 (177 E3: a local
+    /// compactor 2048, within the model's own output limit).
     fn reply_tokens(&self) -> u32 {
-        let base = match (
+        match (
             &self.local,
             self.model.model.as_ref().map(|m| m.limit.output),
         ) {
             (Some(_), Some(out)) if out > 0 => LOCAL_MAX_TOKENS.min(out),
             (Some(_), _) => LOCAL_MAX_TOKENS,
             (None, _) => MAX_TOKENS,
+        }
+    }
+
+    /// 194 R1: the most `max_tokens` one request can carry — the model's
+    /// output limit and half its window (what [`crate::tokens::ceiling`]
+    /// keeps for a reply).
+    fn carry(&self) -> u32 {
+        let half = u32::try_from(crate::tokens::memory_window(&self.model) / 2).unwrap_or(u32::MAX);
+        self.model
+            .model
+            .as_ref()
+            .map(|m| m.limit.output)
+            .filter(|&o| o > 0)
+            .map_or(half, |o| o.min(half))
+    }
+
+    /// `max_tokens` for a reply of `lines` lines: the reply ([`Self::reply_tokens`]
+    /// for one unit, 600 a line for a batch, at most 16k) and beside it (194
+    /// R1) the effort's thinking budget — none under `anthropic_off` —
+    /// within [`Self::carry`]. [`Self::with_pick`] keeps a numeric budget a
+    /// line under the carry, so the cap stays above it.
+    fn cap(&self, anthropic_off: bool, lines: u32) -> u32 {
+        let reply = if lines <= 1 && !anthropic_off {
+            self.reply_tokens()
+        } else {
+            batch_reply_tokens(MAX_TOKENS, lines)
         };
-        base + self.budget()
+        let thinking = if anthropic_off { 0 } else { self.budget() };
+        reply.saturating_add(thinking).min(self.carry())
+    }
+
+    /// 194 D4e: the user's `pick` for this compactor (Settings › Memory, the
+    /// chat's own, the agent's `memory_effort`). A positive level rides every
+    /// transport as picked (`chosen`); a numeric budget a request cannot
+    /// carry beside a one-line reply is clamped to what it can (R1, warned).
+    /// None or an explicit Off keeps today's thinking off by transport (R1
+    /// Q1): [`anthropic_off`] (Fable: adaptive at `low`), the local kwargs —
+    /// never `Zero` on the wire, which genai's omlx adapter sends as
+    /// `enable_thinking: true` and Fable answers empty.
+    pub(crate) fn with_pick(mut self, pick: Option<ReasoningEffort>) -> Self {
+        let Some(e) =
+            pick.filter(|e| !matches!(e, ReasoningEffort::Zero | ReasoningEffort::Budget(0)))
+        else {
+            return self;
+        };
+        let room = self.carry().saturating_sub(MAX_TOKENS);
+        // ponytail: a named level is sent as picked; its genai budget (24k at
+        // High, Anthropic budget thinking only) needs an output limit above it.
+        self.effort = Some(match e {
+            ReasoningEffort::Budget(n) if n > room => {
+                tracing::warn!(model = %self.model.id, budget = n, room, "endless compactor: thinking budget clamped to what a request carries");
+                ReasoningEffort::Budget(room)
+            }
+            e => e,
+        });
+        self.chosen = true;
+        self
     }
 
     /// `[system][user ctx (marked)][user step][assistant][user correction]…`.
@@ -1106,15 +1162,8 @@ impl ModelCompactor {
         if t != Transport::Anthropic {
             req = req.with_system(self.system.clone());
         }
-        // 177 E3: a local single unit gets the local cap; a batch keeps the
-        // cloud formula (600 per line).
-        let cap = if anthropic && !self.chosen {
-            batch_reply_tokens(MAX_TOKENS, lines)
-        } else if lines <= 1 {
-            self.reply_tokens()
-        } else {
-            batch_reply_tokens(MAX_TOKENS + self.budget(), lines)
-        };
+        let ant_off = anthropic && !self.chosen;
+        let cap = self.cap(ant_off, lines);
         let max = if forced {
             self.forced_cap(&req, cap)
         } else {
@@ -1151,7 +1200,7 @@ impl ModelCompactor {
             opts = crate::backend::thinking_off(opts);
         }
         // R2-7 / R2-8: thinking off by transport, not by model id.
-        let effort = if anthropic && !self.chosen {
+        let effort = if ant_off {
             let slug = self
                 .model
                 .genai
@@ -1228,13 +1277,13 @@ impl Compactor for ModelCompactor {
         self.local.clone()
     }
 
-    fn out_tokens(&self) -> u32 {
-        self.reply_tokens()
+    fn out_tokens(&self, lines: u32) -> u32 {
+        self.cap(false, lines)
     }
 
     fn can_grow(&self, ctx: &str, convo: &[ChatMessage]) -> bool {
         let (_, opts) = self.request_opts(Transport::OpenAiLike, ctx, convo, 1, true);
-        opts.max_tokens.unwrap_or(0) > self.reply_tokens()
+        opts.max_tokens.unwrap_or(0) > self.cap(false, 1)
     }
 }
 

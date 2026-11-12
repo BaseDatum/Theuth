@@ -1479,14 +1479,14 @@ impl Message<SetSettings> for Night {
 }
 
 /// 194 D4b–d for one tier: `effort` follows `model` — cleared with it; `check`
-/// is `agent::CheckEffort` against it (`None`: unchecked, no agent actor); a
-/// failing effort is dropped when the pick changed from `old`, else refused.
+/// is its [`check_effort`]; a failing effort is dropped when the pick changed
+/// from `old`, else refused.
 fn settle_effort(
     tier: &str,
     effort: &Option<String>,
     model: &Option<String>,
     old: &Option<String>,
-    check: Option<Result<(), String>>,
+    check: Result<(), String>,
 ) -> Result<Option<String>, String> {
     let effort = effort
         .as_deref()
@@ -1494,13 +1494,34 @@ fn settle_effort(
         .filter(|e| !e.is_empty() && model.is_some())
         .map(str::to_owned);
     match (effort, check) {
-        (Some(_), Some(Err(why))) if model == old => Err(format!("efforts.{tier}: {why}")),
-        (Some(_), Some(Err(_))) => Ok(None),
+        (Some(_), Err(why)) if model == old => Err(format!("efforts.{tier}: {why}")),
+        (Some(_), Err(_)) => Ok(None),
         (e, _) => Ok(e),
     }
 }
 
-/// [`settle_effort`] with the live agent's check.
+/// 194 D4b: `effort` against `model` (`agent::CheckEffort`); with the agent
+/// unreachable, the word alone (`agent::effort_of`) — never unchecked (R1).
+async fn check_effort(model: &str, effort: &str) -> Result<(), String> {
+    if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
+        match agents
+            .ask(agent::CheckEffort {
+                model: Some(model.to_owned()),
+                effort: effort.to_owned(),
+            })
+            .await
+        {
+            Ok(()) => return Ok(()),
+            Err(kameo::error::SendError::HandlerError(why)) => return Err(why),
+            Err(e) => tracing::warn!("dreaming: effort check unavailable ({e}): the word alone"),
+        }
+    }
+    agent::effort_of(effort)
+        .map(|_| ())
+        .ok_or_else(|| format!("unknown effort {effort}"))
+}
+
+/// [`settle_effort`] with [`check_effort`].
 async fn tier_effort(
     tier: &str,
     effort: &Option<String>,
@@ -1508,23 +1529,8 @@ async fn tier_effort(
     old: &Option<String>,
 ) -> Result<Option<String>, String> {
     let check = match (model, effort.as_deref().map(str::trim)) {
-        (Some(m), Some(e)) if !e.is_empty() => {
-            match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
-                Ok(Some(agents)) => match agents
-                    .ask(agent::CheckEffort {
-                        model: Some(m.clone()),
-                        effort: e.to_owned(),
-                    })
-                    .await
-                {
-                    Ok(()) => Some(Ok(())),
-                    Err(kameo::error::SendError::HandlerError(why)) => Some(Err(why)),
-                    Err(_) => None,
-                },
-                _ => None,
-            }
-        }
-        _ => None,
+        (Some(m), Some(e)) if !e.is_empty() => check_effort(m, e).await,
+        _ => Ok(()),
     };
     settle_effort(tier, effort, model, old, check)
 }
@@ -2845,11 +2851,12 @@ mod tests {
     }
 
     /// 194 D4b/D4c: an effort its tier's pick does not take is refused while the pick
-    /// stays, dropped when the pick changed; unchecked it is kept.
-    #[test]
-    fn a_tier_effort_is_checked_against_its_pick() {
+    /// stays, dropped when the pick changed; R1: with no agent the word alone is
+    /// checked, never stored unchecked.
+    #[tokio::test]
+    async fn a_tier_effort_is_checked_against_its_pick() {
         let some = |s: &str| Some(s.to_owned());
-        let no = || Some(Err("p/m accepts low".to_owned()));
+        let no = || Err("p/m accepts low".to_owned());
         assert_eq!(
             settle_effort("judge", &some(" high "), &some("p/m"), &some("p/m"), no()),
             Err("efforts.judge: p/m accepts low".into())
@@ -2859,12 +2866,21 @@ mod tests {
             Ok(None)
         );
         assert_eq!(
-            settle_effort("judge", &some(" high "), &some("p/m"), &None, Some(Ok(()))),
+            settle_effort("judge", &some(" high "), &some("p/m"), &None, Ok(())),
             Ok(some("high"))
         );
         assert_eq!(
-            settle_effort("judge", &some("high"), &None, &None, None),
+            settle_effort("judge", &some("high"), &None, &None, Ok(())),
             Ok(None)
+        );
+        let m = some("p/m");
+        assert_eq!(
+            tier_effort("judge", &some("warp"), &m, &m).await,
+            Err("efforts.judge: unknown effort warp".into())
+        );
+        assert_eq!(
+            tier_effort("judge", &some("high"), &m, &m).await,
+            Ok(some("high"))
         );
     }
 

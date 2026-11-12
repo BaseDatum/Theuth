@@ -9261,7 +9261,7 @@ mod compact_floor_tests;
 
 /// 70 THINKING-TRACES: the `thinking` field per effort and the signed round trip, at a fake Anthropic.
 #[cfg(test)]
-mod thinking_tests;
+pub(crate) mod thinking_tests;
 
 /// 76 §7: `CancelTurn { keep }` persists the heard prefix and stops with `interrupted`.
 #[cfg(test)]

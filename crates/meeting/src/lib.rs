@@ -1473,10 +1473,99 @@ struct Summarizing {
 /// 158 §6.1 / 194: what the summary switch changed on the meeting session, to put back.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Restore {
-    /// The model before the switch.
-    model: Option<String>,
-    /// The effort before the switch (`Some(None)`: the session had none).
-    effort: Option<Option<String>>,
+    /// The model before the switch, and the summary model it switched to.
+    model: Option<(String, String)>,
+    /// The effort before the switch (`None`: the session had none), and the summary effort.
+    effort: Option<(Option<String>, String)>,
+}
+
+/// 194 R1: what putting the session back sets — the prior model, the prior effort — each
+/// only while the session still holds the summary's own (`now_*`): a pick the user made
+/// during the summary stands.
+fn restore_plan(
+    r: &Restore,
+    now_model: Option<&str>,
+    now_effort: Option<&str>,
+) -> (Option<String>, Option<Option<String>>) {
+    let model = r
+        .model
+        .as_ref()
+        .filter(|(_, to)| now_model == Some(to.as_str()))
+        .map(|(prior, _)| prior.clone());
+    let effort = r
+        .effort
+        .as_ref()
+        .filter(|(_, to)| now_effort == Some(to.as_str()))
+        .map(|(prior, _)| prior.clone());
+    (model, effort)
+}
+
+/// Test seam (194 R1): every `restore_session` call, by session.
+#[cfg(test)]
+static RESTORED: parking_lot::Mutex<Vec<(SessionId, Restore)>> =
+    parking_lot::const_mutex(Vec::new());
+
+/// 194 R1: put `session` back after its summary turn ([`restore_plan`]). Awaited by every
+/// exit that ends the summary — a queue failure, the turn's end, a withdrawal, the
+/// watchdog — never detached, so it lands before the actor handles anything else.
+async fn restore_session(session: SessionId, r: Restore) {
+    #[cfg(test)]
+    RESTORED.lock().push((session, r.clone()));
+    let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
+        return;
+    };
+    let now_model = agents
+        .ask(agent::SessionModel(session))
+        .await
+        .ok()
+        .flatten();
+    let now_effort = agents
+        .ask(agent::SessionEffort(session))
+        .await
+        .ok()
+        .flatten();
+    let (model, effort) = restore_plan(&r, now_model.as_deref(), now_effort.as_deref());
+    if let Some(model) = model
+        && let Err(e) = agents
+            .ask(agent::SetModel {
+                session: Some(session),
+                model,
+                manual: false,
+            })
+            .await
+    {
+        tracing::warn!(%session, "meeting: restore model: {e}");
+    }
+    if let Some(effort) = effort
+        && let Err(e) = agents
+            .ask(agent::SetEffort {
+                session: Some(session),
+                effort,
+                manual: false,
+            })
+            .await
+    {
+        tracing::warn!(%session, "meeting: restore effort: {e}");
+    }
+}
+
+/// Queue the summary form; a queue that fails puts the session back at once (194 R1:
+/// no slot holds `restore` to do it later). `Ok` hands `restore` to the slot.
+async fn queue_summary(
+    session: SessionId,
+    input: InputId,
+    form: String,
+    restore: Option<Restore>,
+) -> Result<Option<Restore>, String> {
+    match session::queue_turn(session, input, form).await {
+        Ok(()) => Ok(restore),
+        Err(e) => {
+            if let Some(r) = restore {
+                restore_session(session, r).await;
+            }
+            Err(e)
+        }
+    }
 }
 
 /// 194 D4e: what the summary turn switches the session to — `meeting.summary_model` when it
@@ -1497,13 +1586,13 @@ fn summary_switch(
     ((model != prior_model).then_some(model), effort)
 }
 
-/// 194 D4b–d: `summary_effort` follows `summary_model` — cleared with it; `check` is
-/// `agent::CheckEffort` against it (`None`: unchecked, no agent actor); a failing effort is
-/// dropped when the model changed from `old_model`, else refused with the check's words.
+/// 194 D4b–d: `summary_effort` follows `summary_model` — cleared with it; `check` is its
+/// [`check_effort`]; a failing effort is dropped when the model changed from `old_model`,
+/// else refused with the check's words.
 fn settle_summary_effort(
     s: &mut MeetingSettings,
     old_model: Option<&str>,
-    check: Option<Result<(), String>>,
+    check: Result<(), String>,
 ) -> Result<(), String> {
     s.summary_effort = s
         .summary_effort
@@ -1511,7 +1600,7 @@ fn settle_summary_effort(
         .map(|e| e.trim().to_owned())
         .filter(|e| !e.is_empty() && s.summary_model.is_some());
     if s.summary_effort.is_some()
-        && let Some(Err(why)) = check
+        && let Err(why) = check
     {
         if s.summary_model.as_deref() == old_model {
             return Err(format!("summary_effort: {why}"));
@@ -1521,29 +1610,35 @@ fn settle_summary_effort(
     Ok(())
 }
 
-/// [`settle_summary_effort`] with the live agent's check.
+/// 194 D4b: `effort` against `model` (`agent::CheckEffort`); with the agent unreachable,
+/// the word alone (`agent::effort_of`) — never unchecked (R1).
+async fn check_effort(model: &str, effort: &str) -> Result<(), String> {
+    if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
+        match agents
+            .ask(agent::CheckEffort {
+                model: Some(model.to_owned()),
+                effort: effort.to_owned(),
+            })
+            .await
+        {
+            Ok(()) => return Ok(()),
+            Err(kameo::error::SendError::HandlerError(why)) => return Err(why),
+            Err(e) => tracing::warn!("meeting: effort check unavailable ({e}): the word alone"),
+        }
+    }
+    agent::effort_of(effort)
+        .map(|_| ())
+        .ok_or_else(|| format!("unknown effort {effort}"))
+}
+
+/// [`settle_summary_effort`] with [`check_effort`].
 async fn checked_summary_effort(
     mut s: MeetingSettings,
     old_model: Option<&str>,
 ) -> Result<MeetingSettings, String> {
     let check = match (&s.summary_model, &s.summary_effort) {
-        (Some(model), Some(effort)) => {
-            match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
-                Ok(Some(agents)) => match agents
-                    .ask(agent::CheckEffort {
-                        model: Some(model.clone()),
-                        effort: effort.trim().to_owned(),
-                    })
-                    .await
-                {
-                    Ok(()) => Some(Ok(())),
-                    Err(kameo::error::SendError::HandlerError(why)) => Some(Err(why)),
-                    Err(_) => None,
-                },
-                _ => None,
-            }
-        }
-        _ => None,
+        (Some(model), Some(effort)) => check_effort(model, effort.trim()).await,
+        _ => Ok(()),
     };
     settle_summary_effort(&mut s, old_model, check)?;
     Ok(s)
@@ -3437,7 +3532,7 @@ impl Message<AgentEvent> for Meeting {
                     }
                 }
                 AgentEvent::InputWithdrawn { id, .. } => {
-                    if let Some(s) = self.take_summarizing(|s| s.input == *id) {
+                    if let Some(s) = self.take_summarizing(|s| s.input == *id).await {
                         self.summary_failed(s.manifest, "the form was withdrawn before its turn")
                             .await;
                         return;
@@ -3446,7 +3541,7 @@ impl Message<AgentEvent> for Meeting {
                 AgentEvent::TurnFinished {
                     turn, stop_reason, ..
                 } => {
-                    if let Some(s) = self.take_summarizing(|s| s.turn == Some(*turn)) {
+                    if let Some(s) = self.take_summarizing(|s| s.turn == Some(*turn)).await {
                         let error = (stop_reason == "error" || stop_reason == "cancelled")
                             .then(|| format!("the summary turn ended with {stop_reason}"));
                         summary::spawn(self.rt.clone(), self.store.clone(), s.manifest, error);
@@ -4235,7 +4330,13 @@ impl Meeting {
     ) -> Result<(), String> {
         let input = InputId::new();
         let restore = self.summary_model_switch(manifest.session).await;
-        session::queue_turn(manifest.session, input, summary::form_for(&manifest)).await?;
+        let restore = queue_summary(
+            manifest.session,
+            input,
+            summary::form_for(&manifest),
+            restore,
+        )
+        .await?;
         manifest.state = MeetingState::Summarizing;
         manifest.failure = None;
         self.save(&manifest).await;
@@ -4283,16 +4384,21 @@ impl Meeting {
         };
         let (model, effort) = summary_switch(&self.cfg, &prior, prior_effort.as_deref());
         let mut restore = Restore::default();
+        // 194 R1: the values the session holds after the switch, as it stores them — the
+        // put-back only touches a session still on them (`restore_plan`).
         if let Some(model) = model {
             match agents
                 .ask(agent::SetModel {
                     session: Some(session),
-                    model,
+                    model: model.clone(),
                     manual: false,
                 })
                 .await
             {
-                Ok(_) => restore.model = Some(prior),
+                Ok(_) => {
+                    let to = agents.ask(agent::SessionModel(session)).await;
+                    restore.model = Some((prior, to.ok().flatten().unwrap_or(model)));
+                }
                 Err(e) => {
                     tracing::warn!(%session, "meeting: summary model: {e}");
                     return None;
@@ -4303,12 +4409,15 @@ impl Meeting {
             match agents
                 .ask(agent::SetEffort {
                     session: Some(session),
-                    effort: Some(effort),
+                    effort: Some(effort.clone()),
                     manual: false,
                 })
                 .await
             {
-                Ok(()) => restore.effort = Some(prior_effort),
+                Ok(()) => {
+                    let to = agents.ask(agent::SessionEffort(session)).await;
+                    restore.effort = Some((prior_effort, to.ok().flatten().unwrap_or(effort)));
+                }
                 Err(e) => tracing::warn!(%session, "meeting: summary effort: {e}"),
             }
         }
@@ -4316,8 +4425,11 @@ impl Meeting {
     }
 
     /// Release the slot matching `pred`; the session goes back to its own model (§6.1)
-    /// and effort (194).
-    fn take_summarizing(&mut self, pred: impl Fn(&Summarizing) -> bool) -> Option<Summarizing> {
+    /// and effort (194), awaited ([`restore_session`]).
+    async fn take_summarizing(
+        &mut self,
+        pred: impl Fn(&Summarizing) -> bool,
+    ) -> Option<Summarizing> {
         let id = self
             .summarizing
             .iter()
@@ -4325,34 +4437,7 @@ impl Meeting {
             .map(|(id, _)| *id)?;
         let s = self.summarizing.remove(&id)?;
         if let Some(r) = s.restore.clone() {
-            let session = s.manifest.session;
-            tokio::spawn(async move {
-                let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
-                    return;
-                };
-                if let Some(model) = r.model
-                    && let Err(e) = agents
-                        .ask(agent::SetModel {
-                            session: Some(session),
-                            model,
-                            manual: false,
-                        })
-                        .await
-                {
-                    tracing::warn!(%session, "meeting: restore model: {e}");
-                }
-                if let Some(effort) = r.effort
-                    && let Err(e) = agents
-                        .ask(agent::SetEffort {
-                            session: Some(session),
-                            effort,
-                            manual: false,
-                        })
-                        .await
-                {
-                    tracing::warn!(%session, "meeting: restore effort: {e}");
-                }
-            });
+            restore_session(s.manifest.session, r).await;
         }
         Some(s)
     }
@@ -4394,11 +4479,10 @@ impl Message<SummaryTimeout> for Meeting {
         t: SummaryTimeout,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        let held = self
-            .summarizing
-            .get(&t.meeting)
-            .is_some_and(|s| s.input == t.input);
-        if held && let Some(s) = self.summarizing.remove(&t.meeting) {
+        if let Some(s) = self
+            .take_summarizing(|s| s.manifest.id == t.meeting && s.input == t.input)
+            .await
+        {
             let why = if s.turn.is_some() {
                 "its turn"
             } else {
@@ -5433,7 +5517,7 @@ mod tests {
     }
 
     /// 194 D4b/D4c: an effort the summary model does not take is refused while the model
-    /// stays, dropped when the model changed; unchecked (no agent) it is kept.
+    /// stays, dropped when the model changed.
     #[test]
     fn summary_effort_is_checked_against_its_model() {
         let s = |model: &str| MeetingSettings {
@@ -5441,7 +5525,7 @@ mod tests {
             summary_effort: Some(" high ".into()),
             ..MeetingSettings::default()
         };
-        let no = Some(Err("p/m accepts low".to_owned()));
+        let no = Err("p/m accepts low".to_owned());
         let mut same = s("p/m");
         assert_eq!(
             settle_summary_effort(&mut same, Some("p/m"), no.clone()),
@@ -5451,11 +5535,35 @@ mod tests {
         settle_summary_effort(&mut changed, Some("p/other"), no).unwrap();
         assert_eq!(changed.summary_effort, None);
         let mut ok = s("p/m");
-        settle_summary_effort(&mut ok, Some("p/m"), Some(Ok(()))).unwrap();
+        settle_summary_effort(&mut ok, Some("p/m"), Ok(())).unwrap();
         assert_eq!(ok.summary_effort.as_deref(), Some("high"));
-        let mut unchecked = s("p/m");
-        settle_summary_effort(&mut unchecked, None, None).unwrap();
-        assert_eq!(unchecked.summary_effort.as_deref(), Some("high"));
+    }
+
+    /// 194 R1: with no agent to check against, the word alone is checked — an unknown one
+    /// is refused, never stored unchecked.
+    #[tokio::test]
+    async fn summary_effort_without_an_agent_checks_the_word() {
+        let b = bench().await;
+        let s = |effort: &str| MeetingSettings {
+            summary_model: Some("p/m".into()),
+            summary_effort: Some(effort.into()),
+            ..MeetingSettings::default()
+        };
+        assert_eq!(
+            b.actor
+                .ask(SetSettings(s("high")))
+                .await
+                .unwrap()
+                .summary_effort
+                .as_deref(),
+            Some("high")
+        );
+        // The model stays: refused (D4b), not dropped.
+        let r = b.actor.ask(SetSettings(s("warp"))).await;
+        assert!(
+            matches!(&r, Err(kameo::error::SendError::HandlerError(e)) if e == "summary_effort: unknown effort warp"),
+            "{r:?}"
+        );
     }
 
     /// 194 D4e: the summary turn switches to the summary model and its effort, each only
@@ -5483,6 +5591,95 @@ mod tests {
             summary_switch(&cfg(None, Some("high")), "p/m", None),
             (None, None)
         );
+    }
+
+    /// 194 R1: the put-back touches only what still holds the summary's own value — a
+    /// model or effort the user picked during the summary stands.
+    #[test]
+    fn the_put_back_keeps_a_pick_made_during_the_summary() {
+        let r = Restore {
+            model: Some(("p/m".into(), "p/s".into())),
+            effort: Some((None, "high".into())),
+        };
+        assert_eq!(
+            restore_plan(&r, Some("p/s"), Some("high")),
+            (Some("p/m".into()), Some(None))
+        );
+        assert_eq!(
+            restore_plan(&r, Some("p/s"), Some("low")),
+            (Some("p/m".into()), None),
+            "the user's effort stands"
+        );
+        assert_eq!(
+            restore_plan(&r, Some("p/x"), None),
+            (None, None),
+            "the user's model and cleared effort stand"
+        );
+    }
+
+    /// 194 R1: every exit of a summary puts the session back, awaited in the handler — a
+    /// failed queue at once, the watchdog, a withdrawn form, the turn's end.
+    #[tokio::test]
+    async fn every_summary_exit_puts_the_session_back() {
+        let restored = |s: SessionId| {
+            RESTORED
+                .lock()
+                .iter()
+                .filter(|(id, _)| *id == s)
+                .map(|(_, r)| r.clone())
+                .collect::<Vec<_>>()
+        };
+        let r = Restore {
+            model: None,
+            effort: Some((Some("low".into()), "high".into())),
+        };
+        // No agent here: the queue fails.
+        let session = SessionId::new();
+        let queued = queue_summary(session, InputId::new(), "form".into(), Some(r.clone())).await;
+        assert!(queued.is_err());
+        assert_eq!(restored(session), std::slice::from_ref(&r));
+
+        let b = bench().await;
+        for exit in ["watchdog", "withdrawn", "turn end"] {
+            let mut m = finished(&b.store, MeetingState::Review).await;
+            m.state = MeetingState::Summarizing;
+            b.store.save(&m).await.unwrap();
+            let (input, turn) = (InputId::new(), TurnId::new());
+            b.actor
+                .ask(Hold(Summarizing {
+                    manifest: m.clone(),
+                    input,
+                    turn: Some(turn),
+                    restore: Some(r.clone()),
+                }))
+                .await
+                .unwrap();
+            match exit {
+                "watchdog" => b
+                    .actor
+                    .ask(SummaryTimeout {
+                        meeting: m.id,
+                        input,
+                    })
+                    .await
+                    .unwrap(),
+                "withdrawn" => b
+                    .actor
+                    .ask(AgentEvent::InputWithdrawn {
+                        session: m.session,
+                        id: input,
+                    })
+                    .await
+                    .unwrap(),
+                _ => b
+                    .actor
+                    .ask(finished_turn(m.session, turn, "cancelled"))
+                    .await
+                    .unwrap(),
+            }
+            assert!(b.actor.ask(Held).await.unwrap().is_empty(), "{exit}");
+            assert_eq!(restored(m.session), std::slice::from_ref(&r), "{exit}");
+        }
     }
 
     /// 158 D13: a manifest the last run left `Recording` with a track on disk is `Stopping`

@@ -356,6 +356,52 @@ async fn local_summary_call_switches_thinking_off_by_chat_template() {
     assert_eq!(opts.max_tokens, Some(compactor::MAX_TOKENS));
 }
 
+/// 194 R1: on a local OpenAI-protocol server an explicit Off is today's
+/// thinking off — the kwargs and no effort keyword (never `"none"`, which
+/// genai's omlx adapter sends as `enable_thinking: true`); a picked `low`
+/// rides as `reasoning_effort`, without the kwargs.
+#[tokio::test]
+async fn local_compactor_off_is_the_kwargs_and_a_pick_rides() {
+    use genai::chat::ReasoningEffort;
+    let dir = crate::TestDir::new("local-194");
+    let (server, seen) = omlx(true).await;
+    let auth = auth_with(&dir.0, "mlx", &server);
+    let mut bodies = Vec::new();
+    for pick in [
+        None,
+        Some(ReasoningEffort::Zero),
+        Some(ReasoningEffort::Low),
+    ] {
+        let c = compactor_for(zero_model("mlx"), &auth).with_pick(pick);
+        let _ = compactor::build(
+            &c,
+            "<chat>\n</chat>",
+            &unit(),
+            512,
+            1,
+            Duration::from_secs(30),
+        )
+        .await;
+        let mut seen = seen.lock();
+        bodies.push(seen[0].0.clone());
+        seen.clear();
+    }
+    let [default, off, low] = &bodies[..] else {
+        unreachable!()
+    };
+    for b in [default, off] {
+        assert_eq!(
+            b["chat_template_kwargs"],
+            json!({"enable_thinking": false}),
+            "{b}"
+        );
+        assert!(b.get("reasoning_effort").is_none(), "{b}");
+        assert_eq!(b["max_tokens"], compactor::LOCAL_MAX_TOKENS, "{b}");
+    }
+    assert_eq!(low["reasoning_effort"], "low", "{low}");
+    assert!(low.get("chat_template_kwargs").is_none(), "{low}");
+}
+
 /// E3: a model that thinks through the cap whatever it is told — one forced
 /// retry at twice the cap, then the "whole reply on thinking" error; a model
 /// that honours the kwargs answers on the first call.

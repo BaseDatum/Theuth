@@ -176,21 +176,23 @@ impl Store {
     }
 
     /// 137G: this chat's compactor model (`None` clears) or, with `agent`,
-    /// the desk agent's `memory_model`.
+    /// the desk agent's `memory_model` — with its effort (194), one write.
     pub async fn set_endless_model(
         &self,
         id: SessionId,
         model: Option<&str>,
+        effort: Option<&str>,
         agent: bool,
     ) -> anyhow::Result<()> {
         let sql = if agent {
-            "UPDATE sessions SET endless_agent_model = ? WHERE id = ?"
+            "UPDATE sessions SET endless_agent_model = ?, endless_agent_effort = ? WHERE id = ?"
         } else {
-            "UPDATE sessions SET endless_model = ? WHERE id = ?"
+            "UPDATE sessions SET endless_model = ?, endless_effort = ? WHERE id = ?"
         };
         let mut tx = self.begin_write().await?;
         sqlx::query(sql)
             .bind(model)
+            .bind(effort)
             .bind(id.to_string())
             .execute(&mut *tx)
             .await?;
@@ -699,19 +701,11 @@ mod tests {
             .await
             .unwrap();
         store
-            .set_endless_model(id, Some("p/chat"), false)
+            .set_endless_model(id, Some("p/chat"), Some("high"), false)
             .await
             .unwrap();
         store
-            .set_endless_model(id, Some("p/desk"), true)
-            .await
-            .unwrap();
-        store
-            .set_endless_effort(id, Some("high"), false)
-            .await
-            .unwrap();
-        store
-            .set_endless_effort(id, Some("low"), true)
+            .set_endless_model(id, Some("p/desk"), Some("low"), true)
             .await
             .unwrap();
         assert_eq!(
@@ -729,10 +723,26 @@ mod tests {
                 agent_effort: Some("low".into()),
             }
         );
-        store.set_endless_model(id, None, false).await.unwrap();
-        assert_eq!(store.endless_meta(id).await.unwrap().model_override, None);
-        store.set_endless_effort(id, None, false).await.unwrap();
-        assert_eq!(store.endless_meta(id).await.unwrap().effort_override, None);
+        store
+            .set_endless_model(id, None, None, false)
+            .await
+            .unwrap();
+        let meta = store.endless_meta(id).await.unwrap();
+        assert_eq!((meta.model_override, meta.effort_override), (None, None));
+        assert_eq!(meta.agent_effort.as_deref(), Some("low"));
+        store
+            .set_endless_effort(id, Some("high"), false)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .endless_meta(id)
+                .await
+                .unwrap()
+                .effort_override
+                .as_deref(),
+            Some("high")
+        );
         assert_eq!(store.endless_sessions().await.unwrap().len(), 1);
         assert_eq!(
             store.session(id).await.unwrap().unwrap().memory,

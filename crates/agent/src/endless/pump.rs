@@ -715,7 +715,9 @@ fn usable_effort(model: &models::Resolved, effort: Option<String>) -> Option<Str
 }
 
 /// The compactor for a session ([`chosen`]; R1-D3 + 137G) with the chain's
-/// effort (194) — every link read live (137F E1). Keyed by model id + effort.
+/// effort (194) — every link read live (137F E1). Keyed by model id, effort
+/// and whether it is the user's pick (two requests differ by it alone: a
+/// listed `low` is also the thinking-off default).
 fn compactor_for(
     inner: &Inner,
     session: SessionId,
@@ -753,7 +755,7 @@ fn compactor_for(
         .as_ref()
         .map(|m| (m.limit.context, m.limit.output));
     (
-        format!("{}|{:?}|{limits:?}", c.model.id, c.effort),
+        format!("{}|{:?}|{}|{limits:?}", c.model.id, c.effort, c.chosen),
         Arc::new(c),
     )
 }
@@ -776,11 +778,9 @@ pub(crate) fn model_compactor(
     let quiet = backend.local_openai(&model);
     // R1 Q1: the compactor never thinks, whatever the session's effort (E8:
     // `think: false` only through genai's own Ollama adapter, not a gateway,
-    // R1-14; 177 E2: never an effort keyword next to the kwargs).
-    let picked = chosen.is_some();
-    let effort = if picked {
-        chosen
-    } else if quiet || (base.is_some() && crate::loop_::ns(&model.genai) == "ollama") {
+    // R1-14; 177 E2: never an effort keyword next to the kwargs) — unless
+    // the user picked a level ([`ModelCompactor::with_pick`]).
+    let effort = if quiet || (base.is_some() && crate::loop_::ns(&model.genai) == "ollama") {
         None
     } else {
         compactor::thinking_off(&model)
@@ -791,11 +791,12 @@ pub(crate) fn model_compactor(
         model,
         system: compactor::prompt(agent),
         effort,
-        chosen: picked,
+        chosen: false,
         local,
         quiet,
         cfg: inner.cfg.clone(),
     }
+    .with_pick(chosen)
 }
 
 /// 177 E9: the fixed sample [`test_summary`] compresses.
@@ -1756,7 +1757,7 @@ async fn call(
     } else {
         cfg.attempt_secs.clamp(10, 3_600)
     }));
-    let reply = compactor::batch_reply_tokens(c.out_tokens(), lines);
+    let reply = c.out_tokens(lines);
     let ctx = fit_ctx(
         ctx,
         ctx_budget(c.as_ref(), step, &cfg, local.is_some(), reply),
@@ -2641,6 +2642,7 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
             String::new()
         },
         effort: usable_effort(state.compactor().model(), chosen(inner, &live.picks).2),
+        effort_override: live.picks.chat_effort.clone(),
         spend_today_usd,
     })
 }
@@ -2823,10 +2825,7 @@ pub(crate) async fn set_model(
         })
     };
     store
-        .set_endless_model(session, model.as_deref(), agent)
-        .await?;
-    store
-        .set_endless_effort(session, effort.as_deref(), agent)
+        .set_endless_model(session, model.as_deref(), effort.as_deref(), agent)
         .await?;
     if let Some(state) = state_of(inner, session) {
         {
@@ -2913,11 +2912,21 @@ pub(crate) fn frontier_failing(inner: &Inner, session: SessionId) -> bool {
 }
 
 /// Test seam (194): the key of the session's compactor in force — its model
-/// id and the effort its requests carry (`{id}|{effort:?}|{limits:?}`).
+/// id, the effort its requests carry and whether that is the user's pick
+/// (`{id}|{effort:?}|{chosen}|{limits:?}`).
 #[cfg(test)]
 pub(crate) fn compactor_key_for_tests(inner: &Inner, session: SessionId) -> String {
     let state = state_of(inner, session).expect("attached");
     state.current.read().key.clone()
+}
+
+/// Test seam (194 R1): the session's compactor in force.
+#[cfg(test)]
+pub(crate) fn compactor_in_force_for_tests(
+    inner: &Inner,
+    session: SessionId,
+) -> Arc<dyn Compactor> {
+    state_of(inner, session).expect("attached").compactor()
 }
 
 /// Test seam: a state over an in-memory store with a scripted compactor is

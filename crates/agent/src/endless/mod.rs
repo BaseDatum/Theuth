@@ -422,6 +422,11 @@ pub struct SessionMemory {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub effort: Option<String>,
+    /// 194 R1: this chat's own compactor effort (`set_session_compactor_effort`),
+    /// stored beside `model_override`; `None` = inherit. The panel's chips show it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub effort_override: Option<String>,
     /// 137G G11: this chat's compactor spend in the current UTC day (USD, `model_calls` kind `endless`).
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(as = "Option<f64>", optional))]
