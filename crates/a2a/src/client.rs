@@ -854,6 +854,14 @@ impl PeerClient {
                     self.remote_text(&e.message)
                 )))
             }
+            // 191 (D3, S4): every machine of the contact said `not owner`.
+            Ok(Err(e)) if e.code == agent::communication::network::NOT_OWNER_CODE => {
+                Err(RemoteSendError::Refused(format!(
+                    "peer {} refused: {} on every machine of it",
+                    self.name,
+                    agent::communication::network::NOT_OWNER_TEXT
+                )))
+            }
             Ok(Err(e)) => Err(RemoteSendError::Refused(format!(
                 "peer {} refused: {} ({})",
                 self.name,

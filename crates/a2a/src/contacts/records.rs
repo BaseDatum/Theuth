@@ -794,9 +794,11 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
         sets.push(bad.map_or(Ok(set), Err));
         signed.push(sig);
     }
-    // Attribution: an endpoint two groups admit stays only with the one that pinned it or
-    // holds a copy it signed; neither (or both), and it is admitted for none until it
-    // co-signs. The overlap never denies it, so a planted listing evicts nobody.
+    // Attribution: an endpoint two groups admit stays only with the one that pinned it (a
+    // human ceremony), else with the one holding a copy it signed; two such (or none), and it
+    // is admitted for none until that resolves. The overlap never denies it elsewhere, so a
+    // planted listing evicts nobody, and a second pin of one contact (a record its roster
+    // already lists, until the merge proof joins them) keeps its machine.
     let mut listed: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, s) in sets.iter().enumerate() {
         for e in s.iter().flatten() {
@@ -804,16 +806,23 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
         }
     }
     for (e, gs) in listed.into_iter().filter(|(_, gs)| gs.len() > 1) {
-        let owns: Vec<usize> = gs
+        let pinned: Vec<usize> = gs
             .iter()
             .copied()
             .filter(|i| {
                 anchors[*i]
                     .iter()
                     .any(|a| a.eid.as_deref() == Some(e.as_str()))
-                    || signed[*i].contains(&e)
             })
             .collect();
+        let owns: Vec<usize> = if pinned.is_empty() {
+            gs.iter()
+                .copied()
+                .filter(|i| signed[*i].contains(&e))
+                .collect()
+        } else {
+            pinned
+        };
         for i in gs {
             if owns != [i]
                 && let Ok(s) = &mut sets[i]
@@ -1895,6 +1904,13 @@ mod tests {
         let s = stage(&r);
         assert_eq!(s.contact_by_eid(&eid(1)), Some("alice"));
         assert_eq!(s.contacts["bob"].eids, vec![eid(5)]);
+        // A pin outranks a signed copy: the record its ceremony made keeps it, even when
+        // another record holds a copy it co-signed (a contact's second pin before the merge).
+        r.local[0] = local("a", 1, &[eid(1), eid(5)], &[eid(5)]);
+        r.local[1] = local("b", 1, &[eid(5)], &[]);
+        let s = stage(&r);
+        assert_eq!(s.contact_by_eid(&eid(5)), Some("bob"));
+        assert_eq!(s.contact_by_eid(&eid(1)), Some("alice"));
     }
 
     /// 191 (D1 merge proof): two records whose rosters each list the other's pin merge (two

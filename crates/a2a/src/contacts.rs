@@ -952,7 +952,9 @@ impl crate::Ctx {
             .staged
             .contacts
             .values()
-            .any(|c| c.display == shown && c.eid != peer);
+            // 191: a machine the contact's roster already lists is that contact, not a
+            // lookalike.
+            .any(|c| c.display == shown && c.eid != peer && !c.eids.iter().any(|e| e == peer));
         if lookalike {
             tracing::warn!(%shown, %peer, "a2a: ceremony peer has the name of an existing contact but another key");
         }
@@ -1072,7 +1074,17 @@ impl crate::Ctx {
         let now = mesh::identity::now_ms() as i64;
         let r = self.records().await?;
         let a = records::analyze(&r);
+        // A live record whose anchor is `eid`, else (191 D1: "an endpoint that already belongs
+        // to a live record") the contact whose current roster admits it: Pair again adds a
+        // pin to it, never a second record.
+        let listed = {
+            let live = self.shared.read();
+            live.staged
+                .contact_by_eid(&eid)
+                .map(|alias| live.staged.contacts[alias].id.clone())
+        };
         let known = records::record_with_eid(&r, &eid, false)
+            .or_else(|| listed.and_then(|id| r.contacts.iter().find(|c| c.id == id)))
             .map(|c| records::group_of(&a, &c.id).map_or(vec![c], |g| g.members.clone()));
         let mut w = Vec::new();
         let record = match known {

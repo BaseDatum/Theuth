@@ -487,8 +487,9 @@ impl Ctx {
     }
 }
 
-/// The contacts (by endpoint id) whose granted offers differ between `prev` and `next`;
-/// a contact new in `next` is left out (it fetches our card at pairing).
+/// The contacts (191: every machine of each, by endpoint id) whose granted offers differ
+/// between `prev` and `next`; a contact new in `next` is left out (it fetches our card at
+/// pairing).
 pub(crate) fn changed(prev: &Staged, next: &Staged) -> Vec<String> {
     let before: HashMap<&str, (&str, Vec<ContactOffer>)> = prev
         .contacts
@@ -500,7 +501,8 @@ pub(crate) fn changed(prev: &Staged, next: &Staged) -> Vec<String> {
         .filter(|(_, f)| !f.blocked)
         .filter_map(|(alias, f)| {
             let (_, old) = before.get(f.eid.as_str())?;
-            (*old != granted(next, alias)).then(|| f.eid.clone())
+            (*old != granted(next, alias)).then(|| f.eids.clone())
         })
+        .flatten()
         .collect()
 }
