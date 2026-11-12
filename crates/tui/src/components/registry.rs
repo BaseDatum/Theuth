@@ -35,6 +35,7 @@ pub fn builtin() -> Registry {
     registry.register(knowledge::Knowledge::default()).expect("built-in component registration");
     registry.register(mcp::Mcp::default()).expect("built-in component registration");
     registry.register(search_attach::SearchAttach::default()).expect("built-in component registration");
+    registry.register(dictation_voice::DictationVoice::default()).expect("built-in component registration");
 
     // Model-picker panels (after design 194): register below, in this block only.
     registry
@@ -273,7 +274,9 @@ impl Registry {
                         0 => capture && component.composer_mode() == mode,
                         1 => !capture && focused,
                         _ => !capture && !focused && component.declaration().bindings.iter().any(|binding|
-                            binding.class == class && binding.code == key.code && binding.modifiers == key.modifiers
+                            binding.class == class && binding.code == key.code
+                                && (binding.modifiers == key.modifiers
+                                    || (class == FocusClass::Spoken && key.modifiers.contains(binding.modifiers)))
                         ),
                     };
                     if selected { component.input(Input::Key(key), &owner_core, token, self.epoch, &mut out); }

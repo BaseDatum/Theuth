@@ -134,7 +134,7 @@ pub fn residual(event: &TopicEvent) -> Option<UiEvent> {
         Some("tools.ask-resolved") => decode!(tools::AskResolved, AskResolved),
         Some("agent.login") => decode!(agent::LoginFinished, LoginFinished),
         Some("artifact.shown") => decode!(artifact::ArtifactShown, ArtifactShown),
-        Some("voice.events") => decode!(voice::VoiceEvent, Voice),
+        Some("voice.events") if value["type"] == "SpeechFinished" => decode!(voice::VoiceEvent, Voice),
         Some("talk.events") => decode!(talk::TalkEvent, Talk),
         None => legacy(value, matches!(event, TopicEvent::Local(_))),
         _ => None,
@@ -165,7 +165,7 @@ fn legacy(value: &Value, _local: bool) -> Option<UiEvent> {
     }
     owner!(agent::AgentEvent, Agent);
 
-    owner!(voice::VoiceEvent, Voice);
+    if value["type"] == "SpeechFinished" { owner!(voice::VoiceEvent, Voice); }
     owner!(talk::TalkEvent, Talk);
     None
 }

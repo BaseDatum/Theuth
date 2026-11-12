@@ -50,12 +50,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "",
         "subagents of this session (picker: ⏎ opens one)",
     ),
-    ("/dictate", "", "toggle dictation (Ctrl+D)"),
-    (
-        "/voice",
-        "[mic <name|default> | shape <full|plain|off>]",
-        "dictation: mics and last timings; pick the mic; the TUI's shaping preset",
-    ),
     (
         "/talk",
         "",

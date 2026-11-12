@@ -130,6 +130,27 @@
         assert!(slash_matches("/zzz", true).is_empty());
     }
 
+    use crate::components::dictation_voice::{DictationVoice, Request as DictationRequest, Msg as DictationMsg, voice_cmd, voice_line};
+    use crate::components::dictation_voice::state::Phase;
+    fn dictation(model: &Model) -> &DictationVoice { model.components.get::<DictationVoice>().unwrap() }
+    fn dictation_mut(model: &mut Model) -> &mut DictationVoice { model.components.get_mut::<DictationVoice>().unwrap() }
+    fn voice_event(event: voice::VoiceEvent) -> UiEvent { wire_event("voice.events", event) }
+    fn dictation_reply(model: &Model, body: DictationMsg) -> UiEvent {
+        UiEvent::Component(crate::components::LocalReply {
+            to: model.components.token("dictation-voice"), engine_epoch: 0, body: Box::new(body),
+        })
+    }
+    fn dictation_action(model: &mut Model, action: DictationMsg) -> Option<DictationRequest> {
+        let (tx, mut rx) = unbounded_channel();
+        let previous = model.component_commands.replace(tx);
+        component_reply(model, "dictation-voice", action);
+        model.component_commands = previous;
+        component_request(&mut rx).ok()
+    }
+    fn dictation_toggle(model: &mut Model, before: String, after: String) -> Option<DictationRequest> {
+        dictation_action(model, DictationMsg::Toggle { before, after })
+    }
+
     /// 54 §5.2: Ctrl+D needs `Ready`, anchors the caret, tracks only our
     /// id, stops on the second press and splices on `Finished`; Esc restores
     /// `before + after` and the later `Finished` splices nothing.
@@ -137,32 +158,32 @@
     fn dictation_lifecycle() {
         use voice::{DictationId, FinishReason, ModelState, VoiceEvent};
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), true);
         // Not ready: a reason, no command.
-        assert!(m.toggle_dictation("a".into(), "b".into()).is_none());
+        assert!(dictation_toggle(&mut m, "a".into(), "b".into()).is_none());
         assert!(matches!(m.entries.last(), Some(Entry::Info(s)) if s.contains("missing")));
-        m.apply(UiEvent::Voice(VoiceEvent::DictationModel {
+        m.apply(voice_event(VoiceEvent::DictationModel {
             state: ModelState::Ready,
         }));
         assert!(matches!(
-            m.toggle_dictation("hello".into(), "world".into()),
-            Some(Command::DictationStart { .. })
+            dictation_toggle(&mut m, "hello".into(), "world".into()),
+            Some(DictationRequest::DictationStart { .. })
         ));
         // A second press while the reply is pending does nothing.
-        assert!(m.toggle_dictation(String::new(), String::new()).is_none());
+        assert!(dictation_toggle(&mut m, String::new(), String::new()).is_none());
         let id = DictationId(Uuid::now_v7());
         let other = DictationId(Uuid::now_v7());
-        m.apply(UiEvent::DictationStarting(id));
+        m.apply(dictation_reply(&m, DictationMsg::Starting(id)));
         assert!(!m.input_focused() && m.animating());
-        assert_eq!(m.dictation.as_ref().map(|d| d.phase), Some(Phase::Starting));
-        m.apply(UiEvent::Voice(VoiceEvent::DictationStarted { id: other }));
-        assert_eq!(m.dictation.as_ref().map(|d| d.phase), Some(Phase::Starting));
-        m.apply(UiEvent::Voice(VoiceEvent::DictationStarted { id }));
+        assert_eq!(dictation(&m).dictation.as_ref().map(|d| d.phase), Some(Phase::Starting));
+        m.apply(voice_event(VoiceEvent::DictationStarted { id: other }));
+        assert_eq!(dictation(&m).dictation.as_ref().map(|d| d.phase), Some(Phase::Starting));
+        m.apply(voice_event(VoiceEvent::DictationStarted { id }));
         assert_eq!(
-            m.dictation.as_ref().map(|d| d.phase),
+            dictation(&m).dictation.as_ref().map(|d| d.phase),
             Some(Phase::Dictating)
         );
-        m.apply(UiEvent::Voice(VoiceEvent::DictationText {
+        m.apply(voice_event(VoiceEvent::DictationText {
             id: other,
             utterance: 0,
             text: "not ours".into(),
@@ -171,7 +192,7 @@
             command: None,
             actions: vec![],
         }));
-        m.apply(UiEvent::Voice(VoiceEvent::DictationText {
+        m.apply(voice_event(VoiceEvent::DictationText {
             id,
             utterance: 0,
             text: "this is".into(),
@@ -180,7 +201,7 @@
             command: None,
             actions: vec![],
         }));
-        m.apply(UiEvent::Voice(VoiceEvent::DictationText {
+        m.apply(voice_event(VoiceEvent::DictationText {
             id,
             utterance: 0,
             text: "this is a test.".into(),
@@ -189,26 +210,26 @@
             command: None,
             actions: vec![],
         }));
-        m.apply(UiEvent::Voice(VoiceEvent::DictationLevel {
+        m.apply(voice_event(VoiceEvent::DictationLevel {
             id,
             levels: vec![0.5; 8],
         }));
-        assert_eq!(m.dictation.as_ref().unwrap().levels.len(), 8);
+        assert_eq!(dictation(&m).dictation.as_ref().unwrap().levels.len(), 8);
         assert!(matches!(
-            m.toggle_dictation(String::new(), String::new()),
-            Some(Command::DictationStop(i)) if i == id
+            dictation_toggle(&mut m, String::new(), String::new()),
+            Some(DictationRequest::DictationStop(i)) if i == id
         ));
-        assert_eq!(m.dictation.as_ref().map(|d| d.phase), Some(Phase::Stopping));
-        m.apply(UiEvent::Voice(VoiceEvent::DictationFinished {
+        assert_eq!(dictation(&m).dictation.as_ref().map(|d| d.phase), Some(Phase::Stopping));
+        m.apply(voice_event(VoiceEvent::DictationFinished {
             id: other,
             reason: FinishReason::Done,
         }));
-        assert!(m.dictation.is_some() && m.pending_input.is_none());
-        m.apply(UiEvent::Voice(VoiceEvent::DictationFinished {
+        assert!(dictation(&m).dictation.is_some() && m.pending_input.is_none());
+        m.apply(voice_event(VoiceEvent::DictationFinished {
             id,
             reason: FinishReason::Done,
         }));
-        assert!(m.dictation.is_none() && m.input_focused());
+        assert!(dictation(&m).dictation.is_none() && m.input_focused());
         assert_eq!(
             m.pending_input.take(),
             Some((
@@ -218,9 +239,9 @@
         );
 
         // Esc: restored at once; `Finished` afterwards changes nothing.
-        m.toggle_dictation("hel".into(), "lo".into());
-        m.apply(UiEvent::DictationStarting(id));
-        m.apply(UiEvent::Voice(VoiceEvent::DictationText {
+        dictation_toggle(&mut m, "hel".into(), "lo".into());
+        m.apply(dictation_reply(&m, DictationMsg::Starting(id)));
+        m.apply(voice_event(VoiceEvent::DictationText {
             id,
             utterance: 0,
             text: "there".into(),
@@ -229,23 +250,23 @@
             command: None,
             actions: vec![],
         }));
-        assert!(matches!(m.discard_dictation(), Some(Command::DictationStop(i)) if i == id));
+        assert!(matches!(dictation_action(&mut m, DictationMsg::Discard), Some(DictationRequest::DictationStop(i)) if i == id));
         assert_eq!(m.pending_input.take(), Some(("hello".into(), 3)));
-        m.apply(UiEvent::Voice(VoiceEvent::DictationFinished {
+        m.apply(voice_event(VoiceEvent::DictationFinished {
             id,
             reason: FinishReason::Error {
                 message: "mic".into(),
             },
         }));
-        assert!(m.dictation.is_none() && m.pending_input.is_none());
+        assert!(dictation(&m).dictation.is_none() && m.pending_input.is_none());
         assert!(matches!(m.entries.last(), Some(Entry::Error(s)) if s == "dictation: mic"));
 
         // A refused start clears the anchor; `/dictate` routes to the same toggle.
-        m.toggle_dictation("x".into(), String::new());
-        m.apply(UiEvent::DictationFailed("already dictating".into()));
-        assert!(m.dictation_pending.is_none());
+        dictation_toggle(&mut m, "x".into(), String::new());
+        m.apply(dictation_reply(&m, DictationMsg::Failed("already dictating".into())));
+        assert!(dictation(&m).dictation_pending.is_none());
         m.submit("/dictate", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::DictationStart { .. })));
+        assert!(matches!(component_request::<DictationRequest>(&mut rx), Ok(DictationRequest::DictationStart { .. })));
     }
 
     fn text_ev(
@@ -256,7 +277,7 @@
         command: Option<voice::EndCommand>,
         is_final: bool,
     ) -> UiEvent {
-        UiEvent::Voice(voice::VoiceEvent::DictationText {
+        voice_event(voice::VoiceEvent::DictationText {
             id,
             utterance,
             text: text.into(),
@@ -268,14 +289,14 @@
     }
 
     fn ready_dictating(before: &str, after: &str) -> (Model, voice::DictationId) {
-        let mut m = Model::default();
-        m.apply(UiEvent::Voice(voice::VoiceEvent::DictationModel {
+        let mut m = Model::new(String::new(), true);
+        m.apply(voice_event(voice::VoiceEvent::DictationModel {
             state: voice::ModelState::Ready,
         }));
-        m.toggle_dictation(before.into(), after.into());
+        dictation_toggle(&mut m, before.into(), after.into());
         let id = voice::DictationId(Uuid::now_v7());
-        m.apply(UiEvent::DictationStarting(id));
-        m.apply(UiEvent::Voice(voice::VoiceEvent::DictationStarted { id }));
+        m.apply(dictation_reply(&m, DictationMsg::Starting(id)));
+        m.apply(voice_event(voice::VoiceEvent::DictationStarted { id }));
         (m, id)
     }
 
@@ -296,7 +317,7 @@
             send,
             false,
         ));
-        assert!(m.dictation.as_ref().unwrap().send);
+        assert!(dictation(&m).dictation.as_ref().unwrap().send);
         m.apply(text_ev(
             id,
             0,
@@ -305,23 +326,23 @@
             send,
             true,
         ));
-        m.apply(UiEvent::Voice(VoiceEvent::DictationFinished {
+        m.apply(voice_event(VoiceEvent::DictationFinished {
             id,
             reason: FinishReason::Done,
         }));
         assert_eq!(m.pending_send.take(), Some("hello world".into()));
-        assert!(m.pending_input.is_none() && m.dictation.is_none());
-        assert_eq!(m.dictated, Some(id));
+        assert!(m.pending_input.is_none() && dictation(&m).dictation.is_none());
+        assert_eq!(dictation(&m).dictated, Some(id));
         // The UI loop submits the value: the correction goes first, then the message.
         m.submit("hello world", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::DictationCorrection { id: i, text }) if i == id && text == "hello world"
+            component_request::<DictationRequest>(&mut rx),
+            Ok(DictationRequest::DictationCorrection { id: i, text }) if i == id && text == "hello world"
         ));
         assert!(matches!(rx.try_recv(), Ok(Command::Send { text, .. }) if text == "hello world"));
-        assert!(m.dictated.is_none());
+        assert!(dictation(&m).dictated.is_none());
         // A second `Finished` for the same id is nothing.
-        m.apply(UiEvent::Voice(VoiceEvent::DictationFinished {
+        m.apply(voice_event(VoiceEvent::DictationFinished {
             id,
             reason: FinishReason::Done,
         }));
@@ -331,9 +352,9 @@
         // Armed, then a typed key: stop without the send; the splice lands in the editor.
         let (mut m, id) = ready_dictating("a", "");
         m.apply(text_ev(id, 0, "x send it", "x", send, false));
-        assert!(matches!(m.stop_dictation(false), Some(Command::DictationStop(i)) if i == id));
-        assert!(!m.dictation.as_ref().unwrap().send);
-        m.apply(UiEvent::Voice(VoiceEvent::DictationFinished {
+        assert!(matches!(dictation_mut(&mut m).stop_dictation(false), Some(DictationRequest::DictationStop(i)) if i == id));
+        assert!(!dictation(&m).dictation.as_ref().unwrap().send);
+        m.apply(voice_event(VoiceEvent::DictationFinished {
             id,
             reason: FinishReason::Done,
         }));
@@ -344,14 +365,14 @@
         let (mut m, id) = ready_dictating("", "");
         m.apply(text_ev(id, 0, "x send it", "x", send, true));
         m.apply(text_ev(id, 1, "more", "more", None, false));
-        assert!(!m.dictation.as_ref().unwrap().send);
+        assert!(!dictation(&m).dictation.as_ref().unwrap().send);
         m.apply(text_ev(id, 1, "more send it", "more", send, false));
         assert!(matches!(
-            m.stop_dictation(true),
-            Some(Command::DictationStop(_))
+            dictation_mut(&mut m).stop_dictation(true),
+            Some(DictationRequest::DictationStop(_))
         ));
-        assert!(m.dictation.as_ref().unwrap().send);
-        m.apply(UiEvent::Voice(VoiceEvent::DictationFinished {
+        assert!(dictation(&m).dictation.as_ref().unwrap().send);
+        m.apply(voice_event(VoiceEvent::DictationFinished {
             id,
             reason: FinishReason::Done,
         }));
@@ -360,12 +381,12 @@
         // "send it" with nothing to send: the (empty) splice lands, no submit, no correction.
         let (mut m, id) = ready_dictating("", "");
         m.apply(text_ev(id, 0, "send it", "", send, true));
-        m.apply(UiEvent::Voice(VoiceEvent::DictationFinished {
+        m.apply(voice_event(VoiceEvent::DictationFinished {
             id,
             reason: FinishReason::Done,
         }));
         assert_eq!(m.pending_input.take(), Some((String::new(), 0)));
-        assert!(m.pending_send.is_none() && m.dictated.is_none());
+        assert!(m.pending_send.is_none() && dictation(&m).dictated.is_none());
     }
 
     /// 153 §6.4: the suggestion line takes the keys, answers once, ignores
@@ -374,7 +395,7 @@
     fn suggestion_keys() {
         use voice::{SuggestionAnswer, SuggestionId, Surface, VoiceEvent};
         let suggestion = |surface: Surface| {
-            UiEvent::Voice(VoiceEvent::DictionarySuggestion {
+            voice_event(VoiceEvent::DictionarySuggestion {
                 id: SuggestionId(Uuid::now_v7()),
                 heard: "parakeet tee dee tee".into(),
                 typed: "Parakeet TDT".into(),
@@ -383,36 +404,36 @@
                 has_audio: false,
             })
         };
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), true);
         m.apply(suggestion(Surface::Composer));
-        assert!(m.suggestion.is_none() && m.input_focused());
+        assert!(dictation(&m).suggestion.is_none() && m.input_focused());
         m.apply(suggestion(Surface::Tui));
-        let s = m.suggestion.clone().expect("shown");
+        let s = dictation(&m).suggestion.clone().expect("shown");
         assert!(!m.input_focused());
         assert!(s.line().contains("“parakeet tee dee tee” → “Parakeet TDT”"));
-        assert_eq!(m.suggestion_wake(), Some(s.shown_ms + 20_000));
-        m.expire_suggestion(s.shown_ms + 19_999);
-        assert!(m.suggestion.is_some());
+        assert_eq!(dictation(&m).suggestion_wake(), Some(s.shown_ms + 20_000));
+        dictation_mut(&mut m).expire_suggestion(s.shown_ms + 19_999);
+        assert!(dictation(&m).suggestion.is_some());
         for (answer, label) in [
             (SuggestionAnswer::Add, "y"),
             (SuggestionAnswer::NotNow, "n"),
             (SuggestionAnswer::Never, "N"),
         ] {
-            m.suggestion = Some(s.clone());
+            dictation_mut(&mut m).suggestion = Some(s.clone());
             assert!(
                 matches!(
-                    m.answer_suggestion(answer),
-                    Some(Command::SuggestionAnswer { id, answer: a }) if id == s.id && a == answer
+                    dictation_mut(&mut m).answer_suggestion(answer),
+                    Some(DictationRequest::SuggestionAnswer { id, answer: a }) if id == s.id && a == answer
                 ),
                 "{label}"
             );
-            assert!(m.suggestion.is_none() && m.input_focused());
+            assert!(dictation(&m).suggestion.is_none() && m.input_focused());
             // Answered once: a second key does nothing.
-            assert!(m.answer_suggestion(answer).is_none());
+            assert!(dictation_mut(&mut m).answer_suggestion(answer).is_none());
         }
-        m.suggestion = Some(s.clone());
-        m.expire_suggestion(s.shown_ms + 20_000);
-        assert!(m.suggestion.is_none() && m.suggestion_wake().is_none());
+        dictation_mut(&mut m).suggestion = Some(s.clone());
+        dictation_mut(&mut m).expire_suggestion(s.shown_ms + 20_000);
+        assert!(dictation(&m).suggestion.is_none() && dictation(&m).suggestion_wake().is_none());
     }
 
     /// 153 §8.2: the mic note rides the header; other ids are ignored.
@@ -420,28 +441,28 @@
     fn dictation_device_note() {
         use voice::{DeviceState, VoiceEvent};
         let (mut m, id) = ready_dictating("", "");
-        m.apply(UiEvent::Voice(VoiceEvent::DictationDevice {
+        m.apply(voice_event(VoiceEvent::DictationDevice {
             id: voice::DictationId(Uuid::now_v7()),
             device: None,
             state: DeviceState::Lost,
         }));
-        assert!(m.dictation.as_ref().unwrap().mic.is_none());
-        m.apply(UiEvent::Voice(VoiceEvent::DictationDevice {
+        assert!(dictation(&m).dictation.as_ref().unwrap().mic.is_none());
+        m.apply(voice_event(VoiceEvent::DictationDevice {
             id,
             device: None,
             state: DeviceState::Lost,
         }));
         assert_eq!(
-            m.dictation.as_ref().unwrap().mic.as_deref(),
+            dictation(&m).dictation.as_ref().unwrap().mic.as_deref(),
             Some("mic lost — reconnecting…")
         );
-        m.apply(UiEvent::Voice(VoiceEvent::DictationDevice {
+        m.apply(voice_event(VoiceEvent::DictationDevice {
             id,
             device: Some("Shure MV7".into()),
             state: DeviceState::Changed,
         }));
         assert_eq!(
-            m.dictation.as_ref().unwrap().mic.as_deref(),
+            dictation(&m).dictation.as_ref().unwrap().mic.as_deref(),
             Some("mic → Shure MV7")
         );
     }
@@ -450,33 +471,33 @@
     #[test]
     fn voice_cmd_parses() {
         use voice::Preset;
-        assert!(matches!(voice_cmd(""), Ok(Command::VoiceStatus)));
+        assert!(matches!(voice_cmd(""), Ok(DictationRequest::VoiceStatus)));
         assert!(
-            matches!(voice_cmd("mic default"), Ok(Command::SetInputDevices(v)) if v.is_empty())
+            matches!(voice_cmd("mic default"), Ok(DictationRequest::SetInputDevices(v)) if v.is_empty())
         );
         assert!(matches!(
             voice_cmd("mic Shure MV7"),
-            Ok(Command::SetInputDevices(v)) if v == ["Shure MV7"]
+            Ok(DictationRequest::SetInputDevices(v)) if v == ["Shure MV7"]
         ));
         assert!(matches!(
             voice_cmd("shape plain"),
-            Ok(Command::SetShape(Preset::Plain))
+            Ok(DictationRequest::SetShape(Preset::Plain))
         ));
         assert!(matches!(
             voice_cmd("shape off"),
-            Ok(Command::SetShape(Preset::Off))
+            Ok(DictationRequest::SetShape(Preset::Off))
         ));
         assert!(matches!(
             voice_cmd("shape full"),
-            Ok(Command::SetShape(Preset::Full))
+            Ok(DictationRequest::SetShape(Preset::Full))
         ));
         for bad in ["mic", "shape", "shape loud", "nonsense"] {
             assert!(voice_cmd(bad).is_err(), "{bad}");
         }
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), true);
         m.submit("/voice mic default", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::SetInputDevices(v)) if v.is_empty()));
+        assert!(matches!(component_request::<DictationRequest>(&mut rx), Ok(DictationRequest::SetInputDevices(v)) if v.is_empty()));
         m.submit("/voice shape", &tx);
         assert!(
             matches!(m.entries.last(), Some(Entry::Error(e)) if e.starts_with("usage: /voice"))
@@ -8411,4 +8432,38 @@
             info(worker, SessionKind::Chat),
         ]));
         assert_eq!(m.agents.keys().copied().collect::<Vec<_>>(), [worker]);
+    }
+
+    #[tokio::test]
+    async fn late_dictation_correction_after_editor_replacement_keeps_new_draft() {
+        type Calls = Arc<parking_lot::Mutex<Vec<(voice::DictationId, String)>>>;
+        fn module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+            let mut module = jsonrpsee::RpcModule::new(server);
+            module.register_method("dictation_correction", |params, server, _| {
+                let sent: (voice::DictationId, String) = params.parse()?;
+                server.rt.extension::<Calls>(Default::default).lock().push(sent);
+                Ok::<_, jsonrpsee::types::ErrorObjectOwned>(())
+            }).unwrap();
+            module
+        }
+        let (mut model, id) = ready_dictating("", "");
+        model.session = Some(SessionId::new());
+        model.apply(text_ev(id, 0, "dictated draft", "dictated draft", None, true));
+        model.apply(voice_event(voice::VoiceEvent::DictationFinished { id, reason: voice::FinishReason::Done }));
+        assert_eq!(model.pending_input.take(), Some(("dictated draft".into(), 14)));
+        let (tx, mut commands) = unbounded_channel();
+        model.submit("dictated draft corrected", &tx);
+        let Command::Component(correction) = commands.try_recv().unwrap() else { panic!("correction effect") };
+        assert!(matches!(commands.try_recv(), Ok(Command::Send { text, .. }) if text == "dictated draft corrected"));
+        model.component_notify(crate::components::Lifecycle::ComposerEdited("new unsent draft"));
+        model.pending_input = Some(("new unsent draft".into(), 3));
+        let rt = runtime::Runtime::new(Default::default(), std::env::temp_dir());
+        let calls = rt.extension::<Calls>(Default::default);
+        let engine = Arc::new(rpc::client::Engine::Local(rpc::client::Local::new(rt.clone(), module)));
+        model.apply(crate::components::execute(correction, engine).await);
+        assert_eq!(*calls.lock(), [(id, "dictated draft corrected".into())]);
+        assert_eq!(model.pending_input.take(), Some(("new unsent draft".into(), 3)));
+        assert!(model.pending_send.is_none() && dictation(&model).dictated.is_none());
+        assert!(commands.try_recv().is_err());
+        rt.shutdown.cancel();
     }
