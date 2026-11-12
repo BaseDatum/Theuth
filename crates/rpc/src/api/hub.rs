@@ -2,6 +2,7 @@ use super::*;
 use sessionsync::rpc_support::RpcSessionMoveExt;
 use super::sessions::SessionStateExt;
 use talk::rpc_support::dictation;
+use roster::rpc_support::tasks_actor;
 
 #[rpc(server, client)]
 pub trait CoreApi {

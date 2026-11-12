@@ -1,7 +1,6 @@
 //! The JSON-RPC surface. Every method is a lazy registry lookup plus one
 //! `ask`; event subscriptions drain the owner-declared `wire` feed.
 
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
@@ -62,10 +61,7 @@ use knowledge::{
     KnowledgeActor, List, Meta, Put, PutConcept, Restore, Revision, RevisionOf, Search, Source,
     SyncNow, Write,
 };
-use link::{
-    CancelPair, Enable, LinkConfig, LinkStatus, Pair, Pairing, Rename,
-    RenameDevice, Revoke,
-};
+use link::{LinkConfig, LinkStatus};
 
 use runtime::{Runtime, SessionId};
 use serde::de::DeserializeOwned;
@@ -187,17 +183,8 @@ pub mod documents;
 pub mod notebooks;
 /// Messaging RPC server and client traits.
 pub mod messaging;
-/// Network RPC server and client traits.
-pub mod network;
-/// Routines RPC server and client traits.
-pub mod routines;
-/// Boards RPC server and client traits.
-pub mod boards;
 /// Artifacts RPC server and client traits.
 pub mod artifacts;
-/// Credentials RPC server and client traits.
-pub mod credentials;
-
 
 pub use hub::{CoreApiClient, CoreApiServer};
 pub use sessions::{SessionsApiClient, SessionsApiServer};
@@ -208,12 +195,7 @@ pub use concepts::{ConceptsApiClient, ConceptsApiServer};
 pub use documents::{DocumentsApiClient, DocumentsApiServer};
 pub use notebooks::{NotebooksApiClient, NotebooksApiServer};
 pub use messaging::{MessagingApiClient, MessagingApiServer};
-pub use network::{NetworkApiClient, NetworkApiServer};
-pub use routines::{RoutinesApiClient, RoutinesApiServer};
-pub use boards::{BoardsApiClient, BoardsApiServer};
 pub use artifacts::{ArtifactsApiClient, ArtifactsApiServer};
-pub use credentials::{CredentialsApiClient, CredentialsApiServer};
-
 
 /// All domain client traits for typed methods on any jsonrpsee client.
 pub mod clients {
@@ -231,11 +213,11 @@ pub mod clients {
     pub use super::notebooks::NotebooksApiClient;
     pub use ::codeindex::rpc::CodemapApiClient;
     pub use super::messaging::MessagingApiClient;
-    pub use super::network::NetworkApiClient;
-    pub use super::routines::RoutinesApiClient;
-    pub use super::boards::BoardsApiClient;
+    pub use nodes::NetworkApiClient;
+    pub use schedule::RoutinesApiClient;
+    pub use roster::BoardsApiClient;
     pub use super::artifacts::ArtifactsApiClient;
-    pub use super::credentials::CredentialsApiClient;
+    pub use secrets::CredentialsApiClient;
     pub use talk::SpeechApiClient;
     pub use meeting::MeetingsApiClient;
     pub use ::cells::rpc::KernelsApiClient;
@@ -259,11 +241,11 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         notebooks::rpc_module(server.clone()),
         ::codeindex::rpc_module(server.clone()),
         messaging::rpc_module(server.clone()),
-        network::rpc_module(server.clone()),
-        routines::rpc_module(server.clone()),
-        boards::rpc_module(server.clone()),
+        nodes::rpc_module(server.clone()),
+        schedule::rpc_module(server.clone()),
+        roster::rpc_module(server.clone()),
         artifacts::rpc_module(server.clone()),
-        credentials::rpc_module(server.clone()),
+        secrets::rpc_module(server.clone()),
         talk::rpc_module(server.clone()),
         meeting::rpc_module(server.clone()),
         dreaming::rpc_module(server.clone()),
@@ -528,13 +510,6 @@ async fn route_question_via<T: DeserializeOwned>(
     }
 }
 
-/// The nodes actor; absent when `nodes.enabled: false` or the plugin is not loaded.
-fn nodes() -> RpcResult<ActorRef<nodes::NodesActor>> {
-    lookup::<nodes::NodesActor>(nodes::NODES_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "nodes is disabled", None::<()>),
-        _ => e,
-    })
-}
 
 
 
@@ -566,10 +541,6 @@ async fn name_paired_on(contacts: &mut [a2a::contacts::Contact]) {
 }
 
 
-/// The tasks actor; absent when the plugin is not loaded or its store failed (67 §7).
-fn tasks_actor() -> RpcResult<ActorRef<tasks::Tasks>> {
-    lookup::<tasks::Tasks>(tasks::TASKS_ACTOR)
-}
 
 
 
