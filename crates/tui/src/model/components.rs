@@ -72,10 +72,8 @@ impl Model {
                     }
                 }
                 CoreAction::Reject(text) => self.entries.push(Entry::Error(text)),
-                CoreAction::AppendCard(card) => self.entries.push(Entry::Card {
-                    kind: CardKind::Component { group: card.group, key: card.key, glyph: card.glyph, color: card.color },
-                    title: card.title, text: Box::new(markdown::Text::complete(&card.body)), expanded: card.expanded,
-                }),
+                CoreAction::AppendCard(card) => self.entries.push(card.into()),
+                CoreAction::InterjectCard(card) => self.interject(card.into()),
                 CoreAction::ReplaceCard { group, key, body } => {
                     if let Some(Entry::Card { kind: CardKind::Component { key: current, .. }, text, .. }) =
                         self.entries.iter_mut().rev().find(|entry| matches!(entry,
@@ -352,4 +350,57 @@ impl crate::components::SessionMembers for HashMap<SessionId, AgentRow> {
     fn member(&self, id: SessionId) -> Option<crate::components::SessionMember<'_>> {
         self.get(&id).map(|row| crate::components::SessionMember { name: &row.info.name, project: row.info.project.as_deref() })
     }
+}
+
+#[test]
+fn component_cards_interject_without_rebuilding_rendered_text_or_splitting_stream() {
+    use crate::components::{Component, Declaration, Input, Cx, TranscriptCard, LocalReply};
+    use std::sync::Arc;
+    struct Cards;
+    impl Component for Cards {
+        type Msg = CoreAction;
+        fn declaration(&self) -> Declaration {
+            Declaration { id: "rendered-cards", interests: &[], slash: &[], bindings: &[] }
+        }
+        fn decode(&self, _: &TopicEvent, _: &CoreView<'_>) -> Option<CoreAction> { None }
+        fn update(&mut self, input: Input<'_, CoreAction>, cx: &mut Cx<'_, '_, CoreAction>) {
+            if let Input::Message(action) = input { cx.core(action); }
+        }
+        fn view(&self, _: Surface<'_>, _: &ViewCx<'_>) -> Option<View> { None }
+    }
+    let mut model = Model::default();
+    let session = SessionId::new();
+    let turn = runtime::TurnId::new();
+    model.session = Some(session);
+    model.streaming = true;
+    model.apply(crate::model::UiEvent::Agent(agent::AgentEvent::TextDelta { session, turn, text: "before ".into() }));
+    let token = model.components.register(Cards).unwrap();
+    let mut body = markdown::Text::with(markdown::Options {
+        width: 31,
+        fence: Some(Arc::new(|_, _, width| Some(vec![vec![markdown::Span {
+            text: format!("diagram@{width}"), style: markdown::Style::default(),
+        }]]))),
+    });
+    body.push("```diagram\nsource\n```\n");
+    body.finish();
+    body.reveal_all();
+    model.apply(crate::model::UiEvent::Component(LocalReply {
+        to: token, engine_epoch: 0,
+        body: Box::new(CoreAction::InterjectCard(TranscriptCard {
+            group: "test", key: uuid::Uuid::new_v4(), glyph: "▣", color: iocraft::Color::Cyan,
+            title: "rendered".into(), body, expanded: true, plain: false,
+        })),
+    }));
+    model.apply(crate::model::UiEvent::Agent(agent::AgentEvent::TextDelta { session, turn, text: "after".into() }));
+    let Entry::Card { text, .. } = &model.entries[0] else { panic!("interjected card") };
+    let rendered: String = text.view().lines().flat_map(|line| line.iter().map(|span| span.text.as_str())).collect();
+    assert_eq!(rendered, "diagram@31");
+    assert!(matches!(&model.entries[1], Entry::Assistant(text) if text.raw() == "before after" && !text.is_done()));
+    assert_eq!(model.entries.len(), 2);
+    let literal: Entry = TranscriptCard {
+        group: "literal", key: uuid::Uuid::new_v4(), glyph: "⟵", color: iocraft::Color::Cyan,
+        title: "remote".into(), body: markdown::Text::complete("**now**\n# head\nmore"),
+        expanded: true, plain: true,
+    }.into();
+    assert_eq!(literal.height(80), 7);
 }

@@ -312,7 +312,7 @@ fn replacement_group_freezes_older_cards_without_crossing_groups() {
     }));
     for (group, key, title) in [("shared", old, "old"), ("shared", new, "new"), ("separate", separate, "separate")] {
         apply(CoreAction::AppendCard(TranscriptCard {
-            group, key, title: title.into(), body: title.into(), expanded: true,
+            group, key, title: title.into(), body: markdown::Text::complete(title), expanded: true, plain: false,
             glyph: "⌁", color: iocraft::Color::Cyan,
         }));
     }
@@ -389,3 +389,4 @@ fn intrinsic_secret_editor_restores_underlying_wizard_without_focus_loss() {
     registry.submit("continue wizard", &core());
     assert!(registry.editor().is_none());
 }
+
