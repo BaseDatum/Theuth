@@ -488,6 +488,8 @@ pub trait Component: Send + Sync + 'static {
     // Step-11 group t2 Component methods (with defaults): add below, in this block only.
 
     // Step-11 group t3 Component methods (with defaults): add below, in this block only.
+    /// Intrinsic capture precedes exclusive focus and bound keys at this class.
+    fn captures(&self, _class: FocusClass) -> bool { false }
 }
 
 trait ErasedComponent: Send + Sync {
@@ -497,6 +499,7 @@ trait ErasedComponent: Send + Sync {
     fn input(&mut self, input: Input<'_, ()>, core: &CoreView<'_>, token: ComponentToken, epoch: u64, out: &mut Outbox);
     fn view(&self, at: Surface<'_>, cx: &ViewCx<'_>) -> Option<View>;
     fn editor(&self) -> Option<Editor>;
+    fn captures(&self, class: FocusClass) -> bool;
     fn wake(&self) -> Option<u64>;
     fn entry_rows(&self, key: &str) -> usize;
     fn as_any(&self) -> &dyn Any;
@@ -521,6 +524,7 @@ impl<C: Component> ErasedComponent for Mounted<C> {
     }
     fn view(&self, at: Surface<'_>, cx: &ViewCx<'_>) -> Option<View> { self.0.view(at, cx) }
     fn editor(&self) -> Option<Editor> { self.0.editor() }
+    fn captures(&self, class: FocusClass) -> bool { self.0.captures(class) }
     fn wake(&self) -> Option<u64> { self.0.wake() }
     fn entry_rows(&self, key: &str) -> usize { self.0.entry_rows(key) }
     fn as_any(&self) -> &dyn Any { &self.0 }

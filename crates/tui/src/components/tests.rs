@@ -8,6 +8,7 @@ pub(crate) struct Counter {
     value: i64,
     bindings: &'static [Binding],
     slash: &'static [SlashSpec],
+    capture: Option<FocusClass>,
 }
 pub(crate) enum Msg {
     Add(i64),
@@ -15,7 +16,7 @@ pub(crate) enum Msg {
     Work(Lane, Box<dyn FnOnce(Arc<Engine>) -> BoxFuture<'static, Msg> + Send>),
 }
 impl Counter {
-    pub(crate) fn new(id: &'static str) -> Self { Self { id, value: 0, bindings: &[], slash: &[] } }
+    pub(crate) fn new(id: &'static str) -> Self { Self { id, value: 0, bindings: &[], slash: &[], capture: None } }
 }
 impl Component for Counter {
     type Msg = Msg;
@@ -38,6 +39,7 @@ impl Component for Counter {
             }
             Input::Message(Msg::Fail(error)) => cx.error(error),
             Input::Message(Msg::Work(lane, work)) => cx.spawn(lane, work),
+            Input::Key(_) if self.capture.is_some() => { self.value += 1; cx.consume_key(); }
             Input::Key(key) if key.code == KeyCode::Esc => { cx.close(); cx.consume_key(); }
             Input::Key(_) => { cx.focus(self.bindings[0].class); cx.consume_key(); }
             Input::Paste(text) | Input::Submit(text) => { self.value += text.len() as i64; cx.consume_key(); }
@@ -48,6 +50,7 @@ impl Component for Counter {
     fn view(&self, at: Surface<'_>, _: &ViewCx<'_>) -> Option<View> {
         matches!(at, Surface::Status(StatusSlot::Work)).then(|| View::Text(format!("{}={}", self.id, self.value)))
     }
+    fn captures(&self, class: FocusClass) -> bool { self.capture == Some(class) }
 }
 fn core() -> CoreView<'static> {
     CoreView { session: None, parent: None, private_root: None, project: None, inspecting: false, streaming: false, reasoning: false, agent: None, entries: &[] }
@@ -320,4 +323,20 @@ fn replacement_group_freezes_older_cards_without_crossing_groups() {
         _ => None,
     }).collect();
     assert_eq!(bodies, ["old", "current tick", "independent tick"]);
+}
+
+#[test]
+fn intrinsic_capture_precedes_an_earlier_focused_owner_without_stealing_focus() {
+    let mut registry = Registry::empty();
+    let mut focused = Counter::new("focused");
+    focused.bindings = &[Binding { class: FocusClass::Spoken, code: KeyCode::Char('x'), modifiers: KeyModifiers::NONE }];
+    registry.register(focused).unwrap();
+    registry.key(FocusClass::Spoken, &KeyEvent::new(iocraft::KeyEventKind::Press, KeyCode::Char('x')), &core());
+    let mut capture = Counter::new("capture");
+    capture.capture = Some(FocusClass::Spoken);
+    let capture = registry.register(capture).unwrap();
+    assert!(registry.key(FocusClass::Spoken, &KeyEvent::new(iocraft::KeyEventKind::Press, KeyCode::Char('q')), &core()).consumed());
+    assert_eq!(shown(&registry), ["focused=0", "capture=1"]);
+    registry.unmount(capture);
+    assert!(registry.key(FocusClass::Spoken, &KeyEvent::new(iocraft::KeyEventKind::Press, KeyCode::Char('q')), &core()).consumed());
 }

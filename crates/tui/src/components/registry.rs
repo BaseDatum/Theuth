@@ -166,15 +166,23 @@ impl Registry {
     /// Dispatch at one fixed precedence boundary, stopping after consumption.
     pub fn key(&mut self, class: FocusClass, key: &KeyEvent, core: &CoreView<'_>) -> Outbox {
         let mut out = Outbox::default();
-        for (index, slot) in self.slots.iter_mut().enumerate() {
-            let token = ComponentToken { slot: index, generation: slot.generation };
-            if let Some(component) = &mut slot.component {
-                let focused = self.focus == Some((token, class));
-                let bound = component.declaration().bindings.iter().any(|binding|
-                    binding.class == class && binding.code == key.code && binding.modifiers == key.modifiers
-                );
-                if focused || bound { component.input(Input::Key(key), core, token, self.epoch, &mut out); }
-                if out.consumed { break; }
+        // Preserve intrinsic capture, then exclusive focus, then declared chords.
+        'delivery: for pass in 0..3 {
+            for (index, slot) in self.slots.iter_mut().enumerate() {
+                let token = ComponentToken { slot: index, generation: slot.generation };
+                if let Some(component) = &mut slot.component {
+                    let capture = component.captures(class);
+                    let focused = self.focus == Some((token, class));
+                    let selected = match pass {
+                        0 => capture,
+                        1 => !capture && focused,
+                        _ => !capture && !focused && component.declaration().bindings.iter().any(|binding|
+                            binding.class == class && binding.code == key.code && binding.modifiers == key.modifiers
+                        ),
+                    };
+                    if selected { component.input(Input::Key(key), core, token, self.epoch, &mut out); }
+                    if out.consumed { break 'delivery; }
+                }
             }
         }
         self.finish(&mut out);
