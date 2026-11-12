@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use agent::store::contacts::{RecordWrite, Records};
+use agent::store::contacts::{Cell, RecordTable, RecordWrite, Records};
 
 use super::records::{self, Admit};
 use super::rosters::{self, Carried, Chain, Copy, PathAnswer, PeerHead, Seen, Verified};
@@ -42,6 +42,22 @@ pub(crate) struct Mem {
     pub(crate) seen: HashMap<String, (Instant, u32)>,
     /// Record → (contact alias, alert text): the raised inflation alerts (alert only).
     pub(crate) alerts: BTreeMap<String, (String, String, u64)>,
+    /// Other machines' flagged heads rows → (their `at_ms`, the round it last changed)
+    /// ([`records::age_flags`]).
+    flags: HashMap<String, (Option<i64>, u64)>,
+    /// The flags those rounds expired (what staging and the gate read).
+    pub(crate) expired: BTreeSet<String>,
+    /// A round's fetches are running: a round due meanwhile only stamps and ages flags.
+    pub(crate) busy: bool,
+}
+
+/// Clears [`Mem::busy`] however the round ends.
+struct Busy<'a>(&'a parking_lot::Mutex<Mem>);
+
+impl Drop for Busy<'_> {
+    fn drop(&mut self) {
+        self.0.lock().busy = false;
+    }
 }
 
 /// This mesh's live machines as the reconcile sees them (this one included).
@@ -212,7 +228,9 @@ impl Ctx {
         };
         let added: BTreeMap<String, u64> = members.into_iter().collect();
         for f in due {
-            let body = Self::carried_for(r, &f.id, &added);
+            let mut body = Self::carried_for(r, &f.id, &added);
+            // Within the body cap the contact enforces (413 above it).
+            rosters::trim(&mut body, rosters::NOTICE_BYTES_MAX);
             if body.chains.is_empty() {
                 continue;
             }
@@ -391,14 +409,14 @@ impl Ctx {
             };
             let me = r.me.clone();
             let family = family(self.net().as_deref());
-            let now = mesh::identity::now_ms() as i64;
+            let expired = self.rosters.lock().expired.clone();
             let mut w = Vec::new();
             for m in &g.members {
                 let pins = records::pins_of(&r, &m.id);
                 let conflict = records::heads_of(&r, &m.id, &me, &family, true)
                     .iter()
                     .any(|h| h.machine == me && h.conflict);
-                let next = match records::admit_of(&r, &m.id, &family, now) {
+                let next = match records::admit_of(&r, &m.id, &family, &expired) {
                     Admit::Roster(mut l) => {
                         let before = l.clone();
                         let mut flips = self.flip_budget(&m.id);
@@ -549,76 +567,136 @@ impl Ctx {
         out
     }
 
-    /// 191 (D1): one refresh round of the contact side, at most every [`rosters::ROUND`]:
-    /// the cards of every trusted member are fetched again (when older than the TTL); a
-    /// record based elsewhere but not here bootstraps from its pin (a corroborated head only);
-    /// a record with state compares it with every live machine's head (merely behind for
-    /// [`rosters::STALE_REFRESHES`] rounds, or diverging: one proof path, then a conflict only
-    /// when it reached the other head and differs there), and publishes its own head.
+    /// 191 (D1): one refresh round of the contact side, at most every [`rosters::ROUND`].
+    /// First, never behind the lock or another round's fetches: this machine's own standing
+    /// conflict flags are stamped again (`at_ms`), and the other machines' flags age by one
+    /// round ([`records::age_flags`]; an expiry restages). Then, unless a round's fetches
+    /// are still running: the cards of every trusted member are fetched again (when older
+    /// than the TTL); a record based elsewhere but not here bootstraps from its pin (a
+    /// corroborated head only); a record with state compares it with every live machine's
+    /// head (merely behind for [`rosters::STALE_REFRESHES`] rounds, or diverging: one proof
+    /// path, then a conflict only when it reached the other head and differs there), and
+    /// publishes its own head. The fetches run outside `roster_lock`; their writes land
+    /// under it only for a record whose state here did not move meanwhile.
     pub(crate) async fn roster_round(self: &Arc<Self>) {
         if !self.ready.load(std::sync::atomic::Ordering::SeqCst) || self.net().is_none() {
             return;
         }
-        {
+        let round = {
             let mut m = self.rosters.lock();
             m.round += 1;
             m.last_round = Some(Instant::now());
-        }
-        self.refresh_stale_offers().await;
-        let changed = {
-            let _serial = self.roster_lock.lock().await;
-            let Ok(r) = self.records().await else { return };
-            let a = records::analyze(&r);
-            let me = r.me.clone();
-            let family = family(self.net().as_deref());
-            let now = mesh::identity::now_ms() as i64;
-            let mut w = Vec::new();
-            // Dial and chain hints are untrusted: any machine's row gives them, a retired
-            // one's included; only live machines' heads count for adoption and divergence.
-            let anyone: BTreeSet<String> =
-                r.heads.iter().filter_map(|h| h.machine.clone()).collect();
-            for m in a.groups.iter().flat_map(|g| g.members.iter()) {
-                let pins = records::pins_of(&r, &m.id);
-                let peers = records::heads_of(&r, &m.id, &me, &family, false);
-                let mine = records::heads_of(&r, &m.id, &me, &family, true)
-                    .into_iter()
-                    .find(|h| h.machine == me);
-                let hinted = records::heads_of(&r, &m.id, &me, &anyone, false);
-                let hints: Vec<String> = hinted.iter().flat_map(|p| p.members.clone()).collect();
-                match records::admit_of(&r, &m.id, &family, now) {
-                    Admit::Pins => {}
-                    Admit::Unverified => {
-                        w.extend(
-                            self.bootstrap(&m.id, &me, &pins, &peers, &hinted, &family)
-                                .await,
-                        );
-                    }
-                    Admit::Roster(_) | Admit::Disagree => {
-                        // Under a conflict too: it is recomputed, and cleared once heads agree.
-                        let Some(l) = records::local_of(&r, &m.id) else {
-                            continue;
-                        };
-                        w.extend(
-                            self.diverge(
-                                &m.id,
-                                &me,
-                                l,
-                                &pins,
-                                &peers,
-                                &hints,
-                                mine.as_ref(),
-                                &family,
-                            )
-                            .await,
-                        );
-                    }
-                }
-            }
-            !w.is_empty() && self.write_rows(w).await
+            m.round
         };
-        if changed {
+        let Ok(r) = self.records().await else { return };
+        let me = r.me.clone();
+        let family = family(self.net().as_deref());
+        let now = mesh::identity::now_ms() as i64;
+        let stamps: Vec<RecordWrite> = r
+            .heads
+            .iter()
+            .filter(|h| h.conflict == Some(1) && h.machine.as_deref() == Some(me.as_str()))
+            .filter(|h| {
+                h.record
+                    .as_deref()
+                    .is_some_and(|rec| h.id == format!("{rec}|{me}"))
+            })
+            .map(|h| {
+                RecordWrite::new(
+                    RecordTable::Heads,
+                    h.id.clone(),
+                    vec![("at_ms", Cell::Int(now))],
+                )
+            })
+            .collect();
+        if !stamps.is_empty() {
+            self.write_rows(stamps).await;
+        }
+        let aged = {
+            let mut m = self.rosters.lock();
+            let expired = records::age_flags(&mut m.flags, &r, &family, round);
+            let aged = expired != m.expired;
+            m.expired = expired;
+            aged
+        };
+        let changed = self.round_fetches(&family).await == Some(true);
+        if changed || aged {
             let _ = self.reconcile_now().await;
         }
+    }
+
+    /// The fetching half of [`Self::roster_round`]; `None` when another round's is running.
+    /// Returns whether it wrote.
+    async fn round_fetches(self: &Arc<Self>, family: &BTreeSet<String>) -> Option<bool> {
+        let _busy = {
+            let mut m = self.rosters.lock();
+            if std::mem::replace(&mut m.busy, true) {
+                return None;
+            }
+            Busy(&self.rosters)
+        };
+        self.refresh_stale_offers().await;
+        let Ok(r) = self.records().await else {
+            return Some(false);
+        };
+        let a = records::analyze(&r);
+        let me = r.me.clone();
+        let expired = self.rosters.lock().expired.clone();
+        // (record, this machine's state the writes were computed from, the writes).
+        let mut out: Vec<(String, Option<rosters::Local>, Vec<RecordWrite>)> = Vec::new();
+        // Dial and chain hints are untrusted: any machine's row gives them, a retired one's
+        // included; only live machines' heads count for adoption and divergence.
+        let anyone: BTreeSet<String> = r.heads.iter().filter_map(|h| h.machine.clone()).collect();
+        for m in a.groups.iter().flat_map(|g| g.members.iter()) {
+            let pins = records::pins_of(&r, &m.id);
+            let peers = records::heads_of(&r, &m.id, &me, family, false);
+            let mine = records::heads_of(&r, &m.id, &me, family, true)
+                .into_iter()
+                .find(|h| h.machine == me);
+            let hinted = records::heads_of(&r, &m.id, &me, &anyone, false);
+            let hints: Vec<String> = hinted.iter().flat_map(|p| p.members.clone()).collect();
+            match records::admit_of(&r, &m.id, family, &expired) {
+                Admit::Pins => {}
+                Admit::Unverified => {
+                    let w = self
+                        .bootstrap(&m.id, &me, &pins, &peers, &hinted, family)
+                        .await;
+                    out.push((m.id.clone(), None, w));
+                }
+                Admit::Roster(_) | Admit::Disagree => {
+                    // Under a conflict too: it is recomputed, and cleared only on proof.
+                    let Some(l) = records::local_of(&r, &m.id) else {
+                        continue;
+                    };
+                    let w = self
+                        .diverge(
+                            &m.id,
+                            &me,
+                            l.clone(),
+                            &pins,
+                            &peers,
+                            &hints,
+                            mine.as_ref(),
+                            family,
+                        )
+                        .await;
+                    out.push((m.id.clone(), Some(l), w));
+                }
+            }
+        }
+        let _serial = self.roster_lock.lock().await;
+        let Ok(now) = self.records().await else {
+            return Some(false);
+        };
+        let mut w = Vec::new();
+        for (record, before, rows) in out {
+            // An ingest moved this machine's state meanwhile: the next round compares again
+            // (a standing flag stays: it is stamped every round).
+            if records::local_of(&now, &record) == before {
+                w.extend(rows);
+            }
+        }
+        Some(!w.is_empty() && self.write_rows(w).await)
     }
 
     /// A record this machine has no state for, based elsewhere: proof paths from its pins,
@@ -674,7 +752,10 @@ impl Ctx {
         ]
     }
 
-    /// A record with state: compare with every live machine's head and act (D1).
+    /// A record with state: compare with every live machine's head and act (D1). The flag
+    /// starts from this machine's own row: a proof sets it, and a standing one clears only
+    /// when every live machine's head equals this machine's (after this round's advance). A
+    /// failed or short fetch proves nothing, so it never clears one.
     #[allow(clippy::too_many_arguments)]
     async fn diverge(
         &self,
@@ -688,7 +769,8 @@ impl Ctx {
         family: &BTreeSet<String>,
     ) -> Vec<RecordWrite> {
         let mut l = mine.clone();
-        let mut conflict = false;
+        let standing = row.is_some_and(|r| r.conflict);
+        let mut found = false;
         let mut flips = self.flip_budget(record);
         for p in peers {
             let key = (record.to_owned(), p.machine.clone());
@@ -733,11 +815,13 @@ impl Ctx {
                     && rosters::conflict(&contents, to, &p.hash)
                 {
                     tracing::warn!(%record, machine = %p.machine, version = to, "191: {}", rosters::DISAGREE);
-                    conflict = true;
+                    found = true;
                 }
             }
         }
         self.spend_flip(record, flips);
+        let agreed = peers.iter().all(|p| rosters::compare(&l, p) == Seen::Agree);
+        let conflict = found || (standing && !agreed);
         let mut w = Vec::new();
         if l != mine {
             w.push(records::local_row(record, &l));
@@ -746,9 +830,9 @@ impl Ctx {
         let same = row.is_some_and(|r| {
             (r.version, r.hash.as_str()) == (h.version, h.hash.as_str()) && r.conflict == conflict
         });
-        // A head that moved, a flag that changed, a flag kept (written again so it does not
-        // expire), or no row yet.
-        if !same || conflict {
+        // A head that moved, a flag that changed, or no row yet (a kept flag is stamped at
+        // the round's start).
+        if !same {
             w.push(records::head_row(record, me, &l, conflict));
         }
         w

@@ -1,10 +1,11 @@
 // 124 §3: the cmdk body every model picker shares — providers level → a provider's models, with the
 // §2 word search over every model whenever the input is non-empty. Ranking is ours (`shouldFilter={false}`).
+// 2026-11-11 (Sky): the selected model's effort levels are a chip row directly under its row, wherever it shows.
 
 import { Check, ChevronLeft, ChevronRight, Star } from 'lucide-react'
 import { useCommandState } from 'cmdk'
-import { useState } from 'react'
-import { Command, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command'
+import { Fragment, useState } from 'react'
+import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { cn } from '@/lib/utils'
 import { modelsOfProvider, providersOf, rankModels, searchTerms } from '@/lib/model-search'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
@@ -31,11 +32,14 @@ export type View = {
   rows: Row[]
 }
 
+/** A bare catalog row for an id the catalog does not describe (`extra` ids, a harness's model options). */
+export const stubModel = (id: string, name: string, provider: string): ModelInfo => ({ id, name, provider, context: 0, reasoning: false, image: false, efforts: [], budget_min: null, budget_max: null, local: false })
+
 /** `extra` ids as catalog rows under the `other` provider, appended after `models` (catalog order). */
 export function withExtra(models: ModelInfo[], extra: string[] | undefined): ModelInfo[] {
   const add = (extra ?? []).filter((id) => !models.some((m) => m.id === id))
   if (add.length === 0) return models
-  return [...models, ...add.map((id) => ({ id, name: id, provider: OTHER, context: 0, reasoning: false, image: false, efforts: [], budget_min: null, budget_max: null, local: false }))]
+  return [...models, ...add.map((id) => stubModel(id, id, OTHER))]
 }
 
 /** 177 U4: the providers that serve `local` models. */
@@ -92,6 +96,18 @@ export function contextLabel(context: number): string {
   return context > 0 ? `${Math.round(context / 1000)}k` : ''
 }
 
+/** The selected model's effort levels: the chip row under its row. */
+export type Effort = {
+  levels: readonly string[]
+  current: string | null | undefined
+  /** `null` is the "Default" chip. */
+  onSelect(level: string | null): void
+  /** Display names by level (a harness's option names); the level itself otherwise. */
+  labels?: Record<string, string>
+  /** No "Default" chip: a level is always set (a harness's thought_level option). */
+  required?: boolean
+}
+
 export type ModelPickerProps = {
   /** 177 U4: local providers and local search hits first (the summary-model pickers). */
   localFirst?: boolean
@@ -99,8 +115,8 @@ export type ModelPickerProps = {
   /** The current id (session, draft, or form value); `undefined` → no Current row. */
   model: string | undefined
   onSelect(id: string): void
-  /** The current model's effort levels (providers level only), with `clear`. */
-  effort?: { levels: string[]; current: string | null | undefined; onSelect(level: string | null): void }
+  /** The current model's effort levels, as chips under its row (no levels → no chips). */
+  effort?: Effort
   /** A first row ("Engine default", "Off") that selects `none.value` — forms. */
   none?: { value: string; label: string }
   /** Ids not in `models` (a stale on-file value) listed under `other` so they stay selectable. */
@@ -143,6 +159,13 @@ function SearchInput({ query, setQuery, canGoBack, back, onToggleFavorite }: { q
 /** The `CommandItem` look for the rows cmdk does not own (`leadRow`). */
 const LEAD_ROW = 'flex w-full cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg:not([class*=text-])]:text-muted-foreground'
 
+/** An effort chip; wraps and grows to a finger's size on phones and coarse pointers. A cmdk chip shows the highlight as a ring. */
+const CHIP = 'inline-flex h-7 items-center gap-1 rounded-full border border-border px-2.5 py-0 text-xs data-[selected=true]:ring-2 data-[selected=true]:ring-ring max-md:h-9 max-md:px-3 max-md:text-sm pointer-coarse:h-9 pointer-coarse:px-3 pointer-coarse:text-sm'
+/** The plain-button chip (under the Current lead row). */
+const CHIP_BUTTON = 'cursor-default outline-hidden select-none hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring'
+/** The active level. */
+const CHIP_ON = 'border-foreground bg-foreground text-background hover:bg-foreground/85 hover:text-background data-[selected=true]:bg-foreground/85 data-[selected=true]:text-background'
+
 /** 177 U4: the small tag of a model (or provider) served by a local model server. */
 export function LocalTag() {
   return <span className="shrink-0 rounded-sm border border-fg-tertiary/40 px-1 text-[10px] leading-4 text-fg-secondary">local</span>
@@ -159,23 +182,58 @@ export function ModelPicker({ models, model, onSelect, effort, none, extra, favo
   // it until the prop changes). The §3 start row — first provider / first model / first result — must
   // therefore be the first cmdk item, so the Current, none and back rows above it are plain buttons:
   // clickable and Tab-reachable, outside ↑/↓/Enter. Picking Current is a no-op anyway; back has Backspace.
+  // The effort chips follow the row they sit under: plain buttons under Current (Tab, then Enter/Space), cmdk
+  // items under a favorite or provider-list row (↑/↓ step through them, Enter applies), never the first cmdk item.
+  const levels: (string | null)[] = effort && effort.levels.length > 0 ? [...(effort.required ? [] : [null]), ...effort.levels] : []
+  const chips = (asItems: boolean) =>
+    effort &&
+    levels.length > 0 && (
+      <div role="group" aria-label="Effort" className="flex flex-wrap gap-1 pt-0.5 pr-2 pb-1.5 pl-4">
+        {levels.map((lvl) => {
+          const on = lvl === null ? !effort.current : lvl === effort.current
+          const value = lvl === null ? 'effort-default' : `effort:${lvl}`
+          const body = (
+            <>
+              {on && <Check className="size-3.5 text-current" />}
+              {lvl === null ? 'Default' : (effort.labels?.[lvl] ?? lvl)}
+            </>
+          )
+          return asItems ? (
+            <CommandItem key={value} value={value} className={cn(CHIP, on && CHIP_ON)} onSelect={() => effort.onSelect(lvl)}>
+              {body}
+            </CommandItem>
+          ) : (
+            <button key={value} type="button" data-value={value} aria-pressed={on} className={cn(CHIP, CHIP_BUTTON, on && CHIP_ON)} onClick={() => effort.onSelect(lvl)}>
+              {body}
+            </button>
+          )
+        })}
+      </div>
+    )
   const leadRow = (row: Row) => {
     switch (row.kind) {
       case 'current':
         return (
-          <button key={row.value} type="button" className={LEAD_ROW} onClick={() => onSelect(row.id)}>
-            <span className="truncate">{row.name}</span>
-            {row.provider && local.has(row.provider) && <LocalTag />}
-            {row.provider && <span className="ml-auto shrink-0 text-xs text-fg-tertiary">{row.provider}</span>}
-            <Check className={row.provider ? undefined : 'ml-auto'} />
-          </button>
+          <Fragment key={row.value}>
+            <button type="button" className={LEAD_ROW} onClick={() => onSelect(row.id)}>
+              <span className="truncate">{row.name}</span>
+              {row.provider && local.has(row.provider) && <LocalTag />}
+              {row.provider && <span className="ml-auto shrink-0 text-xs text-fg-tertiary">{row.provider}</span>}
+              <Check className={row.provider ? undefined : 'ml-auto'} />
+            </button>
+            {chips(false)}
+          </Fragment>
         )
+      // "Node default" is a selection too: a form that pairs it with an effort (an agent's runtime) gets the chips under it.
       case 'none':
         return (
-          <button key={row.value} type="button" className={LEAD_ROW} onClick={() => onSelect(none!.value)}>
-            <span className="truncate">{row.label}</span>
-            {row.current && <Check className="ml-auto" />}
-          </button>
+          <Fragment key={row.value}>
+            <button type="button" className={LEAD_ROW} onClick={() => onSelect(none!.value)}>
+              <span className="truncate">{row.label}</span>
+              {row.current && <Check className="ml-auto" />}
+            </button>
+            {row.current && chips(false)}
+          </Fragment>
         )
       case 'back':
         return (
@@ -218,25 +276,31 @@ export function ModelPicker({ models, model, onSelect, effort, none, extra, favo
         )
       case 'favorite':
         return (
-          <CommandItem key={row.value} value={row.value} onSelect={() => onSelect(row.m.id)}>
-            <span className="truncate">{row.m.name}</span>
-            {row.m.local && <LocalTag />}
-            <span className="ml-auto shrink-0 text-xs text-fg-tertiary">{[row.m.provider, contextLabel(row.m.context)].filter(Boolean).join(' · ')}</span>
-            {row.current && <Check className="size-4" />}
-            {star(row.m.id, true)}
-          </CommandItem>
+          <Fragment key={row.value}>
+            <CommandItem value={row.value} onSelect={() => onSelect(row.m.id)}>
+              <span className="truncate">{row.m.name}</span>
+              {row.m.local && <LocalTag />}
+              <span className="ml-auto shrink-0 text-xs text-fg-tertiary">{[row.m.provider, contextLabel(row.m.context)].filter(Boolean).join(' · ')}</span>
+              {row.current && <Check className="size-4" />}
+              {star(row.m.id, true)}
+            </CommandItem>
+            {row.current && chips(true)}
+          </Fragment>
         )
       case 'model':
         return (
-          <CommandItem key={row.value} value={row.value} onSelect={() => onSelect(row.m.id)}>
-            <span className="truncate">{row.m.name}</span>
-            {row.m.local && <LocalTag />}
-            <span className="ml-auto shrink-0 text-xs text-fg-tertiary">
-              {view.mode === 'search' ? row.m.provider : [contextLabel(row.m.context), row.m.image ? 'vision' : ''].filter(Boolean).join(' · ')}
-            </span>
-            {row.current && <Check className="size-4" />}
-            {star(row.m.id, row.favorite)}
-          </CommandItem>
+          <Fragment key={row.value}>
+            <CommandItem value={row.value} onSelect={() => onSelect(row.m.id)}>
+              <span className="truncate">{row.m.name}</span>
+              {row.m.local && <LocalTag />}
+              <span className="ml-auto shrink-0 text-xs text-fg-tertiary">
+                {view.mode === 'search' ? row.m.provider : [contextLabel(row.m.context), row.m.image ? 'vision' : ''].filter(Boolean).join(' · ')}
+              </span>
+              {row.current && <Check className="size-4" />}
+              {star(row.m.id, row.favorite)}
+            </CommandItem>
+            {row.current && chips(true)}
+          </Fragment>
         )
       case 'empty':
         return (
@@ -260,23 +324,6 @@ export function ModelPicker({ models, model, onSelect, effort, none, extra, favo
         {view.mode === 'providers' && grouped('favorite', 'Favorites')}
         <div className="p-1 empty:hidden">{view.rows.map(leadRow)}</div>
         {view.mode === 'models' ? grouped('model', `${view.provider} · ${view.rows.filter((r) => r.kind === 'model').length} models`) : view.mode === 'search' ? view.rows.map(item) : grouped('provider', 'Providers')}
-        {view.mode === 'providers' && effort && effort.levels.length > 0 && (
-          <>
-            <CommandSeparator />
-            <CommandGroup heading="Effort">
-              {effort.levels.map((lvl) => (
-                <CommandItem key={lvl} value={`effort:${lvl}`} onSelect={() => effort.onSelect(lvl)}>
-                  {lvl}
-                  {lvl === effort.current && <Check className="ml-auto size-4" />}
-                </CommandItem>
-              ))}
-              <CommandItem value="effort:clear" onSelect={() => effort.onSelect(null)}>
-                clear
-                {!effort.current && <Check className="ml-auto size-4" />}
-              </CommandItem>
-            </CommandGroup>
-          </>
-        )}
       </CommandList>
     </Command>
   )

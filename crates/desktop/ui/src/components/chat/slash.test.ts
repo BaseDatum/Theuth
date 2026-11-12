@@ -5,6 +5,7 @@ import { NO_PICK, useDrafts } from '@/lib/drafts'
 import { active } from '@/store/engine-scope'
 import { useSessions } from '@/store/sessions'
 import { type Ctx, isCommand, run, sendRaw, slashMenu } from './slash'
+import { useToolsSheet } from './tools-sheet'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn() }) }))
 
@@ -39,15 +40,27 @@ test('skill index not loaded: a plain word still runs, a path-like word is text'
   expect(isCommand('/', null)).toBe(false)
 })
 
-test('bare /skills and /mcp open their pages, carrying the chat they came from', async () => {
+test('bare /skills opens its page carrying the chat; /mcp and /tools open that chat’s Tools sheet, Settings outside one', async () => {
   const navigate = vi.fn().mockResolvedValue(undefined)
   const ctx = { api: {} as Api, session: 'abc', parent: null, navigate, reload: async () => {} } as unknown as Ctx
   await run('/skills', ctx)
   expect(navigate).toHaveBeenLastCalledWith({ to: '/skills', search: { session: 'abc' } })
-  await run('/mcp', ctx)
-  expect(navigate).toHaveBeenLastCalledWith({ to: '/settings/$tab', params: { tab: 'tools' }, search: { session: 'abc' } })
   await run('/skills', { ...ctx, session: null })
   expect(navigate).toHaveBeenLastCalledWith({ to: '/skills', search: {} })
+  navigate.mockClear()
+  for (const [cmd, session] of [['/tools', 'abc'], ['/mcp', 'pane-2']] as const) {
+    useToolsSheet.getState().hide()
+    await run(cmd, { ...ctx, session })
+    expect(useToolsSheet.getState().session).toBe(session)
+  }
+  expect(navigate).not.toHaveBeenCalled()
+  useToolsSheet.getState().hide()
+  for (const cmd of ['/mcp', '/tools']) {
+    await run(cmd, { ...ctx, session: null })
+    expect(navigate).toHaveBeenLastCalledWith({ to: '/settings/$tab', params: { tab: 'tools' } })
+  }
+  expect(useToolsSheet.getState().session).toBeNull()
+  await expect(run('/tools bogus', ctx)).rejects.toThrow('usage: /tools [add <url|json> | sync]')
 })
 
 // 87 COMPACT-NONBLOCK: `/compact` returns once the RPC is issued, so `submit` releases `busy` and the composer

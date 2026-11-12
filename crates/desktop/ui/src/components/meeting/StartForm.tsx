@@ -1,22 +1,20 @@
 // 53 §4.1 / 03 §3: the start form — source picker (System audio by default, or one app; apps playing
 // audio first), title, a dictated context box, the one lawful sentence (158 R3, Amendment A2: no checkbox;
 // Start sends `consent: true`), the project (158 §9.2: a combobox; "Default" leaves the engine's remembered /
-// `meeting.project` choice), the session's model (the chat header's picker; remembered in `meeting-settings`),
+// `meeting.project` choice), the session's model (the standard `ModelCombobox`; remembered in `meeting-settings`),
 // the permissions row. `Start` → `meeting_start` → the control center.
 
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { Check, ChevronDown, LoaderCircle, RefreshCw, X } from 'lucide-react'
+import { Check, LoaderCircle, RefreshCw, X } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { useFavorites } from '@/components/chat/ModelMenu'
-import { ModelPicker } from '@/components/chat/ModelPicker'
+import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { ProjectChip } from '@/components/meeting/ProjectChip'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
@@ -62,9 +60,6 @@ export function StartForm() {
   const [project, setProject] = useState<string | null>(null)
   const saved = useMeetingSettings((s) => s.model)
   const model = saved ?? info?.default_model
-  const [pickModel, setPickModel] = useState(false)
-  const current = models.data?.find((m) => m.id === model)
-  const { favorites, toggleFavorite } = useFavorites()
 
   // 137 R1-D6: the ∞ switch starts at `agent.endless.default_meeting`, remembered for this form only.
   const endlessSettings = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
@@ -127,27 +122,7 @@ export function StartForm() {
           label="Session model"
           description="The meeting's own chat session runs on it; a fast, inexpensive model is the sensible choice here."
         >
-          <Popover open={pickModel} onOpenChange={setPickModel}>
-            <PopoverTrigger asChild>
-              <Button variant="outline" className="w-64 justify-between font-normal">
-                <span className="truncate">{current?.name ?? model ?? 'Model'}</span>
-                <ChevronDown className="size-4 opacity-70" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="start" className="w-80 p-0">
-              <ModelPicker
-                models={models.data ?? []}
-                model={model}
-                favorites={favorites}
-                onToggleFavorite={(id) => void toggleFavorite(id)}
-                listClassName="max-h-[min(24rem,calc(var(--visible-band)-6rem))]"
-                onSelect={(id) => {
-                  useMeetingSettings.getState().setModel(id)
-                  setPickModel(false)
-                }}
-              />
-            </PopoverContent>
-          </Popover>
+          <ModelCombobox aria-label="Session model" className="w-64" models={models.data ?? []} value={model} onChange={(id) => id && useMeetingSettings.getState().setModel(id)} />
         </Row>
         <Row label="Note template" description="The headings the summary is written under. Automatic: the one remembered for this calendar event, else the default from Settings › Meetings.">
           <Select value={template ?? AUTO} onValueChange={(v) => setTemplate(v === AUTO ? null : v)}>

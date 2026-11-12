@@ -31,6 +31,8 @@ pub const TITLE_MAX: usize = super::CARD_TEXT_MAX;
 const ERROR_MAX: usize = 200;
 /// One fetch or notice's deadline.
 const CALL_TIMEOUT: Duration = Duration::from_secs(15);
+/// Card bytes kept for the members/v1 extension's wrapper and the JWS (191 D1).
+const CARD_MARGIN: usize = 4 * 1024;
 /// Pairing: both sides pin on their own Accept, so the first fetch may beat the other's pin.
 const PAIRED_RETRIES: [Duration; 3] = [
     Duration::from_secs(1),
@@ -265,7 +267,14 @@ impl Ctx {
         let mut facts = self.card_facts(&net);
         facts.skills = offers;
         let mut card = super::card(&facts);
-        let carried = self.carried_to(eid).await?;
+        let mut carried = self.carried_to(eid).await?;
+        // Within the card cap a reader enforces: the card's own bytes, a margin for the
+        // extension's wrapper and the JWS, and the rest for the chains ([`rosters::trim`]).
+        let own = serde_json::to_vec(&card).map_err(|e| e.to_string())?.len();
+        super::rosters::trim(
+            &mut carried,
+            super::CARD_BYTES_MAX.saturating_sub(own + CARD_MARGIN),
+        );
         if !carried.chains.is_empty() {
             let params = match serde_json::to_value(&carried) {
                 Ok(serde_json::Value::Object(m)) => m.into_iter().collect(),

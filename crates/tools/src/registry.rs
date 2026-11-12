@@ -152,7 +152,8 @@ type Participant = (
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ListTools(pub Option<SessionId>);
 
-/// `ask` → `()`. Hide (or show again) tools for one session, in memory.
+/// `ask` → `()`. Hide (or show again) tools for one session; the owner writes
+/// the session's set to `sessions.hidden_tools` (the journal) before it replies.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetHidden {
     /// Session to switch (its subagents follow).
@@ -166,6 +167,18 @@ pub struct SetHidden {
 /// `ask` → `HashSet<String>`: what [`SetHidden`] hid for the session or an ancestor.
 #[derive(Clone, Copy, Debug)]
 pub struct HiddenTools(pub SessionId);
+
+/// `ask` → `()`: replace a session's own hidden set with the list loaded from
+/// its `sessions.hidden_tools` row (actor spawn: boot, resume, take) without
+/// writing it back. Engine-internal. Names of tools not registered (removed
+/// since) stay inert: hiding is by name, so they match nothing.
+#[derive(Clone, Debug)]
+pub struct RestoreHidden {
+    /// The session.
+    pub session: SessionId,
+    /// The row's names; empty clears any set held in memory.
+    pub tools: Vec<String>,
+}
 
 /// `ask` → [`ToolOutput`]. Never fails: unknown tool, denied approval, bad
 /// args, tool panic and timeout all come back as `ToolOutput { is_error: true }`.
@@ -1554,8 +1567,23 @@ impl Message<SetHidden> for ToolRegistry {
         } else {
             set.retain(|t| !m.tools.contains(t));
         }
-        if set.is_empty() {
+        let mut names: Vec<String> = set.iter().cloned().collect();
+        names.sort();
+        if names.is_empty() {
             self.hidden.remove(&m.session);
+        }
+        self.journal.hidden(m.session, names).await;
+    }
+}
+
+impl Message<RestoreHidden> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: RestoreHidden, _: &mut Context<Self, Self::Reply>) {
+        if m.tools.is_empty() {
+            self.hidden.remove(&m.session);
+        } else {
+            self.hidden.insert(m.session, m.tools.into_iter().collect());
         }
     }
 }

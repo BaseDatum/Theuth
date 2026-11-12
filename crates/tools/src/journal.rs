@@ -44,6 +44,12 @@ pub trait Journal: Send + Sync {
     fn approvals(&self, _session: SessionId, _pin: Option<bool>) -> BoxFuture<'_, ()> {
         Box::pin(async {})
     }
+    /// A session's own hidden tool set changed (`SetHidden`): the whole set,
+    /// sorted; empty clears `sessions.hidden_tools`. Default no-op: only the
+    /// agent's store has a row to write.
+    fn hidden(&self, _session: SessionId, _tools: Vec<String>) -> BoxFuture<'_, ()> {
+        Box::pin(async {})
+    }
 }
 
 /// `ask` → `()`: install the agent's journal on the registry, which forwards

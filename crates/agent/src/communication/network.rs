@@ -122,8 +122,23 @@ impl Message<ContactOwned> for Agents {
     }
 }
 
+/// Tests (`test-support`): `session`'s row now names `owner` (another machine took it), as the
+/// session log would apply it, so a dependent crate's test reaches a non-owner.
+#[cfg(feature = "test-support")]
+#[derive(Clone, Debug)]
+pub struct OwnedElsewhereForTest(pub SessionId, pub String);
+
+#[cfg(feature = "test-support")]
+impl Message<OwnedElsewhereForTest> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: OwnedElsewhereForTest, _: &mut Context<Self, ()>) {
+        self.store.owned_elsewhere(m.0, &m.1).await;
+    }
+}
+
 /// `ask` → `Result<SessionId, A2AError>` (183 §7.6): the capped inbox of (contact
-/// `binding`, `origin.export`), an agent export: created on the first request (an isolated
+/// `binding`, `origin.export`), an agent export: created on the first send (an isolated
 /// root titled `<contact> · <export>`, recorded in `a2a_contexts`), reused after, and its cap
 /// (`origin.cap`) installed on every resolve so it holds after a restart and a lowered cap
 /// applies at once.
@@ -137,6 +152,9 @@ pub struct ContactInbox {
     pub origin: super::ContactOrigin,
     /// 191 (D4): the export's replicated id, for the session's `contact_inbox` marker.
     pub export_id: Option<String>,
+    /// 191 (S4): a send (`SendMessage`, the streaming send); else a read (a task's get, list,
+    /// cancel or subscribe), which never opens an inbox.
+    pub send: bool,
 }
 
 impl A2aPrincipal {
@@ -3206,6 +3224,21 @@ impl Agents {
             principal: &key,
             export: &m.origin.export,
         };
+        // 191 (S4, P2 review SHOULD 1): the strict owner check, before any side effect (an
+        // inbox opened, its row marked, its limits installed): an inbox here whose session is
+        // not strictly this engine's (moved, unknown, unreadable) is `not owner` to a send and
+        // TASK_NOT_FOUND to a read, as an unknown task is; a read never opens an inbox.
+        let existing = self.store.a2a_inbox(scope).await.map_err(internal)?;
+        let read_refused = || A2AError::task_not_found("task");
+        match existing {
+            Some(id) => {
+                if let Err(e) = self.contact_owned(id).await {
+                    return Err(if m.send { e } else { read_refused() });
+                }
+            }
+            None if !m.send => return Err(read_refused()),
+            None => {}
+        }
         // W-25: the exported agent's persona, charter, model and ceiling (`<agent>@<engine>`
         // names the agent of this engine).
         let bare = m.agent.split('@').next().unwrap_or(&m.agent);
@@ -3234,7 +3267,7 @@ impl Agents {
             full::Live::Known(p) => Some(p.clone()),
             _ => None,
         };
-        let id = match self.store.a2a_inbox(scope).await.map_err(internal)? {
+        let id = match existing {
             Some(id) => id,
             None => {
                 // §7.6: isolated, so the contact-driven model reaches no other root.
@@ -5889,6 +5922,7 @@ mod tests {
                 agent: "theuth".into(),
                 origin,
                 export_id: None,
+                send: true,
             })
             .await
             .unwrap();
@@ -5987,6 +6021,7 @@ mod tests {
                 agent: "theuth".into(),
                 origin: bob("research", tools::Risk::ReadOnly),
                 export_id: None,
+                send: true,
             })
             .await
             .unwrap();
@@ -6272,6 +6307,7 @@ mod tests {
                 agent: "theuth".into(),
                 origin: bob("research", tools::Risk::Mutating),
                 export_id: None,
+                send: true,
             })
             .await
             .unwrap();
@@ -6340,6 +6376,7 @@ mod tests {
                 agent: "research@c".into(),
                 origin: bob("research", tools::Risk::Mutating),
                 export_id: None,
+                send: true,
             })
             .await
             .unwrap();
@@ -6370,6 +6407,7 @@ mod tests {
             agent: "theuth".into(),
             origin: bob(export, tools::Risk::ReadOnly),
             export_id: None,
+            send: true,
         };
         let first = a.handle_inbox(ask("research")).await.unwrap();
         let row = a.store.session(first).await.unwrap().unwrap();
@@ -6453,6 +6491,7 @@ mod tests {
                 agent: "research@sky-mac".into(),
                 origin: bob("research", tools::Risk::Mutating),
                 export_id: None,
+                send: true,
             })
             .await
             .unwrap();
@@ -6474,6 +6513,7 @@ mod tests {
                 agent: "theuth".into(),
                 origin: bob("ops", tools::Risk::Mutating),
                 export_id: None,
+                send: true,
             })
             .await
             .unwrap();
@@ -7117,6 +7157,68 @@ mod tests {
         assert_eq!(task.status, A2aTaskStatus::AuthRequired, "{task:?}");
         assert!(a.network.full_inbound.is_empty(), "never delivered full");
     }
+
+    /// 191 (D3, S4, P2 review MUST 1): an unreadable session row proves no owner. A contact's
+    /// message is refused at admission (fixed text, never the store's), `full_intake` refuses
+    /// on its own, and a task held before the row broke is never delivered (`deliver_full`),
+    /// even for a session in the insert-only `inboxes` set.
+    #[tokio::test]
+    async fn an_unreadable_owner_refuses_every_contact_path() {
+        let scratch = crate::TestDir::new("agents");
+        let mut a =
+            crate::supervisor::tests::agents_on(scratch.0.clone(), Some("me-engine"), true).await;
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let principal = format!("peer:{}", binding.id);
+        let (session, _, _) = exported_task(&mut a, &principal).await;
+        let p = |ask_first| A2aPrincipal {
+            binding: binding.id,
+            export: "research".into(),
+            session,
+            route: CancellationToken::new(),
+            contact: Some(bob("research", tools::Risk::ReadOnly)),
+            ask_first,
+        };
+        let held = a.admit_send(&p(true), &send("m-1")).await.unwrap().task;
+        assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+        let generation = a.admit_principal(&p(false)).await.unwrap();
+        let h = a
+            .network
+            .held
+            .remove(&("bob".into(), "research".into()))
+            .unwrap()
+            .remove(0);
+        h.watch.abort();
+        let record = a
+            .store
+            .exchange_record(h.task.dedup_exchange.unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        a.store.break_session_for_test(session).await;
+        let refused = a.admit_send(&p(false), &send("m-2")).await.err().unwrap();
+        assert_eq!(
+            (refused.code, refused.message.as_str()),
+            (a2a_types::error_code::INTERNAL_ERROR, "internal error")
+        );
+        assert_eq!(
+            a.full_intake(record, "peer:bob".into(), generation.clone(), 0)
+                .await,
+            Err(NOT_OWNER_TEXT.to_owned())
+        );
+        a.network.inboxes.insert(session);
+        let task = a.start_or_queue(h.task, generation, h.route).await;
+        assert!(
+            task.status == A2aTaskStatus::AuthRequired
+                || (task.status == A2aTaskStatus::Failed
+                    && task.error.as_deref() == Some(NOT_OWNER_TEXT)),
+            "{task:?}"
+        );
+        assert!(a.network.full_inbound.is_empty(), "never delivered full");
+    }
 }
 
 #[cfg(test)]
@@ -7173,6 +7275,7 @@ mod full_inbox_tests {
             agent: "research@sky-mac".into(),
             origin: full_bob(),
             export_id: None,
+            send: true,
         })
         .await
     }
@@ -7226,6 +7329,7 @@ mod full_inbox_tests {
                     ..full_bob()
                 },
                 export_id: None,
+                send: true,
             })
             .await
             .unwrap();
@@ -7390,6 +7494,86 @@ mod full_inbox_tests {
         forget(&mut a, inbox);
         a.reinstall_contact_limits(inbox).await.unwrap();
         assert!(capped(&a, inbox), "default-deny again");
+    }
+
+    /// 191 (S4, P2 review SHOULD 1): at a machine whose inbox's session is no longer its own
+    /// (moved), the router's resolve answers a read (`GetTask`, `CancelTask`: `send` unset)
+    /// TASK_NOT_FOUND and a send `not owner`, before any side effect: no inbox opened, the row
+    /// not marked (its stored ceiling kept though the live one is higher), no limits installed
+    /// (no cap lifted). A read from a contact with no inbox here opens none.
+    #[tokio::test]
+    async fn a_non_owner_inbox_resolve_changes_nothing() {
+        use a2a_types::error_code::TASK_NOT_FOUND;
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let roster = Roster::research(Some(tools::Risk::ReadOnly));
+        a.identity = Some(Arc::new(roster.clone()));
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        route(&mut a, binding.id);
+        let inbox = admit(&mut a, binding.id).await.unwrap();
+        forget(&mut a, inbox);
+        a.store.owned_elsewhere(inbox, "other-engine").await;
+        roster.set(Some(Some(tools::Risk::Mutating)));
+        let ask = |binding, send| ContactInbox {
+            binding,
+            agent: "research@sky-mac".into(),
+            origin: full_bob(),
+            export_id: Some("x-research".into()),
+            send,
+        };
+        let key = format!("peer:{}", binding.id);
+        let scope = A2aScope {
+            principal: &key,
+            export: "research",
+        };
+        let sessions = a.store.list_sessions().await.unwrap().len();
+        for (what, send, code) in [
+            ("GetTask", false, TASK_NOT_FOUND),
+            ("CancelTask", false, TASK_NOT_FOUND),
+            ("SendMessage", true, NOT_OWNER_CODE),
+        ] {
+            let r = a.handle_inbox(ask(binding.id, send)).await;
+            assert_eq!(r.err().map(|e| e.code), Some(code), "{what}");
+            assert_eq!(a.store.a2a_context_count_for_test(scope).await, 1, "{what}");
+            assert_eq!(a.store.list_sessions().await.unwrap().len(), sessions);
+            assert_eq!(
+                a.store
+                    .a2a_inbox_full(inbox)
+                    .await
+                    .unwrap()
+                    .map(|r| r.ceiling),
+                Some(Some(Some(tools::Risk::ReadOnly))),
+                "{what}: not marked"
+            );
+            assert!(
+                !a.caps.contains_key(&inbox) && !a.network.inbox_personas.contains_key(&inbox),
+                "{what}: no limits installed"
+            );
+        }
+        // A read from a contact with no inbox here: none opened.
+        let carol = a
+            .store
+            .bind_peer("carol", &contact_endpoint("carol-endpoint"))
+            .await
+            .unwrap();
+        route(&mut a, carol.id);
+        let r = a.handle_inbox(ask(carol.id, false)).await;
+        assert_eq!(r.err().map(|e| e.code), Some(TASK_NOT_FOUND));
+        let key = format!("peer:{}", carol.id);
+        let scope = A2aScope {
+            principal: &key,
+            export: "research",
+        };
+        assert_eq!(a.store.a2a_context_count_for_test(scope).await, 0);
+        assert_eq!(a.store.list_sessions().await.unwrap().len(), sessions);
+        // An unreadable row proves nothing either.
+        a.store.break_session_for_test(inbox).await;
+        let r = a.handle_inbox(ask(binding.id, true)).await;
+        assert_eq!(r.err().map(|e| e.code), Some(NOT_OWNER_CODE));
+        assert!(!a.caps.contains_key(&inbox));
     }
 
     /// 186 review 2: with no live persona (the roster not joined, the agent missing) a full

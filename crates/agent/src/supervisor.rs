@@ -31,8 +31,8 @@ use tools::{
     ActivitySink, Admission, Admit, ApprovalId, ApprovalRequested, ApprovalResolved,
     InstallCommunicationAccess, JOBS_ACTOR, JobEvent, JobExit, JobId, JobKind, Jobs, ListPrompts,
     ListTools, Notice, REGISTRY_ACTOR, RearmReminder, RegisterActivity, RegisterPrompt,
-    RegisterTool, ReminderEvent, RestoreApprovals, Risk, SetCap, SetParent, SetPromoteAfter,
-    Settle, ToolRegistry,
+    RegisterTool, ReminderEvent, RestoreApprovals, RestoreHidden, Risk, SetCap, SetParent,
+    SetPromoteAfter, Settle, ToolRegistry,
 };
 use uuid::Uuid;
 
@@ -1459,9 +1459,10 @@ impl Agents {
         Ok(actor)
     }
 
-    /// Subagents inherit the parent's approval switch. 183 §4.5 (D4): the
-    /// row's approvals pin and agent-messaging opt-out are applied here, so
-    /// a restart, resume or take keeps them before the first tool call.
+    /// Subagents inherit the parent's approval switch and hidden tools. 183
+    /// §4.5 (D4): the row's approvals pin, hidden tools and agent-messaging
+    /// opt-out are applied here, so a restart, resume or take keeps them
+    /// before the first tool call.
     async fn inherit_approvals(&mut self, id: SessionId, parent: Option<SessionId>) {
         let reg = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
             .ok()
@@ -1487,6 +1488,14 @@ impl Agents {
         // `None` too: a pin this registry held from before a move away is stale.
         if let Some(reg) = &reg {
             let _ = reg.ask(RestoreApprovals { session: id, pin }).await;
+            // Empty too, for the same reason; a list that does not parse
+            // leaves the registry as it is.
+            match self.store.session_hidden(id).await {
+                Ok(tools) => {
+                    let _ = reg.ask(RestoreHidden { session: id, tools }).await;
+                }
+                Err(e) => tracing::error!(session = %id, "hidden tools: {e:#}"),
+            }
         }
         // 183 R1 (S1): the opt-out both ways, as every reader applies it.
         self.mirror(id).await;

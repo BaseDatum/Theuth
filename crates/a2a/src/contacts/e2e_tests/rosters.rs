@@ -165,6 +165,11 @@ async fn removing_the_pairing_machine_leaves_the_others_and_a_stale_contact_catc
     let c = engine("c", &lan, true, cfg(600)).await;
     let (n1, n2) = our_two_and(&c).await;
     assert_eq!(version(&c).await, Some(1));
+    assert_ne!(
+        c.net.a2a_path(&n1.eid()),
+        mesh::PeerPath::Offline,
+        "c and n1 are connected"
+    );
     mesh_remove(&n2, &n1.eid()).await;
     assert!(n2.ctx.tick().await, "a membership change signs");
     until_true!(
@@ -172,6 +177,11 @@ async fn removing_the_pairing_machine_leaves_the_others_and_a_stale_contact_catc
         version(&c).await == Some(2) && !admits(&c, &n1.eid()) && admits(&c, &n2.eid())
     );
     assert_eq!(c.ctx.gate(&n1.eid()), IrohGate::Refuse);
+    // Review SHOULD 2 (D2 step 6): the dropped machine's open connections closed with it.
+    until_true!(
+        "n1's connections closed",
+        c.net.a2a_path(&n1.eid()) == mesh::PeerPath::Offline
+    );
     assert!(c.ctx.refresh_offers(&n2.eid()).await, "C reaches n2");
 
     // Case 8: n1 is back; ten changes (an n5 added, removed, five times): versions 3..13.
@@ -242,6 +252,21 @@ async fn removing_the_pairing_machine_leaves_the_others_and_a_stale_contact_catc
         kept.contains(&1) && kept.contains(&13) && !kept.contains(&4),
         "{kept:?}"
     );
+    // Review SHOULD 3: a push is ingested under the contact's permit, before its 204 (no
+    // task outlives the request).
+    rewind(&c, &record, &at3).await;
+    let body = serde_json::to_vec(&carried).unwrap();
+    let (s, _) = crate::contacts::offers::call_with(
+        &n2.net,
+        &c.eid(),
+        hyper::Method::POST,
+        crate::contacts::offers::NOTICE_PATH,
+        Some(body.into()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(s, hyper::StatusCode::NO_CONTENT);
+    assert_eq!(version(&c).await, Some(13), "ingested before the answer");
 }
 
 /// Rig 9: a new contact machine c2 after our pin n1 retired: it has the record and c1's
@@ -384,6 +409,62 @@ async fn a_divergence_is_a_conflict_only_once_our_chain_reaches_it() {
     }
     // n2 saw c1 ask for version 3 above its latest (2), then a head at 3 it never signed.
     assert!(n2.ctx.rosters.lock().seen.values().any(|(_, n)| *n >= 1));
+
+    // Review MUST 2. Our mesh unreachable (n2 down; n1, removed, serves a path short of 3):
+    // a round proves nothing, and c1's flag stands.
+    n2.net.shutdown().await;
+    c1.ctx.roster_round().await;
+    assert_eq!(
+        my_head(&c1).await,
+        Some((3, true)),
+        "a failed or short fetch keeps the flag"
+    );
+    assert!(!admits(&c1, &n2.eid()));
+    // A slow round (its fetches still running): the next round still stamps the flag.
+    let before = stamp_of(&c1, &c1.eid()).await;
+    c1.ctx.rosters.lock().busy = true;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    c1.ctx.roster_round().await;
+    assert!(stamp_of(&c1, &c1.eid()).await > before, "stamped again");
+    // c3 gets c1's row stamped by a clock an hour behind: still denied. Unchanged, it expires
+    // only after three of c3's own rounds (its fetches held off: they would dial n2).
+    replicate(&c1, &c3).await;
+    let skewed = mesh::identity::now_ms() as i64 - 3_600_000;
+    c3.ctx
+        .agents()
+        .unwrap()
+        .ask(agent::communication::network::WriteContactRecords(vec![
+            agent::store::contacts::RecordWrite::new(
+                agent::store::contacts::RecordTable::Heads,
+                format!("{record}|{}", c1.eid()),
+                vec![("at_ms", agent::store::contacts::Cell::Int(skewed))],
+            ),
+        ]))
+        .await
+        .unwrap();
+    c3.ctx.reconcile_now().await.unwrap();
+    c3.ctx.rosters.lock().busy = true;
+    for round in 1..=4 {
+        c3.ctx.roster_round().await;
+        let problem = c3.ctx.contact_list()[0].problem.clone();
+        assert_eq!(
+            problem.as_deref() == Some(rosters::DISAGREE),
+            round <= 3,
+            "round {round}: {problem:?}"
+        );
+    }
+}
+
+/// When `e`'s copy of `machine`'s heads row was last stamped.
+async fn stamp_of(e: &Engine, machine: &str) -> Option<i64> {
+    e.ctx
+        .records()
+        .await
+        .unwrap()
+        .heads
+        .iter()
+        .find(|h| h.machine.as_deref() == Some(machine))
+        .and_then(|h| h.at_ms)
 }
 
 /// Rig 12 and 13: n1 and n2 partitioned each sign a different version 2 (n5 through one, n6
@@ -754,6 +835,53 @@ async fn the_proof_path_serves_only_the_callers_own_record_from_its_pin() {
     .await
     .unwrap();
     assert_eq!(s, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+/// Review SHOULD 6: three of our machines each run a ceremony with the same contact
+/// machine. The endpoint row's pins hold all three, so after the third ceremony the second
+/// machine is still a pin: its proof path is served (never 403) and its hop chain kept.
+#[tokio::test]
+async fn three_ceremonies_with_one_contact_machine_keep_every_pin() {
+    let lan = Lan::default();
+    let c = engine("c", &lan, true, cfg(600)).await;
+    let (n1, n2) = our_two_and(&c).await;
+    paired(&n2, &c).await;
+    replicate(&n2, &n1).await;
+    let n3 = engine("n3", &lan, true, cfg(600)).await;
+    mesh_pair(&n1, &n3).await;
+    mesh_pair(&n2, &n3).await;
+    introduce(&[&n1, &n2, &n3, &c]).await;
+    replicate(&n2, &n3).await;
+    assert!(n2.ctx.tick().await, "n3 joined: a new version");
+    until_true!("c admits n3", admits(&c, &n3.eid()));
+    assert!(n3.ctx.tick().await);
+    n3.ctx.roster_round().await;
+    paired(&n3, &c).await;
+    replicate(&n3, &n1).await;
+    replicate(&n3, &n2).await;
+    let (chain, _) = state(&n3).await;
+    for n in [&n1, &n2, &n3] {
+        let _ = n.ctx.tick().await;
+        let r = n.ctx.records().await.unwrap();
+        let row = r
+            .endpoints
+            .iter()
+            .find(|e| e.eid.as_deref() == Some(c.eid().as_str()))
+            .expect("c's pin row");
+        assert_eq!(
+            records::pinners(row),
+            BTreeSet::from([n1.eid(), n2.eid(), n3.eid()]),
+            "on {}",
+            n.eid()
+        );
+        for pin in [&n1, &n2, &n3] {
+            let path = n
+                .ctx
+                .roster_path(&c.eid(), &format!("chain={chain}&pin={}&from=0", pin.eid()))
+                .await;
+            assert!(path.is_ok(), "pin {} on {}: {path:?}", pin.eid(), n.eid());
+        }
+    }
 }
 
 /// A stand-in contact machine: every JSON-RPC call answers `code` (or a result), counted.

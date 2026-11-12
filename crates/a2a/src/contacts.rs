@@ -1202,16 +1202,19 @@ impl crate::Ctx {
                 record
             }
         };
+        let pin_id = format!("{record}|{eid}");
+        // 191 (D1): this machine joins the pins the contact holds of us; a machine that pinned
+        // this endpoint before stays one (a set: a third ceremony forgets nobody).
+        let pinned_by = records::pinned_by_with(&r, &pin_id, &r.me);
         w.push(RecordWrite::new(
             RecordTable::Endpoints,
-            format!("{record}|{eid}"),
+            pin_id,
             vec![
                 ("contact", Cell::Text(record.clone())),
                 ("eid", Cell::Text(eid.clone())),
                 ("paired_ms", Cell::Int(now)),
                 ("barred_ms", Cell::Null),
-                // 191 (D1): this machine is now a pin the contact holds of us.
-                ("pinned_by", Cell::Text(r.me.clone())),
+                ("pinned_by", pinned_by),
             ],
         ));
         self.commit_records(w).await?;
