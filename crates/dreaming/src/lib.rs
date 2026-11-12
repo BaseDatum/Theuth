@@ -112,10 +112,16 @@ pub fn routine_text(
     agent: &config::AgentDefaults,
 ) -> String {
     let (models, _) = cfg.resolve_models(agent);
+    // 194 D4e: the tidy tier's effort (only beside its pick) is the routine's
+    // `effort:`, the night session's reasoning effort.
+    let effort_line = match (&cfg.models.tidy, &cfg.efforts.tidy) {
+        (Some(_), Some(e)) => format!("effort: \"{e}\"\n"),
+        _ => String::new(),
+    };
     let model_line = if models.tidy.is_empty() {
         String::new()
     } else {
-        format!("model: {}\n", models.tidy)
+        format!("model: {}\n{effort_line}", models.tidy)
     };
     let engine_arg = cfg
         .home_engine
@@ -407,6 +413,63 @@ mod tests {
         assert_eq!(spec.model.as_deref(), Some("anthropic/claude-haiku-4-5"));
         assert_eq!(spec.budget.unwrap().nanos, 2_500_000_000);
         assert!(!spec.sensor.unwrap().args.contains_key("engine"));
+    }
+
+    /// 194 (B2 × C): the tidy tier's effort reaches the routine as `effort:`
+    /// only beside its own pick, so the schedule parser (which refuses
+    /// `effort:` without `model:`) always reads the file — fresh, patched
+    /// with the effort, and patched again after the pick is cleared.
+    #[test]
+    fn tidy_effort_rides_only_with_its_model_and_the_routine_still_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        let picked = DreamConfig {
+            models: config::Models {
+                tidy: Some("anthropic/claude-haiku-4-5".into()),
+                ..Default::default()
+            },
+            efforts: config::Models {
+                tidy: Some("high".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let spec = schedule::file::parse(
+            "dreaming",
+            &routine_text(&picked, dir.path(), None, &agent()),
+        )
+        .unwrap();
+        assert_eq!(spec.model.as_deref(), Some("anthropic/claude-haiku-4-5"));
+        assert_eq!(spec.effort.as_deref(), Some("high"));
+        // An effort with no tidy pick (agent.model fallback) is not written.
+        let unpicked = DreamConfig {
+            models: config::Models::default(),
+            ..picked.clone()
+        };
+        let text = routine_text(&unpicked, dir.path(), None, &agent());
+        assert!(!text.contains("effort:"), "{text}");
+        assert_eq!(
+            schedule::file::parse("dreaming", &text).unwrap().effort,
+            None
+        );
+        // The installed file follows: effort in with the pick, out when the pick goes.
+        install_files(dir.path(), &DreamConfig::default(), None, &agent()).unwrap();
+        let routine = dir.path().join("schedules/dreaming.md");
+        night::update_routine_file(dir.path(), &picked, None, &agent()).unwrap();
+        let on = std::fs::read_to_string(&routine).unwrap();
+        assert_eq!(
+            schedule::file::parse("dreaming", &on)
+                .unwrap_or_else(|e| panic!("{e}\n{on}"))
+                .effort
+                .as_deref(),
+            Some("high")
+        );
+        night::update_routine_file(dir.path(), &unpicked, None, &agent()).unwrap();
+        let off = std::fs::read_to_string(&routine).unwrap();
+        let spec = schedule::file::parse("dreaming", &off).unwrap_or_else(|e| panic!("{e}\n{off}"));
+        assert_eq!(
+            (spec.model.as_deref(), spec.effort),
+            (Some("openai/gpt-5.6-sol"), None)
+        );
     }
 
     /// R-15 (D13): any finite budget renders to a line `Budget::parse` accepts.

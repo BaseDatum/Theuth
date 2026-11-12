@@ -10,6 +10,15 @@ pub trait BoardsApi {
     /// like `set_subagent_model`. An open theuth desk switches at once.
     #[method(name = "set_theuth_agent_model")]
     async fn set_theuth_agent_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>>;
+    /// The built-in theuth agent's effort (`roster.theuth_effort`), if set (194 rows 4–5).
+    /// `None` = same as new sessions.
+    #[method(name = "theuth_agent_effort")]
+    async fn theuth_agent_effort(&self) -> RpcResult<Option<String>>;
+    /// Persist `roster.theuth_effort`; `None` clears it. Refused when theuth's effective model
+    /// does not take it. Its open desk and the desk's new work sessions start on it. Returns
+    /// the stored value.
+    #[method(name = "set_theuth_agent_effort")]
+    async fn set_theuth_agent_effort(&self, effort: Option<String>) -> RpcResult<Option<String>>;
     /// Unresolved desktop hand-offs (79 §6.6).
     #[method(name = "handoffs_list")]
     async fn handoffs_list(&self) -> RpcResult<Vec<roster::attention::Handoff>>;
@@ -111,6 +120,14 @@ impl BoardsApiServer for Server {
 
     async fn set_theuth_agent_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>> {
         send(&roster_actor()?, roster::SetTheuthModel { model }).await
+    }
+
+    async fn theuth_agent_effort(&self) -> RpcResult<Option<String>> {
+        send(&roster_actor()?, roster::TheuthEffort).await
+    }
+
+    async fn set_theuth_agent_effort(&self, effort: Option<String>) -> RpcResult<Option<String>> {
+        send(&roster_actor()?, roster::SetTheuthEffort { effort }).await
     }
 
     // 79 §6.6 (H fills these; stubs so the method list is complete).

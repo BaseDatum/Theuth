@@ -421,14 +421,14 @@ impl Tool for StudyDraftTool {
          Shows a draft card; the user's Start press creates the study — this call writes nothing. Benchmark scripts \
          written during setup belong under the autoresearch drafts directory, never in the user's checkout. \
          `partial: true` (setup in the Autoresearch tab) relaxes validation to slug + repo and shows a compact card; \
-         `confirmed` lists the rows the user agreed to."
+         `confirmed` lists the rows the user agreed to; `models.<role>_effort` sets a role's reasoning effort beside its model."
             .into()
     }
 
     async fn call(&self, a: DraftArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         // 151 D5: `partial` / `confirmed` are stored with the spec (ENG builds the relaxed validation and the compact card).
         let DraftArgs {
-            spec,
+            mut spec,
             partial,
             confirmed,
         } = a;
@@ -454,6 +454,10 @@ impl Tool for StudyDraftTool {
             Err(e) => return Ok(ToolOutput::err(format!("autoresearch_draft: {e}"))),
         };
         let root = cfg.root(&self.core.rt.data_dir);
+        // 194 D4b–d: each role's effort against its model, before anything is written.
+        if let Err(e) = setup::settle_draft(&root, &mut spec).await {
+            return Ok(ToolOutput::err(format!("autoresearch_draft: {e}")));
+        }
         let (token, sticky) = match write_draft(&root, &spec, cx.session, partial, confirmed) {
             Ok(t) => t,
             Err(e) => {

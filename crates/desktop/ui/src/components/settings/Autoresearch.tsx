@@ -115,6 +115,7 @@ export function Autoresearch() {
       <Section title="Models">
         {ROLES.map((role) => {
           const off = role === 'review' && s?.review.model === 'off'
+          const current = s ? models.data?.find((m) => m.id === roleModel(s, role)) : undefined
           return (
             <Row stack key={role} label={ROLE_LABEL[role]} description={ROLE_HELP[role]}>
               {role === 'review' && (
@@ -131,6 +132,16 @@ export function Autoresearch() {
                   className="w-full max-w-72 max-md:max-w-none"
                   models={models.data ?? []}
                   value={s ? roleModel(s, role) : undefined}
+                  // 194 row 19: each role's effort sits beside its model (`models.<role>_effort`, `review.effort`).
+                  effort={
+                    s && current && current.efforts.length > 0
+                      ? {
+                          levels: current.efforts,
+                          current: role === 'review' ? s.review.effort : s.models[`${role}_effort` as const],
+                          onSelect: (effort) => change((c) => (role === 'review' ? { ...c, review: { ...c.review, effort } } : { ...c, models: { ...c.models, [`${role}_effort`]: effort } })),
+                        }
+                      : undefined
+                  }
                   none={{ label: ROLE_NONE[role] }}
                   disabled={busy}
                   onChange={(v) => change((c) => withRoleModel(c, role, v))}

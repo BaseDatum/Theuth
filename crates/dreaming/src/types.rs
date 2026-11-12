@@ -529,6 +529,11 @@ pub struct DreamSettings {
     pub budget_usd: f64,
     /// The four tiers.
     pub models: DreamModels,
+    /// 194: `dreaming.efforts` — each tier's effort beside its pick in
+    /// `models`; cleared with it, dropped when a new pick does not take it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<DreamModels>", optional))]
+    pub efforts: DreamModels,
     /// `preferences.auto_from_explicit`.
     pub preferences_auto: bool,
     /// `"<Day> HH:MM"`.

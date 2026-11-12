@@ -273,12 +273,22 @@ impl evalcore::run::Model for DreamModel {
     }
 }
 
-fn role(model: &str) -> runtime::ModelRole {
-    if model.is_empty() {
-        runtime::ModelRole::Session
-    } else {
-        runtime::ModelRole::Named(model.to_owned())
+fn role(model: &str, effort: Option<&str>) -> runtime::ModelRole {
+    match (model.is_empty(), effort) {
+        (true, _) => runtime::ModelRole::Session,
+        (false, Some(e)) => runtime::ModelRole::NamedWithEffort {
+            model: model.to_owned(),
+            effort: Some(e.to_owned()),
+        },
+        (false, None) => runtime::ModelRole::Named(model.to_owned()),
     }
+}
+
+/// The judge tier's side-call role (136 D12) with its effort (194 D4e: only
+/// beside an explicit `dreaming.models.judge`; a default judge sends none).
+fn judge_role(cfg: &DreamConfig, judge: &str) -> runtime::ModelRole {
+    let effort = cfg.models.judge.as_ref().and(cfg.efforts.judge.as_deref());
+    role(judge, effort)
 }
 
 /// A dreaming case as the shared core's: `context` is the input, `ideal` and `user_words`
@@ -329,12 +339,12 @@ pub async fn replay(
     let target = DreamModel {
         agents: agents.clone(),
         session,
-        role: role(target),
+        role: role(target, None),
     };
     let judge = DreamModel {
         agents,
         session,
-        role: role(&models.judge),
+        role: judge_role(cfg, &models.judge),
     };
     let scored = evalcore::run::run_case(
         &target,
@@ -441,6 +451,31 @@ mod tests {
         );
         assert_eq!(parse_judge("no json"), None);
         assert_eq!(parse_judge("{\"reason\": \"x\"}"), None);
+    }
+
+    /// 194 D4e: the judge's side call carries `dreaming.efforts.judge` beside an explicit
+    /// judge pick; a default judge (or none set) sends no reasoning setting.
+    #[test]
+    fn the_judge_call_carries_the_judge_effort() {
+        let mut cfg = DreamConfig::default();
+        assert_eq!(
+            judge_role(&cfg, "p/j"),
+            runtime::ModelRole::Named("p/j".into())
+        );
+        cfg.models.judge = Some("p/j".into());
+        cfg.efforts.judge = Some("high".into());
+        assert_eq!(
+            judge_role(&cfg, "p/j"),
+            runtime::ModelRole::NamedWithEffort {
+                model: "p/j".into(),
+                effort: Some("high".into())
+            }
+        );
+        cfg.models.judge = None;
+        assert_eq!(
+            judge_role(&cfg, "p/default"),
+            runtime::ModelRole::Named("p/default".into())
+        );
     }
 
     #[test]

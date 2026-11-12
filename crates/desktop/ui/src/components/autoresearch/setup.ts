@@ -45,7 +45,8 @@ export const LEAVES: Record<string, readonly string[]> = {
   secondary_guards: ['secondary_guards'],
   warm: ['warm'],
   parallel: ['parallel'],
-  models: ['models.executor', 'models.review', 'models.advisor'],
+  // 194 row 20: each `<model>_effort` leaf is its model picker's chip row, not an input of its own.
+  models: ['models.executor', 'models.executor_effort', 'models.review', 'models.review_effort', 'models.advisor', 'models.advisor_effort'],
   evaluator_paths: ['evaluator_paths'],
 }
 

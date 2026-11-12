@@ -379,6 +379,8 @@ pub struct Spec {
     pub missed_run: bool,
     /// `model:` — model for the run's session.
     pub model: Option<String>,
+    /// `effort:` (194) — reasoning effort of `model` for the run's session; needs `model:`.
+    pub effort: Option<String>,
     /// `enabled:` — default true; false is listed and never fires.
     pub enabled: bool,
     /// Body, trimmed; never empty.
@@ -442,6 +444,7 @@ struct FrontMatter {
     quiet: Option<bool>,
     missed: Option<String>,
     model: Option<String>,
+    effort: Option<String>,
     enabled: Option<bool>,
     until: Option<String>,
     max_runs: Option<u32>,
@@ -476,7 +479,7 @@ struct FrontMatter {
 /// `<key>: needs when:`, `when: needs a stop (until, max_runs or expires)`,
 /// `missed: not allowed with when:`, `expires: below every`, `timeout: above
 /// 60s`, `timeout: must be below every / 2`, `created: expected RFC 3339`;
-/// `run_timeout: below 30s` (88)).
+/// `run_timeout: below 30s` (88); `effort: needs model:`, `effort: unknown effort <x>` (194)).
 pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
     let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
     let parsed = matter
@@ -699,6 +702,23 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
                 .map_err(|_| "cap: expected read_only|mutating|destructive".to_string())
         })
         .transpose()?;
+    // 194 D2/D4d: `effort:` is the run model's; without `model:` it has nothing to go with.
+    let model = fm
+        .model
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty());
+    let effort = fm
+        .effort
+        .map(|e| e.trim().to_string())
+        .filter(|e| !e.is_empty());
+    if let Some(e) = &effort {
+        if model.is_none() {
+            return Err("effort: needs model:".into());
+        }
+        if agent::effort_of(e).is_none() {
+            return Err(format!("effort: unknown effort {e}"));
+        }
+    }
 
     Ok(Spec {
         name: name.to_string(),
@@ -706,10 +726,8 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
         when_text,
         quiet: fm.quiet.unwrap_or(false),
         missed_run,
-        model: fm
-            .model
-            .map(|m| m.trim().to_string())
-            .filter(|m| !m.is_empty()),
+        model,
+        effort,
         enabled: fm.enabled.unwrap_or(true),
         prompt: prompt.to_string(),
         until,
@@ -930,6 +948,8 @@ pub struct FileArgs<'a> {
     pub quiet: bool,
     /// `model:` — written only when present.
     pub model: Option<&'a str>,
+    /// `effort:` (194) — written only when present.
+    pub effort: Option<&'a str>,
     /// `until:` — the stop command (33 §2); written only when present.
     pub until: Option<&'a str>,
     /// `max_runs:` — the cap (33 §2); written only when present.
@@ -998,6 +1018,10 @@ pub struct ScheduleFile {
     pub missed_run: bool,
     /// `model:`.
     pub model: Option<String>,
+    /// `effort:` (194): the run model's effort; absent = `agent.effort`.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub effort: Option<String>,
     /// `enabled:` (default true).
     pub enabled: bool,
     /// `until:`.
@@ -1066,6 +1090,7 @@ impl ScheduleFile {
             quiet: fm.quiet.unwrap_or(false),
             missed_run: fm.missed.as_deref().map(str::trim) == Some("run"),
             model: fm.model,
+            effort: fm.effort,
             enabled: fm.enabled.unwrap_or(true),
             until: fm.until,
             max_runs: fm.max_runs,
@@ -1102,6 +1127,7 @@ impl ScheduleFile {
             at: some(&self.at),
             quiet: self.quiet,
             model: some(&self.model),
+            effort: some(&self.effort),
             until: some(&self.until),
             max_runs: self.max_runs,
             cwd: some(&self.cwd),
@@ -1184,6 +1210,9 @@ pub fn render(a: &FileArgs<'_>) -> String {
     }
     if let Some(m) = a.model {
         s.push_str(&format!("model: {}\n", m.trim()));
+    }
+    if let Some(e) = a.effort {
+        s.push_str(&format!("effort: {}\n", e.trim()));
     }
     if let Some(u) = a.until {
         s.push_str(&format!("until: {}\n", yaml_str(u.trim())));
@@ -1410,6 +1439,7 @@ mod tests {
         at: None,
         quiet: false,
         model: None,
+        effort: None,
         until: None,
         max_runs: None,
         cwd: None,
@@ -1962,6 +1992,29 @@ mod tests {
             ..BASE
         });
         assert_eq!(parse("a", &text).unwrap().when_text, "at 2099-01-01T10:00");
+    }
+
+    /// 194 row 18: `effort:` beside `model:` survives the editor's read → render → parse; an old
+    /// file without it reads as Default; it needs `model:` and a known word.
+    #[test]
+    fn effort_round_trips_beside_model() {
+        let old = "---\nevery: 30m\nmodel: a/b\n---\nGo.\n";
+        assert_eq!(parse("old", old).unwrap().effort, None);
+        let f = ScheduleFile {
+            effort: Some("high".into()),
+            ..ScheduleFile::read("old", old).unwrap()
+        };
+        let text = render(&f.args());
+        assert!(text.contains("model: a/b\neffort: high\n"), "{text}");
+        assert_eq!(parse("old", &text).unwrap().effort.as_deref(), Some("high"));
+        assert_eq!(
+            ScheduleFile::read("old", &text).unwrap().effort.as_deref(),
+            Some("high")
+        );
+        let bare = "---\nevery: 30m\neffort: high\n---\nGo.\n";
+        assert_eq!(parse("e", bare).unwrap_err(), "effort: needs model:");
+        let loud = "---\nevery: 30m\nmodel: a/b\neffort: loud\n---\nGo.\n";
+        assert_eq!(parse("e", loud).unwrap_err(), "effort: unknown effort loud");
     }
 
     #[test]

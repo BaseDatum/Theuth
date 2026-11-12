@@ -242,6 +242,8 @@ struct BackendModel<'a> {
     env: &'a Env,
     study: &'a StudyRecord,
     model: String,
+    /// 194 D4e: the target's effort.
+    effort: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -251,7 +253,10 @@ impl evalcore::run::Model for BackendModel<'_> {
             .backend
             .side_call(
                 self.study,
-                runtime::ModelRole::Named(self.model.clone()),
+                runtime::ModelRole::NamedWithEffort {
+                    model: self.model.clone(),
+                    effort: self.effort.clone(),
+                },
                 system,
                 user,
                 CALL_BUDGET,
@@ -299,6 +304,7 @@ async fn generate(
                     .clone()
                     .filter(|m| !m.trim().is_empty())
                     .unwrap_or_else(|| env.cfg.executor(&spec.models, &env.agent)),
+                effort: env.cfg.target_effort(&spec.models),
             };
             // Generation only: the artefact is the system prompt, the case input the user turn
             // (W2's `run_case` is a replay that also scores, and refuses a case with no check
@@ -404,6 +410,14 @@ async fn call_judge(
     let mut cost = 0u64;
     let mut used = model.to_owned();
     let mut last = String::new();
+    // 194 D4e: the effort of the model `judge_model` picked: `models.judge_effort`, else the
+    // reviewer's, else the executor's.
+    let m = &study.spec.models;
+    let effort = match m.judge.as_deref().map(str::trim).filter(|j| !j.is_empty()) {
+        Some(_) => m.judge_effort.clone(),
+        None if env.cfg.reviewer(m, &env.agent).is_some() => env.cfg.reviewer_effort(m),
+        None => env.cfg.executor_effort(m),
+    };
     for correction in [None, Some(CORRECTION)] {
         let msg = match correction {
             None => user.to_owned(),
@@ -413,7 +427,10 @@ async fn call_judge(
             .backend
             .side_call(
                 study,
-                runtime::ModelRole::Named(model.to_owned()),
+                runtime::ModelRole::NamedWithEffort {
+                    model: model.to_owned(),
+                    effort: effort.clone(),
+                },
                 pair::SYSTEM,
                 msg,
                 CALL_BUDGET,
@@ -1850,6 +1867,8 @@ mod tests {
     struct ShorterWins {
         calls: parking_lot::Mutex<u32>,
         last_user: parking_lot::Mutex<String>,
+        /// 194 D4e: the role of every call.
+        roles: parking_lot::Mutex<Vec<runtime::ModelRole>>,
     }
 
     fn fenced(user: &str, label: &str) -> String {
@@ -1871,12 +1890,13 @@ mod tests {
         async fn side_call(
             &self,
             _study: &StudyRecord,
-            _role: runtime::ModelRole,
+            role: runtime::ModelRole,
             _system: &str,
             user: String,
             _budget: Duration,
         ) -> Result<runtime::SideReply> {
             *self.calls.lock() += 1;
+            self.roles.lock().push(role);
             *self.last_user.lock() = user.clone();
             let a = words(&fenced(&user, "Output A (data):"));
             let b = words(&fenced(&user, "Output B (data):"));
@@ -2083,7 +2103,9 @@ sys.exit(main())
             backend: fake.clone(),
         };
         let env = studies.env();
-        let spec = judged_spec(&worktree.display().to_string());
+        let mut spec = judged_spec(&worktree.display().to_string());
+        spec.models.judge = Some("fake/judge".into());
+        spec.models.judge_effort = Some("high".into());
         let study = StudyRecord {
             slug: "tj".into(),
             state: StudyState::Running,
@@ -2178,6 +2200,12 @@ sys.exit(main())
         .await
         .unwrap();
         assert_eq!((b2.value, *fake.calls.lock()), (Some(0.5), 12));
+        // 194 D4e: every judge call carries the judge role's effort.
+        let judge = runtime::ModelRole::NamedWithEffort {
+            model: "fake/judge".into(),
+            effort: Some("high".into()),
+        };
+        assert_eq!(*fake.roles.lock(), vec![judge; 12]);
 
         // Experiment 1: a shorter, complete generator.
         std::fs::write(worktree.join("blurb.py"), BETTER).unwrap();

@@ -37,7 +37,6 @@ export function ModelCombobox({
   id,
   className,
   size,
-  localFirst,
   'aria-label': ariaLabel,
 }: {
   models: ModelInfo[]
@@ -52,8 +51,6 @@ export function ModelCombobox({
   className?: string
   size?: 'sm' | 'default'
   'aria-label'?: string
-  /** 177 U4: local models first (the summary-model pickers). */
-  localFirst?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const current = value ? models.find((m) => m.id === value) : undefined
@@ -68,7 +65,6 @@ export function ModelCombobox({
   const picker = (className?: string, listClassName?: string) => (
     <ModelPicker
       models={models}
-      localFirst={localFirst}
       model={value ?? undefined}
       extra={value && !current ? [value] : undefined}
       effort={effort && { ...effort, onSelect: (level) => (setOpen(false), effort.onSelect(level)) }}

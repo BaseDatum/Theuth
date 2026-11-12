@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use genai::chat::{ChatRequest, ChatRole, ContentPart, Tool};
+use genai::chat::{ChatRequest, ChatRole, ContentPart, ReasoningEffort, Tool};
 use prost::Message as _;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -113,37 +113,49 @@ pub fn decode_args(args: &HashMap<String, Vec<u8>>) -> Value {
     )
 }
 
+/// Whether a Cursor model id takes the `reasoning` parameter: the OpenAI
+/// family. Every other family (Claude, Grok, composer, …) carries its
+/// thinking in the id itself, and the wire has no effort field for it.
+pub fn takes_reasoning(id: &str) -> bool {
+    id.starts_with("gpt-") || id.starts_with("o1") || id.starts_with("o3") || id.starts_with("o4")
+}
+
 /// Wire model id + `RequestedModel.parameters` for a catalog slug. OpenAI
 /// family effort siblings (`gpt-5.4-mini-low[-fast]`) must go as base id +
 /// `reasoning` parameter or the Run fails `resource_exhausted`; `-none` is
 /// the bare base. Bare `composer-2.5` pins the Standard lane. Everything else
-/// (Claude, Grok, k3, …) passes through unchanged, as omp does.
-pub fn wire_model(id: &str) -> (String, Vec<(&'static str, String)>) {
+/// (Claude, Grok, k3, …) passes through unchanged, as omp does. 194: an
+/// explicit `effort` replaces the slug's on the OpenAI family — `Zero` is the
+/// bare base, a keyword its `reasoning`; a token budget (no Cursor field)
+/// keeps the slug's; `None` is the slug alone.
+pub fn wire_model(
+    id: &str,
+    effort: Option<&ReasoningEffort>,
+) -> (String, Vec<(&'static str, String)>) {
     if id == "composer-2.5" {
         return (id.to_owned(), vec![("fast", "false".to_owned())]);
     }
-    let openai = id.starts_with("gpt-")
-        || id.starts_with("o1")
-        || id.starts_with("o3")
-        || id.starts_with("o4");
-    if !openai {
+    if !takes_reasoning(id) {
         return (id.to_owned(), vec![]);
     }
     let (stem, lane) = match id.strip_suffix("-fast") {
         Some(s) => (s, "-fast"),
         None => (id, ""),
     };
-    for effort in ["minimal", "low", "medium", "high", "xhigh", "max", "none"] {
-        if let Some(base) = stem.strip_suffix(&format!("-{effort}")) {
-            let params = if effort == "none" {
-                vec![]
-            } else {
-                vec![("reasoning", effort.to_owned())]
-            };
-            return (format!("{base}{lane}"), params);
-        }
-    }
-    (id.to_owned(), vec![])
+    let (base, suffix) = ["minimal", "low", "medium", "high", "xhigh", "max", "none"]
+        .into_iter()
+        .find_map(|e| Some((stem.strip_suffix(&format!("-{e}"))?, Some(e))))
+        .unwrap_or((stem, None));
+    let reasoning = match effort {
+        None => suffix,
+        Some(ReasoningEffort::Zero) => None,
+        Some(e) => e.as_keyword().or(suffix),
+    };
+    let params = reasoning
+        .filter(|r| *r != "none")
+        .map(|r| vec![("reasoning", r.to_owned())])
+        .unwrap_or_default();
+    (format!("{base}{lane}"), params)
 }
 
 /// System prompt entries: `req.system` plus any `System` role messages.
@@ -443,9 +455,11 @@ fn active_index(req: &ChatRequest) -> usize {
     }
 }
 
-/// The complete `AgentRunRequest` plus the blobs it references.
+/// The complete `AgentRunRequest` plus the blobs it references; `effort` as
+/// [`wire_model`] takes it.
 pub fn run_request(
     model: &str,
+    effort: Option<&ReasoningEffort>,
     req: &ChatRequest,
     conversation: &str,
 ) -> (proto::AgentRunRequest, Blobs) {
@@ -469,7 +483,7 @@ pub fn run_request(
             request_context: None,
         }),
     };
-    let (wire, params) = wire_model(model);
+    let (wire, params) = wire_model(model, effort);
     // ponytail: `max_mode` really comes from `GetUsableModels`; the slug
     // suffix is the only signal a bare model id carries. Thread `Model` through
     // if a `-max` slug ever reports `max_mode: false`.
@@ -534,11 +548,55 @@ mod tests {
             ("cursor-grok-4.6-xhigh", "cursor-grok-4.6-xhigh", vec![]),
         ];
         for (input, id, params) in cases {
-            let (got_id, got_params) = wire_model(input);
+            let (got_id, got_params) = wire_model(input, None);
             assert_eq!(got_id, id, "{input}");
             let got: Vec<(&str, &str)> = got_params.iter().map(|(k, v)| (*k, v.as_str())).collect();
             assert_eq!(got, params, "{input}");
         }
+    }
+
+    /// 194: the request body a picked effort produces — none keeps the slug's
+    /// reasoning, `Zero` sends the bare base with no `reasoning`, a level
+    /// replaces the slug's (lane kept); a budget keeps the slug's; a family
+    /// without the field is unchanged whatever the pick.
+    #[test]
+    fn explicit_effort_reaches_the_requested_model() {
+        let rm = |model: &str, effort: Option<ReasoningEffort>| {
+            let (run, _) = run_request(model, effort.as_ref(), &req(), "conv");
+            let rm = run.requested_model.unwrap();
+            let params: Vec<(String, String)> =
+                rm.parameters.into_iter().map(|p| (p.id, p.value)).collect();
+            (rm.model_id, params)
+        };
+        let reasoning = |v: &str| vec![("reasoning".to_owned(), v.to_owned())];
+        assert_eq!(
+            rm("gpt-5.4-mini-low", None),
+            ("gpt-5.4-mini".into(), reasoning("low"))
+        );
+        assert_eq!(
+            rm("gpt-5.4-mini-low", Some(ReasoningEffort::Zero)),
+            ("gpt-5.4-mini".into(), vec![])
+        );
+        assert_eq!(
+            rm("gpt-5.4-mini-low", Some(ReasoningEffort::High)),
+            ("gpt-5.4-mini".into(), reasoning("high"))
+        );
+        assert_eq!(
+            rm("gpt-5.6-sol-fast", Some(ReasoningEffort::XHigh)),
+            ("gpt-5.6-sol-fast".into(), reasoning("xhigh"))
+        );
+        assert_eq!(
+            rm("gpt-5.4-none", Some(ReasoningEffort::Medium)),
+            ("gpt-5.4".into(), reasoning("medium"))
+        );
+        assert_eq!(
+            rm("gpt-5.4-mini-low", Some(ReasoningEffort::Budget(8000))),
+            ("gpt-5.4-mini".into(), reasoning("low"))
+        );
+        assert_eq!(
+            rm("claude-4.6-opus-high", Some(ReasoningEffort::Low)),
+            ("claude-4.6-opus-high".into(), vec![])
+        );
     }
 
     #[test]
@@ -607,7 +665,7 @@ mod tests {
         );
         assert_eq!(json.len(), 6);
 
-        let (run, blobs) = run_request("gpt-5.4-high", &r, "conv");
+        let (run, blobs) = run_request("gpt-5.4-high", None, &r, "conv");
         let state = run.conversation_state.unwrap();
         assert_eq!(state.root_prompt_messages_json.len(), 6);
         assert_eq!(state.turns.len(), 1);
@@ -630,7 +688,7 @@ mod tests {
         let mut r2 = r;
         r2.messages.pop();
         r2.messages.pop();
-        let (run, _) = run_request("m", &r2, "conv");
+        let (run, _) = run_request("m", None, &r2, "conv");
         assert!(matches!(
             run.action.unwrap().action,
             Some(Action::ResumeAction(_))

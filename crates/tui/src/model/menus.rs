@@ -24,19 +24,14 @@ pub enum Menu {
         filter: String,
         /// Highlighted row of `models_rows()`.
         cursor: usize,
+        /// 194 D6: the highlighted chip while the cursor is on the chip row.
+        chip: usize,
         /// The provider whose models are listed; `None` is the providers level.
         provider: Option<String>,
-        /// Whose model a pick sets (125 §7.2): the session's or its advisor's.
+        /// Whose model a pick sets (125 §7.2): the session's, its advisor's or its harness's.
         target: PickTarget,
-    },
-    /// `/effort` picker.
-    Efforts {
-        /// The model's effort levels, then `clear`.
-        items: Vec<String>,
-        /// Highlighted row.
-        cursor: usize,
-        /// Whose effort a pick sets.
-        target: PickTarget,
+        /// `PickTarget::Harness`: the harness's options (75 §8); empty otherwise.
+        harness: Vec<acp::ConfigOption>,
     },
     /// `/aws` picker.
     AwsProfiles {
@@ -263,7 +258,6 @@ impl Model {
             None => MenuKey::Consumed,
             Some(Menu::Slash { .. }) => self.slash_key(code, input, tx),
             Some(Menu::Models { .. }) => self.models_key(code, tx),
-            Some(Menu::Efforts { .. }) => self.efforts_key(code, tx),
             Some(Menu::AwsProfiles { .. }) => self.aws_key(code, tx),
             Some(Menu::Sessions { .. }) => self.sessions_key(code, tx),
             Some(Menu::Search | Menu::Attach) => MenuKey::Consumed,

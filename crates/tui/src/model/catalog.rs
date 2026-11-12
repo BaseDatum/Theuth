@@ -1,3 +1,4 @@
+use super::harnesses::harness_groups;
 use super::*;
 
 /// Where a `/model` / `/effort` pick goes (125 §7.2).
@@ -8,30 +9,12 @@ pub enum PickTarget {
     Session,
     /// `set_advisor`: the shown session's advisor.
     Advisor,
+    /// `set_harness_option` (75 §8, 194 D6): an ACP session's `model` select
+    /// as the rows, its `thought_level` option as the chips (no Default).
+    Harness,
 }
 
 impl Model {
-
-    /// Open the `/effort` picker over `items` plus a `clear` row; no levels → a notice.
-    /// `target` says whose effort the pick sets (125 §7.2).
-    pub(super) fn open_efforts(&mut self, mut items: Vec<String>, target: PickTarget) {
-        if items.is_empty() {
-            let model = match target {
-                PickTarget::Session => self.model_id.as_str(),
-                PickTarget::Advisor => self.advisor.model.as_deref().unwrap_or("advisor"),
-            };
-            self.entries.push(Entry::Info(format!(
-                "{model} has no reasoning effort levels"
-            )));
-            return;
-        }
-        items.push("clear".into());
-        self.menu = Some(Menu::Efforts {
-            items,
-            cursor: 0,
-            target,
-        });
-    }
 
     /// `/advisor [off|on|status|<provider/model>]` (125 §7.1): bare opens the
     /// `/model` picker targeted at the advisor; `on` re-uses the remembered
@@ -86,8 +69,7 @@ impl Model {
         self.set_advisor(session, model, effort, tx);
     }
 
-    /// `SetAdvisor` for `session`; a pick (`Some` model) chains into the
-    /// advisor's effort picker when the reply names a model with levels.
+    /// `SetAdvisor` for `session`: a model pick or a chip; the reply installs silently.
     fn set_advisor(
         &mut self,
         session: SessionId,
@@ -95,7 +77,7 @@ impl Model {
         effort: Option<String>,
         tx: &UnboundedSender<Command>,
     ) {
-        self.advisor_reply = (model.is_some() && effort.is_none()).then_some(AdvisorReply::Pick);
+        self.advisor_reply = None;
         send(
             tx,
             Command::SetAdvisor {
@@ -130,25 +112,27 @@ impl Model {
     }
 
     /// `/model <id>` or a picker pick (148 R1): `SetModel` for the shown
-    /// session only; with none yet the draft's model, shown in the header and
-    /// chained into the effort picker as the engine's reply would be.
+    /// session only; with none yet the draft's model, shown in the header.
     pub(super) fn pick_model(&mut self, model: String, tx: &UnboundedSender<Command>) {
         match self.session {
             Some(session) => send(tx, Command::SetModel { session, model }),
             None => {
-                let efforts = self
-                    .catalog
-                    .as_ref()
-                    .and_then(|c| c.closest(&model))
-                    .map(|m| m.efforts())
-                    .unwrap_or_default();
                 self.entries
                     .push(Entry::Info(format!("model → {model} (next session)")));
-                self.model_id = model.clone();
-                self.draft.get_or_insert_default().model = Some(model);
-                if !efforts.is_empty() {
-                    self.open_efforts(efforts, PickTarget::Session);
+                // 194 D4c, as `set_model` does: drop a draft effort the new model
+                // does not take (one the catalog does not know is kept).
+                let draft = self.draft.get_or_insert_default();
+                let known = self.catalog.as_ref().and_then(|c| c.closest(&model));
+                if let (Some(e), Some(known)) = (&draft.effort, known)
+                    && known.validate_effort(e).is_err()
+                {
+                    self.entries
+                        .push(Entry::Info(format!("effort reset: not offered by {model}")));
+                    draft.effort = None;
+                    self.effort = self.default_effort.clone();
                 }
+                self.model_id = model.clone();
+                draft.model = Some(model);
             }
         }
     }
@@ -173,6 +157,25 @@ impl Model {
         }
     }
 
+    /// Bare `/effort` on a native session (194 D6): the `/model` picker with
+    /// the cursor on the current model's chips, or a notice without levels.
+    pub(super) fn effort_picker(&mut self, tx: &UnboundedSender<Command>) {
+        let offered = self
+            .catalog
+            .as_ref()
+            .and_then(|c| c.closest(&self.model_id))
+            .is_some_and(|m| !m.efforts().is_empty());
+        if offered {
+            self.pick_effort = true;
+            send(tx, Command::ListModels);
+        } else {
+            self.entries.push(Entry::Info(format!(
+                "{} has no reasoning effort levels",
+                self.model_id
+            )));
+        }
+    }
+
     /// The draft's options for a command that opens the session (148 R1):
     /// `Some` only while a pick is pending and no session is shown.
     pub(super) fn draft_options(&self) -> Option<CreateSessionOptions> {
@@ -185,16 +188,18 @@ impl Model {
 impl Model {
 
     /// `/model` picker rows (124 §3, 127 §3): the favorites present in the
-    /// catalog, the current model unless it is one of them, then one row per
-    /// provider; a provider's models by name; or, with a filter, the current
-    /// model then the ranked results over every model (the current one
-    /// removed so it shows once).
+    /// catalog, the picked model unless it is one of them, then one row per
+    /// provider; a provider's models by name; or, with a filter, the picked
+    /// model then the ranked results over every model (the picked one
+    /// removed so it shows once). 194 D6: the picked model's effort chips
+    /// directly under its row, wherever it shows.
     pub fn models_rows(&self) -> Vec<ModelRow<'_>> {
         let Some(Menu::Models {
             items,
             filter,
             provider,
             target,
+            harness,
             ..
         }) = &self.menu
         else {
@@ -202,6 +207,11 @@ impl Model {
         };
         let picked = self.pick_current();
         let current = items.iter().find(|m| Some(m.id.as_str()) == picked);
+        // The harness picker stars nothing (as on the desktop).
+        let favorites: &[String] = match target {
+            PickTarget::Harness => &[],
+            _ => &self.favorite_models,
+        };
         let mut rows = Vec::new();
         // 125 §7.2: the advisor's picker leads with `Off` while browsing (either
         // level — a single provider skips the providers one), marked while there is none.
@@ -222,12 +232,12 @@ impl Model {
             rows.extend(provider_models(items, p).into_iter().map(ModelRow::Model));
         } else {
             rows.extend(
-                self.favorite_models
+                favorites
                     .iter()
                     .filter_map(|f| items.iter().find(|m| m.id == *f))
                     .map(ModelRow::Favorite),
             );
-            if !self.favorite_models.contains(&self.model_id) {
+            if !picked.is_some_and(|p| favorites.iter().any(|f| f == p)) {
                 rows.extend(current.map(ModelRow::Current));
             }
             let now = current.map(|c| c.provider.as_str());
@@ -236,17 +246,61 @@ impl Model {
                 ModelRow::Provider { id, count, current }
             }));
         }
+        if let Some(chips) = current.and_then(|c| self.effort_chips(*target, &c.efforts, harness))
+            && let Some(at) = rows
+                .iter()
+                .position(|r| r.model().is_some_and(|m| Some(m.id.as_str()) == picked))
+        {
+            rows.insert(at + 1, ModelRow::Efforts(chips));
+        }
         rows
     }
 
-    /// The model the open `/model` picker marks `●`: the session's, or the
-    /// advisor's (`None` while off) when the picker targets it (125 §7.2).
+    /// 194 D6: the chip row over the picked model's `levels` — Default first
+    /// unless the target requires a level (a harness), the stored effort active.
+    fn effort_chips(
+        &self,
+        target: PickTarget,
+        levels: &[String],
+        harness: &[acp::ConfigOption],
+    ) -> Option<EffortChips> {
+        if levels.is_empty() {
+            return None;
+        }
+        let (required, current) = match target {
+            PickTarget::Session if self.session.is_some() => (false, self.effort.as_deref()),
+            // 148 R1: before a session the draft's pick; none is the engine default.
+            PickTarget::Session => (false, self.draft.as_ref().and_then(|d| d.effort.as_deref())),
+            PickTarget::Advisor => (false, self.advisor.effort.as_deref()),
+            PickTarget::Harness => (true, harness_groups(harness).1.map(|o| o.current.as_str())),
+        };
+        let levels: Vec<Option<String>> = (!required)
+            .then_some(None)
+            .into_iter()
+            .chain(levels.iter().cloned().map(Some))
+            .collect();
+        let active = levels.iter().position(|l| l.as_deref() == current);
+        Some(EffortChips { levels, active })
+    }
+
+    /// The model the open `/model` picker marks `●`: the session's, the
+    /// advisor's (`None` while off) when the picker targets it (125 §7.2), or
+    /// the harness's `model` value (its one row without a model select).
     pub fn pick_current(&self) -> Option<&str> {
         match &self.menu {
             Some(Menu::Models {
                 target: PickTarget::Advisor,
                 ..
             }) => self.advisor.model.as_deref(),
+            Some(Menu::Models {
+                target: PickTarget::Harness,
+                items,
+                harness,
+                ..
+            }) => harness_groups(harness)
+                .0
+                .map(|o| o.current.as_str())
+                .or_else(|| items.first().map(|m| m.id.as_str())),
             _ => Some(self.model_id.as_str()),
         }
     }
@@ -261,14 +315,57 @@ impl Model {
         }
     }
 
+    /// Open the picker over `items` for `target` (124 §3.5: one provider skips
+    /// the providers level); `chips` (bare `/effort`) starts on the chip row.
+    pub(super) fn open_models(
+        &mut self,
+        items: Vec<ModelInfo>,
+        target: PickTarget,
+        harness: Vec<acp::ConfigOption>,
+        chips: bool,
+    ) {
+        let provider = match providers(&items).as_slice() {
+            [(p, _)] => Some(p.clone()),
+            _ => None,
+        };
+        self.menu = Some(Menu::Models {
+            items,
+            filter: String::new(),
+            cursor: 0,
+            chip: 0,
+            provider,
+            target,
+            harness,
+        });
+        self.models_home();
+        let at = self
+            .models_rows()
+            .iter()
+            .enumerate()
+            .find_map(|(i, r)| match r {
+                ModelRow::Efforts(c) if chips => Some((i, c.active.unwrap_or(0))),
+                _ => None,
+            });
+        if let (Some((row, active)), Some(Menu::Models { cursor, chip, .. })) = (at, &mut self.menu)
+        {
+            *cursor = row;
+            *chip = active;
+        }
+    }
+
     /// Put the `/model` cursor where a level starts: the first row after the
-    /// Off and Current rows (first favorite, first provider, or best search hit)
-    /// when there is one.
+    /// Off and Current rows and their chips (first favorite, first provider,
+    /// or best search hit) when there is one.
     pub(super) fn models_home(&mut self) {
         let rows = self.models_rows();
         let lead = rows
             .iter()
-            .take_while(|r| matches!(r, ModelRow::Off { .. } | ModelRow::Current(_)))
+            .take_while(|r| {
+                matches!(
+                    r,
+                    ModelRow::Off { .. } | ModelRow::Current(_) | ModelRow::Efforts(_)
+                )
+            })
             .count();
         let home = if rows.len() > lead { lead } else { 0 };
         if let Some(Menu::Models { cursor, .. }) = &mut self.menu {
@@ -282,35 +379,57 @@ impl Model {
     /// `/model` (124 §3, 127 §3): ↑↓ move; typing searches every model; ⏎/→
     /// on a provider opens it; ←, or ⌫ on an empty filter, returns to the
     /// providers level (no-op with one provider); ⏎ on a model sets it; ⇥ on
-    /// a model stars or unstars it (the menu stays open); Esc closes.
+    /// a model stars or unstars it (the menu stays open; not on a harness);
+    /// 194 D6: on the chip row ←→ move between chips and ⏎ sets that effort
+    /// (Default clears it); Esc closes.
     pub(super) fn models_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        /// What the highlighted row is.
+        enum Hit {
+            Provider(String),
+            /// A model row: its id and effort levels.
+            Model(String, Vec<String>),
+            /// The advisor's `Off` row.
+            Off,
+            /// The chip row's chips (`None` = Default).
+            Chips(Vec<Option<String>>),
+        }
         let Some(Menu::Models {
             items,
             cursor,
             target,
+            harness,
             ..
         }) = &self.menu
         else {
             return MenuKey::Consumed;
         };
         let target = *target;
+        let (model_option, effort_option) = {
+            let (m, e) = harness_groups(harness);
+            (m.map(|o| o.id.clone()), e.map(|o| o.id.clone()))
+        };
+        let many = providers(items).len() > 1;
         let rows = self.models_rows();
         let len = rows.len();
         let at = (*cursor).min(len.saturating_sub(1));
-        // `(true, id)` opens provider `id`; `(false, Some(id))` picks model `id`;
-        // `(false, None)` is the advisor's `Off` row.
-        let picked = match rows.get(at) {
+        let hit = match rows.get(at) {
             Some(ModelRow::Current(m) | ModelRow::Favorite(m) | ModelRow::Model(m)) => {
-                Some((false, Some(m.id.clone())))
+                Some(Hit::Model(m.id.clone(), m.efforts.clone()))
             }
-            Some(ModelRow::Provider { id, .. }) => Some((true, Some(id.clone()))),
-            Some(ModelRow::Off { .. }) => Some((false, None)),
+            Some(ModelRow::Provider { id, .. }) => Some(Hit::Provider(id.clone())),
+            Some(ModelRow::Off { .. }) => Some(Hit::Off),
+            Some(ModelRow::Efforts(c)) => Some(Hit::Chips(c.levels.clone())),
             None => None,
         };
-        let many = providers(items).len() > 1;
+        // ↑↓ onto the chip row land on its active chip.
+        let chips_at = rows.iter().enumerate().find_map(|(i, r)| match r {
+            ModelRow::Efforts(c) => Some((i, c.active.unwrap_or(0))),
+            _ => None,
+        });
         let Some(Menu::Models {
             filter,
             cursor,
+            chip,
             provider,
             ..
         }) = &mut self.menu
@@ -320,8 +439,17 @@ impl Model {
         *cursor = at;
         let mut home = false;
         match code {
-            KeyCode::Up => *cursor = cursor.saturating_sub(1),
-            KeyCode::Down => *cursor = (*cursor + 1).min(len.saturating_sub(1)),
+            KeyCode::Up | KeyCode::Down => {
+                *cursor = match code {
+                    KeyCode::Up => cursor.saturating_sub(1),
+                    _ => (*cursor + 1).min(len.saturating_sub(1)),
+                };
+                if let Some((row, active)) = chips_at
+                    && row == *cursor
+                {
+                    *chip = active;
+                }
+            }
             KeyCode::Char(c) => {
                 filter.push(c);
                 home = true;
@@ -334,42 +462,49 @@ impl Model {
                     home = true;
                 }
             }
-            KeyCode::Left => {
-                if filter.is_empty() && many && provider.is_some() {
+            KeyCode::Left => match hit {
+                Some(Hit::Chips(_)) => *chip = chip.saturating_sub(1),
+                _ if filter.is_empty() && many && provider.is_some() => {
                     *provider = None;
                     home = true;
                 }
-            }
-            KeyCode::Right => {
-                if let Some((true, Some(p))) = picked {
+                _ => {}
+            },
+            KeyCode::Right => match hit {
+                Some(Hit::Chips(levels)) => *chip = (*chip + 1).min(levels.len().saturating_sub(1)),
+                Some(Hit::Provider(p)) => {
                     *provider = Some(p);
                     home = true;
-                }
-            }
-            KeyCode::Enter => match (picked, target) {
-                (Some((true, Some(p))), _) => {
-                    *provider = Some(p);
-                    home = true;
-                }
-                (Some((false, Some(model))), PickTarget::Session) => {
-                    self.menu = None;
-                    self.pick_model(model, tx);
-                }
-                // 125 §7.2: a model or `Off` goes to `set_advisor`.
-                (Some((false, model)), PickTarget::Advisor) => {
-                    self.menu = None;
-                    match self.session {
-                        Some(s) => self.set_advisor(s, model, None, tx),
-                        None => self
-                            .entries
-                            .push(Entry::Error("no session yet: send a message first".into())),
-                    }
                 }
                 _ => {}
             },
+            KeyCode::Enter => match hit {
+                Some(Hit::Provider(p)) => {
+                    *provider = Some(p);
+                    home = true;
+                }
+                Some(Hit::Chips(levels)) => {
+                    let level = levels.get(*chip).cloned();
+                    self.menu = None;
+                    if let Some(level) = level {
+                        self.pick_chip(target, level, effort_option, tx);
+                    }
+                }
+                Some(Hit::Model(model, efforts)) => {
+                    self.menu = None;
+                    self.pick_row(target, Some(model), &efforts, model_option, tx);
+                }
+                Some(Hit::Off) => {
+                    self.menu = None;
+                    self.pick_row(target, None, &[], model_option, tx);
+                }
+                None => {}
+            },
             KeyCode::Esc => self.menu = None,
             KeyCode::Tab => {
-                if let Some((false, Some(model))) = picked {
+                if let Some(Hit::Model(model, _)) = hit
+                    && target != PickTarget::Harness
+                {
                     let favorite = !self.favorite_models.contains(&model);
                     send(tx, Command::SetModelFavorite { model, favorite });
                 }
@@ -382,49 +517,88 @@ impl Model {
         MenuKey::Consumed
     }
 
-    /// `/effort`: Enter sets the highlighted level (`clear` unsets) from the next
-    /// turn; targeted at the advisor (125 §7.2) it re-sends its model with the effort.
-    pub(super) fn efforts_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
-        let Some(Menu::Efforts {
-            items,
-            cursor,
-            target,
-        }) = &mut self.menu
-        else {
-            return MenuKey::Consumed;
-        };
-        match code {
-            KeyCode::Up => *cursor = cursor.saturating_sub(1),
-            KeyCode::Down => *cursor = (*cursor + 1).min(items.len().saturating_sub(1)),
-            KeyCode::Esc => self.menu = None,
-            KeyCode::Enter => {
-                let picked = items.get(*cursor).cloned();
-                let target = *target;
-                self.menu = None;
-                let Some(v) = picked else {
-                    return MenuKey::Consumed;
-                };
-                let effort = (v != "clear").then_some(v);
-                match (target, self.session, self.advisor.model.clone()) {
-                    (PickTarget::Session, ..) => self.set_effort(effort, tx),
-                    (PickTarget::Advisor, Some(session), model @ Some(_)) => {
-                        self.advisor_reply = None;
-                        send(
-                            tx,
-                            Command::SetAdvisor {
-                                session,
-                                model,
-                                effort,
-                            },
-                        );
-                    }
-                    // The advisor went off while the picker was open: nothing to set.
-                    (PickTarget::Advisor, ..) => {}
+    /// ⏎ on a model row (`None`: the advisor's `Off`): the target's model
+    /// setter. `efforts` are the picked model's levels; `option` is the
+    /// harness's `model` select.
+    fn pick_row(
+        &mut self,
+        target: PickTarget,
+        model: Option<String>,
+        efforts: &[String],
+        option: Option<String>,
+        tx: &UnboundedSender<Command>,
+    ) {
+        match target {
+            PickTarget::Session => {
+                if let Some(model) = model {
+                    self.pick_model(model, tx);
                 }
             }
-            _ => {}
+            // 125 §7.2: a model or `Off` goes to `set_advisor`; a model keeps
+            // the advisor's effort when it takes it (194 D4c), else Default.
+            PickTarget::Advisor => match self.session {
+                Some(s) => {
+                    let effort = self
+                        .advisor
+                        .effort
+                        .clone()
+                        .filter(|e| model.is_some() && efforts.contains(e));
+                    self.set_advisor(s, model, effort, tx);
+                }
+                None => self
+                    .entries
+                    .push(Entry::Error("no session yet: send a message first".into())),
+            },
+            // A harness without a model select: its one row only closes the picker.
+            PickTarget::Harness => {
+                if let (Some(session), Some(config_id), Some(value)) = (self.session, option, model)
+                {
+                    send(
+                        tx,
+                        Command::SetHarnessOption {
+                            session,
+                            config_id,
+                            value,
+                        },
+                    );
+                }
+            }
         }
-        MenuKey::Consumed
+    }
+
+    /// ⏎ on a chip (194 D6): the target's effort setter, as `/effort` does;
+    /// `None` is the Default chip. `option` is the harness's `thought_level` one.
+    fn pick_chip(
+        &mut self,
+        target: PickTarget,
+        effort: Option<String>,
+        option: Option<String>,
+        tx: &UnboundedSender<Command>,
+    ) {
+        match target {
+            PickTarget::Session => self.set_effort(effort, tx),
+            PickTarget::Advisor => {
+                // The advisor went off while the picker was open: nothing to set.
+                if let (Some(session), model @ Some(_)) = (self.session, self.advisor.model.clone())
+                {
+                    self.set_advisor(session, model, effort, tx);
+                }
+            }
+            PickTarget::Harness => {
+                if let (Some(session), Some(config_id), Some(value)) =
+                    (self.session, option, effort)
+                {
+                    send(
+                        tx,
+                        Command::SetHarnessOption {
+                            session,
+                            config_id,
+                            value,
+                        },
+                    );
+                }
+            }
+        }
     }
 
     /// `/aws`: Enter selects the highlighted profile for the whole harness;
@@ -495,6 +669,28 @@ pub enum ModelRow<'a> {
     Favorite(&'a ModelInfo),
     /// A model on a provider's level or in the search results.
     Model(&'a ModelInfo),
+    /// 194 D6: the picked model's effort chips, directly under its row.
+    Efforts(EffortChips),
+}
+
+impl ModelRow<'_> {
+    /// The model a Current, Favorite or Model row stands for.
+    pub fn model(&self) -> Option<&ModelInfo> {
+        match self {
+            Self::Current(m) | Self::Favorite(m) | Self::Model(m) => Some(m),
+            _ => None,
+        }
+    }
+}
+
+/// The chip row under the picked model (194 D6).
+#[derive(Debug, PartialEq, Eq)]
+pub struct EffortChips {
+    /// The chips in order: `None` is Default (absent when a level is
+    /// required), then the levels.
+    pub levels: Vec<Option<String>>,
+    /// The active chip; `None` when the stored effort is not one of them.
+    pub active: Option<usize>,
 }
 
 /// Search terms (124 §2.1): lowercased words of `query`; none means browse mode.

@@ -237,7 +237,7 @@ impl Message<SetSettings> for Studies {
     /// cancel / phase maps are keyed by it.
     async fn handle(
         &mut self,
-        SetSettings(cfg): SetSettings,
+        SetSettings(mut cfg): SetSettings,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         if !(cfg.defaults.budget.usd.is_finite() && cfg.defaults.budget.usd > 0.0) {
@@ -252,6 +252,8 @@ impl Message<SetSettings> for Studies {
                 self.root.display()
             ));
         }
+        // 194 D4b–d: each role's effort against the model it goes with.
+        config::settle_settings(&mut cfg, &self.cfg).await?;
         config::persist(&self.data_dir.join("config.yaml"), &cfg)
             .map_err(|e| format!("config.yaml: {e}"))?;
         self.cfg = cfg;

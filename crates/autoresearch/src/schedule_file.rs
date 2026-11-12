@@ -93,6 +93,10 @@ pub fn text(
     ));
     if !model.trim().is_empty() {
         s.push_str(&format!("model: {}\n", model.trim()));
+        // 194 D4e: the executor's effort rides with its picked model (routine `effort:`).
+        if let Some(e) = cfg.executor_effort(&spec.models) {
+            s.push_str(&format!("effort: {e}\n"));
+        }
     }
     s.push_str("enabled: true\n");
     // 182 D6: the study's schedule fires on the engine that started it, only.
@@ -381,6 +385,26 @@ mod tests {
             schedule::file::parse("autoresearch-sort-speed", &w).is_ok(),
             "{w}"
         );
+    }
+
+    /// 194 D4e: the executor's session starts on its effort — `effort:` beside the picked
+    /// `model:`, parsed by the routine parser; no effort line without a pick.
+    #[test]
+    fn the_executor_effort_rides_in_the_schedule_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = spec();
+        s.models.executor = Some("openai/gpt-5.6-sol".into());
+        s.models.executor_effort = Some("high".into());
+        let cfg = AutoresearchConfig::default();
+        let t = text(&s, &cfg, dir.path(), "openai/gpt-5.6-sol", &StartWhen::Now);
+        assert!(
+            t.contains("model: openai/gpt-5.6-sol\neffort: high\n"),
+            "{t}"
+        );
+        let parsed = schedule::file::parse("autoresearch-sort-speed", &t).unwrap();
+        assert_eq!(parsed.effort.as_deref(), Some("high"));
+        let t = text(&spec(), &cfg, dir.path(), "m", &StartWhen::Now);
+        assert!(!t.contains("effort:"), "{t}");
     }
 
     #[tokio::test]

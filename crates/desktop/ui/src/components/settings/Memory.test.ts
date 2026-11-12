@@ -3,6 +3,7 @@ import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Combobox from '@/components/chat/ModelCombobox'
+import type { Effort } from '@/components/chat/ModelPicker'
 import type * as Rpc from '@/lib/rpc'
 import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
@@ -11,7 +12,7 @@ import { bounded } from './shared'
 import { Memory } from './Memory'
 
 // R1-10: what each picker was given (the closed popover renders no list to read the order from).
-const pickers = vi.hoisted(() => [] as { 'aria-label'?: string; localFirst?: boolean }[])
+const pickers = vi.hoisted(() => [] as { 'aria-label'?: string; effort?: Effort }[])
 vi.mock('@/components/chat/ModelCombobox', async (original) => {
   const m = await original<typeof Combobox>()
   return { ...m, ModelCombobox: (p: Parameters<typeof m.ModelCombobox>[0]) => (pickers.push(p), createElement(m.ModelCombobox, p)) }
@@ -117,7 +118,20 @@ test('177 U5: Test summary call sits under the compactor model and tests what a 
   expect(local).toContain(`Sends one summary of a fixed sample to ${lfm.id}`)
   // 177 U4: the picker's trigger tags a local model.
   expect(local).toMatch(/LFM3-1.7B-MLX-bf16<\/span><span[^>]*>local<\/span>/)
-  // 177 U4: the compactor picker lists local models first.
-  expect(pickers.filter((p) => p['aria-label'] === 'Compactor model').every((p) => p.localFirst === true)).toBe(true)
   expect(pickers.some((p) => p['aria-label'] === 'Compactor model')).toBe(true)
+})
+
+test('194: the compactor picker carries the picked model’s effort chips at agent.endless.effort and its trigger names the effort; none while unset', async () => {
+  const think = { ...lfm, id: 'anthropic/claude-haiku-5-5', name: 'Claude Haiku 5.5', provider: 'anthropic', reasoning: true, efforts: ['low', 'high'], local: false } satisfies ModelInfo
+  const compactor = () => pickers.findLast((p) => p['aria-label'] === 'Compactor model')
+  await render()
+  expect(compactor()?.effort).toBeUndefined()
+  served = { ...config, model: think.id, effort: 'high' }
+  listed = [think]
+  const html = await render()
+  served = config
+  listed = []
+  expect(compactor()?.effort?.levels).toEqual(['low', 'high'])
+  expect(compactor()?.effort?.current).toBe('high')
+  expect(html).toContain('Claude Haiku 5.5 · high')
 })

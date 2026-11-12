@@ -245,6 +245,13 @@ test('draftToFile round trip: a card draft is the form state, and the sentence a
   )
 })
 
+test('194 row 18: a card draft’s `effort` reaches the form state (what `put_schedule` sends) and the file text beside `model:`', () => {
+  const f = draftToFile({ name: 'brief', sentence: 'Weekdays at 09:00', cron: '0 9 * * 1-5', model: 'a/b', effort: 'high', prompt: 'Brief me.' })
+  expect(f).toMatchObject({ model: 'a/b', effort: 'high' })
+  expect(fileText(f)).toContain('model: a/b\neffort: high\n')
+  expect(draftToFile({ name: 'brief', sentence: '', prompt: 'x' }).effort).toBeUndefined()
+})
+
 test('§6.2 first send: new_session → rename → seed slice → onSession → use_skill', async () => {
   const calls: string[] = []
   const api = {

@@ -369,6 +369,7 @@ const SECTION_OF: Record<string, 'trigger' | 'stop' | 'run' | 'concurrency' | 'n
   agent: 'run',
   project: 'run',
   model: 'run',
+  effort: 'run',
   mode: 'concurrency',
   name: 'name',
 }
@@ -425,6 +426,8 @@ function Editor({
   }, [focusForm])
 
   const set = <K extends keyof ScheduleFile>(k: K, v: ScheduleFile[K]) => setF((x) => ({ ...x, [k]: v }))
+  // 194 row 18: `effort:` beside `model:`; a model change keeps it only when the new model takes it.
+  const runModel = models.data?.find((m) => m.id === f.model)
   const trigger: Trigger = f.when !== null ? 'when' : f.every !== null ? 'every' : f.at !== null ? 'at' : 'cron'
   const setTrigger = (k: Trigger) =>
     setF((x) => ({
@@ -663,8 +666,17 @@ function Editor({
                     ))}
                   </datalist>
                 </Field>
-                <Field label="Model" id="rt-model" hint="the run's session; default = the engine's default model">
-                  <ModelCombobox id="rt-model" size="sm" className="w-full" models={models.data ?? []} value={f.model} none={{ label: 'Engine default' }} onChange={(v) => set('model', v)} />
+                <Field label="Model" id="rt-model" hint="the run's session; default = the engine's default model" error={errAt('effort')}>
+                  <ModelCombobox
+                    id="rt-model"
+                    size="sm"
+                    className="w-full"
+                    models={models.data ?? []}
+                    value={f.model}
+                    effort={runModel && runModel.efforts.length > 0 ? { levels: runModel.efforts, current: f.effort ?? null, onSelect: (level) => set('effort', level ?? undefined) } : undefined}
+                    none={{ label: 'Engine default' }}
+                    onChange={(v) => setF((x) => ({ ...x, model: v, effort: v && models.data?.find((m) => m.id === v)?.efforts.includes(x.effort ?? '') ? x.effort : undefined }))}
+                  />
                 </Field>
                 <Field label="Directory" id="rt-cwd" hint="where until runs and the run starts" error={errAt('cwd')}>
                   <Input id="rt-cwd" className="font-mono" value={f.cwd ?? ''} placeholder="~/src/app" onChange={(e) => set('cwd', str(e.target.value))} />
@@ -720,7 +732,7 @@ function Editor({
 }
 
 /** Fields that render their own `plainError` line; the section line is for the rest. */
-const FIELD_OWN: Record<string, true> = { name: true, cron: true, every: true, at: true, when: true, for: true, cooldown: true, timeout: true, missed_run: true, max_runs: true, expires: true, until: true, prompt: true, agent: true, cwd: true, run_timeout: true }
+const FIELD_OWN: Record<string, true> = { name: true, cron: true, every: true, at: true, when: true, for: true, cooldown: true, timeout: true, missed_run: true, max_runs: true, expires: true, until: true, prompt: true, agent: true, cwd: true, run_timeout: true, effort: true }
 
 function Part({ legend, hint, error, children }: { legend: string; hint: string; error?: string; children: React.ReactNode }) {
   return (

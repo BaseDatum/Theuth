@@ -660,8 +660,8 @@ const ROOT_HOPS: usize = 32;
 /// 183 R1/R2 (E-M3): the schema of the replicated session tables, as
 /// sessionsync sends it in `Hello` and `Release`: a peer on an older value
 /// is not shipped rows whose columns it cannot apply, and its takes are
-/// refused. Named after the migration that last changed them (0061:
-/// `sessions.hidden_tools`).
+/// refused. Named after the migration that last changed them (0063:
+/// `sessions.endless_effort`, `sessions.endless_agent_effort`).
 ///
 /// **Bump rule:** set this to a new migration's number exactly when that
 /// migration adds, drops or renames a column of a table the session log
@@ -671,7 +671,7 @@ const ROOT_HOPS: usize = 32;
 /// mixed versions for nothing. Never a lower or an unrelated number: a peer
 /// whose value reads as newer is shipped rows its schema cannot apply, and
 /// `sqlite3changeset_apply` skips the table while the cursor advances.
-pub const SESSIONS_WIRE_SCHEMA: u32 = 61;
+pub const SESSIONS_WIRE_SCHEMA: u32 = 63;
 
 impl Store {
     /// Open (creating) the database in WAL mode and run migrations. Two
@@ -4301,8 +4301,8 @@ mod tests {
     #[tokio::test]
     async fn sessions_wire_schema_tracks_the_replicated_columns() {
         const SNAPSHOT: (u32, &str) = (
-            61,
-            "sessions: id,created_at,title,model,parent,name,effort,cut_at,agent,acp_session,cwd,updated_at,pinned,todo_version,context_revision,scope,alias,project,archived,tags,harness_model,unattended,owner,epoch,desk,harness_commands,context_size,acp_skills,last_stop,finished_at,kind,memory,endless_base,endless_filter,endless_view_bytes,budget,observed_source,observed_state,observed_stop,observed_cancel,observed_description,observed_tool_call,observed_detail,observed_cursor,observed_cost_rule,notebook,acp_previous,endless_paused,endless_spend_override,endless_model,endless_agent_model,approvals,communication,contact_inbox,hidden_tools
+            63,
+            "sessions: id,created_at,title,model,parent,name,effort,cut_at,agent,acp_session,cwd,updated_at,pinned,todo_version,context_revision,scope,alias,project,archived,tags,harness_model,unattended,owner,epoch,desk,harness_commands,context_size,acp_skills,last_stop,finished_at,kind,memory,endless_base,endless_filter,endless_view_bytes,budget,observed_source,observed_state,observed_stop,observed_cancel,observed_description,observed_tool_call,observed_detail,observed_cursor,observed_cost_rule,notebook,acp_previous,endless_paused,endless_spend_override,endless_model,endless_agent_model,approvals,communication,contact_inbox,hidden_tools,endless_effort,endless_agent_effort
 messages: session_id,seq,body,excluded,vision,at,thinking_ms,advisory,channel,moved
 epochs: session_id,n,at_seq,tail_from,head,created_at,excluded
 todo_snapshots: session_id,at_seq,k,source,items

@@ -19,8 +19,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use genai::chat::{
-    ChatRequest, ChatStreamEvent, ContentPart, MessageContent, StopReason, StreamChunk, StreamEnd,
-    ToolCall, ToolChunk, Usage,
+    ChatRequest, ChatStreamEvent, ContentPart, MessageContent, ReasoningEffort, StopReason,
+    StreamChunk, StreamEnd, ToolCall, ToolChunk, Usage,
 };
 use prost::Message as _;
 use serde_json::Value;
@@ -45,15 +45,17 @@ const HANDOFF: &str = "Tool call received and handed off to the external client 
 Do not retry or call it again; end the turn. The result will be provided in the next request.";
 const NOT_IMPLEMENTED: &str = "not implemented by this client";
 
-/// Start a Run against `base` and return its event stream.
+/// Start a Run against `base` and return its event stream; `effort` as
+/// [`history::wire_model`] takes it.
 pub async fn start(
     base: &str,
     token: &str,
     model: &str,
+    effort: Option<&ReasoningEffort>,
     req: &ChatRequest,
     conversation: &str,
 ) -> Result<EventStream, String> {
-    let (run, blobs) = history::run_request(model, req, conversation);
+    let (run, blobs) = history::run_request(model, effort, req, conversation);
     let ctx = history::request_context(req);
     let (tx, rx) = mpsc::channel::<Bytes>(64);
     let outbox = Outbox(tx);

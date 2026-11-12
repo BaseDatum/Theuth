@@ -253,6 +253,11 @@ pub struct AgentFile {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub memory_model: Option<String>,
+    /// 194: the effort of `memory_model` (`None` = thinking off); dropped
+    /// with `memory_model` and when a new one does not take it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub memory_effort: Option<String>,
     /// The charter (markdown body).
     pub body: String,
 }

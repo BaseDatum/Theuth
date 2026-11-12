@@ -209,6 +209,7 @@ pub async fn review(
     study: &StudyRecord,
     n: u32,
     model: &str,
+    effort: Option<&str>,
     _rt: &runtime::Runtime,
 ) -> Result<ReviewVerdict> {
     let e = store
@@ -224,7 +225,10 @@ pub async fn review(
         }
     };
     let rubric = prompt(study, &e, &diff);
-    let role = runtime::ModelRole::Named(model.to_owned());
+    let role = runtime::ModelRole::NamedWithEffort {
+        model: model.to_owned(),
+        effort: effort.map(str::to_owned),
+    };
     let first = match call(study, role.clone(), REVIEW_SYSTEM, rubric.clone()).await {
         Ok(t) => t,
         Err(reason) => return Ok(ReviewVerdict::Error { reason }),
@@ -422,12 +426,12 @@ pub fn parse_ideas(reply: &str) -> Vec<IdeaDraft> {
     out
 }
 
-/// The plateau consult (140 §9.2): five materially different ideas.
-/// `model` None → `advisor.model` (125) when set, else the study session's model.
+/// The plateau consult (140 §9.2): five materially different ideas, on [`advisor_role`].
 pub async fn advise(
     store: &Store,
     study: &StudyRecord,
     model: Option<&str>,
+    effort: Option<&str>,
     rt: &runtime::Runtime,
 ) -> Result<Vec<IdeaDraft>> {
     let all = store.list_experiments(&study.slug, None, u32::MAX).await?;
@@ -457,17 +461,12 @@ pub async fn advise(
         _ => String::new(),
     };
     let user = advisor_prompt(study, &summarise_diff(&diff, ADVISOR_DIFF), &kept, &dead);
-    let role = match model.map(str::trim).filter(|m| !m.is_empty()) {
-        Some(m) => runtime::ModelRole::Named(m.to_owned()),
-        None => match rt
-            .section::<agent::AdvisorConfig>("advisor")
-            .ok()
-            .and_then(|a| a.model)
-        {
-            Some(m) if !m.trim().is_empty() => runtime::ModelRole::Named(m),
-            _ => runtime::ModelRole::Session,
-        },
+    // 125: `advisor.model` as the engine holds it now (not the startup config).
+    let advisor = match agents() {
+        Ok(a) => a.ask(agent::GetAdvisorDefaults).await.unwrap_or_default(),
+        Err(_) => agent::AdvisorDefaults::default(),
     };
+    let role = advisor_role(model, effort, &advisor);
     // 159 W7 H8 / R-SEAMS-17: the configured `root:` (as finalize.rs reads it) and the
     // study's pin, so a running study's advisor never switches on Adopt.
     let cfg: crate::config::AutoresearchConfig = rt.section("autoresearch").unwrap_or_default();
@@ -485,6 +484,29 @@ pub async fn advise(
         )));
     }
     Ok(ideas)
+}
+
+/// 194: the consult's model role. A picked `model` brings the role's `effort` (D4e); no pick is
+/// `advisor.model` (125) with no reasoning setting, as before (D4a: `advisor.effort` is the
+/// `/advisor` pick's, never inherited here), else the study session's model.
+fn advisor_role(
+    model: Option<&str>,
+    effort: Option<&str>,
+    advisor: &agent::AdvisorDefaults,
+) -> runtime::ModelRole {
+    let pick = |m: Option<&str>| {
+        m.map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_owned)
+    };
+    match (pick(model), pick(advisor.model.as_deref())) {
+        (Some(model), _) => runtime::ModelRole::NamedWithEffort {
+            model,
+            effort: effort.map(str::to_owned),
+        },
+        (None, Some(m)) => runtime::ModelRole::Named(m),
+        (None, None) => runtime::ModelRole::Session,
+    }
 }
 
 #[cfg(test)]
@@ -655,19 +677,49 @@ not an idea
         store.create_study(&s).await.unwrap();
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
         // No experiment row.
-        assert!(review(&store, &s, 1, "openai/x", &rt).await.is_err());
+        assert!(review(&store, &s, 1, "openai/x", None, &rt).await.is_err());
         let mut e = ExperimentRecord::open("sort-speed", 1, 0, "base");
         e.state = ExperimentState::Kept;
         e.commit_sha = Some("c1".into());
         store.insert_experiment(&e).await.unwrap();
         // No worktree → the diff is unavailable → fail open.
-        match review(&store, &s, 1, "openai/x", &rt).await.unwrap() {
+        match review(&store, &s, 1, "openai/x", None, &rt).await.unwrap() {
             ReviewVerdict::Error { reason } => {
                 assert!(reason.starts_with("diff unavailable:"), "{reason}")
             }
             v => panic!("{v:?}"),
         }
-        let err = advise(&store, &s, None, &rt).await.unwrap_err().to_string();
+        let err = advise(&store, &s, None, None, &rt)
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("no bound session"), "{err}");
+    }
+
+    /// 194 D4a (R1): with no autoresearch pick the consult runs on `advisor.model` with no
+    /// reasoning setting, even when `advisor.effort` is set; a pick carries its own effort only.
+    #[test]
+    fn the_advisor_default_sends_no_reasoning() {
+        use runtime::ModelRole;
+        let advisor = agent::AdvisorDefaults {
+            model: Some("a/adv".into()),
+            effort: Some("high".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            advisor_role(None, None, &advisor),
+            ModelRole::Named("a/adv".into())
+        );
+        let picked = |effort: Option<&str>| ModelRole::NamedWithEffort {
+            model: "x/y".into(),
+            effort: effort.map(str::to_owned),
+        };
+        assert_eq!(advisor_role(Some("x/y"), None, &advisor), picked(None));
+        assert_eq!(
+            advisor_role(Some("x/y"), Some("low"), &advisor),
+            picked(Some("low"))
+        );
+        let none = agent::AdvisorDefaults::default();
+        assert_eq!(advisor_role(Some(" "), None, &none), ModelRole::Session);
     }
 }

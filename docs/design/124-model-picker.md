@@ -135,3 +135,13 @@ Semantics of the stored values are unchanged (same ids, same `null`/`off` sentin
 ## 7. Out of scope
 
 Engine-side provider display names (`ProviderInfo.name` is only the gateway prefix), recents/favourites, the ACP harness picker, Slack/Telegram `/model`.
+
+## 8. Effort everywhere (194)
+
+194 (`194-effort-everywhere.md`, as-built `194-as-built-*.md`) makes every picker the same full picker: providers → models, word search, Favorites (★, `Alt+Enter`), the Current row, the effort chip row under the selected model (a Default chip first unless the setting requires a level), keyboard, the touch dialog on coarse pointers, the `name · effort` trigger and the Local tag.
+
+- Every `<ModelCombobox>` / `<ModelPicker>` passes `effort` (`levels` = the selected model's `efforts`, `current` = the stored effort, `onSelect` = its setter; `undefined` only when the model has no levels). `chat/effortEverywhere.test.ts` scans `src/` and fails, naming file:line, on any element without `effort=`; only `ModelCombobox`'s own `<ModelPicker>` (it forwards `effort`) is exempt.
+- Every model setting stores its effort beside the model (`*_model` → `*_effort`); `none` clears both; a model change drops an effort the new model does not take; the engine validates.
+- `localFirst` (177 U4) is gone: one ordering everywhere (Favorites, Current, providers); local models keep their Local tag.
+- The header picker (`ModelMenu`, also the notebook column) opens 127 §6's top-of-band dialog on touch, like `ModelCombobox`; the header trigger and the compact Model row show the Local tag. The ACP harness picker stays without a Default chip and without Favorites (its rows are the harness's option values, not catalog ids), on desktop and in the TUI.
+- TUI: `/model` and the other TUI pickers get the chip row (194 D6).

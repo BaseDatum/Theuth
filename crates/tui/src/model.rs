@@ -334,6 +334,8 @@ pub struct Model {
     pub advisor_default: AdvisorDefaults,
     /// Where the next `UiEvent::Models` picker sends its pick.
     pick_target: PickTarget,
+    /// Bare `/effort` (194 D6): the next picker opens with the cursor on the chip row.
+    pick_effort: bool,
     /// What the next `UiEvent::AdvisorStatus` reply is for; `None` installs it silently.
     advisor_reply: Option<AdvisorReply>,
     /// Seqs of the Advisory rows `AdvisoryAdded` carded: a `TurnStarted`
@@ -424,7 +426,7 @@ pub use artifacts::{Owner, artifact_rows, APP_WHERE, bytes_label, Progress, prog
 use artifacts::{SHOW, APP};
 pub(crate) use artifacts::{artifact_read_path, artifact_text};
 pub use boards::{tasks_table, agents_table};
-pub use catalog::{PickTarget, ModelRow, rank_models, providers, provider_models, title_model_line, vision_model_line, aws_profile_line};
+pub use catalog::{PickTarget, ModelRow, EffortChips, rank_models, providers, provider_models, title_model_line, vision_model_line, aws_profile_line};
 #[cfg(test)]
 use catalog::{search_terms};
 pub use concepts::{meta_line, HISTORY_PAGE, revision_rows};

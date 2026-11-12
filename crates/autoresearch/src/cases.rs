@@ -491,7 +491,8 @@ pub fn judge_model(env: &Env, spec: &StudySpec) -> String {
 struct StudyModel {
     env: Arc<Env>,
     study: Arc<StudyRecord>,
-    model: String,
+    /// 194 D4e: the model with its role's effort.
+    role: runtime::ModelRole,
     spent: Arc<Mutex<Spent>>,
     /// USD nanos; `None` = no cap.
     cap_nanos: Option<u64>,
@@ -530,14 +531,14 @@ impl StudyModel {
     fn new(
         env: &Arc<Env>,
         study: &Arc<StudyRecord>,
-        model: String,
+        (model, effort): (String, Option<String>),
         spent: &Arc<Mutex<Spent>>,
         cap_nanos: Option<u64>,
     ) -> Arc<Self> {
         Arc::new(Self {
             env: env.clone(),
             study: study.clone(),
-            model,
+            role: runtime::ModelRole::NamedWithEffort { model, effort },
             spent: spent.clone(),
             cap_nanos,
         })
@@ -555,13 +556,7 @@ impl Model for StudyModel {
         let reply = self
             .env
             .backend
-            .side_call(
-                &self.study,
-                runtime::ModelRole::Named(self.model.clone()),
-                system,
-                user,
-                CALL_BUDGET,
-            )
+            .side_call(&self.study, self.role.clone(), system, user, CALL_BUDGET)
             .await
             .map_err(|e| e.to_string())?;
         self.spent.lock().charge(&reply, self.cap_nanos)?;
@@ -740,12 +735,24 @@ pub async fn sample(
     let target = StudyModel::new(
         &env_a,
         &study_a,
-        target_model(env, &study.spec),
+        (
+            target_model(env, &study.spec),
+            env.cfg.target_effort(&study.spec.models),
+        ),
         &spent,
         cap_nanos,
     );
     let judge_name = judge_model(env, &study.spec);
-    let judge = StudyModel::new(&env_a, &study_a, judge_name.clone(), &spent, cap_nanos);
+    // 194: the judge's effort only rides with a picked `models.judge`.
+    let judge_effort =
+        crate::config::with_model(&[(&study.spec.models.judge, &study.spec.models.judge_effort)]);
+    let judge = StudyModel::new(
+        &env_a,
+        &study_a,
+        (judge_name.clone(), judge_effort),
+        &spent,
+        cap_nanos,
+    );
     let needs_judge = chosen.iter().any(|(c, _)| c.check.is_none());
     let artefact = Arc::new(artefact);
     let template: Option<Arc<str>> = Some(cs.render.trim())
@@ -1844,7 +1851,13 @@ mod tests {
             _budget: Duration,
         ) -> Result<runtime::SideReply> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            assert!(matches!(role, runtime::ModelRole::Named(_)));
+            // 194 D4e: every target call carries `models.target_effort`.
+            let runtime::ModelRole::NamedWithEffort { model, effort } = &role else {
+                panic!("a named role");
+            };
+            if model == "fake/target" {
+                assert_eq!(effort.as_deref(), Some("high"));
+            }
             let (ideal, tag) = self
                 .by_input
                 .get(&user)
@@ -1878,6 +1891,7 @@ mod tests {
             _: &StudyRecord,
             _: u32,
             _: &str,
+            _: Option<&str>,
             _: &runtime::Runtime,
         ) -> Result<ReviewVerdict> {
             Ok(ReviewVerdict::Clean {
@@ -1986,6 +2000,7 @@ mod tests {
             models: ModelsSpec {
                 review: Some("off".into()),
                 target: Some("fake/target".into()),
+                target_effort: Some("high".into()),
                 ..ModelsSpec::default()
             },
             budget: BudgetSpec {

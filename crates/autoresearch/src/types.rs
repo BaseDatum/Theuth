@@ -871,16 +871,31 @@ wire! {
     pub struct ModelsSpec {
         /// The study session; default `agent.model`.
         pub executor: Option<String>,
+        /// 194: the executor's effort beside `executor`; `None` = Default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub executor_effort: Option<String>,
         /// The judge; `"off"` disables; default another vendor.
         pub review: Option<String>,
+        /// 194: the reviewer's effort beside `review`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub review_effort: Option<String>,
         /// The plateau consult.
         pub advisor: Option<String>,
+        /// 194: the plateau consult's effort beside `advisor`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub advisor_effort: Option<String>,
         /// 159: the model a prompt artefact runs on (W2); default `agent.model`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub target: Option<String>,
+        /// 194: the target's effort beside `target`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub target_effort: Option<String>,
         /// 159: the case or pair judge (W2, W3); default the reviewer's other-vendor rule.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub judge: Option<String>,
+        /// 194: the judge's effort beside `judge`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub judge_effort: Option<String>,
     }
 }
 

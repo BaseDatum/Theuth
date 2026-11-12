@@ -62,6 +62,10 @@ pub struct EndlessConfig {
     pub cap_chars: u32,
     /// Compactor model; `None` = the session's own model (D8).
     pub model: Option<String>,
+    /// 194: the compactor model's effort; `None` = thinking off (R1 Q1). Only
+    /// with `model` (validated against it, dropped when a new `model` does not take it).
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub effort: Option<String>,
     /// 137F E6: one attempt's bound in seconds for a cloud compactor (10..=3600).
     #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
     pub attempt_secs: u32,
@@ -108,6 +112,7 @@ impl Default for EndlessConfig {
             retry_secs: 10,
             cap_chars: 30_000,
             model: None,
+            effort: None,
             attempt_secs: 120,
             local_attempt_secs: 600,
             local_ctx_bytes: 24_000,
@@ -410,6 +415,18 @@ pub struct SessionMemory {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(as = "Option<String>", optional))]
     pub model_source: String,
+    /// 194: the effort `model` runs with — this chat's own pick
+    /// (`set_session_compactor_effort`), else the effort of the link that chose
+    /// `model` (the agent's `memory_effort`, `agent.endless.effort`); `None` =
+    /// thinking off. An effort `model` does not take is dropped (`None`).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub effort: Option<String>,
+    /// 194 R1: this chat's own compactor effort (`set_session_compactor_effort`),
+    /// stored beside `model_override`; `None` = inherit. The panel's chips show it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub effort_override: Option<String>,
     /// 137G G11: this chat's compactor spend in the current UTC day (USD, `model_calls` kind `endless`).
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(as = "Option<f64>", optional))]
@@ -760,22 +777,37 @@ impl Endless {
     /// RPC `set_session_compactor_model` (137G): this chat's own compactor
     /// (`None` clears = inherit); refused when the id does not resolve;
     /// persisted in `sessions.endless_model`; live (re-resolve + kick, 137F).
+    /// 194: the chat's own effort goes with a cleared model, and with a new
+    /// one that does not take it.
     pub async fn set_model(
         &self,
         session: SessionId,
         model: Option<String>,
     ) -> anyhow::Result<SessionMemory> {
-        pump::set_model(&self.inner, session, model, false).await
+        pump::set_model(&self.inner, session, model, false, None).await
+    }
+
+    /// RPC `set_session_compactor_effort` (194): this chat's own compactor
+    /// effort (`None` clears); refused when the model in force does not take
+    /// it; persisted in `sessions.endless_effort`; live.
+    pub async fn set_effort(
+        &self,
+        session: SessionId,
+        effort: Option<String>,
+    ) -> anyhow::Result<SessionMemory> {
+        pump::set_effort(&self.inner, session, effort).await
     }
 
     /// The roster at desk open (137G): the agent's `memory_model` default
-    /// for this desk session (`None` clears); persisted, live.
+    /// for this desk session (`None` clears) with its `memory_effort` (194;
+    /// cleared with the model); persisted, live.
     pub async fn set_agent_model(
         &self,
         session: SessionId,
         model: Option<String>,
+        effort: Option<String>,
     ) -> anyhow::Result<SessionMemory> {
-        pump::set_model(&self.inner, session, model, true).await
+        pump::set_model(&self.inner, session, model, true, effort).await
     }
 
     /// The constant VIEW_DOC appended to the system prompt in endless sessions (§9).

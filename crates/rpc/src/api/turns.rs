@@ -113,6 +113,15 @@ pub trait TurnsApi {
         session: SessionId,
         model: Option<String>,
     ) -> RpcResult<SessionMemory>;
+    /// 194: this chat's own compactor effort (`None` = the effort of the link
+    /// that chose the model); refused when the model in force does not take
+    /// it; persisted, live; the fresh `SessionMemory` (its `effort`).
+    #[method(name = "set_session_compactor_effort", with_extensions)]
+    async fn set_session_compactor_effort(
+        &self,
+        session: SessionId,
+        effort: Option<String>,
+    ) -> RpcResult<SessionMemory>;
     /// 137 §9 `zoom`: the two children of line `id+n` (`n == 1`: the whole message).
     #[method(name = "endless_zoom", with_extensions)]
     async fn endless_zoom(&self, session: SessionId, id: u64, n: u64) -> RpcResult<Vec<ViewLine>>;
@@ -534,6 +543,30 @@ impl TurnsApiServer for Server {
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             agent::SetSessionCompactorModel { session, model },
+        )
+        .await
+    }
+
+    async fn set_session_compactor_effort(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        effort: Option<String>,
+    ) -> RpcResult<SessionMemory> {
+        self.authorize_fwd(ext, session).await?;
+        if let Some(r) = forward::route(
+            ext,
+            session,
+            "set_session_compactor_effort",
+            (session, effort.clone()),
+        )
+        .await?
+        {
+            return Ok(r);
+        }
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            agent::SetSessionCompactorEffort { session, effort },
         )
         .await
     }
