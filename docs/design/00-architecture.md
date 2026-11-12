@@ -210,6 +210,8 @@ Authorization belongs to `agent::rpc_support::RpcServerExt`, not inherent
 `sessionsync::rpc_support::RpcSessionMoveExt` expose the real owner operations;
 cross-domain callers use those contracts rather than generated wire traits.
 Configuration and private-session tracking/wait extensions stay domain-local.
+The `meeting` crate owns the meeting, calendar and brief wire methods and
+their actor/client helpers; main registers `meeting::rpc_module` directly.
 
 Events: a plugin may publish one struct per event or one `#[serde(tag =
 "type")]` enum per event *stream* — `agent::AgentEvent` is the latter because
@@ -627,8 +629,8 @@ logins (its own subscription, so `TextDelta` never serializes), and for
 everything else calls the harness commands. The 25 domain RPC traits in
 `rpc::api` implement their generated server contracts on `rpc_core::Server`,
 using actor lookup plus `ask`/`tell`. They are assembled by the explicit
-`rpc_core::ModuleFactory` supplied by `main` (temporarily
-`rpc::api::into_rpc_module`). The TUI uses the generated typed clients over
+`rpc_core::ModuleFactory` supplied by `main`: its `rpc_module` function
+merges the 25 domain factories with `rpc_core::merge`. The TUI uses the generated typed clients over
 `rpc::client::Local::new(rt, module)` or a remote WebSocket. Local dispatch
 uses jsonrpsee `Methods` in-process: no loopback socket or bearer token.
 Events still use the TUI's own bus subscription. A command is added once to

@@ -291,3 +291,8 @@ impl BoardsApiServer for Server {
         send(&tasks_actor()?, m).await
     }
 }
+
+/// Build this domain's RPC module.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    BoardsApiServer::into_rpc(server)
+}

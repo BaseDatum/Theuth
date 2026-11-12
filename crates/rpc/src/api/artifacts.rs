@@ -377,3 +377,8 @@ impl ArtifactsApiServer for Server {
         Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
     }
 }
+
+/// Build this domain's RPC module.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    ArtifactsApiServer::into_rpc(server)
+}
