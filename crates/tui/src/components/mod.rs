@@ -455,6 +455,8 @@ pub enum Plain {
     Line(String),
     /// Notice that the requested interaction needs a terminal.
     TtyRequired(String),
+    /// Existing query-reply completion predicate, with no printable bytes.
+    Finished,
 }
 /// Owned transcript presentation, with no feature DTO in core.
 pub struct TranscriptCard {

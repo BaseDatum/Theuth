@@ -1231,6 +1231,7 @@ fn print_output(out: &mut impl Write, output: model::Output<'_>) -> (bool, bool)
             };
             return (finished, matches!(event, UiEvent::Search(..)));
         }
+        model::Output::Plain(components::Plain::Finished) => return (true, false),
         model::Output::Plain(components::Plain::Text(text)) => {
             let _ = out.write_all(text.as_bytes()).and_then(|()| out.flush());
         }
