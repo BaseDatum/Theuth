@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { routed } from '@/lib/owner'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useDraftTarget, useDrafts } from '@/lib/drafts'
 import { usePanes } from '@/lib/panes'
@@ -17,7 +17,7 @@ import type { ConfigOption } from '@/rpc/bindings/ConfigOption'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import { useAdvisor, useSetAdvisor } from './advisor'
 import { MenuRow } from './HeaderMenu'
-import { ModelPicker, stubModel } from './ModelPicker'
+import { LocalTag, ModelPicker, stubModel } from './ModelPicker'
 import { surfaceOf } from './slash'
 
 /** `harness_options(session)` (75 §8); refetched on `HarnessModelChanged` and at every turn end (a queued change lands then). */
@@ -251,6 +251,8 @@ export function HarnessPicker({ m, className, listClassName }: { m: Model; class
           onSelect: (v) => v !== null && void m.setHarnessOption(effort.id, v),
         }
       }
+      favorites={m.favorites}
+      onToggleFavorite={(id) => void m.toggleFavorite(id)}
       className={className}
       listClassName={listClassName}
     />
@@ -371,6 +373,21 @@ function ModelCommand({ m, session, advisor, className, listClassName, footerCla
   )
 }
 
+/** The picker in 127 §6's dialog (top of the band on touch): the compact header's, and the header's on touch (194 D1). */
+function PickerDialogContent({ m, session, advisor }: { m: Model; session: string | null; advisor: boolean }) {
+  const place = dialogPlacement(touch())
+  const picker = cn('[&_[cmdk-input]]:h-12 **:data-[slot=command-input-wrapper]:h-12', place.picker)
+  return (
+    <DialogContent className={cn('max-w-sm overflow-hidden p-0', place.content)}>
+      <DialogHeader className="sr-only">
+        <DialogTitle>{m.agent ? 'Harness' : 'Model'}</DialogTitle>
+        <DialogDescription>{m.agent ? "Pick from the harness's options" : 'Pick the model and effort'}</DialogDescription>
+      </DialogHeader>
+      {m.agent ? <HarnessPicker m={m} className={picker} listClassName={place.list} /> : <ModelCommand m={m} session={session} advisor={advisor} className={picker} listClassName={place.list} footerClassName={place.footer} />}
+    </DialogContent>
+  )
+}
+
 /**
  * ChatGPT's header slot: the model name with a cmdk-filtered list from
  * `list_models`, the selected model's effort levels as chips under its row. A fresh chat keeps its
@@ -378,6 +395,7 @@ function ModelCommand({ m, session, advisor, className, listClassName, footerCla
  * An ACP child (75 §8) gets the same picker over its harness's own options (`HarnessPicker`);
  * with the process gone it shows `omp · <model>` as plain text.
  * `small` (157 D1): the 28 px, text-xs trigger of a column header (the notebook chat) instead of the 36 px headline.
+ * 194 D1: on touch it opens the top-of-band dialog (as `ModelCombobox` does), not the anchored popover.
  */
 export function ModelMenu({ small = false, ...props }: Props & { small?: boolean }) {
   const [open, setOpen] = useState(false)
@@ -408,20 +426,30 @@ export function ModelMenu({ small = false, ...props }: Props & { small?: boolean
   }
   const { effort: harnessEffort } = harnessGroups(m.harness ?? [])
   const effortLabel = m.agent ? harnessCurrent(harnessEffort, harnessEffort && m.pending[harnessEffort.id]) : m.effort
+  const onOpenChange = (o: boolean) => (setOpen(o), !o && setAdvisor(false))
+  const trigger = (
+    <Button variant="ghost" className={small ? 'h-7 max-w-full gap-1 rounded-md px-2 text-xs font-medium text-fg-secondary' : 'h-9 max-w-full gap-1 rounded-lg px-2.5 text-lg font-medium text-fg-secondary'}>
+      <span className="min-w-0 truncate">{m.agent ? harnessLabel(m) : m.name}</span>
+      {effortLabel && <span className={cn('shrink-0 font-normal text-fg-tertiary', small ? 'text-[11px]' : 'text-sm')}>· {effortLabel}</span>}
+      {!m.agent && m.current?.local && <LocalTag />}
+      <ChevronDown className={small ? 'size-3.5 opacity-70' : 'size-4 opacity-70'} />
+    </Button>
+  )
   return (
     <>
-      <Popover open={open} onOpenChange={(o) => (setOpen(o), !o && setAdvisor(false))}>
-        <PopoverTrigger asChild>
-          <Button variant="ghost" className={small ? 'h-7 max-w-full gap-1 rounded-md px-2 text-xs font-medium text-fg-secondary' : 'h-9 max-w-full gap-1 rounded-lg px-2.5 text-lg font-medium text-fg-secondary'}>
-            <span className="min-w-0 truncate">{m.agent ? harnessLabel(m) : m.name}</span>
-            {effortLabel && <span className={cn('shrink-0 font-normal text-fg-tertiary', small ? 'text-[11px]' : 'text-sm')}>· {effortLabel}</span>}
-            <ChevronDown className={small ? 'size-3.5 opacity-70' : 'size-4 opacity-70'} />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-80 p-0">
-          {m.agent ? <HarnessPicker m={m} /> : <ModelCommand m={m} session={props.session} advisor={advisor} />}
-        </PopoverContent>
-      </Popover>
+      {touch() ? (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+          <DialogTrigger asChild>{trigger}</DialogTrigger>
+          <PickerDialogContent m={m} session={props.session} advisor={advisor} />
+        </Dialog>
+      ) : (
+        <Popover open={open} onOpenChange={onOpenChange}>
+          <PopoverTrigger asChild>{trigger}</PopoverTrigger>
+          <PopoverContent align="start" className="w-80 p-0">
+            {m.agent ? <HarnessPicker m={m} /> : <ModelCommand m={m} session={props.session} advisor={advisor} />}
+          </PopoverContent>
+        </Popover>
+      )}
       {resume}
     </>
   )
@@ -437,7 +465,8 @@ export function ModelRow({ onOpen, ...props }: Props & { onOpen(): void }) {
     const detail = lvl ? `${harnessLabel(m)} · ${lvl}` : harnessLabel(m)
     return <MenuRow icon={Bot} label="Harness" detail={detail} onSelect={m.harness ? onOpen : undefined} />
   }
-  return <MenuRow icon={Cpu} label="Model" detail={m.effort ? `${m.name} · ${m.effort}` : m.name} onSelect={onOpen} />
+  const text = m.effort ? `${m.name} · ${m.effort}` : m.name
+  return <MenuRow icon={Cpu} label="Model" detail={m.current?.local ? <span className="inline-flex items-center gap-1">{text}<LocalTag /></span> : text} onSelect={onOpen} />
 }
 
 /** The same picker as a dialog: the compact header has no model button to anchor a popover to. */
@@ -447,17 +476,9 @@ export function ModelDialog({ open, onOpenChange, ...props }: Props & { open: bo
   useOpenOnSlash(props, () => onOpenChange(true))
   useOpenAdvisor(props.session, () => (setAdvisor(true), onOpenChange(true)))
   if (m.watching || (m.agent && !m.harness)) return null
-  const place = dialogPlacement(touch())
-  const picker = cn('[&_[cmdk-input]]:h-12 **:data-[slot=command-input-wrapper]:h-12', place.picker)
   return (
     <Dialog open={open} onOpenChange={(o) => (onOpenChange(o), !o && setAdvisor(false))}>
-      <DialogHeader className="sr-only">
-        <DialogTitle>{m.agent ? 'Harness' : 'Model'}</DialogTitle>
-        <DialogDescription>{m.agent ? "Pick from the harness's options" : 'Pick the model and effort'}</DialogDescription>
-      </DialogHeader>
-      <DialogContent className={cn('max-w-sm overflow-hidden p-0', place.content)}>
-        {m.agent ? <HarnessPicker m={m} className={picker} listClassName={place.list} /> : <ModelCommand m={m} session={props.session} advisor={advisor} className={picker} listClassName={place.list} footerClassName={place.footer} />}
-      </DialogContent>
+      <PickerDialogContent m={m} session={props.session} advisor={advisor} />
     </Dialog>
   )
 }
