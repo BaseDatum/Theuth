@@ -512,3 +512,8 @@ impl MessagingApiServer for Server {
         contacts(&self.rt, a2a::contacts::ContactsWaiting, Ok(Vec::new())).await
     }
 }
+
+/// Build this domain's RPC module.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    MessagingApiServer::into_rpc(server)
+}

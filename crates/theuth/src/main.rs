@@ -1833,7 +1833,7 @@ async fn run() -> anyhow::Result<()> {
     let plugins: Vec<Box<dyn Plugin>> = if let Some((ws, running)) = attached {
         // A client of the running engine: no engine plugins here (63 §2.3).
         if cli.acp {
-            vec![Box::new(rpc::AcpPlugin { remote: Some(ws), module: rpc::api::into_rpc_module })]
+            vec![Box::new(rpc::AcpPlugin { remote: Some(ws), module: rpc_module })]
         } else {
             let prompt = match cli.prompt {
                 Some(p) if p.is_empty() => Some(std::io::read_to_string(std::io::stdin())?),
@@ -1845,7 +1845,7 @@ async fn run() -> anyhow::Result<()> {
                 Box::pin(async move { start_plugins(&rt, engine_plugins(false, false)).await })
             });
             vec![Box::new(tui::TuiPlugin {
-                module: rpc::api::into_rpc_module,
+                module: rpc_module,
                 resume: cli.resume,
                 prompt,
                 attached: Some(tui::Attached {
@@ -1890,14 +1890,14 @@ async fn run() -> anyhow::Result<()> {
             // The `search` tool (49 §4.4): registration only.
             Box::new(rpc::SearchToolsPlugin),
             // 63 §6.4: attachable, on a loopback port; stdout untouched.
-            Box::new(rpc::RpcPlugin { implicit: true, module: rpc::api::into_rpc_module }),
+            Box::new(rpc::RpcPlugin { implicit: true, module: rpc_module }),
             Box::new(signal::SignalPlugin {
                 channel: false,
                 link: None,
             }),
             Box::new(slack::SlackPlugin { channel: false }),
             Box::new(telegram::TelegramPlugin { channel: false }),
-            Box::new(rpc::AcpPlugin { remote: None, module: rpc::api::into_rpc_module }),
+            Box::new(rpc::AcpPlugin { remote: None, module: rpc_module }),
         ]
     } else {
         let mut plugins = engine_plugins(cli.headless, cli.serve || cli.headless);
@@ -1907,7 +1907,7 @@ async fn run() -> anyhow::Result<()> {
                 p => p,
             };
             plugins.push(Box::new(tui::TuiPlugin {
-                module: rpc::api::into_rpc_module,
+                module: rpc_module,
                 resume: cli.resume,
                 prompt,
                 attached: None,
@@ -1932,7 +1932,7 @@ async fn run() -> anyhow::Result<()> {
         // 158 §12.2: theuth as an MCP server, iff `mcp_server.enabled`; the catalogue calls the API in-process.
         mcp_server::boot(
             &rt,
-            std::sync::Arc::new(rpc::client::Local::new(rt.clone(), rpc::api::into_rpc_module)),
+            std::sync::Arc::new(rpc::client::Local::new(rt.clone(), rpc_module)),
         )
         .await;
     }
@@ -1987,6 +1987,36 @@ async fn sigterm() {
         return;
     }
     std::future::pending().await
+}
+
+fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_core::merge([
+        rpc::api::hub::rpc_module(server.clone()),
+        rpc::api::sessions::rpc_module(server.clone()),
+        rpc::api::turns::rpc_module(server.clone()),
+        rpc::api::jobs::rpc_module(server.clone()),
+        rpc::api::skills::rpc_module(server.clone()),
+        rpc::api::tooling::rpc_module(server.clone()),
+        rpc::api::screens::rpc_module(server.clone()),
+        rpc::api::mcp::rpc_module(server.clone()),
+        rpc::api::concepts::rpc_module(server.clone()),
+        rpc::api::documents::rpc_module(server.clone()),
+        rpc::api::notebooks::rpc_module(server.clone()),
+        rpc::api::codemap::rpc_module(server.clone()),
+        rpc::api::messaging::rpc_module(server.clone()),
+        rpc::api::network::rpc_module(server.clone()),
+        rpc::api::routines::rpc_module(server.clone()),
+        rpc::api::boards::rpc_module(server.clone()),
+        rpc::api::artifacts::rpc_module(server.clone()),
+        rpc::api::credentials::rpc_module(server.clone()),
+        rpc::api::speech::rpc_module(server.clone()),
+        rpc::api::meetings::rpc_module(server.clone()),
+        rpc::api::dreams::rpc_module(server.clone()),
+        rpc::api::research::rpc_module(server.clone()),
+        rpc::api::kernels::rpc_module(server.clone()),
+        rpc::api::sandboxes::rpc_module(server.clone()),
+        rpc::api::settings::rpc_module(server),
+    ])
 }
 
 /// The engine's plugin list (every mode but `--acp` and `--link-signal`):
@@ -2046,7 +2076,7 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
     ];
     // 58 §6.1: capture backends per OS; `MeetingStatus.supported` says what this host can do.
     plugins.push(Box::new(meeting::MeetingPlugin));
-    plugins.push(Box::new(rpc::RpcPlugin { implicit: !serve, module: rpc::api::into_rpc_module }));
+    plugins.push(Box::new(rpc::RpcPlugin { implicit: !serve, module: rpc_module }));
     plugins
 }
 

@@ -422,3 +422,8 @@ const CREATED_ROW_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// 183 §5.6: a new row from another engine not here after this long is a WARN.
 const CREATED_ROW_LAG: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// Build this domain's RPC module.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    SessionsApiServer::into_rpc(server)
+}
