@@ -6,6 +6,7 @@ use tools::ToolRegistry;
 use rpc_core::{ask, Server};
 
 /// Settings RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "web", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait WebSettingsApi {
     /// One probe query through one registered provider (built-in or external):
@@ -71,6 +72,7 @@ impl WebSettingsApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    WebSettingsApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(WebSettingsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("web RPC descriptors")
 }

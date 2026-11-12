@@ -7,6 +7,7 @@ use tools::PtyChunk;
 use crate as cells;
 use crate::{kernel_rpc, kernel_latest};
 
+#[rpc_core_macros::rpc_descriptors(owner = "cells", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait KernelsApi {
     // 171:C cells (design 171 §15.2). Bodies: `kernel_rpc` (E1), `kernel_latest` (E2).
@@ -261,6 +262,7 @@ impl KernelsApiServer for Server {
 }
 
 /// Build this domain's RPC module.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    KernelsApiServer::into_rpc(server)
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(KernelsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("cells RPC descriptors")
 }

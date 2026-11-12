@@ -24,7 +24,7 @@ impl Model {
         // 141 §10.1: a watch-only child takes no input (the status line says
         // why) — except the one slash command `/` opened the editor for.
         (self.observed.is_none() || self.watch_slash)
-            && !self.todo_focus
+            && !self.components.captures(crate::components::FocusClass::Pinned)
             && !self.modal_menu()
             && !self.historical && self.inspect.is_none()
     }

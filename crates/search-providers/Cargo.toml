@@ -7,6 +7,7 @@ description = "External search providers (Brave, Firecrawl, SearXNG, OpenSERP) r
 
 [dependencies]
 rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
 jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 web = { workspace = true }

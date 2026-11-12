@@ -52,9 +52,9 @@ async fn filters_envelopes_opaque_old_peer_and_external_liveness() {
     signal::declare_wire(&rt).await.unwrap();
     slack::declare_wire(&rt).await.unwrap();
     sessionsync::declare_wire(&rt).await.unwrap();
-    let base = rpc_compose::methods(rt.clone(), rpc_compose::rpc_module).await;
+    let base = rpc_compose::methods(rt.clone(), |server| rpc_compose::rpc_module(server).module).await;
     // Repeated assembly must neither install a second actor nor duplicate events.
-    let _again = rpc_compose::methods(rt.clone(), rpc_compose::rpc_module).await;
+    let _again = rpc_compose::methods(rt.clone(), |server| rpc_compose::rpc_module(server).module).await;
     let (methods, _, _guard) = connection(&base);
     let local = rt.wire_events();
     assert_eq!(rt.wire_external_stream_count(), 0);
@@ -122,7 +122,7 @@ async fn topic_focus_merging_barriers_and_lagged_snapshot() {
     a2a::declare_wire(&rt).await.unwrap();
     let server = rpc_compose::new_server(rt.clone());
     let focus = server.focus.clone();
-    let base: jsonrpsee::Methods = rpc_compose::rpc_module(server).into();
+    let base: jsonrpsee::Methods = rpc_compose::rpc_module(server).module.into();
     let (methods, peer, _guard) = connection(&base);
     let mut stream = topics(&methods, json!(["agent.events", "a2a.changed"]), None, false).await;
     assert_eq!(next(&mut stream).await, pending());
@@ -169,11 +169,11 @@ async fn private_child_bookkeeping_precedes_topic_selection_and_prompts_are_proj
     let agents = agent::spawn_test_agents(rt.clone(), |_: &str| true).await.unwrap();
     let server = rpc_compose::new_server(rt.clone());
     let private = server.private.clone();
-    let base: jsonrpsee::Methods = rpc_core::merge([
+    let base: jsonrpsee::Methods = rpc_core::merge_described([
         rpc_compose::rpc_module(server.clone()),
         agent::rpc_module(server.clone()),
         sessionsync::rpc_module(server),
-    ]).into();
+    ]).expect("test RPC descriptors").module.into();
     let (a, owner, _a_guard) = connection(&base);
     let (b, _, _b_guard) = connection(&base);
     let open: agent::SessionOpen = a.call("create_session", (agent::CreateSessionOptions {

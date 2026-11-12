@@ -8,6 +8,7 @@ description = "Meeting recorder: the meeting app's audio and the microphone as l
 [dependencies]
 runtime = { workspace = true }
 rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
 jsonrpsee = { workspace = true }
 wire = { workspace = true }
 agent = { workspace = true }

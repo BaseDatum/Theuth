@@ -15,6 +15,7 @@ use agent::rpc_session_state::RpcSessionTrackExt;
 use sessionsync::rpc_session_state::RpcSessionWaitExt;
 
 /// Hub RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "sessionsync", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait SessionsyncHubApi {
     /// 181: send `session`, owned here, to the paired engine `to` (its mesh
@@ -126,6 +127,7 @@ impl SessionsyncHubApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    SessionsyncHubApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(SessionsyncHubApiServer::into_rpc(server), rpc_descriptors())
+        .expect("sessionsync RPC descriptors")
 }

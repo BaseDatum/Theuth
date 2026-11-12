@@ -5,6 +5,7 @@ use tools::{SetPtyIdle, ToolRegistry};
 use rpc_core::{ask, Server};
 
 /// Settings RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "tools", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait ToolsSettingsApi {
     /// Persist `tools.pty_idle_secs` (61 §1.6); `start` calls without `idle_secs` use it from then on. `0` = never.
@@ -20,6 +21,7 @@ impl ToolsSettingsApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    ToolsSettingsApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(ToolsSettingsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("tools RPC descriptors")
 }

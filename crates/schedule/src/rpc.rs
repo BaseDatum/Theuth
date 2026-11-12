@@ -5,6 +5,7 @@ use rpc_core::{Server, send};
 use runtime::SessionId;
 use schedule::rpc_support::schedule;
 
+#[rpc_core_macros::rpc_descriptors(owner = "schedule", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait RoutinesApi {
     /// Persist `schedule.run_timeout_secs` (88); runs fired from then on use it.
@@ -123,6 +124,7 @@ impl RoutinesApiServer for Server {
 }
 
 /// Build this domain's RPC module.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    RoutinesApiServer::into_rpc(server)
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(RoutinesApiServer::into_rpc(server), rpc_descriptors())
+        .expect("schedule RPC descriptors")
 }

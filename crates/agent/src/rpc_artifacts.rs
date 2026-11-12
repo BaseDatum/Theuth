@@ -10,6 +10,7 @@ use agent::rpc_attachments::decode_attachment;
 use agent::rpc_support::RpcServerExt;
 
 /// Artifacts RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "agent", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait AgentArtifactsApi {
     /// Store base64 `bytes` under `session`'s tree (51 §8.1): the durable
@@ -54,6 +55,7 @@ impl AgentArtifactsApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    AgentArtifactsApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(AgentArtifactsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("agent RPC descriptors")
 }

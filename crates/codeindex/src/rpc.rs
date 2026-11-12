@@ -10,6 +10,7 @@ use jsonrpsee::proc_macros::rpc;
 use rpc_core::{Server, send};
 use runtime::SessionId;
 
+#[rpc_core_macros::rpc_descriptors(owner = "codeindex", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait CodemapApi {
     /// Row counts and freshness of the code index for `root` (default: the
@@ -276,6 +277,7 @@ impl CodemapApiServer for Server {
 }
 
 /// Build this domain's RPC module.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    CodemapApiServer::into_rpc(server)
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(CodemapApiServer::into_rpc(server), rpc_descriptors())
+        .expect("codeindex RPC descriptors")
 }

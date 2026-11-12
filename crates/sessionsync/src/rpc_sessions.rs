@@ -11,6 +11,7 @@ use rpc_core::{ask, Server};
 use agent::rpc_support::RpcServerExt;
 
 /// Sessions RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "sessionsync", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait SessionsyncSessionsApi {
     /// Take `session` here (68 §4.2): `reason` is `user` (continue here, at
@@ -77,6 +78,7 @@ impl SessionsyncSessionsApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    SessionsyncSessionsApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(SessionsyncSessionsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("sessionsync RPC descriptors")
 }

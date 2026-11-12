@@ -207,7 +207,7 @@ impl Component for Nodes {
                 self.refresh = true;
             }
             Input::Tick { now_ms, .. } => {
-                if std::mem::take(&mut self.refresh) { self.request(Request::ListNodes, cx); }
+                if std::mem::take(&mut self.refresh) && cx.core.interactive { self.request(Request::ListNodes, cx); }
                 if let Some(card) = &mut self.invite { if !card.tick(now_ms, cx) { self.invite = None; } }
             }
             Input::Lifecycle(Lifecycle::CommandFailed(_)) => self.awaiting = false,
@@ -289,6 +289,8 @@ fn stale_list_failure_cannot_replace_newer_invite() {
     use crate::model::{CardKind, Command, Entry, Model, UiEvent};
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut model = Model::default();
+    model.components = crate::components::Registry::empty();
+    model.components.register(Nodes::default()).unwrap();
     model.mount_components(&tx);
     model.submit("/nodes", &tx);
     let Command::Component(effect) = rx.try_recv().unwrap() else { panic!("node effect") };

@@ -5,6 +5,7 @@ use rpc_core::{send, Server};
 use update::rpc_support::update_actor;
 
 /// Settings RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "update", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait UpdateSettingsApi {
     /// The self-updater's latest state: `null`, or the version that is on disk
@@ -21,6 +22,7 @@ impl UpdateSettingsApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    UpdateSettingsApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(UpdateSettingsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("update RPC descriptors")
 }

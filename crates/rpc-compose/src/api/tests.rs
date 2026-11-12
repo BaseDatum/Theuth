@@ -25,7 +25,7 @@ use base64::Engine as _;
 
 /// Unit-test/export composition only; production assembly belongs to main.
 pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
-    rpc_core::merge([
+    rpc_core::merge_described([
         rpc::rpc_module(server.clone()),
         crate::rpc_module(server.clone()),
         agent::rpc_module(server.clone()),
@@ -57,7 +57,7 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         autoresearch::rpc_module(server.clone()),
         cells::rpc_module(server.clone()),
         sandbox::rpc_module(server),
-    ])
+    ]).expect("test RPC descriptors").module
 }
 
     use super::*;

@@ -11,10 +11,10 @@
 pub mod rpc_settings;
 
 /// Assemble this plugin's RPC methods.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    rpc_core::merge([
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::merge_described([
         rpc_settings::rpc_module(server),
-    ])
+    ]).expect("web RPC composition")
 }
 
 pub mod actor;

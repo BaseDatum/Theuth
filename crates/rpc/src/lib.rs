@@ -32,7 +32,7 @@ mod diag;
 mod wslog;
 
 /// Assemble transport-only RPC methods.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
     infra::rpc_module(server)
 }
 

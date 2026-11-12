@@ -14,6 +14,7 @@ use tools::{
     PtyScreenReply, PtyViewport,
 };
 
+#[rpc_core_macros::rpc_descriptors(owner = "agent", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait JobsApi {
     /// Background jobs of a session (14 §2): id, state, seconds, log path, tail.
@@ -241,6 +242,7 @@ impl JobsApiServer for Server {
 }
 
 /// Build this domain's RPC module.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    JobsApiServer::into_rpc(server)
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(JobsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("agent RPC descriptors")
 }

@@ -7,6 +7,7 @@ description = "Knowledge bundle: OKF files, FTS index, gix history, knowledge_* 
 
 [dependencies]
 rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
 jsonrpsee = { workspace = true }
 okf = { workspace = true }
 gix = { workspace = true }

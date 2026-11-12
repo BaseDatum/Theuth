@@ -6,6 +6,7 @@ use rpc_core::{ask, send, Server};
 use talk::rpc_support::dictation;
 
 /// Hub RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "talk", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait TalkHubApi {
     /// 153 F1: the live user-facing `voice.*` settings — what `set_shape`, `set_end_phrases`,
@@ -27,6 +28,7 @@ impl TalkHubApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    TalkHubApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(TalkHubApiServer::into_rpc(server), rpc_descriptors())
+        .expect("talk RPC descriptors")
 }

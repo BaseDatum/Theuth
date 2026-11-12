@@ -9,6 +9,7 @@ description = "Model loop (genai), session store (sqlite), skills, subagents"
 document = { workspace = true }
 codeindex = { workspace = true }
 rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
 jsonrpsee = { workspace = true }
 platform = { workspace = true }
 knowledge = { workspace = true }

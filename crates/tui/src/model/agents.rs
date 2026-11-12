@@ -24,12 +24,7 @@ impl Model {
         // never finishes a streaming tail below. Children's plans show when
         // opened; a hidden session refreshes from `Loaded.todos` then.
         let ev = match ev {
-            AgentEvent::TodoChanged { session, snapshot } => {
-                if self.session == Some(session) {
-                    self.set_todos(snapshot);
-                }
-                return;
-            }
+            AgentEvent::TodoChanged { .. } => return,
             // 82 §3: global; the draft header (no session open) follows it
             // unless the draft picked its own model (148 R1).
             AgentEvent::DefaultModelChanged { model } => {

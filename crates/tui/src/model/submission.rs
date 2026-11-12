@@ -167,7 +167,6 @@ impl Model {
                 .entries
                 .push(Entry::Error("usage: /logout <name>".into())),
             "/logout" => send(tx, Command::Logout(arg.to_owned())),
-            "/todos" => self.toggle_todos(tx),
             // The line was taken out of the editor to get here: the region lands in an empty box.
             "/dictate" => {
                 if let Some(cmd) = self.toggle_dictation(String::new(), String::new()) {

@@ -50,7 +50,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "",
         "subagents of this session (picker: ⏎ opens one)",
     ),
-    ("/todos", "", "show or hide the plan card (F2)"),
     ("/dictate", "", "toggle dictation (Ctrl+D)"),
     (
         "/voice",

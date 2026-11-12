@@ -135,7 +135,6 @@ impl<Context> DescribedModule<Context> {
 }
 
 /// Merge only audited owner units; reject empty lists and duplicate registrations.
-/// Existing unannotated domains keep using `merge` until the annotation cutover.
 pub fn merge_described<Context>(
     modules: impl IntoIterator<Item = DescribedModule<Context>>,
 ) -> Result<DescribedModule<Context>> {

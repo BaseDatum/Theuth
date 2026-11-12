@@ -4,6 +4,7 @@ mod client;
 pub mod compatibility;
 mod discovery;
 pub use discovery::{Audience, DescribedModule, Descriptors, Discovery, MethodDescriptor, ParamDescriptor, SchemaFn, SubscriptionDescriptor, merge_described, schema_for};
+pub use rpc_core_macros::rpc_descriptors;
 mod follow;
 mod helpers;
 mod state;
@@ -22,16 +23,3 @@ pub use state::{FocusMap, FollowMap, PrivateMap, SeenMap, Server};
 
 /// Explicit aggregate factory, threaded through every transport and local client.
 pub type ModuleFactory = fn(Server) -> jsonrpsee::RpcModule<Server>;
-
-/// Merge owner modules, rejecting empty lists and duplicate wire method names.
-/// Annotated owners use [`merge_described`] to carry and audit schema descriptors.
-pub fn merge(
-    modules: impl IntoIterator<Item = jsonrpsee::RpcModule<Server>>,
-) -> jsonrpsee::RpcModule<Server> {
-    let mut modules = modules.into_iter();
-    let mut merged = modules.next().expect("RPC module list must not be empty");
-    for module in modules {
-        merged.merge(module).expect("duplicate RPC method name");
-    }
-    merged
-}

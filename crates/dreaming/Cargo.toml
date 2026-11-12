@@ -9,6 +9,7 @@ description = "Dreaming: the nightly own-context routine that tidies knowledge, 
 runtime = { workspace = true }
 wire = { workspace = true }
 rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
 jsonrpsee = { workspace = true }
 decision = { workspace = true }
 double = { workspace = true }

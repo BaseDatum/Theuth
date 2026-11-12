@@ -11,6 +11,7 @@ use agent::rpc_support::RpcServerExt;
 use agent::rpc_session_state::RpcSessionTrackExt;
 
 /// Sessions RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "agent", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait AgentSessionsApi {
     /// Create an idle `owner`-scope root (50 §2.3; the caller authenticated
@@ -303,6 +304,7 @@ impl AgentSessionsApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    AgentSessionsApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(AgentSessionsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("agent RPC descriptors")
 }

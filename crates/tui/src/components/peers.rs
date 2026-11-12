@@ -330,12 +330,12 @@ impl Component for Peers {
             },
             Input::Message(message) => self.message(message, cx),
             Input::Tick { .. } => {
-                if std::mem::take(&mut self.refresh_communication) { self.request(Request::GetCommunication(cx.core.session), cx); }
-                if std::mem::take(&mut self.refresh_peers) && let Some(Menu::Peers { session, .. }) = &self.menu {
+                if std::mem::take(&mut self.refresh_communication) && cx.core.interactive { self.request(Request::GetCommunication(cx.core.session), cx); }
+                if std::mem::take(&mut self.refresh_peers) && cx.core.interactive && let Some(Menu::Peers { session, .. }) = &self.menu {
                     let session = *session; self.request(Request::ListPeers(session), cx); self.request(Request::ListPeerRequests(session), cx);
                 }
             }
-            Input::Lifecycle(Lifecycle::Mount) => self.request(Request::GetCommunication(None), cx),
+            Input::Lifecycle(Lifecycle::Mount) if cx.core.interactive => self.request(Request::GetCommunication(None), cx),
             Input::Lifecycle(Lifecycle::SessionReset) => { *self = Self::default(); self.refresh_communication = true; }
             Input::Lifecycle(Lifecycle::SessionChanged | Lifecycle::EngineChanged | Lifecycle::Resync) => self.refresh_communication = true,
             Input::Lifecycle(Lifecycle::History(loaded)) => if let Some(state) = &loaded.communication { self.set_communication(state.clone()); },

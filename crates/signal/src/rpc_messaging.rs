@@ -5,6 +5,7 @@ use signal::{Allow, Link, RemoveAllowed, SIGNAL_ACTOR, Signal, SignalStatus, Sta
 use rpc_core::{ask, Server};
 
 /// Messaging RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "signal", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait SignalMessagingApi {
     /// Start Signal linking (if not registered); returns the provisioning URL
@@ -49,6 +50,7 @@ impl SignalMessagingApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    SignalMessagingApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(SignalMessagingApiServer::into_rpc(server), rpc_descriptors())
+        .expect("signal RPC descriptors")
 }

@@ -125,12 +125,6 @@ impl Model {
                 category,
                 snapshot,
             } => self.open_shake(session, category, snapshot),
-            // A failed read leaves the plan on screen, labelled stale (47 §5.4).
-            UiEvent::Todos(id, snapshot) => {
-                if self.session == Some(id) {
-                    self.loaded_todos(snapshot);
-                }
-            }
             // The transcript reload that follows pushes the notice (`Refreshed`).
             UiEvent::ContextRemoved(id, r) => {
                 if self.session == Some(id) {

@@ -27,6 +27,7 @@ pub mod costs;
 pub mod web_progress;
 pub mod artifacts_apps;
 pub mod double;
+pub mod todos;
 
 // Step-11 group t3 (jobs, terminals, speech and search): add modules below, in this block only.
 pub mod jobs;
@@ -206,6 +207,12 @@ pub struct CoreView<'a> {
     /// Membership in accepted core prompt queues, independent of shown identity.
     pub prompts: &'a dyn PromptIds,
 
+
+    /// Full terminal height; distinct from the transcript row budget.
+    pub terminal_height: usize,
+
+    /// Existing modal menu or intrinsic secret editor suspends lower-priority capture.
+    pub modal_open: bool,
 
     // Step-11 group t3 CoreView fields: add below, in this block only.
     /// Measured transcript row budget at the current key dispatch boundary.
@@ -637,6 +644,28 @@ pub enum CoreAction {
     ResumeSession(SessionId),
 
     // Step-11 group t2 CoreAction variants: add below, in this block only.
+
+    /// Apply authoritative revision/editability metadata without retaining an inventory.
+    ContextState {
+        /// Selected session whose context was read.
+        session: SessionId,
+        /// Revision required by a future core edit transaction.
+        revision: String,
+        /// Whether the authoritative snapshot permits edits.
+        editable: bool,
+        /// Refusal reason; retained only for a non-editable snapshot.
+        reason: Option<String>,
+    },
+
+    /// Run the core context mutation and its settled reload as one transaction.
+    EditContext {
+        /// Session whose authoritative inventory supplied the targets.
+        session: SessionId,
+        /// Revision reviewed by the user.
+        expected_revision: String,
+        /// Exact core transcript targets, including protocol companions.
+        targets: Vec<agent::ContextTarget>,
+    },
 
     // Step-11 group t3 CoreAction variants: add below, in this block only.
     /// Move the shell-owned separate editor cursor without touching the chat draft.

@@ -11,7 +11,6 @@ use ::search::SearchCategory;
 use acp::EntryInfo;
 use acp::registry::RegistryAgent;
 use agent::durability::{ResumeCause, ResumeKind};
-use agent::todo::{Status as TodoStatus, TodoSnapshot, TodoSource};
 use agent::{
     AdvisorDefaults, AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AdvisoryKind,
     AgentEvent, AgentInfo, AgentState, AwsProfiles,
@@ -205,6 +204,8 @@ pub struct Model {
     /// (tests, line printer) = unbounded. Assistant text renders at this
     /// width when constructed; resize does not re-render (design doc 30 §7).
     pub width: usize,
+    /// Full terminal height for component key paging, independent of transcript rows.
+    pub(crate) terminal_height: usize,
     /// Measured transcript rows for component key handling.
     pub(crate) viewport: usize,
     /// A read-only historical frame, independent of its feature-owned navigation intent.
@@ -239,20 +240,6 @@ pub struct Model {
     /// The engine behind the calls changed: the event loop reloads the shown
     /// session and its subtree from the new one (63 §2.3).
     pub reselect: bool,
-    /// Latest plan of the shown session (`Loaded.todos`, `TodoChanged`,
-    /// `get_todos`; 47 §5.1). `None` until a load carried one.
-    pub todos: Option<TodoSnapshot>,
-    /// The plan on screen may be behind: the last load carried no snapshot.
-    /// Labelled as such; never drawn as an empty plan (47 §5.4).
-    pub todos_stale: bool,
-    /// Disclosure choice per session, kept across switches within this
-    /// client and across incoming snapshots (47 §6.1). Absent = collapsed.
-    todo_open: HashMap<SessionId, bool>,
-    /// The todo card has the keys (F2): ↑/↓/PgUp/PgDn scroll it, esc
-    /// collapses, tab hands the editor back. Modals still win; see [`Model::todo_focused`].
-    pub todo_focus: bool,
-    /// First wrapped body row shown while expanded.
-    pub todo_scroll: usize,
     /// `/search` state (49 §6.1): query, chips, request identity, groups,
     /// cursor, previews. Kept across session switches so chips survive and
     /// **Back to results** restores the last view; `menu == Menu::Search`
@@ -339,7 +326,6 @@ mod slash;
 mod speech;
 mod status;
 mod submission;
-mod todos;
 mod transcript;
 mod updates;
 
@@ -374,7 +360,6 @@ pub(crate) use status::{now_ms, when, ago, on_off};
 pub use status::{Level, k};
 pub(crate) use status::elapsed;
 
-pub use todos::{TODO_ROWS, TodoCard, status_label};
 pub(crate) use transcript::{markdown_rows, clean, attr, unescape};
 pub use transcript::{Entry, CardKind, moved_title, injected, describe, output_markdown, result_line, Window, vision_line, note_title, attachment_label};
 use transcript::{split_engine_restart, card, attachment_labels, first_arg, wrapper_kind};

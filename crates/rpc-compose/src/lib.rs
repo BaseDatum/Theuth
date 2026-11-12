@@ -18,8 +18,9 @@ pub use acp::AcpPlugin;
 pub use api::clients;
 
 /// Assemble the cross-plugin RPC methods.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    api::CompositionApiServer::into_rpc(server)
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(api::CompositionApiServer::into_rpc(server), api::rpc_descriptors())
+        .expect("rpc-compose RPC descriptors")
 }
 
 #[cfg(test)]
