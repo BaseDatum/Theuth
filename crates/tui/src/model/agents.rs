@@ -314,14 +314,8 @@ impl Model {
                 );
                 return;
             }
-            // The ledger of the shown session or an ancestor moved: re-read
-            // the owner summary rather than sum deltas (51 §6.2).
-            AgentEvent::ModelUsageChanged { session, .. } => {
-                self.refresh_cost |= self.session == Some(*session)
-                    || self.session_parent == Some(*session)
-                    || self.private.as_ref().is_some_and(|p| p.root == *session);
-                return;
-            }
+            // Non-transcript chrome must never finish a streaming assistant tail.
+            AgentEvent::ModelUsageChanged { .. } => return,
             // The owned private tree is closing (a leave from here already
             // dropped `private`; this is the harness's own close): let go of
             // everything it held.

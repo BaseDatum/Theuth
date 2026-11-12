@@ -22,7 +22,6 @@ impl Model {
             skills: std::mem::take(&mut self.skills),
             width: self.width,
             secrets: self.secrets.take(),
-            nodes: self.nodes.take(),
             components: std::mem::replace(&mut self.components, crate::components::Registry::empty()),
             component_commands: self.component_commands.take(),
             todo_open: std::mem::take(&mut self.todo_open),
@@ -97,8 +96,6 @@ impl Model {
             .resume
             .filter(|r| !r.here)
             .map(|r| r.owner.unwrap_or_default());
-        // The header's cost tag is the owner's summary, re-read on every load (51 §6.2).
-        self.refresh_cost = true;
         // The link survives a restart (125 §3): re-read it with the transcript.
         self.refresh_advisor = true;
         if let Some(n) = loaded.context_estimate {

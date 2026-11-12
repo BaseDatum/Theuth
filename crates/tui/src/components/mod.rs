@@ -13,12 +13,14 @@ pub mod update;
 pub mod computer;
 pub mod sandboxes;
 pub mod link;
+pub mod nodes;
 
 // Step-11 group t2 (boards, costs and artifacts): add modules below, in this block only.
 pub mod tasks;
 pub mod roster;
 pub mod routines;
 pub mod autoresearch;
+pub mod costs;
 
 // Step-11 group t3 (jobs, terminals, speech and search): add modules below, in this block only.
 pub mod jobs;
@@ -168,6 +170,8 @@ pub struct CoreView<'a> {
     // Step-11 group t1 CoreView fields: add below, in this block only.
 
     // Step-11 group t2 CoreView fields: add below, in this block only.
+    /// Whether this registry is mounted on an interactive terminal surface.
+    pub interactive: bool,
 
     // Step-11 group t3 CoreView fields: add below, in this block only.
 }
@@ -258,6 +262,7 @@ impl<'a, M> Input<'a, M> {
         })
     }
 }
+
 
 /// Stable header geometry, independent of registry composition order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

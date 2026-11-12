@@ -13,7 +13,7 @@ impl Model {
         let (residual, out) = match event {
             UiEvent::Wire(event) => {
                 let residual = crate::topics::residual(&event);
-                let core = CoreView { session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(),
+                let core = CoreView { interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(),
                 inspecting: self.inspect.is_some(), streaming: self.streaming,
                 reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })),
                 agent: match &residual { Some(UiEvent::Agent(event)) => Some(event), _ => None }, entries: &self.entries };
@@ -22,7 +22,7 @@ impl Model {
                 (residual, out)
             }
             UiEvent::Component(reply) => {
-                let core = CoreView { session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+                let core = CoreView { interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
                 (None, self.components.reply(reply, &core))
             }
             event => {
@@ -90,7 +90,7 @@ impl Model {
     }
 
     fn component_lifecycle(&mut self, event: Lifecycle<'_>) -> Outbox {
-        let core = CoreView { session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+        let core = CoreView { interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         self.components.lifecycle(event, &core)
     }
     pub(crate) fn component_notify(&mut self, event: Lifecycle<'_>) {
@@ -102,7 +102,7 @@ impl Model {
         if self.components.focused()
             && (self.prompt.is_some() || self.menu.as_ref().is_some_and(|menu| !matches!(menu, Menu::Slash { .. })))
         {
-            let core = CoreView { session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+            let core = CoreView { interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
             let out = self.components.release_focus(&core);
             self.component_finish(out, &mut |_| {});
         }
@@ -116,14 +116,14 @@ impl Model {
     }
     pub(crate) fn component_tick_with(&mut self, now_ms: u64, emit: &mut impl FnMut(Output<'_>)) {
         self.component_reconcile_core_focus();
-        let core = CoreView { session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+        let core = CoreView { interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let out = self.components.tick(now_ms, self.frame, &core);
         for plain in &out.plain { emit(Output::Plain(plain)); }
         self.component_finish(out, emit);
     }
     pub(crate) fn component_key(&mut self, class: FocusClass, key: &iocraft::KeyEvent) -> bool {
         self.component_reconcile_core_focus();
-        let core = CoreView { session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+        let core = CoreView { interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let out = self.components.key(class, key, &core);
         let consumed = out.consumed();
         self.component_finish(out, &mut |_| {});
@@ -131,7 +131,7 @@ impl Model {
     }
     pub(crate) fn component_paste(&mut self, text: &str) -> bool {
         self.component_reconcile_core_focus();
-        let core = CoreView { session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+        let core = CoreView { interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let out = self.components.paste(text, &core);
         let consumed = out.consumed();
         self.component_finish(out, &mut |_| {});
@@ -139,28 +139,28 @@ impl Model {
     }
     pub(crate) fn component_submit(&mut self, text: &str) -> bool {
         self.component_reconcile_core_focus();
-        let core = CoreView { session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+        let core = CoreView { interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let out = self.components.submit(text, &core);
         let consumed = out.consumed();
         self.component_finish(out, &mut |_| {});
         consumed
     }
     pub(super) fn component_slash(&mut self, name: &str, args: &str) -> bool {
-        let core = CoreView { session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+        let core = CoreView { interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let Some(out) = self.components.slash(name, args, &core) else { return false };
         self.component_finish(out, &mut |_| {});
         true
     }
     pub(crate) fn component_views(&self, surface: Surface<'_>, width: usize, height: usize) -> Vec<View> {
         let cx = ViewCx {
-            core: CoreView { session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries },
+            core: CoreView { interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries },
             width, height, frame: self.frame,
         };
         self.components.views(surface, &cx).collect()
     }
     pub(crate) fn component_text(&self, surface: Surface<'_>) -> String {
         let cx = ViewCx {
-            core: CoreView { session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries },
+            core: CoreView { interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries },
             width: self.width, height: 0, frame: self.frame,
         };
         let mut text = String::new();
@@ -218,11 +218,9 @@ impl Model {
                 if let (Some(session), Some(commands)) = (self.session, &self.component_commands) {
                     let _ = commands.send(Command::ListAgents(session));
                 }
-                self.refresh_cost = self.session.is_some();
                 self.refresh_artifacts = self.session.is_some();
                 self.refresh_advisor = self.session.is_some();
                 self.refresh_communication = true;
-                self.refresh_nodes = self.nodes.is_some();
                 self.refresh_secrets = self.secrets.is_some();
                 self.component_notify(Lifecycle::Resync);
             }
@@ -245,14 +243,14 @@ fn component_plain_output_precedes_core_actions_and_errors_keep_global_effects()
     assert_eq!(bytes, b"counter: 0 -> 4\n");
     assert!(matches!(&model.entries[..], [Entry::Info(text)] if text == "counter=4"));
     model.compacting = true;
-    model.awaiting_cost = true;
+    model.components.get_mut::<crate::components::costs::Costs>().unwrap().pending = true;
     model.components.get_mut::<crate::components::link::Link>().unwrap().awaiting = true;
     let mut completed = false;
     model.receive(UiEvent::Component(reply(token, 0, Msg::Fail("request failed".into()))), &mut |output| {
         completed |= crate::print_output(&mut bytes, output).0;
     });
     assert!(completed);
-    assert!(!model.compacting && !model.awaiting_cost && !model.components.get::<crate::components::link::Link>().unwrap().awaiting);
+    assert!(!model.compacting && !model.components.get::<crate::components::costs::Costs>().unwrap().pending && !model.components.get::<crate::components::link::Link>().unwrap().awaiting);
     assert!(matches!(model.entries.last(), Some(Entry::Error(text)) if text == "request failed"));
 }
 

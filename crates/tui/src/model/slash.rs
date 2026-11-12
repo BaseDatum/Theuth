@@ -73,11 +73,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "talk with the session aloud; Esc cancels the reply or leaves the view, Ctrl+T stops",
     ),
     (
-        "/cost",
-        "",
-        "model cost of this session's tree: returned, estimated, coverage, per child",
-    ),
-    (
         "/project",
         "<label|off>",
         "label this session's root for grouping in /sessions and /artifacts (off clears)",
@@ -196,11 +191,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "/mesh",
         "devices [list|add [name]|rm <id>|name <id> <name>]",
         "devices paired with the mesh (any node serves them)",
-    ),
-    (
-        "/nodes",
-        "[add <key>|rm <n>|name <n> <name>|invite <n>]",
-        "machines this harness can run sessions on",
     ),
     (
         "/artifacts",

@@ -95,8 +95,6 @@ const SKILL: Color = OCHRE;
 const PROMPT: Color = SAND;
 /// Finished background job cards.
 const JOB: Color = MALACHITE;
-/// `/link pair` and `/nodes` invite QR cards.
-const LINK: Color = FAIENCE;
 
 /// Run the fullscreen UI until the user quits. Mouse capture stays off so
 /// the terminal's own selection (and copy-on-select) keeps working. Ctrl+C
@@ -250,9 +248,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 if std::mem::take(&mut m.refresh_mcp) {
                     let _ = commands.send(Command::ListMcp(m.session));
                 }
-                if std::mem::take(&mut m.refresh_nodes) {
-                    let _ = commands.send(Command::ListNodes);
-                }
                 if std::mem::take(&mut m.refresh_secrets) {
                     let _ = commands.send(Command::ListSecrets);
                 }
@@ -294,12 +289,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 {
                     let _ = commands.send(Command::ListPeers(*session));
                     let _ = commands.send(Command::ListPeerRequests(*session));
-                }
-                // The ledger moved (51 §6.2): the owner summary, never a local sum.
-                if std::mem::take(&mut m.refresh_cost)
-                    && let Some(session) = m.session
-                {
-                    let _ = commands.send(Command::SessionCost(session));
                 }
                 // 125 §3: the link survives a restart; re-read it with every load.
                 if std::mem::take(&mut m.refresh_advisor)
@@ -1431,7 +1420,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 .collect(),
             *cursor,
         ),
-        Menu::Nodes { cursor } => (m.nodes_title(), m.nodes_rows(), *cursor),
         Menu::Secrets { cursor, history } => {
             (m.secrets_title(), m.secrets_rows(), history.unwrap_or(*cursor))
         }
@@ -1471,24 +1459,15 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             *cursor,
         ),
         Menu::KnowledgeHistory { .. } => m.knowledge_history_menu(),
-        Menu::Cost { cost, cursor } => (
-            format!(
-                "cost · {} · rev {}   esc close   (owner summary; nothing is summed here)",
-                short(cost.session),
-                cost.revision
-            ),
-            m.cost_rows(),
-            *cursor,
-        ),
     };
-    // A diff or the cost breakdown gets the screen minus the frame around the box; lists stay short.
+    // Diffs get the screen minus the frame around the box; lists stay short.
     let tall = matches!(
         m.menu,
         Some(
             Menu::KnowledgeHistory {
                 revision: Some(_),
                 ..
-            } | Menu::Cost { .. }
+            }
         )
     );
     Some(menu_view(title, rows, cursor, width, height, tall))
@@ -1922,7 +1901,6 @@ fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<cr
                 CardKind::Skill => SKILL,
                 CardKind::Prompt => PROMPT,
                 CardKind::Job | CardKind::Schedule => JOB,
-                CardKind::Node => LINK,
                 CardKind::Component { color, .. } => *color,
                 CardKind::Artifact => TOOL,
                 CardKind::Removed => PROMPT,

@@ -227,13 +227,6 @@ impl Model {
                     },
                 ),
             },
-            "/cost" => match self.session {
-                Some(session) => {
-                    self.awaiting_cost = true;
-                    send(tx, Command::SessionCost(session));
-                }
-                None => self.entries.push(Entry::Info("no session".into())),
-            },
             "/apps" if !self.app_enabled => self.entries.push(Entry::Info(
                 "apps are off (app.enabled); /artifacts lists their sources".into(),
             )),
@@ -279,7 +272,6 @@ impl Model {
             "/provider" => self.provider_cmd(arg, tx),
             "/secrets" => self.secrets_cmd(arg, tx),
             "/mesh" => self.mesh_cmd(arg, tx),
-            "/nodes" => self.nodes_cmd(arg, tx),
             // `/<skill> [args]` hands the skill to the model (04 §2.4); any other `/word` — a path, a typo —
             // is message text and takes the arm below.
             // A watch-only child takes neither (141 §10.1): the hint instead.

@@ -1,4 +1,5 @@
 use super::*;
+use crate::components::costs::cost_short;
 
 /// Notes an [`Entry::Advisory`] shows before Ctrl+O (125 §7.4).
 pub const ADVISORY_COLLAPSED: usize = 3;

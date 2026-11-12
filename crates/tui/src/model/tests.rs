@@ -1,4 +1,6 @@
     use super::*;
+    use agent::{CostBucket, CostScope, Coverage, Money, SessionCost};
+    use crate::components::costs::{cost_lines, cost_short, money_units};
     use tokio::sync::mpsc::unbounded_channel;
     use iocraft::KeyModifiers;
     use tools::JobEvent;
@@ -7,6 +9,15 @@
     use crate::components::{FocusClass, terminals::{Terminals, TerminalView, Menu as TerminalMenu, Request as TerminalRequest, TERMINAL_PAGE, TERMINAL_INTERACTIVE_POLL_MS}};
     fn job_event(event: JobEvent) -> UiEvent {
         UiEvent::Wire(crate::topics::TopicEvent::Legacy(Arc::new(serde_json::to_value(event).unwrap())))
+    }
+    use crate::components::nodes::{NodesArg, parse_nodes_arg, find_node};
+
+
+    fn cost_reply(model: &Model, session: SessionId, cost: SessionCost) -> UiEvent {
+        UiEvent::Component(crate::components::LocalReply {
+            to: model.components.token("costs"), engine_epoch: 0,
+            body: Box::new(crate::components::costs::Msg::Loaded(session, Ok(cost), true)),
+        })
     }
 
     fn component_request<R: Clone + 'static>(
@@ -1592,7 +1603,7 @@
     /// child's own turn events keep driving the row; nesting by parent row.
     #[test]
     fn board_tracks_observed_children_as_watch_rows() {
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         let root = SessionId::new();
         m.session = Some(root);
         let child = SessionId::new();
@@ -1638,7 +1649,7 @@
             }],
             ..Default::default()
         };
-        m.apply(UiEvent::Cost(
+        m.apply(cost_reply(&m,
             root,
             SessionCost {
                 session: root,
@@ -1716,7 +1727,7 @@
     /// row (no tag) is the plain `agent_row`.
     #[test]
     fn watch_rows_keep_the_cost_tag_whole_at_every_width() {
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         let root = SessionId::new();
         m.session = Some(root);
         let (child, native) = (SessionId::new(), SessionId::new());
@@ -1759,7 +1770,7 @@
             },
             scope: CostScope::Observed,
         };
-        m.apply(UiEvent::Cost(
+        m.apply(cost_reply(&m,
             root,
             SessionCost {
                 session: root,
@@ -1847,7 +1858,7 @@
         }));
         assert!(m.invite.is_some());
         assert!(
-            matches!(m.entries.last(), Some(Entry::Card { kind: CardKind::Node, title, .. }) if title.ends_with("pending AbC-_123"))
+            matches!(m.entries.last(), Some(Entry::Card { kind: CardKind::Component { group: "node-invite", .. }, title, .. }) if title.ends_with("pending AbC-_123"))
         );
     }
 
@@ -2022,8 +2033,11 @@
 
     #[test]
     fn nodes_menu_rows_keys_and_invite_card() {
+        use crate::components::nodes::{Nodes, Menu as NodesMenu, Prompt as NodesPrompt, Msg, Request};
+        fn panel(model: &Model) -> &Nodes { model.components.get::<Nodes>().unwrap() }
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.mount_components(&tx);
         let node = nodes::Node {
             id: "abcd1234".into(),
             name: "build-box".into(),
@@ -2046,11 +2060,11 @@
         };
         // Bare `/nodes` asks; the reply opens the modal.
         m.submit("/nodes", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListNodes)));
-        m.apply(UiEvent::Nodes(vec![node.clone(), offline]));
-        assert!(matches!(m.menu, Some(Menu::Nodes { .. })) && !m.input_focused());
-        assert!(m.nodes_title().starts_with("nodes · 2 paired"));
-        let rows = m.nodes_rows();
+        assert!(matches!(component_request::<Request>(&mut rx), Ok(Request::ListNodes)));
+        component_reply(&mut m, "nodes", Msg::Listed { notice: None, result: Ok(vec![node.clone(), offline]) });
+        assert!(matches!(panel(&m).menu, Some(NodesMenu::Nodes { .. })) && !m.input_focused());
+        assert!(panel(&m).nodes_title().starts_with("nodes · 2 paired"));
+        let rows = panel(&m).nodes_rows();
         assert!(
             rows[0].starts_with("● build-box") && rows[0].contains("2 running   paired 3d ago")
         );
@@ -2062,35 +2076,35 @@
         );
         assert!(m.header(&catalog).0.ends_with("  ·  nodes ●1"));
         // `x` confirms through a prompt; `n` keeps.
-        m.menu_key(KeyCode::Char('x'), "", &tx);
-        assert!(matches!(m.prompt, Some(Prompt::NodeRemove { .. })) && m.menu.is_none());
+        component_menu_key(&mut m, "nodes", KeyCode::Char('x'));
+        assert!(matches!(panel(&m).prompt, Some(NodesPrompt::NodeRemove { .. })) && panel(&m).menu.is_none());
         m.submit("n", &tx);
-        assert!(rx.try_recv().is_err() && m.prompt.is_none());
+        assert!(rx.try_recv().is_err() && panel(&m).prompt.is_none());
         // `a` prompts for the key; the reply reopens the menu.
-        m.menu = Some(Menu::Nodes { cursor: 0 });
-        m.menu_key(KeyCode::Char('a'), "", &tx);
-        assert!(matches!(m.prompt, Some(Prompt::NodeKey)));
+        m.components.get_mut::<Nodes>().unwrap().menu = Some(NodesMenu::Nodes { cursor: 0 });
+        component_menu_key(&mut m, "nodes", KeyCode::Char('a'));
+        assert!(matches!(panel(&m).prompt, Some(NodesPrompt::NodeKey)));
         m.submit(" https://relay.example/link#1.AAAA.QQ ", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::AddNode(k, None)) if k == "https://relay.example/link#1.AAAA.QQ"
+            component_request::<Request>(&mut rx),
+            Ok(Request::AddNode(k, None)) if k == "https://relay.example/link#1.AAAA.QQ"
         ));
-        m.apply(UiEvent::Nodes(vec![node.clone()]));
-        assert!(matches!(m.menu, Some(Menu::Nodes { .. })));
+        component_reply(&mut m, "nodes", Msg::Listed { notice: None, result: Ok(vec![node.clone()]) });
+        assert!(matches!(panel(&m).menu, Some(NodesMenu::Nodes { .. })));
         // `i` invites: a node card counting down, untouched by link pairing events.
-        m.menu_key(KeyCode::Char('i'), "", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::InviteNode(id)) if id == "abcd1234"));
-        m.apply(UiEvent::NodeInvite(
+        component_menu_key(&mut m, "nodes", KeyCode::Char('i'));
+        assert!(matches!(component_request::<Request>(&mut rx), Ok(Request::InviteNode(id)) if id == "abcd1234"));
+        component_reply(&mut m, "nodes", Msg::Invited(Ok((
             "build-box".into(),
             link::Pairing {
                 key: "https://relay.example/link#1.BBBB.QQ".into(),
                 expires_at_ms: now_ms() + 300_000,
             },
-        ));
+        ))));
         assert!(m.animating());
         assert!(matches!(
             m.entries.last(),
-            Some(Entry::Card { kind: CardKind::Node, title, .. }) if title == "node invite · build-box"
+            Some(Entry::Card { kind: CardKind::Component { group: "node-invite", .. }, title, .. }) if title == "node invite · build-box"
         ));
         component_reply(&mut m, "link", crate::components::link::Msg::Event(link::LinkEvent::LinkPairing {
             key: None,
@@ -2101,13 +2115,13 @@
             "a link pairing ending leaves the node invite live"
         );
         // Any node event re-asks the list; verbs resolve later, in the command task.
-        m.apply(UiEvent::NodeEvent(nodes::NodeEvent::NodeRemoved {
+        component_reply(&mut m, "nodes", Msg::Event(nodes::NodeEvent::NodeRemoved {
             id: "zzzz9999".into(),
         }));
-        assert!(std::mem::take(&mut m.refresh_nodes));
-        m.menu = None;
+        assert!(std::mem::take(&mut m.components.get_mut::<Nodes>().unwrap().refresh));
+        m.components.get_mut::<Nodes>().unwrap().menu = None;
         m.submit("/nodes rm mac-mini", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::RemoveNode(n)) if n == "mac-mini"));
+        assert!(matches!(component_request::<Request>(&mut rx), Ok(Request::RemoveNode(n)) if n == "mac-mini"));
         m.submit("/nodes frob", &tx);
         assert!(
             matches!(m.entries.last(), Some(Entry::Error(e)) if e.starts_with("usage: /nodes"))

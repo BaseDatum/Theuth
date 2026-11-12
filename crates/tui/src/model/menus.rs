@@ -107,11 +107,6 @@ pub enum Menu {
         /// What ⏎ does with the highlighted turn.
         action: TurnAction,
     },
-    /// `/nodes`: paired nodes over [`Model::nodes`] (32 §6.7).
-    Nodes {
-        /// Highlighted node.
-        cursor: usize,
-    },
     /// `/artifacts` picker (35 §6.2); `/apps` when `apps` (46 §8.2).
     Artifacts {
         /// Project and session headings, then the rows by name and version (51 §3).
@@ -174,13 +169,6 @@ pub enum Menu {
         /// `list_peer_messages(pending_only)`; `None` until it arrives.
         requests: Option<PeerMessagePage>,
         /// Highlighted row of [`Model::peers_rows`].
-        cursor: usize,
-    },
-    /// `/cost`: the shown session's owner summary (51 §6.5, §8.3).
-    Cost {
-        /// The summary at open (or the latest refresh).
-        cost: SessionCost,
-        /// Highlighted row.
         cursor: usize,
     },
 }
@@ -259,7 +247,6 @@ impl Model {
             Some(Menu::Skills { .. }) => self.skills_key(code, tx),
             Some(Menu::Logins { .. }) => self.logins_key(code, tx),
             Some(Menu::Turns { .. }) => self.turns_key(code, tx),
-            Some(Menu::Nodes { .. }) => self.nodes_key(code, tx),
             Some(Menu::Secrets { .. }) => self.secrets_key(code, tx),
             Some(Menu::Artifacts { .. }) => self.artifacts_key(code, tx),
             Some(Menu::Shake(_)) => self.shake_key(code, tx),
@@ -267,7 +254,6 @@ impl Model {
             Some(Menu::Peers { .. }) => self.peers_key(code, tx),
             Some(Menu::Knowledge { .. }) => self.knowledge_key(code, tx),
             Some(Menu::KnowledgeHistory { .. }) => self.knowledge_history_key(code, tx),
-            Some(Menu::Cost { .. }) => self.cost_key(code),
         }
     }
 }

@@ -12,12 +12,14 @@ pub fn builtin() -> Registry {
     registry.register(computer::Computer).expect("built-in component registration");
     registry.register(sandboxes::Sandboxes).expect("built-in component registration");
     registry.register(link::Link::default()).expect("built-in component registration");
+    registry.register(nodes::Nodes::default()).expect("built-in component registration");
 
     // Step-11 group t2 (boards, costs and artifacts): register below, in this block only.
     registry.register(tasks::Tasks).expect("built-in component registration");
     registry.register(roster::Roster).expect("built-in component registration");
     registry.register(routines::Routines).expect("built-in component registration");
     registry.register(autoresearch::Autoresearch).expect("built-in component registration");
+    registry.register(costs::Costs::default()).expect("built-in component registration");
 
     // Step-11 group t3 (jobs, terminals, speech and search): register below, in this block only.
     registry.register(jobs::Jobs::default()).expect("built-in component registration");
@@ -34,6 +36,7 @@ pub struct Registry {
     by_slash: HashMap<&'static str, ComponentToken>,
     focus: Option<(ComponentToken, FocusClass)>,
     epoch: u64,
+    interactive: bool,
 }
 impl Default for Registry { fn default() -> Self { Self::empty() } }
 impl std::fmt::Debug for Registry {
@@ -49,9 +52,13 @@ impl Registry {
         ).expect("registered component");
         ComponentToken { slot, generation: self.slots[slot].generation }
     }
+    /// Set presentation mode before mounting components.
+    pub fn set_interactive(&mut self, interactive: bool) { self.interactive = interactive; }
+    /// Read presentation mode without borrowing the component slots.
+    pub fn interactive(&self) -> bool { self.interactive }
     /// Empty shell for fixed composition and isolated contract consumers.
     pub fn empty() -> Self {
-        Self { slots: Vec::new(), by_topic: HashMap::new(), by_slash: HashMap::new(), focus: None, epoch: 0 }
+        Self { slots: Vec::new(), by_topic: HashMap::new(), by_slash: HashMap::new(), focus: None, epoch: 0, interactive: true }
     }
     /// Reject duplicate ids, reserved slash/aliases and equal-class key chords.
     pub fn register<C: Component>(&mut self, component: C) -> Result<ComponentToken, &'static str> {
