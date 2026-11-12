@@ -422,6 +422,7 @@ pub(crate) use status::elapsed;
 
 pub use todos::{TODO_ROWS, TodoCard, status_label};
 pub use tooling::{Row, Target, Switch, action_name, gate_name, git_url, mcp_entry};
+pub(crate) use transcript::markdown_rows;
 pub use transcript::{Entry, CardKind, moved_title, injected, describe, output_markdown, result_line, Window, vision_line, note_title, attachment_label};
 use transcript::{split_engine_restart, card, unescape, attr, attachment_labels, first_arg};
 

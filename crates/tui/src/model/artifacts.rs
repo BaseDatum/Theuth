@@ -68,7 +68,7 @@ impl Model {
     /// An artifact card expands to its file rendered by kind (35 §6.1).
     pub fn toggle_card(&mut self) {
         let opts = self.assistant_options();
-        let Some(e) = self.entries.iter_mut().rev().find(|e| {
+        let Some(index) = self.entries.iter().rposition(|e| {
             matches!(
                 e,
                 Entry::Card { .. }
@@ -84,6 +84,8 @@ impl Model {
         }) else {
             return;
         };
+        if self.component_entry_action(index, crate::components::EntryOperation::Toggle) { return; }
+        let e = &mut self.entries[index];
         match e {
             Entry::Card { expanded, .. }
             | Entry::Compacted { expanded, .. }

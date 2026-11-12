@@ -657,10 +657,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 && modifiers.is_empty()
                 && m.prompt.is_none()
                 && input.read().is_empty()
-                && let Some(path) = m.artifact_path()
             {
-                let _ = commands.send(Command::OpenPath(path.to_owned()));
-                return;
+                if m.component_open_latest_entry() { return; }
+                if let Some(path) = m.artifact_path() {
+                    let _ = commands.send(Command::OpenPath(path.to_owned()));
+                    return;
+                }
             }
             if m.component_key(FocusClass::Content, &key) { return; }
             // Transcript scrolling. ↑/↓ are the editor's while it spans
@@ -776,7 +778,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         .enumerate()
         .map(|(i, e)| {
             let decorations = match e {
-                Entry::Tool { call_id, artifact: None, .. } => m.component_views(Surface::Entry { key: call_id, skipped: 0 }, usize::from(width), 0),
+                Entry::Tool { call_id, .. } | Entry::Pending { call_id, .. } => m.component_views(Surface::Entry { key: call_id, skipped: 0 }, usize::from(width), m.entry_height(e, usize::from(width))),
                 _ => Vec::new(),
             };
             entry(e, m.spinner(), if i == 0 { win.skip } else { 0 }, width, decorations, m.entry_summary(e))
@@ -1871,6 +1873,11 @@ fn queued_text(text: &str) -> String {
 /// One transcript entry. `skip` drops that many leading rendered lines of a
 /// reply (`Model::window`): the part that cannot reach the screen.
 fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<crate::components::View>, summary: Option<String>) -> AnyElement<'static> {
+    if let Some(index) = decorations.iter().rposition(|view| matches!(view, crate::components::View::Element { replace: true, .. })) {
+        return element!(View(flex_direction: FlexDirection::Column) {
+            #(decorations.into_iter().skip(index).filter_map(|view| match view { crate::components::View::Element { element, .. } => Some(element), _ => None }))
+        }).into_any();
+    }
     match e {
         // Human turns: the same card shape as tools and peers, own colour and glyph.
         // A live-talk utterance shows its `[spoken, N s]` marker as a muted tag line.
