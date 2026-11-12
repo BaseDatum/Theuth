@@ -139,7 +139,6 @@ pub fn residual(event: &TopicEvent) -> Option<UiEvent> {
         // The sole typed local exception sees kernels; never deliver both copies.
         Some("tools.jobs") if matches!(event, TopicEvent::Local(_)) => None,
         Some("tools.jobs") => decode!(tools::JobEvent, Job),
-        Some("link.events") => decode!(link::LinkEvent, LinkEvent),
         Some("nodes.events") => decode!(nodes::NodeEvent, NodeEvent),
         Some("artifact.shown") => decode!(artifact::ArtifactShown, ArtifactShown),
         Some("secrets.events") => decode!(secrets::SecretsEvent, SecretsEvent),
@@ -189,7 +188,6 @@ fn legacy(value: &Value, local: bool) -> Option<UiEvent> {
     }
     owner!(agent::AgentEvent, Agent);
     if !local { owner!(tools::JobEvent, Job); }
-    owner!(link::LinkEvent, LinkEvent);
     owner!(nodes::NodeEvent, NodeEvent);
     owner!(secrets::SecretsEvent, SecretsEvent);
     owner!(voice::VoiceEvent, Voice);

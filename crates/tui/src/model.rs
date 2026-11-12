@@ -226,23 +226,13 @@ pub struct Model {
     /// (tests, line printer) = unbounded. Assistant text renders at this
     /// width when constructed; resize does not re-render (design doc 30 §7).
     pub width: usize,
-    /// Latest `link_status` (badge and `/link` menu); `None` until fetched.
-    pub link: Option<link::LinkStatus>,
     /// Fixed feature registry; feature state never leaks into the core enum.
     pub(crate) components: crate::components::Registry,
     component_commands: Option<UnboundedSender<Command>>,
-    /// `/link` was typed (or a flow that reopens it ran); the next
-    /// `UiEvent::Link` opens the menu (same rule as `awaiting_mcp`).
-    awaiting_link: bool,
-    /// A link event arrived that the local copy cannot fold in: the event
-    /// loop re-asks `link_status`.
-    pub refresh_link: bool,
-    /// The live `/link pair` card, redrawn each second by [`Model::tick`].
-    pairing: Option<PairingCard>,
     /// Latest `list_nodes` (badge and `/nodes` menu); `None` until fetched.
     pub nodes: Option<Vec<nodes::Node>>,
     /// `/nodes` was typed (or a flow that reopens it ran); the next
-    /// `UiEvent::Nodes` opens the menu (same rule as `awaiting_link`).
+    /// `UiEvent::Nodes` opens the menu.
     awaiting_nodes: bool,
     /// A node event arrived: the event loop re-asks `list_nodes`.
     pub refresh_nodes: bool,
@@ -253,7 +243,7 @@ pub struct Model {
     invite: Option<PairingCard>,
     /// Latest `list_secrets` (the `/secrets` menu, the `replaces vN` hint); `None` until fetched.
     pub secrets: Option<secrets::SecretsList>,
-    /// `/secrets` was typed; the next `UiEvent::Secrets` opens the menu (same rule as `awaiting_link`).
+    /// `/secrets` was typed; the next `UiEvent::Secrets` opens the menu.
     awaiting_secrets: bool,
     /// The vault changed while a list is held: the event loop re-asks `list_secrets`.
     pub refresh_secrets: bool,
@@ -443,7 +433,7 @@ pub use jobs::{JOB_LINES, JobTail};
 pub use menus::{window, Menu, Grouped, grouped_step, grouped_first, MenuKey};
 pub(crate) use network::{PairingCard};
 use network::{tick_card};
-pub use network::{NodesArg, parse_nodes_arg, find_node, link_line, mesh_device_line};
+pub use network::{NodesArg, parse_nodes_arg, find_node, mesh_device_line};
 pub use paste::{Paste, paste_token};
 use peers::{on_off, short_uuid, peer_card, contact_row};
 pub(crate) use peers::{clean, outside_card};
@@ -454,10 +444,9 @@ use sessions::{project_heading, project_order};
 pub use shake::{ShakeCategory, ShakeStage, Shake, ReviewRow, kind_name, expand, SHAKE_USAGE, removal_line};
 pub use slash::{COMMANDS, slash_matches, SlashRow};
 pub use speech::{voice_cmd, voice_line};
-pub(crate) use status::{now_ms, when};
+pub(crate) use status::{now_ms, when, ago};
 pub use status::{Level, k};
 pub(crate) use status::elapsed;
-use status::ago;
 pub use terminal::{TERMINAL_POLL_MS, TERMINAL_INTERACTIVE_POLL_MS, TerminalView, terminal_row};
 #[cfg(test)]
 use terminal::{TERMINAL_PAGE};

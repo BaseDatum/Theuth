@@ -19,22 +19,6 @@ pub enum Prompt {
         /// Normalized URL already collected.
         url: String,
     },
-    /// `/link` `r`: asking for a paired device's new name.
-    LinkDeviceName {
-        /// `Device.id`.
-        id: String,
-        /// Its current name (the hint).
-        name: String,
-    },
-    /// `/link` `n`: asking for the harness display name.
-    LinkName,
-    /// `/link` `x`: `y` revokes the device, anything else keeps it.
-    LinkRevoke {
-        /// `Device.id`.
-        id: String,
-        /// Its name (the hint).
-        name: String,
-    },
     /// `/nodes` `a`: asking for a node's pasted pairing key.
     NodeKey,
     /// `/nodes` `r`: asking for a node's new local alias.
@@ -97,11 +81,6 @@ impl Prompt {
             Prompt::ProviderKey { name, .. } => {
                 format!("provider add  {name}  api key  (esc cancel)")
             }
-            Prompt::LinkDeviceName { name, .. } => {
-                format!("link  rename {name}  new name  (esc cancel)")
-            }
-            Prompt::LinkName => "link  node name  (esc cancel)".into(),
-            Prompt::LinkRevoke { name, .. } => format!("link  revoke {name}?  y/n"),
             Prompt::NodeKey => "nodes  add  paste the node's key  (esc cancel)".into(),
             Prompt::NodeName { name, .. } => {
                 format!("nodes  rename {name}  new name  (esc cancel)")
@@ -148,9 +127,6 @@ impl Prompt {
         match self {
             Prompt::ProviderName | Prompt::ProviderUrl { .. } | Prompt::ProviderKey { .. } => {
                 "provider add cancelled"
-            }
-            Prompt::LinkDeviceName { .. } | Prompt::LinkName | Prompt::LinkRevoke { .. } => {
-                "link: cancelled"
             }
             Prompt::NodeKey | Prompt::NodeName { .. } | Prompt::NodeRemove { .. } => {
                 "nodes: cancelled"
@@ -213,22 +189,6 @@ impl Model {
                         key: line.to_owned(),
                     },
                 );
-            }
-            Some(Prompt::LinkDeviceName { id, .. }) => {
-                self.awaiting_link = true;
-                send(tx, Command::LinkRenameDevice(id, line.to_owned()));
-            }
-            Some(Prompt::LinkName) => {
-                self.awaiting_link = true;
-                send(tx, Command::LinkRename(line.to_owned()));
-            }
-            Some(Prompt::LinkRevoke { id, name }) => {
-                if line.eq_ignore_ascii_case("y") || line.eq_ignore_ascii_case("yes") {
-                    self.awaiting_link = true;
-                    send(tx, Command::LinkRevoke(id));
-                } else {
-                    self.entries.push(Entry::Info(format!("link: kept {name}")));
-                }
             }
             Some(Prompt::NodeKey) => {
                 self.awaiting_nodes = true;
