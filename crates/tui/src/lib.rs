@@ -827,7 +827,7 @@ fn print_output(out: &mut impl Write, output: model::Output<'_>) -> bool {
 /// A loaded transcript as lines. A row removed from context (48 §2.2)
 /// prints as one `⊘` marker over its first line — the archive is not
 /// replayed — and attachment occurrences print by name.
-fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Result<()> {
+fn print_history(out: &mut impl Write, loaded: &agent::Loaded, registry: &components::Registry) -> std::io::Result<()> {
     let labels = |c: &Option<agent::ContextEntry>| -> String {
         c.as_ref().map_or_else(String::new, |c| {
             c.attachments
@@ -837,7 +837,9 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
         })
     };
     let removed = |c: &Option<agent::ContextEntry>| c.as_ref().is_some_and(|c| c.removed);
-    loaded.history.iter().try_for_each(|h| match h {
+    loaded.history.iter().try_for_each(|h| {
+        if let Some(lines) = registry.history_plain(h) { return lines.iter().try_for_each(|line| writeln!(out, "{line}")); }
+        match h {
         // A consultation note (52 §6) is harness-authored: one header line,
         // never echoed as the human's `>` prompt or the assistant's reply.
         agent::HistoryEntry::User {
@@ -917,6 +919,7 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
         }
         // 183 §5.3: one line.
         agent::HistoryEntry::Moved { moved, .. } => writeln!(out, "{}", model::moved_title(moved)),
+        }
     })
 }
 
@@ -1168,7 +1171,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 model::short(a.id)
             )
         }),
-        UiEvent::History(_, loaded) => print_history(out, loaded),
+        UiEvent::History(_, loaded) => print_history(out, loaded, &model.components),
         // A busy session's settled reload is refused (48 §5); the model
         // keeps what it shows and says so.
         UiEvent::Refreshed(_, loaded) if !loaded.settled => writeln!(
@@ -1179,7 +1182,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 .as_deref()
                 .unwrap_or("session is busy")
         ),
-        UiEvent::Refreshed(_, loaded) => print_history(out, loaded),
+        UiEvent::Refreshed(_, loaded) => print_history(out, loaded, &model.components),
         UiEvent::ContextRemoved(_, r) => writeln!(out, "{}", model::removal_line(r)),
         UiEvent::SessionCreated(id) => writeln!(out, "session {id}"),
         UiEvent::Providers(list) => list

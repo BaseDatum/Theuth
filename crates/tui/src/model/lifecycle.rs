@@ -43,13 +43,14 @@ impl Model {
     }
 
     /// Present owner-built history without changing context or losing active prompts.
-    pub(super) fn present_transcript(&mut self, frame: crate::components::TranscriptPresentation) {
+    pub(super) fn present_transcript(&mut self, build: impl FnOnce(&mut crate::components::Registry) -> (crate::components::TranscriptPresentation, crate::components::LocalReply)) -> crate::components::LocalReply {
         let previous_session = self.session;
         let approvals = std::mem::take(&mut self.approvals);
         let asks = std::mem::take(&mut self.asks);
         self.reset();
         self.approvals = approvals;
         self.asks = asks;
+        let (frame, reply) = build(&mut self.components);
         self.session = Some(frame.session);
         self.entries = frame.entries;
         self.anchor = frame.anchor;
@@ -66,6 +67,7 @@ impl Model {
         if self.session != previous_session {
             self.component_notify(crate::components::Lifecycle::SessionChanged);
         }
+        reply
     }
 
     /// Show a loaded transcript: `UiEvent::History` and `UiEvent::Forked`.
@@ -77,7 +79,7 @@ impl Model {
         self.entries = loaded
             .history
             .into_iter()
-            .flat_map(|h| from_history(h, &opts, &self.components))
+            .flat_map(|h| from_history(h, &opts, &mut self.components))
             .collect();
         self.anchor = None;
         // An index into the old transcript is meaningless now.

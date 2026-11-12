@@ -749,8 +749,8 @@ pub enum CoreAction {
         /// Measured terminal columns.
         width: usize,
     },
-    /// Build after registry mutation ends, present the frame, then deliver its typed receipt.
-    PresentTranscript(Box<dyn FnOnce(&Registry) -> (TranscriptPresentation, LocalReply) + Send>),
+    /// Reset the old frame, build with its retained registry, then deliver the typed receipt.
+    PresentTranscript(Box<dyn FnOnce(&mut Registry) -> (TranscriptPresentation, LocalReply) + Send>),
     /// Change only the core historical-frame input/admission mode.
     SetReadOnly(bool),
     /// Deliver owner input synchronously after preceding core operations.
@@ -866,7 +866,7 @@ impl<M: Send + 'static> Cx<'_, '_, M> {
     // Step-11 group t3 Cx helpers: add below, in this block only.
     /// Project through the same registry/history helper as ordinary core reloads.
     pub fn present_transcript<F>(&mut self, build: F)
-    where F: FnOnce(&Registry) -> (TranscriptPresentation, M) + Send + 'static,
+    where F: FnOnce(&mut Registry) -> (TranscriptPresentation, M) + Send + 'static,
     {
         let (to, engine_epoch) = (self.token, self.epoch);
         self.core(CoreAction::PresentTranscript(Box::new(move |registry| {
@@ -974,6 +974,10 @@ pub trait Component: Send + Sync + 'static {
     fn turn_hidden(&self, _seq: i64) -> bool { false }
     /// Override disclosure eligibility for an owned entry; None keeps core policy.
     fn entry_toggleable(&self, _key: &str) -> Option<bool> { None }
+    /// Consume an owned history row, or return it unchanged for the next owner/core.
+    fn history_entry(&mut self, row: agent::HistoryEntry, _opts: &markdown::Options) -> Result<Vec<crate::model::Entry>, agent::HistoryEntry> { Err(row) }
+    /// Plain projection of a canonical row; None preserves core formatting.
+    fn history_plain(&self, _row: &agent::HistoryEntry) -> Option<Vec<String>> { None }
 }
 
 trait ErasedComponent: Send + Sync {
@@ -996,6 +1000,8 @@ trait ErasedComponent: Send + Sync {
     fn session_hidden(&self, session: SessionId) -> bool;
     fn turn_hidden(&self, seq: i64) -> bool;
     fn entry_toggleable(&self, key: &str) -> Option<bool>;
+    fn history_entry(&mut self, row: agent::HistoryEntry, opts: &markdown::Options) -> Result<Vec<crate::model::Entry>, agent::HistoryEntry>;
+    fn history_plain(&self, row: &agent::HistoryEntry) -> Option<Vec<String>>;
     fn as_any(&self) -> &dyn Any;
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -1033,6 +1039,8 @@ impl<C: Component> ErasedComponent for Mounted<C> {
     fn session_hidden(&self, session: SessionId) -> bool { self.0.session_hidden(session) }
     fn turn_hidden(&self, seq: i64) -> bool { self.0.turn_hidden(seq) }
     fn entry_toggleable(&self, key: &str) -> Option<bool> { self.0.entry_toggleable(key) }
+    fn history_entry(&mut self, row: agent::HistoryEntry, opts: &markdown::Options) -> Result<Vec<crate::model::Entry>, agent::HistoryEntry> { self.0.history_entry(row, opts) }
+    fn history_plain(&self, row: &agent::HistoryEntry) -> Option<Vec<String>> { self.0.history_plain(row) }
     fn as_any(&self) -> &dyn Any { &self.0 }
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn Any { &mut self.0 }

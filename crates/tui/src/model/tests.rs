@@ -140,7 +140,7 @@
     }
 
     fn from_history(row: HistoryEntry, options: &markdown::Options) -> Vec<Entry> {
-        history::from_history(row, options, &crate::components::builtin())
+        history::from_history(row, options, &mut crate::components::builtin())
     }
 
 
