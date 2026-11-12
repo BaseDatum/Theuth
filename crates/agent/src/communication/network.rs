@@ -6014,67 +6014,58 @@ mod tests {
     /// row fails it too; neither is started, and the row goes.
     #[tokio::test]
     async fn a_release_after_the_chat_moved_fails_the_task() {
-        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
-        let held_in = async |a: &mut Agents, alias: &str| {
+        for unreadable in [false, true] {
+            let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
             let binding = a
                 .store
-                .bind_peer(alias, &contact_endpoint(&format!("{alias}-endpoint")))
+                .bind_peer("bob", &contact_endpoint("bob-endpoint"))
                 .await
                 .unwrap();
             let principal = format!("peer:{}", binding.id);
-            let (session, busy, _) = exported_task(a, &principal).await;
+            let (session, busy, _) = exported_task(&mut a, &principal).await;
             let p = A2aPrincipal {
                 binding: binding.id,
                 export: "research".into(),
                 session,
                 route: CancellationToken::new(),
-                contact: Some(super::super::ContactOrigin {
-                    contact: alias.into(),
-                    ..bob("research", tools::Risk::ReadOnly)
-                }),
+                contact: Some(bob("research", tools::Risk::ReadOnly)),
                 ask_first: true,
             };
             let held = a.admit_send(&p, &send("m-a")).await.unwrap().task;
             assert_eq!(held.status, A2aTaskStatus::AuthRequired);
-            (principal, session, busy, held)
-        };
-        let release = |alias: &str| ContactRelease {
-            contact: alias.into(),
-            export: Some("research".into()),
-            allow: true,
-        };
-
-        let (principal, session, busy, held) = held_in(&mut a, "bob").await;
-        a.store.owned_elsewhere(session, "another-engine").await;
-        assert_eq!(a.release_held(release("bob")).await, 1);
-        let s = A2aScope {
-            principal: &principal,
-            export: "research",
-        };
-        let now = a.store.a2a_task(s, &held.id).await.unwrap().unwrap();
-        assert_eq!(now.status, A2aTaskStatus::Failed, "never started here");
-        assert_eq!(now.error.as_deref(), Some(HOLD_MOVED));
-        let busy = a.store.a2a_task(s, &busy.id).await.unwrap().unwrap();
-        assert_eq!(busy.status, A2aTaskStatus::Working, "nothing else moved");
-        assert!(a.store.contact_holds().await.unwrap().is_empty());
-
-        let (principal, session, _, held) = held_in(&mut a, "carol").await;
-        a.store.break_session_for_test(session).await;
-        assert_eq!(a.release_held(release("carol")).await, 1);
-        let s = A2aScope {
-            principal: &principal,
-            export: "research",
-        };
-        let now = a.store.a2a_task(s, &held.id).await.unwrap().unwrap();
-        assert_eq!(now.status, A2aTaskStatus::Failed);
-        assert!(
-            now.error
-                .as_deref()
-                .is_some_and(|e| e.starts_with("the chat's machine could not be checked")),
-            "{:?}",
-            now.error
-        );
-        assert!(a.network.held.is_empty());
+            if unreadable {
+                a.store.break_session_for_test(session).await;
+            } else {
+                a.store.owned_elsewhere(session, "another-engine").await;
+            }
+            let n = a
+                .release_held(ContactRelease {
+                    contact: "bob".into(),
+                    export: Some("research".into()),
+                    allow: true,
+                })
+                .await;
+            assert_eq!(n, 1);
+            let s = A2aScope {
+                principal: &principal,
+                export: "research",
+            };
+            let now = a.store.a2a_task(s, &held.id).await.unwrap().unwrap();
+            assert_eq!(now.status, A2aTaskStatus::Failed, "never started here");
+            let why = now.error.unwrap_or_default();
+            if unreadable {
+                assert!(
+                    why.starts_with("the chat's machine could not be checked"),
+                    "{why}"
+                );
+            } else {
+                assert_eq!(why, HOLD_MOVED);
+            }
+            let busy = a.store.a2a_task(s, &busy.id).await.unwrap().unwrap();
+            assert_eq!(busy.status, A2aTaskStatus::Working, "nothing else moved");
+            assert!(a.network.held.is_empty());
+            assert!(a.store.contact_holds().await.unwrap().is_empty());
+        }
     }
 
     /// 183 review 1: the held line takes the holder's machine text cut to 64 characters

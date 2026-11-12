@@ -2560,7 +2560,7 @@ impl crate::Ctx {
         let mut h = std::hash::DefaultHasher::new();
         rows.hash(&mut h);
         let hash = h.finish();
-        if std::mem::replace(&mut self.state.lock().holds_hash, Some(hash)) == Some(hash) {
+        if self.state.lock().holds_hash.replace(hash) == Some(hash) {
             return false;
         }
         nudge_attention();
