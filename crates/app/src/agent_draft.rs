@@ -55,6 +55,9 @@ pub struct AgentDraft {
     /// Compactor model of its endless desk sessions (137G); default: the engine's chain.
     #[serde(default)]
     pub memory_model: Option<String>,
+    /// The effort of `memory_model` (194); default: none (thinking off).
+    #[serde(default)]
+    pub memory_effort: Option<String>,
     /// The charter (markdown): purpose, what it owns, what it never does, how it reports.
     pub charter: String,
 }
@@ -333,6 +336,9 @@ pub fn source(
         if let Some(m) = &d.memory_model {
             meta.push(format!("memory model `{m}`"));
         }
+        if let Some(e) = &d.memory_effort {
+            meta.push(format!("memory effort `{e}`"));
+        }
         let mut parts = vec![
             format!("{c}_head"),
             format!("{c}_charter"),
@@ -408,6 +414,7 @@ mod tests {
             budget: None,
             capabilities: None,
             memory_model: None,
+            memory_effort: None,
             charter: "You own \"prod\".\nNever deploy on Friday.".into(),
         }
     }
@@ -478,6 +485,17 @@ mod tests {
             source(&[long], &existing, "", None)
                 .0
                 .contains(&format!("{}…", "x".repeat(PREVIEW)))
+        );
+        // 194: the memory summary pick reads as the model does, its effort beside it.
+        let memory = AgentDraft {
+            memory_model: Some("p/m".into()),
+            memory_effort: Some("low".into()),
+            ..draft("ops", "theuth")
+        };
+        assert!(
+            source(&[memory], &existing, "", None)
+                .0
+                .contains("memory model `p/m` · memory effort `low`")
         );
     }
 

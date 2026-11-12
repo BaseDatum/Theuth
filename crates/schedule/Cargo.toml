@@ -37,6 +37,7 @@ ts-rs = { workspace = true, optional = true }
 [dev-dependencies]
 tempfile = "3"
 figment = { workspace = true }
+agent = { workspace = true, features = ["test-support"] }  # 194: a live model-less engine for the run's effort
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "agent/ts"]

@@ -383,6 +383,8 @@ export interface Api {
   add_provider(name: string, base_url: string, key?: string | null, runtime?: LocalRuntime | null): Promise<ProviderInfo>
   add_skill(name: string, description: string, body: string, always: boolean): Promise<SkillMeta>
   add_skill_repo(url: string, name: string | null): Promise<SkillMeta[]>
+  /** 194 R1: `/advisor on` — turn `session`'s advisor on with the live default (`advisor.model` / `advisor.effort`, read by the engine at the call). Rejects when no default model is set; `AdvisorChanged` follows on the stream. */
+  advisor_on(session: SessionId): Promise<AdvisorStatus>
   /** 125 §6.3: the advisor status of `session` (`state: 'off'` when it has none). */
   advisor_status(session: SessionId): Promise<AdvisorStatus>
   /** One message to many sessions (62 §0.1): server-side selector, one outcome row per session; `dry_run: true` previews. */
@@ -494,6 +496,10 @@ export interface Api {
   /** 153 §9.2: `voice.polish_model`, `null` = the chain (title model, then the session's). */
   polish_model(): Promise<ModelInfo | null>
   set_polish_model(model: string | null): Promise<ModelInfo | null>
+  /** 194: `voice.polish_effort`, sent when the polish model answers; `null` = no reasoning setting. */
+  polish_effort(): Promise<string | null>
+  /** Persist `voice.polish_effort`; rejects a level the model polish resolves to does not take. Returns the stored value. */
+  set_polish_effort(effort: string | null): Promise<string | null>
   /** 153 §9: polish `text` for a human reader at `destination`; an agent prompt is refused. `text: null` + `refused` = deliver the shaped text. */
   polish(text: string, destination: Destination, session: SessionId | null): Promise<PolishReply>
   /** 153 §13.6: rewrite `selection` per `instruction`; `thread` = earlier (instruction, result) pairs of the same panel. */
@@ -622,6 +628,8 @@ export interface Api {
   fork_session(session: SessionId, through: number | null, reply: number | null): Promise<SessionId>
   /** The escalation model (57 §0.9, tier 2 of the local decision oracle): what is set and what a tier-2 call resolves to (`effective === null` = the session's model). */
   escalate_model(): Promise<EscalateModel>
+  /** 194: `agent.escalate_effort`, sent when the escalation model answers a tier-2 call; `null` = no reasoning setting. */
+  escalate_effort(): Promise<string | null>
   /** A committed app record: artifact, source, compatibility hash, pinned bindings, diagnostics (46 §6.3). `-32001` when apps are disabled — show the artifact's source instead. `session` as `get_artifact`. */
   get_app(record_call_id: string, session?: SessionId | null): Promise<AppDoc>
   /** Commit `source` as a new `app` artifact named `name` without a model turn (30 §8, the transcript's Open as app); the result is what `get_app` returns for its `record_call_id`. Located helper errors arrive as the RPC error message. */
@@ -1136,6 +1144,8 @@ export interface Api {
   endless_pause(session: SessionId, paused: boolean): Promise<SessionMemory>
   /** 137G: this chat's own summary model (`null` = inherit agent → Settings → title → chat model); the fresh memory. */
   set_session_compactor_model(session: SessionId, model: string | null): Promise<SessionMemory>
+  /** 194: this chat's own summary effort (`null` = the effort of the link that chose the model); refused when the model in force does not take it; the fresh memory (its `effort`). */
+  set_session_compactor_effort(session: SessionId, effort: string | null): Promise<SessionMemory>
   /** 137 §9 `zoom`: `n = 1` → one line with the whole message; `n > 1` → the two children of `id+n`. */
   endless_zoom(session: SessionId, id: number, n: number): Promise<ViewLine[]>
   /** 137 §9 `recall`: FTS over the level-0 lines (raw fallback under 2 hits); `limit` null = 8. */
@@ -1218,6 +1228,8 @@ export interface Api {
   set_advisor(session: SessionId, model: string | null, effort: string | null): Promise<AdvisorStatus>
   /** Persist `advisor.effort` (`null` clears): the remembered pick's effort (125 §6.5). */
   set_advisor_default_effort(effort: string | null): Promise<AdvisorDefaults>
+  /** Persist `advisor.model` (194 row 6), the default `/advisor on` starts on; `null` clears it and `advisor.effort`, and a model that does not take the stored effort drops it. Unknown or un-keyed ids reject. */
+  set_advisor_default_model(model: string | null): Promise<AdvisorDefaults>
   /** Persist `advisor.immune_turns` (0–10; 0 disables the window after a steer). */
   set_advisor_immune_turns(n: number): Promise<AdvisorDefaults>
   /** Persist `advisor.max_consults` (0–32; 0 removes the `consult` tool) (125 R1). */
@@ -1234,6 +1246,8 @@ export interface Api {
   resume_child(session: SessionId): Promise<ChildResumed>
   /** Persist `agent.escalate_model` (57 §0.9): `null` = inherit the title model; an id that is not a catalog entry rejects and leaves the selection unchanged. */
   set_escalate_model(model: string | null): Promise<ModelInfo | null>
+  /** Persist `agent.escalate_effort` (194); rejects a level the effective escalation model does not take; Off on the model clears it. Returns the stored value. */
+  set_escalate_effort(effort: string | null): Promise<string | null>
   /** Persist `agent.max_salvages`: interrupted-reply recoveries per turn; `0` turns recovery off. New sessions only. */
   set_max_salvages(count: number): Promise<null>
   set_max_tool_rounds(rounds: number): Promise<null>
@@ -1254,11 +1268,19 @@ export interface Api {
   set_schedule_run_timeout(seconds: number): Promise<null>
   /** Persist `agent.subagents.model`: the model native children get when `spawn_subagent` omits `model` (148 R2); `null` = the default model for new sessions. */
   set_subagent_model(model: string | null): Promise<ModelInfo | null>
+  /** Persist `agent.subagents.effort` (194 row 3): the effort native children get when `spawn_subagent` omits `effort`; `null` = the new-sessions effort. Rejects a level the effective subagent model does not take; returns the stored value. */
+  set_subagent_effort(effort: string | null): Promise<string | null>
   /** Persist `roster.theuth_model` (148 R3): the built-in theuth agent's desk and the desk's direct work children; `null` = same as new sessions. Unknown ids reject like `set_subagent_model`. */
   set_theuth_agent_model(model: string | null): Promise<ModelInfo | null>
+  /** Persist `roster.theuth_effort` (194 rows 4–5): theuth's desk and its work; `null` = same as new sessions. Rejects a level theuth's effective model does not take; returns the stored value. */
+  set_theuth_agent_effort(effort: string | null): Promise<string | null>
   set_title_model(model: string | null): Promise<ModelInfo | null>
+  /** Persist `agent.title_effort` (194); rejects a level the title model does not take; a model change drops one it does not take. Returns the stored value. */
+  set_title_effort(effort: string | null): Promise<string | null>
   /** Persist `agent.vision_model` (52 §3.1): `null` turns the fallback off; an unavailable or text-only id rejects and leaves the selection unchanged. */
   set_vision_model(model: string | null): Promise<ModelInfo | null>
+  /** Persist `agent.vision_effort` (194); rejects a level the fallback does not take; Off clears it. Returns the stored value. */
+  set_vision_effort(effort: string | null): Promise<string | null>
   shutdown(): Promise<null>
   signal_allow(number: string): Promise<null>
   signal_link(): Promise<string>
@@ -1288,11 +1310,17 @@ export interface Api {
   stop_speaking(id: string | null): Promise<null>
   /** The subagent default model, `null` when unset. */
   subagent_model(): Promise<ModelInfo | null>
+  /** The subagent default effort (`agent.subagents.effort`, 194), `null` when unset. */
+  subagent_effort(): Promise<string | null>
   sync_mcp(): Promise<SyncResult[]>
   sync_skills(): Promise<SyncResult[]>
   title_model(): Promise<ModelInfo | null>
+  /** 194: `agent.title_effort`, `null` = no reasoning setting. */
+  title_effort(): Promise<string | null>
   /** The theuth agent's model (`roster.theuth_model`, 148 R3), `null` = same as new sessions. */
   theuth_agent_model(): Promise<ModelInfo | null>
+  /** The theuth agent's effort (`roster.theuth_effort`, 194), `null` = same as new sessions. */
+  theuth_agent_effort(): Promise<string | null>
   /** Start a talk on `session` (76 §5.1). Local peers pass `device`/`null`; a relay peer must pass `client` and its mic rate and streams PCM via `talk_audio`. One per daemon: rejects with `already talking`. */
   talk_start(session: SessionId, sink: Sink, sample_rate: number | null): Promise<TalkId>
   /** Stop talk `id`; `TalkFinished` follows. Idempotent. */
@@ -1313,6 +1341,8 @@ export interface Api {
   usage_limits_refresh(provider: string | null): Promise<null>
   /** The vision fallback model (52 §3.1), `null` when off; may name a model that is no longer available. */
   vision_model(): Promise<ModelInfo | null>
+  /** 194: `agent.vision_effort`, `null` = the fallback model's default. */
+  vision_effort(): Promise<string | null>
   /** Model state, voices, the utterance in flight (43 §6) and `input_devices` (153 §8.1); `-32001` when the voice plugin is disabled. */
   voice_status(): Promise<VoiceStatus>
   withdraw(session: SessionId, id: InputId): Promise<string>
@@ -1438,6 +1468,7 @@ export const METHODS = [
   'add_provider',
   'add_skill',
   'add_skill_repo',
+  'advisor_on',
   'advisor_status',
   'agent_approve',
   'agent_get',
@@ -1631,6 +1662,7 @@ export const METHODS = [
   'endless_settings_set',
   'endless_zoom',
   'engine_agents_list',
+  'escalate_effort',
   'escalate_model',
   'export_artifact',
   'fence_snapshot',
@@ -1797,6 +1829,7 @@ export const METHODS = [
   'pin_session',
   'ping',
   'polish',
+  'polish_effort',
   'polish_model',
   'promote_answer',
   'provider_models',
@@ -1870,6 +1903,7 @@ export const METHODS = [
   'sessions_status',
   'set_advisor',
   'set_advisor_default_effort',
+  'set_advisor_default_model',
   'set_advisor_immune_turns',
   'set_advisor_max_consults',
   'set_advisor_notes_per_update',
@@ -1883,6 +1917,7 @@ export const METHODS = [
   'set_decision_training',
   'set_effort',
   'set_end_phrases',
+  'set_escalate_effort',
   'set_escalate_model',
   'set_event_focus',
   'set_harness_option',
@@ -1898,21 +1933,27 @@ export const METHODS = [
   'set_model_favorite',
   'set_model_limits',
   'set_peer_scope',
+  'set_polish_effort',
   'set_polish_model',
   'set_project_style',
   'set_pty_idle',
   'set_schedule_run_timeout',
   'set_secret',
+  'set_session_compactor_effort',
   'set_session_compactor_model',
   'set_session_memory',
   'set_session_project',
   'set_session_view_bytes',
   'set_shape',
   'set_stream_idle',
+  'set_subagent_effort',
   'set_subagent_model',
   'set_subagent_timeout',
+  'set_theuth_agent_effort',
   'set_theuth_agent_model',
+  'set_title_effort',
   'set_title_model',
+  'set_vision_effort',
   'set_vision_model',
   'shutdown',
   'signal_allow',
@@ -1934,6 +1975,7 @@ export const METHODS = [
   'spend_report',
   'steer',
   'stop_speaking',
+  'subagent_effort',
   'subagent_model',
   'sync_mcp',
   'sync_skills',
@@ -1961,7 +2003,9 @@ export const METHODS = [
   'test_schedule',
   'test_schedule_file',
   'test_summary_call',
+  'theuth_agent_effort',
   'theuth_agent_model',
+  'title_effort',
   'title_model',
   'transcribe',
   'undo',
@@ -1971,6 +2015,7 @@ export const METHODS = [
   'use_skill',
   'vault_rotate',
   'vault_rotation',
+  'vision_effort',
   'vision_model',
   'voice_settings',
   'voice_status',

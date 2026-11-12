@@ -257,7 +257,29 @@ the roster's `ListModels`-based check.
 ## Follow-ups
 
 - TUI: no way to set the default model/effort (Settings UI owns it).
-- Subagent default effort row in Settings › Chat (`agent.subagents.effort` is
-  config.yaml-only today).
+- ~~Subagent default effort row in Settings › Chat (`agent.subagents.effort` is
+  config.yaml-only today).~~ Done in 194 (below).
 - A desk whose configured model no longer resolves follows the default only
   after a restart or a model change, not on `DefaultModelChanged` (F7 gap).
+
+## Effort beside the model (194, 2026-11-12)
+
+194 (`194-effort-everywhere.md`, as-built `194-as-built-A.md`) gives the two
+148 model defaults their effort, stored and validated like the model:
+
+| Setting | Effort key | RPC | Applied |
+|---|---|---|---|
+| Subagents | `agent.subagents.effort` (now live: `Agents.subagent_effort`, an `RwLock` like the model) | `subagent_effort()` / `set_subagent_effort(effort)` (settings.rs) | spawn chain |
+| theuth agent | `roster.theuth_effort` | `theuth_agent_effort()` / `set_theuth_agent_effort(effort)` (boards.rs) | theuth desk and its work children (`SetDeskModel.effort`) |
+
+- Effective effort, replacing the line under "Effective model": a native
+  child uses spawn `effort` → desk agent's effort (the file's `effort:`, sent
+  with `SetDeskModel`) → `agent.subagents.effort` → `agent.effort`, filtered by
+  the child's model (F6). A hired agent's `effort:` now reaches its desk too.
+- A setter refuses an effort the effective model (`agent.subagents.model`, else
+  `agent.model`; `roster.theuth_model`, else `agent.model`) does not take;
+  "Same as new sessions" clears the effort; a model change drops one the new
+  model does not take.
+- The system prompt's subagent line names the effort when one is set (D4h).
+- Settings › Models: both rows show the effort chips under the selected model
+  (none under "Same as new sessions"); Agents › theuth the same.

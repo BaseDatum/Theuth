@@ -112,6 +112,7 @@ export type SettingsChange =
   | { kind: 'budget'; usd: number }
   | { kind: 'window'; index: 0 | 1; time: string }
   | { kind: 'model'; tier: Tier; model: string | null }
+  | { kind: 'effort'; tier: Tier; effort: string | null }
   | { kind: 'preferences_auto'; on: boolean }
   | { kind: 'digest_day'; day: Day }
   | { kind: 'digest_time'; time: string }
@@ -138,6 +139,10 @@ export function reduceSettings(s: DreamSettings, c: SettingsChange): DreamSettin
     case 'model':
       if (s.models[c.tier] === c.model) return null
       return { ...s, models: { ...s.models, [c.tier]: c.model } }
+    // 194: a tier's effort beside its pick; the engine clears it with the pick and drops one a new pick does not take.
+    case 'effort':
+      if ((s.efforts?.[c.tier] ?? null) === c.effort) return null
+      return { ...s, efforts: { triage: null, tidy: null, propose: null, judge: null, ...s.efforts, [c.tier]: c.effort } }
     case 'preferences_auto':
       return s.preferences_auto === c.on ? null : { ...s, preferences_auto: c.on }
     case 'digest_day': {

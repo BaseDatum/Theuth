@@ -27,6 +27,10 @@ pub struct DreamConfig {
     pub run_timeout: String,
     /// The four model tiers; `None` = the design's default per tier.
     pub models: Models,
+    /// 194: `efforts:` — each tier's effort, only beside that tier's pick in
+    /// `models` (`None` = the tier's default effort: none on a side call, the
+    /// routine's own for tidy).
+    pub efforts: Models,
     /// Per-phase count caps.
     pub caps: Caps,
     /// Type lifetimes in days (knowledge's own `knowledge.lifetimes` wins for rank; 136 §3.1).
@@ -207,6 +211,7 @@ impl Default for DreamConfig {
             budget_usd: 1.0,
             run_timeout: "45m".into(),
             models: Models::default(),
+            efforts: Models::default(),
             caps: Caps::default(),
             lifetimes: Lifetimes::default(),
             gate: Gate::default(),
@@ -320,6 +325,8 @@ mod tests {
         assert!(c.models.tidy.is_none());
         assert_eq!(c.window, ["23:00", "05:00"]);
         assert_eq!(c.caps, Caps::default());
+        // 194: a section older than `efforts:` has none.
+        assert_eq!(c.efforts, Models::default());
     }
 
     /// D12: `tidy` defaults to `agent.model`, `propose` to `tidy`, `judge` to

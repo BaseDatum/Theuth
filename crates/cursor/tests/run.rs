@@ -336,7 +336,7 @@ async fn bidi_run_round_trip() {
     assert_eq!(models[1].name, "claude-4.6-opus-max");
     assert!(models[1].max_mode);
 
-    let stream = cursor::chat_stream_at(&base, "tok", "gpt-5.4-high", request(), "conv-1")
+    let stream = cursor::chat_stream_at(&base, "tok", "gpt-5.4-high", None, request(), "conv-1")
         .await
         .unwrap();
     let events: Vec<_> = stream.collect().await;
@@ -381,7 +381,7 @@ async fn bidi_run_round_trip() {
         (Some(100), Some(7), Some(107))
     );
 
-    let stream = cursor::chat_stream_at(&base, "tok", "boom", request(), "conv-1")
+    let stream = cursor::chat_stream_at(&base, "tok", "boom", None, request(), "conv-1")
         .await
         .unwrap();
     let events: Vec<_> = stream.collect().await;

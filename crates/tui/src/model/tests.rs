@@ -4113,27 +4113,17 @@
             rx.try_recv(),
             Ok(Command::SetEffort { effort: None, .. })
         ));
-        // Picker: levels then `clear`; Enter on `clear` unsets.
-        m.open_efforts(vec!["low".into(), "high".into()], PickTarget::Session);
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
-        assert!(m.menu.is_none());
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetEffort { effort: None, .. })
-        ));
-        // The reply lands in the header; the echo event is not announced twice.
-        m.apply(UiEvent::EffortSet(Some("high".into())));
-        assert_eq!(m.effort.as_deref(), Some("high"));
-        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "effort: high"));
-        // No levels: a notice, no menu.
-        m.open_efforts(Vec::new(), PickTarget::Session);
+        // 194 D6: bare `/effort` on a model without levels is a notice, no picker.
+        m.submit("/effort", &tx);
+        assert!(rx.try_recv().is_err());
         assert!(m.menu.is_none());
         assert!(
             matches!(m.entries.last(), Some(Entry::Info(t)) if t.ends_with("no reasoning effort levels"))
         );
+        // The reply lands in the header; the echo event is not announced twice.
+        m.apply(UiEvent::EffortSet(Some("high".into())));
+        assert_eq!(m.effort.as_deref(), Some("high"));
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "effort: high"));
     }
 
     /// 83 §3: `DefaultEffortChanged` moves the draft header but not an open
@@ -4216,6 +4206,54 @@
                 ..
             })
         ));
+    }
+
+    /// 194 D4c: a draft model change keeps the draft's effort only when the
+    /// new model takes it; else it is dropped (header back on the default),
+    /// so the created session never carries a stale pair.
+    #[test]
+    fn draft_model_change_drops_an_effort_the_new_model_does_not_take() {
+        let catalog = Catalog::load(
+            std::env::temp_dir()
+                .join("theuth-tui-no-user-file")
+                .as_path(),
+        );
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::new("openai/gpt-5.4".into(), true);
+        m.default_effort = Some("low".into());
+        m.catalog = Some(Arc::new(catalog));
+        let mut sent = |m: &mut Model| {
+            m.submit("hello", &tx);
+            let Ok(Command::Send {
+                session: None,
+                draft: Some(draft),
+                ..
+            }) = rx.try_recv()
+            else {
+                panic!("no draft send");
+            };
+            (draft.model, draft.effort)
+        };
+        // xhigh is not one of claude-opus-4-6's levels: dropped.
+        m.submit("/effort xhigh", &tx);
+        m.submit("/model anthropic/claude-opus-4-6", &tx);
+        assert_eq!(m.effort.as_deref(), Some("low"));
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Info(t)) if t == "effort reset: not offered by anthropic/claude-opus-4-6")
+        );
+        assert_eq!(
+            sent(&mut m),
+            (Some("anthropic/claude-opus-4-6".into()), None)
+        );
+        // high is one of gpt-5.4-mini's: it survives the switch.
+        m.submit("/new", &tx);
+        m.submit("/effort high", &tx);
+        m.submit("/model openai/gpt-5.4-mini", &tx);
+        assert_eq!(m.effort.as_deref(), Some("high"));
+        assert_eq!(
+            sent(&mut m),
+            (Some("openai/gpt-5.4-mini".into()), Some("high".into()))
+        );
     }
 
     /// 148 R1: the other session-creating entries — `/talk`, the MCP menu's
@@ -4375,6 +4413,121 @@
         assert!(
             matches!(m.entries.last(), Some(Entry::Info(t)) if t == "model → b/y after this turn")
         );
+    }
+
+    /// 194 D6 (75 §8): bare `/model` on an ACP session is the standard picker
+    /// over the harness — its `model` values as rows by provider, its
+    /// `thought_level` values as chips under the current one with no Default
+    /// chip and no stars — and both picks go to `set_harness_option`. Bare
+    /// `/effort` starts on the chips; no `thought_level` makes it a notice; a
+    /// harness with neither option lists its options as before.
+    #[test]
+    fn acp_harness_picker_has_chips_without_default() {
+        let (tx, mut rx) = unbounded_channel();
+        let id = SessionId::new();
+        let mut m = Model {
+            session: Some(id),
+            agent: Some("omp".into()),
+            favorite_models: vec!["b/y".into()],
+            ..Model::default()
+        };
+        let options: Vec<acp::ConfigOption> = serde_json::from_value(serde_json::json!([
+                {"id":"model","name":"Model","category":"model","current":"a/x",
+                 "options":[{"value":"a/x","name":"X","description":null},{"value":"b/y","name":"Y","description":null}]},
+                {"id":"thinking","name":"Thinking","category":"thought_level","current":"medium",
+                 "options":[{"value":"low","name":"Low","description":null},{"value":"medium","name":"Medium","description":null}]}
+            ]))
+            .unwrap();
+        m.submit("/model", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::HarnessOptions(s)) if s == id));
+        m.apply(UiEvent::HarnessOptions(options.clone()));
+        assert_eq!(model_row_ids(&m), ["●a/x", "~low|*medium", "●a:1", "b:1"]);
+        assert_eq!(models_cursor(&m), 2);
+        // ⇥ stars nothing; a chip sets the thought_level option and closes.
+        m.menu_key(KeyCode::Up, "", &tx);
+        m.menu_key(KeyCode::Up, "", &tx);
+        m.menu_key(KeyCode::Tab, "", &tx);
+        m.menu_key(KeyCode::Down, "", &tx);
+        assert_eq!(models_chip(&m), 1);
+        m.menu_key(KeyCode::Left, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetHarnessOption { session, config_id, value })
+                if session == id && config_id == "thinking" && value == "low"
+        ));
+        assert!(m.menu.is_none());
+        // A model row sets the model select.
+        m.apply(UiEvent::HarnessOptions(options.clone()));
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert_eq!(model_row_ids(&m), ["b/y"]);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetHarnessOption { config_id, value, .. })
+                if config_id == "model" && value == "b/y"
+        ));
+        // Bare `/effort`: the same picker on the active chip.
+        m.submit("/effort", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::HarnessOptions(_))));
+        m.apply(UiEvent::HarnessOptions(options.clone()));
+        assert_eq!((models_cursor(&m), models_chip(&m)), (1, 1));
+        m.menu = None;
+        // No thought_level: `/effort` is a notice; `/model` still picks the model.
+        let models_only = options[..1].to_vec();
+        m.submit("/effort", &tx);
+        rx.try_recv().unwrap();
+        m.apply(UiEvent::HarnessOptions(models_only.clone()));
+        assert!(m.menu.is_none());
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Info(t)) if t == "omp has no reasoning effort levels")
+        );
+        m.submit("/model", &tx);
+        rx.try_recv().unwrap();
+        m.apply(UiEvent::HarnessOptions(models_only));
+        assert_eq!(model_row_ids(&m)[..2], ["●a/x", "●a:1"]);
+        m.menu = None;
+        // Only the effort: one row for what it runs (the harness's LLM, not
+        // the harness name in `model_id`), still with its chips.
+        m.model_id = "omp".into();
+        m.harness_model = Some("claude-x".into());
+        m.submit("/model", &tx);
+        rx.try_recv().unwrap();
+        m.apply(UiEvent::HarnessOptions(options[1..].to_vec()));
+        assert_eq!(model_row_ids(&m), ["claude-x", "~low|*medium"]);
+        m.menu = None;
+        // Neither: the option lines, no picker.
+        let mode: Vec<acp::ConfigOption> = serde_json::from_value(serde_json::json!([
+            {"id":"mode","name":"Mode","category":"mode","current":"default",
+             "options":[{"value":"default","name":"Default","description":null}]}
+        ]))
+        .unwrap();
+        m.apply(UiEvent::HarnessOptions(mode));
+        assert!(m.menu.is_none());
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Info(t)) if t == "mode: default  (has: default)")
+        );
+        // Bare `/effort` with no levels is the notice, mode-only or no options at all.
+        for options in [
+            serde_json::from_value(serde_json::json!([
+                {"id":"mode","name":"Mode","category":"mode","current":"default",
+                 "options":[{"value":"default","name":"Default","description":null}]}
+            ]))
+            .unwrap(),
+            Vec::new(),
+        ] {
+            m.entries.clear();
+            m.submit("/effort", &tx);
+            rx.try_recv().unwrap();
+            m.apply(UiEvent::HarnessOptions(options));
+            assert!(m.menu.is_none());
+            assert!(
+                matches!(&m.entries[..], [.., Entry::Info(t)] if t == "omp has no reasoning effort levels"),
+                "{:?}",
+                m.entries
+            );
+        }
     }
 
     #[test]
@@ -7388,6 +7541,19 @@
                 }
                 ModelRow::Favorite(i) => format!("★{}", i.id),
                 ModelRow::Model(i) => i.id.clone(),
+                // `~Default|low|*medium`: the chips, `*` on the active one.
+                ModelRow::Efforts(c) => {
+                    let chips: Vec<String> = c
+                        .levels
+                        .iter()
+                        .enumerate()
+                        .map(|(n, l)| {
+                            let on = if c.active == Some(n) { "*" } else { "" };
+                            format!("{on}{}", l.as_deref().unwrap_or("Default"))
+                        })
+                        .collect();
+                    format!("~{}", chips.join("|"))
+                }
             })
             .collect()
     }
@@ -7788,6 +7954,268 @@
                 if model == "amazon-bedrock/amazon.nova-pro-v1:0"
         ));
         assert!(m.menu.is_some());
+    }
+
+    /// `model_catalog()` with effort levels on `openai/gpt-5.4` only.
+    fn chips_catalog() -> Vec<ModelInfo> {
+        let mut items = model_catalog();
+        items[7].efforts = vec!["low".into(), "medium".into(), "high".into()];
+        items
+    }
+
+    fn models_chip(m: &Model) -> usize {
+        match &m.menu {
+            Some(Menu::Models { chip, .. }) => *chip,
+            other => panic!("no models menu: {other:?}"),
+        }
+    }
+
+    /// 194 D6: the picked model's chips sit directly under its row wherever
+    /// it shows — Current, its favorite, its provider's list, search — and
+    /// under no other row; Default leads and the stored effort is active.
+    #[test]
+    fn effort_chips_sit_under_the_picked_model_wherever_it_shows() {
+        const CHIPS: &str = "~Default|low|*medium|high";
+        let (tx, _rx) = unbounded_channel();
+        let mut m = Model {
+            session: Some(SessionId::new()),
+            model_id: "openai/gpt-5.4".into(),
+            effort: Some("medium".into()),
+            ..Model::default()
+        };
+        m.apply(UiEvent::Models(chips_catalog()));
+        assert_eq!(
+            model_row_ids(&m)[..3],
+            ["●openai/gpt-5.4", CHIPS, "amazon-bedrock:2"]
+        );
+        assert_eq!(
+            models_cursor(&m),
+            2,
+            "home skips the Current row and its chips"
+        );
+        // Starred, its favorite row carries them and the Current row is gone.
+        m.apply(UiEvent::FavoriteModels(vec![
+            "google/gemini-2.5-pro".into(),
+            "openai/gpt-5.4".into(),
+        ]));
+        assert_eq!(
+            model_row_ids(&m)[..4],
+            [
+                "★google/gemini-2.5-pro",
+                "★openai/gpt-5.4",
+                CHIPS,
+                "amazon-bedrock:2"
+            ]
+        );
+        // Its provider's list: under its own row only.
+        for _ in 0..9 {
+            m.menu_key(KeyCode::Down, "", &tx);
+        }
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert_eq!(
+            model_row_ids(&m),
+            [
+                "openai/gpt-5.4",
+                CHIPS,
+                "openai/gpt-5.4-mini",
+                "openai/o3-pro"
+            ]
+        );
+        // Search: under the Current row, also when nothing else matches.
+        for c in "gpt".chars() {
+            m.menu_key(KeyCode::Char(c), "", &tx);
+        }
+        assert_eq!(
+            model_row_ids(&m),
+            [
+                "●openai/gpt-5.4",
+                CHIPS,
+                "cursor/gpt-5.4",
+                "openai/gpt-5.4-mini"
+            ]
+        );
+        assert_eq!(models_cursor(&m), 2);
+        m.menu_key(KeyCode::Char('x'), "", &tx);
+        assert_eq!(model_row_ids(&m), ["●openai/gpt-5.4", CHIPS]);
+        // No stored effort: Default is active; before a session the draft's
+        // pick is (none: Default, whatever the header shows).
+        m.effort = None;
+        assert_eq!(model_row_ids(&m)[1], "~*Default|low|medium|high");
+        m.session = None;
+        m.effort = Some("high".into());
+        assert_eq!(model_row_ids(&m)[1], "~*Default|low|medium|high");
+        m.draft = Some(CreateSessionOptions {
+            effort: Some("low".into()),
+            ..CreateSessionOptions::default()
+        });
+        assert_eq!(model_row_ids(&m)[1], "~Default|*low|medium|high");
+        // A model without levels has no chip row.
+        m.model_id = "openai/o3-pro".into();
+        assert!(!model_row_ids(&m).iter().any(|r| r.starts_with('~')));
+    }
+
+    /// 194 D6: ↑↓ onto the chip row land on the active chip, ←→ move between
+    /// chips (clamped; ← there never leaves a provider's level), ⏎ sets that
+    /// effort — Default clears it — and closes like a model pick; ⇥ there
+    /// stars nothing; a model pick and its reply open no second effort step.
+    #[test]
+    fn effort_chip_keys_pick_the_level_and_close() {
+        let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            model_id: "openai/gpt-5.4".into(),
+            effort: Some("medium".into()),
+            ..Model::default()
+        };
+        m.apply(UiEvent::Models(chips_catalog()));
+        m.menu_key(KeyCode::Up, "", &tx);
+        assert_eq!((models_cursor(&m), models_chip(&m)), (1, 2));
+        m.menu_key(KeyCode::Tab, "", &tx);
+        for _ in 0..3 {
+            m.menu_key(KeyCode::Left, "", &tx);
+        }
+        assert_eq!(models_chip(&m), 0);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetEffort { session, effort: None }) if session == s
+        ));
+        assert!(m.menu.is_none());
+        m.apply(UiEvent::Models(chips_catalog()));
+        m.menu_key(KeyCode::Up, "", &tx);
+        for _ in 0..3 {
+            m.menu_key(KeyCode::Right, "", &tx);
+        }
+        assert_eq!(models_chip(&m), 3);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetEffort { effort: Some(e), .. }) if e == "high"
+        ));
+        // On a provider's level ← on the chips moves the chip, not the level.
+        m.apply(UiEvent::Models(chips_catalog()));
+        for _ in 0..9 {
+            m.menu_key(KeyCode::Down, "", &tx);
+        }
+        m.menu_key(KeyCode::Enter, "", &tx);
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Left, "", &tx);
+        assert!(matches!(
+            &m.menu,
+            Some(Menu::Models { provider: Some(p), chip: 1, .. }) if p == "openai"
+        ));
+        // A model pick closes; its reply opens nothing.
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetModel { model, .. }) if model == "openai/gpt-5.4-mini"
+        ));
+        m.apply(UiEvent::ModelSet(ModelInfo {
+            efforts: vec!["low".into()],
+            ..chips_catalog()[8].clone()
+        }));
+        assert!(m.menu.is_none());
+        assert_eq!(m.model_id, "openai/gpt-5.4-mini");
+    }
+
+    /// 194 D6: bare `/effort` is the `/model` picker with the cursor on the
+    /// current model's chip row, on the active chip.
+    #[test]
+    fn bare_effort_opens_the_picker_on_the_chip_row() {
+        let catalog = Catalog::load(
+            std::env::temp_dir()
+                .join("theuth-tui-no-user-file")
+                .as_path(),
+        );
+        let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            model_id: "anthropic/claude-sonnet-4-5".into(),
+            catalog: Some(Arc::new(catalog)),
+            ..Model::default()
+        };
+        let levels = m
+            .catalog
+            .as_ref()
+            .and_then(|c| c.closest(&m.model_id))
+            .map(|c| c.efforts())
+            .unwrap();
+        let level = levels.last().cloned().unwrap();
+        m.effort = Some(level.clone());
+        m.submit("/effort", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListModels)));
+        let mut items = model_catalog();
+        items[3].efforts.clone_from(&levels);
+        m.apply(UiEvent::Models(items));
+        assert_eq!((models_cursor(&m), models_chip(&m)), (1, levels.len()));
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetEffort { session, effort: Some(e) }) if session == s && e == level
+        ));
+        // The next `/model` opens at home again: past the Current row and its chips.
+        m.submit("/model", &tx);
+        let mut items = model_catalog();
+        items[3].efforts = levels;
+        m.apply(UiEvent::Models(items));
+        assert_eq!(models_cursor(&m), 2);
+    }
+
+    /// 194 D6: the advisor picker's chips are the advisor's effort, under its
+    /// model; a chip re-sends the model with that effort; a new model keeps
+    /// the effort when it takes it.
+    #[test]
+    fn advisor_picker_chips_set_the_advisor_effort() {
+        let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            model_id: "openai/o3-pro".into(),
+            ..Model::default()
+        };
+        m.advisor = advisor_status(s, AdvisorState::Idle, "openai/gpt-5.4");
+        m.submit("/advisor", &tx);
+        rx.try_recv().unwrap();
+        m.apply(UiEvent::Models(chips_catalog()));
+        assert_eq!(
+            model_row_ids(&m)[..4],
+            [
+                "off",
+                "●openai/gpt-5.4",
+                "~Default|low|medium|*high",
+                "amazon-bedrock:2"
+            ]
+        );
+        assert_eq!(models_cursor(&m), 3);
+        m.menu_key(KeyCode::Up, "", &tx);
+        m.menu_key(KeyCode::Left, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetAdvisor { session, model: Some(model), effort: Some(e) })
+                if session == s && model == "openai/gpt-5.4" && e == "medium"
+        ));
+        assert!(m.menu.is_none());
+        m.advisor = advisor_status(s, AdvisorState::Idle, "openai/gpt-5.4-mini");
+        m.submit("/advisor", &tx);
+        rx.try_recv().unwrap();
+        m.apply(UiEvent::Models(chips_catalog()));
+        for c in "openai gpt".chars() {
+            m.menu_key(KeyCode::Char(c), "", &tx);
+        }
+        assert_eq!(
+            model_row_ids(&m),
+            ["●openai/gpt-5.4-mini", "openai/gpt-5.4"]
+        );
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetAdvisor { model: Some(model), effort: Some(e), .. })
+                if model == "openai/gpt-5.4" && e == "high"
+        ));
     }
 
     fn note(severity: AdvisorSeverity, text: &str) -> agent::AdvisoryNote {

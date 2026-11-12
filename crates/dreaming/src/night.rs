@@ -184,6 +184,12 @@ pub fn settings(data_dir: &Path, cfg: &DreamConfig, agent: &AgentDefaults) -> Dr
             propose: cfg.models.propose.clone(),
             judge: cfg.models.judge.clone(),
         },
+        efforts: crate::types::DreamModels {
+            triage: cfg.efforts.triage.clone(),
+            tidy: cfg.efforts.tidy.clone(),
+            propose: cfg.efforts.propose.clone(),
+            judge: cfg.efforts.judge.clone(),
+        },
         preferences_auto: cfg.preferences.auto_from_explicit,
         digest: cfg.digest.clone(),
         paused_until: read_state(data_dir).paused_until,
@@ -229,11 +235,12 @@ pub fn persist(path: &Path, cfg: &DreamConfig) -> std::io::Result<()> {
 /// R-47) carries into the installed routine file. 185 A2: `cwd` and
 /// `engine` are this engine's (data dir, id), so bytes another engine wrote
 /// over the file before the mirror kept it local repair at the next start.
-const ROUTINE_KEYS: [&str; 7] = [
+const ROUTINE_KEYS: [&str; 8] = [
     "budget",
     "when",
     "run_timeout",
     "model",
+    "effort",
     "cap",
     "cwd",
     "engine",
@@ -241,10 +248,11 @@ const ROUTINE_KEYS: [&str; 7] = [
 
 /// Carry a settings change into the installed routine file: its `budget:`,
 /// `when:` (window / idle / heavy-day args, the `home_engine` pin),
-/// `run_timeout:`, `model:` (the resolved tidy tier, 136 D12), `cap:`,
-/// `cwd:` and `engine:` (`me`, 185 A2) lines take the new values — a
-/// missing one is inserted before the closing `---`; every other line —
-/// `enabled:` above all — stays.
+/// `run_timeout:`, `model:` (the resolved tidy tier, 136 D12), `effort:`
+/// (194: the tidy tier's; a cleared one leaves the file), `cap:`, `cwd:` and
+/// `engine:` (`me`, 185 A2) lines take the new values — a missing one is
+/// inserted before the closing `---`; every other line — `enabled:` above
+/// all — stays.
 pub fn update_routine_file(
     data_dir: &Path,
     cfg: &DreamConfig,
@@ -289,6 +297,9 @@ pub fn update_routine_file(
                 patched.push(key);
                 if let Some(w) = want(key) {
                     out.push(w);
+                    continue;
+                }
+                if *key == "effort" {
                     continue;
                 }
             }
@@ -1428,6 +1439,21 @@ impl Message<SetSettings> for Night {
         cfg.models.tidy = s.models.tidy.clone().filter(|m| !m.is_empty());
         cfg.models.propose = s.models.propose.clone().filter(|m| !m.is_empty());
         cfg.models.judge = s.models.judge.clone().filter(|m| !m.is_empty());
+        // 194 D4b–d: each tier's effort follows its pick.
+        let old = &self.cfg.models;
+        cfg.efforts = crate::config::Models {
+            triage: tier_effort("triage", &s.efforts.triage, &cfg.models.triage, &old.triage)
+                .await?,
+            tidy: tier_effort("tidy", &s.efforts.tidy, &cfg.models.tidy, &old.tidy).await?,
+            propose: tier_effort(
+                "propose",
+                &s.efforts.propose,
+                &cfg.models.propose,
+                &old.propose,
+            )
+            .await?,
+            judge: tier_effort("judge", &s.efforts.judge, &cfg.models.judge, &old.judge).await?,
+        };
         cfg.preferences.auto_from_explicit = s.preferences_auto;
         cfg.digest = s.digest.clone();
         persist(&self.data_dir.join("config.yaml"), &cfg)
@@ -1450,6 +1476,63 @@ impl Message<SetSettings> for Night {
         self.cfg = cfg;
         Ok(settings(&self.data_dir, &self.cfg, &self.agent))
     }
+}
+
+/// 194 D4b–d for one tier: `effort` follows `model` — cleared with it; `check`
+/// is its [`check_effort`]; a failing effort is dropped when the pick changed
+/// from `old`, else refused.
+fn settle_effort(
+    tier: &str,
+    effort: &Option<String>,
+    model: &Option<String>,
+    old: &Option<String>,
+    check: Result<(), String>,
+) -> Result<Option<String>, String> {
+    let effort = effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| !e.is_empty() && model.is_some())
+        .map(str::to_owned);
+    match (effort, check) {
+        (Some(_), Err(why)) if model == old => Err(format!("efforts.{tier}: {why}")),
+        (Some(_), Err(_)) => Ok(None),
+        (e, _) => Ok(e),
+    }
+}
+
+/// 194 D4b: `effort` against `model` (`agent::ValidateEffort`); with the agent
+/// unreachable, the word alone (`agent::effort_of`) — never unchecked (R1).
+async fn check_effort(model: &str, effort: &str) -> Result<(), String> {
+    if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
+        match agents
+            .ask(agent::ValidateEffort {
+                model: Some(model.to_owned()),
+                effort: effort.to_owned(),
+            })
+            .await
+        {
+            Ok(()) => return Ok(()),
+            Err(kameo::error::SendError::HandlerError(why)) => return Err(why),
+            Err(e) => tracing::warn!("dreaming: effort check unavailable ({e}): the word alone"),
+        }
+    }
+    agent::effort_of(effort)
+        .map(|_| ())
+        .ok_or_else(|| format!("unknown effort {effort}"))
+}
+
+/// [`settle_effort`] with [`check_effort`].
+async fn tier_effort(
+    tier: &str,
+    effort: &Option<String>,
+    model: &Option<String>,
+    old: &Option<String>,
+) -> Result<Option<String>, String> {
+    let check = match (model, effort.as_deref().map(str::trim)) {
+        (Some(m), Some(e)) if !e.is_empty() => check_effort(m, e).await,
+        _ => Ok(()),
+    };
+    settle_effort(tier, effort, model, old, check)
 }
 
 /// The largest nightly budget `set_settings` accepts (136 D13).
@@ -2726,6 +2809,79 @@ mod tests {
         }
         assert!(routine_enabled(d));
         assert_eq!(model_of().as_deref(), Some("openai/gpt-5.6-sol"));
+    }
+
+    /// 194: a tier's effort is saved beside its pick (`dreaming.efforts.*`), read back by
+    /// `Settings` (live), and the tidy tier's becomes the routine's `effort:` (D4e); a
+    /// cleared pick clears its effort (D4d) and takes the line out of the file.
+    #[tokio::test]
+    async fn tier_efforts_follow_their_picks() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let rt = Runtime::new(figment::Figment::new(), d.to_owned());
+        let agent = AgentDefaults {
+            model: "openai/gpt-5.6-sol".into(),
+            escalate_model: None,
+        };
+        crate::install_files(d, &DreamConfig::default(), Some("e"), &agent).unwrap();
+        let routine = || std::fs::read_to_string(d.join("schedules/dreaming.md")).unwrap();
+        let actor = Night::spawn(Night::new(&rt, DreamConfig::default(), "e", agent));
+        let mut s = actor.ask(Settings).await.unwrap();
+        assert_eq!(s.efforts, crate::types::DreamModels::default());
+        s.models.tidy = Some("anthropic/claude-haiku-4-5".into());
+        s.efforts.tidy = Some("high".into());
+        s.models.judge = Some("openai/gpt-5.6-sol".into());
+        s.efforts.judge = Some("low".into());
+        s.efforts.propose = Some("low".into());
+        let back = actor.ask(SetSettings(s.clone())).await.unwrap();
+        assert_eq!(back.efforts.tidy.as_deref(), Some("high"));
+        assert_eq!(back.efforts.judge.as_deref(), Some("low"));
+        assert_eq!(back.efforts.propose, None, "no pick, no effort");
+        assert_eq!(actor.ask(Settings).await.unwrap().efforts, back.efforts);
+        assert!(routine().contains("model: anthropic/claude-haiku-4-5\n"));
+        assert!(routine().contains("effort: \"high\"\n"), "{}", routine());
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(d.join("config.yaml")).unwrap()).unwrap();
+        let cfg: DreamConfig = serde_yaml::from_value(yaml["dreaming"].clone()).unwrap();
+        assert_eq!(cfg.efforts.tidy.as_deref(), Some("high"));
+        s.models.tidy = None;
+        let back = actor.ask(SetSettings(s)).await.unwrap();
+        assert_eq!(back.efforts.tidy, None);
+        assert!(!routine().contains("effort:"), "{}", routine());
+    }
+
+    /// 194 D4b/D4c: an effort its tier's pick does not take is refused while the pick
+    /// stays, dropped when the pick changed; R1: with no agent the word alone is
+    /// checked, never stored unchecked.
+    #[tokio::test]
+    async fn a_tier_effort_is_checked_against_its_pick() {
+        let some = |s: &str| Some(s.to_owned());
+        let no = || Err("p/m accepts low".to_owned());
+        assert_eq!(
+            settle_effort("judge", &some(" high "), &some("p/m"), &some("p/m"), no()),
+            Err("efforts.judge: p/m accepts low".into())
+        );
+        assert_eq!(
+            settle_effort("judge", &some("high"), &some("p/m"), &some("p/x"), no()),
+            Ok(None)
+        );
+        assert_eq!(
+            settle_effort("judge", &some(" high "), &some("p/m"), &None, Ok(())),
+            Ok(some("high"))
+        );
+        assert_eq!(
+            settle_effort("judge", &some("high"), &None, &None, Ok(())),
+            Ok(None)
+        );
+        let m = some("p/m");
+        assert_eq!(
+            tier_effort("judge", &some("warp"), &m, &m).await,
+            Err("efforts.judge: unknown effort warp".into())
+        );
+        assert_eq!(
+            tier_effort("judge", &some("high"), &m, &m).await,
+            Ok(some("high"))
+        );
     }
 
     /// D6: the fired session is registered as the consolidating session at

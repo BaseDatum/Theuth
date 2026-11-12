@@ -142,33 +142,17 @@ impl Model {
             }
             UiEvent::Models(items) => {
                 let target = std::mem::take(&mut self.pick_target);
+                let chips = std::mem::take(&mut self.pick_effort);
                 if items.is_empty() {
                     self.entries
                         .push(Entry::Error("no models: no provider is configured".into()));
                 } else {
-                    // One provider only: skip the providers level (124 §3.5).
-                    let provider = match providers(&items).as_slice() {
-                        [(p, _)] => Some(p.clone()),
-                        _ => None,
-                    };
-                    self.menu = Some(Menu::Models {
-                        items,
-                        filter: String::new(),
-                        cursor: 0,
-                        provider,
-                        target,
-                    });
-                    self.models_home();
+                    self.open_models(items, target, Vec::new(), chips);
                 }
             }
             UiEvent::PathComplete(generation, reply) => self.path.reply(generation, reply),
-            // Chained picker: a model with effort levels asks for one right away (Esc skips).
-            UiEvent::ModelSet(info) => {
-                self.model_id = info.id;
-                if !info.efforts.is_empty() {
-                    self.open_efforts(info.efforts, PickTarget::Session);
-                }
-            }
+            // 194 D6: the effort is the chip row's, under the model in the picker; no second step.
+            UiEvent::ModelSet(info) => self.model_id = info.id,
             UiEvent::FavoriteModels(models) => self.set_favorites(models),
             UiEvent::EffortSet(effort) => {
                 self.awaiting_effort = false;
@@ -179,40 +163,20 @@ impl Model {
                 self.effort = effort;
             }
             // The reply of `/advisor …` or a load's refresh (125 §7.1): installed
-            // silently; `status` prints its lines; a pick chains into the effort picker.
+            // silently; `status` prints its lines.
             UiEvent::AdvisorStatus(status) => {
                 if status.session != self.session.unwrap_or(status.session) {
                     return;
                 }
                 let why = self.advisor_reply.take();
                 self.set_advisor_status(status);
-                match why {
-                    Some(AdvisorReply::Status) => {
-                        for line in advisor_status_lines(&self.advisor) {
-                            self.entries.push(Entry::Info(line));
-                        }
+                if why == Some(AdvisorReply::Status) {
+                    for line in advisor_status_lines(&self.advisor) {
+                        self.entries.push(Entry::Info(line));
                     }
-                    Some(AdvisorReply::Pick) => {
-                        let levels = self
-                            .advisor
-                            .model
-                            .as_deref()
-                            .zip(self.catalog.as_ref())
-                            .and_then(|(id, c)| c.closest(id))
-                            .map(|m| m.efforts())
-                            .unwrap_or_default();
-                        if !levels.is_empty() {
-                            self.open_efforts(levels, PickTarget::Advisor);
-                        }
-                    }
-                    None => {}
                 }
             }
-            UiEvent::HarnessOptions(options) => {
-                for line in harness_options_lines(&options) {
-                    self.entries.push(Entry::Info(line));
-                }
-            }
+            UiEvent::HarnessOptions(options) => self.open_harness(options),
             UiEvent::HarnessOptionSet(key, value, r) => {
                 self.entries
                     .push(Entry::Info(harness_option_set_line(&key, &value, &r)));

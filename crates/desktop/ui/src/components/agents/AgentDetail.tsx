@@ -366,12 +366,16 @@ function Charter({ file: f }: { file: AgentFile }) {
   )
 }
 
-/** 148 R3: theuth's model (`roster.theuth_model`) — the same picker, RPC and query as Settings › Models › Defaults; the roster refetches so the header's model updates. */
+/** 148 R3: theuth's model (`roster.theuth_model`, 194: and `roster.theuth_effort` as its chips) — the same picker, RPCs and queries as Settings › Models › Defaults; the roster refetches so the header's model updates. */
 function TheuthRuntime() {
   const api = useApi()
   const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
   const model = useQuery({ queryKey: queryKeys.theuthAgentModel, queryFn: () => api.theuth_agent_model() })
-  const setModel = useAction((id: string | null) => api.set_theuth_agent_model(id), { keys: [queryKeys.theuthAgentModel, queryKeys.roster] })
+  const effort = useQuery({ queryKey: queryKeys.theuthAgentEffort, queryFn: () => api.theuth_agent_effort() })
+  // 194 D4c: a model change may drop the stored effort, so its query refetches too.
+  const setModel = useAction((id: string | null) => api.set_theuth_agent_model(id), { keys: [queryKeys.theuthAgentModel, queryKeys.theuthAgentEffort, queryKeys.roster] })
+  const setEffort = useAction((level: string | null) => api.set_theuth_agent_effort(level), { keys: [queryKeys.theuthAgentEffort, queryKeys.roster] })
+  const current = models.data?.find((m) => m.id === model.data?.id)
   return (
     <div className="flex flex-col gap-4 p-4 text-sm text-fg-secondary">
       <Field id="theuth-model" label="Model" hint="Its desk and the work it starts for tasks; subagents below those use the subagent default.">
@@ -381,12 +385,13 @@ function TheuthRuntime() {
           models={models.data ?? []}
           value={model.data?.id}
           none={SAME_AS_NEW}
-          disabled={model.isPending || setModel.isPending}
+          effort={current && current.efforts.length > 0 ? { levels: current.efforts, current: effort.data, onSelect: (level) => setEffort.mutate(level) } : undefined}
+          disabled={model.isPending || setModel.isPending || setEffort.isPending}
           onChange={(v) => setModel.mutate(v)}
         />
       </Field>
       <p>
-        The built-in root runs with tools <code>destructive</code>, every MCP server and no budget; only its model is configured here (or in Settings › Models › Defaults).
+        The built-in root runs with tools <code>destructive</code>, every MCP server and no budget; only its model and effort are configured here (or in Settings › Models › Defaults).
       </p>
     </div>
   )

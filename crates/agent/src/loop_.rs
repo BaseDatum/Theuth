@@ -790,8 +790,14 @@ struct Shared {
     /// 153 §9.2 `voice.polish_model`; `None` = the title model, then the session's
     /// model. Shared with the supervisor ([`Session::with_polish_model`]).
     polish_model: Arc<RwLock<Option<Resolved>>>,
+    /// 194: the side-call roles' own efforts. Shared with the supervisor
+    /// ([`Session::with_role_efforts`]); read per call, so a pick is live.
+    role_efforts: Arc<parking_lot::RwLock<side::RoleEfforts>>,
     /// Subagent default model (`agent.subagents.model`); named in the system prompt. Shared with the supervisor.
     subagent_model: Arc<RwLock<Option<Resolved>>>,
+    /// 194 D4h: subagent default effort (`agent.subagents.effort`); named in the system
+    /// prompt. Shared with the supervisor ([`Session::with_subagent_effort`]).
+    subagent_effort: Arc<RwLock<Option<String>>>,
     /// 136 §2.2: the session's money cap from [`SetBudgetNow`] (persisted on
     /// the session row by the supervisor, loaded by [`Session::with_budget`]
     /// on resume — R-22). `Reserved::open` refuses any call of this owner —
@@ -983,7 +989,9 @@ impl Session {
                 image_notice: Arc::default(),
                 escalate_model,
                 polish_model: Arc::default(),
+                role_efforts: Arc::default(),
                 subagent_model,
+                subagent_effort: Arc::default(),
                 budget: Arc::default(),
                 store,
                 client,
@@ -1057,6 +1065,21 @@ impl Session {
     /// 153 §9.2: the supervisor's shared `voice.polish_model` slot.
     pub(crate) fn with_polish_model(mut self, slot: Arc<RwLock<Option<Resolved>>>) -> Self {
         self.shared.polish_model = slot;
+        self
+    }
+
+    /// 194: the supervisor's shared role-effort slot.
+    pub(crate) fn with_role_efforts(
+        mut self,
+        slot: Arc<parking_lot::RwLock<side::RoleEfforts>>,
+    ) -> Self {
+        self.shared.role_efforts = slot;
+        self
+    }
+
+    /// 194 D4h: the supervisor's shared `agent.subagents.effort` slot.
+    pub(crate) fn with_subagent_effort(mut self, slot: Arc<RwLock<Option<String>>>) -> Self {
+        self.shared.subagent_effort = slot;
         self
     }
 
@@ -2470,12 +2493,13 @@ impl Message<crate::SideCall> for Session {
         let side = self.shared.side(self.entered.flatten());
         tokio::spawn(async move {
             let out = match model {
-                Ok(model) => {
+                Ok((model, effort)) => {
                     // R2-6: a title-model title (notebook note titles) is short;
                     // other roles (insights, ask, polish, escalate) keep thinking.
                     let short =
                         m.kind == CallKind::Title && matches!(m.role, crate::ModelRole::Title);
                     side.short(short)
+                        .effort(&model, effort.as_deref())
                         .call(model, &m.system, m.user, m.budget, m.kind)
                         .await
                 }
@@ -4951,6 +4975,12 @@ impl Turn {
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .map(|r| r.id.clone());
+        let subagent_effort = self
+            .shared
+            .subagent_effort
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         let advisor = self.shared.kind == SessionKind::Advisor;
         // 125 R1.3: `consult` is a Chat session's tool while a link serves it
         // — its own (the flag) or an ancestor's (asked once per rebase, so a
@@ -4997,6 +5027,7 @@ impl Turn {
                 &blocks,
                 claude_code,
                 subagent_model.as_deref(),
+                subagent_effort.as_deref(),
                 attended,
                 self.shared.advisor.load(Ordering::Relaxed),
                 self.consult.is_some(),
@@ -5323,8 +5354,16 @@ impl Turn {
         kind: CallKind,
     ) -> Result<StreamEnd, Abort> {
         // 177 E2: an aux (vision) call to a local OpenAI-protocol server asks
-        // for no thinking and sends no effort keyword; turns are unchanged.
-        let quiet = kind == CallKind::Vision && current.backend.local_openai(&current.model);
+        // for no thinking and sends no effort keyword — unless it is the
+        // image call and `agent.vision_effort` picked a level (194); a picked
+        // `off` is that same thinking-off request. Turns are unchanged.
+        let picked = frame.vision
+            && current
+                .effort
+                .as_ref()
+                .is_some_and(|e| !matches!(e, ReasoningEffort::Zero));
+        let quiet =
+            kind == CallKind::Vision && !picked && current.backend.local_openai(&current.model);
         let effort = if quiet { None } else { current.effort() };
         let (req, opts) = frame.request(transport, conversation, effort);
         let opts = if quiet {
@@ -6076,7 +6115,7 @@ impl Turn {
         ) {
             return;
         }
-        let model = match self.shared.role_model(&crate::ModelRole::Title) {
+        let (model, effort) = match self.shared.role_model(&crate::ModelRole::Title) {
             Ok(m) => m,
             Err(e) => return tracing::warn!(session = %self.shared.id, "title model: {e}"),
         };
@@ -6111,7 +6150,10 @@ impl Turn {
         let closed = self.shared.closed.clone();
         let generation = self.shared.resources.generation;
         let private = self.shared.resources.is_private();
-        let side = self.shared.side(self.turn);
+        let side = self
+            .shared
+            .side(self.turn)
+            .effort(&model, effort.as_deref());
         self.state.title_task = Some(tokio::spawn(async move {
             let chars = |s: &str| (!private).then(|| s.chars().count());
             let reply = match side
@@ -8710,12 +8752,15 @@ impl Turn {
         question: &str,
         group: &[&VisionImage],
     ) -> Result<Vec<vision::Outcome>, String> {
-        let current = Current::new(
+        let mut current = Current::new(
             fallback.clone(),
             None,
             &self.shared.client,
             &self.shared.auth,
         );
+        // 194 D4e: `agent.vision_effort`, live; unset keeps the model's default.
+        let effort = self.shared.role_efforts.read().vision.clone();
+        current.effort = side::checked_effort(fallback, effort.as_deref());
         let transport = current.backend.transport(fallback).await?;
         let message = vision::vision_message(question, group);
         let reply = match self
@@ -8754,7 +8799,14 @@ impl Turn {
         // 116: one message on the fallback model; no calibration for it.
         let output = current.model.model.as_ref().map_or(0, |m| m.limit.output);
         let est = compact::est(&message).saturating_add((system.len() / 4) as u32);
-        let budget = compact::reply_budget(output, self.window_of(&current.model), est, None, 0);
+        // 194: a picked vision effort on Anthropic floors the reply above its thinking budget.
+        let floor = if vision && current.effort.is_some() {
+            current.reply_floor(transport)
+        } else {
+            0
+        };
+        let budget =
+            compact::reply_budget(output, self.window_of(&current.model), est, None, floor);
         let frame = Frame {
             tools: &[],
             system,
@@ -9224,6 +9276,7 @@ fn progress_due(prev: Option<&Progress>, now: Instant, len: usize) -> bool {
 }
 
 mod side;
+pub(crate) use side::RoleEfforts;
 
 /// 137 §9: `zoom`, `recall`, `date` — specs and handlers of an endless turn.
 pub(crate) mod endless_tools;
@@ -9257,7 +9310,7 @@ mod compact_floor_tests;
 
 /// 70 THINKING-TRACES: the `thinking` field per effort and the signed round trip, at a fake Anthropic.
 #[cfg(test)]
-mod thinking_tests;
+pub(crate) mod thinking_tests;
 
 /// 76 §7: `CancelTurn { keep }` persists the heard prefix and stops with `interrupted`.
 #[cfg(test)]
@@ -10120,7 +10173,9 @@ mod tests {
         let data_dir = scratch.0.clone();
         let skills_dir = skills::dir(&data_dir);
         std::fs::create_dir_all(&skills_dir).unwrap();
-        let bare = frame::baseline(&data_dir, None, "", "", false, None, true, false, false);
+        let bare = frame::baseline(
+            &data_dir, None, "", "", false, None, None, true, false, false,
+        );
         assert!(bare.starts_with("You are theuth, a meta-harness"));
         assert!(!bare.contains("## Skills"));
 
@@ -10137,6 +10192,7 @@ mod tests {
             "## Peers\npeer text",
             "Plugin block.",
             false,
+            None,
             None,
             true,
             false,
@@ -11307,20 +11363,14 @@ mod tests {
         (base_url, hits, bodies)
     }
 
-    /// A turn of session `id` on `store` whose model is the OpenAI-compatible
-    /// gateway at `base_url`; with its resolved model and transport and the
-    /// runtime's event stream.
-    async fn gateway_turn(
+    /// Session `id` on `store` whose model is the OpenAI-compatible gateway
+    /// at `base_url` (loopback: a local server), with the runtime's event stream.
+    async fn gateway_session(
         dir: &Path,
         store: Store,
         id: SessionId,
         base_url: String,
-    ) -> (
-        Turn,
-        Current,
-        Transport,
-        tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
-    ) {
+    ) -> (Session, tokio::sync::mpsc::UnboundedReceiver<AgentEvent>) {
         let auth = Auth::stub(dir);
         auth.gateways
             .write()
@@ -11343,7 +11393,7 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let sink = kameo::actor::Spawn::spawn(Sink(tx));
         rt.subscribe::<Sink, AgentEvent>(&sink).await;
-        let mut session = Session::new(
+        let session = Session::new(
             id,
             0,
             (model, None),
@@ -11364,6 +11414,23 @@ mod tests {
             Arc::new(Semaphore::new(1)),
             SessionResources::durable_arc(dir),
         );
+        (session, rx)
+    }
+
+    /// A turn of [`gateway_session`]; with its resolved model and transport
+    /// and the runtime's event stream.
+    async fn gateway_turn(
+        dir: &Path,
+        store: Store,
+        id: SessionId,
+        base_url: String,
+    ) -> (
+        Turn,
+        Current,
+        Transport,
+        tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    ) {
+        let (mut session, rx) = gateway_session(dir, store, id, base_url).await;
         let mut turn = Turn::new(
             session.shared.clone(),
             Some(TurnId::new()),
@@ -11885,7 +11952,7 @@ mod tests {
         let (base_url, _hits, _) = fake_openai(vec![]).await;
         let (turn, _, _, _events) = gateway_turn(&dir, store, SessionId::new(), base_url).await;
         let shared = &turn.shared;
-        let id_of = |role: ModelRole| shared.role_model(&role).map(|r| r.id);
+        let id_of = |role: ModelRole| shared.role_model(&role).map(|(r, _)| r.id);
 
         assert_eq!(id_of(ModelRole::Escalate).unwrap(), "fake/m");
         assert_eq!(id_of(ModelRole::Title).unwrap(), "fake/m");
@@ -11921,7 +11988,7 @@ mod tests {
         let (base_url, _hits, _) = fake_openai(vec![]).await;
         let (turn, _, _, _events) = gateway_turn(&dir, store, SessionId::new(), base_url).await;
         let shared = &turn.shared;
-        let id_of = |role: ModelRole| shared.role_model(&role).map(|r| r.id);
+        let id_of = |role: ModelRole| shared.role_model(&role).map(|(r, _)| r.id);
 
         assert_eq!(id_of(ModelRole::Polish).unwrap(), "fake/m");
         *shared.escalate_model.write().unwrap() = Some(resolved("cheap/e"));
@@ -12018,5 +12085,228 @@ mod tests {
             (rows[1].2.as_str(), rows[1].3.as_str()),
             ("escalate", "failed")
         );
+    }
+
+    /// 194 S1: `NamedWithEffort` resolves like `Named` and its effort rides
+    /// the request as `reasoning_effort` — a `SideCall` sent to the session
+    /// actor; `effort: None` is `Named` exactly; an effort the model does not
+    /// take is dropped, not sent.
+    #[tokio::test]
+    async fn named_with_effort_carries_its_effort() {
+        let scratch = crate::TestDir::new("side-effort");
+        let dir = scratch.0.clone();
+        let store = Store::open_memory().await.unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "fake/m", None, None, None)
+            .await
+            .unwrap();
+        let usage = r#"{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}"#;
+        let (base_url, _, bodies) = fake_openai(vec![sse(usage), sse(usage)]).await;
+        let (session, _events) = gateway_session(&dir, store, id, base_url).await;
+        let shared = session.shared.clone();
+        let with = |effort: Option<&str>| ModelRole::NamedWithEffort {
+            model: "fake/m".into(),
+            effort: effort.map(str::to_owned),
+        };
+        let (model, effort) = shared.role_model(&with(Some("high"))).unwrap();
+        assert_eq!(
+            (model.id.as_str(), effort.as_deref()),
+            ("fake/m", Some("high"))
+        );
+        let key = |role: ModelRole| {
+            let (m, e) = shared.role_model(&role).unwrap();
+            (m.id, m.genai, m.provider, m.model.map(|m| m.id), e)
+        };
+        assert_eq!(key(with(None)), key(ModelRole::Named("fake/m".into())));
+
+        let actor = <Session as kameo::actor::Spawn>::spawn(session);
+        let wire =
+            |i: usize| -> serde_json::Value { serde_json::from_str(&bodies.lock()[i]).unwrap() };
+        actor
+            .ask(side_call(id, with(Some("high")), CallKind::Escalate))
+            .await
+            .unwrap();
+        assert_eq!(wire(0)["reasoning_effort"], "high", "{}", wire(0));
+        actor
+            .ask(side_call(id, with(None), CallKind::Escalate))
+            .await
+            .unwrap();
+        assert!(wire(1).get("reasoning_effort").is_none(), "{}", wire(1));
+        // The model lists only `low`: `high` is dropped with a warning.
+        let low_only = Resolved {
+            model: Some(
+                serde_json::from_value(serde_json::json!({
+                    "id": "m", "name": "m", "limit": {"context": 200000, "output": 8192},
+                    "reasoning": true,
+                    "reasoning_options": [{"type": "effort", "values": ["low"]}]
+                }))
+                .unwrap(),
+            ),
+            ..model
+        };
+        assert!(side::checked_effort(&low_only, Some("high")).is_none());
+        assert!(side::checked_effort(&low_only, Some("low")).is_some());
+    }
+
+    /// 194 rows 7–10: the effort follows the setting whose model answered —
+    /// Title → `title_effort`; Escalate → `escalate_effort`, `title_effort` on
+    /// the title fallback, none on the session's model; Polish likewise with
+    /// `polish_effort`; Vision → `vision_effort`. Read per call (live).
+    #[tokio::test]
+    async fn role_effort_follows_the_answering_setting() {
+        let scratch = crate::TestDir::new("role-effort");
+        let dir = scratch.0.clone();
+        let store = Store::open_memory().await.unwrap();
+        let (base_url, _hits, _) = fake_openai(vec![]).await;
+        let (turn, _, _, _events) = gateway_turn(&dir, store, SessionId::new(), base_url).await;
+        let shared = &turn.shared;
+        let pick = |role: ModelRole| {
+            let (m, e) = shared.role_model(&role).unwrap();
+            (m.id, e)
+        };
+        let at = |id: &str, e: Option<&str>| (id.to_owned(), e.map(str::to_owned));
+        *shared.role_efforts.write() = RoleEfforts {
+            title: Some("low".into()),
+            vision: Some("medium".into()),
+            escalate: Some("high".into()),
+            polish: Some("max".into()),
+        };
+        // Nothing set: every chain ends on the session's model, with no effort.
+        for role in [ModelRole::Title, ModelRole::Escalate, ModelRole::Polish] {
+            assert_eq!(pick(role), at("fake/m", None));
+        }
+        // The title model answers its own chain and the two that fall back to it.
+        *shared.title_model.write().unwrap() = Some(resolved("cheap/t"));
+        assert_eq!(pick(ModelRole::Title), at("cheap/t", Some("low")));
+        assert_eq!(pick(ModelRole::Escalate), at("cheap/t", Some("low")));
+        assert_eq!(pick(ModelRole::Polish), at("cheap/t", Some("low")));
+        *shared.escalate_model.write().unwrap() = Some(resolved("cheap/e"));
+        *shared.polish_model.write().unwrap() = Some(resolved("small/p"));
+        *shared.vision_model.write().unwrap() = Some(resolved("eyes/v"));
+        assert_eq!(pick(ModelRole::Escalate), at("cheap/e", Some("high")));
+        assert_eq!(pick(ModelRole::Polish), at("small/p", Some("max")));
+        assert_eq!(pick(ModelRole::Vision), at("eyes/v", Some("medium")));
+        assert_eq!(pick(ModelRole::Session), at("fake/m", None));
+        // Live: a new pick is the next call's effort.
+        shared.role_efforts.write().escalate = None;
+        assert_eq!(pick(ModelRole::Escalate), at("cheap/e", None));
+    }
+
+    /// A `SideCall` of `role` for session `id`, as another plugin sends it.
+    fn side_call(id: SessionId, role: ModelRole, kind: CallKind) -> crate::SideCall {
+        crate::SideCall {
+            session: id,
+            role,
+            system: "s".into(),
+            user: "q".into(),
+            budget: Duration::from_secs(5),
+            kind,
+        }
+    }
+
+    /// 194 D4e through the production handoff: a `SideCall` sent to the
+    /// session actor carries its role's effort on the wire — Title (a title
+    /// call, local server: a level beats the thinking-off), Escalate (the
+    /// title fallback, at the title's effort), Polish. A picked `off` on a
+    /// local server is the thinking-off request (no effort keyword).
+    #[tokio::test]
+    async fn side_calls_through_the_actor_carry_their_effort() {
+        let scratch = crate::TestDir::new("role-wire");
+        let dir = scratch.0.clone();
+        let store = Store::open_memory().await.unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "fake/m", None, None, None)
+            .await
+            .unwrap();
+        let usage = r#"{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}"#;
+        let (base_url, _, bodies) = fake_openai(vec![sse(usage); 4]).await;
+        let (session, _events) = gateway_session(&dir, store, id, base_url).await;
+        let shared = session.shared.clone();
+        let model = shared.model.lock().unwrap().model.clone();
+        *shared.title_model.write().unwrap() = Some(model.clone());
+        *shared.polish_model.write().unwrap() = Some(model);
+        *shared.role_efforts.write() = RoleEfforts {
+            title: Some("high".into()),
+            polish: Some("low".into()),
+            escalate: Some("medium".into()),
+            vision: None,
+        };
+        let actor = <Session as kameo::actor::Spawn>::spawn(session);
+        let body =
+            |i: usize| -> serde_json::Value { serde_json::from_str(&bodies.lock()[i]).unwrap() };
+        for (i, (role, kind, want)) in [
+            (ModelRole::Title, CallKind::Title, "high"),
+            // No escalation model: the title model answers, at the title's effort.
+            (ModelRole::Escalate, CallKind::Escalate, "high"),
+            (ModelRole::Polish, CallKind::Polish, "low"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            actor.ask(side_call(id, role.clone(), kind)).await.unwrap();
+            assert_eq!(body(i)["reasoning_effort"], want, "{role:?}: {}", body(i));
+            assert!(
+                body(i).get("chat_template_kwargs").is_none(),
+                "{role:?}: {}",
+                body(i)
+            );
+        }
+        shared.role_efforts.write().polish = Some("off".into());
+        actor
+            .ask(side_call(id, ModelRole::Polish, CallKind::Polish))
+            .await
+            .unwrap();
+        assert!(body(3).get("reasoning_effort").is_none(), "{}", body(3));
+        assert_eq!(
+            body(3)["chat_template_kwargs"],
+            serde_json::json!({"enable_thinking": false})
+        );
+    }
+
+    /// 194 R1 / 177 R2-6: the session's own title turn (`maybe_title`, as a
+    /// turn's end runs it) on a local server, `agent.title_effort` read live
+    /// per title: Default and `off` send the thinking-off request — no effort
+    /// keyword, `enable_thinking: false` — and a level rides as `reasoning_effort`.
+    #[tokio::test]
+    async fn title_turn_carries_the_title_effort_and_off_stays_thinking_off() {
+        let scratch = crate::TestDir::new("title-effort");
+        let dir = scratch.0.clone();
+        let store = Store::open_memory().await.unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "fake/m", None, None, None)
+            .await
+            .unwrap();
+        let usage = r#"{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}"#;
+        let (base_url, _, bodies) = fake_openai(vec![sse(usage); 3]).await;
+        let (mut turn, current, _, _events) = gateway_turn(&dir, store, id, base_url).await;
+        *turn.shared.title_model.write().unwrap() = Some(current.model.clone());
+        for (i, effort) in [None, Some("off"), Some("high")].into_iter().enumerate() {
+            turn.shared.role_efforts.write().title = effort.map(str::to_owned);
+            turn.state.title_model = false;
+            turn.state.title_chars = 10;
+            turn.maybe_title().await;
+            turn.state
+                .title_task
+                .take()
+                .expect("a title call")
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_str(&bodies.lock()[i]).unwrap();
+            let kwargs = body.get("chat_template_kwargs");
+            if effort == Some("high") {
+                assert_eq!(body["reasoning_effort"], "high", "{body}");
+                assert!(kwargs.is_none(), "{body}");
+            } else {
+                assert!(body.get("reasoning_effort").is_none(), "{effort:?}: {body}");
+                assert_eq!(
+                    kwargs,
+                    Some(&serde_json::json!({"enable_thinking": false})),
+                    "{effort:?}: {body}"
+                );
+            }
+        }
     }
 }

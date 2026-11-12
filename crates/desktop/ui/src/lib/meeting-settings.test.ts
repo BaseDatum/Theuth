@@ -81,3 +81,18 @@ test('the note handle drag keeps the line under the pointer: zero move = start r
   expect(noteSplitAt(start, 1500)).toBe(0.85)
   expect(noteSplitAt(start, -100)).toBe(0.15)
 })
+
+test('194 row 17: the start form remembers an effort beside its model; a new model brings its own (none by default), no model clears it', async () => {
+  vi.resetModules()
+  mem.set('meeting-settings', JSON.stringify({ model: 'a/b' }))
+  const a = await import('./meeting-settings')
+  expect(a.useMeetingSettings.getState().effort).toBe(null)
+  a.useMeetingSettings.getState().setModel('a/b', 'high')
+  expect(JSON.parse(mem.get('meeting-settings') ?? '')).toMatchObject({ model: 'a/b', effort: 'high' })
+  a.useMeetingSettings.getState().setSplit(0.5)
+  expect(JSON.parse(mem.get('meeting-settings') ?? '')).toMatchObject({ model: 'a/b', effort: 'high' })
+  a.useMeetingSettings.getState().setModel('c/d')
+  expect(a.useMeetingSettings.getState().effort).toBe(null)
+  a.useMeetingSettings.getState().setModel(null, 'high')
+  expect(a.useMeetingSettings.getState()).toMatchObject({ model: null, effort: null })
+})
