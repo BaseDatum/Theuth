@@ -3,7 +3,7 @@ use super::*;
 impl Model {
     /// Fresh state showing `default_model` in the header.
     pub fn new(default_model: String, approvals: bool) -> Self {
-        Self::with_components(default_model, approvals, crate::components::builtin(false))
+        Self::with_components(default_model, approvals, crate::components::builtin())
     }
 
     /// Fresh core state with a boot-configured registry, without rebuilding its owners.

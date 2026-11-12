@@ -40,7 +40,7 @@ pub mod search_attach;
 pub mod dictation_voice;
 
 // Model-picker panels (after design 194): add modules below, in this block only.
-pub use registry::{Registry, builtin};
+pub use registry::{Registry, builtin, builtin_with};
 
 #[cfg(test)]
 pub(crate) mod tests;
