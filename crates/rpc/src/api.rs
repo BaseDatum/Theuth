@@ -47,12 +47,6 @@ use app::{
 };
 use artifact::search::ArtifactMatchContext;
 use base64::Engine as _;
-use browser::{BROWSER_ACTOR, Browsers, Screenshot};
-use codeindex::{
-    CODEINDEX_ACTOR, ChangeLens, CodeindexActor, FitLens, HereLens, IndexStats, LensMeta,
-    LocateAnchor, Located, MapElement, MapExport, MapHit, MapIndex, MapJob,
-};
-use computer::{COMPUTER_ACTOR, Computer, Permissions, ScreenContext};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -82,16 +76,13 @@ use slack::{SLACK_ACTOR, Slack, SlackStatus};
 use telegram::{PairingLink, TelegramStatus};
 use tokio::sync::broadcast;
 use tokio::time::Instant;
-use tools::git::SyncResult;
 use tools::{
-    AddRepo, AddServer, Answer, Approval, ApprovalId, ApprovalRequested, ApprovalsState, AskId,
-    AskRequested, Decision, Gate, GetApprovals, GetPtyIdle, JOBS_ACTOR,
-    Jobs, ListServers, ListTools, Mcp, McpHomeAction, McpLogin,
-    McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve, SetApprovals,
-    SetGate, SetHidden, SetMcpHome, SetPtyIdle, SyncMcp, ToolRegistry, ToolSpec,
+    Answer, Approval, ApprovalId, ApprovalRequested, ApprovalsState, AskId,
+    AskRequested, Decision, GetApprovals, GetPtyIdle, JOBS_ACTOR,
+    Jobs, ListTools, Resolve, SetApprovals, SetHidden, SetPtyIdle, ToolRegistry, ToolSpec,
 };
 use tools::{
-    ListTerminals, PtyChunk, Retention, TerminalSummary,
+    ListTerminals, Retention, TerminalSummary,
 };
 use uuid::Uuid;
 
@@ -102,7 +93,7 @@ use rpc_core::{FocusMap, BACKLOG};
 use agent::rpc_forward as forward;
 use crate::pathac::PathCompletion;
 use crate::search::SearchResponse;
-use rpc_core::{is_delta, Stream, Backlog, Next, ask, send, lookup, failed, peer, owner, stub_err, ASK_FAILED, NOT_RUNNING, UNAUTHORIZED};
+use rpc_core::{is_delta, Stream, Backlog, Next, ask, send, lookup, failed, peer, owner, ASK_FAILED, NOT_RUNNING, UNAUTHORIZED};
 use agent::rpc_support::{owner_root, RpcServerExt};
 use link::rpc_support::{link, mint_as_holder};
 use mesh::rpc_support::mesh_actor;
@@ -187,18 +178,13 @@ pub mod sessions;
 pub mod settings;
 /// Tooling RPC server and client traits.
 pub mod tooling;
-/// Screens RPC server and client traits.
-pub mod screens;
-/// Mcp RPC server and client traits.
-pub mod mcp;
+
 /// Concepts RPC server and client traits.
 pub mod concepts;
 /// Documents RPC server and client traits.
 pub mod documents;
 /// Notebooks RPC server and client traits.
 pub mod notebooks;
-/// Codemap RPC server and client traits.
-pub mod codemap;
 /// Messaging RPC server and client traits.
 pub mod messaging;
 /// Network RPC server and client traits.
@@ -211,29 +197,23 @@ pub mod boards;
 pub mod artifacts;
 /// Credentials RPC server and client traits.
 pub mod credentials;
-/// Kernels RPC server and client traits.
-pub mod kernels;
-/// Sandboxes RPC server and client traits.
-pub mod sandboxes;
+
 
 pub use hub::{CoreApiClient, CoreApiServer};
 pub use sessions::{SessionsApiClient, SessionsApiServer};
 pub use settings::{SettingsApiClient, SettingsApiServer};
 pub use tooling::{SESSION_TOOLS, ToolingApiClient, ToolingApiServer};
-pub use screens::{ScreensApiClient, ScreensApiServer};
-pub use mcp::{McpApiClient, McpApiServer};
+
 pub use concepts::{ConceptsApiClient, ConceptsApiServer};
 pub use documents::{DocumentsApiClient, DocumentsApiServer};
 pub use notebooks::{NotebooksApiClient, NotebooksApiServer};
-pub use codemap::{CodemapApiClient, CodemapApiServer};
 pub use messaging::{MessagingApiClient, MessagingApiServer};
 pub use network::{NetworkApiClient, NetworkApiServer};
 pub use routines::{RoutinesApiClient, RoutinesApiServer};
 pub use boards::{BoardsApiClient, BoardsApiServer};
 pub use artifacts::{ArtifactsApiClient, ArtifactsApiServer};
 pub use credentials::{CredentialsApiClient, CredentialsApiServer};
-pub use kernels::{KernelsApiClient, KernelsApiServer};
-pub use sandboxes::{SandboxesApiClient, SandboxesApiServer};
+
 
 /// All domain client traits for typed methods on any jsonrpsee client.
 pub mod clients {
@@ -244,12 +224,12 @@ pub mod clients {
     pub use super::settings::SettingsApiClient;
     pub use super::tooling::ToolingApiClient;
     pub use agent::rpc_skills::SkillsApiClient;
-    pub use super::screens::ScreensApiClient;
-    pub use super::mcp::McpApiClient;
+    pub use computer::rpc::ScreensApiClient;
+    pub use mcp_server::rpc::McpApiClient;
     pub use super::concepts::ConceptsApiClient;
     pub use super::documents::DocumentsApiClient;
     pub use super::notebooks::NotebooksApiClient;
-    pub use super::codemap::CodemapApiClient;
+    pub use ::codeindex::rpc::CodemapApiClient;
     pub use super::messaging::MessagingApiClient;
     pub use super::network::NetworkApiClient;
     pub use super::routines::RoutinesApiClient;
@@ -258,10 +238,10 @@ pub mod clients {
     pub use super::credentials::CredentialsApiClient;
     pub use talk::SpeechApiClient;
     pub use meeting::MeetingsApiClient;
-    pub use super::kernels::KernelsApiClient;
+    pub use ::cells::rpc::KernelsApiClient;
     pub use dreaming::DreamsApiClient;
     pub use autoresearch::ResearchApiClient;
-    pub use super::sandboxes::SandboxesApiClient;
+    pub use ::sandbox::rpc::SandboxesApiClient;
 }
 
 /// Unit-test/export composition only; production assembly belongs to main.
@@ -272,12 +252,12 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         sessions::rpc_module(server.clone()),
         agent::rpc_module(server.clone()),
         tooling::rpc_module(server.clone()),
-        screens::rpc_module(server.clone()),
-        mcp::rpc_module(server.clone()),
+        computer::rpc_module(server.clone()),
+        mcp_server::rpc_module(server.clone()),
         concepts::rpc_module(server.clone()),
         documents::rpc_module(server.clone()),
         notebooks::rpc_module(server.clone()),
-        codemap::rpc_module(server.clone()),
+        ::codeindex::rpc_module(server.clone()),
         messaging::rpc_module(server.clone()),
         network::rpc_module(server.clone()),
         routines::rpc_module(server.clone()),
@@ -288,8 +268,8 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         meeting::rpc_module(server.clone()),
         dreaming::rpc_module(server.clone()),
         autoresearch::rpc_module(server.clone()),
-        kernels::rpc_module(server.clone()),
-        sandboxes::rpc_module(server.clone()),
+        ::cells::rpc_module(server.clone()),
+        ::sandbox::rpc_module(server.clone()),
         settings::rpc_module(server),
     ])
 }
@@ -592,13 +572,6 @@ fn tasks_actor() -> RpcResult<ActorRef<tasks::Tasks>> {
 }
 
 
-/// The sandbox actor; absent when `sandbox.enabled: false` or the plugin is not loaded (79).
-fn sandbox() -> RpcResult<ActorRef<sandbox::SandboxActor>> {
-    lookup::<sandbox::SandboxActor>(sandbox::SANDBOX_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "sandbox is disabled", None::<()>),
-        _ => e,
-    })
-}
 
 /// The update actor; absent when `update.enabled: false` or the plugin is not loaded.
 fn update_actor() -> RpcResult<ActorRef<update::UpdateActor>> {
@@ -1017,13 +990,6 @@ fn knowledge() -> RpcResult<ActorRef<KnowledgeActor>> {
     })
 }
 
-/// The codeindex actor; `codeindex.enabled: false` means it was never spawned (60 §10).
-fn codeindex() -> RpcResult<ActorRef<CodeindexActor>> {
-    lookup::<CodeindexActor>(CODEINDEX_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "codeindex is disabled", None::<()>),
-        _ => e,
-    })
-}
 
 /// The A2A actor, or `None` for the one silent case: `a2a.enabled: false`
 /// (or no `a2a` section) and nothing registered. A malformed section, or

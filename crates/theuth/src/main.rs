@@ -1995,12 +1995,12 @@ fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server
         rpc::api::sessions::rpc_module(server.clone()),
         agent::rpc_module(server.clone()),
         rpc::api::tooling::rpc_module(server.clone()),
-        rpc::api::screens::rpc_module(server.clone()),
-        rpc::api::mcp::rpc_module(server.clone()),
+        computer::rpc_module(server.clone()),
+        mcp_server::rpc_module(server.clone()),
         rpc::api::concepts::rpc_module(server.clone()),
         rpc::api::documents::rpc_module(server.clone()),
         rpc::api::notebooks::rpc_module(server.clone()),
-        rpc::api::codemap::rpc_module(server.clone()),
+        codeindex::rpc_module(server.clone()),
         rpc::api::messaging::rpc_module(server.clone()),
         rpc::api::network::rpc_module(server.clone()),
         rpc::api::routines::rpc_module(server.clone()),
@@ -2011,8 +2011,8 @@ fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server
         meeting::rpc_module(server.clone()),
         dreaming::rpc_module(server.clone()),
         autoresearch::rpc_module(server.clone()),
-        rpc::api::kernels::rpc_module(server.clone()),
-        rpc::api::sandboxes::rpc_module(server.clone()),
+        cells::rpc_module(server.clone()),
+        sandbox::rpc_module(server.clone()),
         rpc::api::settings::rpc_module(server),
     ])
 }
@@ -2188,7 +2188,7 @@ async fn update_cli(
 /// refuses unless `--stop-cells`. `Ok(false)` = cancelled. No engine, an unreachable one
 /// or one without cells asks nothing.
 async fn cells_before_update(data_dir: &Path, stop_cells: bool) -> anyhow::Result<bool> {
-    use rpc::api::KernelsApiClient;
+    use cells::rpc::KernelsApiClient;
     use std::io::IsTerminal;
     let Some(running) = rpc::engine::discover(data_dir) else {
         return Ok(true);

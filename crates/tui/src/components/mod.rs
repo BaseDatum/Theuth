@@ -8,10 +8,18 @@ use crate::{model::UiEvent, topics::TopicEvent};
 
 mod registry;
 pub mod update;
+
+// Step-11 group t1 (network and prompts): add modules below, in this block only.
 pub mod computer;
-pub mod tasks;
 pub mod sandboxes;
+
+// Step-11 group t2 (boards, costs and artifacts): add modules below, in this block only.
+pub mod tasks;
 pub mod roster;
+
+// Step-11 group t3 (jobs, terminals, speech and search): add modules below, in this block only.
+
+// Model-picker panels (after design 194): add modules below, in this block only.
 pub use registry::{Registry, builtin};
 
 #[cfg(test)]
@@ -148,6 +156,17 @@ pub struct CoreView<'a> {
     /// Accepted transcript entries; components retain only their own projection.
     pub entries: &'a [crate::model::Entry],
 }
+impl CoreView<'_> {
+    /// Only the newest card in a named replacement group may keep updating.
+    pub fn card_current(&self, group: &str, key: uuid::Uuid) -> bool {
+        self.entries.iter().rev().find_map(|entry| match entry {
+            crate::model::Entry::Card {
+                kind: crate::model::CardKind::Component { group: old, key, .. }, ..
+            } if *old == group => Some(*key),
+            _ => None,
+        }) == Some(key)
+    }
+}
 
 /// Notifications borrow accepted core data; retain only the owner's projection.
 #[derive(Clone, Copy)]
@@ -276,6 +295,23 @@ pub enum Plain {
     /// Notice that the requested interaction needs a terminal.
     TtyRequired(String),
 }
+/// Owned transcript presentation, with no feature DTO in core.
+pub struct TranscriptCard {
+    /// Newer cards freeze earlier cards in this replacement group.
+    pub group: &'static str,
+    /// Stable identity within the current transcript, never a Vec index.
+    pub key: uuid::Uuid,
+    /// Header marker.
+    pub glyph: &'static str,
+    /// Header color.
+    pub color: iocraft::Color,
+    /// Card title.
+    pub title: String,
+    /// Markdown body.
+    pub body: String,
+    /// Initial disclosure state.
+    pub expanded: bool,
+}
 /// Core-only presentation operations, applied after registry borrows end.
 pub enum CoreAction {
     /// Append a core notice.
@@ -292,6 +328,17 @@ pub enum CoreAction {
         name: String,
         /// User-supplied arguments.
         args: String,
+    },
+    /// Append an owner-formatted card; this becomes the group's current card.
+    AppendCard(TranscriptCard),
+    /// Replace only the still-current card, leaving superseded cards frozen.
+    ReplaceCard {
+        /// Named replacement group.
+        group: &'static str,
+        /// Stable card identity.
+        key: uuid::Uuid,
+        /// New markdown body.
+        body: String,
     },
 }
 

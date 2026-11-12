@@ -283,3 +283,41 @@ fn component_prompt_keeps_composer_focus_and_accepts_empty_answer() {
     assert!(matches!(model.entries.last(), Some(Entry::Info(text)) if text == "answer:"));
     assert!(model.components.editor().is_none());
 }
+
+#[test]
+fn replacement_group_freezes_older_cards_without_crossing_groups() {
+    struct Cards;
+    impl Component for Cards {
+        type Msg = CoreAction;
+        fn declaration(&self) -> Declaration {
+            Declaration { id: "cards-test", interests: &[], slash: &[], bindings: &[] }
+        }
+        fn decode(&self, _: &TopicEvent, _: &CoreView<'_>) -> Option<CoreAction> { None }
+        fn update(&mut self, input: Input<'_, CoreAction>, cx: &mut Cx<'_, '_, CoreAction>) {
+            if let Input::Message(action) = input { cx.core(action); }
+        }
+        fn view(&self, _: Surface<'_>, _: &ViewCx<'_>) -> Option<View> { None }
+    }
+    let mut model = Model::default();
+    let token = model.components.register(Cards).unwrap();
+    let old = uuid::Uuid::new_v4();
+    let new = uuid::Uuid::new_v4();
+    let separate = uuid::Uuid::new_v4();
+    let mut apply = |action: CoreAction| model.apply(crate::model::UiEvent::Component(LocalReply {
+        to: token, engine_epoch: 0, body: Box::new(action),
+    }));
+    for (group, key, title) in [("shared", old, "old"), ("shared", new, "new"), ("separate", separate, "separate")] {
+        apply(CoreAction::AppendCard(TranscriptCard {
+            group, key, title: title.into(), body: title.into(), expanded: true,
+            glyph: "⌁", color: iocraft::Color::Cyan,
+        }));
+    }
+    apply(CoreAction::ReplaceCard { group: "shared", key: old, body: "stale tick".into() });
+    apply(CoreAction::ReplaceCard { group: "shared", key: new, body: "current tick".into() });
+    apply(CoreAction::ReplaceCard { group: "separate", key: separate, body: "independent tick".into() });
+    let bodies: Vec<_> = model.entries.iter().filter_map(|entry| match entry {
+        Entry::Card { text, .. } => Some(text.raw()),
+        _ => None,
+    }).collect();
+    assert_eq!(bodies, ["old", "current tick", "independent tick"]);
+}
