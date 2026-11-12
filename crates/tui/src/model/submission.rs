@@ -264,44 +264,6 @@ impl Model {
                 ),
                 None => self.entries.push(Entry::Info("no session".into())),
             },
-            // 140 §13.1: list/status/pause/resume/stop/steer are direct RPC; a goal (or a control in words) hands
-            // the `autoresearch` skill to the model (the model calls autoresearch_draft/status/control).
-            "/autoresearch" => match arg
-                .split_once(' ')
-                .map_or((arg, ""), |(a, b)| (a, b.trim()))
-            {
-                ("", _) | ("list", "") | ("status", "") => {
-                    send(tx, Command::AutoresearchStatus(None))
-                }
-                ("status", slug) if !slug.is_empty() => {
-                    send(tx, Command::AutoresearchStatus(Some(slug.to_owned())))
-                }
-                (op @ ("pause" | "resume" | "stop" | "stop_now"), slug) if !slug.is_empty() => {
-                    let op = match op {
-                        "pause" => autoresearch::ControlOp::Pause,
-                        "resume" => autoresearch::ControlOp::Resume,
-                        "stop" => autoresearch::ControlOp::StopAfter,
-                        _ => autoresearch::ControlOp::StopNow,
-                    };
-                    send(tx, Command::AutoresearchControl(slug.to_owned(), op))
-                }
-                ("steer", rest) if rest.contains(' ') => {
-                    let (slug, text) = rest.split_once(' ').unwrap_or((rest, ""));
-                    send(
-                        tx,
-                        Command::AutoresearchSteer(slug.to_owned(), text.trim().to_owned()),
-                    )
-                }
-                // One word that is not a verb: a slug (the engine says so if it is not).
-                (slug, "")
-                    if slug
-                        .bytes()
-                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-') =>
-                {
-                    send(tx, Command::AutoresearchStatus(Some(slug.to_owned())))
-                }
-                _ => self.use_skill("autoresearch".into(), arg.to_owned(), tx),
-            },
             "/compact" => self.compact_cmd(arg, tx),
             "/endless" => self.endless_cmd(arg, tx),
             "/shake" => self.shake_cmd(arg, tx),
