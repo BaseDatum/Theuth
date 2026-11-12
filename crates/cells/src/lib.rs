@@ -32,6 +32,7 @@ pub mod tools;
 pub mod types;
 #[cfg(test)]
 mod rpc_test_support;
+/// Kernel RPC server and client traits.
 #[allow(clippy::too_many_arguments)]
 pub mod rpc;
 mod kernel_rpc;

@@ -2013,7 +2013,7 @@ fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server
         rpc::api::meetings::rpc_module(server.clone()),
         rpc::api::dreams::rpc_module(server.clone()),
         rpc::api::research::rpc_module(server.clone()),
-        rpc::api::kernels::rpc_module(server.clone()),
+        cells::rpc_module(server.clone()),
         rpc::api::sandboxes::rpc_module(server.clone()),
         rpc::api::settings::rpc_module(server),
     ])
@@ -2190,7 +2190,7 @@ async fn update_cli(
 /// refuses unless `--stop-cells`. `Ok(false)` = cancelled. No engine, an unreachable one
 /// or one without cells asks nothing.
 async fn cells_before_update(data_dir: &Path, stop_cells: bool) -> anyhow::Result<bool> {
-    use rpc::api::KernelsApiClient;
+    use cells::rpc::KernelsApiClient;
     use std::io::IsTerminal;
     let Some(running) = rpc::engine::discover(data_dir) else {
         return Ok(true);
