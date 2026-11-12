@@ -22,7 +22,7 @@ impl Model {
     pub fn board_row(&self, a: &AgentRow, width: u16) -> String {
         let tag = self.component_text(crate::components::Surface::SessionBadge(a.info.id));
         let fit =
-            width.saturating_sub(u16::try_from(crate::search::cells(&tag)).unwrap_or(u16::MAX));
+            width.saturating_sub(u16::try_from(crate::components::search_attach::state::cells(&tag)).unwrap_or(u16::MAX));
         format!("{}{tag}", agent_row(a, self.spinner(), fit))
     }
 

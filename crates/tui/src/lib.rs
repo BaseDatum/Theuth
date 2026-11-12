@@ -27,7 +27,6 @@ pub mod topics;
 pub mod dictation;
 pub mod model;
 pub mod pathac;
-pub mod search;
 pub mod talk;
 mod ui;
 
@@ -523,11 +522,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             pick: false,
         },
         Command::ListSessions => UiEvent::Sessions(msg(api.list_sessions().await)?),
-        // Every search reply carries the view generation that asked, errors
-        // included, so a superseded request can never land (49 §6.1).
-        Command::Search(search::Request { generation, kind }) => {
-            UiEvent::Search(generation, search_request(api, kind).await)
-        }
         // Failures show nothing: the list simply does not open (PATH-AC).
         Command::PathComplete {
             session,
@@ -929,75 +923,6 @@ async fn run_talk_sim(id: ::talk::TalkId, session: SessionId, tx: UnboundedSende
     }
 }
 
-/// One `/search` request against the API (49 §6–7). Failures are the reply's
-/// `Err`, never a bare `UiEvent::Error`: the menu needs the identity.
-async fn search_request(api: &Engine, kind: search::RequestKind) -> search::Reply {
-    use search::{Reply, RequestKind};
-    match kind {
-        RequestKind::Results {
-            query,
-            categories,
-            limit,
-        } => Reply::Results {
-            result: api
-                .search(query, Some(categories.clone()), Some(limit))
-                .await
-                .map_err(reason),
-            categories,
-            limit,
-        },
-        RequestKind::Recent => Reply::Recent(api.list_sessions().await.map_err(reason)),
-        RequestKind::Refresh(categories) => {
-            Reply::Refreshed(api.search_refresh(Some(categories)).await.map_err(reason))
-        }
-        RequestKind::Artifact { call_id, query } => {
-            // A search hit is durable: a private tree is never indexed.
-            let artifact = match api.get_artifact(call_id.clone(), None).await {
-                Ok(a) => a,
-                Err(e) => return Reply::Artifact(Err(reason(e))),
-            };
-            // Text-like kinds (and an archive's listing sidecar) are read here,
-            // off the UI thread (49 §6.2).
-            let bytes = match components::artifacts_apps::artifact_read_path(&artifact) {
-                Some(p) => tokio::fs::read(p).await.map_err(|e| e.to_string()),
-                None => Ok(Vec::new()),
-            };
-            let matched = match query {
-                Some(q) => Some(api.artifact_search_match(call_id, q).await.map_err(reason)),
-                None => None,
-            };
-            Reply::Artifact(Ok(search::ArtifactLoad {
-                artifact,
-                bytes,
-                matched,
-            }))
-        }
-        RequestKind::Concept(id) => Reply::Concept(api.knowledge_get(id).await.map_err(reason)),
-        RequestKind::Historical { id, commit } => Reply::Historical(
-            api.knowledge_read_revision(id, commit)
-                .await
-                .map_err(reason),
-        ),
-        RequestKind::Revision { commit, id } => Reply::Revision(
-            api.knowledge_revision(commit, Some(id))
-                .await
-                .map_err(reason),
-        ),
-        RequestKind::Page { session, seq } => Reply::Page {
-            session,
-            seq,
-            result: api
-                .load_session(
-                    session,
-                    Some(seq.saturating_add(1)),
-                    Some(search::PAGE),
-                    Some(false),
-                )
-                .await
-                .map_err(reason),
-        },
-    }
-}
 
 /// Keep only the message: the JSON-RPC code is not user-facing.
 fn msg<T>(r: Result<T, ClientError>) -> anyhow::Result<T> {
@@ -1047,16 +972,13 @@ async fn line_printer(
     let mut stdin_open = true;
     let mut out = std::io::stdout();
     loop {
-        let wake = [model.search_wake(), model.components.wake()].into_iter().flatten().min();
+        let wake = model.components.wake();
         tokio::select! {
             ev = events.recv() => {
                 let Some(ev) = ev else { break };
                 let mut done = false;
-                let mut search_reply = false;
                 model.receive(ev, &mut |output| {
-                    let (finished, search) = print_output(&mut out, output);
-                    done |= print_mode && finished;
-                    search_reply |= search;
+                    done |= print_output(&mut out, output) && print_mode;
                 });
                 if std::mem::take(&mut model.reselect)
                     && let Some(session) = model.session
@@ -1071,24 +993,20 @@ async fn line_printer(
                 {
                     let _ = commands.send(Command::Load { session, settled_only: true });
                 }
-                model.search_tick(model::now_ms(), &commands);
-                // `-p "/search …"` ends once every selected group has settled
-                // (an indexing owner is re-asked first, like the menu).
-                if done || (print_mode && search_reply && model.search_wake().is_none()) { break; }
+                if done { break; }
                 if !stdin_open && model.approval().is_some() {
                     let _ = writeln!(out, "denied: stdin closed");
                     model.decide(Decision::Deny, &commands);
                 }
             }
-            // Search and component deadlines share the existing loop, without a scheduler.
+            // Component deadlines share the existing loop, without a scheduler.
             _ = tokio::time::sleep(std::time::Duration::from_millis(
                 wake.map_or(0, |t| t.saturating_sub(model::now_ms())).max(1),
             )), if wake.is_some() => {
                 let now = model::now_ms();
-                model.search_tick(now, &commands);
                 let mut done = false;
                 model.component_tick_with(now, &mut |output| {
-                    done |= print_mode && print_output(&mut out, output).0;
+                    done |= print_output(&mut out, output) && print_mode;
                 });
                 if done { break; }
             }
@@ -1109,7 +1027,7 @@ async fn line_printer(
     model.component_notify(components::Lifecycle::Shutdown);
 }
 
-fn print_output(out: &mut impl Write, output: model::Output<'_>) -> (bool, bool) {
+fn print_output(out: &mut impl Write, output: model::Output<'_>) -> bool {
     match output {
         model::Output::Event(model, event) => {
             print_event(out, model, event);
@@ -1118,9 +1036,9 @@ fn print_output(out: &mut impl Write, output: model::Output<'_>) -> (bool, bool)
                 UiEvent::Error(_) => true,
                 _ => false,
             };
-            return (finished, matches!(event, UiEvent::Search(..)));
+            return finished;
         }
-        model::Output::Plain(components::Plain::Finished) => return (true, false),
+        model::Output::Plain(components::Plain::Finished) => return true,
         model::Output::Plain(components::Plain::Text(text)) => {
             let _ = out.write_all(text.as_bytes()).and_then(|()| out.flush());
         }
@@ -1128,7 +1046,7 @@ fn print_output(out: &mut impl Write, output: model::Output<'_>) -> (bool, bool)
             let _ = writeln!(out, "{text}");
         }
     }
-    (false, false)
+    false
 }
 
 /// A loaded transcript as lines. A row removed from context (48 §2.2)
@@ -1510,12 +1428,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             };
             writeln!(out, "{}  {}  {chip:<8}  {}", s.id, s.model, s.title)
         }),
-        // Real output groups with state, coverage and exact identities (49
-        // §6.2); an interactive chip set is not on offer here.
-        UiEvent::Search(_, reply) => search::print_lines(reply)
-            .iter()
-            .try_for_each(|l| writeln!(out, "{l}")),
-        UiEvent::KnowledgeChanged(_) => Ok(()),
         UiEvent::Agents(list) => list.iter().try_for_each(|a| {
             writeln!(
                 out,

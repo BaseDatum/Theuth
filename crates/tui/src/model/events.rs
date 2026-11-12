@@ -22,10 +22,6 @@ pub enum UiEvent {
     AskResolved(AskResolved),
     /// Reply to [`Command::ListSessions`].
     Sessions(Vec<SessionSummary>),
-    /// Reply to [`Command::Search`], tagged with the view generation that asked (49 §6.1).
-    Search(u64, search::Reply),
-    /// A concept was written or removed (bus event): open search re-asks.
-    KnowledgeChanged(knowledge::KnowledgeChanged),
     /// Reply to [`Command::ListAgents`]: the session's subtree with live state.
     Agents(Vec<AgentInfo>),
     /// Reply to [`Command::Load`] with `settled_only: false`: shown as is.
@@ -285,9 +281,6 @@ pub enum Command {
     SetAwsProfile(Option<String>),
     /// `list_sessions`.
     ListSessions,
-    /// One `/search` request (49 §6): `search`, `search_refresh`, a
-    /// destination fetch or the page around an old message.
-    Search(search::Request),
     /// `list_agents`: the subtree under a session.
     ListAgents(SessionId),
     /// `load_session`; `settled_only` (48 §5) reads through the idle actor

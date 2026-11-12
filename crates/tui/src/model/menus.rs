@@ -52,10 +52,6 @@ pub enum Menu {
         /// Highlighted row.
         cursor: usize,
     },
-    /// `/search` (49 §6): the live menu over [`Model::search`].
-    Search,
-    /// `/attach` (66 §10): the search menu picking a reference for the input box.
-    Attach,
     /// `/agents` picker.
     Agents {
         /// The current session's subtree: running first, then awaiting /
@@ -185,7 +181,6 @@ impl Model {
             Some(Menu::Efforts { .. }) => self.efforts_key(code, tx),
             Some(Menu::AwsProfiles { .. }) => self.aws_key(code, tx),
             Some(Menu::Sessions { .. }) => self.sessions_key(code, tx),
-            Some(Menu::Search | Menu::Attach) => MenuKey::Consumed,
             Some(Menu::Agents { .. }) => self.agents_key(code, tx),
             Some(Menu::Mcp { .. }) => self.mcp_key(code, tx),
             Some(Menu::Acp { .. }) => self.acp_key(code, tx),

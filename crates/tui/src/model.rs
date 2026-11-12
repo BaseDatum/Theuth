@@ -7,7 +7,6 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
-use ::search::SearchCategory;
 use acp::EntryInfo;
 use acp::registry::RegistryAgent;
 use agent::durability::{ResumeCause, ResumeKind};
@@ -39,7 +38,6 @@ use uuid::Uuid;
 use crate::clip::Image;
 use crate::dictation::{self, Dictating, Phase, Suggestion};
 use crate::pathac::PathState;
-use crate::search;
 use crate::talk::Talking;
 
 
@@ -249,17 +247,7 @@ pub struct Model {
     /// The engine behind the calls changed: the event loop reloads the shown
     /// session and its subtree from the new one (63 §2.3).
     pub reselect: bool,
-    /// `/search` state (49 §6.1): query, chips, request identity, groups,
-    /// cursor, previews. Kept across session switches so chips survive and
-    /// **Back to results** restores the last view; `menu == Menu::Search`
-    /// says whether it is up.
-    pub search: Box<search::State>,
-    /// The **Earlier messages** inspection (49 §7): the transcript shows a
-    /// page ending at an old match, isolated from the session's live events.
-    pub inspect: Option<search::Inspect>,
-    /// Search requests a reply produced where no sender was at hand (the
-    /// refresh reply's re-ask); flushed by the next tick or key.
-    search_outbox: Vec<search::Request>,
+
     /// The shown session's advisor (125 §7.5): the status segment, the
     /// header tag, the picker's `●`. `state: Off` until a reply or event says otherwise.
     pub advisor: AdvisorStatus,
@@ -306,8 +294,6 @@ pub struct Model {
     pub talk_view: bool,
     /// `/talk` sent, waiting for `talk_start`'s reply.
     talk_pending: bool,
-    /// A `/attach` pick this frame: the token the editor prepends to its text.
-    pub attach_token: Option<String>,
     /// When Esc last cancelled (133 §5): three within [`ESC_TAPS_WINDOW`] stop the subtree too.
     esc_taps: Vec<std::time::Instant>,
 }

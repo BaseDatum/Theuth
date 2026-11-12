@@ -40,6 +40,17 @@
     use crate::components::nodes::{NodesArg, parse_nodes_arg, find_node};
     use ::knowledge::{Change, ChangeStatus, History, Meta, Revision};
     use crate::components::knowledge::{Knowledge, Menu as KnowledgeMenu, Request as KnowledgeRequest, Msg as KnowledgeMsg, HISTORY_PAGE};
+    use crate::components::search_attach::{SearchAttach, Mode as SearchMode, Msg as SearchMsg, state as search};
+    use ::search::SearchCategory;
+    fn search_reply(model: &Model, generation: u64, reply: search::Reply) -> UiEvent {
+        UiEvent::Component(crate::components::LocalReply {
+            to: model.components.token("search-attach"), engine_epoch: 0,
+            body: Box::new(SearchMsg::Reply { generation, reply }),
+        })
+    }
+    fn search_key(model: &mut Model, code: KeyCode) {
+        model.component_key(FocusClass::Search, &iocraft::KeyEvent::new(iocraft::KeyEventKind::Press, code));
+    }
     fn knowledge_reply(model: &Model, body: KnowledgeMsg) -> UiEvent {
         UiEvent::Component(crate::components::LocalReply {
             to: model.components.token("knowledge"), engine_epoch: 0, body: Box::new(body),
@@ -1121,18 +1132,16 @@
         }
     }
 
-    /// The reply to a `Command::Search` results request pulled off `rx`.
-    fn search_answer(cmd: Command, hits: Vec<agent::search::SearchHit>) -> UiEvent {
-        let Command::Search(search::Request { generation, kind }) = cmd else {
-            panic!("expected a search request");
-        };
+    /// The reply to an owner's results request pulled off `rx`.
+    fn search_answer(model: &Model, request: search::Request, hits: Vec<agent::search::SearchHit>) -> UiEvent {
+        let search::Request { generation, kind } = request;
         let search::RequestKind::Results {
             categories, limit, ..
         } = kind
         else {
             panic!("expected a results request");
         };
-        UiEvent::Search(
+        search_reply(model,
             generation,
             search::Reply::Results {
                 categories,
@@ -1150,42 +1159,41 @@
     fn search_opens_live_menu_and_enter_on_a_title_hit_switches_session() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(SearchAttach::default()).unwrap();
+        m.mount_components(&tx);
         // Blank `/search` opens the menu and asks only for recent sessions.
         m.submit("/search", &tx);
-        assert!(m.search_open() && !m.input_focused());
+        assert!(m.components.get::<SearchAttach>().unwrap().mode.is_some() && !m.input_focused());
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::Search(search::Request {
-                kind: search::RequestKind::Recent,
-                ..
-            }))
+            component_request::<search::Request>(&mut rx),
+            Ok(search::Request { kind: search::RequestKind::Recent, .. })
         ));
-        m.search_key(KeyCode::Esc, 80, 10, &tx);
-        assert!(m.menu.is_none());
+        search_key(&mut m, KeyCode::Esc);
+        assert!(m.components.get::<SearchAttach>().unwrap().mode.is_none());
         // A prefilled query runs at once, all six chips at limit 10.
         m.submit("/search deploy", &tx);
-        let cmd = rx.try_recv().unwrap();
+        let cmd = component_request::<search::Request>(&mut rx).unwrap();
         assert!(matches!(
             &cmd,
-            Command::Search(search::Request { kind: search::RequestKind::Results { query, categories, limit: 10 }, .. })
+            search::Request { kind: search::RequestKind::Results { query, categories, limit: 10 }, .. }
                 if query == "deploy" && categories.len() == search::N
         ));
         let hit = SessionId::new();
-        m.apply(search_answer(cmd, vec![search_session_hit(hit, None)]));
+        m.apply(search_answer(&m, cmd, vec![search_session_hit(hit, None)]));
         assert!(matches!(
-            m.search.rows.get(m.search.cursor),
+            m.components.get::<SearchAttach>().unwrap().state.rows.get(m.components.get::<SearchAttach>().unwrap().state.cursor),
             Some(search::Row::Hit(0, 0))
         ));
         // Enter on a title hit is a session switch, the `/sessions` path.
-        m.search_key(KeyCode::Enter, 80, 10, &tx);
-        assert!(m.menu.is_none());
+        search_key(&mut m, KeyCode::Enter);
+        assert!(m.components.get::<SearchAttach>().unwrap().mode.is_none());
         assert_eq!(m.session, Some(hit));
         assert!(matches!(rx.try_recv(), Ok(Command::Load { session, .. }) if session == hit));
         // Chips survive the reset a session switch performs.
-        m.search.selected = [true, false, false, false, false, false, false, false];
+        m.components.get_mut::<SearchAttach>().unwrap().state.selected = [true, false, false, false, false, false, false, false];
         m.resume(SessionId::new(), &tx);
         assert_eq!(
-            m.search.selected,
+            m.components.get::<SearchAttach>().unwrap().state.selected,
             [true, false, false, false, false, false, false, false]
         );
     }
@@ -1197,19 +1205,21 @@
     fn attach_picks_a_hit_and_sends_its_marker_first() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(SearchAttach::default()).unwrap();
+        m.mount_components(&tx);
         m.submit("/attach deploy", &tx);
-        assert!(m.search_open() && m.attach_open());
-        let cmd = rx.try_recv().unwrap();
+        assert!(m.components.get::<SearchAttach>().unwrap().mode.is_some() && m.components.get::<SearchAttach>().unwrap().mode == Some(SearchMode::Attach));
+        let cmd = component_request::<search::Request>(&mut rx).unwrap();
         let hit = SessionId::new();
-        m.apply(search_answer(cmd, vec![search_session_hit(hit, None)]));
-        m.search_key(KeyCode::Enter, 80, 10, &tx);
-        assert!(m.menu.is_none(), "the menu closes on a pick");
+        m.apply(search_answer(&m, cmd, vec![search_session_hit(hit, None)]));
+        search_key(&mut m, KeyCode::Enter);
+        assert!(m.components.get::<SearchAttach>().unwrap().mode.is_none(), "the menu closes on a pick");
         assert_eq!(m.session, None, "a pick is not a session switch");
-        let token = m.attach_token.take().expect("a token for the editor");
+        let token = m.editor_prefixes.pop().expect("a token for the editor");
         assert_eq!(token, "[⎘ attach 1: deploy checklist]");
         assert_eq!(m.pastes.len(), 1);
         // Attaching the same thing again is a no-op returning the same token.
-        let again = m.attach_ref(crate::attach::from_hit(&search::Hit::Session(
+        let again = m.attach_ref(crate::components::search_attach::attach::from_hit(&search::Hit::Session(
             search_session_hit(hit, None),
         )));
         assert_eq!((again, m.pastes.len()), (token.clone(), 1));
@@ -1239,17 +1249,19 @@
         use agent::{ContextEntry, ContextTarget, HistoryEntry};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(SearchAttach::default()).unwrap();
+        m.mount_components(&tx);
         let live = SessionId::new();
         m.session = Some(live);
         m.submit("/search deploy", &tx);
-        let cmd = rx.try_recv().unwrap();
-        m.apply(search_answer(cmd, vec![search_session_hit(live, Some(7))]));
-        m.search_key(KeyCode::Enter, 80, 10, &tx);
+        let cmd = component_request::<search::Request>(&mut rx).unwrap();
+        m.apply(search_answer(&m, cmd, vec![search_session_hit(live, Some(7))]));
+        search_key(&mut m, KeyCode::Enter);
         // The current session too: a page ending at the match, not a resume.
-        let Ok(Command::Search(search::Request {
+        let Ok(search::Request {
             generation,
             kind: search::RequestKind::Page { session, seq: 7 },
-        })) = rx.try_recv()
+        }) = component_request::<search::Request>(&mut rx)
         else {
             panic!("expected a page request");
         };
@@ -1275,7 +1287,7 @@
             ],
             ..Loaded::default()
         };
-        m.apply(UiEvent::Search(
+        m.apply(search_reply(&m,
             generation,
             search::Reply::Page {
                 session: live,
@@ -1283,8 +1295,8 @@
                 result: Ok(loaded),
             },
         ));
-        assert!(m.menu.is_none());
-        let inspect = m.inspect.clone().expect("inspection view");
+        assert!(m.components.get::<SearchAttach>().unwrap().mode.is_none());
+        let inspect = m.components.get::<SearchAttach>().unwrap().inspect.clone().expect("inspection view");
         assert!(inspect.found);
         let marker = m
             .entries
@@ -1306,8 +1318,8 @@
         }));
         assert_eq!(m.entries.len(), before);
         // Jump to latest loads the normal tail.
-        m.jump_latest(&tx);
-        assert!(m.inspect.is_none());
+        m.component_key(FocusClass::Content, &iocraft::KeyEvent::new(iocraft::KeyEventKind::Press, KeyCode::Enter));
+        assert!(m.components.get::<SearchAttach>().unwrap().inspect.is_none());
         assert!(
             matches!(rx.try_recv(), Ok(Command::Load { session, settled_only: false }) if session == live)
         );
@@ -1317,25 +1329,25 @@
     fn back_to_results_restores_the_view_and_a_stale_reply_after_escape_is_dropped() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(SearchAttach::default()).unwrap();
+        m.mount_components(&tx);
         m.submit("/search deploy", &tx);
-        let cmd = rx.try_recv().unwrap();
-        let Command::Search(search::Request { generation, .. }) = &cmd else {
-            panic!()
-        };
-        let generation = *generation;
-        m.search_key(KeyCode::Esc, 80, 10, &tx);
-        assert!(m.menu.is_none());
+        let cmd = component_request::<search::Request>(&mut rx).unwrap();
+        let generation = cmd.generation;
+        search_key(&mut m, KeyCode::Esc);
+        assert!(m.components.get::<SearchAttach>().unwrap().mode.is_none());
         m.apply(search_answer(
+            &m,
             cmd,
             vec![search_session_hit(SessionId::new(), None)],
         ));
         assert!(
-            m.search.groups.is_empty(),
+            m.components.get::<SearchAttach>().unwrap().state.groups.is_empty(),
             "an answer to a closed view never lands"
         );
         assert!(m.entries.iter().all(|e| !matches!(e, Entry::Error(_))));
         // An error for that generation is inert too, not a transcript line.
-        m.apply(UiEvent::Search(
+        m.apply(search_reply(&m,
             generation,
             search::Reply::Results {
                 categories: vec![SearchCategory::Sessions],
@@ -1345,9 +1357,60 @@
         ));
         assert!(m.entries.iter().all(|e| !matches!(e, Entry::Error(_))));
         // Back to results reopens the menu with the query kept.
-        m.back_to_results(&tx);
-        assert!(m.search_open());
-        assert_eq!(m.search.query, "deploy");
+        component_reply(&mut m, "search-attach", SearchMsg::Restore);
+        assert!(m.components.get::<SearchAttach>().unwrap().mode.is_some());
+        assert_eq!(m.components.get::<SearchAttach>().unwrap().state.query, "deploy");
+    }
+
+    #[test]
+    fn local_and_remote_knowledge_changes_preserve_query_inspection_and_drop_superseded_replies() {
+        use crate::topics::TopicEvent;
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.components.register(SearchAttach::default()).unwrap();
+        m.mount_components(&tx);
+        let session = SessionId::new();
+        m.session = Some(session);
+        m.submit("/search deploy", &tx);
+        let original = component_request::<search::Request>(&mut rx).unwrap();
+        m.apply(search_answer(&m, original.clone(), vec![search_session_hit(session, Some(7))]));
+        let changed = ::knowledge::KnowledgeChanged {
+            id: "deploy".into(), op: ::knowledge::KnowledgeOp::Put,
+            source: ::knowledge::Source::User, commit: None,
+        };
+        m.apply(UiEvent::Wire(TopicEvent::Local(Arc::new(wire::WireFrame {
+            descriptor: Some(Arc::new(wire::EventDescriptor {
+                topic: "knowledge.changed", version: 1,
+                schema: |generator| generator.subschema_for::<::knowledge::KnowledgeChanged>(),
+            })),
+            event: serde_json::to_value(&changed).unwrap(), policy: Default::default(),
+        }))));
+        let due = m.components.wake().expect("local change schedules an open query refresh");
+        m.component_tick(due);
+        let refreshed = component_request::<search::Request>(&mut rx).unwrap();
+        assert!(matches!(&refreshed.kind, search::RequestKind::Results { query, .. } if query == "deploy"));
+        m.apply(search_answer(&m, refreshed, vec![search_session_hit(session, Some(7))]));
+        search_key(&mut m, KeyCode::Enter);
+        let page = component_request::<search::Request>(&mut rx).unwrap();
+        m.apply(search_reply(&m, page.generation, search::Reply::Page {
+            session, seq: 7, result: Ok(Loaded::default()),
+        }));
+        let before = m.entries.len();
+        m.apply(wire_event("knowledge.changed", changed));
+        let owner = m.components.get::<SearchAttach>().unwrap();
+        assert_eq!(owner.state.query, "deploy");
+        assert_eq!(owner.inspect.as_ref().map(|i| (i.session, i.seq)), Some((session, 7)));
+        assert!(m.historical && owner.mode.is_none());
+        assert_eq!(m.entries.len(), before);
+        m.component_key(FocusClass::Content, &iocraft::KeyEvent::new(iocraft::KeyEventKind::Press, KeyCode::Esc));
+        assert!(matches!(rx.try_recv(), Ok(Command::Load { session: id, .. }) if id == session));
+        let current = component_request::<search::Request>(&mut rx).unwrap();
+        assert_ne!(current.generation, original.generation);
+        assert_eq!(m.components.get::<SearchAttach>().unwrap().state.query, "deploy");
+        let fresh = SessionId::new();
+        m.apply(search_answer(&m, current, vec![search_session_hit(fresh, None)]));
+        m.apply(search_answer(&m, original, vec![search_session_hit(session, None)]));
+        assert!(matches!(&m.components.get::<SearchAttach>().unwrap().state.groups[0].hits[0], search::Hit::Session(hit) if hit.session == fresh));
     }
 
     /// `/broadcast`: the picker pre-ticks running roots and groups children
@@ -1855,9 +1918,9 @@
             // Whole tag, and the row fits inside the picker frame (border, padding, cursor).
             assert!(row.ends_with("  ·  $0.265"), "{width}: {row}");
             assert!(
-                crate::search::cells(&row) + 7 <= usize::from(width),
+                search::cells(&row) + 7 <= usize::from(width),
                 "{width}: {} cells: {row}",
-                crate::search::cells(&row)
+                search::cells(&row)
             );
             assert!(row.contains("1m3") && row.contains(" ·"), "{width}: {row}");
             // The model joins the detail only when there is room after the tag.

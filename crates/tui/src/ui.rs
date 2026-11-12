@@ -20,10 +20,9 @@ use crate::model::{
 use crate::model::{
     AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch,
     TurnAction, UiEvent, action_name, describe, gate_name,
-    k, now_ms, progress_line, result_line, short, window,
+    k, now_ms, progress_line, result_line, window,
 };
 use crate::pathac;
-use crate::search::{self, Focus, Preview};
 use crate::talk::{self, Look, Talking};
 
 /// Channels handed to the app through iocraft context (owned so the receiver
@@ -76,11 +75,11 @@ pub(crate) const SAND: Color = rgb(0x9A8B72);
 /// Accent: focus borders, headings, hints, the human's turn.
 pub(crate) const OCHRE: Color = rgb(0xC47A2C);
 /// Success / done.
-const MALACHITE: Color = rgb(0x4A8A6E);
+pub(crate) const MALACHITE: Color = rgb(0x4A8A6E);
 /// Info / agent state: tools, peers, asks.
 pub(crate) const FAIENCE: Color = rgb(0x5B8F8A);
 /// Error / stop.
-const CARNELIAN: Color = rgb(0xC45A48);
+pub(crate) const CARNELIAN: Color = rgb(0xC45A48);
 /// Human turn cards.
 const USER: Color = OCHRE;
 /// Tool call cards.
@@ -144,9 +143,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let mut input = hooks.use_state(String::new);
     let mut component_rows = hooks.use_ref_default::<usize>();
     let mut handle = hooks.use_ref_default::<TextInputHandle>();
-    // The `/search` query has its own editor and handle (49 §6.1): the chat
-    // draft, its cursor and paste tokens are never touched by a search.
-    let mut search_handle = hooks.use_ref_default::<TextInputHandle>();
+    // Separate owner input never touches the composer's draft, cursor or paste tokens.
+    let mut separate_handle = hooks.use_ref_default::<TextInputHandle>();
     let commands = links.commands.clone();
     let data_dir = links.data_dir.clone();
 
@@ -198,11 +196,9 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return,
                     }
                 }
-                // A due search request (debounce, indexing poll) or terminal
-                // poll (51 §7.3) wakes an idle loop.
+                // Owner deadlines and core editor helpers wake the idle loop.
                 let now = now_ms();
-                let due = model.read().search_wake().is_some_and(|t| t <= now)
-                    || model.read().path.wake().is_some_and(|t| t <= now)
+                let due = model.read().path.wake().is_some_and(|t| t <= now)
                     || model.read().suggestion_wake().is_some_and(|t| t <= now);
                 let due = due || model.read().components.wake().is_some_and(|at| at <= now);
                 if pending.is_empty() && !model.read().animating() && !due {
@@ -219,7 +215,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 if m.animating() {
                     m.tick();
                 }
-                m.search_tick(now, &commands);
                 m.component_tick(now);
                 let session = m.session;
                 m.path.tick(now, session, &commands);
@@ -241,7 +236,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     handle.write().set_cursor_offset(caret);
                 }
                 if let Some(caret) = m.widget_cursor.take() {
-                    search_handle.write().set_cursor_offset(caret);
+                    separate_handle.write().set_cursor_offset(caret);
                 }
                 prepend_editor(&mut m, input);
                 // "send it" (153 §7.4): the spliced value takes the send key's path, once.
@@ -331,20 +326,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             let TerminalEvent::Key(key) = event
             else {
                 if let TerminalEvent::BracketedPaste(text) = event {
-                    if m.component_paste(&text, search_handle.read().cursor_offset()) { return; }
-                    // Search paste is query text at the cursor: never an
-                    // attachment, paste token or slash command (49 §6.1).
-                    if m.search_open() {
-                        if m.search.focus == Focus::Query && m.search.previews.is_empty() {
-                            let flat = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
-                            let mut v = m.search.query.clone();
-                            let at = search_handle.read().cursor_offset().min(v.len());
-                            let at = if v.is_char_boundary(at) { at } else { v.len() };
-                            v.insert_str(at, &flat);
-                            m.search_edit(v);
-                        }
-                        return;
-                    }
+                    if m.component_paste(&text, separate_handle.read().cursor_offset()) { return; }
                     if m.input_focused() {
                         // A dropped image path attaches the file (17 §4.2).
                         let s = match clip::dropped_file(&text) {
@@ -423,7 +405,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             // Chat-only: a search menu on top must not toggle transcript cards.
             if code == KeyCode::Char('o')
                 && modifiers.contains(KeyModifiers::CONTROL)
-                && !m.search_open()
+                && !m.components.separate_editor()
             {
                 m.toggle_card();
                 return;
@@ -501,7 +483,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 return;
             }
             // Alt+Up: pull the newest queued steer back into the editor (not through search).
-            if code == KeyCode::Up && modifiers.contains(KeyModifiers::ALT) && !m.search_open() {
+            if code == KeyCode::Up && modifiers.contains(KeyModifiers::ALT) && !m.components.separate_editor() {
                 m.withdraw(input.read().is_empty(), &commands);
                 return;
             }
@@ -527,22 +509,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             // keys reach the search `TextInput`, everything else lands here.
             if m.component_key(FocusClass::Search, &key) {
                 prepend_editor(&mut m, input);
-                return;
-            }
-            if m.search_open() {
-                let (inner, area, _, _) = search_layout(&m, w, view);
-                m.search_key(code, inner, area, &commands);
-                // `/attach` picked a row (66 §10): its token leads the draft.
-                if let Some(token) = m.attach_token.take() {
-                    let v = input.read().to_string();
-                    let v = if v.is_empty() {
-                        token
-                    } else {
-                        format!("{token} {v}")
-                    };
-                    m.sync_slash(&v);
-                    input.set(v);
-                }
                 return;
             }
             // Path autocomplete (PATH-AC): Tab on a path token opens the list
@@ -576,28 +542,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 return;
             }
-            // Earlier-messages inspection (49 §7): scroll, jump to latest, back to results.
-            if m.inspect.is_some() {
-                let step = match code {
-                    KeyCode::PageUp => Some(-(view as isize)),
-                    KeyCode::PageDown => Some(view as isize),
-                    KeyCode::Up => Some(-1),
-                    KeyCode::Down => Some(1),
-                    _ => None,
-                };
-                if let Some(step) = step {
-                    m.scroll(step, view, usize::from(w));
-                } else {
-                    match code {
-                        KeyCode::Enter | KeyCode::Char('j') => m.jump_latest(&commands),
-                        KeyCode::Esc | KeyCode::Char('b') | KeyCode::Backspace => {
-                            m.back_to_results(&commands)
-                        }
-                        _ => {}
-                    }
-                }
-                return;
-            }
+            if m.component_key(FocusClass::Content, &key) { return; }
             // 141 §10.1: a watch-only child has no editor. `/` opens it for one
             // slash command (`/parent`, `/agents`, … — the way out); anything
             // else that would have been typed gets the read-only hint instead.
@@ -630,7 +575,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     return;
                 }
             }
-            if m.component_key(FocusClass::Content, &key) { return; }
             // Transcript scrolling. ↑/↓ are the editor's while it spans
             // lines; terminals without mouse capture send them for the wheel.
             let step = match code {
@@ -708,14 +652,14 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         .or_else(|| component_slot(&m, Surface::Prompt(FocusClass::Secret), width, height, None).element())
 
         .or_else(|| ask_box(&m))
-        .or_else(|| {
-            m.search_open().then(|| {
-                let budget = view_rows(&m, height, &input.read(), extra_rows);
-                search_box(&m, model, search_handle, width, budget)
-            })
-        })
+
         .or_else(|| menu(&m, &input.read(), width, height))
-        .or_else(|| component_slot(&m, Surface::Modal, width, height, Some(search_handle)).element());
+        .or_else(|| {
+            let budget = if m.components.separate_editor() {
+                u16::try_from(view_rows(&m, height, &input.read(), extra_rows)).unwrap_or(u16::MAX)
+            } else { height };
+            component_slot(&m, Surface::Modal, width, budget, Some(separate_handle)).element()
+        });
     // A secret's value (or a provider's key) shows as dots.
     let component_editor = m.components.editor();
     let mask = (m.prompt.as_ref().is_some_and(Prompt::masked)
@@ -797,11 +741,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             #(pinned.element())
             #(modal)
             #(badge.element())
-            #(m.inspect_line().map(|hint| {
-                element!(View(height: 1, padding_left: 1) {
-                    Text(content: hint, color: OCHRE, wrap: TextWrap::NoWrap)
-                })
-            }))
             #(m.prompt.as_ref().map(|p| {
                 element!(View(height: 1, padding_left: 1) {
                     Text(content: p.hint(), color: OCHRE)
@@ -1223,8 +1162,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 .collect(),
             *cursor,
         ),
-        // Drawn by `search_box`, never here.
-        Menu::Search | Menu::Attach => return None,
         Menu::Agents { items, cursor } => (
             "agents  ⏎ open  esc close  (the one you leave keeps running)".to_owned(),
             items
@@ -1482,7 +1419,6 @@ fn view_rows(m: &Model, height: u16, input: &str, todo: usize) -> usize {
         .saturating_sub(
             2 + editor
                 + usize::from(m.prompt.is_some())
-                + usize::from(m.inspect.is_some())
                 + activity
                 + queued
                 + board
@@ -1491,231 +1427,6 @@ fn view_rows(m: &Model, height: u16, input: &str, todo: usize) -> usize {
         .max(1)
 }
 
-/// The `/search` box geometry at `width` columns inside `budget` rows (the
-/// transcript's rows: the box may take them all, never more): `(inner
-/// columns, result rows, chip rows, compact)`. Query, chips, status and
-/// footer are fixed; results get the rest, snippets dropped when fewer than
-/// four rows remain (49 §6.2). Results keep one row even when the fixed
-/// rows alone overflow the budget: the box then scrolls to the focus
-/// (`search_box`) so every control stays reachable.
-fn search_layout(
-    m: &Model,
-    width: u16,
-    budget: usize,
-) -> (usize, usize, Vec<search::ChipRow>, bool) {
-    // Border 2 + padding 2; rows stay one cell short of the inner width so
-    // taffy never wraps them (see `menu_box_is_tight_at_any_width`).
-    let inner = usize::from(width).saturating_sub(5).max(8);
-    let chips = search::chip_rows(&m.search, inner);
-    let rows = budget.max(3) - 2;
-    let area = if m.search.previews.is_empty() {
-        rows.saturating_sub(3 + chips.len()).max(1)
-    } else {
-        rows - 1
-    };
-    (inner, area, chips, area < 4)
-}
-
-/// The `/search` menu (49 §6): the query editor, the wrapped chips, a status
-/// row, the result window and the footer actions — or the innermost preview
-/// over the same box. Sized to `budget` rows at most; nothing overflows the
-/// terminal, rows are cut by display cells.
-fn search_box(
-    m: &Model,
-    mut model: State<Model>,
-    handle: Ref<TextInputHandle>,
-    width: u16,
-    budget: usize,
-) -> AnyElement<'static> {
-    let s = &m.search;
-    let (inner, area, chips, compact) = search_layout(m, width, budget);
-    let dim = SAND;
-    let border = OCHRE;
-    if let Some(p) = s.previews.last() {
-        let title = search::fit(&p.title(), inner);
-        let rows: Vec<AnyElement<'static>> = match p.rows(inner) {
-            Some(rows) => rows
-                .into_iter()
-                .skip(p.scroll())
-                .take(area)
-                .map(|r| {
-                    let color = match (p, r.chars().next()) {
-                        (Preview::Changes { .. }, Some('+')) => MALACHITE,
-                        (Preview::Changes { .. }, Some('-')) => CARNELIAN,
-                        (Preview::Changes { .. }, Some('@')) => FAIENCE,
-                        _ => BONE_DIM,
-                    };
-                    element!(Text(content: search::fit(&r, inner), wrap: TextWrap::NoWrap, color))
-                        .into_any()
-                })
-                .collect(),
-            None => match p {
-                Preview::Artifact { body, scroll, .. } => body
-                    .view()
-                    .lines()
-                    .skip(*scroll)
-                    .take(area)
-                    .map(line)
-                    .collect(),
-                _ => Vec::new(),
-            },
-        };
-        let height = u16::try_from((2 + 1 + rows.len()).min(budget.max(3))).unwrap_or(u16::MAX);
-        return element! {
-            View(border_style: BorderStyle::Round, border_color: border, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1, width, height, overflow: Overflow::Hidden) {
-                Text(content: title, color: dim, wrap: TextWrap::NoWrap)
-                #(rows)
-            }
-        }
-        .into_any();
-    }
-    // Every row in order, and the one the focus sits on: a box too short
-    // for them all drops leading rows until that one is in view.
-    let mut body: Vec<AnyElement<'static>> = Vec::with_capacity(3 + chips.len() + s.rows.len());
-    let mut target = 0;
-    let query_focus = s.focus == Focus::Query;
-    body.push(
-        element! {
-            View(flex_direction: FlexDirection::Row, height: 1) {
-                Text(content: "Query: ", color: if query_focus { BONE } else { dim }, weight: Weight::Bold)
-                View(flex_grow: 1.0_f32, height: 1) {
-                    TextInput(
-                        handle,
-                        has_focus: query_focus,
-                        value: s.query.clone(),
-                        ignore_paste: true,
-                        on_change: move |v: String| model.write().search_edit(v),
-                    )
-                }
-            }
-        }
-        .into_any(),
-    );
-    // Chips: selected ones carry a check and colour; the focused one inverts.
-    for row in &chips {
-        let mut contents = Vec::with_capacity(row.len() * 2);
-        for (n, (i, text)) in row.iter().enumerate() {
-            if n > 0 {
-                contents.push(MixedTextContent::new(" "));
-            }
-            let on = text.contains('✓');
-            let mut c = MixedTextContent::new(text).color(if on { FAIENCE } else { BONE_DIM });
-            if s.focus == Focus::Filters(*i) {
-                c = c.invert().weight(Weight::Bold);
-                target = body.len();
-            }
-            contents.push(c);
-        }
-        body.push(element!(MixedText(contents, wrap: TextWrap::NoWrap)).into_any());
-    }
-    let status = search::fit(&s.status(), inner);
-    body.push(
-        element!(Text(content: status, color: if s.notice.is_some() { OCHRE } else { dim }, wrap: TextWrap::NoWrap))
-            .into_any(),
-    );
-    // Result rows: the window starting at the clamped scroll.
-    let first = search::first_row(&s.rows, s.scroll, s.cursor, area, compact);
-    let text_fit = inner.saturating_sub(2);
-    let mut used = 0;
-    for (r, row) in s.rows.iter().enumerate().skip(first) {
-        let h = row.height(compact);
-        if used + h > area {
-            break;
-        }
-        used += h;
-        let here = r == s.cursor && row.selectable();
-        if here && s.focus == Focus::Results {
-            target = body.len();
-        }
-        let mark = if here { "› " } else { "  " };
-        let color = if here { BONE } else { BONE_DIM };
-        let weight = if here { Weight::Bold } else { Weight::Normal };
-        match row {
-            search::Row::Header(t) => body.push(
-                element!(Text(content: search::fit(t, inner), color: dim, weight: Weight::Bold, wrap: TextWrap::NoWrap)).into_any(),
-            ),
-            search::Row::Note(t) => body.push(
-                element!(Text(content: format!("  {}", search::fit(t, text_fit)), color: dim, italic: true, wrap: TextWrap::NoWrap)).into_any(),
-            ),
-            search::Row::More(g) => body.push(
-                element!(Text(content: format!("{mark}{}", s.more_label(*g)), color: if here { BONE } else { FAIENCE }, weight, wrap: TextWrap::NoWrap)).into_any(),
-            ),
-            search::Row::Recent(i) => {
-                let Some(sess) = s.recent.as_ref().and_then(|r| r.get(*i)) else { continue };
-                let text = format!(
-                    "{mark}{}  {}  {}",
-                    short(sess.id),
-                    sess.updated_at.with_timezone(&chrono::Local).format("%m-%d %H:%M"),
-                    sess.title
-                );
-                body.push(element!(Text(content: search::fit(&text, inner), color, weight, wrap: TextWrap::NoWrap)).into_any());
-            }
-            search::Row::Hit(g, i) => {
-                let Some(hit) = s.groups.get(*g).and_then(|g| g.hits.get(*i)) else { continue };
-                let (title, prov) = (hit.title(), hit.provenance());
-                let room = text_fit.saturating_sub(3);
-                let prov_room = (room / 2).min(search::cells(&prov));
-                let title = search::fit(&title, room.saturating_sub(prov_room + if prov_room > 0 { 2 } else { 0 }));
-                let prov = search::fit(&prov, room.saturating_sub(search::cells(&title) + 2));
-                body.push(
-                    element!(MixedText(contents: vec![
-                        MixedTextContent::new(format!("{mark}{title}")).color(color).weight(weight),
-                        MixedTextContent::new(format!("  {prov}")).color(dim),
-                    ], wrap: TextWrap::NoWrap))
-                    .into_any(),
-                );
-                if !compact {
-                    let (label, snippet, ranges) = hit.snippet();
-                    let mut contents = vec![MixedTextContent::new(format!("    {label}")).color(dim)];
-                    let max = text_fit.saturating_sub(2 + search::cells(label));
-                    for (text, hot) in search::runs(snippet, ranges, max) {
-                        let mut c = MixedTextContent::new(text).color(if hot { HEADING } else { BONE_DIM });
-                        if hot {
-                            c = c.weight(Weight::Bold);
-                        }
-                        contents.push(c);
-                    }
-                    body.push(element!(MixedText(contents, wrap: TextWrap::NoWrap)).into_any());
-                }
-            }
-        }
-    }
-    // Footer: the actions the footer focus walks, the key legend before
-    // them when the row has the room.
-    let legend: &str = if m.attach_open() {
-        "⇥ filters · ↑↓ results · ⏎ attach · esc close  "
-    } else {
-        "⇥ filters · ↑↓ results · ⏎ open · esc close  "
-    };
-    let actions: usize = search::FOOTER.iter().map(|a| search::cells(a) + 3).sum();
-    let mut footer = Vec::with_capacity(1 + 2 * search::FOOTER.len());
-    if search::cells(legend) + actions <= inner {
-        footer.push(MixedTextContent::new(legend).color(dim));
-    }
-    for (i, action) in search::FOOTER.iter().enumerate() {
-        let mut c = MixedTextContent::new(format!("[{action}]")).color(BONE_DIM);
-        if s.focus == Focus::Footer(i) {
-            c = c.invert().weight(Weight::Bold);
-        }
-        footer.push(c);
-        footer.push(MixedTextContent::new(" "));
-    }
-    if matches!(s.focus, Focus::Footer(_)) {
-        target = body.len();
-    }
-    body.push(element!(MixedText(contents: footer, wrap: TextWrap::NoWrap)).into_any());
-    // Never taller than the transcript rows on offer: a short terminal
-    // scrolls the box to the focus rather than the frame overflowing (49 §6.2).
-    let shown = budget.max(3) - 2;
-    let skip = (target + 1).saturating_sub(shown);
-    let height = u16::try_from(2 + body.len().min(shown)).unwrap_or(u16::MAX);
-    element! {
-        View(border_style: BorderStyle::Round, border_color: border, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1, width, height, overflow: Overflow::Hidden) {
-            #(body.into_iter().skip(skip))
-        }
-    }
-    .into_any()
-}
 
 /// The subagent board (design doc 19 §3.3): the live rows of the current
 /// session's subtree, between the transcript and the editor; `None` while
@@ -2095,7 +1806,7 @@ fn plain(
 
 /// One rendered markdown line. `Style` is renderer-agnostic; this is the
 /// iocraft mapping.
-fn line(l: &markdown::Line) -> AnyElement<'static> {
+pub(crate) fn line(l: &markdown::Line) -> AnyElement<'static> {
     if l.is_empty() {
         // An empty `Text` measures zero rows.
         return element!(Text(content: " ")).into_any();
@@ -2144,6 +1855,7 @@ mod tests {
     use super::*;
     use agent::ModelInfo;
     use runtime::SessionId;
+    use crate::components::search_attach::{SearchAttach, Msg as SearchMsg, state::{self as search, Focus}};
 
     /// A search view with wide-character titles and snippets, one hit per
     /// category plus a `show more` row, as the menu would show it.
@@ -2152,8 +1864,10 @@ mod tests {
         use rpc_compose::search::{SearchGroup, SearchResponse};
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut m = Model::default();
-        m.open_search("日本語 deploy", &tx);
-        let generation = m.search.generation;
+        m.components.register(SearchAttach::default()).unwrap();
+        m.mount_components(&tx);
+        m.submit("/search 日本語 deploy", &tx);
+        let generation = m.components.get::<SearchAttach>().unwrap().state.generation;
         let session = agent::search::SearchHit {
             session: SessionId::new(),
             title: "日本語のデプロイ計画 · a long session title that keeps going".into(),
@@ -2191,9 +1905,7 @@ mod tests {
                 ranges: vec![MatchRange { start: 3, end: 9 }],
             },
         };
-        m.apply(UiEvent::Search(
-            generation,
-            search::Reply::Results {
+        let reply = search::Reply::Results {
                 categories: ::search::SearchCategory::ALL.to_vec(),
                 limit: 10,
                 result: Ok(SearchResponse {
@@ -2210,8 +1922,11 @@ mod tests {
                         },
                     ],
                 }),
-            },
-        ));
+        };
+        m.apply(UiEvent::Component(crate::components::LocalReply {
+            to: m.components.token("search-attach"), engine_epoch: 0,
+            body: Box::new(SearchMsg::Reply { generation, reply }),
+        }));
         m
     }
 
@@ -2229,12 +1944,12 @@ mod tests {
         let focus = props.focus;
         let model = hooks.use_state(|| {
             let mut m = search_model();
-            m.search.focus = focus;
+            m.components.get_mut::<SearchAttach>().unwrap().state.focus = focus;
             m
         });
         let handle = hooks.use_ref_default::<TextInputHandle>();
         let m = model.read();
-        search_box(&m, model, handle, props.width, props.budget)
+        component_slot(&m, Surface::Modal, props.width, props.budget as u16, Some(handle)).element().expect("search view")
     }
 
     /// Wide characters count cells, chips wrap whole, and the box never

@@ -33,7 +33,6 @@ impl Model {
             app_enabled: self.app_enabled,
             advisor_default: std::mem::take(&mut self.advisor_default),
             vision_model: self.vision_model.take(),
-            search: std::mem::take(&mut self.search),
             private: self.private.take(),
             private_warned: self.private_warned,
             dictation: self.dictation.take(),

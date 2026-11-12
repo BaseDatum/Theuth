@@ -1,8 +1,8 @@
 //! `/search` (design doc 49 §6–7): one live menu over the six search
 //! categories, the request identities that keep late replies inert, the
 //! read-only previews it opens, and the page-at-seq inspection of an old
-//! session message. Pure state: `ui.rs` draws it, `lib.rs` turns its
-//! [`Request`]s into `rpc::Api` calls and feeds [`Reply`]s back.
+//! session message. Pure state: sibling `ui` draws it; the owning component
+//! turns [`Request`]s into owner RPC calls and feeds [`Reply`]s back.
 //!
 //! Every request carries the view's `generation`; editing the query,
 //! changing chips, closing or reopening bumps it, so whatever answers a
@@ -81,7 +81,7 @@ fn idx(c: SearchCategory) -> usize {
 }
 
 /// What the menu asks of `rpc::Api`; `generation` comes back on the reply.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Request {
     /// View identity when asked.
     pub generation: u64,
@@ -90,7 +90,7 @@ pub struct Request {
 }
 
 /// The calls behind the menu.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum RequestKind {
     /// `search(query, categories, limit)`: the groups sharing one limit.
     Results {
@@ -138,7 +138,7 @@ pub enum RequestKind {
     },
 }
 
-/// What came back, tagged in `UiEvent::Search(generation, reply)`.
+/// What came back, tagged with the requesting view generation in the owner message.
 #[derive(Debug)]
 // One `Loaded` page per reply; a short-lived message, not worth a Box.
 #[allow(clippy::large_enum_variant)]
@@ -1216,13 +1216,13 @@ impl State {
                 .recent
                 .as_ref()?
                 .get(*i)
-                .map(crate::attach::from_session),
+                .map(super::attach::from_session),
             Row::Hit(g, i) => {
                 let group = self.groups.get(*g)?;
                 if group.generation != self.generation {
                     return None;
                 }
-                group.hits.get(*i).map(crate::attach::from_hit)
+                group.hits.get(*i).map(super::attach::from_hit)
             }
             Row::More(_) | Row::Header(_) | Row::Note(_) => None,
         }
