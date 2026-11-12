@@ -1,6 +1,16 @@
     use super::*;
+    use agent::{CostBucket, CostScope, Coverage, Money, SessionCost};
+    use crate::components::costs::{cost_lines, cost_short, money_units};
     use tokio::sync::mpsc::unbounded_channel;
     use crate::components::nodes::{NodesArg, parse_nodes_arg, find_node};
+
+
+    fn cost_reply(model: &Model, session: SessionId, cost: SessionCost) -> UiEvent {
+        UiEvent::Component(crate::components::LocalReply {
+            to: model.components.token("costs"), engine_epoch: 0,
+            body: Box::new(crate::components::costs::Msg::Loaded(session, Ok(cost), true)),
+        })
+    }
 
     fn component_request<R: Clone + 'static>(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
@@ -1585,7 +1595,7 @@
     /// child's own turn events keep driving the row; nesting by parent row.
     #[test]
     fn board_tracks_observed_children_as_watch_rows() {
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         let root = SessionId::new();
         m.session = Some(root);
         let child = SessionId::new();
@@ -1631,7 +1641,7 @@
             }],
             ..Default::default()
         };
-        m.apply(UiEvent::Cost(
+        m.apply(cost_reply(&m,
             root,
             SessionCost {
                 session: root,
@@ -1709,7 +1719,7 @@
     /// row (no tag) is the plain `agent_row`.
     #[test]
     fn watch_rows_keep_the_cost_tag_whole_at_every_width() {
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         let root = SessionId::new();
         m.session = Some(root);
         let (child, native) = (SessionId::new(), SessionId::new());
@@ -1752,7 +1762,7 @@
             },
             scope: CostScope::Observed,
         };
-        m.apply(UiEvent::Cost(
+        m.apply(cost_reply(&m,
             root,
             SessionCost {
                 session: root,

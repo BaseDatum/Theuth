@@ -471,9 +471,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 None => "project cleared".to_owned(),
             })
         }
-        Command::SessionCost(session) => {
-            UiEvent::Cost(session, msg(api.session_cost(session).await)?)
-        }
         Command::ListTerminals(session) => {
             UiEvent::Terminals(msg(api.list_terminals(session, Some(true)).await)?)
         }
@@ -1964,10 +1961,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::CommunicationChanged(_)
         | UiEvent::PeerMessageChanged(_)
         | UiEvent::A2aChanged(_) => Ok(()),
-        // The owner's display strings (51 §6.2), never a local sum.
-        UiEvent::Cost(_, c) => model::cost_lines(&c.total)
-            .iter()
-            .try_for_each(|l| writeln!(out, "{l}")),
         UiEvent::Terminals(list) if list.is_empty() => {
             writeln!(out, "no terminals in this session's tree")
         }

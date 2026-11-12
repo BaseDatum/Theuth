@@ -164,7 +164,6 @@ impl Model {
                     self.session = Some(id);
                     // The global default was shown; now this session's own view.
                     self.refresh_communication = true;
-                    self.refresh_cost = true;
                 }
                 if let Some((s, message)) = self.send_error.take()
                     && s == id
@@ -737,7 +736,7 @@ impl Model {
                 self.awaiting_effort = false;
                 self.awaiting_vision = false;
                 self.awaiting_secrets = false;
-                self.awaiting_cost = false;
+
                 self.notice = None;
                 // A knowledge request that was in flight failed: the menu
                 // shows it where the rows would be (`r` retries).
@@ -760,22 +759,6 @@ impl Model {
                     _ => e,
                 };
                 self.entries.push(Entry::Error(e));
-            }
-            // The owner's summary, never a local sum (51 §6.2): a reply for
-            // a session left behind is dropped.
-            UiEvent::Cost(id, cost) => {
-                if self.session != Some(id) {
-                    return;
-                }
-                if let Some(Menu::Cost { cost: shown, .. }) = &mut self.menu {
-                    *shown = cost.clone();
-                } else if std::mem::take(&mut self.awaiting_cost) {
-                    self.menu = Some(Menu::Cost {
-                        cost: cost.clone(),
-                        cursor: 0,
-                    });
-                }
-                self.cost = Some(cost);
             }
             UiEvent::Terminals(items) => {
                 if items.is_empty() {
@@ -800,7 +783,6 @@ impl Model {
                 self.reset();
                 self.session = Some(open.session);
                 self.refresh_communication = true;
-                self.refresh_cost = true;
                 if open.retention == Retention::Private
                     && let Some(secret) = open.lease_secret
                 {

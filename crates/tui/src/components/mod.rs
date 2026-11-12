@@ -20,6 +20,7 @@ pub mod tasks;
 pub mod roster;
 pub mod routines;
 pub mod autoresearch;
+pub mod costs;
 
 // Step-11 group t3 (jobs, terminals, speech and search): add modules below, in this block only.
 
