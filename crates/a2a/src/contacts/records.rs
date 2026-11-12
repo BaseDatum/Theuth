@@ -1984,7 +1984,7 @@ mod tests {
             assert!(!expired.contains(&format!("c|{me}")), "round {round}");
             assert_eq!(
                 expired.contains(&format!("c|{c3}")),
-                round >= 1 + rosters::CONFLICT_REFRESHES,
+                round > rosters::CONFLICT_REFRESHES,
                 "round {round}"
             );
         }
