@@ -184,6 +184,32 @@ impl Registry {
         self.finish(&mut out, core);
         out
     }
+    /// Deliver a core-selected stable entry action; only its owner consumes it.
+    pub fn entry_action(&mut self, key: &str, operation: EntryOperation, core: &CoreView<'_>) -> Outbox {
+        let mut out = Outbox::default();
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            if let Some(component) = &mut slot.component {
+                component.input(Input::EntryAction { key, operation }, core, ComponentToken { slot: index, generation: slot.generation }, self.epoch, &mut out);
+                if out.consumed { break; }
+            }
+        }
+        self.finish(&mut out, core);
+        out
+    }
+    /// Whether an owner has a local representation of this stable entry.
+    pub fn entry_openable(&self, key: &str) -> bool {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).any(|component| component.entry_openable(key))
+    }
+    /// Last replacement and following append rows, matching entry-view composition exactly.
+    pub fn entry_layout(&self, key: &str, width: usize) -> (Option<usize>, usize) {
+        let mut replacement = None;
+        let mut appended = 0;
+        for component in self.slots.iter().filter_map(|slot| slot.component.as_ref()) {
+            if let Some(height) = component.entry_height(key, width) { replacement = Some(height); appended = 0; }
+            appended += component.entry_rows(key);
+        }
+        (replacement, appended)
+    }
     /// Deliver only due deadlines using the existing frame/line-printer loop.
     pub fn tick(&mut self, now_ms: u64, frame: usize, core: &CoreView<'_>) -> Outbox {
         let mut out = Outbox::default();
@@ -270,10 +296,6 @@ impl Registry {
     /// Earliest deadline, without a second scheduler or per-component task.
     pub fn wake(&self) -> Option<u64> {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()?.wake()).min()
-    }
-    /// Exact decoration geometry without constructing a toolkit view.
-    pub fn entry_rows(&self, key: &str) -> usize {
-        self.slots.iter().filter_map(|slot| slot.component.as_ref()).map(|component| component.entry_rows(key)).sum()
     }
     /// Read-only owner query for composition and component integration tests.
     pub fn get<C: Component>(&self) -> Option<&C> {
