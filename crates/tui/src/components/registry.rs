@@ -205,6 +205,14 @@ impl Registry {
     pub fn wake(&self) -> Option<u64> {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()?.wake()).min()
     }
+    /// Exact decoration geometry without constructing a toolkit view.
+    pub fn entry_rows(&self, key: &str) -> usize {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).map(|component| component.entry_rows(key)).sum()
+    }
+    /// Read-only owner query for composition and component integration tests.
+    pub fn get<C: Component>(&self) -> Option<&C> {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).find_map(|component| component.as_any().downcast_ref())
+    }
     /// Whether a component, rather than the chat editor, currently owns input.
     pub fn focused(&self) -> bool { self.focus.is_some() }
 }

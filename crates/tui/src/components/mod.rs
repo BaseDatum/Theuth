@@ -132,6 +132,8 @@ pub struct CoreView<'a> {
     pub reasoning: bool,
     /// Once-decoded agent event shared with the core reducer for this dispatch.
     pub agent: Option<&'a agent::AgentEvent>,
+    /// Accepted transcript entries; components retain only their own projection.
+    pub entries: &'a [crate::model::Entry],
 }
 
 /// Notifications borrow accepted core data; retain only the owner's projection.
@@ -267,6 +269,8 @@ pub enum CoreAction {
     Notice(String),
     /// Insert above a streaming tail using the existing transcript policy.
     Interject(String),
+    /// A local validation refusal, not a failed asynchronous command.
+    Reject(String),
     /// Existing generic error semantics, including print-mode completion.
     Error(String),
 }
@@ -351,6 +355,8 @@ pub trait Component: Send + Sync + 'static {
     fn update(&mut self, input: Input<'_, Self::Msg>, cx: &mut Cx<'_, '_, Self::Msg>);
     /// Return owned presentation for a fixed layout slot.
     fn view(&self, at: Surface<'_>, cx: &ViewCx<'_>) -> Option<View>;
+    /// Exact additional rows for an owner decoration; shared by layout and view.
+    fn entry_rows(&self, _key: &str) -> usize { 0 }
     /// Next Unix-millisecond deadline; idle components do not wake the loop.
     fn wake(&self) -> Option<u64> { None }
 }
@@ -362,6 +368,8 @@ trait ErasedComponent: Send + Sync {
     fn input(&mut self, input: Input<'_, ()>, core: &CoreView<'_>, token: ComponentToken, epoch: u64, out: &mut Outbox);
     fn view(&self, at: Surface<'_>, cx: &ViewCx<'_>) -> Option<View>;
     fn wake(&self) -> Option<u64>;
+    fn entry_rows(&self, key: &str) -> usize;
+    fn as_any(&self) -> &dyn Any;
 }
 struct Mounted<C>(C);
 impl<C: Component> ErasedComponent for Mounted<C> {
@@ -383,6 +391,8 @@ impl<C: Component> ErasedComponent for Mounted<C> {
     }
     fn view(&self, at: Surface<'_>, cx: &ViewCx<'_>) -> Option<View> { self.0.view(at, cx) }
     fn wake(&self) -> Option<u64> { self.0.wake() }
+    fn entry_rows(&self, key: &str) -> usize { self.0.entry_rows(key) }
+    fn as_any(&self) -> &dyn Any { &self.0 }
 }
 
 /// Fixed generic effect envelope, never a feature-specific Command or reply.
