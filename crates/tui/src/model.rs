@@ -217,11 +217,15 @@ pub struct Model {
     /// (tests, line printer) = unbounded. Assistant text renders at this
     /// width when constructed; resize does not re-render (design doc 30 §7).
     pub width: usize,
+    /// Measured transcript rows for component key handling.
+    pub(crate) viewport: usize,
     /// Fixed feature registry; feature state never leaks into the core enum.
     pub(crate) components: crate::components::Registry,
     component_commands: Option<UnboundedSender<Command>>,
     /// A one-shot caret update for the shell's separate editor.
     pub(crate) widget_cursor: Option<usize>,
+    /// Text queued to prepend without replacing a draft typed since dispatch.
+    pub(crate) editor_prefixes: Vec<String>,
     /// A loaded transcript holds `show` cards: the event loop asks
     /// `list_artifacts` to join their artifacts back (35 §0.3).
     pub refresh_artifacts: bool,

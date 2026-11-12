@@ -244,6 +244,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 if let Some(caret) = m.widget_cursor.take() {
                     search_handle.write().set_cursor_offset(caret);
                 }
+                prepend_editor(&mut m, input);
                 // "send it" (153 §7.4): the spliced value takes the send key's path, once.
                 if let Some(text) = m.pending_send.take() {
                     m.submit(&text, &commands);
@@ -543,9 +544,14 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 .todo_card(usize::from(w), usize::from(h))
                 .map_or(0, |c| c.height());
             let view = view_rows(&m, h, &input.read(), todo + *component_rows.read());
+            m.width = usize::from(w);
+            m.viewport = view;
             // `/search` (49 §6.1): its own focus ring; the query editor's own
             // keys reach the search `TextInput`, everything else lands here.
-            if m.component_key(FocusClass::Search, &key) { return; }
+            if m.component_key(FocusClass::Search, &key) {
+                prepend_editor(&mut m, input);
+                return;
+            }
             if m.search_open() {
                 let (inner, area, _, _) = search_layout(&m, w, view);
                 m.search_key(code, inner, area, &commands);
@@ -911,6 +917,14 @@ impl ComponentSlot {
         Some(element!(View(flex_direction: FlexDirection::Column, height: self.rows as u32, flex_shrink: 0.0) {
             #(self.elements)
         }).into_any())
+    }
+}
+fn prepend_editor(m: &mut Model, mut input: State<String>) {
+    for prefix in std::mem::take(&mut m.editor_prefixes) {
+        let value = input.read().to_string();
+        let value = if value.is_empty() { prefix } else { format!("{prefix} {value}") };
+        m.sync_slash(&value);
+        input.set(value);
     }
 }
 fn component_slot(m: &Model, at: Surface<'_>, width: u16, height: u16, handle: Option<Ref<TextInputHandle>>) -> ComponentSlot {
