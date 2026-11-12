@@ -358,7 +358,7 @@ impl Model {
         // A subagent's stream is not rendered here; open it to read it. An
         // inspected page (49 §7) is not the live tail: arriving events must
         // not stitch across the missing middle or move the match offscreen.
-        if ev.session().is_none_or(|s| self.session != Some(s)) || self.inspect.is_some() {
+        if ev.session().is_none_or(|s| self.session != Some(s)) || self.historical || self.inspect.is_some() {
             return;
         }
         if !matches!(ev, AgentEvent::ReasoningDelta { .. })

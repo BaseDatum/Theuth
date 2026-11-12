@@ -121,7 +121,7 @@ pub(super) static FENCE: LazyLock<markdown::FenceHook> = LazyLock::new(|| Arc::n
 /// from context (48 §2.2) is a collapsed `⊘` card over the original — the
 /// archive stays readable (Ctrl+O), nothing re-enters the model's frame.
 /// Attachment occurrences are listed by name, removed ones marked.
-pub(super) fn from_history(h: HistoryEntry, opts: &markdown::Options, registry: &Registry) -> Vec<Entry> {
+pub(crate) fn from_history(h: HistoryEntry, opts: &markdown::Options, registry: &Registry) -> Vec<Entry> {
     let removed = |c: &Option<ContextEntry>| c.as_ref().is_some_and(|c| c.removed);
     match h {
         // A consultation note (52 §6) is harness-authored, never `◆ you`:

@@ -50,6 +50,32 @@ impl Model {
         };
     }
 
+    /// Present owner-built history without changing context or losing active prompts.
+    pub(super) fn present_transcript(&mut self, frame: crate::components::TranscriptPresentation) {
+        let previous_session = self.session;
+        let approvals = std::mem::take(&mut self.approvals);
+        let asks = std::mem::take(&mut self.asks);
+        self.reset();
+        self.approvals = approvals;
+        self.asks = asks;
+        self.session = Some(frame.session);
+        self.entries = frame.entries;
+        self.anchor = frame.anchor;
+        self.historical = frame.read_only;
+        self.model_id = frame.loaded.model;
+        self.harness_model = frame.loaded.harness_model;
+        self.harness_commands = frame.loaded.harness_commands;
+        self.context_size = frame.loaded.context_size;
+        self.agent = frame.loaded.agent;
+        self.effort = frame.loaded.effort;
+        self.session_name = frame.loaded.name;
+        self.session_parent = frame.loaded.parent;
+        self.streaming = frame.loaded.running;
+        if self.session != previous_session {
+            self.component_notify(crate::components::Lifecycle::SessionChanged);
+        }
+    }
+
     /// Show a loaded transcript: `UiEvent::History` and `UiEvent::Forked`.
     pub(super) fn load(&mut self, loaded: Loaded) {
         self.component_notify(crate::components::Lifecycle::TranscriptReplaced);

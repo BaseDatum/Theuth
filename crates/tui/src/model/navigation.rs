@@ -26,7 +26,7 @@ impl Model {
         (self.observed.is_none() || self.watch_slash)
             && !self.todo_focus
             && !self.modal_menu()
-            && self.inspect.is_none()
+            && !self.historical && self.inspect.is_none()
     }
 
     /// 141 §10.1: the read-only reason of a watch-only view, for the status
@@ -341,7 +341,7 @@ impl Model {
             search::Act::Resume(id) => {
                 self.menu = None;
                 self.search.close();
-                if Some(id) != self.session || self.inspect.is_some() {
+                if Some(id) != self.session || self.historical || self.inspect.is_some() {
                     self.resume(id, tx);
                 }
             }
