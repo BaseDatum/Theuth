@@ -413,3 +413,8 @@ impl DocumentsApiServer for Server {
         Ok(())
     }
 }
+
+/// Build this domain's RPC module.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    DocumentsApiServer::into_rpc(server)
+}

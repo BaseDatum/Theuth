@@ -632,3 +632,8 @@ impl NotebooksApiServer for Server {
         nb_result(agent::overviews::notebook_overviews(&agents, notebook.to_string()).await)
     }
 }
+
+/// Build this domain's RPC module.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    NotebooksApiServer::into_rpc(server)
+}

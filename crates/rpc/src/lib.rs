@@ -71,7 +71,7 @@ mod export;
 
 pub use self::search::SearchToolsPlugin;
 pub use acp::AcpPlugin;
-pub use api::{clients, into_rpc_module};
+pub use api::clients;
 
 /// `[rpc]` config section.
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -225,3 +225,8 @@ impl JobsApiServer for Server {
         Ok(())
     }
 }
+
+/// Build this domain's RPC module.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    JobsApiServer::into_rpc(server)
+}

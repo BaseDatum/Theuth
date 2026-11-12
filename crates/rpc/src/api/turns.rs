@@ -749,3 +749,8 @@ impl TurnsApiServer for Server {
         Ok(true)
     }
 }
+
+/// Build this domain's RPC module.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    TurnsApiServer::into_rpc(server)
+}
