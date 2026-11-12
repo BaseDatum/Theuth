@@ -1,0 +1,293 @@
+[
+  {
+    "input": {
+      "type": "LinkRelay",
+      "connected": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LinkRelay",
+          "connected": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "LinkRelay",
+      "connected": true
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LinkRelay",
+          "connected": true
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "LinkPairing"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LinkPairing",
+          "key": null,
+          "expires_at_ms": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "LinkPairing",
+      "key": "sample",
+      "expires_at_ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LinkPairing",
+          "key": "sample",
+          "expires_at_ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "LinkPairing",
+      "key": null,
+      "expires_at_ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LinkPairing",
+          "key": null,
+          "expires_at_ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "LinkPairing",
+      "key": "sample",
+      "expires_at_ms": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LinkPairing",
+          "key": "sample",
+          "expires_at_ms": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "LinkPaired",
+      "device": {
+        "id": "sample",
+        "name": "sample",
+        "platform": "sample",
+        "paired_at_ms": 1,
+        "last_seen_ms": 1,
+        "online": false
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LinkPaired",
+          "device": {
+            "id": "sample",
+            "name": "sample",
+            "platform": "sample",
+            "paired_at_ms": 1,
+            "last_seen_ms": 1,
+            "online": false
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "LinkPaired",
+      "device": {
+        "id": "sample",
+        "name": "sample",
+        "platform": "sample",
+        "paired_at_ms": 1,
+        "last_seen_ms": 1,
+        "online": true
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LinkPaired",
+          "device": {
+            "id": "sample",
+            "name": "sample",
+            "platform": "sample",
+            "paired_at_ms": 1,
+            "last_seen_ms": 1,
+            "online": true
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "LinkDevice",
+      "id": "sample",
+      "online": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LinkDevice",
+          "id": "sample",
+          "online": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "LinkDevice",
+      "id": "sample",
+      "online": true
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LinkDevice",
+          "id": "sample",
+          "online": true
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "LinkRevoked",
+      "id": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LinkRevoked",
+          "id": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "MeshRelay",
+      "connected": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "MeshRelay",
+          "connected": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "MeshRelay",
+      "connected": true
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "MeshRelay",
+          "connected": true
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DevicePaired",
+      "id": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DevicePaired",
+          "id": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DevicesChanged"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DevicesChanged"
+        }
+      }
+    }
+  }
+]

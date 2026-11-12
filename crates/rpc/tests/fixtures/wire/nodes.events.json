@@ -1,0 +1,191 @@
+[
+  {
+    "input": {
+      "type": "NodeAdded",
+      "node": {
+        "id": "sample",
+        "name": "sample",
+        "relay": "sample",
+        "platform": "sample",
+        "version": "sample",
+        "paired_at_ms": 1,
+        "last_seen_ms": 1,
+        "online": false,
+        "revoked": false,
+        "children": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NodeAdded",
+          "node": {
+            "id": "sample",
+            "name": "sample",
+            "relay": "sample",
+            "platform": "sample",
+            "version": "sample",
+            "paired_at_ms": 1,
+            "last_seen_ms": 1,
+            "online": false,
+            "revoked": false,
+            "children": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "NodeAdded",
+      "node": {
+        "id": "sample",
+        "name": "sample",
+        "relay": "sample",
+        "platform": "sample",
+        "version": "sample",
+        "paired_at_ms": 1,
+        "last_seen_ms": 1,
+        "online": true,
+        "revoked": false,
+        "children": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NodeAdded",
+          "node": {
+            "id": "sample",
+            "name": "sample",
+            "relay": "sample",
+            "platform": "sample",
+            "version": "sample",
+            "paired_at_ms": 1,
+            "last_seen_ms": 1,
+            "online": true,
+            "revoked": false,
+            "children": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "NodeAdded",
+      "node": {
+        "id": "sample",
+        "name": "sample",
+        "relay": "sample",
+        "platform": "sample",
+        "version": "sample",
+        "paired_at_ms": 1,
+        "last_seen_ms": 1,
+        "online": false,
+        "revoked": true,
+        "children": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NodeAdded",
+          "node": {
+            "id": "sample",
+            "name": "sample",
+            "relay": "sample",
+            "platform": "sample",
+            "version": "sample",
+            "paired_at_ms": 1,
+            "last_seen_ms": 1,
+            "online": false,
+            "revoked": true,
+            "children": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "NodeOnline",
+      "id": "sample",
+      "online": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NodeOnline",
+          "id": "sample",
+          "online": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "NodeOnline",
+      "id": "sample",
+      "online": true
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NodeOnline",
+          "id": "sample",
+          "online": true
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "NodeRemoved",
+      "id": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NodeRemoved",
+          "id": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "NodeRevoked",
+      "id": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NodeRevoked",
+          "id": "sample"
+        }
+      }
+    }
+  }
+]

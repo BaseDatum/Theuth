@@ -1,0 +1,100 @@
+[
+  {
+    "input": {
+      "question_id": "sample",
+      "class": "sample",
+      "choice": "sample",
+      "version": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleAnswered",
+          "question_id": "sample",
+          "class": "sample",
+          "choice": "sample",
+          "version": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "question_id": "sample",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "class": "sample",
+      "choice": "sample",
+      "version": "sample",
+      "undo_until": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleAnswered",
+          "question_id": "sample",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "class": "sample",
+          "choice": "sample",
+          "version": "sample",
+          "undo_until": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "question_id": "sample",
+      "session": null,
+      "class": "sample",
+      "choice": "sample",
+      "version": "sample",
+      "undo_until": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleAnswered",
+          "question_id": "sample",
+          "class": "sample",
+          "choice": "sample",
+          "version": "sample",
+          "undo_until": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "question_id": "sample",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "class": "sample",
+      "choice": "sample",
+      "version": "sample",
+      "undo_until": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleAnswered",
+          "question_id": "sample",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "class": "sample",
+          "choice": "sample",
+          "version": "sample"
+        }
+      }
+    }
+  }
+]

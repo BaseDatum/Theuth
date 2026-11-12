@@ -1,0 +1,389 @@
+[
+  {
+    "input": {
+      "run_id": "sample",
+      "tier": "a",
+      "venue": "sample",
+      "state": "idle",
+      "message": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleTrainingState",
+          "run_id": "sample",
+          "tier": "a",
+          "venue": "sample",
+          "state": "idle",
+          "message": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "run_id": "sample",
+      "tier": "a",
+      "venue": "sample",
+      "state": "idle",
+      "progress": 1,
+      "message": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleTrainingState",
+          "run_id": "sample",
+          "tier": "a",
+          "venue": "sample",
+          "state": "idle",
+          "progress": 1.0,
+          "message": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "run_id": "sample",
+      "tier": "b",
+      "venue": "sample",
+      "state": "idle",
+      "progress": 1,
+      "message": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleTrainingState",
+          "run_id": "sample",
+          "tier": "b",
+          "venue": "sample",
+          "state": "idle",
+          "progress": 1.0,
+          "message": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "run_id": "sample",
+      "tier": "c",
+      "venue": "sample",
+      "state": "idle",
+      "progress": 1,
+      "message": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleTrainingState",
+          "run_id": "sample",
+          "tier": "c",
+          "venue": "sample",
+          "state": "idle",
+          "progress": 1.0,
+          "message": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "run_id": "sample",
+      "tier": "baseline",
+      "venue": "sample",
+      "state": "idle",
+      "progress": 1,
+      "message": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleTrainingState",
+          "run_id": "sample",
+          "tier": "baseline",
+          "venue": "sample",
+          "state": "idle",
+          "progress": 1.0,
+          "message": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "run_id": "sample",
+      "tier": "a",
+      "venue": "sample",
+      "state": "eligible",
+      "progress": 1,
+      "message": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleTrainingState",
+          "run_id": "sample",
+          "tier": "a",
+          "venue": "sample",
+          "state": "eligible",
+          "progress": 1.0,
+          "message": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "run_id": "sample",
+      "tier": "a",
+      "venue": "sample",
+      "state": "waiting",
+      "progress": 1,
+      "message": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleTrainingState",
+          "run_id": "sample",
+          "tier": "a",
+          "venue": "sample",
+          "state": "waiting",
+          "progress": 1.0,
+          "message": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "run_id": "sample",
+      "tier": "a",
+      "venue": "sample",
+      "state": "acquiring",
+      "progress": 1,
+      "message": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleTrainingState",
+          "run_id": "sample",
+          "tier": "a",
+          "venue": "sample",
+          "state": "acquiring",
+          "progress": 1.0,
+          "message": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "run_id": "sample",
+      "tier": "a",
+      "venue": "sample",
+      "state": "running",
+      "progress": 1,
+      "message": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleTrainingState",
+          "run_id": "sample",
+          "tier": "a",
+          "venue": "sample",
+          "state": "running",
+          "progress": 1.0,
+          "message": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "run_id": "sample",
+      "tier": "a",
+      "venue": "sample",
+      "state": "paused",
+      "progress": 1,
+      "message": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleTrainingState",
+          "run_id": "sample",
+          "tier": "a",
+          "venue": "sample",
+          "state": "paused",
+          "progress": 1.0,
+          "message": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "run_id": "sample",
+      "tier": "a",
+      "venue": "sample",
+      "state": "evaluating",
+      "progress": 1,
+      "message": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleTrainingState",
+          "run_id": "sample",
+          "tier": "a",
+          "venue": "sample",
+          "state": "evaluating",
+          "progress": 1.0,
+          "message": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "run_id": "sample",
+      "tier": "a",
+      "venue": "sample",
+      "state": "promoted",
+      "progress": 1,
+      "message": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleTrainingState",
+          "run_id": "sample",
+          "tier": "a",
+          "venue": "sample",
+          "state": "promoted",
+          "progress": 1.0,
+          "message": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "run_id": "sample",
+      "tier": "a",
+      "venue": "sample",
+      "state": "rejected",
+      "progress": 1,
+      "message": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleTrainingState",
+          "run_id": "sample",
+          "tier": "a",
+          "venue": "sample",
+          "state": "rejected",
+          "progress": 1.0,
+          "message": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "run_id": "sample",
+      "tier": "a",
+      "venue": "sample",
+      "state": "cleaned",
+      "progress": 1,
+      "message": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleTrainingState",
+          "run_id": "sample",
+          "tier": "a",
+          "venue": "sample",
+          "state": "cleaned",
+          "progress": 1.0,
+          "message": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "run_id": "sample",
+      "tier": "a",
+      "venue": "sample",
+      "state": "idle",
+      "progress": null,
+      "message": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleTrainingState",
+          "run_id": "sample",
+          "tier": "a",
+          "venue": "sample",
+          "state": "idle",
+          "message": "sample"
+        }
+      }
+    }
+  }
+]

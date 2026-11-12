@@ -1,0 +1,145 @@
+[
+  {
+    "input": {
+      "connecting": [],
+      "connected": [],
+      "failed": []
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "McpProgress",
+          "connecting": [],
+          "connected": [],
+          "failed": [],
+          "homes_problem": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "connecting": [],
+      "connected": [],
+      "failed": [],
+      "homes_problem": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "McpProgress",
+          "connecting": [],
+          "connected": [],
+          "failed": [],
+          "homes_problem": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "connecting": [
+        "sample"
+      ],
+      "connected": [],
+      "failed": [],
+      "homes_problem": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "McpProgress",
+          "connecting": [
+            "sample"
+          ],
+          "connected": [],
+          "failed": [],
+          "homes_problem": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "connecting": [],
+      "connected": [
+        "sample"
+      ],
+      "failed": [],
+      "homes_problem": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "McpProgress",
+          "connecting": [],
+          "connected": [
+            "sample"
+          ],
+          "failed": [],
+          "homes_problem": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "connecting": [],
+      "connected": [],
+      "failed": [
+        "sample"
+      ],
+      "homes_problem": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "McpProgress",
+          "connecting": [],
+          "connected": [],
+          "failed": [
+            "sample"
+          ],
+          "homes_problem": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "connecting": [],
+      "connected": [],
+      "failed": [],
+      "homes_problem": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "McpProgress",
+          "connecting": [],
+          "connected": [],
+          "failed": [],
+          "homes_problem": null
+        }
+      }
+    }
+  }
+]

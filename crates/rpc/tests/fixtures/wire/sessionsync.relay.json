@@ -1,0 +1,605 @@
+[
+  {
+    "input": {
+      "kind": "ApprovalRequested",
+      "event": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "tool": "sample",
+        "args": null,
+        "risk": "read_only",
+        "type": "ApprovalRequested",
+        "replay": true,
+        "future": {
+          "key": "kept"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "tool": "sample",
+          "args": null,
+          "risk": "read_only",
+          "type": "ApprovalRequested",
+          "replay": true,
+          "future": {
+            "key": "kept"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "kind": "ApprovalResolved",
+      "event": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "decision": "allow",
+        "timed_out": false,
+        "type": "ApprovalResolved",
+        "replay": true,
+        "future": {
+          "key": "kept"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "id": "00000000-0000-0000-0000-000000000001",
+          "decision": "allow",
+          "timed_out": false,
+          "type": "ApprovalResolved",
+          "replay": true,
+          "future": {
+            "key": "kept"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "kind": "AskRequested",
+      "event": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "questions": [],
+        "type": "AskRequested",
+        "replay": true,
+        "future": {
+          "key": "kept"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "questions": [],
+          "type": "AskRequested",
+          "replay": true,
+          "future": {
+            "key": "kept"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "kind": "AskResolved",
+      "event": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "dismissed": false,
+        "timed_out": false,
+        "type": "AskResolved",
+        "replay": true,
+        "future": {
+          "key": "kept"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "id": "00000000-0000-0000-0000-000000000001",
+          "dismissed": false,
+          "timed_out": false,
+          "type": "AskResolved",
+          "replay": true,
+          "future": {
+            "key": "kept"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "kind": "JobEvent",
+      "event": {
+        "type": "JobStarted",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "id": "sample",
+        "command": "sample",
+        "call_id": "sample",
+        "log": "sample",
+        "replay": true,
+        "future": {
+          "key": "kept"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobStarted",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "call_id": "sample",
+          "log": "sample",
+          "name": null,
+          "pty": false,
+          "kind": "shell"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "kind": "JobEvent",
+      "event": {
+        "type": "JobOutput",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "id": "sample",
+        "chunk": "sample",
+        "replay": true,
+        "future": {
+          "key": "kept"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobOutput",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "chunk": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "kind": "JobEvent",
+      "event": {
+        "type": "JobScreen",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "id": "sample",
+        "rows": [],
+        "cursor": [
+          1,
+          1
+        ],
+        "replay": true,
+        "future": {
+          "key": "kept"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobScreen",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "rows": [],
+          "cursor": [
+            1,
+            1
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "kind": "JobEvent",
+      "event": {
+        "type": "JobIdle",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "id": "sample",
+        "command": "sample",
+        "quiet_secs": 1,
+        "secs": 1,
+        "nudge": 1,
+        "output": "sample",
+        "replay": true,
+        "future": {
+          "key": "kept"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobIdle",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "name": null,
+          "quiet_secs": 1,
+          "secs": 1,
+          "nudge": 1,
+          "user_typed_secs": null,
+          "output": "sample",
+          "why": ""
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "kind": "JobEvent",
+      "event": {
+        "type": "JobFinished",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "id": "sample",
+        "command": "sample",
+        "exit": {
+          "exited": 1
+        },
+        "secs": 1,
+        "output": "sample",
+        "inline": false,
+        "pty": false,
+        "replay": true,
+        "future": {
+          "key": "kept"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "JobFinished",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "sample",
+          "command": "sample",
+          "exit": {
+            "exited": 1
+          },
+          "secs": 1,
+          "output": "sample",
+          "inline": false,
+          "pty": false,
+          "kind": "shell"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "kind": "CellEvent",
+      "event": {
+        "type": "run_queued",
+        "run": "sample",
+        "scope": {
+          "type": "session",
+          "id": "00000000-0000-0000-0000-000000000001"
+        },
+        "replay": true,
+        "future": {
+          "key": "kept"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "run_queued",
+          "run": "sample",
+          "scope": {
+            "type": "session",
+            "id": "00000000-0000-0000-0000-000000000001"
+          },
+          "replay": true,
+          "future": {
+            "key": "kept"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "kind": "CellEvent",
+      "event": {
+        "type": "run_started",
+        "run": "sample",
+        "scope": {
+          "type": "session",
+          "id": "00000000-0000-0000-0000-000000000001"
+        },
+        "replay": true,
+        "future": {
+          "key": "kept"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "run_started",
+          "run": "sample",
+          "scope": {
+            "type": "session",
+            "id": "00000000-0000-0000-0000-000000000001"
+          },
+          "replay": true,
+          "future": {
+            "key": "kept"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "kind": "CellEvent",
+      "event": {
+        "type": "run_finished",
+        "run": "sample",
+        "scope": {
+          "type": "session",
+          "id": "00000000-0000-0000-0000-000000000001"
+        },
+        "replay": true,
+        "future": {
+          "key": "kept"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "run_finished",
+          "run": "sample",
+          "scope": {
+            "type": "session",
+            "id": "00000000-0000-0000-0000-000000000001"
+          },
+          "replay": true,
+          "future": {
+            "key": "kept"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "kind": "CellEvent",
+      "event": {
+        "type": "kernel_changed",
+        "kernel": {
+          "scope": {
+            "type": "session",
+            "id": "00000000-0000-0000-0000-000000000001"
+          },
+          "spec": {
+            "type": "shell",
+            "kind": "bash",
+            "path": "sample"
+          }
+        },
+        "replay": true,
+        "future": {
+          "key": "kept"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "kernel_changed",
+          "kernel": {
+            "scope": {
+              "type": "session",
+              "id": "00000000-0000-0000-0000-000000000001"
+            },
+            "spec": {
+              "type": "shell",
+              "kind": "bash",
+              "path": "sample"
+            }
+          },
+          "replay": true,
+          "future": {
+            "key": "kept"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "kind": "CellEvent",
+      "event": {
+        "type": "cells_changed",
+        "scope": {
+          "type": "session",
+          "id": "00000000-0000-0000-0000-000000000001"
+        },
+        "replay": true,
+        "future": {
+          "key": "kept"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "cells_changed",
+          "scope": {
+            "type": "session",
+            "id": "00000000-0000-0000-0000-000000000001"
+          },
+          "replay": true,
+          "future": {
+            "key": "kept"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "kind": "FollowState",
+      "event": {
+        "type": "FollowState",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "live": false
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "FollowState",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "live": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "kind": "FollowState",
+      "event": {
+        "type": "FollowState",
+        "session": "00000000-0000-0000-0000-000000000001",
+        "live": true
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "FollowState",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "live": true
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "kind": "FutureOwnerEvent",
+      "event": {
+        "type": "FutureTag",
+        "nested": {
+          "session": "00000000-0000-0000-0000-000000000001"
+        },
+        "replay": true,
+        "future": [
+          1,
+          null
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "FutureTag",
+          "nested": {
+            "session": "00000000-0000-0000-0000-000000000001"
+          },
+          "replay": true,
+          "future": [
+            1,
+            null
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "kind": "FutureOwnerEvent",
+      "event": {
+        "type": "FutureTag",
+        "session": null,
+        "optional": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "FutureTag",
+          "session": null,
+          "optional": null
+        }
+      }
+    }
+  }
+]

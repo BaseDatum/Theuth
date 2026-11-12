@@ -1,0 +1,261 @@
+[
+  {
+    "input": {
+      "type": "contact_pair",
+      "data": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "peer": "sample",
+        "name": "sample",
+        "os_name": "sample",
+        "code": "sample",
+        "state": "sample",
+        "expires_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "contact_pair",
+          "data": {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "peer": "sample",
+            "name": "sample",
+            "os_name": "sample",
+            "addr": "",
+            "code": "sample",
+            "state": "sample",
+            "expires_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "contact_pair",
+      "data": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "peer": "sample",
+        "name": "sample",
+        "os_name": "sample",
+        "addr": "sample",
+        "code": "sample",
+        "state": "sample",
+        "expires_ms": 1
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "contact_pair",
+          "data": {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "peer": "sample",
+            "name": "sample",
+            "os_name": "sample",
+            "addr": "sample",
+            "code": "sample",
+            "state": "sample",
+            "expires_ms": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "contact_nearby",
+      "data": []
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "contact_nearby",
+          "data": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "contact_nearby",
+      "data": [
+        {
+          "name": "sample",
+          "service": "sample",
+          "addr": "sample",
+          "verified": false
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "contact_nearby",
+          "data": [
+            {
+              "name": "sample",
+              "service": "sample",
+              "addr": "sample",
+              "eid": null,
+              "card": null,
+              "verified": false
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "contact_nearby",
+      "data": [
+        {
+          "name": "sample",
+          "service": "sample",
+          "addr": "sample",
+          "eid": "sample",
+          "card": "sample",
+          "verified": false
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "contact_nearby",
+          "data": [
+            {
+              "name": "sample",
+              "service": "sample",
+              "addr": "sample",
+              "eid": "sample",
+              "card": "sample",
+              "verified": false
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "contact_nearby",
+      "data": [
+        {
+          "name": "sample",
+          "service": "sample",
+          "addr": "sample",
+          "eid": null,
+          "card": "sample",
+          "verified": false
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "contact_nearby",
+          "data": [
+            {
+              "name": "sample",
+              "service": "sample",
+              "addr": "sample",
+              "eid": null,
+              "card": "sample",
+              "verified": false
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "contact_nearby",
+      "data": [
+        {
+          "name": "sample",
+          "service": "sample",
+          "addr": "sample",
+          "eid": "sample",
+          "card": null,
+          "verified": false
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "contact_nearby",
+          "data": [
+            {
+              "name": "sample",
+              "service": "sample",
+              "addr": "sample",
+              "eid": "sample",
+              "card": null,
+              "verified": false
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "contact_nearby",
+      "data": [
+        {
+          "name": "sample",
+          "service": "sample",
+          "addr": "sample",
+          "eid": "sample",
+          "card": "sample",
+          "verified": true
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "contact_nearby",
+          "data": [
+            {
+              "name": "sample",
+              "service": "sample",
+              "addr": "sample",
+              "eid": "sample",
+              "card": "sample",
+              "verified": true
+            }
+          ]
+        }
+      }
+    }
+  }
+]

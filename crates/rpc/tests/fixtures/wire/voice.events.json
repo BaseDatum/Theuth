@@ -1,0 +1,1092 @@
+[
+  {
+    "input": {
+      "type": "VoiceModel",
+      "state": {
+        "state": "missing"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "VoiceModel",
+          "state": {
+            "state": "missing"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "VoiceModel",
+      "state": {
+        "state": "loading"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "VoiceModel",
+          "state": {
+            "state": "loading"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "VoiceModel",
+      "state": {
+        "state": "ready"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "VoiceModel",
+          "state": {
+            "state": "ready"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "VoiceModel",
+      "state": {
+        "state": "failed",
+        "message": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "VoiceModel",
+          "state": {
+            "state": "failed",
+            "message": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SpeechStarted",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "sample_rate": 1,
+      "chars": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SpeechStarted",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "sample_rate": 1,
+          "chars": 1,
+          "sink": "client"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SpeechStarted",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "sample_rate": 1,
+      "chars": 1,
+      "sink": "client"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SpeechStarted",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "sample_rate": 1,
+          "chars": 1,
+          "sink": "client"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SpeechStarted",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "sample_rate": 1,
+      "chars": 1,
+      "sink": "device"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SpeechStarted",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "sample_rate": 1,
+          "chars": 1,
+          "sink": "device"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SpeechAudio",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "seq": 1,
+      "opus": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SpeechAudio",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "seq": 1,
+          "opus": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SpeechFinished",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "reason": {
+        "reason": "done"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SpeechFinished",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "reason": {
+            "reason": "done"
+          },
+          "sink": "client"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SpeechFinished",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "reason": {
+        "reason": "done"
+      },
+      "sink": "client"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SpeechFinished",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "reason": {
+            "reason": "done"
+          },
+          "sink": "client"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SpeechFinished",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "reason": {
+        "reason": "stopped"
+      },
+      "sink": "client"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SpeechFinished",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "reason": {
+            "reason": "stopped"
+          },
+          "sink": "client"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SpeechFinished",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "reason": {
+        "reason": "error",
+        "message": "sample"
+      },
+      "sink": "client"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SpeechFinished",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "reason": {
+            "reason": "error",
+            "message": "sample"
+          },
+          "sink": "client"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SpeechFinished",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "reason": {
+        "reason": "done"
+      },
+      "sink": "device"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SpeechFinished",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "reason": {
+            "reason": "done"
+          },
+          "sink": "device"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationModel",
+      "state": {
+        "state": "missing"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationModel",
+          "state": {
+            "state": "missing"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationModel",
+      "state": {
+        "state": "loading"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationModel",
+          "state": {
+            "state": "loading"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationModel",
+      "state": {
+        "state": "ready"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationModel",
+          "state": {
+            "state": "ready"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationModel",
+      "state": {
+        "state": "failed",
+        "message": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationModel",
+          "state": {
+            "state": "failed",
+            "message": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationStarted",
+      "id": "00000000-0000-0000-0000-000000000001"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationStarted",
+          "id": "00000000-0000-0000-0000-000000000001"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationLevel",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "levels": []
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationLevel",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "levels": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationLevel",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "levels": [
+        1
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationLevel",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "levels": [
+            1.0
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationText",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "utterance": 1,
+      "text": "sample",
+      "final": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationText",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "utterance": 1,
+          "text": "sample",
+          "final": false,
+          "shaped": "",
+          "command": null,
+          "actions": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationText",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "utterance": 1,
+      "text": "sample",
+      "final": false,
+      "shaped": "sample",
+      "command": {
+        "command": "send",
+        "near_miss": false
+      },
+      "actions": []
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationText",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "utterance": 1,
+          "text": "sample",
+          "final": false,
+          "shaped": "sample",
+          "command": {
+            "command": "send",
+            "near_miss": false
+          },
+          "actions": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationText",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "utterance": 1,
+      "text": "sample",
+      "final": true,
+      "shaped": "sample",
+      "command": {
+        "command": "send",
+        "near_miss": false
+      },
+      "actions": []
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationText",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "utterance": 1,
+          "text": "sample",
+          "final": true,
+          "shaped": "sample",
+          "command": {
+            "command": "send",
+            "near_miss": false
+          },
+          "actions": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationText",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "utterance": 1,
+      "text": "sample",
+      "final": false,
+      "shaped": "sample",
+      "command": {
+        "command": "send",
+        "near_miss": true
+      },
+      "actions": []
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationText",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "utterance": 1,
+          "text": "sample",
+          "final": false,
+          "shaped": "sample",
+          "command": {
+            "command": "send",
+            "near_miss": true
+          },
+          "actions": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationText",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "utterance": 1,
+      "text": "sample",
+      "final": false,
+      "shaped": "sample",
+      "command": {
+        "command": "scratch_that"
+      },
+      "actions": []
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationText",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "utterance": 1,
+          "text": "sample",
+          "final": false,
+          "shaped": "sample",
+          "command": {
+            "command": "scratch_that"
+          },
+          "actions": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationText",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "utterance": 1,
+      "text": "sample",
+      "final": false,
+      "shaped": "sample",
+      "command": null,
+      "actions": []
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationText",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "utterance": 1,
+          "text": "sample",
+          "final": false,
+          "shaped": "sample",
+          "command": null,
+          "actions": []
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationText",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "utterance": 1,
+      "text": "sample",
+      "final": false,
+      "shaped": "sample",
+      "command": {
+        "command": "send",
+        "near_miss": false
+      },
+      "actions": [
+        "new_line"
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationText",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "utterance": 1,
+          "text": "sample",
+          "final": false,
+          "shaped": "sample",
+          "command": {
+            "command": "send",
+            "near_miss": false
+          },
+          "actions": [
+            "new_line"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationText",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "utterance": 1,
+      "text": "sample",
+      "final": false,
+      "shaped": "sample",
+      "command": {
+        "command": "send",
+        "near_miss": false
+      },
+      "actions": [
+        "new_paragraph"
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationText",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "utterance": 1,
+          "text": "sample",
+          "final": false,
+          "shaped": "sample",
+          "command": {
+            "command": "send",
+            "near_miss": false
+          },
+          "actions": [
+            "new_paragraph"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationText",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "utterance": 1,
+      "text": "sample",
+      "final": false,
+      "shaped": "sample",
+      "command": {
+        "command": "send",
+        "near_miss": false
+      },
+      "actions": [
+        "tab"
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationText",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "utterance": 1,
+          "text": "sample",
+          "final": false,
+          "shaped": "sample",
+          "command": {
+            "command": "send",
+            "near_miss": false
+          },
+          "actions": [
+            "tab"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationFinished",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "reason": {
+        "reason": "done"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationFinished",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "reason": {
+            "reason": "done"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationFinished",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "reason": {
+        "reason": "stopped"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationFinished",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "reason": {
+            "reason": "stopped"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationFinished",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "reason": {
+        "reason": "error",
+        "message": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationFinished",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "reason": {
+            "reason": "error",
+            "message": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationDevice",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "state": "changed"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationDevice",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "device": null,
+          "state": "changed"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationDevice",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "device": "sample",
+      "state": "changed"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationDevice",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "device": "sample",
+          "state": "changed"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationDevice",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "device": null,
+      "state": "changed"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationDevice",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "device": null,
+          "state": "changed"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictationDevice",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "device": "sample",
+      "state": "lost"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictationDevice",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "device": "sample",
+          "state": "lost"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictionarySuggestion",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "heard": "sample",
+      "typed": "sample",
+      "occurrences": 1,
+      "surface": "composer",
+      "has_audio": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictionarySuggestion",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "heard": "sample",
+          "typed": "sample",
+          "occurrences": 1,
+          "surface": "composer",
+          "has_audio": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictionarySuggestion",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "heard": "sample",
+      "typed": "sample",
+      "occurrences": 1,
+      "surface": "tui",
+      "has_audio": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictionarySuggestion",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "heard": "sample",
+          "typed": "sample",
+          "occurrences": 1,
+          "surface": "tui",
+          "has_audio": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictionarySuggestion",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "heard": "sample",
+      "typed": "sample",
+      "occurrences": 1,
+      "surface": "companion",
+      "has_audio": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictionarySuggestion",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "heard": "sample",
+          "typed": "sample",
+          "occurrences": 1,
+          "surface": "companion",
+          "has_audio": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictionarySuggestion",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "heard": "sample",
+      "typed": "sample",
+      "occurrences": 1,
+      "surface": "phone",
+      "has_audio": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictionarySuggestion",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "heard": "sample",
+          "typed": "sample",
+          "occurrences": 1,
+          "surface": "phone",
+          "has_audio": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictionarySuggestion",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "heard": "sample",
+      "typed": "sample",
+      "occurrences": 1,
+      "surface": "any_app",
+      "has_audio": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictionarySuggestion",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "heard": "sample",
+          "typed": "sample",
+          "occurrences": 1,
+          "surface": "any_app",
+          "has_audio": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DictionarySuggestion",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "heard": "sample",
+      "typed": "sample",
+      "occurrences": 1,
+      "surface": "composer",
+      "has_audio": true
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DictionarySuggestion",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "heard": "sample",
+          "typed": "sample",
+          "occurrences": 1,
+          "surface": "composer",
+          "has_audio": true
+        }
+      }
+    }
+  }
+]

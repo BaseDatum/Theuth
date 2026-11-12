@@ -1,0 +1,104 @@
+[
+  {
+    "input": {
+      "type": "Connected",
+      "connections": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Connected",
+          "connections": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Disconnected",
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Disconnected",
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "RateLimited",
+      "method": "sample",
+      "retry_after_secs": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "RateLimited",
+          "method": "sample",
+          "retry_after_secs": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StreamFallback",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StreamFallback",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Unconfigured"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Unconfigured"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DaemonOnly"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DaemonOnly"
+        }
+      }
+    }
+  }
+]

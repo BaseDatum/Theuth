@@ -1,0 +1,287 @@
+[
+  {
+    "input": {
+      "id": "sample",
+      "op": "put",
+      "source": "harvest"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "KnowledgeChanged",
+          "id": "sample",
+          "op": "put",
+          "source": "harvest",
+          "commit": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "sample",
+      "op": "put",
+      "source": "harvest",
+      "commit": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "KnowledgeChanged",
+          "id": "sample",
+          "op": "put",
+          "source": "harvest",
+          "commit": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "sample",
+      "op": "delete",
+      "source": "harvest",
+      "commit": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "KnowledgeChanged",
+          "id": "sample",
+          "op": "delete",
+          "source": "harvest",
+          "commit": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "sample",
+      "op": "merge",
+      "source": "harvest",
+      "commit": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "KnowledgeChanged",
+          "id": "sample",
+          "op": "merge",
+          "source": "harvest",
+          "commit": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "sample",
+      "op": "supersede",
+      "source": "harvest",
+      "commit": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "KnowledgeChanged",
+          "id": "sample",
+          "op": "supersede",
+          "source": "harvest",
+          "commit": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "sample",
+      "op": "archive",
+      "source": "harvest",
+      "commit": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "KnowledgeChanged",
+          "id": "sample",
+          "op": "archive",
+          "source": "harvest",
+          "commit": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "sample",
+      "op": "verify",
+      "source": "harvest",
+      "commit": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "KnowledgeChanged",
+          "id": "sample",
+          "op": "verify",
+          "source": "harvest",
+          "commit": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "sample",
+      "op": "retitle",
+      "source": "harvest",
+      "commit": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "KnowledgeChanged",
+          "id": "sample",
+          "op": "retitle",
+          "source": "harvest",
+          "commit": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "sample",
+      "op": "put",
+      "source": "model",
+      "commit": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "KnowledgeChanged",
+          "id": "sample",
+          "op": "put",
+          "source": "model",
+          "commit": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "sample",
+      "op": "put",
+      "source": "user",
+      "commit": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "KnowledgeChanged",
+          "id": "sample",
+          "op": "put",
+          "source": "user",
+          "commit": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "sample",
+      "op": "put",
+      "source": "sync",
+      "commit": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "KnowledgeChanged",
+          "id": "sample",
+          "op": "put",
+          "source": "sync",
+          "commit": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "sample",
+      "op": "put",
+      "source": "dreaming",
+      "commit": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "KnowledgeChanged",
+          "id": "sample",
+          "op": "put",
+          "source": "dreaming",
+          "commit": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "sample",
+      "op": "put",
+      "source": "harvest",
+      "commit": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "KnowledgeChanged",
+          "id": "sample",
+          "op": "put",
+          "source": "harvest",
+          "commit": null
+        }
+      }
+    }
+  }
+]

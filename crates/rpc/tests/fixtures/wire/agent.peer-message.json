@@ -1,0 +1,142 @@
+[
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "state": "accepted"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PeerMessageChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "state": "accepted"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "state": "held"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PeerMessageChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "state": "held"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "state": "consumed"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PeerMessageChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "state": "consumed"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "state": "replied"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PeerMessageChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "state": "replied"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "state": "suppressed"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PeerMessageChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "state": "suppressed"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "state": "failed"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PeerMessageChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "state": "failed"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "state": "unknown"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PeerMessageChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "state": "unknown"
+        }
+      }
+    }
+  }
+]

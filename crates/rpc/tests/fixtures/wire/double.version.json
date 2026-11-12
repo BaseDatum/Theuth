@@ -1,0 +1,93 @@
+[
+  {
+    "input": {
+      "version": "sample",
+      "metrics": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleVersionActivated",
+          "version": "sample",
+          "metrics": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "version": "sample",
+      "previous": "sample",
+      "metrics": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleVersionActivated",
+          "version": "sample",
+          "previous": "sample",
+          "metrics": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "version": "sample",
+      "previous": null,
+      "metrics": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleVersionActivated",
+          "version": "sample",
+          "metrics": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "version": "sample",
+      "previous": "sample",
+      "metrics": {
+        "text": "λ\n\"quoted\"",
+        "values": [
+          1,
+          false,
+          null
+        ]
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DoubleVersionActivated",
+          "version": "sample",
+          "previous": "sample",
+          "metrics": {
+            "text": "λ\n\"quoted\"",
+            "values": [
+              1,
+              false,
+              null
+            ]
+          }
+        }
+      }
+    }
+  }
+]

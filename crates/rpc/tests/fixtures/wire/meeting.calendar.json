@@ -1,0 +1,51 @@
+[
+  {
+    "input": {
+      "type": "EventKit",
+      "enabled": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EventKit",
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "EventKit",
+      "enabled": true
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "EventKit",
+          "enabled": true
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "SourcesChanged"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "SourcesChanged"
+        }
+      }
+    }
+  }
+]

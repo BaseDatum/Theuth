@@ -1,0 +1,50 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "method": "subscribe_events",
+    "params": {
+      "subscription": "<subscription>",
+      "result": {
+        "type": "PendingPrompts",
+        "approvals": [],
+        "asks": [],
+        "secrets": []
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "subscribe_events",
+    "params": {
+      "subscription": "<subscription>",
+      "result": {
+        "type": "Lagged",
+        "count": 2
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "subscribe_events",
+    "params": {
+      "subscription": "<subscription>",
+      "result": {
+        "type": "PendingPrompts",
+        "approvals": [],
+        "asks": [],
+        "secrets": []
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "subscribe_events",
+    "params": {
+      "subscription": "<subscription>",
+      "result": {
+        "type": "TitleChanged",
+        "title": "2"
+      }
+    }
+  }
+]

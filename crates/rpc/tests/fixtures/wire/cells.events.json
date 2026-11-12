@@ -1,0 +1,451 @@
+[
+  {
+    "input": {
+      "type": "run_queued",
+      "run": "sample",
+      "scope": {
+        "type": "session",
+        "id": "00000000-0000-0000-0000-000000000001"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "run_queued",
+          "run": "sample",
+          "scope": {
+            "type": "session",
+            "id": "00000000-0000-0000-0000-000000000001"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "run_queued",
+      "run": "sample",
+      "scope": {
+        "type": "doc",
+        "id": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "run_queued",
+          "run": "sample",
+          "scope": {
+            "type": "doc",
+            "id": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "run_started",
+      "run": "sample",
+      "scope": {
+        "type": "session",
+        "id": "00000000-0000-0000-0000-000000000001"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "run_started",
+          "run": "sample",
+          "scope": {
+            "type": "session",
+            "id": "00000000-0000-0000-0000-000000000001"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "run_started",
+      "run": "sample",
+      "scope": {
+        "type": "doc",
+        "id": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "run_started",
+          "run": "sample",
+          "scope": {
+            "type": "doc",
+            "id": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "run_finished",
+      "run": "sample",
+      "scope": {
+        "type": "session",
+        "id": "00000000-0000-0000-0000-000000000001"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "run_finished",
+          "run": "sample",
+          "scope": {
+            "type": "session",
+            "id": "00000000-0000-0000-0000-000000000001"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "run_finished",
+      "run": "sample",
+      "scope": {
+        "type": "doc",
+        "id": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "run_finished",
+          "run": "sample",
+          "scope": {
+            "type": "doc",
+            "id": "sample"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "kernel_changed",
+      "kernel": {
+        "scope": {
+          "type": "session",
+          "id": "00000000-0000-0000-0000-000000000001"
+        },
+        "spec": {
+          "type": "shell",
+          "kind": "bash",
+          "path": "sample"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "kernel_changed",
+          "kernel": {
+            "scope": {
+              "type": "session",
+              "id": "00000000-0000-0000-0000-000000000001"
+            },
+            "spec": {
+              "type": "shell",
+              "kind": "bash",
+              "path": "sample"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "kernel_changed",
+      "kernel": {
+        "scope": {
+          "type": "doc",
+          "id": "sample"
+        },
+        "spec": {
+          "type": "shell",
+          "kind": "bash",
+          "path": "sample"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "kernel_changed",
+          "kernel": {
+            "scope": {
+              "type": "doc",
+              "id": "sample"
+            },
+            "spec": {
+              "type": "shell",
+              "kind": "bash",
+              "path": "sample"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "kernel_changed",
+      "kernel": {
+        "scope": {
+          "type": "session",
+          "id": "00000000-0000-0000-0000-000000000001"
+        },
+        "spec": {
+          "type": "shell",
+          "kind": "zsh",
+          "path": "sample"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "kernel_changed",
+          "kernel": {
+            "scope": {
+              "type": "session",
+              "id": "00000000-0000-0000-0000-000000000001"
+            },
+            "spec": {
+              "type": "shell",
+              "kind": "zsh",
+              "path": "sample"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "kernel_changed",
+      "kernel": {
+        "scope": {
+          "type": "session",
+          "id": "00000000-0000-0000-0000-000000000001"
+        },
+        "spec": {
+          "type": "shell",
+          "kind": "sh",
+          "path": "sample"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "kernel_changed",
+          "kernel": {
+            "scope": {
+              "type": "session",
+              "id": "00000000-0000-0000-0000-000000000001"
+            },
+            "spec": {
+              "type": "shell",
+              "kind": "sh",
+              "path": "sample"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "kernel_changed",
+      "kernel": {
+        "scope": {
+          "type": "session",
+          "id": "00000000-0000-0000-0000-000000000001"
+        },
+        "spec": {
+          "type": "shell",
+          "kind": "pwsh",
+          "path": "sample"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "kernel_changed",
+          "kernel": {
+            "scope": {
+              "type": "session",
+              "id": "00000000-0000-0000-0000-000000000001"
+            },
+            "spec": {
+              "type": "shell",
+              "kind": "pwsh",
+              "path": "sample"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "kernel_changed",
+      "kernel": {
+        "scope": {
+          "type": "session",
+          "id": "00000000-0000-0000-0000-000000000001"
+        },
+        "spec": {
+          "type": "python",
+          "path": "sample"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "kernel_changed",
+          "kernel": {
+            "scope": {
+              "type": "session",
+              "id": "00000000-0000-0000-0000-000000000001"
+            },
+            "spec": {
+              "type": "python",
+              "path": "sample"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "kernel_changed",
+      "kernel": {
+        "scope": {
+          "type": "session",
+          "id": "00000000-0000-0000-0000-000000000001"
+        },
+        "spec": {
+          "type": "monty"
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "kernel_changed",
+          "kernel": {
+            "scope": {
+              "type": "session",
+              "id": "00000000-0000-0000-0000-000000000001"
+            },
+            "spec": {
+              "type": "monty"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "cells_changed",
+      "scope": {
+        "type": "session",
+        "id": "00000000-0000-0000-0000-000000000001"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "cells_changed",
+          "scope": {
+            "type": "session",
+            "id": "00000000-0000-0000-0000-000000000001"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "cells_changed",
+      "scope": {
+        "type": "doc",
+        "id": "sample"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "cells_changed",
+          "scope": {
+            "type": "doc",
+            "id": "sample"
+          }
+        }
+      }
+    }
+  }
+]

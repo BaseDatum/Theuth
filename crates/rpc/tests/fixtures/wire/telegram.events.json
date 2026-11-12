@@ -1,0 +1,229 @@
+[
+  {
+    "input": {
+      "type": "Identity",
+      "bot": "sample",
+      "topics": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Identity",
+          "bot": "sample",
+          "topics": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Identity",
+      "bot": "sample",
+      "topics": true
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Identity",
+          "bot": "sample",
+          "topics": true
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Connected",
+      "bot": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Connected",
+          "bot": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Disconnected",
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Disconnected",
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Conflict"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Conflict"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "RateLimited",
+      "method": "sample",
+      "retry_after_secs": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "RateLimited",
+          "method": "sample",
+          "retry_after_secs": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StreamFallback",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StreamFallback",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Unreachable",
+      "chat": 1,
+      "reason": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Unreachable",
+          "chat": 1,
+          "reason": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "PairingLink",
+      "url": "sample",
+      "expires_at_ms": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PairingLink",
+          "url": "sample",
+          "expires_at_ms": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Paired",
+      "user": 1,
+      "name": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Paired",
+          "user": 1,
+          "name": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Unconfigured"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Unconfigured"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "DaemonOnly"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DaemonOnly"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Starting"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Starting"
+        }
+      }
+    }
+  }
+]

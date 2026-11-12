@@ -1,0 +1,67 @@
+[
+  {
+    "input": {
+      "type": "ReminderSet",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "r1",
+      "message": "remember",
+      "set_at": 1,
+      "fires_at": 2,
+      "seconds": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ReminderSet",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "r1",
+          "message": "remember",
+          "set_at": 1,
+          "fires_at": 2,
+          "seconds": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ReminderCancelled",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "r1"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ReminderCancelled",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "r1"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "ReminderFired",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "id": "r1"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ReminderFired",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "id": "r1"
+        }
+      }
+    }
+  }
+]

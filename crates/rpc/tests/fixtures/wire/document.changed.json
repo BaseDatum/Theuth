@@ -1,0 +1,242 @@
+[
+  {
+    "input": {
+      "doc": "sample",
+      "kind": "knowledge",
+      "title": "sample",
+      "updated_ms": 1,
+      "deleted": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DocumentChanged",
+          "doc": "sample",
+          "kind": "knowledge",
+          "title": "sample",
+          "updated_ms": 1,
+          "deleted": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "doc": "sample",
+      "kind": "artifact",
+      "title": "sample",
+      "updated_ms": 1,
+      "deleted": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DocumentChanged",
+          "doc": "sample",
+          "kind": "artifact",
+          "title": "sample",
+          "updated_ms": 1,
+          "deleted": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "doc": "sample",
+      "kind": "meeting_note",
+      "title": "sample",
+      "updated_ms": 1,
+      "deleted": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DocumentChanged",
+          "doc": "sample",
+          "kind": "meeting_note",
+          "title": "sample",
+          "updated_ms": 1,
+          "deleted": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "doc": "sample",
+      "kind": "note",
+      "title": "sample",
+      "updated_ms": 1,
+      "deleted": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DocumentChanged",
+          "doc": "sample",
+          "kind": "note",
+          "title": "sample",
+          "updated_ms": 1,
+          "deleted": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "doc": "sample",
+      "kind": "agent_charter",
+      "title": "sample",
+      "updated_ms": 1,
+      "deleted": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DocumentChanged",
+          "doc": "sample",
+          "kind": "agent_charter",
+          "title": "sample",
+          "updated_ms": 1,
+          "deleted": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "doc": "sample",
+      "kind": "task_thread",
+      "title": "sample",
+      "updated_ms": 1,
+      "deleted": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DocumentChanged",
+          "doc": "sample",
+          "kind": "task_thread",
+          "title": "sample",
+          "updated_ms": 1,
+          "deleted": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "doc": "sample",
+      "kind": "board",
+      "title": "sample",
+      "updated_ms": 1,
+      "deleted": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DocumentChanged",
+          "doc": "sample",
+          "kind": "board",
+          "title": "sample",
+          "updated_ms": 1,
+          "deleted": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "doc": "sample",
+      "kind": "notebook",
+      "title": "sample",
+      "updated_ms": 1,
+      "deleted": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DocumentChanged",
+          "doc": "sample",
+          "kind": "notebook",
+          "title": "sample",
+          "updated_ms": 1,
+          "deleted": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "doc": "sample",
+      "kind": "source",
+      "title": "sample",
+      "updated_ms": 1,
+      "deleted": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DocumentChanged",
+          "doc": "sample",
+          "kind": "source",
+          "title": "sample",
+          "updated_ms": 1,
+          "deleted": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "doc": "sample",
+      "kind": "knowledge",
+      "title": "sample",
+      "updated_ms": 1,
+      "deleted": true
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DocumentChanged",
+          "doc": "sample",
+          "kind": "knowledge",
+          "title": "sample",
+          "updated_ms": 1,
+          "deleted": true
+        }
+      }
+    }
+  }
+]

@@ -1,0 +1,97 @@
+[
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "html": "sample",
+      "width": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PagePreviewRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "html": "sample",
+          "width": 1,
+          "appearance": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "html": "sample",
+      "width": 1,
+      "appearance": "dark"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PagePreviewRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "html": "sample",
+          "width": 1,
+          "appearance": "dark"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "html": "sample",
+      "width": 1,
+      "appearance": "light"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PagePreviewRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "html": "sample",
+          "width": 1,
+          "appearance": "light"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "html": "sample",
+      "width": 1,
+      "appearance": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PagePreviewRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "html": "sample",
+          "width": 1,
+          "appearance": null
+        }
+      }
+    }
+  }
+]

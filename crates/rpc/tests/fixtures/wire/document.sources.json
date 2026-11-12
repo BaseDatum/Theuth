@@ -1,0 +1,116 @@
+[
+  {
+    "input": {
+      "type": "Changed",
+      "source": "sample",
+      "status": "new"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "source": "sample",
+          "status": "new"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "source": "sample",
+      "status": "queued"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "source": "sample",
+          "status": "queued"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "source": "sample",
+      "status": "running"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "source": "sample",
+          "status": "running"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "source": "sample",
+      "status": "completed"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "source": "sample",
+          "status": "completed"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Changed",
+      "source": "sample",
+      "status": "failed"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Changed",
+          "source": "sample",
+          "status": "failed"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Progress",
+      "source": "sample",
+      "percent": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Progress",
+          "source": "sample",
+          "percent": 1
+        }
+      }
+    }
+  }
+]

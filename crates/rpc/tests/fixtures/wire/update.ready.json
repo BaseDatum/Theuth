@@ -1,0 +1,38 @@
+[
+  {
+    "input": {
+      "version": "sample",
+      "applied": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "UpdateReady",
+          "version": "sample",
+          "applied": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "version": "sample",
+      "applied": true
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "UpdateReady",
+          "version": "sample",
+          "applied": true
+        }
+      }
+    }
+  }
+]
