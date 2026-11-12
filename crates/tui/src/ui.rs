@@ -1682,6 +1682,33 @@ mod tests {
     use crate::components::search_attach::{SearchAttach, Msg as SearchMsg, state::{self as search, Focus}};
 
     #[test]
+    fn entry_summary_replaces_the_spinner_text_without_adding_rows() {
+        use crate::components::web_progress::WebProgress;
+        for (raw, rows, fallback) in [
+            (Entry::Pending { call_id: "crawl".into(), name: "crawl".into() }, 2, "preparing crawl…"),
+            (Entry::Tool { call_id: "crawl".into(), name: "crawl".into(), args: vec!["https://example.com".into()], result: None, expanded: None }, 7, "running…"),
+        ] {
+            let mut model = Model::new(String::new(), false);
+            model.entries.push(raw);
+            let render = |model: &Model| {
+                let raw = &model.entries[0];
+                entry(raw, "·", 0, 80, Vec::new(), model.entry_summary(raw))
+            };
+            assert_eq!(render(&model).render(Some(80)).height(), rows);
+            assert!(render(&model).to_string().contains(fallback));
+            model.components.get_mut::<WebProgress>().unwrap().progress.insert("crawl".into(), "crawling… 2/50 · example.com".into());
+            let mut frame = render(&model);
+            assert_eq!(frame.render(Some(80)).height(), rows);
+            assert_eq!(model.entry_height(&model.entries[0], 80), rows);
+            let text = frame.to_string();
+            assert!(text.contains("· crawling… 2/50 · example.com"), "{text}");
+            assert_eq!(text.matches("crawling…").count(), 1);
+            assert!(!text.contains(fallback), "{text}");
+            assert_eq!(model.activity().as_deref(), Some("crawling… 2/50 · example.com"));
+        }
+    }
+
+    #[test]
     fn missing_and_late_artifact_hydration_keeps_raw_fallback_heights_and_links() {
         use crate::components::{LocalReply, Surface, View as OwnerView};
         use crate::components::artifacts_apps::{ArtifactsApps, Msg};
