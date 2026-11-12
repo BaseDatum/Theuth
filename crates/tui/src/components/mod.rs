@@ -166,6 +166,8 @@ pub struct CoreView<'a> {
     // Step-11 group t1 CoreView fields: add below, in this block only.
 
     // Step-11 group t2 CoreView fields: add below, in this block only.
+    /// Whether this registry is mounted on an interactive terminal surface.
+    pub interactive: bool,
 
     // Step-11 group t3 CoreView fields: add below, in this block only.
 }
