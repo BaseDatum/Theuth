@@ -22993,6 +22993,7 @@ dependencies = [
  "models",
  "nodes",
  "oauth",
+ "parking_lot",
  "platform",
  "png",
  "roster",
@@ -23003,6 +23004,7 @@ dependencies = [
  "schedule",
  "search",
  "secrets",
+ "serde",
  "serde_json",
  "sha2 0.11.1",
  "surface",
@@ -23017,6 +23019,7 @@ dependencies = [
  "uuid",
  "voice",
  "web",
+ "wire",
 ]
 
 [[package]]

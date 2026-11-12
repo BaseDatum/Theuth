@@ -2,6 +2,10 @@ use super::*;
 /// Everything the UI can receive: bus events plus replies to its own commands.
 #[derive(Debug)]
 pub enum UiEvent {
+    /// Local/remote topic intake (no typed bus replay).
+    Wire(crate::topics::TopicEvent),
+    /// Typed owner reply erased only at the registry boundary.
+    Component(crate::components::LocalReply),
     /// Agent progress.
     Agent(AgentEvent),
     /// Where the calls go now (63 §0.3): `Some("attached · pid N · host")`
@@ -200,8 +204,6 @@ pub enum UiEvent {
     Sandboxes(Vec<sandbox::SandboxInfo>),
     /// Reply to [`Command::SandboxDesktop`]: the noVNC URL for a browser (the password stays out of the transcript).
     SandboxDesktop(String, sandbox::types::DesktopAccess),
-    /// The self-updater staged a newer version (39 §4.1).
-    UpdateReady(update::UpdateReady),
     /// Reply to [`Command::ListNodes`] and the node commands that change the list.
     Nodes(Vec<nodes::Node>),
     /// Reply to [`Command::InviteNode`]: the node's name and the string its QR card encodes.
@@ -294,6 +296,8 @@ pub enum UiEvent {
 /// these into `rpc::Api` calls and their replies into [`UiEvent`]s.
 #[derive(Debug)]
 pub enum Command {
+    /// Generic owner effect; new panels do not add command cases.
+    Component(crate::components::Effect),
     /// `send_input`.
     Send {
         /// `None` creates a session.
@@ -872,6 +876,8 @@ pub enum Command {
     DictationStart {
         /// When Ctrl+D was pressed (153 §8.7).
         pressed: std::time::Instant,
+        /// One completion/help vocabulary, including component commands.
+        commands: Vec<String>,
     },
     /// `dictation_stop(id)`: close the mic; `DictationFinished` follows on the bus.
     DictationStop(voice::DictationId),

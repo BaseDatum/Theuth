@@ -285,7 +285,7 @@ impl Model {
                         self.communication_tag(),
                         self.link_tag(),
                         self.nodes_tag(),
-                        self.update_tag()
+                        self.component_text(crate::components::Surface::Header)
                     ),
                     level,
                 )
@@ -299,7 +299,7 @@ impl Model {
                     self.communication_tag(),
                     self.link_tag(),
                     self.nodes_tag(),
-                    self.update_tag()
+                    self.component_text(crate::components::Surface::Header)
                 ),
                 Level::Normal,
             ),
@@ -370,15 +370,6 @@ impl Model {
         }
     }
 
-    /// `  ·  0.2.0 ready` once a newer binary is installed, `  ·  0.2.0
-    /// available` when only staged; empty otherwise (39 §4.1).
-    fn update_tag(&self) -> String {
-        match &self.update {
-            Some(u) if u.applied => format!("  ·  {} ready", u.version),
-            Some(u) => format!("  ·  {} available", u.version),
-            None => String::new(),
-        }
-    }
 }
 
 /// The `/computer` reply: permission ticks and the attached displays on one

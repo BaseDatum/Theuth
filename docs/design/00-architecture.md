@@ -645,21 +645,46 @@ Library: `iocraft` 0.9 (declarative, flexbox via taffy, hooks;
 runtime-agnostic — `use_future` takes any future). Ink-like model matches
 the oh-my-pi rendering approach.
 
-The TUI is a control plane over the same actor commands RPC exposes. It
-subscribes to bus events for the transcript, approvals, MCP progress and
-logins (its own subscription, so `TextDelta` never serializes), and for
-everything else calls the harness commands. Domain RPC traits implement their
-generated server contracts on `rpc_core::Server`; dreaming owns dreams and
-autoresearch owns research plus dreaming-backed sidecar landing.
-Domains not yet extracted remain in `rpc::api`. Handlers use actor lookup
-plus `ask`/`tell`. They are assembled by the explicit
+The TUI is a control plane over the same actor commands RPC exposes. Its
+single topic intake reads shared `wire::WireFrame`s locally, or one
+`subscribe_topics(null, null, null)` stream when attached. Only method-not-found
+selects the old engine's bare `subscribe_events` ABI; no mirrored bus copy runs.
+Domain RPC traits implement their generated server contracts on
+`rpc_core::Server`; dreaming owns dreams and autoresearch owns research plus
+dreaming-backed sidecar landing. Domains not yet extracted remain in `rpc::api`.
+Handlers use actor lookup plus `ask`/`tell`. They are assembled by the explicit
 `rpc_core::ModuleFactory` supplied by `main`: its `rpc_module` function
 merges the 25 domain factories with `rpc_core::merge`. The TUI uses the generated typed clients over
 `rpc::client::Local::new(rt, module)` or a remote WebSocket. Local dispatch
 uses jsonrpsee `Methods` in-process: no loopback socket or bearer token.
-Events still use the TUI's own bus subscription. A command is added once to
-its domain trait and implementation, then exposed to every frontend through
-the same assembled methods. TUI takeover retains the original factory.
+The local `rpc::topics::LocalStream` subscribes before initialization and shares
+the hub's JSON pending-prompt/loss producer: PendingPrompts first (including
+empty sets), Lagged then an authoritative snapshot after loss. Live local
+frames are never reserialized by the TUI, and local intake does not acquire an
+external-RPC renderer/liveness lease. A gated local JobEvent-only subscriber
+preserves cell-kernel visibility; the filtered tools.jobs frame is not also
+delivered locally. TUI takeover retains the original method factory.
+
+Step 11 increment 0 introduces the TUI-local typed `components::Component`
+contract: associated `Msg`, declaration, borrowed topic decode, synchronous
+update, owned view and next wake deadline. `components/registry.rs::builtin`
+is the fixed registration list (update is the first component). The registry
+erases only component storage and local reply bodies, dispatches in registration
+order, rejects id/slash/key collisions, and fences replies by stable slot
+generation and engine epoch. Effects use one generic Command envelope, run on
+the current Engine, and share the existing concurrent/FIFO input lanes. Focus
+hooks stay at the old imperative precedence boundaries; closing a surface does
+not discard its persistent cache. Slots render the same row counts they reserve.
+
+`Model` retains transcript/composer/sessions/approvals; unmigrated responsibilities
+remain behind the shrinking topic-keyed residual decoder, never bus republishing.
+The update component owns its DTO, dedupe cache, header and interjected notice;
+no update-specific Model field, UiEvent variant, reducer or print arm remains.
+Later panel increments delete their residual cases and use typed local messages,
+borrowed owner serde contracts, neutral core actions/lifecycle and plain-output
+ports. Generic errors retain existing cross-panel pending-state effects.
+The line printer emits against pre-event state, not appended entries; `-p` still
+ends only on its selected root TurnFinished, generic Error or settled search.
 
 Input: `TextInput` is multiline with `newline_modifiers: SHIFT` (our iocraft
 patch, `[patch.crates-io]`): plain Enter submits, Shift+Enter inserts a

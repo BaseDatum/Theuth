@@ -49,7 +49,9 @@ impl Model {
                 current,
                 ..
             } => {
-                if self.session == Some(session) || self.agents.contains_key(&session) {
+                if !self.secret_requests.iter().any(|pending| pending.id == id)
+                    && (self.session == Some(session) || self.agents.contains_key(&session))
+                {
                     self.secret_requests.push_back(SecretRequest {
                         id,
                         name,

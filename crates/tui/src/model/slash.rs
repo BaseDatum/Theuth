@@ -345,6 +345,7 @@ impl Model {
     pub fn slash_rows(&self, word: &str) -> Vec<SlashRow> {
         let mut rows: Vec<SlashRow> = slash_matches(word, self.app_enabled)
             .into_iter()
+            .chain(self.components.slash_specs().filter(|spec| spec.0.starts_with(word)))
             .map(|(name, hint, desc)| SlashRow {
                 name: (*name).to_owned(),
                 hint: (*hint).to_owned(),
