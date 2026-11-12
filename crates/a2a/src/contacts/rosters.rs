@@ -40,8 +40,12 @@ pub const CHAINS_MAX: usize = 16;
 pub const ENTRIES_MAX: usize = 4 * PATH_HOPS_MAX;
 /// A contact machine still behind a peer after this many refreshes fetches a proof path.
 pub const STALE_REFRESHES: u32 = 3;
-/// A peer's `conflict` not written again within this many refreshes expires.
+/// Another machine's `conflict` this machine saw unchanged for this many of its own rounds
+/// expires (`records::age_flags`).
 pub const CONFLICT_REFRESHES: u64 = 3;
+/// The highest version a copy may carry (the columns are SQLite integers); a higher one does
+/// not verify, and our side never signs past it.
+pub const VERSION_MAX: u64 = i64::MAX as u64;
 /// Our machines a contact machine asks for a proof path when that many are reachable.
 pub const SOURCES_MIN: usize = 2;
 /// The problem of a record this machine cannot (yet) verify the other side's machines of.
@@ -121,10 +125,15 @@ impl Copy {
         content_hash(&self.chain, self.version, &self.members)
     }
 
-    /// The copy verifies: a chain, a version from 1, 1 to [`MEMBERS_MAX`] sorted unique
-    /// endpoint ids, the signer among them, and a valid signature under [`DOMAIN`].
+    /// The copy verifies: a chain, a version from 1 to [`VERSION_MAX`], 1 to [`MEMBERS_MAX`]
+    /// sorted unique endpoint ids, the signer among them, and a valid signature under
+    /// [`DOMAIN`].
     pub fn verify(&self) -> Result<(), String> {
-        if self.chain.is_empty() || self.chain.len() > 64 || self.version == 0 {
+        if self.chain.is_empty()
+            || self.chain.len() > 64
+            || self.version == 0
+            || self.version > VERSION_MAX
+        {
             return Err("malformed chain or version".into());
         }
         if self.members.is_empty() || self.members.len() > MEMBERS_MAX {
@@ -337,6 +346,11 @@ fn prev_members(copies: &[Copy], version: u64) -> BTreeSet<String> {
 /// membership it computes (D1): `None` when the latest content already is `mine` and it
 /// signed it (or [`SIGS_MAX`] signers ranked before it did), else the version to sign
 /// `mine` at (latest + 1 when they differ, the latest to co-sign).
+///
+/// The damper: latest + 1 only when `mine` also differs from the content this machine last
+/// signed. Two of our machines whose `members()` stay different (a row quarantined on one)
+/// then sign once each and stop, never alternating versions pushed to every contact; a
+/// machine whose view changes signs again. Never past [`VERSION_MAX`].
 pub fn decide(
     copies: &[Copy],
     mine: &[String],
@@ -348,7 +362,14 @@ pub fn decide(
         return Some(1);
     };
     if l.members != mine {
-        return Some(l.version + 1);
+        let mine_last = copies
+            .iter()
+            .filter(|c| c.signer == me)
+            .max_by_key(|c| c.version);
+        if mine_last.is_some_and(|c| c.members == mine) {
+            return None;
+        }
+        return l.version.checked_add(1).filter(|v| *v <= VERSION_MAX);
     }
     let hash = l.hash();
     let signers: Vec<&str> = copies
@@ -471,6 +492,36 @@ pub fn carried(
     Chain {
         chain: chain.to_owned(),
         versions,
+    }
+}
+
+/// Cut `c` to at most `max` bytes of JSON (a card stays within its cap, a push within
+/// [`NOTICE_BYTES_MAX`]), in the carried order reversed: the oldest version entries go first
+/// (from the chain carrying the most; each keeps its latest), then the last-ranked
+/// signatures ([`sig_rank`]; each content keeps its first), then whole chains from the end.
+/// A contact that needs what was cut asks a proof path (D1).
+/// ponytail: re-serializes per cut, O(entries²); only payloads over the cap pay it.
+pub fn trim(c: &mut Carried, max: usize) {
+    let size = |c: &Carried| serde_json::to_vec(c).map_or(usize::MAX, |b| b.len());
+    while size(c) > max {
+        if let Some(ch) = c
+            .chains
+            .iter_mut()
+            .filter(|ch| ch.versions.len() > 1)
+            .max_by_key(|ch| ch.versions.len())
+        {
+            ch.versions.remove(0);
+        } else if let Some(v) = c
+            .chains
+            .iter_mut()
+            .flat_map(|ch| ch.versions.iter_mut())
+            .filter(|v| v.sigs.len() > 1)
+            .max_by_key(|v| v.sigs.len())
+        {
+            v.sigs.pop();
+        } else if c.chains.pop().is_none() {
+            return;
+        }
     }
 }
 
@@ -715,8 +766,6 @@ pub struct PeerHead {
     pub history: Vec<(u64, String)>,
     /// It flagged a conflict.
     pub conflict: bool,
-    /// When it last wrote the row.
-    pub at_ms: i64,
     /// Untrusted dial hints: our members at its head.
     pub members: Vec<String>,
     /// Untrusted: the chain it follows.
@@ -1009,6 +1058,90 @@ mod tests {
             ),
             Some(1)
         );
+    }
+
+    /// The damper (review SHOULD 7): two of our machines whose memberships stay different
+    /// sign one version each and stop, never alternating; a machine whose view then changes
+    /// signs again. Nothing is signed past [`VERSION_MAX`], and a copy above it does not
+    /// verify.
+    #[test]
+    fn two_views_that_stay_different_sign_once_each_then_stop() {
+        let (n1, n2, n3, n4) = (Key::new(), Key::new(), Key::new(), Key::new());
+        let m = |ks: &[&Key]| {
+            let mut v: Vec<String> = ks.iter().map(|k| k.eid()).collect();
+            v.sort();
+            v
+        };
+        let (pins, added) = (set(&[&n1]), BTreeMap::new());
+        let (a, b) = (m(&[&n1, &n2, &n3]), m(&[&n1, &n2, &n4]));
+        let mut copies = verified([n3.sign("c", 1, &[&n1, &n2, &n3, &n4])]);
+        assert_eq!(decide(&copies, &a, &n1.eid(), &pins, &added), Some(2));
+        copies.extend(verified([n1.sign("c", 2, &[&n1, &n2, &n3])]));
+        assert_eq!(decide(&copies, &b, &n2.eid(), &pins, &added), Some(3));
+        copies.extend(verified([n2.sign("c", 3, &[&n1, &n2, &n4])]));
+        assert_eq!(
+            decide(&copies, &a, &n1.eid(), &pins, &added),
+            None,
+            "n1 signed its view already"
+        );
+        assert_eq!(decide(&copies, &b, &n2.eid(), &pins, &added), None);
+        let c = m(&[&n1, &n2]);
+        assert_eq!(
+            decide(&copies, &c, &n1.eid(), &pins, &added),
+            Some(4),
+            "a new view signs"
+        );
+        // The top of the version range.
+        let top = verified([n3.sign("c", VERSION_MAX, &[&n1, &n3])]);
+        assert_eq!(top.len(), 1);
+        assert_eq!(decide(&top, &a, &n1.eid(), &pins, &added), None);
+        assert!(n3.sign("c", VERSION_MAX + 1, &[&n3]).verify().is_err());
+    }
+
+    /// Two 256-member chains of 8 versions exceed the push cap (and the card's): `trim` cuts
+    /// the oldest versions first and keeps each chain's latest whole; under the cap it cuts
+    /// nothing.
+    #[test]
+    fn two_full_chains_are_trimmed_to_the_cap_oldest_first() {
+        let keys: Vec<Key> = (0..MEMBERS_MAX).map(|_| Key::new()).collect();
+        let refs: Vec<&Key> = keys.iter().collect();
+        let mut chains = Vec::new();
+        for chain in ["a", "b"] {
+            let mut copies = Vec::new();
+            for v in 1..=CARRIED as u64 {
+                for k in &keys[..4] {
+                    copies.push(k.sign(chain, v, &refs));
+                }
+            }
+            chains.push(carried(
+                chain,
+                &verified(copies),
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+            ));
+        }
+        let full = Carried { chains };
+        let size = |c: &Carried| serde_json::to_vec(c).unwrap().len();
+        assert!(size(&full) > crate::contacts::CARD_BYTES_MAX);
+        let mut c = full.clone();
+        trim(&mut c, NOTICE_BYTES_MAX);
+        assert!(size(&c) <= NOTICE_BYTES_MAX);
+        for (t, f) in c.chains.iter().zip(&full.chains) {
+            assert!(t.versions.len() < f.versions.len());
+            assert_eq!(
+                t.versions.last(),
+                f.versions.last(),
+                "the latest kept whole"
+            );
+            assert_eq!(
+                t.versions[..],
+                f.versions[f.versions.len() - t.versions.len()..],
+                "the oldest cut first"
+            );
+        }
+        let mut same = full.clone();
+        trim(&mut same, usize::MAX);
+        assert_eq!(same, full);
     }
 
     /// A legacy (pin-only) record bases on the copy its pin signed, not on another member's;

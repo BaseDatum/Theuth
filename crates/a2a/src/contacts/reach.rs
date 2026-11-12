@@ -274,7 +274,9 @@ async fn contact_route(
                 return hyper::StatusCode::PAYLOAD_TOO_LARGE.into_response();
             };
             // Each copy is verified on its own: a body that does not parse, or copies that do
-            // not verify, change nothing. The card is fetched again as before.
+            // not verify, change nothing. The ingest runs here, under the contact's permit
+            // (its rate and concurrency bounds), before the answer: nothing outlives the
+            // request or queues past those bounds. The card is fetched again as before.
             let pushed = if body.is_empty() {
                 None
             } else {
@@ -282,13 +284,10 @@ async fn contact_route(
                     .inspect_err(|e| tracing::debug!(%remote, "191: roster push not read: {e}"))
                     .ok()
             };
-            let (c, remote) = (c.clone(), remote.to_owned());
-            tokio::spawn(async move {
-                if let Some(m) = pushed {
-                    c.ingest(&m, &remote).await;
-                }
-                c.offers_noticed(&remote);
-            });
+            if let Some(m) = pushed {
+                c.ingest(&m, remote).await;
+            }
+            c.offers_noticed(remote);
             hyper::StatusCode::NO_CONTENT.into_response()
         }
         Route::Path => match c
