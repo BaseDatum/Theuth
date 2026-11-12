@@ -2006,7 +2006,7 @@ fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server
         rpc::api::messaging::rpc_module(server.clone()),
         nodes::rpc_module(server.clone()),
         schedule::rpc_module(server.clone()),
-        rpc::api::boards::rpc_module(server.clone()),
+        roster::rpc_module(server.clone()),
         rpc::api::artifacts::rpc_module(server.clone()),
         secrets::rpc_module(server.clone()),
         talk::rpc_module(server.clone()),

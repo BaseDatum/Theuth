@@ -226,6 +226,8 @@ The `schedule` crate owns routine RPC methods and exports
 `schedule::rpc_module`; its shared actor lookup stays in `schedule::rpc_support`.
 The `secrets` crate owns credentials RPC methods and exports
 `secrets::rpc_module`; vault lookups remain in `secrets::rpc_support`.
+The `roster` crate owns boards RPC methods and exports `roster::rpc_module`.
+Its `rpc_support::tasks_actor` lookup is shared with the remaining RPC hub.
 
 Events: a plugin may publish one struct per event or one `#[serde(tag =
 "type")]` enum per event *stream* — `agent::AgentEvent` is the latter because
@@ -652,11 +654,11 @@ the oh-my-pi rendering approach.
 The TUI is a control plane over the same actor commands RPC exposes. It
 subscribes to bus events for the transcript, approvals, MCP progress and
 logins (its own subscription, so `TextDelta` never serializes), and for
-everything else calls the harness commands. The 25 domain RPC traits in
-`rpc::api` implement their generated server contracts on `rpc_core::Server`,
+everything else calls the harness commands. The domain RPC traits in
+`rpc::api` and their plugin owners implement server contracts on `rpc_core::Server`,
 using actor lookup plus `ask`/`tell`. They are assembled by the explicit
 `rpc_core::ModuleFactory` supplied by `main`: its `rpc_module` function
-merges the 25 domain factories with `rpc_core::merge`. The TUI uses the generated typed clients over
+merges the domain factories with `rpc_core::merge`. The TUI uses the generated typed clients over
 `rpc::client::Local::new(rt, module)` or a remote WebSocket. Local dispatch
 uses jsonrpsee `Methods` in-process: no loopback socket or bearer token.
 Events still use the TUI's own bus subscription. A command is added once to

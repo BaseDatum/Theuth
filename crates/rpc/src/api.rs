@@ -1,7 +1,6 @@
 //! The JSON-RPC surface. Every method is a lazy registry lookup plus one
 //! `ask`; event subscriptions drain the owner-declared `wire` feed.
 
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
@@ -206,8 +205,6 @@ pub mod notebooks;
 pub mod codemap;
 /// Messaging RPC server and client traits.
 pub mod messaging;
-/// Boards RPC server and client traits.
-pub use roster::rpc as boards;
 /// Artifacts RPC server and client traits.
 pub mod artifacts;
 /// Kernels RPC server and client traits.
@@ -233,7 +230,6 @@ pub use documents::{DocumentsApiClient, DocumentsApiServer};
 pub use notebooks::{NotebooksApiClient, NotebooksApiServer};
 pub use codemap::{CodemapApiClient, CodemapApiServer};
 pub use messaging::{MessagingApiClient, MessagingApiServer};
-pub use boards::{BoardsApiClient, BoardsApiServer};
 pub use artifacts::{ArtifactsApiClient, ArtifactsApiServer};
 pub use kernels::{KernelsApiClient, KernelsApiServer};
 pub use dreams::{DreamsApiClient, DreamsApiServer};
@@ -258,7 +254,7 @@ pub mod clients {
     pub use super::messaging::MessagingApiClient;
     pub use nodes::NetworkApiClient;
     pub use schedule::RoutinesApiClient;
-    pub use super::boards::BoardsApiClient;
+    pub use roster::BoardsApiClient;
     pub use super::artifacts::ArtifactsApiClient;
     pub use secrets::CredentialsApiClient;
     pub use talk::SpeechApiClient;
@@ -288,7 +284,7 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         messaging::rpc_module(server.clone()),
         nodes::rpc_module(server.clone()),
         schedule::rpc_module(server.clone()),
-        boards::rpc_module(server.clone()),
+        roster::rpc_module(server.clone()),
         artifacts::rpc_module(server.clone()),
         secrets::rpc_module(server.clone()),
         talk::rpc_module(server.clone()),
