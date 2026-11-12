@@ -3,6 +3,7 @@ use crate::{Agents, NewRootSession, PeerScope, Authorize, Authorized};
 use crate::rpc_forward as forward;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::RpcResult;
+use jsonrpsee::types::ErrorObjectOwned;
 use runtime::SessionId;
 use rpc_core::{ask, peer, Server};
 use kameo::error::SendError;
@@ -140,4 +141,33 @@ pub async fn attach_pty(
         return Err(forward::runs_elsewhere(owner.0));
     }
     attached
+}
+/// 139 §6.1 (D16): the supervisor refuses an input to a session mid-release-drain
+/// with a handler error whose `Display` form is `SessionDraining:<reason>[:<next owner>]`
+/// (`agent::supervisor::transfer::DRAINING_PREFIX`, the `DocError::NotHub` convention).
+/// Mapped here to the retryable [`forward::SESSION_DRAINING`] with the typed payload;
+/// the composer retries once. Anything else passes through.
+pub fn session_draining(session: SessionId, e: ErrorObjectOwned) -> ErrorObjectOwned {
+    let Some(rest) = e.message().strip_prefix("SessionDraining:") else {
+        return e;
+    };
+    let (reason, next_owner) = match rest.split_once(':') {
+        Some((r, o)) if !o.is_empty() => (r.to_owned(), Some(o.to_owned())),
+        Some((r, _)) => (r.to_owned(), None),
+        None => (rest.to_owned(), None),
+    };
+    let msg = match (reason.as_str(), &next_owner) {
+        ("release", Some(to)) => format!("{session} is moving to {to} — retry in a moment"),
+        ("release", None) => format!("{session} is moving to another engine — retry in a moment"),
+        (r, _) => format!("{session} is pausing for {r} — resumes on the next start"),
+    };
+    ErrorObjectOwned::owned(
+        forward::SESSION_DRAINING,
+        msg,
+        Some(forward::FrontDoorError::SessionDraining {
+            session,
+            reason,
+            next_owner,
+        }),
+    )
 }
