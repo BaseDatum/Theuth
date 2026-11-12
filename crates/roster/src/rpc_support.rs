@@ -9,10 +9,6 @@ pub fn roster_actor() -> RpcResult<ActorRef<roster::Roster>> {
     lookup::<roster::Roster>(roster::ROSTER_ACTOR)
 }
 
-/// The tasks actor; absent when the plugin is not loaded or its store failed (67 §7).
-pub fn tasks_actor() -> RpcResult<ActorRef<tasks::Tasks>> {
-    lookup::<tasks::Tasks>(tasks::TASKS_ACTOR)
-}
 
 /// The attention actor; absent when the roster plugin is not loaded (70 HUD).
 pub fn attention_actor() -> RpcResult<ActorRef<roster::attention::Attention>> {

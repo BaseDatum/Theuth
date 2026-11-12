@@ -12,6 +12,7 @@
 //!   [`ListInvocations`]
 //! - events: [`ArtifactShown`]; [`snapshot`]'s fence pictures for chat channels (164)
 
+pub mod rpc_support;
 pub mod archive;
 pub mod export;
 pub mod inline;

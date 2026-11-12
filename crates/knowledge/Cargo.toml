@@ -6,6 +6,8 @@ publish.workspace = true
 description = "Knowledge bundle: OKF files, FTS index, gix history, knowledge_* tools (design doc 10)"
 
 [dependencies]
+rpc-core = { workspace = true }
+jsonrpsee = { workspace = true }
 okf = { workspace = true }
 gix = { workspace = true }
 runtime = { workspace = true }

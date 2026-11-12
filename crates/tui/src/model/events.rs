@@ -32,10 +32,6 @@ pub enum UiEvent {
     KnowledgeChanged(knowledge::KnowledgeChanged),
     /// Reply to [`Command::ListAgents`]: the session's subtree with live state.
     Agents(Vec<AgentInfo>),
-    /// Reply to [`Command::ListActivity`]: every live or root session (62 §0.6).
-    Activity(Vec<AgentInfo>),
-    /// Reply to [`Command::Broadcast`]: the receipt (dry run or send), or the refusal.
-    Broadcasted(Result<BroadcastReceipt, String>),
     /// Reply to [`Command::Load`] with `settled_only: false`: shown as is.
     History(SessionId, Loaded),
     /// Reply to [`Command::Load`] with `settled_only: true` (48 §5): shown
@@ -171,10 +167,7 @@ pub enum UiEvent {
     Undone(String),
     /// Reply to [`Command::Redo`]: first line of the turn restored.
     Redone(String),
-    /// Reply to [`Command::ListJobs`].
-    Jobs(Vec<JobView>),
-    /// A background job started, wrote output or ended (bus event).
-    Job(JobEvent),
+
     /// A `show` call produced a file (bus event, design doc 35).
     ArtifactShown(artifact::ArtifactShown),
     /// Reply to [`Command::ListArtifacts`]: the session subtree's artifacts, newest first;
@@ -219,22 +212,6 @@ pub enum UiEvent {
     PeerDelivered(PeerDelivered),
     /// Network configuration or listener state changed (bus event).
     A2aChanged(a2a::A2aChanged),
-    /// Reply to [`Command::ListTerminals`].
-    Terminals(Vec<TerminalSummary>),
-    /// Reply to [`Command::PtyScreen`], echoing the request's identity so a
-    /// reply for a terminal or viewport left behind is dropped (51 §7.4).
-    PtyScreen {
-        /// Owning session asked.
-        session: SessionId,
-        /// Job asked.
-        job: JobId,
-        /// Viewport asked.
-        viewport: PtyViewport,
-        /// [`TerminalView::epoch`] when asked.
-        epoch: u64,
-        /// The page, or why there is none (`terminal busy` is retried).
-        reply: Result<PtyScreenReply, String>,
-    },
     /// Reply to [`Command::CreateSession`].
     SessionOpened(SessionOpen),
     /// Reply to [`Command::LeaveSession`]: the root left and how far its cleanup got.
@@ -321,15 +298,6 @@ pub enum Command {
     },
     /// `cancel`.
     Cancel(SessionId),
-    /// `list_jobs` for the shown session.
-    ListJobs(SessionId),
-    /// `cancel_job`.
-    CancelJob {
-        /// Owning session.
-        session: SessionId,
-        /// Job id, e.g. `j3`.
-        id: String,
-    },
     /// `session_take(id, "user")`: `/take` continues the open session on this engine (68 §10).
     TakeSession(SessionId),
     /// `compact`.
@@ -388,10 +356,6 @@ pub enum Command {
     Search(search::Request),
     /// `list_agents`: the subtree under a session.
     ListAgents(SessionId),
-    /// `list_activity`: the broadcast picker's rows (62 §0.6).
-    ListActivity,
-    /// `broadcast` (62 §0.1); `dry_run` previews.
-    Broadcast(BroadcastRequest),
     /// `load_session`; `settled_only` (48 §5) reads through the idle actor
     /// and replies with [`UiEvent::Refreshed`] instead of [`UiEvent::History`].
     Load {
@@ -732,32 +696,6 @@ pub enum Command {
         session: SessionId,
         /// `None` clears.
         project: Option<String>,
-    },
-    /// `list_terminals(session, descendants: true)`.
-    ListTerminals(SessionId),
-    /// `pty_screen`: one page of a retained terminal (51 §7.4).
-    PtyScreen {
-        /// Owning session.
-        session: SessionId,
-        /// Job.
-        job: JobId,
-        /// Rows asked for.
-        viewport: PtyViewport,
-        /// Revision already shown; `Unchanged` comes back when it still holds.
-        if_revision: Option<u64>,
-        /// [`TerminalView::epoch`] at the time of asking, echoed by the reply.
-        epoch: u64,
-    },
-    /// `pty_input`: the human types into a PTY job (55 §3).
-    PtyInput {
-        /// Owning session.
-        session: SessionId,
-        /// Job.
-        job: JobId,
-        /// Typed text.
-        text: Option<String>,
-        /// Keys after `text`.
-        keys: Vec<Key>,
     },
     /// `create_session`: explicit creation, private or durable (51 §4.1).
     CreateSession(CreateSessionOptions),

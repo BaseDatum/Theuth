@@ -134,10 +134,6 @@ impl Model {
                 category,
                 snapshot,
             } => self.open_shake(session, category, snapshot),
-            UiEvent::Activity(list) => {
-                self.menu = Some(Menu::Broadcast(Box::new(Broadcast::pick(list))));
-            }
-            UiEvent::Broadcasted(r) => self.broadcasted(r),
             // A failed read leaves the plan on screen, labelled stale (47 §5.4).
             UiEvent::Todos(id, snapshot) => {
                 if self.session == Some(id) {
@@ -529,7 +525,6 @@ impl Model {
                     None => self.entries.push(Entry::Info(note)),
                 }
             }
-            UiEvent::Jobs(jobs) => self.entries.push(Entry::Info(tools::jobs::table(&jobs))),
             UiEvent::ArtifactShown(ev) => {
                 self.search_invalidate(SearchCategory::Artifacts);
                 if self.session == Some(ev.session) {
@@ -563,54 +558,6 @@ impl Model {
                     });
                 }
             }
-            UiEvent::Job(ev) => match ev {
-                JobEvent::Started {
-                    session,
-                    id,
-                    call_id,
-                    ..
-                } if self.session == Some(session) => {
-                    if let Some(Entry::Tool { job, .. }) = self.entries.iter_mut().rev().find(
-                        |e| matches!(e, Entry::Tool { call_id: c, .. } if *c == call_id),
-                    ) {
-                        *job = Some(JobTail::new(id.0.clone()));
-                    }
-                    self.jobs.insert(id.0);
-                }
-                JobEvent::Output { session, id, chunk } if self.session == Some(session) => {
-                    if let Some(j) = self.job_mut(&id.0) {
-                        j.push(&chunk);
-                    }
-                }
-                JobEvent::Screen {
-                    session, id, rows, ..
-                } if self.session == Some(session) => {
-                    if let Some(j) = self.job_mut(&id.0) {
-                        j.set_screen(&rows);
-                    }
-                }
-                JobEvent::Finished {
-                    session,
-                    id,
-                    exit,
-                    secs,
-                    inline,
-                    ..
-                } if self.session == Some(session) => {
-                    match self.entries.iter_mut().rev().find(
-                        |e| matches!(e, Entry::Tool { job: Some(j), .. } if j.id == id.0),
-                    ) {
-                        // Within grace: the result carries the output.
-                        Some(Entry::Tool { job, .. }) if inline => *job = None,
-                        Some(Entry::Tool { job: Some(j), .. }) => {
-                            j.exit = Some(format!("{exit} · {secs}s"));
-                        }
-                        _ => {}
-                    }
-                    self.jobs.remove(&id.0);
-                }
-                _ => {}
-            },
             UiEvent::CompactStyle(s) => self.entries.push(Entry::Info(format!(
                 "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
             ))),
@@ -727,25 +674,6 @@ impl Model {
                     _ => e,
                 };
                 self.entries.push(Entry::Error(e));
-            }
-            UiEvent::Terminals(items) => {
-                if items.is_empty() {
-                    self.entries
-                        .push(Entry::Info("no terminals in this session's tree".into()));
-                } else {
-                    self.menu = Some(Menu::Terminals { items, cursor: 0 });
-                }
-            }
-            UiEvent::PtyScreen {
-                session,
-                job,
-                viewport,
-                epoch,
-                reply,
-            } => {
-                if let Some(Menu::Terminal(v)) = &mut self.menu {
-                    v.reply(session, &job, viewport, epoch, reply);
-                }
             }
             UiEvent::SessionOpened(open) => {
                 self.reset();

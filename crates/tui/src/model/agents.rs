@@ -466,7 +466,6 @@ impl Model {
                     name: if inner { format!("↳ {name}") } else { name },
                     result: None,
                     expanded: None,
-                    job: None,
                     artifact: None,
                 };
                 match self
@@ -883,7 +882,7 @@ pub fn agent_row(a: &AgentRow, spinner: &str, width: u16) -> String {
     let (glyph, word) = match &a.info.observed {
         Some(o) => (WATCH_GLYPH, observed_word(o.state)),
         None => (
-            crate::broadcast::glyph(&a.info.state, spinner),
+            crate::components::broadcast::state::glyph(&a.info.state, spinner),
             a.info.state.word(),
         ),
     };
@@ -897,13 +896,13 @@ pub fn agent_row(a: &AgentRow, spinner: &str, width: u16) -> String {
         (_, Some(t)) => ago(now - t),
         _ => String::new(),
     };
-    let active = match crate::broadcast::age(a.info.activity.last_active) {
+    let active = match crate::components::broadcast::state::age(a.info.activity.last_active) {
         s if s.is_empty() => s,
         s => format!(" ·{s}"),
     };
     let tail = format!(
         "  {age}{}{active}",
-        crate::broadcast::counts(&a.info.activity)
+        crate::components::broadcast::state::counts(&a.info.activity)
     );
     // Glyph, name, state and their gaps take 27 columns, the picker frame 7; the detail gets
     // what is left after the measured tail (141 R4 T13b: an estimate let long ages overflow).

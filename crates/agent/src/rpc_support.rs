@@ -7,7 +7,7 @@ use jsonrpsee::types::ErrorObjectOwned;
 use runtime::SessionId;
 use rpc_core::{ask, peer, Server};
 use kameo::error::SendError;
-use rpc_core::{failed, lookup};
+use rpc_core::{failed, lookup, NOT_RUNNING};
 use tools::{JOBS_ACTOR, JobId, Jobs, PtyAttach};
 
 /// The owner console's root: `NewRootSession { scope: Owner }`, trusted
@@ -170,4 +170,11 @@ pub fn session_draining(session: SessionId, e: ErrorObjectOwned) -> ErrorObjectO
             next_owner,
         }),
     )
+}
+
+/// 160: the engine's cost cube service; `NOT_RUNNING` before the agent plugin started.
+pub fn cost_service() -> RpcResult<&'static agent::CostService> {
+    agent::CostService::engine().ok_or_else(|| {
+        ErrorObjectOwned::owned(NOT_RUNNING, "costs: agent is not running", None::<()>)
+    })
 }

@@ -73,16 +73,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "talk with the session aloud; Esc cancels the reply or leaves the view, Ctrl+T stops",
     ),
     (
-        "/jobs",
-        "[kill <id>]",
-        "list this session's background jobs",
-    ),
-    (
-        "/terminals",
-        "",
-        "PTY jobs of this session's tree (picker: ⏎ opens a read-only observer)",
-    ),
-    (
         "/project",
         "<label|off>",
         "label this session's root for grouping in /sessions and /artifacts (off clears)",
@@ -94,11 +84,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "switch session (picker; owner chip on sessions owned elsewhere)",
     ),
     ("/take", "", "continue the open session on this node (68)"),
-    (
-        "/broadcast",
-        "[running|roots] [text]",
-        "send one message to many sessions",
-    ),
     (
         "/search",
         "[query]",

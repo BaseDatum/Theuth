@@ -54,10 +54,6 @@ pub enum Entry {
         result: Option<(String, bool)>,
         /// Full output shown (Ctrl+O); built on first expand.
         expanded: Option<Box<markdown::Text>>,
-        /// Live output of the background job a `shell` call started
-        /// (design doc 14); `None` for other tools and jobs that finished
-        /// within the grace window (their result carries the output).
-        job: Option<JobTail>,
         /// The file a `show` call produced (`ArtifactShown`, design doc 35);
         /// the card renders as an artifact card once set.
         artifact: Option<Box<artifact::Artifact>>,
@@ -268,12 +264,10 @@ impl Entry {
             Entry::Tool {
                 args,
                 expanded,
-                job,
                 ..
             } => {
                 5 + args.len()
                     + expanded.as_ref().map_or(0, |t| md(t, inner))
-                    + job.as_ref().map_or(0, |j| 1 + j.rows().count())
             }
             Entry::Compacted {
                 summary, expanded, ..
@@ -525,6 +519,14 @@ pub struct Window {
 }
 
 impl Model {
+    /// Core measurement plus registered owners' exact decoration rows.
+    pub(crate) fn entry_height(&self, entry: &Entry, width: usize) -> usize {
+        entry.height(width) + match entry {
+            Entry::Tool { call_id, artifact: None, .. } => self.components.entry_rows(call_id),
+            _ => 0,
+        }
+    }
+
 
     /// The slice of the transcript worth building this frame. Every frame
     /// lays out and paints every child it is given, so building the whole
@@ -537,10 +539,10 @@ impl Model {
     pub fn window(&self, view: usize, width: usize) -> Window {
         let budget = view * 2;
         if let Some((i, r)) = self.anchor.filter(|(i, _)| *i < self.entries.len()) {
-            let mut total = self.entries[i].height(width).saturating_sub(r);
+            let mut total = self.entry_height(&self.entries[i], width).saturating_sub(r);
             let mut to = i + 1;
             while total < budget && to < self.entries.len() {
-                total += self.entries[to].height(width);
+                total += self.entry_height(&self.entries[to], width);
                 to += 1;
             }
             return Window {
@@ -565,7 +567,7 @@ impl Model {
     pub(super) fn tail(&self, lines: usize, width: usize) -> (usize, usize) {
         let mut total = 0;
         for (i, e) in self.entries.iter().enumerate().rev() {
-            let h = e.height(width);
+            let h = self.entry_height(e, width);
             if total + h < lines {
                 total += h;
                 continue;
@@ -595,7 +597,7 @@ impl Model {
     /// window at `width`. Heights are the same estimates `window` draws by.
     /// Reaching the bottom re-pins; the top stops at the first entry.
     pub fn scroll(&mut self, delta: isize, view: usize, width: usize) {
-        let h = |i: usize| self.entries[i].height(width);
+        let h = |i: usize| self.entry_height(&self.entries[i], width);
         let len = self.entries.len();
         let (mut i, mut r) = match self.anchor.filter(|(i, _)| *i < len) {
             Some(a) => a,

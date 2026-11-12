@@ -434,6 +434,18 @@ pub enum StartReply {
 #[derive(Clone, Copy, Debug)]
 pub struct ListJobs(pub SessionId);
 
+/// In-process TUI recovery: retain kernel visibility without exposing it on RPC.
+pub struct LocalJobIds(pub SessionId);
+
+impl Message<LocalJobIds> for Jobs {
+    type Reply = Vec<JobId>;
+    async fn handle(&mut self, query: LocalJobIds, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.sessions.get(&query.0).map_or_else(Vec::new, |session| {
+            session.jobs.iter().filter(|job| job.exit.is_none()).map(|job| job.id.clone()).collect()
+        })
+    }
+}
+
 /// `ask` → `HashMap<SessionId, (u16, u16)>`: running `(pipe jobs, PTY jobs)`
 /// per requested session (62 §0.5); a session with none may be absent.
 #[derive(Clone, Debug)]

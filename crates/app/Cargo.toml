@@ -6,6 +6,7 @@ publish.workspace = true
 description = "Interactive OpenUI apps: the `app` publishing tool, the headless parser helper, and the app actor that runs one-press tool calls (design doc 46)"
 
 [dependencies]
+jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }
 tools = { workspace = true }
