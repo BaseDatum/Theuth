@@ -9,6 +9,7 @@ pub fn builtin() -> Registry {
     registry.register(update::Update::default()).expect("built-in component registration");
     registry.register(computer::Computer).expect("built-in component registration");
     registry.register(tasks::Tasks).expect("built-in component registration");
+    registry.register(sandboxes::Sandboxes).expect("built-in component registration");
     registry
 }
 

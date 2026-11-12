@@ -682,6 +682,8 @@ The update component owns its DTO, dedupe cache, header and interjected notice;
 no update-specific Model field, UiEvent variant, reducer or print arm remains.
 The computer component owns `/computer`, its permissions RPC, display DTO and
 identical transcript/plain formatting; no computer event or command remains in core.
+The sandboxes component owns inventory and desktop URL replies; desktop passwords
+remain private inside opaque local replies, never transcript or plain output.
 Later panel increments delete their residual cases and use typed local messages,
 borrowed owner serde contracts, neutral core actions/lifecycle and plain-output
 ports. Generic errors retain existing cross-panel pending-state effects.

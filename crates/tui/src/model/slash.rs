@@ -233,11 +233,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "machines this harness can run sessions on",
     ),
     (
-        "/sandbox",
-        "[desktop <name>]",
-        "sandbox VMs on this engine (design doc 79); `desktop` prints the noVNC URL",
-    ),
-    (
         "/artifacts",
         "",
         "files the agent showed (picker: ⏎ opens, s shows inline, e exports to ~/Downloads)",
