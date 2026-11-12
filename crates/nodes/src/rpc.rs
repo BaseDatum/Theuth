@@ -1,3 +1,4 @@
+use crate as nodes;
 use agent::rpc_forward as forward;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};

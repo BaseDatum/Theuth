@@ -207,7 +207,7 @@ pub mod codemap;
 /// Messaging RPC server and client traits.
 pub mod messaging;
 /// Network RPC server and client traits.
-pub mod network;
+pub use nodes::rpc as network;
 /// Routines RPC server and client traits.
 pub mod routines;
 /// Boards RPC server and client traits.

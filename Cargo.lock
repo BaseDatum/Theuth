@@ -13449,11 +13449,13 @@ dependencies = [
  "jsonrpsee",
  "kameo",
  "link",
+ "mesh",
  "platform",
  "rand 0.10.3",
  "rpc-core",
  "runtime",
  "schemars 1.2.3",
+ "secrets",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -13464,6 +13466,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "ts-rs",
+ "uuid",
  "wire",
 ]
 
