@@ -1,4 +1,15 @@
-use super::*;
+use agent::rpc_forward as forward;
+use agent::rpc_support::{owner_root, RpcServerExt};
+use agent::{
+    AddSkill, AddSkillRepo, Agents, ListSkills, LoadSkill, RemoveSkill, RemoveSkillRepo,
+    SkillBody, SkillMeta, SyncSkills, UseSkill,
+};
+use jsonrpsee::Extensions;
+use jsonrpsee::core::{RpcResult, async_trait};
+use jsonrpsee::proc_macros::rpc;
+use rpc_core::{Server, ask};
+use runtime::SessionId;
+use tools::git::SyncResult;
 
 #[rpc(server, client)]
 pub trait SkillsApi {

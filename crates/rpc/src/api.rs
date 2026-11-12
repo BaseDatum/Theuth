@@ -16,22 +16,22 @@ use agent::context::save_blob;
 use agent::supervisor::{ChildResumed, HarnessOptions, ResumeChild, SetHarnessOption};
 use agent::todo::TodoSnapshot;
 use agent::{
-    AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentInfo, Agents, AnswerPeerRequest,
+    AddAcp, AddProvider, AgentInfo, Agents, AnswerPeerRequest,
     ArchiveSession, Broadcast, BroadcastOutcome, BroadcastReceipt, BroadcastRequest,
     BroadcastTargets, Cancel, CancelScope, CommunicationState, Compact, CompactStyle,
     ContextBreakdown, ContextItems, ContextRemoval, ContextSnapshot, ContextTarget, DeleteSession,
     Delivery, EditTurn, EscalateModel, ForkSession, GetCommunication, GetCompactStyle,
     GetEscalateModel, GetPeerMessage, GetSubagentModel, GetTitleModel, GetTodos, GetVisionModel,
     Harvest, ListAcp, ListActivity, ListAgents, ListLogins, ListModels, ListPeerMessages,
-    ListPeers, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession,
-    LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, PeerMessagePage,
+    ListPeers, ListProviders, ListQueued, ListRegistry, ListSessions, LoadSession,
+    Loaded, Login, LoginInfo, Logout, ModelInfo, PeerMessagePage,
     PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo, QueuedInput, Redo,
     RefreshProviderModels, RefreshedModels, Regenerate, RemoveAcp, RemoveContext, RemoveProvider,
-    RemoveSkill, RemoveSkillRepo, RenameSession, SendInput, SessionContextBreakdown,
+    RenameSession, SendInput, SessionContextBreakdown,
     SessionSummary, SetCommunication, SetCompactStyle, SetEffort, SetEscalateModel, SetMaxSalvages,
     SetMaxToolRounds, SetModel, SetPeerScope, SetStreamIdle, SetSubagentModel, SetSubagentTimeout,
-    SetTitleModel, SetVisionModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo,
-    UseSkill, Withdraw,
+    SetTitleModel, SetVisionModel, ShowPrompt, Steer, Undo,
+    Withdraw,
 };
 use agent::{
     AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, SetAdvisor, SetAdvisorDefaults, SyncBacklog,
