@@ -8,6 +8,7 @@ use agent::rpc_document::doc_forward;
 use document::rpc_support::{doc_send, documents};
 
 /// Documents RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "roster", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait RosterDocumentsApi {
     /// The document bound to an agent-charter `binding`, created from `markdown` when there is none
@@ -49,6 +50,7 @@ impl RosterDocumentsApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    RosterDocumentsApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(RosterDocumentsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("roster RPC descriptors")
 }

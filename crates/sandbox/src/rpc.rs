@@ -7,6 +7,7 @@ use rpc_core::{Server, send};
 use runtime::SessionId;
 use sandbox::rpc_support::sandbox;
 
+#[rpc_core_macros::rpc_descriptors(owner = "sandbox", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait SandboxesApi {
     /// Every sandbox record (docker, ssh, vm) with state, resources, shares, metrics (79 §4.5).
@@ -268,6 +269,7 @@ impl SandboxesApiServer for Server {
 }
 
 /// Build this domain's RPC module.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    SandboxesApiServer::into_rpc(server)
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(SandboxesApiServer::into_rpc(server), rpc_descriptors())
+        .expect("sandbox RPC descriptors")
 }

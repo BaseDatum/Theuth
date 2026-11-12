@@ -7,6 +7,7 @@ use rpc_core::{send, Server};
 use knowledge::rpc_support::knowledge;
 
 /// Concepts RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "knowledge", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait KnowledgeConceptsApi {
     /// Search the knowledge bundle (design doc 10 §8); `limit` defaults to 10, max 50.
@@ -141,6 +142,7 @@ impl KnowledgeConceptsApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    KnowledgeConceptsApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(KnowledgeConceptsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("knowledge RPC descriptors")
 }

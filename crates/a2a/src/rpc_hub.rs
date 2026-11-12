@@ -11,6 +11,7 @@ use a2a::rpc_support::{A2A_FORWARD_MESSAGING_OFF, a2a};
 use agent::rpc_support::RpcServerExt;
 
 /// Hub RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "a2a", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait A2aHubApi {
     /// 191 (D3): a contact's unary call (`POST path` with the JSON-RPC `body`) that another
@@ -20,6 +21,7 @@ pub trait A2aHubApi {
     /// not owned here either, `OWNER_UNREACHABLE` (-32010) before `contacts_ready`; every
     /// outcome of the router is `{status, body}`.
     #[method(name = "a2a_forward", with_extensions)]
+    #[rpc_audience("mesh")]
     async fn a2a_forward(
         &self,
         caller: String,
@@ -100,6 +102,7 @@ impl A2aHubApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    A2aHubApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(A2aHubApiServer::into_rpc(server), rpc_descriptors())
+        .expect("a2a RPC descriptors")
 }

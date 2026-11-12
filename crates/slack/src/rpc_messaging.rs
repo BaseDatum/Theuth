@@ -5,6 +5,7 @@ use slack::{SLACK_ACTOR, Slack, SlackStatus};
 use rpc_core::{ask, Server};
 
 /// Messaging RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "slack", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait SlackMessagingApi {
     /// The Slack app manifest this engine's Slack code expects (`slack::MANIFEST`,
@@ -57,6 +58,7 @@ impl SlackMessagingApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    SlackMessagingApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(SlackMessagingApiServer::into_rpc(server), rpc_descriptors())
+        .expect("slack RPC descriptors")
 }

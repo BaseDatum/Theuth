@@ -5,6 +5,7 @@ use rpc_core::{peer, Server};
 use crate::diag;
 
 /// Transport-only liveness and client diagnostics.
+#[rpc_core::rpc_descriptors(owner = "rpc", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait InfraApi {
     /// 176 C1: liveness only — answers `null` at once. Asks no actor and awaits nothing, so a
@@ -41,6 +42,7 @@ impl InfraApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    InfraApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(InfraApiServer::into_rpc(server), rpc_descriptors())
+        .expect("rpc RPC descriptors")
 }

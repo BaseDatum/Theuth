@@ -36,11 +36,11 @@ use policy::{Action, Input, Policy, Timer};
 pub mod rpc_hub;
 
 /// Assemble this plugin's RPC methods.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    rpc_core::merge([
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::merge_described([
         rpc::rpc_module(server.clone()),
         rpc_hub::rpc_module(server),
-    ])
+    ]).expect("talk RPC composition")
 }
 
 mod policy;

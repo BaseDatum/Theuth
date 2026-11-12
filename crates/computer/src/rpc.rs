@@ -9,6 +9,7 @@ use jsonrpsee::types::ErrorObjectOwned;
 use rpc_core::{NOT_RUNNING, Server, ask, failed, lookup, peer, send};
 use runtime::SessionId;
 
+#[rpc_core_macros::rpc_descriptors(owner = "computer", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait ScreensApi {
     /// Current page of `session`'s embedded browser as a base64 PNG for a live
@@ -65,6 +66,7 @@ impl ScreensApiServer for Server {
 }
 
 /// Build this domain's RPC module.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    ScreensApiServer::into_rpc(server)
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(ScreensApiServer::into_rpc(server), rpc_descriptors())
+        .expect("computer RPC descriptors")
 }

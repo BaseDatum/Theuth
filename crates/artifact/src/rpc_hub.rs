@@ -8,6 +8,7 @@ use artifact::rpc_support::artifact;
 use document::rpc_support::{doc_send, documents, member_outcome, principal};
 
 /// Hub RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "artifact", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait ArtifactHubApi {
     /// Export `doc` (72): `markdown` = `doc_markdown`'s text, `pdf` = the print lowering through Typst
@@ -82,6 +83,7 @@ impl ArtifactHubApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    ArtifactHubApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(ArtifactHubApiServer::into_rpc(server), rpc_descriptors())
+        .expect("artifact RPC descriptors")
 }

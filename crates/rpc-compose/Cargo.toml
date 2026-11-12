@@ -8,6 +8,7 @@ description = "Cross-plugin RPC composition and application adapters"
 [dependencies]
 rpc = { workspace = true }
 rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }
 platform = { workspace = true }

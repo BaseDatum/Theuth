@@ -9,6 +9,7 @@ description = "Autoresearch: a measured experiment loop whose noise gate, evalua
 runtime = { workspace = true }
 wire = { workspace = true }
 rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
 jsonrpsee = { workspace = true }
 dreaming = { workspace = true }
 tools = { workspace = true }  # 140 §12.4 the seven tools, `RegisterPrompt`, `Risk`

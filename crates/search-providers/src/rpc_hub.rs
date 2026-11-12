@@ -4,6 +4,7 @@ use jsonrpsee::proc_macros::rpc;
 use rpc_core::{ask, Server};
 
 /// Hub RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "search-providers", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait SearchProvidersHubApi {
     /// Settings › Search (16 §8): the four external providers (enabled, base
@@ -58,6 +59,7 @@ impl SearchProvidersHubApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    SearchProvidersHubApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(SearchProvidersHubApiServer::into_rpc(server), rpc_descriptors())
+        .expect("search-providers RPC descriptors")
 }

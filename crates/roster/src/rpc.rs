@@ -8,6 +8,7 @@ use tasks::rpc_support::tasks_actor;
 use rpc_core::{Server, lookup, send};
 use runtime::SessionId;
 
+#[rpc_core_macros::rpc_descriptors(owner = "roster", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait BoardsApi {
     /// The built-in theuth agent's model (`roster.theuth_model`), if set (148 E3 / R3):
@@ -301,6 +302,7 @@ impl BoardsApiServer for Server {
 }
 
 /// Build this domain's RPC module.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    BoardsApiServer::into_rpc(server)
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(BoardsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("roster RPC descriptors")
 }
