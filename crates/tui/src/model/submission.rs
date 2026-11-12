@@ -82,9 +82,11 @@ impl Model {
                 self.reset();
                 self.entries.push(Entry::Info("new session".into()));
             }
-            // 75 §8: an ACP session picks from its harness's options.
+            // 75 §8: an ACP session picks from its harness's options; bare
+            // `/effort` opens the same picker on its chip row (194 D6).
             "/model" | "/effort" if self.agent.is_some() && arg.is_empty() => {
                 if let Some(s) = self.session {
+                    self.pick_effort = cmd == "/effort";
                     send(tx, Command::HarnessOptions(s));
                 }
             }
@@ -120,14 +122,22 @@ impl Model {
                     },
                 );
             }
+            // 194 D6: the `/model` picker with the cursor on the current model's chips.
             "/effort" if arg.is_empty() => {
-                let items = self
+                let offered = self
                     .catalog
                     .as_ref()
                     .and_then(|c| c.closest(&self.model_id))
-                    .map(|m| m.efforts())
-                    .unwrap_or_default();
-                self.open_efforts(items, PickTarget::Session);
+                    .is_some_and(|m| !m.efforts().is_empty());
+                if offered {
+                    self.pick_effort = true;
+                    send(tx, Command::ListModels);
+                } else {
+                    self.entries.push(Entry::Info(format!(
+                        "{} has no reasoning effort levels",
+                        self.model_id
+                    )));
+                }
             }
             "/effort" => self.set_effort((arg != "clear").then(|| arg.to_owned()), tx),
             "/aws" if arg.is_empty() => send(tx, Command::ListAwsProfiles),

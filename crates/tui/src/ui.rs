@@ -13,8 +13,8 @@ use tools::{Decision, Risk};
 use crate::clip;
 use crate::dictation::{self, Dictating, Phase};
 use crate::model::{
-    ADVISORY_COLLAPSED, Grouped, ModelRow, PickTarget, advisory_rows, advisory_severity,
-    advisory_title, providers, session_row, severity_name, terminal_row,
+    ADVISORY_COLLAPSED, EffortChips, Grouped, ModelRow, PickTarget, advisory_rows,
+    advisory_severity, advisory_title, providers, session_row, severity_name, terminal_row,
 };
 use crate::model::{
     APP_WHERE, AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch,
@@ -1099,32 +1099,47 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             items,
             filter,
             cursor,
+            chip,
             provider,
             target,
+            ..
         } => {
             // 125 §7.2: the same picker, titled for whose model it sets.
             let noun = match target {
                 PickTarget::Session => "model",
                 PickTarget::Advisor => "advisor",
+                PickTarget::Harness => m.agent.as_deref().unwrap_or("harness"),
             };
             let rows = m.models_rows();
-            let title = if !filter.is_empty() {
-                let none = rows.iter().all(|r| matches!(r, ModelRow::Current(_)));
-                format!(
-                    "{noun}  search: {filter}▏  ⏎ set  ⇥ ★ favorite  esc close{}",
-                    if none { "  no match" } else { "" }
-                )
+            let star = (*target != PickTarget::Harness).then(|| "⇥ ★ favorite".to_owned());
+            let on_chips = matches!(rows.get(*cursor), Some(ModelRow::Efforts(_)));
+            let mut title: Vec<String> = Vec::new();
+            if on_chips {
+                title.extend([format!("{noun} › effort"), "←→ choose".into(), "⏎ set".into()]);
+            } else if !filter.is_empty() {
+                title.extend([format!("{noun}  search: {filter}▏"), "⏎ set".into()]);
+                title.extend(star);
             } else if let Some(p) = provider {
-                let back = if providers(items).len() > 1 {
-                    "←/⌫ back  "
-                } else {
-                    ""
-                };
-                let models = rows.iter().filter(|r| !matches!(r, ModelRow::Off { .. })).count();
-                format!("{noun} › {p} ({models})  ⏎ set  ⇥ ★ favorite  {back}esc close")
+                let models = rows.iter().filter(|r| matches!(r, ModelRow::Model(_))).count();
+                title.extend([format!("{noun} › {p} ({models})"), "⏎ set".into()]);
+                title.extend(star);
+                if providers(items).len() > 1 {
+                    title.push("←/⌫ back".into());
+                }
             } else {
-                format!("{noun}  ⏎ open provider  ⇥ ★ favorite  type to search all models  esc close")
-            };
+                title.extend([noun.to_owned(), "⏎ open provider".into()]);
+                title.extend(star);
+                title.push("type to search all models".into());
+            }
+            title.push("esc close".into());
+            let none = rows
+                .iter()
+                .all(|r| matches!(r, ModelRow::Current(_) | ModelRow::Efforts(_)));
+            if !on_chips && !filter.is_empty() && none {
+                title.push("no match".into());
+            }
+            // 194 D6: the title never wraps; hints that do not fit drop whole.
+            let title = fit_title(&title, usize::from(width).saturating_sub(5));
             // Two-char marker column (127 §3): `●` current, `★` favorite.
             let marks = |on: bool, fav: bool| {
                 format!(
@@ -1139,14 +1154,16 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                     marks(on, m.favorite_models.contains(&i.id)),
                     i.id,
                     i.name,
-                    k(i.context),
+                    // A harness row has no catalog facts.
+                    if i.context > 0 { k(i.context) } else { String::new() },
                     if i.image { " · vision" } else { "" }
                 )
             };
             let picked = m.pick_current();
             let rows = rows
                 .iter()
-                .map(|r| match r {
+                .enumerate()
+                .map(|(n, r)| match r {
                     ModelRow::Off { current } => {
                         format!("{} {:<44} no advisor", marks(*current, false), "Off")
                     }
@@ -1157,15 +1174,11 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                     ModelRow::Provider { id, count, current } => {
                         format!("{} {id:<24} {count:>4} models", marks(*current, false))
                     }
+                    ModelRow::Efforts(c) => effort_chips_row(c, (n == *cursor).then_some(*chip)),
                 })
                 .collect();
             (title, rows, *cursor)
         }
-        Menu::Efforts { items, cursor, .. } => (
-            "effort  ⏎ set  esc close".to_owned(),
-            items.clone(),
-            *cursor,
-        ),
         Menu::AwsProfiles { cursor, .. } => (
             "aws profile  ⏎ use for every session's Bedrock calls from the next request  esc close"
                 .to_owned(),
@@ -1455,6 +1468,41 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
         }
         .into_any(),
     )
+}
+
+/// `parts` joined by two spaces within `room` cells: the first always
+/// (clipped), each later one only whole, so the title row never wraps.
+fn fit_title(parts: &[String], room: usize) -> String {
+    let mut out = String::new();
+    for p in parts {
+        if out.is_empty() {
+            out = search::fit(p, room);
+        } else if search::cells(&out) + 2 + search::cells(p) <= room {
+            out.push_str("  ");
+            out.push_str(p);
+        }
+    }
+    out
+}
+
+/// The chip row under the picked model (194 D6): `effort  Default  ●high  low`,
+/// `●` on the active chip, `[…]` around `chip` while the cursor is on the row.
+fn effort_chips_row(c: &EffortChips, chip: Option<usize>) -> String {
+    let chips: Vec<String> = c
+        .levels
+        .iter()
+        .enumerate()
+        .map(|(i, level)| {
+            let on = if c.active == Some(i) { "●" } else { "" };
+            let name = level.as_deref().unwrap_or("Default");
+            if chip == Some(i) {
+                format!("[{on}{name}]")
+            } else {
+                format!(" {on}{name} ")
+            }
+        })
+        .collect();
+    format!("   effort {}", chips.join(" "))
 }
 
 /// The path completion list under the editor (PATH-AC): a window of rows
@@ -2448,8 +2496,8 @@ mod tests {
 
     /// Long rows used to make the box taller than its rows (empty space under
     /// the list) at some widths; the box must be title + rows + border. The
-    /// title (69 cells since 127's `⇥ ★ favorite`) wraps below width 74, so
-    /// the ten rows are counted from the bottom border instead of the whole box.
+    /// title wrapped below width 74 until 194 D6 fitted it: now every width
+    /// is exactly title + ten rows.
     #[test]
     fn menu_box_is_tight_at_any_width() {
         let mut m = Model::default();
@@ -2474,6 +2522,8 @@ mod tests {
             cursor: 0,
             provider: Some("amazon-bedrock".into()),
             target: PickTarget::Session,
+            chip: 0,
+            harness: Vec::new(),
         });
         for width in 60..=120u16 {
             let modal = menu(&m, "", width, 30).unwrap();
@@ -2499,9 +2549,7 @@ mod tests {
                 inner.iter().rev().take(10).all(|l| is_row(l)),
                 "width {width}: empty space under the list in {top}..{bottom}"
             );
-            if width >= 74 {
-                assert_eq!(bottom - top, 12, "width {width}: box spans {top}..{bottom}");
-            }
+            assert_eq!(bottom - top, 12, "width {width}: box spans {top}..{bottom}");
             assert!(
                 lines
                     .iter()
@@ -2662,6 +2710,8 @@ mod tests {
             cursor: 0,
             provider: None,
             target: PickTarget::Session,
+            chip: 0,
+            harness: Vec::new(),
         });
         let frame = render(&m);
         assert!(frame.contains("⏎ open provider  ⇥ ★ favorite"), "{frame}");
@@ -2675,6 +2725,8 @@ mod tests {
             cursor: 0,
             provider: Some("openai".into()),
             target: PickTarget::Session,
+            chip: 0,
+            harness: Vec::new(),
         });
         let frame = render(&m);
         assert!(frame.contains("⏎ set  ⇥ ★ favorite  ←/⌫ back"), "{frame}");
@@ -2687,11 +2739,86 @@ mod tests {
             cursor: 1,
             provider: None,
             target: PickTarget::Session,
+            chip: 0,
+            harness: Vec::new(),
         });
         let frame = render(&m);
         assert!(frame.contains("⏎ set  ⇥ ★ favorite  esc close"), "{frame}");
         assert!(frame.contains("●★ openai/gpt-5.4 "), "{frame}");
         assert!(frame.contains(" ★ google/gemini-2.5-pro "), "{frame}");
+    }
+
+    /// 194 D6: the chip row renders on the line right under the picked model
+    /// and nowhere else — Default first, `●` on the active level, `[…]` on
+    /// the highlighted chip once the cursor is there, the title naming the
+    /// chip keys — and at every width the title stays one line.
+    #[test]
+    fn effort_chips_render_under_the_picked_model() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let model = |id: &str, efforts: &[&str]| ModelInfo {
+            id: id.into(),
+            name: id.into(),
+            provider: "openai".into(),
+            context: 200_000,
+            reasoning: true,
+            image: false,
+            efforts: efforts.iter().map(|e| (*e).to_owned()).collect(),
+            budget_min: None,
+            budget_max: None,
+            local: false,
+        };
+        let mut m = Model::new("openai/gpt-5.4".into(), false);
+        m.session = Some(SessionId::new());
+        m.effort = Some("high".into());
+        m.apply(UiEvent::Models(vec![
+            model("openai/gpt-5.4", &["low", "high"]),
+            model("openai/o3-pro", &["low", "medium", "high"]),
+        ]));
+        let frame = menu(&m, "", 120, 30).unwrap().to_string();
+        let lines: Vec<&str> = frame.lines().collect();
+        let row = lines
+            .iter()
+            .position(|l| l.contains("openai/gpt-5.4 "))
+            .unwrap();
+        assert!(
+            lines[row + 1].contains("effort  Default   low   ●high "),
+            "{frame}"
+        );
+        assert!(lines[row + 2].contains("openai/o3-pro "), "{frame}");
+        assert_eq!(frame.matches("effort").count(), 1, "{frame}");
+        assert!(!frame.contains("medium"), "{frame}");
+        m.menu_key(KeyCode::Down, "", &tx);
+        let frame = menu(&m, "", 120, 30).unwrap().to_string();
+        assert!(
+            frame.contains("model › effort  ←→ choose  ⏎ set  esc close"),
+            "{frame}"
+        );
+        assert!(frame.contains("effort  Default   low  [●high]"), "{frame}");
+        for width in 40..=120u16 {
+            for at in [0, 1] {
+                if let Some(Menu::Models { cursor, .. }) = &mut m.menu {
+                    *cursor = at;
+                }
+                let modal = menu(&m, "", width, 30).unwrap();
+                let frame = element! {
+                    View(flex_direction: FlexDirection::Column, width, height: 30u16) {
+                        View(flex_grow: 1.0_f32, min_height: 0)
+                        #(Some(modal))
+                    }
+                }
+                .to_string();
+                let lines: Vec<&str> = frame.lines().collect();
+                let top = lines.iter().position(|l| l.starts_with('╭')).unwrap();
+                let bottom = lines.iter().position(|l| l.starts_with('╰')).unwrap();
+                assert_eq!(bottom - top, 5, "width {width} cursor {at}:\n{frame}");
+                assert!(
+                    lines
+                        .iter()
+                        .all(|l| l.chars().count() <= usize::from(width)),
+                    "width {width} cursor {at}: a row overflows\n{frame}"
+                );
+            }
+        }
     }
 
     /// Eight live children: six rows, one fold line, and no row wider than
