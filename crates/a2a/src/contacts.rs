@@ -107,10 +107,49 @@ pub struct Contact {
     #[cfg_attr(feature = "ts", ts(as = "Option<String>", optional))]
     pub id: String,
     /// 191 (D2): why this machine quarantined the record (it is refused, its endpoints
-    /// denied); `None` for a sound one.
+    /// denied), or D1's inflation alert on a live one; `None` for a sound one.
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub problem: Option<String>,
+    /// 191 (D8): what the row offers for its `problem`; `None` exactly when it has none.
+    #[serde(default)]
+    pub problem_kind: Option<ProblemKind>,
+    /// 191 (D8): the machine of ours whose ceremony paired it, by its name (`contact_list`
+    /// names the record's engine id: the first 8 characters once that machine left the
+    /// mesh); `None` when no machine is recorded (an import).
+    #[serde(default)]
+    pub paired_on: Option<String>,
+    /// 191 (D8): the contact's machines as THIS machine accepted them (its own roster state,
+    /// never a replicated row): the current roster, then those its accepted history lists
+    /// but the roster no longer does (`left`); the pins while no roster is based here.
+    #[serde(default)]
+    pub machines: Vec<ContactMachine>,
+}
+
+/// 191 (D8): what a contact row with a `problem` offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum ProblemKind {
+    /// Refused here and it will not mend itself: Remove is the action.
+    Refused,
+    /// Held while replication catches up: no action, it clears by itself.
+    Waiting,
+    /// D1's inflation alert: the contact still works; Remove, or unpair one of ours.
+    Alert,
+}
+
+/// 191 (D8): one machine of a contact, as this machine knows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ContactMachine {
+    /// Its endpoint id.
+    pub eid: String,
+    /// The `machine` of its last card this machine fetched (in memory), else the first 8
+    /// characters of `eid`.
+    pub name: String,
+    /// In this machine's accepted history of the contact's roster, not in its current one.
+    pub left: bool,
 }
 
 /// 183 F3, F11: one (contact, export) whose first message waits for the owner's answer
@@ -1662,15 +1701,35 @@ pub fn fingerprint(eid: &str) -> String {
         .join(" ")
 }
 
+/// 191 (D8): the machines a contact row lists (`fallback`, `eid` first, while the reconcile
+/// recorded none: a `peers.yaml` entry), each named by `name_of`.
+fn machines(
+    shown: Option<&crate::config::Shown>,
+    fallback: &[String],
+    name_of: &dyn Fn(&str) -> String,
+) -> Vec<ContactMachine> {
+    let view = |eid: &str, left: bool| ContactMachine {
+        eid: eid.to_owned(),
+        name: name_of(eid),
+        left,
+    };
+    match shown {
+        Some(s) => s.machines.iter().map(|(e, left)| view(e, *left)).collect(),
+        None => fallback.iter().map(|e| view(e, false)).collect(),
+    }
+}
+
 /// One staged contact as `contact_list` shows it.
 fn contact_view(
     staged: &crate::config::Staged,
     alias: &str,
     net: Option<&mesh::net::Net>,
     shared: impl FnOnce(&str) -> (Vec<agent::communication::network::ContactOffer>, bool),
+    name_of: &dyn Fn(&str) -> String,
 ) -> Option<Contact> {
     let c = staged.contacts.get(alias)?;
     let peer = staged.peers.get(alias);
+    let shown = staged.shown.get(&c.id);
     let (shared, full_capable) = shared(&c.eid);
     Some(Contact {
         name: alias.to_owned(),
@@ -1687,11 +1746,25 @@ fn contact_view(
         full_capable,
         id: c.id.clone(),
         problem: None,
+        problem_kind: None,
+        paired_on: shown.and_then(|s| s.paired_on.clone()),
+        machines: machines(shown, &c.eids, name_of),
     })
 }
 
-/// 191 (D2): a quarantined record as `contact_list` shows it: refused, its problem said.
-fn quarantined_view(q: &crate::config::Quarantined, cap: tools::Risk) -> Contact {
+/// 191 (D2): a quarantined record as `contact_list` shows it: refused or waiting, its
+/// problem said.
+fn quarantined_view(
+    staged: &crate::config::Staged,
+    q: &crate::config::Quarantined,
+    cap: tools::Risk,
+    name_of: &dyn Fn(&str) -> String,
+) -> Contact {
+    let shown = staged.shown.get(&q.id);
+    let first: Vec<String> = (!q.eid.is_empty())
+        .then(|| q.eid.clone())
+        .into_iter()
+        .collect();
     Contact {
         name: q.alias.clone(),
         machine: clip(&q.machine),
@@ -1707,6 +1780,9 @@ fn quarantined_view(q: &crate::config::Quarantined, cap: tools::Risk) -> Contact
         full_capable: false,
         id: q.id.clone(),
         problem: Some(q.problem.clone()),
+        problem_kind: Some(q.kind),
+        paired_on: shown.and_then(|s| s.paired_on.clone()),
+        machines: machines(shown, &first, name_of),
     }
 }
 
@@ -1735,16 +1811,24 @@ impl crate::Ctx {
         let live = self.shared.read().clone();
         let net = self.net();
         let alerts = self.rosters.lock().alerts.clone();
+        let name_of = |eid: &str| self.machine_name(eid);
         let mut out: Vec<Contact> = live
             .staged
             .contacts
             .keys()
             .filter_map(|alias| {
-                let mut c = contact_view(&live.staged, alias, net.as_deref(), |eid| {
-                    let eid = self.offers_eid(eid);
-                    (self.offers_of(&eid), self.full_of(&eid))
-                })?;
+                let mut c = contact_view(
+                    &live.staged,
+                    alias,
+                    net.as_deref(),
+                    |eid| {
+                        let eid = self.offers_eid(eid);
+                        (self.offers_of(&eid), self.full_of(&eid))
+                    },
+                    &name_of,
+                )?;
                 c.problem = alerts.get(&c.id).map(|(_, text, _)| text.clone());
+                c.problem_kind = c.problem.as_ref().map(|_| ProblemKind::Alert);
                 Some(c)
             })
             .collect();
@@ -1752,7 +1836,7 @@ impl crate::Ctx {
             live.staged
                 .quarantined
                 .iter()
-                .map(|q| quarantined_view(q, self.cfg.contact_cap)),
+                .map(|q| quarantined_view(&live.staged, q, self.cfg.contact_cap, &name_of)),
         );
         out
     }
@@ -1997,9 +2081,13 @@ impl crate::Ctx {
                 self.contact_gone(&alias, &eid, false).await;
             }
         }
-        contact_view(&live.staged, &alias, self.net().as_deref(), |eid| {
-            (self.offers_of(eid), self.full_of(eid))
-        })
+        contact_view(
+            &live.staged,
+            &alias,
+            self.net().as_deref(),
+            |eid| (self.offers_of(eid), self.full_of(eid)),
+            &|eid| self.machine_name(eid),
+        )
         .ok_or_else(|| format!("contact {alias} vanished"))
     }
 }

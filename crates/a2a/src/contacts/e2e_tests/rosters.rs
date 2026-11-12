@@ -219,6 +219,29 @@ async fn removing_the_pairing_machine_leaves_the_others_and_a_stale_contact_catc
     for n5 in &gone {
         assert_eq!(c.ctx.gate(n5), IrohGate::Refuse);
     }
+    // D8 (P4): c's row lists our machines as c accepted them: n1 and n2 now, then as `left`
+    // the passing n5s its history kept (versions 6..12: the first n5 was only in version 4,
+    // which c skipped), by their short ids (no card of theirs was ever fetched); n2 by its
+    // card's machine. The record was paired on c.
+    let row = c.ctx.contact_list().remove(0);
+    assert!(row.machines[..2].iter().all(|m| !m.left), "current first");
+    assert_eq!(
+        row.machines[..2]
+            .iter()
+            .map(|m| m.eid.clone())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([n1.eid(), n2.eid()])
+    );
+    let left = &row.machines[2..];
+    assert_eq!(
+        left.iter().map(|m| m.eid.clone()).collect::<BTreeSet<_>>(),
+        gone[1..].iter().cloned().collect::<BTreeSet<_>>()
+    );
+    assert!(left.iter().all(|m| m.left && m.name == m.eid[..8]));
+    let n2_row = row.machines.iter().find(|m| m.eid == n2.eid()).unwrap();
+    assert_eq!(n2_row.name, mesh::self_name(), "from n2's card");
+    assert_eq!(row.paired_on, Some(c.eid()));
+    assert_eq!((row.problem, row.problem_kind), (None, None));
     // Our side keeps the hop chain from the pin plus the last eight, nothing else.
     let r = n2.ctx.records().await.unwrap();
     let kept: BTreeSet<u64> = records::chain_copies(&r, &state(&n2).await.0)
@@ -268,9 +291,20 @@ async fn a_fresh_contact_machine_bootstraps_from_the_retired_pin_or_denies() {
     replicate(&c1, &c2).await;
     assert!(c2.ctx.tick().await);
     assert!(!admits(&c2, &n1.eid()) && !admits(&c2, &n2.eid()));
+    let row = c2.ctx.contact_list().remove(0);
+    assert_eq!(row.problem.as_deref(), Some(rosters::NOT_VERIFIED));
     assert_eq!(
-        c2.ctx.contact_list()[0].problem.as_deref(),
-        Some(rosters::NOT_VERIFIED)
+        row.problem_kind,
+        Some(crate::contacts::ProblemKind::Refused),
+        "D8: cannot verify is refused, with Remove"
+    );
+    assert_eq!(
+        row.machines
+            .iter()
+            .map(|m| m.eid.clone())
+            .collect::<Vec<_>>(),
+        vec![n1.eid()],
+        "no roster based here: its pin"
     );
     c2.ctx.roster_round().await;
     assert_eq!(
@@ -603,6 +637,11 @@ async fn an_inflated_path_from_the_pin_is_never_adopted_beside_a_peer_and_alerts
     assert_eq!(
         list[0].problem.as_deref(),
         Some(rosters::inflated(&list[0].name).as_str())
+    );
+    assert_eq!(
+        list[0].problem_kind,
+        Some(crate::contacts::ProblemKind::Alert),
+        "D8: the contact still works"
     );
     let items = super::super::FirstContactItems(Arc::downgrade(&n2.ctx))
         .items()
