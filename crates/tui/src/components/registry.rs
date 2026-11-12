@@ -271,6 +271,10 @@ impl Registry {
     pub fn wake(&self) -> Option<u64> {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()?.wake()).min()
     }
+    /// Any mounted owner needs the shared animation clock.
+    pub fn animating(&self) -> bool {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).any(|component| component.animating())
+    }
     /// Exact decoration geometry without constructing a toolkit view.
     pub fn entry_rows(&self, key: &str) -> usize {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()).map(|component| component.entry_rows(key)).sum()
