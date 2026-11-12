@@ -347,7 +347,7 @@ async fn resolve_configured(
 
 /// 194 D4b–d: `memory_effort` follows `memory_model` — cleared with it,
 /// dropped when a changed `memory_model` does not take it, refused with
-/// `agent::CheckEffort`'s words otherwise (a new file, the same model).
+/// `agent::ValidateEffort`'s words otherwise (a new file, the same model).
 /// Unchecked while the agent actor is down (its compactor drops an effort
 /// the model does not take at use).
 async fn settle_memory_effort(f: &mut AgentFile, old: Option<&AgentFile>) -> Result<(), String> {
@@ -365,7 +365,7 @@ async fn settle_memory_effort(f: &mut AgentFile, old: Option<&AgentFile>) -> Res
     let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
         return Ok(());
     };
-    let check = agent::CheckEffort {
+    let check = agent::ValidateEffort {
         model: f.memory_model.clone(),
         effort,
     };

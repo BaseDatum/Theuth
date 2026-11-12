@@ -110,7 +110,7 @@ use crate::{
     UnloadSession, cost::CallKind, polish,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
-use crate::{CheckEffort, SessionEffort, SetSessionCompactorEffort};
+use crate::{SessionEffort, SetSessionCompactorEffort};
 use crate::{
     EndlessConfigChanged, EndlessFold, EndlessPause, EndlessRecall, EndlessRetry, EndlessZoom,
     GetEndlessSettings, RenderMemoryView, SessionMemoryQuery, SetAgentCompactorModel,
@@ -5100,14 +5100,6 @@ impl Agents {
     }
 }
 
-impl Message<CheckEffort> for Agents {
-    type Reply = Result<(), String>;
-
-    async fn handle(&mut self, m: CheckEffort, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.check_effort(m.model.as_deref(), &m.effort)
-    }
-}
-
 impl Message<SideCallable> for Agents {
     type Reply = Result<(), String>;
 
@@ -5258,19 +5250,6 @@ impl Agents {
             runtime::write_nested_config_value(&path, "agent", "subagents", "effort", &value)
         {
             tracing::warn!("config.yaml: {e}");
-        }
-    }
-
-    /// 194 D4b: `effort` against what `model` resolves to — the catalog model's
-    /// `validate_effort`; with no model or no catalog entry, only a known word.
-    fn check_effort(&self, model: Option<&str>, effort: &str) -> Result<(), String> {
-        let known = model
-            .and_then(|m| self.catalog.resolve(m, &*self.configured).ok())
-            .and_then(|r| r.model);
-        match known {
-            Some(m) => m.validate_effort(effort),
-            None if effort_of(effort).is_none() => Err(format!("unknown effort {effort}")),
-            None => Ok(()),
         }
     }
 }
@@ -16485,7 +16464,7 @@ pub(crate) mod tests {
     /// 194 row 11: `agent.endless.effort` is written beside `agent.endless.model`
     /// (quoted), refused when the model does not take it (D4b), dropped when a
     /// new model does not (D4c), cleared with the model (D4d), and in force at
-    /// once (`Endless::config`, D4f); `CheckEffort` is the same check.
+    /// once (`Endless::config`, D4f); `ValidateEffort` is the same check.
     #[tokio::test]
     async fn endless_settings_effort_follows_its_model() {
         let (_scratch, mut a) = agents_with(false).await;
@@ -16551,7 +16530,7 @@ pub(crate) mod tests {
         // The shared check, as meeting and dreaming ask it.
         assert!(
             agents
-                .ask(CheckEffort {
+                .ask(ValidateEffort {
                     model: Some("testfx/think".into()),
                     effort: "low".into(),
                 })
@@ -16559,7 +16538,7 @@ pub(crate) mod tests {
                 .is_ok()
         );
         let e = agents
-            .ask(CheckEffort {
+            .ask(ValidateEffort {
                 model: None,
                 effort: "loud".into(),
             })

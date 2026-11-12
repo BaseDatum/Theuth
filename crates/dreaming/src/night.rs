@@ -1479,7 +1479,7 @@ impl Message<SetSettings> for Night {
 }
 
 /// 194 D4b–d for one tier: `effort` follows `model` — cleared with it; `check`
-/// is `agent::CheckEffort` against it (`None`: unchecked, no agent actor); a
+/// is `agent::ValidateEffort` against it (`None`: unchecked, no agent actor); a
 /// failing effort is dropped when the pick changed from `old`, else refused.
 fn settle_effort(
     tier: &str,
@@ -1511,7 +1511,7 @@ async fn tier_effort(
         (Some(m), Some(e)) if !e.is_empty() => {
             match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
                 Ok(Some(agents)) => match agents
-                    .ask(agent::CheckEffort {
+                    .ask(agent::ValidateEffort {
                         model: Some(m.clone()),
                         effort: e.to_owned(),
                     })

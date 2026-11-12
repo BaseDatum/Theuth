@@ -1498,7 +1498,7 @@ fn summary_switch(
 }
 
 /// 194 D4b–d: `summary_effort` follows `summary_model` — cleared with it; `check` is
-/// `agent::CheckEffort` against it (`None`: unchecked, no agent actor); a failing effort is
+/// `agent::ValidateEffort` against it (`None`: unchecked, no agent actor); a failing effort is
 /// dropped when the model changed from `old_model`, else refused with the check's words.
 fn settle_summary_effort(
     s: &mut MeetingSettings,
@@ -1530,7 +1530,7 @@ async fn checked_summary_effort(
         (Some(model), Some(effort)) => {
             match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
                 Ok(Some(agents)) => match agents
-                    .ask(agent::CheckEffort {
+                    .ask(agent::ValidateEffort {
                         model: Some(model.clone()),
                         effort: effort.trim().to_owned(),
                     })
