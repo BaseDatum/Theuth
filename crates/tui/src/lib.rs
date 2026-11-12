@@ -101,7 +101,8 @@ impl runtime::Plugin for TuiPlugin {
         // (82 §3, 83 §3; config.yaml as read at launch is the fallback when `info` fails).
         let engine = api.read().clone();
         let info = engine.info().await.ok();
-        let components = components::builtin(info.as_ref().is_some_and(|i| i.app_enabled));
+        let interactive = self.prompt.is_none() && std::io::stdout().is_terminal();
+        let components = components::builtin_with(info.as_ref().is_some_and(|i| i.app_enabled), interactive);
         tokio::spawn(run_commands(api, commands_rx, events_tx));
 
         let (default_model, default_effort, advisor, favorite_models) = info.map_or_else(
@@ -132,7 +133,7 @@ impl runtime::Plugin for TuiPlugin {
         let resume = self.resume;
         let prompt = self.prompt;
         tokio::spawn(async move {
-            if prompt.is_none() && std::io::stdout().is_terminal() {
+            if interactive {
                 let links = ui::Links {
                     events: Some(events_rx),
                     commands: commands_tx,
@@ -831,10 +832,9 @@ async fn line_printer(
     commands: UnboundedSender<Command>,
     resume: Option<SessionId>,
     approvals: bool,
-    mut components: components::Registry,
+    components: components::Registry,
     prompt: Option<String>,
 ) {
-    components.set_interactive(false);
     let mut model = Model::with_components(String::new(), approvals, components);
     model.mount_components(&commands);
     if let Some(id) = resume {

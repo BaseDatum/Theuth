@@ -2,10 +2,14 @@ use std::collections::HashMap;
 use super::*;
 
 struct Slot { generation: u64, component: Option<Box<dyn ErasedComponent>> }
+/// Default interactive composition with the app capability disabled.
+pub fn builtin() -> Registry { builtin_with(false, true) }
+
 /// The sole built-in composition list. Add a panel here only after deleting its
 /// residual enum/reducer/executor/render/print hooks.
-pub fn builtin(app_enabled: bool) -> Registry {
+pub fn builtin_with(app_enabled: bool, interactive: bool) -> Registry {
     let mut registry = Registry::empty();
+    registry.set_interactive(interactive);
     registry.register(update::Update::default()).expect("built-in component registration");
 
     // Step-11 group t1 (network and prompts): register below, in this block only.
@@ -360,6 +364,10 @@ impl Registry {
     /// Highest-priority mounted composer presentation.
     pub fn composer_mode(&self) -> ComposerMode {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()).map(|component| component.composer_mode()).max().unwrap_or_default()
+    }
+    /// A read-only region remains active even beneath a hidden editor presentation.
+    pub fn composer_read_only(&self) -> bool {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).any(|component| component.composer_mode() == ComposerMode::ReadOnly)
     }
     /// Earliest deadline, without a second scheduler or per-component task.
     pub fn wake(&self) -> Option<u64> {

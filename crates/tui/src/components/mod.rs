@@ -40,7 +40,7 @@ pub mod search_attach;
 pub mod dictation_voice;
 
 // Model-picker panels (after design 194): add modules below, in this block only.
-pub use registry::{Registry, builtin};
+pub use registry::{Registry, builtin, builtin_with};
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -253,7 +253,6 @@ pub struct CoreView<'a> {
     pub approval: bool,
     /// Core session creation or a first send is awaiting adoption.
     pub awaiting_session: bool,
-
     // Model-picker context: borrowed applied settings, never picker state.
     /// Applied session model, or the model selected for the next draft.
     pub model_id: &'a str,
@@ -261,14 +260,18 @@ pub struct CoreView<'a> {
     pub effort: Option<&'a str>,
     /// Engine default effort used when a draft clears its selection.
     pub default_effort: Option<&'a str>,
-    /// Pending draft options before the first session is adopted.
-    pub draft_options: Option<&'a agent::CreateSessionOptions>,
     /// External harness identity, when the selected session uses one.
     pub harness: Option<&'a str>,
     /// Model reported by the external harness.
     pub harness_model: Option<&'a str>,
     /// Existing read-only model capability catalog.
     pub catalog: Option<&'a models::Catalog>,
+    /// Current shared animation frame before this dispatch.
+    pub frame: usize,
+    /// A mounted owner currently requests a read-only composer region.
+    pub composer_read_only: bool,
+    /// Borrowed pending core session picks, filtered by the existing draft policy.
+    pub draft_options: Option<&'a agent::CreateSessionOptions>,
 }
 /// Read-only identity metadata shared by core session membership.
 pub struct SessionMember<'a> {
@@ -768,6 +771,10 @@ pub enum CoreAction {
     AwaitingEffort(bool),
     /// Deliver one opaque typed message to another mounted owner.
     PostTo(AddressedMessage),
+    /// Adopt an independently created session through the existing draft reducer.
+    SessionCreated(SessionId),
+    /// Adopt an independently opened session through the existing session reducer.
+    SessionOpened(agent::SessionOpen),
 }
 
 /// Owned effects and actions emitted during one deterministic dispatch.

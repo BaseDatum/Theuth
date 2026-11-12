@@ -179,9 +179,12 @@ impl Model {
     /// The draft's options for a command that opens the session (148 R1):
     /// `Some` only while a pick is pending and no session is shown.
     pub(super) fn draft_options(&self) -> Option<CreateSessionOptions> {
-        self.draft
-            .clone()
-            .filter(|d| self.session.is_none() && (d.model.is_some() || d.effort.is_some()))
+        Self::draft_options_ref(self.draft.as_ref(), self.session).cloned()
+    }
+
+    /// Borrow the same picks without cloning on every component dispatch.
+    pub(super) fn draft_options_ref(draft: Option<&CreateSessionOptions>, session: Option<SessionId>) -> Option<&CreateSessionOptions> {
+        draft.filter(|d| session.is_none() && (d.model.is_some() || d.effort.is_some()))
     }
 }
 

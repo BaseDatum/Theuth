@@ -65,16 +65,16 @@
         })
     }
     fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
-        let registry = crate::components::builtin(false);
+        let registry = crate::components::builtin();
         transcript::injected(text, |row| registry.wrapper(row))
     }
 
     fn user_entries(text: String, turn: Option<i64>) -> Vec<Entry> {
-        history::user_entries(text, turn, &crate::components::builtin(false))
+        history::user_entries(text, turn, &crate::components::builtin())
     }
 
     fn from_history(row: HistoryEntry, options: &markdown::Options) -> Vec<Entry> {
-        history::from_history(row, options, &crate::components::builtin(false))
+        history::from_history(row, options, &crate::components::builtin())
     }
 
 
@@ -131,7 +131,7 @@
             MenuKey::Input(String::new())
         );
         assert!(m.quit && m.menu.is_none());
-        m.components = crate::components::builtin(true);
+        m.components = crate::components::builtin_with(true, true);
         let declared = COMMANDS.len() + m.components.slash_specs().count();
         assert_eq!(m.command_specs("/").len(), declared);
         m.components.get_mut::<ArtifactsApps>().unwrap().enabled = false;
@@ -2757,8 +2757,6 @@
             })
         ));
         component_menu_key(&mut m, "mcp", KeyCode::Char('s'));
-        assert!(matches!(rx.try_recv(), Ok(Command::CreateDraft(_))));
-        m.apply(UiEvent::SessionCreated(SessionId::new()));
         assert!(matches!(
             component_request::<McpRequest>(&mut rx),
             Ok(McpRequest::SetHidden {
@@ -4322,8 +4320,8 @@
         component_menu_key(&mut m, "mcp", KeyCode::Enter);
         component_menu_key(&mut m, "mcp", KeyCode::Char('s'));
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::CreateDraft(draft)) if picked(&Some(draft.clone()))
+            component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetHidden { session: None, draft, .. }) if picked(&draft)
         ));
         // `/<skill>` with no session.
         m.submit("/caveman lite", &tx);
@@ -4335,8 +4333,6 @@
         m.apply(UiEvent::SessionCreated(s));
         assert_eq!(m.session, Some(s));
         assert!(m.draft.is_none());
-        assert!(matches!(component_request::<McpRequest>(&mut rx),
-            Ok(McpRequest::SetHidden { session: None, hidden: true, .. })));
 
         // A fresh draft with no pick: the same entries create on the engine side.
         m.submit("/new", &tx);
@@ -4355,8 +4351,8 @@
         component_menu_key(&mut m, "mcp", KeyCode::Enter);
         component_menu_key(&mut m, "mcp", KeyCode::Char('s'));
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::CreateDraft(CreateSessionOptions { model: None, effort: None, .. }))
+            component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetHidden { session: None, draft: None, .. })
         ));
         m.submit("/caveman lite", &tx);
         assert!(matches!(
@@ -4367,9 +4363,6 @@
                 ..
             })
         ));
-        m.apply(UiEvent::SessionCreated(SessionId::new()));
-        assert!(matches!(component_request::<McpRequest>(&mut rx),
-            Ok(McpRequest::SetHidden { session: None, hidden: true, .. })));
     }
 
     /// 75 §8: on an ACP session `/model` lists the harness's options,
@@ -6283,6 +6276,36 @@
         m.session = Some(s);
         m.submit("/fork", &tx);
         assert!(matches!(m.entries.last(), Some(Entry::Error(t)) if t == "no turns yet"));
+    }
+
+    #[test]
+    fn entry_open_uses_the_latest_owned_call_and_yields_after_a_user_turn() {
+        let session = SessionId::new();
+        let path = std::path::PathBuf::from("/missing-theuth-wire-open.md");
+        let (tx, mut rx) = unbounded_channel();
+        let mut model = Model::new(String::new(), false);
+        model.session = Some(session);
+        model.component_commands = Some(tx);
+        let tool = |id: &str, name: &str| Entry::Tool {
+            call_id: id.into(), name: name.into(), args: Vec::new(),
+            result: Some(("done".into(), false)), expanded: None,
+        };
+        model.entries = vec![tool("shown", "show"), tool("unclaimed", "shell")];
+        model.apply(wire_event("artifact.shown", artifact::ArtifactShown {
+            session, call_id: "shown".into(),
+            artifact: artifact::Artifact {
+                id: "owned".into(), session, call_id: "shown".into(),
+                name: "note.md".into(), title: "note.md".into(), kind: artifact::Kind::Markdown,
+                mime: "text/markdown".into(), bytes: 4, version: 1, path: path.clone(),
+                source: None, preview: None, pages: None, origin: None, created_at: 0,
+            },
+        }));
+        assert!(model.component_open_latest_entry());
+        assert!(matches!(component_request::<ArtifactRequest>(&mut rx), Ok(ArtifactRequest::OpenPath(opened)) if opened == path));
+        model.entries.push(Entry::User { text: "next turn".into(), turn: None });
+        model.entries.push(tool("next-unclaimed", "shell"));
+        assert!(!model.component_open_latest_entry());
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

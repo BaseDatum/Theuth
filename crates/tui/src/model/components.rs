@@ -38,10 +38,12 @@ macro_rules! core_view {
             model_id: &$model.model_id,
             effort: $model.effort.as_deref(),
             default_effort: $model.default_effort.as_deref(),
-            draft_options: $model.draft.as_ref().filter(|d| $model.session.is_none() && (d.model.is_some() || d.effort.is_some())),
             harness: $model.agent.as_deref(),
             harness_model: $model.harness_model.as_deref(),
             catalog: $model.catalog.as_deref(),
+            frame: $model.frame,
+            composer_read_only: $model.components.composer_read_only(),
+            draft_options: Model::draft_options_ref($model.draft.as_ref(), $model.session),
         }
     };
 }
@@ -142,6 +144,8 @@ impl Model {
                         self.receive(UiEvent::Component(reply), emit);
                     }
                 }
+                CoreAction::SessionCreated(session) => self.receive(UiEvent::SessionCreated(session), emit),
+                CoreAction::SessionOpened(open) => self.receive(UiEvent::SessionOpened(open), emit),
                 CoreAction::ReplaceEditor { value, caret } => self.pending_input = Some((value, caret)),
                 CoreAction::SubmitEditor(value) => self.pending_send = Some(value),
                 CoreAction::CancelSession(session) => {
