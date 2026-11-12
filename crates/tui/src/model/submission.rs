@@ -16,6 +16,7 @@ impl Model {
 
     fn submit_with(&mut self, line: &str, interject: bool, tx: &UnboundedSender<Command>) {
         self.component_commands = Some(tx.clone());
+        self.component_reconcile_core_focus();
         let line = line.trim();
         // An empty note is an answer (keep / none); every other step waits for text.
         if line.is_empty()
@@ -282,7 +283,6 @@ impl Model {
             "/provider" => self.provider_cmd(arg, tx),
             "/secrets" => self.secrets_cmd(arg, tx),
             "/mesh" => self.mesh_cmd(arg, tx),
-            "/link" => self.link_cmd(arg, tx),
             "/nodes" => self.nodes_cmd(arg, tx),
             // `/<skill> [args]` hands the skill to the model (04 §2.4); any other `/word` — a path, a typo —
             // is message text and takes the arm below.
@@ -293,6 +293,7 @@ impl Model {
             }
             _ => self.send_text(line, interject, tx),
         }
+        self.component_reconcile_core_focus();
     }
 
     /// Send `line` as message text: a steer mid-turn (interjecting when

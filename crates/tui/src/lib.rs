@@ -879,33 +879,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 .await)?;
             UiEvent::Info(format!("{provider}/{}", m.line()))
         }
-        Command::LinkStatus => UiEvent::Link(msg(api.link_status().await)?),
-        Command::LinkEnable(enabled) => {
-            msg(api.link_enable(enabled, None).await)?;
-            UiEvent::Link(msg(api.link_status().await)?)
-        }
-        Command::LinkRelay(url) => {
-            let enabled = msg(api.link_status().await)?.enabled;
-            msg(api.link_enable(enabled, Some(url)).await)?;
-            UiEvent::Link(msg(api.link_status().await)?)
-        }
-        Command::LinkPair => UiEvent::Pairing(msg(api.link_pair().await)?),
-        Command::LinkCancelPair => {
-            msg(api.link_cancel_pair().await)?;
-            UiEvent::Info("pairing cancelled".into())
-        }
-        Command::LinkRename(name) => {
-            msg(api.link_rename(name).await)?;
-            UiEvent::Link(msg(api.link_status().await)?)
-        }
-        Command::LinkRenameDevice(id, name) => {
-            msg(api.link_rename_device(id, name).await)?;
-            UiEvent::Link(msg(api.link_status().await)?)
-        }
-        Command::LinkRevoke(id) => {
-            msg(api.link_revoke_device(id).await)?;
-            UiEvent::Link(msg(api.link_status().await)?)
-        }
         Command::MeshDevicesList => UiEvent::MeshDevices(msg(api.devices_list().await)?),
         Command::MeshDevicesAdd(name) => {
             UiEvent::MeshDevicePairing(msg(api.device_pair_start(name).await)?)
@@ -1874,12 +1847,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             "provider {}  {}  {} models — /model {}/<id>",
             p.name, p.base_url, p.models, p.name
         ),
-        UiEvent::Link(s) => writeln!(out, "{}", model::link_line(s)),
-        UiEvent::Pairing(p) => writeln!(out, "{}\n{}", link::qr(&p.key), p.key),
-        UiEvent::LinkEvent(link::LinkEvent::LinkPaired { device }) => {
-            writeln!(out, "paired: {}", device.name)
-        }
-        UiEvent::LinkEvent(_) => Ok(()),
         UiEvent::Nodes(list) => list.iter().try_for_each(|n| {
             writeln!(
                 out,

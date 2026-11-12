@@ -103,8 +103,6 @@ pub enum CardKind {
     Job,
     /// A `<schedule>` fire the harness injected (34 §1.5).
     Schedule,
-    /// A `/link pair` QR (31 §6.5).
-    Link,
     /// A `/nodes` `i` invite QR: a phone that scans it pairs with that node (32 §6.7).
     Node,
     /// An artifact shown inline from `/artifacts` (`s`), or the `show` card header (35 §6.1).
@@ -146,7 +144,7 @@ impl CardKind {
             CardKind::Prompt => "§",
             CardKind::Job => "▸",
             CardKind::Schedule => "◷",
-            CardKind::Link | CardKind::Node => "⌁",
+            CardKind::Node => "⌁",
             CardKind::Artifact => "▣",
             CardKind::Removed => "⊘",
             CardKind::Vision => "◉",

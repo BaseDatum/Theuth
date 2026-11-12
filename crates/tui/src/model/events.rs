@@ -171,12 +171,7 @@ pub enum UiEvent {
     Undone(String),
     /// Reply to [`Command::Redo`]: first line of the turn restored.
     Redone(String),
-    /// Reply to [`Command::LinkStatus`] and the link commands that change it.
-    Link(link::LinkStatus),
-    /// Reply to [`Command::LinkPair`]: the string the QR card encodes.
-    Pairing(link::Pairing),
-    /// Link plugin traffic (bus event).
-    LinkEvent(link::LinkEvent),
+
     /// Reply to [`Command::MeshDevicesList`] (and the commands that change it): the mesh's replicated registry (69 §3).
     MeshDevices(Vec<link::DeviceInfo>),
     /// Reply to [`Command::MeshDevicesAdd`]: the 4-part string a device scans and its pending id (69 decision 4).
@@ -646,22 +641,6 @@ pub enum Command {
     },
     /// `list_providers`.
     ListProviders,
-    /// `link_status`.
-    LinkStatus,
-    /// `link_enable(enabled, None)`, then `link_status`.
-    LinkEnable(bool),
-    /// `link_enable(<current>, Some(url))`, then `link_status`.
-    LinkRelay(String),
-    /// `link_pair`.
-    LinkPair,
-    /// `link_cancel_pair`.
-    LinkCancelPair,
-    /// `link_rename` (engine display name), then `link_status`.
-    LinkRename(String),
-    /// `link_rename_device(id, name)`, then `link_status`.
-    LinkRenameDevice(String, String),
-    /// `link_revoke_device`, then `link_status`.
-    LinkRevoke(String),
     /// `devices_list` (69 §3).
     MeshDevicesList,
     /// `device_pair_start(name)`: the mesh pairing QR.

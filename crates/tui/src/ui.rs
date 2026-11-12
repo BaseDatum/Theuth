@@ -78,7 +78,7 @@ const OCHRE: Color = rgb(0xC47A2C);
 /// Success / done.
 const MALACHITE: Color = rgb(0x4A8A6E);
 /// Info / agent state: tools, peers, asks.
-const FAIENCE: Color = rgb(0x5B8F8A);
+pub(crate) const FAIENCE: Color = rgb(0x5B8F8A);
 /// Error / stop.
 const CARNELIAN: Color = rgb(0xC45A48);
 /// Human turn cards.
@@ -251,9 +251,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 if std::mem::take(&mut m.refresh_mcp) {
                     let _ = commands.send(Command::ListMcp(m.session));
-                }
-                if std::mem::take(&mut m.refresh_link) {
-                    let _ = commands.send(Command::LinkStatus);
                 }
                 if std::mem::take(&mut m.refresh_nodes) {
                     let _ = commands.send(Command::ListNodes);
@@ -1454,7 +1451,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 .collect(),
             *cursor,
         ),
-        Menu::Link { cursor } => (m.link_title(), m.link_rows(), *cursor),
         Menu::Nodes { cursor } => (m.nodes_title(), m.nodes_rows(), *cursor),
         Menu::Secrets { cursor, history } => {
             (m.secrets_title(), m.secrets_rows(), history.unwrap_or(*cursor))
@@ -2070,7 +2066,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<cr
                 CardKind::Skill => SKILL,
                 CardKind::Prompt => PROMPT,
                 CardKind::Job | CardKind::Schedule => JOB,
-                CardKind::Link | CardKind::Node => LINK,
+                CardKind::Node => LINK,
                 CardKind::Component { color, .. } => *color,
                 CardKind::Artifact => TOOL,
                 CardKind::Removed => PROMPT,
