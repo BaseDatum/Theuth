@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 pub mod rpc_support;
 /// Session-owner forwarding and its immutable startup hooks.
 pub mod rpc_forward;
+pub mod rpc_jobs;
 pub mod acp_child;
 pub mod activity;
 pub mod advisor;

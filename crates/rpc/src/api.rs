@@ -185,7 +185,7 @@ mod hub;
 mod sessions;
 mod turns;
 mod settings;
-mod jobs;
+pub use agent::rpc_jobs as jobs;
 mod tooling;
 mod skills;
 mod screens;

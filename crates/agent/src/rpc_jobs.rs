@@ -1,4 +1,4 @@
-use agent::rpc_support::{attach_pty, RpcServerExt};
+use crate::rpc_support::{attach_pty, RpcServerExt};
 use base64::Engine as _;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
@@ -238,4 +238,8 @@ impl JobsApiServer for Server {
         });
         Ok(())
     }
+}
+
+pub fn rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
+    JobsApiServer::into_rpc(server)
 }
