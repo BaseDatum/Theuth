@@ -164,13 +164,11 @@ impl Model {
     /// Markdown options for assistant text: the terminal width less the
     /// card padding, `surface::fence` for `mermaid`/`json-render` fences.
     pub(super) fn assistant_options(&self) -> markdown::Options {
-        markdown::Options {
-            width: if self.width == 0 {
-                0
-            } else {
-                self.width.saturating_sub(2).max(20)
-            },
-            fence: Some(FENCE.clone()),
-        }
+        markdown_options(self.width)
     }
+}
+
+/// Assistant/card markdown options at the accepted terminal width.
+pub(crate) fn markdown_options(width: usize) -> markdown::Options {
+    markdown::Options { width: if width == 0 { 0 } else { width.saturating_sub(2).max(20) }, fence: Some(FENCE.clone()) }
 }
