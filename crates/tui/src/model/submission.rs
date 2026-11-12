@@ -240,13 +240,6 @@ impl Model {
                     },
                 ),
             },
-            "/cost" => match self.session {
-                Some(session) => {
-                    self.awaiting_cost = true;
-                    send(tx, Command::SessionCost(session));
-                }
-                None => self.entries.push(Entry::Info("no session".into())),
-            },
             "/terminals" => match self.session {
                 Some(session) => send(tx, Command::ListTerminals(session)),
                 None => self.entries.push(Entry::Info("no session".into())),

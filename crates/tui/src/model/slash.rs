@@ -83,11 +83,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "PTY jobs of this session's tree (picker: ⏎ opens a read-only observer)",
     ),
     (
-        "/cost",
-        "",
-        "model cost of this session's tree: returned, estimated, coverage, per child",
-    ),
-    (
         "/project",
         "<label|off>",
         "label this session's root for grouping in /sessions and /artifacts (off clears)",

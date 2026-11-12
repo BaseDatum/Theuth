@@ -225,8 +225,6 @@ pub enum UiEvent {
     PeerDelivered(PeerDelivered),
     /// Network configuration or listener state changed (bus event).
     A2aChanged(a2a::A2aChanged),
-    /// Reply to [`Command::SessionCost`]: the owner summary of `session` (51 §6.5).
-    Cost(SessionId, SessionCost),
     /// Reply to [`Command::ListTerminals`].
     Terminals(Vec<TerminalSummary>),
     /// Reply to [`Command::PtyScreen`], echoing the request's identity so a
@@ -749,8 +747,6 @@ pub enum Command {
         /// `None` clears.
         project: Option<String>,
     },
-    /// `session_cost` for the shown session.
-    SessionCost(SessionId),
     /// `list_terminals(session, descendants: true)`.
     ListTerminals(SessionId),
     /// `pty_screen`: one page of a retained terminal (51 §7.4).

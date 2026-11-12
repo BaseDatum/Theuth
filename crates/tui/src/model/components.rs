@@ -218,7 +218,6 @@ impl Model {
                 if let (Some(session), Some(commands)) = (self.session, &self.component_commands) {
                     let _ = commands.send(Command::ListAgents(session));
                 }
-                self.refresh_cost = self.session.is_some();
                 self.refresh_artifacts = self.session.is_some();
                 self.refresh_advisor = self.session.is_some();
                 self.refresh_communication = true;
@@ -244,14 +243,14 @@ fn component_plain_output_precedes_core_actions_and_errors_keep_global_effects()
     assert_eq!(bytes, b"counter: 0 -> 4\n");
     assert!(matches!(&model.entries[..], [Entry::Info(text)] if text == "counter=4"));
     model.compacting = true;
-    model.awaiting_cost = true;
+    model.components.get_mut::<crate::components::costs::Costs>().unwrap().pending = true;
     model.components.get_mut::<crate::components::link::Link>().unwrap().awaiting = true;
     let mut completed = false;
     model.receive(UiEvent::Component(reply(token, 0, Msg::Fail("request failed".into()))), &mut |output| {
         completed |= crate::print_output(&mut bytes, output).0;
     });
     assert!(completed);
-    assert!(!model.compacting && !model.awaiting_cost && !model.components.get::<crate::components::link::Link>().unwrap().awaiting);
+    assert!(!model.compacting && !model.components.get::<crate::components::costs::Costs>().unwrap().pending && !model.components.get::<crate::components::link::Link>().unwrap().awaiting);
     assert!(matches!(model.entries.last(), Some(Entry::Error(text)) if text == "request failed"));
 }
 

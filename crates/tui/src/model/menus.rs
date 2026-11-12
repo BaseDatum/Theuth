@@ -171,13 +171,6 @@ pub enum Menu {
         /// Highlighted row of [`Model::peers_rows`].
         cursor: usize,
     },
-    /// `/cost`: the shown session's owner summary (51 §6.5, §8.3).
-    Cost {
-        /// The summary at open (or the latest refresh).
-        cost: SessionCost,
-        /// Highlighted row.
-        cursor: usize,
-    },
     /// `/terminals` picker (51 §7.4).
     Terminals {
         /// PTY jobs of the shown session's tree.
@@ -270,7 +263,6 @@ impl Model {
             Some(Menu::Peers { .. }) => self.peers_key(code, tx),
             Some(Menu::Knowledge { .. }) => self.knowledge_key(code, tx),
             Some(Menu::KnowledgeHistory { .. }) => self.knowledge_history_key(code, tx),
-            Some(Menu::Cost { .. }) => self.cost_key(code),
             Some(Menu::Terminals { .. }) => self.terminals_key(code, tx),
             Some(Menu::Terminal(_)) => self.terminal_key(code, tx),
         }

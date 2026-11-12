@@ -13,3 +13,17 @@ impl Model {
 }
 
 
+
+impl Model {
+    /// One `/agents` picker or board line: [`agent_row`] plus the child's
+    /// cost tag (141 R3 T13: watch rows carry their money like the desktop).
+    /// The tag is measured first and the row fitted to the rest (R4 T13b), so
+    /// the detail is what gets cut, never the money.
+    pub fn board_row(&self, a: &AgentRow, width: u16) -> String {
+        let tag = self.component_text(crate::components::Surface::SessionBadge(a.info.id));
+        let fit =
+            width.saturating_sub(u16::try_from(crate::search::cells(&tag)).unwrap_or(u16::MAX));
+        format!("{}{tag}", agent_row(a, self.spinner(), fit))
+    }
+
+}
