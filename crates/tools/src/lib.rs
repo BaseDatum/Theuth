@@ -88,7 +88,7 @@ pub use registry::{
 };
 pub use registry::{
     Allowlisted, CancelCalls, ContactScoped, EffectiveCap, InstallResources, RemoveResources,
-    RestoreApprovals, SetAllowOnly, SetNoLan, SetPromoteAfter, SetTurnCap,
+    RestoreApprovals, RestoreHidden, SetAllowOnly, SetNoLan, SetPromoteAfter, SetTurnCap,
 };
 pub use registry::{
     CloseTreeAll, ExpectParticipants, OpenTree, ParticipantsReady, RegisterLifecycle,

@@ -660,8 +660,8 @@ const ROOT_HOPS: usize = 32;
 /// 183 R1/R2 (E-M3): the schema of the replicated session tables, as
 /// sessionsync sends it in `Hello` and `Release`: a peer on an older value
 /// is not shipped rows whose columns it cannot apply, and its takes are
-/// refused. Named after the migration that last changed them (0059: 191's
-/// `sessions.contact_inbox`).
+/// refused. Named after the migration that last changed them (0061:
+/// `sessions.hidden_tools`).
 ///
 /// **Bump rule:** set this to a new migration's number exactly when that
 /// migration adds, drops or renames a column of a table the session log
@@ -671,7 +671,7 @@ const ROOT_HOPS: usize = 32;
 /// mixed versions for nothing. Never a lower or an unrelated number: a peer
 /// whose value reads as newer is shipped rows its schema cannot apply, and
 /// `sqlite3changeset_apply` skips the table while the cursor advances.
-pub const SESSIONS_WIRE_SCHEMA: u32 = 59;
+pub const SESSIONS_WIRE_SCHEMA: u32 = 61;
 
 impl Store {
     /// Open (creating) the database in WAL mode and run migrations. Two
@@ -1364,6 +1364,38 @@ impl Store {
                 .fetch_optional(&self.read)
                 .await?;
         Ok(row.map(|(a, c)| (a.map(|a| a == "on"), c)))
+    }
+
+    /// Per-chat tool hides (`set_mcp_hidden`): the session's own hidden tool
+    /// names as `sessions.hidden_tools` (a JSON array; empty stores NULL).
+    /// Written by the owner's registry before it replies.
+    pub async fn set_session_hidden(&self, id: SessionId, names: &[String]) -> anyhow::Result<()> {
+        let json = (!names.is_empty())
+            .then(|| serde_json::to_string(names))
+            .transpose()?;
+        let mut tx = self.begin_write().await?;
+        sqlx::query("UPDATE sessions SET hidden_tools = ? WHERE id = ?")
+            .bind(json)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The names [`Store::set_session_hidden`] wrote; empty when none or the
+    /// session does not exist. `Err` on a list that does not parse. Read by
+    /// the supervisor when it spawns the actor (start, resume, take).
+    pub async fn session_hidden(&self, id: SessionId) -> anyhow::Result<Vec<String>> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT hidden_tools FROM sessions WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.read)
+                .await?;
+        match row.and_then(|(j,)| j) {
+            Some(j) => serde_json::from_str(&j).context("sessions.hidden_tools"),
+            None => Ok(Vec::new()),
+        }
     }
 
     /// 136 R-22: persist the session's money cap (`None` clears) so a
@@ -4269,8 +4301,8 @@ mod tests {
     #[tokio::test]
     async fn sessions_wire_schema_tracks_the_replicated_columns() {
         const SNAPSHOT: (u32, &str) = (
-            59,
-            "sessions: id,created_at,title,model,parent,name,effort,cut_at,agent,acp_session,cwd,updated_at,pinned,todo_version,context_revision,scope,alias,project,archived,tags,harness_model,unattended,owner,epoch,desk,harness_commands,context_size,acp_skills,last_stop,finished_at,kind,memory,endless_base,endless_filter,endless_view_bytes,budget,observed_source,observed_state,observed_stop,observed_cancel,observed_description,observed_tool_call,observed_detail,observed_cursor,observed_cost_rule,notebook,acp_previous,endless_paused,endless_spend_override,endless_model,endless_agent_model,approvals,communication,contact_inbox
+            61,
+            "sessions: id,created_at,title,model,parent,name,effort,cut_at,agent,acp_session,cwd,updated_at,pinned,todo_version,context_revision,scope,alias,project,archived,tags,harness_model,unattended,owner,epoch,desk,harness_commands,context_size,acp_skills,last_stop,finished_at,kind,memory,endless_base,endless_filter,endless_view_bytes,budget,observed_source,observed_state,observed_stop,observed_cancel,observed_description,observed_tool_call,observed_detail,observed_cursor,observed_cost_rule,notebook,acp_previous,endless_paused,endless_spend_override,endless_model,endless_agent_model,approvals,communication,contact_inbox,hidden_tools
 messages: session_id,seq,body,excluded,vision,at,thinking_ms,advisory,channel,moved
 epochs: session_id,n,at_seq,tail_from,head,created_at,excluded
 todo_snapshots: session_id,at_seq,k,source,items
@@ -6442,6 +6474,43 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
         );
     }
 
+    /// Per-chat tool hides live on the row: set, still there after a
+    /// restart, cleared by an empty list; a row that does not parse is `Err`.
+    #[tokio::test]
+    async fn session_hidden_round_trips_and_survives_reopen() {
+        let (store, id, dir) = seeded().await;
+        assert!(store.session_hidden(id).await.unwrap().is_empty());
+        let names = vec!["mcp__a__x".to_string(), "mcp__b__y".to_string()];
+        store.set_session_hidden(id, &names).await.unwrap();
+        store.close().await;
+        drop(store);
+        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        assert_eq!(store.session_hidden(id).await.unwrap(), names);
+        store.set_session_hidden(id, &[]).await.unwrap();
+        let raw: Option<String> =
+            sqlx::query_scalar("SELECT hidden_tools FROM sessions WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_one(&store.read)
+                .await
+                .unwrap();
+        assert_eq!(raw, None);
+        assert!(
+            store
+                .session_hidden(SessionId::new())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        sqlx::query("UPDATE sessions SET hidden_tools = 'nope' WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&store.read)
+            .await
+            .unwrap();
+        assert!(store.session_hidden(id).await.is_err());
+    }
+
     /// A committed removal survives a restart: the reopened store projects the
     /// same effective frame, revision, and inventory from the raw rows.
     #[tokio::test]
@@ -7819,6 +7888,10 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
         refused!(
             "set_session_communication",
             store.set_session_communication(id, Some(false))
+        );
+        refused!(
+            "set_session_hidden",
+            store.set_session_hidden(id, &["x".to_string()])
         );
         refused!(
             "set_acp",

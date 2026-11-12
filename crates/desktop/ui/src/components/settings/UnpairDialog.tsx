@@ -5,9 +5,11 @@ import { errorText } from '@/components/settings/shared'
 import { keys } from '@/components/tasks/queries'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { UNPAIR_CONTACTS, names, rogueLine, useContacts } from '@/lib/contacts'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { formatAt } from '@/lib/time'
+import type { Contact } from '@/rpc/bindings/Contact'
 import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
 import type { RotationPeer } from '@/rpc/bindings/RotationPeer'
 import type { RotationPhase } from '@/rpc/bindings/RotationPhase'
@@ -47,6 +49,7 @@ export function UnpairBody({
   busy,
   onCancel,
   onConfirm,
+  contacts = [],
 }: {
   name: string
   preview: UnpairPreview | undefined
@@ -62,6 +65,8 @@ export function UnpairBody({
   busy: boolean
   onCancel: () => void
   onConfirm: () => void
+  /** 191 D8: the mesh's contacts, told this machine left; empty → no contact lines. */
+  contacts?: readonly Pick<Contact, 'name'>[]
 }) {
   const p = preview
   const signIns = p?.sign_ins.map((ns) => ns.replace(/^oauth\//, '')) ?? []
@@ -138,6 +143,12 @@ export function UnpairBody({
             </li>
           )}
         </ul>
+      )}
+      {contacts.length > 0 && (
+        <div className="flex flex-col gap-1 text-[13px] text-fg-secondary">
+          <p>{UNPAIR_CONTACTS}</p>
+          <p>{`If ${name} was lost or stolen: ${rogueLine(names(contacts))}`}</p>
+        </div>
       )}
       <label className="flex items-start gap-2 text-sm">
         <input type="checkbox" className="mt-0.5 size-4 accent-[var(--primary)]" checked={reset} onChange={(e) => onReset(e.currentTarget.checked)} />
@@ -327,6 +338,7 @@ export function UnpairDialog({ id, name, nameOf, onClose }: { id: string; name: 
     },
   })
   const { state, rotate } = useRotation()
+  const contacts = useContacts().data ?? []
   return (
     <Dialog open onOpenChange={(o) => !o && !remove.isPending && onClose()}>
       <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg" aria-describedby={undefined}>
@@ -359,6 +371,7 @@ export function UnpairDialog({ id, name, nameOf, onClose }: { id: string; name: 
             busy={remove.isPending}
             onCancel={onClose}
             onConfirm={() => remove.mutate()}
+            contacts={contacts}
           />
         )}
       </DialogContent>
