@@ -1307,9 +1307,21 @@
     /// the same request for real; the receipt closes the menu and prints.
     #[test]
     fn broadcast_picker_composes_reviews_and_sends() {
-        use agent::{BroadcastOutcome, BroadcastRow, SessionActivity};
+        use agent::{BroadcastOutcome, BroadcastRow, SessionActivity, BroadcastTargets, BroadcastReceipt};
+        use crate::components::broadcast::{BroadcastPanel, Request as BroadcastRequest, Msg as BroadcastMsg, state::BroadcastStage};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(BroadcastPanel::default()).unwrap();
+        m.mount_components(&tx);
+        let key = |m: &mut Model, code| {
+            m.component_key(FocusClass::Modal, &iocraft::KeyEvent::new(iocraft::KeyEventKind::Press, code))
+        };
+        let reply = |m: &mut Model, body: BroadcastMsg| {
+            let event = UiEvent::Component(crate::components::LocalReply {
+                to: m.components.token("broadcast"), engine_epoch: 0, body: Box::new(body),
+            });
+            m.apply(event);
+        };
         let info = |name: &str, parent: Option<SessionId>, state: AgentState, ptys: u16| {
             let id = SessionId::new();
             AgentInfo {
@@ -1342,14 +1354,14 @@
         let child = info("kid", Some(busy.id), AgentState::Running, 0);
         // Children arrive out of order; the picker regroups them under their root.
         m.submit("/broadcast", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListActivity)));
-        m.apply(UiEvent::Activity(vec![
+        assert!(matches!(component_request::<BroadcastRequest>(&mut rx), Ok(BroadcastRequest::ListActivity)));
+        reply(&mut m, BroadcastMsg::Activity(Ok(vec![
             child.clone(),
             busy.clone(),
             idle.clone(),
             pty.clone(),
-        ]));
-        let Some(Menu::Broadcast(b)) = &m.menu else {
+        ])));
+        let Some(b) = &m.components.get::<BroadcastPanel>().unwrap().menu else {
             panic!("picker open");
         };
         let names: Vec<&str> = b.rows.iter().map(|a| a.name.as_str()).collect();
@@ -1357,23 +1369,23 @@
         assert_eq!(b.selected, [busy.id, pty.id].into_iter().collect());
         assert!(b.rows("●")[1].contains("↳ kid"));
         // `a` ticks every root, `n` none, `r` the running ones again; `d` flips delivery.
-        m.menu_key(KeyCode::Char('a'), "", &tx);
-        m.menu_key(KeyCode::Char('n'), "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
-        m.menu_key(KeyCode::Char('r'), "", &tx);
-        m.menu_key(KeyCode::Char('d'), "", &tx);
-        let Some(Menu::Broadcast(b)) = &m.menu else {
+        key(&mut m, KeyCode::Char('a'));
+        key(&mut m, KeyCode::Char('n'));
+        key(&mut m, KeyCode::Enter);
+        key(&mut m, KeyCode::Char('r'));
+        key(&mut m, KeyCode::Char('d'));
+        let Some(b) = &m.components.get::<BroadcastPanel>().unwrap().menu else {
             panic!("still picking");
         };
         assert_eq!(b.stage, BroadcastStage::Pick, "⏎ with nothing ticked stays");
         assert_eq!(b.selected.len(), 2);
         assert_eq!(b.delivery, agent::Delivery::NextTurn);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        key(&mut m, KeyCode::Enter);
         for c in "hi all".chars() {
-            m.menu_key(KeyCode::Char(c), "", &tx);
+            key(&mut m, KeyCode::Char(c));
         }
-        m.menu_key(KeyCode::Enter, "", &tx);
-        let Ok(Command::Broadcast(req)) = rx.try_recv() else {
+        key(&mut m, KeyCode::Enter);
+        let Ok(BroadcastRequest::Broadcast(req)) = component_request::<BroadcastRequest>(&mut rx) else {
             panic!("dry run sent");
         };
         assert!(req.dry_run && req.text == "hi all");
@@ -1401,8 +1413,8 @@
         let skip = || BroadcastOutcome::Skipped {
             reason: "dry run".into(),
         };
-        m.apply(UiEvent::Broadcasted(Ok(receipt([skip(), skip()]))));
-        let Some(Menu::Broadcast(b)) = &m.menu else {
+        reply(&mut m, BroadcastMsg::Broadcasted(Ok(receipt([skip(), skip()]))));
+        let Some(b) = &m.components.get::<BroadcastPanel>().unwrap().menu else {
             panic!("review open");
         };
         assert_eq!(b.stage, BroadcastStage::Review);
@@ -1410,23 +1422,23 @@
         assert!(rows[0].starts_with("[broadcast … · 2 sessions]"));
         assert!(rows[2].ends_with("will queue (next turn)"), "{}", rows[2]);
         // A refusal stays on the menu; ⏎ then sends for real.
-        m.menu_key(KeyCode::Enter, "", &tx);
-        let Ok(Command::Broadcast(req)) = rx.try_recv() else {
+        key(&mut m, KeyCode::Enter);
+        let Ok(BroadcastRequest::Broadcast(req)) = component_request::<BroadcastRequest>(&mut rx) else {
             panic!("send");
         };
         assert!(!req.dry_run && req.delivery == agent::Delivery::NextTurn);
-        m.apply(UiEvent::Broadcasted(Err("too many targets".into())));
+        reply(&mut m, BroadcastMsg::Broadcasted(Err("too many targets".into())));
         assert!(
-            matches!(&m.menu, Some(Menu::Broadcast(b)) if b.error.as_deref() == Some("too many targets"))
+            matches!(&m.components.get::<BroadcastPanel>().unwrap().menu, Some(b) if b.error.as_deref() == Some("too many targets"))
         );
-        m.apply(UiEvent::Broadcasted(Ok(receipt([
+        reply(&mut m, BroadcastMsg::Broadcasted(Ok(receipt([
             BroadcastOutcome::Started,
             BroadcastOutcome::Queued {
                 input_id: InputId::new(),
                 delivery: agent::Delivery::NextTurn,
             },
         ]))));
-        assert!(m.menu.is_none());
+        assert!(m.components.get::<BroadcastPanel>().unwrap().menu.is_none());
         let last = m.entries.iter().rev().find_map(|e| match e {
             Entry::Info(t) => Some(t.as_str()),
             _ => None,

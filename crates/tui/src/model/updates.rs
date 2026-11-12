@@ -134,10 +134,6 @@ impl Model {
                 category,
                 snapshot,
             } => self.open_shake(session, category, snapshot),
-            UiEvent::Activity(list) => {
-                self.menu = Some(Menu::Broadcast(Box::new(Broadcast::pick(list))));
-            }
-            UiEvent::Broadcasted(r) => self.broadcasted(r),
             // A failed read leaves the plan on screen, labelled stale (47 §5.4).
             UiEvent::Todos(id, snapshot) => {
                 if self.session == Some(id) {

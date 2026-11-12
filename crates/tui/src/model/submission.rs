@@ -200,7 +200,6 @@ impl Model {
                     send(tx, cmd);
                 }
             }
-            "/broadcast" => self.broadcast_cmd(arg, tx),
             "/agents" => match self.session {
                 Some(session) => {
                     self.agents_picker_pending = true;

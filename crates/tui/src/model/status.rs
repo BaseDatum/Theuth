@@ -382,5 +382,5 @@ pub(crate) fn when(rfc3339: &str) -> String {
 
 /// Time since a turn ended, coarse: `48s ago`, `3m ago`, `2h ago`, `3d ago`.
 pub(crate) fn ago(d: chrono::Duration) -> String {
-    format!("{} ago", crate::broadcast::since(d))
+    format!("{} ago", crate::components::broadcast::state::since(d))
 }

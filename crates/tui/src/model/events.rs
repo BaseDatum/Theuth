@@ -32,10 +32,6 @@ pub enum UiEvent {
     KnowledgeChanged(knowledge::KnowledgeChanged),
     /// Reply to [`Command::ListAgents`]: the session's subtree with live state.
     Agents(Vec<AgentInfo>),
-    /// Reply to [`Command::ListActivity`]: every live or root session (62 §0.6).
-    Activity(Vec<AgentInfo>),
-    /// Reply to [`Command::Broadcast`]: the receipt (dry run or send), or the refusal.
-    Broadcasted(Result<BroadcastReceipt, String>),
     /// Reply to [`Command::Load`] with `settled_only: false`: shown as is.
     History(SessionId, Loaded),
     /// Reply to [`Command::Load`] with `settled_only: true` (48 §5): shown
@@ -364,10 +360,6 @@ pub enum Command {
     Search(search::Request),
     /// `list_agents`: the subtree under a session.
     ListAgents(SessionId),
-    /// `list_activity`: the broadcast picker's rows (62 §0.6).
-    ListActivity,
-    /// `broadcast` (62 §0.1); `dry_run` previews.
-    Broadcast(BroadcastRequest),
     /// `load_session`; `settled_only` (48 §5) reads through the idle actor
     /// and replies with [`UiEvent::Refreshed`] instead of [`UiEvent::History`].
     Load {

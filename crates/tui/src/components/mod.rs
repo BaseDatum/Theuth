@@ -26,6 +26,7 @@ pub mod web_progress;
 // Step-11 group t3 (jobs, terminals, speech and search): add modules below, in this block only.
 pub mod jobs;
 pub mod terminals;
+pub mod broadcast;
 
 // Model-picker panels (after design 194): add modules below, in this block only.
 pub use registry::{Registry, builtin};

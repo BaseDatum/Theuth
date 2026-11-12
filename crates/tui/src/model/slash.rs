@@ -85,11 +85,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     ("/take", "", "continue the open session on this node (68)"),
     (
-        "/broadcast",
-        "[running|roots] [text]",
-        "send one message to many sessions",
-    ),
-    (
         "/search",
         "[query]",
         "search sessions, artifacts, knowledge and history (live; fzf syntax)",

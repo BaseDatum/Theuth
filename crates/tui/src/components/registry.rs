@@ -25,6 +25,7 @@ pub fn builtin() -> Registry {
     // Step-11 group t3 (jobs, terminals, speech and search): register below, in this block only.
     registry.register(jobs::Jobs::default()).expect("built-in component registration");
     registry.register(terminals::Terminals::default()).expect("built-in component registration");
+    registry.register(broadcast::BroadcastPanel::default()).expect("built-in component registration");
 
     // Model-picker panels (after design 194): register below, in this block only.
     registry

@@ -156,8 +156,6 @@ pub enum Menu {
     },
     /// `/shake` picker and review (48 §2.4).
     Shake(Box<Shake>),
-    /// `/broadcast` picker, composer and review (62 §5.1).
-    Broadcast(Box<Broadcast>),
     /// `/peers` (50 §5.1, §5.3): the directory `session` may address, then
     /// the requests a human may resolve for it by exact id. Opened at once,
     /// filled by the replies that name `session`; a switch drops the rest.
@@ -250,7 +248,6 @@ impl Model {
             Some(Menu::Secrets { .. }) => self.secrets_key(code, tx),
             Some(Menu::Artifacts { .. }) => self.artifacts_key(code, tx),
             Some(Menu::Shake(_)) => self.shake_key(code, tx),
-            Some(Menu::Broadcast(_)) => self.broadcast_key(code, tx),
             Some(Menu::Peers { .. }) => self.peers_key(code, tx),
             Some(Menu::Knowledge { .. }) => self.knowledge_key(code, tx),
             Some(Menu::KnowledgeHistory { .. }) => self.knowledge_history_key(code, tx),

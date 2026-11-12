@@ -1443,7 +1443,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             *cursor,
         ),
         Menu::Shake(s) => (s.title(), s.rows(), s.cursor),
-        Menu::Broadcast(b) => (b.title(), b.rows(m.spinner()), b.cursor),
         Menu::Peers { cursor, .. } => (
             m.peers_title(),
             m.peers_rows().iter().map(|r| r.line()).collect(),
