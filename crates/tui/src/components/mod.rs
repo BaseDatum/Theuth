@@ -35,6 +35,7 @@ pub mod jobs;
 pub mod terminals;
 pub mod broadcast;
 pub mod knowledge;
+pub mod mcp;
 
 // Model-picker panels (after design 194): add modules below, in this block only.
 pub use registry::{Registry, builtin};

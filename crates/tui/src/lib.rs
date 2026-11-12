@@ -603,36 +603,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             };
             UiEvent::Info(text.into())
         }
-        Command::ListMcp(session) => UiEvent::Mcp(msg(api.list_mcp(session).await)?),
-        Command::McpStatus => UiEvent::McpProgress(msg(api.mcp_status().await)?),
-        Command::SetGate {
-            server,
-            tool,
-            gate,
-            session,
-        } => {
-            msg(api.set_mcp_gate(server, tool, gate).await)?;
-            // Re-list here, not from the UI: commands run concurrently.
-            UiEvent::Mcp(msg(api.list_mcp(session).await)?)
-        }
-        Command::SetHidden {
-            session,
-            tools,
-            hidden,
-            draft,
-        } => {
-            let session = match (session, draft) {
-                (Some(s), _) => s,
-                (None, Some(d)) => open_draft(api, d, tx).await?,
-                (None, None) => {
-                    let s = msg(api.new_session().await)?;
-                    let _ = tx.send(UiEvent::SessionCreated(s));
-                    s
-                }
-            };
-            msg(api.set_mcp_hidden(session, tools, hidden).await)?;
-            UiEvent::Mcp(msg(api.list_mcp(Some(session)).await)?)
-        }
         Command::SetApprovals { session, enabled } => {
             UiEvent::Approvals(msg(api.set_approvals(session, enabled, None).await)?)
         }
@@ -664,11 +634,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             }
         }
         Command::SyncSkills => UiEvent::Synced(msg(api.sync_skills().await)?),
-        Command::AddMcp { name, entry } => {
-            UiEvent::McpAdded(msg(api.add_mcp_server(name, entry).await)?)
-        }
-        Command::AddMcpRepo(url) => UiEvent::RepoAdded(msg(api.add_mcp_repo(url, None).await)?),
-        Command::SyncMcp => UiEvent::Synced(msg(api.sync_mcp().await)?),
         Command::ListAcp { probe } => UiEvent::Acp(msg(api.list_acp(probe).await)?),
         Command::AddAcp(id) => {
             let _ = tx.send(UiEvent::AcpAdded(msg(api.add_acp(id).await)?));
@@ -1391,7 +1356,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::HarnessOptionSet(key, value, r) => {
             writeln!(out, "{}", model::harness_option_set_line(key, value, r))
         }
-        UiEvent::Models(_) | UiEvent::Mcp(_) | UiEvent::PathComplete(..) => {
+        UiEvent::Models(_) | UiEvent::PathComplete(..) => {
             writeln!(out, "menus need a TTY")
         }
         UiEvent::Logins(rows) => rows
@@ -1431,7 +1396,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Synced(list) => list
             .iter()
             .try_for_each(|r| writeln!(out, "{}  {}", r.name, r.status)),
-        UiEvent::McpAdded(s) => writeln!(out, "{}  {} tools", s.name, s.tools.len()),
         UiEvent::Acp(list) => list.iter().try_for_each(|e| {
             writeln!(
                 out,
@@ -1456,23 +1420,12 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             e.command,
             e.args.join(" ")
         ),
-        UiEvent::RepoAdded(r) => writeln!(out, "cloned {} → {}\n{}", r.name, r.path, r.readme),
         UiEvent::Approvals(s) => writeln!(
             out,
             "approvals: {} (this session), {} (default)",
             if s.session { "on" } else { "off" },
             if s.global { "on" } else { "off" }
         ),
-        UiEvent::McpProgress(p) if p.connecting.is_empty() => writeln!(
-            out,
-            "mcp: {} connected{}",
-            p.connected.len(),
-            match p.failed.as_slice() {
-                [] => String::new(),
-                f => format!(", failed: {}", f.join(", ")),
-            }
-        ),
-        UiEvent::McpProgress(_) => Ok(()),
         UiEvent::Approval(req) => writeln!(
             out,
             "approve {} ({:?}){}? [y/n]\n{}",

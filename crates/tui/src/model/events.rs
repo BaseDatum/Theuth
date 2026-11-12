@@ -57,12 +57,8 @@ pub enum UiEvent {
     HarnessOptions(Vec<acp::ConfigOption>),
     /// Reply to [`Command::SetHarnessOption`]: the option key asked for, the value, and the result.
     HarnessOptionSet(String, String, acp::SetOptionResult),
-    /// Reply to [`Command::ListMcp`] (also sent after every [`Command::SetGate`] / [`Command::SetHidden`]).
-    Mcp(Vec<McpServer>),
     /// Reply to [`Command::SetApprovals`].
     Approvals(ApprovalsState),
-    /// MCP reconcile snapshot (bus event).
-    McpProgress(McpProgress),
     /// Reply to [`Command::ShowPrompt`].
     Prompt(String),
     /// Reply to [`Command::ListSkills`].
@@ -71,12 +67,8 @@ pub enum UiEvent {
     Skill(SkillBody),
     /// Reply to [`Command::AddSkillRepo`]: the skills the clone holds.
     SkillsAdded(Vec<SkillMeta>),
-    /// Reply to [`Command::SyncSkills`] / [`Command::SyncMcp`].
+    /// Reply to [`Command::SyncSkills`].
     Synced(Vec<SyncResult>),
-    /// Reply to [`Command::AddMcp`].
-    McpAdded(McpServer),
-    /// Reply to [`Command::AddMcpRepo`].
-    RepoAdded(RepoInfo),
     /// Reply to [`Command::ListAcp`] (also sent after [`Command::RemoveAcp`]).
     Acp(Vec<EntryInfo>),
     /// Reply to [`Command::ListAcpRegistry`].
@@ -384,33 +376,6 @@ pub enum Command {
     },
     /// `resume_child` on the open ACP session (75 §10).
     ResumeChild(SessionId),
-    /// `list_mcp` for the root session (its in-memory hides).
-    ListMcp(Option<SessionId>),
-    /// `mcp_status`: the snapshot a late-attaching UI missed.
-    McpStatus,
-    /// `set_mcp_gate`, then `list_mcp`.
-    SetGate {
-        /// Server name.
-        server: String,
-        /// Tool name; `None` sets the server line.
-        tool: Option<String>,
-        /// New line; `None` clears it (back to annotations).
-        gate: Option<Gate>,
-        /// Root session, for the re-list.
-        session: Option<SessionId>,
-    },
-    /// `set_mcp_hidden`, then `list_mcp`. Without a session yet, one is created
-    /// first: the hide must exist before the first turn lists tools.
-    SetHidden {
-        /// Root session; `None` = create it.
-        session: Option<SessionId>,
-        /// Registered tool names.
-        tools: Vec<String>,
-        /// `true` hides.
-        hidden: bool,
-        /// `session: None` only (148 R1): the draft's pending model/effort for the created session.
-        draft: Option<CreateSessionOptions>,
-    },
     /// `set_approvals`.
     SetApprovals {
         /// `None` = global, persisted.
@@ -441,17 +406,6 @@ pub enum Command {
         /// `session: None` only (148 R1): the draft's pending model/effort for the started session.
         draft: Option<CreateSessionOptions>,
     },
-    /// `add_mcp_server`.
-    AddMcp {
-        /// Server name (file stem).
-        name: String,
-        /// One server object (`command`/`args`/`env`/`cwd` or `url`/`headers`).
-        entry: serde_json::Value,
-    },
-    /// `add_mcp_repo`.
-    AddMcpRepo(String),
-    /// `sync_mcp`.
-    SyncMcp,
     /// `list_logins` plus OAuth servers from `list_mcp`.
     ListLogins,
     /// `list_acp`.

@@ -18,8 +18,8 @@ use crate::model::{
     advisory_title, providers, session_row, severity_name,
 };
 use crate::model::{
-    AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch,
-    TurnAction, UiEvent, action_name, describe, gate_name,
+    AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt,
+    TurnAction, UiEvent, describe,
     k, now_ms, progress_line, result_line, short, window,
 };
 use crate::pathac;
@@ -177,8 +177,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             if let Some(id) = resume {
                 model.write().resume(id, &commands);
             }
-            // Servers started connecting before this UI subscribed.
-            let _ = commands.send(Command::McpStatus);
             // Skill names so `/<skill> [args]` resolves before `/skills` was ever opened.
             let _ = commands.send(Command::ListSkills);
             // The harness-wide vision fallback, so attaching an image to a
@@ -248,9 +246,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 if let Some(text) = m.pending_send.take() {
                     m.submit(&text, &commands);
                     input.set(String::new());
-                }
-                if std::mem::take(&mut m.refresh_mcp) {
-                    let _ = commands.send(Command::ListMcp(m.session));
                 }
                 if std::mem::take(&mut m.refresh_artifacts)
                     && let Some(session) = m.session
@@ -872,7 +867,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     Text(content: m.status(), color: SAND)
                     #(m.advisor_segment().map(|(text, state)| element!(Text(content: text, color: advisor_color(state)))))
                 }
-                Text(content: format!("{}{}", m.mcp_status(), m.component_text(Surface::Status(crate::components::StatusSlot::Right))), color: SAND)
+                Text(content: m.component_text(Surface::Status(crate::components::StatusSlot::Right)), color: SAND)
             }
         }
     }
@@ -1230,76 +1225,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             items
                 .iter()
                 .map(|a| m.board_row(a, width))
-                .collect(),
-            *cursor,
-        ),
-        Menu::Mcp {
-            cursor,
-            expanded,
-            pending,
-            ..
-        } => (
-            match pending {
-                Some(t) => format!(
-                    "turn off {}{}?   press  s = this session only  ·  a = always (all sessions, saved to mcp/config.yaml)  ·  esc = cancel",
-                    t.server,
-                    t.tool.as_deref().map_or(String::new(), |n| format!(" › {n}")),
-                ),
-                None => {
-                    "mcp  ⏎ turn on/off (asks: this session or always)  ␣ cycle risk  ⌫ reset risk  →/← tools  l login/logout  s sync  esc close"
-                        .to_owned()
-                }
-            },
-            m.mcp_rows()
-                .iter()
-                .map(|r| match r {
-                    Row::Server(s) => format!(
-                        "{} {:<16} {:>2} tools   {:<20} {:<18} {}{}",
-                        if expanded.contains(&s.name) {
-                            "▾"
-                        } else {
-                            "▸"
-                        },
-                        s.name,
-                        if s.connected {
-                            s.tools.len().to_string()
-                        } else {
-                            "–".to_owned()
-                        },
-                        r.switch().label(),
-                        match s.gate {
-                            None | Some(tools::Gate::Off) => "risk: annotations".to_owned(),
-                            Some(g) => format!("risk: {}", gate_name(g)),
-                        },
-                        match (r.switch(), s.connected, s.auth) {
-                            (Switch::OffAlways, ..) => "○ off",
-                            (_, true, _) => "● connected",
-                            (_, false, tools::McpAuth::Required) => "○ login required",
-                            (_, false, _) => "○ not connected",
-                        },
-                        s.repo
-                            .as_deref()
-                            .map_or_else(String::new, |r| format!("   ⟳ {r}")),
-                    ),
-                    // `mutating (ask)`: effective risk, then what `tools.policy`
-                    // does with it (12 §5). `*` marks the tool's own line;
-                    // `as x__y` the name the model sees when it clashes.
-                    Row::Tool(_, t) => format!(
-                        "    {:<24} {:<20} {:<22}{}",
-                        t.name,
-                        r.switch().label(),
-                        match t.gate {
-                            Some(tools::Gate::Off) => String::new(),
-                            Some(_) =>
-                                format!("{}* ({})", risk_name(t.risk), action_name(t.action)),
-                            None => format!("{} ({})", risk_name(t.risk), action_name(t.action)),
-                        },
-                        t.registered
-                            .as_deref()
-                            .filter(|n| *n != t.name)
-                            .map_or_else(String::new, |n| format!("  as {n}")),
-                    ),
-                })
                 .collect(),
             *cursor,
         ),
@@ -2131,7 +2056,7 @@ fn line(l: &markdown::Line) -> AnyElement<'static> {
     element!(MixedText(contents: contents, wrap: TextWrap::Wrap)).into_any()
 }
 
-fn risk_name(r: Risk) -> &'static str {
+pub(crate) fn risk_name(r: Risk) -> &'static str {
     match r {
         Risk::ReadOnly => "read-only",
         Risk::Mutating => "mutating",

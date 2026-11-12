@@ -222,20 +222,6 @@ impl Model {
                 self.entries
                     .push(Entry::Info(harness_option_set_line(&key, &value, &r)));
             }
-            // The cursor is clamped where it is used (`mcp_key`, renderer).
-            UiEvent::Mcp(list) => match &mut self.menu {
-                Some(Menu::Mcp { servers, .. }) => *servers = list,
-                _ if self.awaiting_mcp => {
-                    self.awaiting_mcp = false;
-                    self.menu = Some(Menu::Mcp {
-                        servers: list,
-                        cursor: 0,
-                        expanded: BTreeSet::new(),
-                        pending: None,
-                    });
-                }
-                _ => {}
-            },
             UiEvent::Acp(list) => match &mut self.menu {
                 Some(Menu::Acp { entries, .. }) => *entries = list,
                 _ if self.awaiting_acp => {
@@ -266,15 +252,6 @@ impl Model {
                     on_off(s.session && !self.approvals_off),
                     on_off(s.global)
                 )));
-            }
-            UiEvent::McpProgress(p) => {
-                // Any change while the menu is open (a login settled, a server
-                // (dis)connected) re-lists; waiting for `connecting` to drain
-                // left a finished login unshown while a slow server reconnected.
-                if self.mcp.as_ref() != Some(&p) && matches!(self.menu, Some(Menu::Mcp { .. })) {
-                    self.refresh_mcp = true;
-                }
-                self.mcp = Some(p);
             }
             // Verbatim: the point is to see exactly what the model sees.
             UiEvent::Prompt(text) => self.entries.push(card(
@@ -335,20 +312,6 @@ impl Model {
                         .push(Entry::Info(format!("{}  {}", r.name, r.status)));
                 }
             }
-            UiEvent::McpAdded(s) => self.entries.push(Entry::Info(format!(
-                "{}  {} tools  {}",
-                s.name,
-                s.tools.len(),
-                if s.connected {
-                    "connected"
-                } else {
-                    "not connected"
-                }
-            ))),
-            UiEvent::RepoAdded(r) => self.entries.push(Entry::Info(format!(
-                "cloned {} → {}  (build it, then `/mcp add {{...\"cwd\": ...}}`)",
-                r.name, r.path
-            ))),
             UiEvent::Info(t) => self.entries.push(Entry::Info(t)),
             // The note rides the reload (like undo's), so it lands after the
             // transcript the new engine serves — a pushed entry would go with

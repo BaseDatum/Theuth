@@ -29,11 +29,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "AWS profile for Bedrock, harness-wide (picker without arg)",
     ),
     (
-        "/mcp",
-        "[add <url|json>|sync]",
-        "MCP servers: on/off (this session or always), risk lines",
-    ),
-    (
         "/acp",
         "[add <registry-id>|remove <name>]",
         "External harnesses (ACP) and the registry",
@@ -156,7 +151,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "",
         "interactive apps the agent built, run on desktop/web (picker: ⏎ opens, s shows source, e exports to ~/Downloads)",
     ),
-    ("/tools", "[add <url|json>|sync]", "same as /mcp"),
     ("/exit", "", "same as /quit"),
 ];
 
