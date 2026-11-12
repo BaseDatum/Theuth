@@ -16,6 +16,7 @@ const CRATES: &[&str] = &[
     "mcp-server",
     "sandbox",
     "computer",
+    "codeindex",
 ];
 
 /// `Extended_Pictographic` ∪ `Emoji_Presentation` (Unicode 16) minus the arrows block and ™, which are

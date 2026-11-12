@@ -195,8 +195,6 @@ pub mod concepts;
 pub mod documents;
 /// Notebooks RPC server and client traits.
 pub mod notebooks;
-/// Codemap RPC server and client traits.
-pub use ::codeindex::rpc as codemap;
 /// Messaging RPC server and client traits.
 pub mod messaging;
 /// Network RPC server and client traits.
@@ -228,7 +226,6 @@ pub use skills::{SkillsApiClient, SkillsApiServer};
 pub use concepts::{ConceptsApiClient, ConceptsApiServer};
 pub use documents::{DocumentsApiClient, DocumentsApiServer};
 pub use notebooks::{NotebooksApiClient, NotebooksApiServer};
-pub use codemap::{CodemapApiClient, CodemapApiServer};
 pub use messaging::{MessagingApiClient, MessagingApiServer};
 pub use network::{NetworkApiClient, NetworkApiServer};
 pub use routines::{RoutinesApiClient, RoutinesApiServer};
@@ -254,7 +251,7 @@ pub mod clients {
     pub use super::concepts::ConceptsApiClient;
     pub use super::documents::DocumentsApiClient;
     pub use super::notebooks::NotebooksApiClient;
-    pub use super::codemap::CodemapApiClient;
+    pub use ::codeindex::rpc::CodemapApiClient;
     pub use super::messaging::MessagingApiClient;
     pub use super::network::NetworkApiClient;
     pub use super::routines::RoutinesApiClient;
@@ -284,7 +281,7 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         concepts::rpc_module(server.clone()),
         documents::rpc_module(server.clone()),
         notebooks::rpc_module(server.clone()),
-        codemap::rpc_module(server.clone()),
+        ::codeindex::rpc_module(server.clone()),
         messaging::rpc_module(server.clone()),
         network::rpc_module(server.clone()),
         routines::rpc_module(server.clone()),

@@ -213,6 +213,13 @@ Authorization belongs to `agent::rpc_support::RpcServerExt`, not inherent
 cross-domain callers use those contracts rather than generated wire traits.
 Configuration and private-session tracking/wait extensions stay domain-local.
 
+RPC method ownership includes kernels → `cells` (with `kernel_rpc`,
+`kernel_latest` and the guard adapter), MCP → `mcp-server`, sandboxes →
+`sandbox`, screens → `computer`, and codemap → `codeindex`. Each exports
+`rpc_module` for main's composition list; sandbox/codeindex actor lookups live
+in their owner's `rpc_support`. The `rpc::api::clients` collection imports
+their generated client traits without adding owner dependencies to the TUI.
+
 Events: a plugin may publish one struct per event or one `#[serde(tag =
 "type")]` enum per event *stream* — `agent::AgentEvent` is the latter because
 every UI consumes the whole stream with one subscription and one `match`.
