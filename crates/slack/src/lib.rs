@@ -412,6 +412,10 @@ impl runtime::Plugin for SlackPlugin {
         "slack"
     }
 
+    async fn declare_wire(&mut self, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await
+    }
+
     async fn start(self: Box<Self>, rt: &runtime::Runtime) -> anyhow::Result<()> {
         declare_wire(rt).await?;
         let cfg: SlackConfig = rt.section("slack").unwrap_or_else(|e| {

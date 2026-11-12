@@ -4370,6 +4370,10 @@ impl runtime::Plugin for AgentPlugin {
         "agent"
     }
 
+    async fn declare_wire(&mut self, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await
+    }
+
     async fn start(self: Box<Self>, rt: &runtime::Runtime) -> anyhow::Result<()> {
         declare_wire(rt).await?;
         // 144 §13.2 (E1): `notebook_context_set` / `notebook_context_estimate` ride the agent's store.

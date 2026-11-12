@@ -68,9 +68,9 @@ base64 = { workspace = true }
 parking_lot = { workspace = true }
 chrono = { workspace = true }
 ts-rs = { workspace = true, optional = true }
+surface = { workspace = true, optional = true }
 
 [dev-dependencies]
-surface = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 tempfile = "3"

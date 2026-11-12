@@ -24,7 +24,6 @@ pub mod attach;
 mod clip;
 pub mod components;
 pub mod topics;
-pub mod dictation;
 pub mod model;
 pub mod pathac;
 pub mod talk;
@@ -727,64 +726,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 .await)?;
             UiEvent::Info(format!("{provider}/{}", m.line()))
         }
-
-        // The reply carries the state even when `DictationModel` was published before this bridge subscribed.
-        Command::DictationPrewarm => UiEvent::Voice(voice::VoiceEvent::DictationModel {
-            state: msg(api.dictation_prewarm().await)?,
-        }),
-        Command::DictationStart { pressed, commands } => {
-            // 153 §14.1: the TUI's surface and its slash commands (shaping stage 4), the press age for §8.7.
-            let opts = voice::DictationOpts {
-                surface: Some(voice::Surface::Tui),
-                destination: Some(voice::Destination::AgentPrompt),
-                app: None,
-                commands,
-                press_ago_ms: u32::try_from(pressed.elapsed().as_millis()).ok(),
-            };
-            match api.dictation_start(None, Some(opts)).await {
-                Ok(id) => UiEvent::DictationStarting(id),
-                Err(e) => UiEvent::DictationFailed(reason(e)),
-            }
-        }
-        Command::DictationStop(id) => {
-            msg(api.dictation_stop(id).await)?;
-            return Ok(());
-        }
-        // Fire-and-forget: a failed correction is a debug line, not an error card.
-        Command::DictationCorrection { id, text } => {
-            if let Err(e) = api.dictation_correction(id, text).await {
-                tracing::debug!("dictation_correction: {}", reason(e));
-            }
-            return Ok(());
-        }
-        Command::SuggestionAnswer { id, answer } => {
-            msg(api.dictionary_suggestion_answer(id, answer).await)?;
-            return Ok(());
-        }
-        Command::VoiceStatus => {
-            let status = msg(api.voice_status().await)?;
-            let dictation = msg(api.dictation_status().await)?;
-            let devices = api.list_input_devices().await.unwrap_or_default();
-            // Like the device list: a failed read drops its row, not the whole reply.
-            let settings = api.voice_settings().await.ok();
-            UiEvent::Info(model::voice_line(
-                &status,
-                &dictation,
-                &devices,
-                settings.as_ref(),
-            ))
-        }
-        Command::SetInputDevices(names) => {
-            msg(api.set_input_devices(names.clone()).await)?;
-            UiEvent::Info(match names.first() {
-                Some(n) => format!("mic → {n}"),
-                None => "mic → system default".to_owned(),
-            })
-        }
-        Command::SetShape(preset) => {
-            msg(api.set_shape(voice::Surface::Tui, preset).await)?;
-            UiEvent::Info(format!("voice shape (tui) → {preset:?}").to_lowercase())
-        }
         Command::TalkStart { session, draft } => start_talk(api, session, draft, tx).await,
         Command::TalkStop(id) if talk_sim() => UiEvent::Talk(::talk::TalkEvent::TalkFinished {
             id,
@@ -1385,9 +1326,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         // No editor in print mode: nothing to dictate into.
         UiEvent::Voice(_)
         | UiEvent::Talk(_)
-        | UiEvent::DictationStarting(_)
         | UiEvent::TalkStarting(_) => Ok(()),
-        UiEvent::DictationFailed(m) => writeln!(out, "dictation: {m}"),
         UiEvent::TalkFailed(m) => writeln!(out, "talk: {m}"),
         // Stderr: `-p` output stays the reply alone.
         UiEvent::Engine(Some(label)) => {

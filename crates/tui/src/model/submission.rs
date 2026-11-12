@@ -31,7 +31,6 @@ impl Model {
             return;
         }
         if self.component_submit(line) { return; }
-        self.component_notify(crate::components::Lifecycle::ComposerSubmitted(line));
         // `/edit` in progress: a plain line replaces the turn being edited
         // (slash commands still run and leave the edit pending).
         if let Some((idx, turn)) = self.editing.filter(|_| !line.starts_with('/')) {
@@ -160,16 +159,6 @@ impl Model {
                 .entries
                 .push(Entry::Error("usage: /logout <name>".into())),
             "/logout" => send(tx, Command::Logout(arg.to_owned())),
-            // The line was taken out of the editor to get here: the region lands in an empty box.
-            "/dictate" => {
-                if let Some(cmd) = self.toggle_dictation(String::new(), String::new()) {
-                    send(tx, cmd);
-                }
-            }
-            "/voice" => match voice_cmd(arg) {
-                Ok(cmd) => send(tx, cmd),
-                Err(e) => self.entries.push(Entry::Error(e.into())),
-            },
             "/talk" => {
                 if let Some(cmd) = self.toggle_talk(false) {
                     send(tx, cmd);
@@ -245,16 +234,7 @@ impl Model {
     /// asked), else the next turn's input. Also the raw path of a harness
     /// slash command picked from the popup (141 D15 c): no `use_skill`.
     pub(super) fn send_text(&mut self, line: &str, interject: bool, tx: &UnboundedSender<Command>) {
-        // 153 §6.1: what went out, when a dictation contributed to it (fire-and-forget).
-        if let Some(id) = self.dictated.take() {
-            send(
-                tx,
-                Command::DictationCorrection {
-                    id,
-                    text: line.to_owned(),
-                },
-            );
-        }
+        self.component_notify(crate::components::Lifecycle::ComposerSubmitted(line));
         let (text, files) = self.expand_pastes(line);
         match self.session {
             // Mid-turn, or mid-`/compact` (a mini-turn without `TurnStarted`;

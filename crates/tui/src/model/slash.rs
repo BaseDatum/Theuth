@@ -50,12 +50,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "",
         "subagents of this session (picker: ⏎ opens one)",
     ),
-    ("/dictate", "", "toggle dictation (Ctrl+D)"),
-    (
-        "/voice",
-        "[mic <name|default> | shape <full|plain|off>]",
-        "dictation: mics and last timings; pick the mic; the TUI's shaping preset",
-    ),
     (
         "/talk",
         "",
@@ -339,7 +333,7 @@ impl Model {
 }
 
 // Presentation metadata only: routing and command declarations remain with owners.
-fn command_rank(name: &str) -> usize {
+pub(crate) fn command_rank(name: &str) -> usize {
     match name {
         "/model" => 0, "/title" => 1, "/vision" => 2, "/effort" => 3,
         "/advisor" => 4, "/aws" => 5, "/mcp" => 6, "/acp" => 7,

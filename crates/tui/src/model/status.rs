@@ -53,7 +53,6 @@ impl Model {
             || self.agents.values().any(AgentRow::live)
             || self.components.wake().is_some()
             || self.components.animating()
-            || self.dictation.is_some()
             || self.talk_view
     }
 }

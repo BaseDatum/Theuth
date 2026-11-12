@@ -1363,6 +1363,10 @@ impl runtime::Plugin for A2aPlugin {
         "a2a"
     }
 
+    async fn declare_wire(&mut self, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await
+    }
+
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
         declare_wire(rt).await?;
         // Absent section = defaults (off). A present but malformed section

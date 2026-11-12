@@ -37,6 +37,7 @@ pub mod broadcast;
 pub mod knowledge;
 pub mod mcp;
 pub mod search_attach;
+pub mod dictation_voice;
 
 // Model-picker panels (after design 194): add modules below, in this block only.
 pub use registry::{Registry, builtin, builtin_with};
@@ -159,6 +160,18 @@ pub struct Declaration {
     pub bindings: &'static [Binding],
 }
 
+/// Mounted composer presentation, with explicit priority independent of registration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ComposerMode {
+    /// Ordinary mounted editor and border.
+    #[default]
+    Default,
+    /// Keep the mounted editor hidden behind owner content and an accent border.
+    ReadOnly,
+    /// Hide the mounted editor and remove its border and minimum height.
+    Hidden,
+}
+
 /// A focused component may borrow the still-mounted composer instead of capturing it.
 pub struct Editor {
     /// Prompt line above the composer.
@@ -219,6 +232,20 @@ pub struct CoreView<'a> {
     // Step-11 group t3 CoreView fields: add below, in this block only.
     /// Measured transcript row budget at the current key dispatch boundary.
     pub viewport: usize,
+    /// Borrowed composer bytes and byte caret, present at editor-aware input dispatch.
+    pub editor: Option<(&'a str, usize)>,
+    /// Core and registered command declarations in their existing speech order.
+    pub commands: &'a [SlashSpec],
+    /// Whether the core editor currently accepts ordinary text.
+    pub input_focused: bool,
+    /// Any core popup or component modal is open.
+    pub menu_open: bool,
+    /// A masked composer-backed editor has priority over idle shortcuts.
+    pub secret_editor: bool,
+    /// A tool approval is currently shown.
+    pub approval: bool,
+    /// Core session creation or a first send is awaiting adoption.
+    pub awaiting_session: bool,
 }
 /// Read-only identity metadata shared by core session membership.
 pub struct SessionMember<'a> {
@@ -447,6 +474,8 @@ pub enum Surface<'a> {
     // Step-11 group t3 Surface variants: add below, in this block only.
     /// Owner activity while core streaming/compaction/vision has no priority.
     Activity,
+    /// Replacement for the existing one-row composer heading.
+    ComposerHeader,
 }
 /// Read-only layout context; no iocraft Hooks or editor handles.
 #[derive(Clone, Copy)]
@@ -691,6 +720,17 @@ pub enum CoreAction {
     Post(LocalReply),
     /// Adopt one core-created draft before releasing queued owner work.
     EnsureSession(SessionContinuation),
+    /// Atomically replace the mounted editor bytes and byte caret.
+    ReplaceEditor {
+        /// Complete replacement text.
+        value: String,
+        /// Byte cursor within the replacement.
+        caret: usize,
+    },
+    /// Take the shell's existing submit-once path.
+    SubmitEditor(String),
+    /// Cancel the existing agent turn without changing owner state.
+    CancelSession(SessionId),
 }
 
 /// Owned effects and actions emitted during one deterministic dispatch.
@@ -863,6 +903,8 @@ pub trait Component: Send + Sync + 'static {
     fn animating(&self) -> bool { false }
     /// The focused view owns a separate widget, not the composer-backed Editor.
     fn separate_editor(&self) -> bool { false }
+    /// Presentation of the still-mounted shell editor.
+    fn composer_mode(&self) -> ComposerMode { ComposerMode::Default }
 }
 
 trait ErasedComponent: Send + Sync {
@@ -877,6 +919,7 @@ trait ErasedComponent: Send + Sync {
     fn wake(&self) -> Option<u64>;
     fn animating(&self) -> bool;
     fn separate_editor(&self) -> bool;
+    fn composer_mode(&self) -> ComposerMode;
     fn entry_rows(&self, key: &str) -> usize;
     fn entry_height(&self, key: &str, width: usize) -> Option<usize>;
     fn entry_openable(&self, key: &str) -> bool;
@@ -910,6 +953,7 @@ impl<C: Component> ErasedComponent for Mounted<C> {
     fn wake(&self) -> Option<u64> { self.0.wake() }
     fn animating(&self) -> bool { self.0.animating() }
     fn separate_editor(&self) -> bool { self.0.separate_editor() }
+    fn composer_mode(&self) -> ComposerMode { self.0.composer_mode() }
     fn entry_rows(&self, key: &str) -> usize { self.0.entry_rows(key) }
     fn entry_height(&self, key: &str, width: usize) -> Option<usize> { self.0.entry_height(key, width) }
     fn entry_openable(&self, key: &str) -> bool { self.0.entry_openable(key) }

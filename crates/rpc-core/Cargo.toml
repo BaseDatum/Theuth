@@ -16,6 +16,9 @@ tokio-util = { workspace = true }
 parking_lot = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
+serde = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 percent-encoding = "2"
 rand = { workspace = true }
 anyhow = { workspace = true }

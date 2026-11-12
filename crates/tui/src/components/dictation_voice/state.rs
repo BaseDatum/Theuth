@@ -1,6 +1,5 @@
 //! Live dictation into the composer (design doc 54 §5–6): the region
-//! splice, the per-dictation state and the header level meter. Pure; the
-//! keys and the render live in `ui.rs`, the events in `model.rs`.
+//! splice, per-dictation state and header level meter. Pure helpers for the owner.
 
 use std::collections::VecDeque;
 use std::time::Instant;

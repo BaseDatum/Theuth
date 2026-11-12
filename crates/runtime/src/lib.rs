@@ -422,6 +422,8 @@ pub fn subscriber_mailbox<A: kameo::Actor>()
 pub trait Plugin: Send {
     /// Stable name used in logs and the kameo registry prefix.
     fn name(&self) -> &'static str;
+    /// Declare inert contracts before any plugin starts; must not open services.
+    async fn declare_wire(&mut self, _rt: &Runtime) -> anyhow::Result<()> { Ok(()) }
     /// Wire this plugin into the runtime.
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()>;
 }

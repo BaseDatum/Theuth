@@ -395,3 +395,14 @@ async fn schema_descriptors_are_lazy_and_use_consumer_draft7_contracts() {
         assert_eq!(SCHEMA_CALLS.load(Ordering::SeqCst), index + 1);
     }
 }
+
+#[tokio::test]
+async fn late_declarations_are_rejected_after_freeze_without_resetting_existing_projectors() {
+    let rt = runtime();
+    rt.register_wire_event::<Local<0>>().await.unwrap();
+    rt.freeze_wire().await.unwrap();
+    assert!(rt.register_wire_event::<Local<1>>().await.unwrap_err().to_string().contains("frozen"));
+    assert!(rt.register_wire_source::<Carrier, _>(|_| Ok(None)).await.is_err());
+    rt.register_wire_event::<Local<0>>().await.unwrap();
+    assert_eq!(rt.wire_schema().iter().map(|d| d.topic).collect::<Vec<_>>(), ["test.a"]);
+}

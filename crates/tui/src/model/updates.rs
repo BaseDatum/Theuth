@@ -412,17 +412,6 @@ impl Model {
             }
             UiEvent::Voice(ev) => self.apply_voice(ev),
             UiEvent::Talk(ev) => self.apply_talk(ev),
-            UiEvent::DictationStarting(id) => {
-                // `/new` or a menu may have run between the key and the reply; an
-                // empty anchor still tracks the dictation the daemon opened for us.
-                let (before, after) = self.dictation_pending.take().unwrap_or_default();
-                self.dictation = Some(Dictating::new(id, before, after));
-            }
-            UiEvent::DictationFailed(m) => {
-                self.dictation_pending = None;
-                self.dictation = None;
-                self.entries.push(Entry::Error(format!("dictation: {m}")));
-            }
             UiEvent::TalkStarting(id) => {
                 self.talk_pending = false;
                 // `SessionOpened` came first when `/talk` had to create the session.

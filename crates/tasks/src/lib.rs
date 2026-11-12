@@ -1610,6 +1610,10 @@ impl runtime::Plugin for TasksPlugin {
         "tasks"
     }
 
+    async fn declare_wire(&mut self, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await
+    }
+
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
         declare_wire(rt).await?;
         let cfg: TasksConfig = rt.section("tasks").unwrap_or_else(|e| {

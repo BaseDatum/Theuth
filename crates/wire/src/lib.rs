@@ -201,6 +201,9 @@ pub trait RuntimeWire {
     fn wire_receiver_count(&self) -> usize;
     /// Sorted contract descriptors; does not invoke schema generation.
     fn wire_schema(&self) -> Vec<EventDescriptor>;
+    /// Seal the catalog after the declaration pass. Existing exact repeats are
+    /// harmless; installing any new event or source afterwards is an error.
+    fn freeze_wire(&self) -> impl Future<Output = Result<()>> + Send;
 }
 
 /// One external RPC subscription. Dropping its task releases owner liveness.
@@ -251,6 +254,8 @@ struct Install {
     subscribe: Subscribe,
 }
 
+struct Freeze;
+
 struct State {
     hub: ActorRef<WireHub>,
     feed: broadcast::Sender<Arc<WireFrame>>,
@@ -270,6 +275,7 @@ fn state(rt: &Runtime) -> Arc<State> {
                     topics: HashMap::new(),
                     feed: feed.clone(),
                     catalog: catalog.clone(),
+                    frozen: false,
                 },
                 runtime::subscriber_mailbox(),
             );
@@ -367,6 +373,11 @@ impl RuntimeWire for Runtime {
     fn wire_schema(&self) -> Vec<EventDescriptor> {
         state(self).catalog.read().clone()
     }
+
+    async fn freeze_wire(&self) -> Result<()> {
+        state(self).hub.ask(Freeze).await
+            .map_err(|err| anyhow::anyhow!("wire freeze failed: {err}"))
+    }
 }
 
 #[derive(Actor)]
@@ -375,6 +386,7 @@ struct WireHub {
     topics: HashMap<&'static str, TypeId>,
     feed: broadcast::Sender<Arc<WireFrame>>,
     catalog: Catalog,
+    frozen: bool,
 }
 
 impl WireHub {
@@ -391,6 +403,9 @@ impl WireHub {
                 (Entry::Source(_), Entry::Source(_)) => Ok(()),
                 _ => bail!("wire type already registered with a different contract or as a source"),
             };
+        }
+        if self.frozen {
+            bail!("wire declarations are frozen");
         }
         if let Entry::Event(event) = &entry
             && self.topics.contains_key(event.descriptor.topic)
@@ -453,6 +468,10 @@ impl<M: Send + 'static> Message<M> for WireHub {
     ) -> Self::Reply {
         if let Some(install) = (&mut message as &mut dyn Any).downcast_mut::<Install>() {
             return self.install(install, ctx.actor_ref().clone()).await;
+        }
+        if (&message as &dyn Any).is::<Freeze>() {
+            self.frozen = true;
+            return Ok(());
         }
         match self.forward(&message) {
             Ok(Some(frame)) => {

@@ -86,6 +86,37 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn mesh_unary_discovery_uses_the_frozen_mesh_audience() {
+        let (a, b) = pair();
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        agent::declare_wire(&rt).await.unwrap();
+        use wire::RuntimeWire as _;
+        rt.freeze_wire().await.unwrap();
+        let described = rpc_core::merge_described([
+            rpc::rpc_module(rpc_core::Server::new(rt.clone())),
+            agent::rpc_module(rpc_core::Server::new(rt.clone())),
+        ]).unwrap();
+        let discovery = rpc_core::Discovery {
+            descriptors: described.descriptors,
+            events: rt.wire_schema(),
+            plugins: vec!["agent".into(), "rpc".into()],
+        };
+        rpc_core::freeze_discovery(&rt, &discovery, "test").unwrap();
+        let shutdown = rt.shutdown.clone();
+        let server = tokio::spawn(serve(rt, b.clone(), described.module.into()));
+        let params = serde_json::value::to_raw_value(&Vec::<String>::new()).unwrap();
+        let summary = forward(a.as_ref(), &b.me, "rpc.capabilities", &params).await.unwrap();
+        let summary: rpc_core::Capabilities = serde_json::from_str(summary.get()).unwrap();
+        let document = forward(a.as_ref(), &b.me, "rpc.discover", &params).await.unwrap();
+        let document: serde_json::Value = serde_json::from_str(document.get()).unwrap();
+        assert_eq!(summary.schema_hash, rpc_core::document_hash(&document).unwrap());
+        assert!(document["methods"].as_array().unwrap().iter().any(|m| m["name"] == "peer_deliver"));
+        assert!(document["x-theuth"]["events"].as_array().unwrap().iter().any(|e| e["topic"] == "agent.events"));
+        shutdown.cancel();
+        server.await.unwrap();
+    }
+
     /// What the fake owner records per `send_input`: text, resolved files, extensions.
     type Seen = (String, Vec<PathBuf>, Option<Extensions>);
 

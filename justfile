@@ -110,11 +110,9 @@ documents-helper:
     build_doc_helper
     echo "built $DOC_HELPER_SRC ($DOC_HELPER)"
 
-# Export TypeScript bindings for the RPC wire types. `--lib`: every ts-rs export test lives in the
-# library; without it cargo also links crates/rpc-compose/tests/prompts.rs, a second multi-GB debug link that thrashed
-# the 8 GiB linux-x86_64 host (two rust-lld at 3.6 GB each, 2026-10-03).
+# Export legacy TS roots and the real declaration-only production wire contract.
 ts:
-    cargo test -p rpc-compose --features ts --lib --quiet export_bindings
+    cargo test -p theuth --features ts --bin t --quiet export_bindings
 
 # Bindings for the desktop UI: `just ts` plus a copy into the Vite tree (25 §5).
 ts-desktop: ts
@@ -122,12 +120,13 @@ ts-desktop: ts
     mkdir -p crates/desktop/ui/src/rpc/bindings
     cp -R bindings/. crates/desktop/ui/src/rpc/bindings/
 
-# Step 9d stubs: generation and explicit baseline acceptance depend on 9c.
+# Generate the production contract without starting plugins, ports or stores.
 wire-schema:
-    @echo "Pending step 9c: export the declaration-only production composition to bindings/openrpc.json, then classify it against crates/theuth/tests/fixtures/wire/openrpc-v1.json."
+    cargo test -p theuth --bin t --quiet export_bindings
 
-wire-schema-accept:
-    @echo "Pending step 9c: regenerate, review the classified diff, then explicitly replace crates/theuth/tests/fixtures/wire/openrpc-v1.json; never auto-accept Breaking/ReviewRequired."
+# Deliberate acceptance after reviewing the classifier; no implicit CI update.
+wire-schema-accept: wire-schema
+    cp bindings/openrpc.json crates/theuth/tests/fixtures/wire/openrpc-v1.json
 
 # Desktop app in dev mode against `target/debug/t` (or `$THEUTH_BIN`); `THEUTH_DATA_DIR` overrides ~/.theuth.
 # `TAURI_FRONTEND_PATH`: the UI lives inside the crate (not beside it as Tauri assumes), so the
