@@ -13,36 +13,34 @@ use a2a::{A2A_ACTOR, A2aActor, A2aStatus};
 use agent::SetModelFavorite;
 use agent::context::save_blob;
 use agent::supervisor::{ChildResumed, HarnessOptions, ResumeChild, SetHarnessOption};
-use agent::todo::TodoSnapshot;
 use agent::{
-    AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentInfo, Agents, AnswerPeerRequest,
-    ArchiveSession, Broadcast, BroadcastOutcome, BroadcastReceipt, BroadcastRequest,
-    BroadcastTargets, Cancel, CancelScope, CommunicationState, Compact, CompactStyle,
-    ContextBreakdown, ContextItems, ContextRemoval, ContextSnapshot, ContextTarget, DeleteSession,
-    Delivery, EditTurn, EscalateModel, ForkSession, GetCommunication, GetCompactStyle,
-    GetEscalateModel, GetPeerMessage, GetSubagentModel, GetTitleModel, GetTodos, GetVisionModel,
-    Harvest, ListAcp, ListActivity, ListAgents, ListLogins, ListModels, ListPeerMessages,
-    ListPeers, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession,
-    LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, PeerMessagePage,
-    PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo, QueuedInput, Redo,
-    RefreshProviderModels, RefreshedModels, Regenerate, RemoveAcp, RemoveContext, RemoveProvider,
-    RemoveSkill, RemoveSkillRepo, RenameSession, SendInput, SessionContextBreakdown,
+    AddAcp, AddProvider, AgentInfo, Agents, AnswerPeerRequest,
+    ArchiveSession,
+    CommunicationState, CompactStyle,
+    DeleteSession,
+    EscalateModel, GetCommunication, GetCompactStyle,
+    GetEscalateModel, GetPeerMessage, GetSubagentModel, GetTitleModel, GetVisionModel,
+    Harvest, ListAcp, ListAgents, ListLogins, ListModels, ListPeerMessages,
+    ListPeers, ListProviders, ListRegistry, ListSessions, LoadSession,
+    Loaded, Login, LoginInfo, Logout, ModelInfo, PeerMessagePage,
+    PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo,
+    RefreshProviderModels, RefreshedModels, RemoveAcp, RemoveProvider,
+    RenameSession,
     SessionSummary, SetCommunication, SetCompactStyle, SetEffort, SetEscalateModel, SetMaxSalvages,
     SetMaxToolRounds, SetModel, SetPeerScope, SetStreamIdle, SetSubagentModel, SetSubagentTimeout,
-    SetTitleModel, SetVisionModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo,
-    UseSkill, Withdraw,
+    SetTitleModel, SetVisionModel, ShowPrompt,
 };
 use agent::{
     AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, SetAdvisor, SetAdvisorDefaults, SyncBacklog,
 };
 use agent::{
     CloseResult, CreateSession, CreateSessionOptions, LeaveSession,
-    ListProjectStyles, PeerDeliver, PeerEnvelope, PrivateTrees, ProjectStyle, ResumePrivate,
+    ListProjectStyles, PrivateTrees, ProjectStyle, ResumePrivate,
     SessionCost, SessionCostQuery, SessionOpen, SetProjectStyle, SetSessionProject, SpendReport,
     SpendReportQuery,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
-use agent::{EndlessConfig, MemoryMode, SessionMemory, ViewLine};
+use agent::EndlessConfig;
 use agent::{GetPolishModel, SetPolishModel};
 use app::{
     AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi,
@@ -75,7 +73,7 @@ use link::{
     RenameDevice, Revoke,
 };
 
-use runtime::{InputId, Runtime, SessionId};
+use runtime::{Runtime, SessionId};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sessionsync::types::{SessionOrphan, SessionOwner, SessionsStatus};
@@ -87,18 +85,18 @@ use tokio::time::Instant;
 use tools::git::SyncResult;
 use tools::{
     AddRepo, AddServer, Answer, Approval, ApprovalId, ApprovalRequested, ApprovalsState, AskId,
-    AskRequested, CancelJob, CancelOrigin, Decision, Gate, GetApprovals, GetPtyIdle, JOBS_ACTOR,
-    JobId, JobView, Jobs, ListJobs, ListServers, ListTools, Mcp, McpHomeAction, McpLogin,
+    AskRequested, Decision, Gate, GetApprovals, GetPtyIdle, JOBS_ACTOR,
+    Jobs, ListServers, ListTools, Mcp, McpHomeAction, McpLogin,
     McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve, SetApprovals,
     SetGate, SetHidden, SetMcpHome, SetPtyIdle, SyncMcp, ToolRegistry, ToolSpec,
 };
 use tools::{
-    Key, ListTerminals, PtyAttach, PtyChunk, PtyInput, PtyOut, PtyResize, PtyScreen,
-    PtyScreenReply, PtyViewport, Retention, TerminalSummary,
+    ListTerminals, PtyChunk, Retention, TerminalSummary,
 };
-use tools::{LiveCounts, LiveCountsRow};
 use uuid::Uuid;
 
+#[cfg(test)]
+use agent::rpc_support::session_draining;
 #[cfg(test)]
 use rpc_core::{FocusMap, BACKLOG};
 use agent::rpc_forward as forward;
@@ -185,16 +183,10 @@ pub struct Info {
 pub mod hub;
 /// Sessions RPC server and client traits.
 pub mod sessions;
-/// Turns RPC server and client traits.
-pub mod turns;
 /// Settings RPC server and client traits.
 pub mod settings;
-/// Jobs RPC server and client traits.
-pub mod jobs;
 /// Tooling RPC server and client traits.
 pub mod tooling;
-/// Skills RPC server and client traits.
-pub mod skills;
 /// Screens RPC server and client traits.
 pub mod screens;
 /// Mcp RPC server and client traits.
@@ -226,11 +218,8 @@ pub mod sandboxes;
 
 pub use hub::{CoreApiClient, CoreApiServer};
 pub use sessions::{SessionsApiClient, SessionsApiServer};
-pub use turns::{TurnsApiClient, TurnsApiServer};
 pub use settings::{SettingsApiClient, SettingsApiServer};
-pub use jobs::{JobsApiClient, JobsApiServer};
 pub use tooling::{SESSION_TOOLS, ToolingApiClient, ToolingApiServer};
-pub use skills::{SkillsApiClient, SkillsApiServer};
 pub use screens::{ScreensApiClient, ScreensApiServer};
 pub use mcp::{McpApiClient, McpApiServer};
 pub use concepts::{ConceptsApiClient, ConceptsApiServer};
@@ -248,13 +237,13 @@ pub use sandboxes::{SandboxesApiClient, SandboxesApiServer};
 
 /// All domain client traits for typed methods on any jsonrpsee client.
 pub mod clients {
+    pub use agent::rpc_jobs::JobsApiClient;
     pub use super::hub::CoreApiClient;
     pub use super::sessions::SessionsApiClient;
-    pub use super::turns::TurnsApiClient;
+    pub use agent::rpc_turns::TurnsApiClient;
     pub use super::settings::SettingsApiClient;
-    pub use super::jobs::JobsApiClient;
     pub use super::tooling::ToolingApiClient;
-    pub use super::skills::SkillsApiClient;
+    pub use agent::rpc_skills::SkillsApiClient;
     pub use super::screens::ScreensApiClient;
     pub use super::mcp::McpApiClient;
     pub use super::concepts::ConceptsApiClient;
@@ -281,9 +270,7 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
     rpc_core::merge([
         hub::rpc_module(server.clone()),
         sessions::rpc_module(server.clone()),
-        turns::rpc_module(server.clone()),
-        jobs::rpc_module(server.clone()),
-        skills::rpc_module(server.clone()),
+        agent::rpc_module(server.clone()),
         tooling::rpc_module(server.clone()),
         screens::rpc_module(server.clone()),
         mcp::rpc_module(server.clone()),
@@ -494,35 +481,6 @@ use rpc_core::{Server, PrivateMap};
 
 
 
-/// 139 §6.1 (D16): the supervisor refuses an input to a session mid-release-drain
-/// with a handler error whose `Display` form is `SessionDraining:<reason>[:<next owner>]`
-/// (`agent::supervisor::transfer::DRAINING_PREFIX`, the `DocError::NotHub` convention).
-/// Mapped here to the retryable [`forward::SESSION_DRAINING`] with the typed payload;
-/// the composer retries once. Anything else passes through.
-fn session_draining(session: SessionId, e: ErrorObjectOwned) -> ErrorObjectOwned {
-    let Some(rest) = e.message().strip_prefix("SessionDraining:") else {
-        return e;
-    };
-    let (reason, next_owner) = match rest.split_once(':') {
-        Some((r, o)) if !o.is_empty() => (r.to_owned(), Some(o.to_owned())),
-        Some((r, _)) => (r.to_owned(), None),
-        None => (rest.to_owned(), None),
-    };
-    let msg = match (reason.as_str(), &next_owner) {
-        ("release", Some(to)) => format!("{session} is moving to {to} — retry in a moment"),
-        ("release", None) => format!("{session} is moving to another engine — retry in a moment"),
-        (r, _) => format!("{session} is pausing for {r} — resumes on the next start"),
-    };
-    ErrorObjectOwned::owned(
-        forward::SESSION_DRAINING,
-        msg,
-        Some(forward::FrontDoorError::SessionDraining {
-            session,
-            reason,
-            next_owner,
-        }),
-    )
-}
 
 /// 139 §9.2 (D18): the engine owning a question's session, when it is another
 /// one — read from the replicated `questions` row, so an answer typed on any
@@ -1171,31 +1129,6 @@ fn decode_attachment(bytes: String, ext: &str) -> RpcResult<Vec<u8>> {
     Ok(bytes)
 }
 
-/// `PtyAttach` as an RPC result; `size` resizes a running job first.
-async fn attach_pty(
-    session: SessionId,
-    job: &JobId,
-    size: Option<(u16, u16)>,
-) -> RpcResult<tools::PtyAttached> {
-    let attached = lookup::<Jobs>(JOBS_ACTOR)?
-        .ask(PtyAttach {
-            session,
-            id: job.clone(),
-            size,
-        })
-        .await
-        .map_err(|e| match e {
-            SendError::HandlerError(msg) => failed(msg),
-            other => failed(other.to_string()),
-        });
-    // 183 §10.3 (W-2): a job of a session owned elsewhere streams there only.
-    if attached.is_err()
-        && let Some(owner) = forward::owner_peer(session).await
-    {
-        return Err(forward::runs_elsewhere(owner.0));
-    }
-    attached
-}
 
 
 

@@ -211,6 +211,10 @@ Authorization belongs to `agent::rpc_support::RpcServerExt`, not inherent
 `sessionsync::rpc_support::RpcSessionMoveExt` expose the real owner operations;
 cross-domain callers use those contracts rather than generated wire traits.
 Configuration and private-session tracking/wait extensions stay domain-local.
+Agent-owned jobs, skills and turns RPC methods live in `agent::rpc_jobs`,
+`agent::rpc_skills` and `agent::rpc_turns`, assembled through `agent::rpc_module`.
+Terminal attachment and draining-error support live in `agent::rpc_support`.
+`rpc::api::clients` re-exports owner client traits for frontends.
 The `meeting` crate owns the meeting, calendar and brief wire methods and
 their actor/client helpers; main registers `meeting::rpc_module` directly.
 The `talk` crate owns speech, dictation and live-conversation RPC methods,
