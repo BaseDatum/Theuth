@@ -83,13 +83,13 @@ impl Model {
                 result: None,
                 scrape,
                 ..
-            } => Some(scrape.clone().unwrap_or_else(|| format!("running {name}…"))),
+            } => Some(self.entry_summary(e).or_else(|| scrape.clone()).unwrap_or_else(|| format!("running {name}…"))),
             Entry::Pending {
                 name,
                 progress: Some(p),
                 ..
-            } => Some(progress_line(name, p)),
-            Entry::Pending { name, .. } => Some(format!("preparing {name}…")),
+            } => Some(self.entry_summary(e).unwrap_or_else(|| progress_line(name, p))),
+            Entry::Pending { name, .. } => Some(self.entry_summary(e).unwrap_or_else(|| format!("preparing {name}…"))),
             _ => None,
         });
         if busy.is_some() {

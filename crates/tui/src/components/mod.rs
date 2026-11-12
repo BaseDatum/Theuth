@@ -330,6 +330,11 @@ pub enum Surface<'a> {
     // Step-11 group t1 Surface variants: add below, in this block only.
 
     // Step-11 group t2 Surface variants: add below, in this block only.
+    /// Owner text for an existing pending/running transcript summary row; no spinner or extra rows.
+    EntrySummary {
+        /// Stable pending/tool call identity.
+        key: &'a str,
+    },
 
     // Step-11 group t3 Surface variants: add below, in this block only.
 }

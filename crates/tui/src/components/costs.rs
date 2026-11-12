@@ -4,17 +4,27 @@ use rpc::api::clients::SessionsApiClient;
 use crate::model::{k, short};
 use super::*;
 
+/// Authoritative summary cache and cost detail overlay.
 #[derive(Default)]
 pub struct Costs {
+    /// A manual request will open the next current-session summary.
     pub pending: bool,
+    /// Last accepted summary of the selected session.
     pub cost: Option<SessionCost>,
     menu: Option<(SessionCost, usize)>,
     refresh: bool,
 }
+/// Typed cost owner read.
 #[derive(Clone)]
-pub enum Request { SessionCost(SessionId) }
+pub enum Request {
+    /// Read the authoritative summary for this session.
+    SessionCost(SessionId),
+}
+/// Summary completion or accepted ledger invalidation.
 pub enum Msg {
+    /// Session, owner result and whether the request was manual.
     Loaded(SessionId, Result<SessionCost, String>, bool),
+    /// Relevant shown/ancestor ledger changed.
     Changed,
 }
 impl Costs {
