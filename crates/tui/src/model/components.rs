@@ -163,8 +163,7 @@ impl Model {
                     }
                 }
                 CoreAction::PresentTranscript(build) => {
-                    let (presentation, reply) = build(&self.components);
-                    self.present_transcript(presentation);
+                    let reply = self.present_transcript(build);
                     self.receive(UiEvent::Component(reply), emit);
                 }
                 CoreAction::SetReadOnly(read_only) => self.historical = read_only,
@@ -612,7 +611,7 @@ fn wrapper_projection_is_tag_owned_and_shared_by_history_and_live_rows() {
     let history = from_history(HistoryEntry::User {
         text: "history body".into(), turn: Some(1), context: None, vision: None, channel: None,
         peer: Some(agent::PeerOrigin { id: Uuid::nil(), from: "history".into(), reply_to: None, scope: None, contact_mode: None }),
-    }, &markdown::Options::default(), &model.components);
+    }, &markdown::Options::default(), &mut model.components);
     assert!(matches!(&history[0], Entry::Card { title, text, .. } if title == "owner:history" && text.raw() == "history body"));
     let session = SessionId::new();
     model.session = Some(session);

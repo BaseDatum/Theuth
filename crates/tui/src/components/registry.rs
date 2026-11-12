@@ -156,6 +156,20 @@ impl Registry {
     pub fn turn_hidden(&self, seq: i64) -> bool {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()).any(|component| component.turn_hidden(seq))
     }
+    /// Hand owned canonical history to the first claiming owner, without cloning it.
+    pub fn history_entry(&mut self, mut row: agent::HistoryEntry, opts: &markdown::Options) -> Result<Vec<crate::model::Entry>, agent::HistoryEntry> {
+        for component in self.slots.iter_mut().filter_map(|slot| slot.component.as_mut()) {
+            match component.history_entry(row, opts) {
+                Ok(entries) => return Ok(entries),
+                Err(unclaimed) => row = unclaimed,
+            }
+        }
+        Err(row)
+    }
+    /// Keep the sole history owner's plain projection beside its graphical projection.
+    pub fn history_plain(&self, row: &agent::HistoryEntry) -> Option<Vec<String>> {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).find_map(|component| component.history_plain(row))
+    }
     fn lose_focus(&mut self, core: &CoreView<'_>, out: &mut Outbox) {
         if let Some((token, _)) = self.focus.take()
             && let Some(component) = &mut self.slots[token.slot].component
