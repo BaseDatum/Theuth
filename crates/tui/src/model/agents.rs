@@ -598,11 +598,6 @@ impl Model {
             | AgentEvent::DefaultModelChanged { .. }
             | AgentEvent::DefaultEffortChanged { .. }
             | AgentEvent::FavoriteModelsChanged { .. } => {}
-            AgentEvent::Harvesting { .. } => self.harvesting = true,
-            AgentEvent::Harvested { added, updated, .. } => {
-                self.harvesting = false;
-                self.interject(Entry::Info(format!("knowledge +{added} ~{updated}")))
-            }
             AgentEvent::SkillsChanged { skills, .. } => self.loaded_skills = skills,
             // The consultation's steps in the status line; the settled note
             // is one collapsed card naming the sources (52 §6). Its body text
@@ -708,6 +703,8 @@ impl Model {
             AgentEvent::TurnSuspended { reason, .. } => {
                 self.interject(Entry::Divider(format!("suspended for {reason}")));
             }
+            // Owner variants still pass the generic admission/tail rules above.
+            _ => {}
         }
     }
 
