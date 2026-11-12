@@ -879,12 +879,7 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             }
         }
         Command::ExportArtifact { id, name, session } => {
-            let dest = std::env::home_dir()
-                .ok_or_else(|| anyhow::anyhow!("no home directory"))?
-                .join("Downloads")
-                .join(name);
-            let path = msg(api.export_artifact(id, dest, session).await)?;
-            UiEvent::Info(format!("exported → {}", path.display()))
+            UiEvent::Info(components::artifacts_apps::export_artifact(api, id, name, session).await.map_err(anyhow::Error::msg)?)
         }
         Command::ListSecrets => UiEvent::Secrets(msg(api.list_secrets().await)?),
         Command::SetSecret { name, value, note } => {
@@ -903,8 +898,7 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         }
         // Detached, like `computer_open`: the TUI runs on the harness host, so the path is local.
         Command::OpenPath(path) => {
-            platform::open::open_path(&path)
-                .map_err(|e| anyhow::anyhow!("could not open {}: {e}", path.display()))?;
+            components::artifacts_apps::open_path(&path).map_err(anyhow::Error::msg)?;
             return Ok(());
         }
         Command::GetCommunication(session) => {
@@ -1106,7 +1100,7 @@ async fn search_request(api: &Engine, kind: search::RequestKind) -> search::Repl
             };
             // Text-like kinds (and an archive's listing sidecar) are read here,
             // off the UI thread (49 §6.2).
-            let bytes = match model::artifact_read_path(&artifact) {
+            let bytes = match components::artifacts_apps::artifact_read_path(&artifact) {
                 Some(p) => tokio::fs::read(p).await.map_err(|e| e.to_string()),
                 None => Ok(Vec::new()),
             };
@@ -1533,7 +1527,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             out,
             "[app: {} · {} → source {}]",
             ev.artifact.name,
-            model::APP_WHERE,
+            components::artifacts_apps::APP_WHERE,
             ev.artifact.path.display()
         ),
         UiEvent::ArtifactShown(ev) => writeln!(
@@ -1547,7 +1541,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         }
         UiEvent::Artifacts { items, .. } => items
             .iter()
-            .try_for_each(|a| writeln!(out, "{}", model::artifact_row(a))),
+            .try_for_each(|a| writeln!(out, "{}", components::artifacts_apps::artifact_row(a))),
         UiEvent::ModelSet(info) => writeln!(out, "model → {}", info.id),
         UiEvent::EffortSet(Some(e)) => writeln!(out, "effort: {e}"),
         UiEvent::EffortSet(None) => writeln!(out, "effort cleared"),
