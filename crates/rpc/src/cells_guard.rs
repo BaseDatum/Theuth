@@ -4,7 +4,7 @@
 use jsonrpsee::Extensions;
 use jsonrpsee::core::RpcResult;
 
-use crate::api::peer;
+use rpc_core::peer;
 use crate::cells::cells_err;
 
 /// Invariant 1, a human press: an authenticated peer that is not a guest and not the internal

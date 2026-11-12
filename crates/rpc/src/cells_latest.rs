@@ -7,7 +7,8 @@ use base64::Engine as _;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::RpcResult;
 
-use crate::api::{Server, ask, peer};
+use crate::api::Server;
+use rpc_core::{ask, peer};
 use crate::cells::Latest;
 
 /// `cell_latest`.
@@ -66,7 +67,7 @@ pub(crate) async fn latest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{NOT_RUNNING, UNAUTHORIZED};
+    use rpc_core::{NOT_RUNNING, UNAUTHORIZED};
 
     #[tokio::test]
     async fn needs_an_authenticated_peer_and_the_documents_plugin() {

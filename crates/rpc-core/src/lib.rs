@@ -2,12 +2,14 @@
 
 mod client;
 mod follow;
+mod helpers;
 mod state;
 mod peer;
 
 pub use client::{Client, ConnId};
 pub use peer::{Guest, RpcPeer, RpcPeerGuard};
 pub use follow::{Following, Unfollow};
+pub use helpers::{ask, send, lookup, failed, peer, owner, dreaming_err, stub_err, ASK_FAILED, NOT_RUNNING, UNAUTHORIZED};
 pub use state::{Event, FocusMap, FollowMap, PrivateMap, SeenMap, Server};
 
 /// Explicit aggregate factory, threaded through every transport and local client.

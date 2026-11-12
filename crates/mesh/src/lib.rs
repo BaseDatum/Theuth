@@ -14,6 +14,7 @@
 //! vault-key frames, keyring and rotation hooks in `keys.rs`; `net.rs` and this file only
 //! call into them.
 
+pub mod rpc_support;
 pub mod config;
 pub mod identity;
 mod keys;

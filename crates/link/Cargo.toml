@@ -6,9 +6,9 @@ publish.workspace = true
 description = "Relay uplink, Noise pairing and sessions, replicated paired-device registry (design docs 31, 69)"
 
 [dependencies]
+rpc-core = { workspace = true }
 platform = { workspace = true }
 runtime = { workspace = true }
-rpc-core = { workspace = true }
 replica = { workspace = true }
 secrets = { workspace = true }
 mesh = { workspace = true }

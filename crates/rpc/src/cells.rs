@@ -21,7 +21,8 @@ use jsonrpsee::types::ErrorObjectOwned;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::api::{NOT_RUNNING, Server, UNAUTHORIZED};
+use crate::api::Server;
+use rpc_core::{NOT_RUNNING, UNAUTHORIZED};
 
 #[path = "cells_guard.rs"]
 mod cells_guard;
@@ -118,7 +119,7 @@ async fn read_scope<T: DeserializeOwned>(
         return Ok(Some(r));
     }
     let Ok(store) =
-        crate::api::ask::<agent::Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await
+        rpc_core::ask::<agent::Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await
     else {
         return Ok(None);
     };
@@ -379,7 +380,7 @@ async fn host_of(scope: &Scope) -> Option<String> {
     let id = match scope {
         Scope::Session(s) => {
             let store =
-                crate::api::ask::<agent::Agents, _>(agent::AGENT_ACTOR, agent::DurableStore)
+                rpc_core::ask::<agent::Agents, _>(agent::AGENT_ACTOR, agent::DurableStore)
                     .await
                     .ok()?;
             store
@@ -393,7 +394,7 @@ async fn host_of(scope: &Scope) -> Option<String> {
         Scope::Doc(_) => return None,
     };
     // The chip shows the peer's name ("Sky's Mac mini"), its id prefix when it has none.
-    let name = crate::api::ask::<mesh::Mesh, _>(mesh::MESH_ACTOR, mesh::Status)
+    let name = rpc_core::ask::<mesh::Mesh, _>(mesh::MESH_ACTOR, mesh::Status)
         .await
         .ok()
         .and_then(|s| s.peers.into_iter().find(|p| p.id.0 == id))

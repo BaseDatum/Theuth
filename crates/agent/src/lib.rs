@@ -26,6 +26,7 @@ use std::sync::Arc;
 use runtime::{InputId, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 
+pub mod rpc_support;
 pub mod acp_child;
 pub mod activity;
 pub mod advisor;

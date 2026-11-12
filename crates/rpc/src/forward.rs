@@ -166,7 +166,7 @@ pub async fn resolve_files(
         None => None,
     };
     let Some(t) = transport else {
-        return Err(crate::api::failed(
+        return Err(rpc_core::failed(
             "attachments: unavailable: no peer has it",
         ));
     };
@@ -186,7 +186,7 @@ pub async fn resolve_files_via(
         let Some(name) = marker(f) else { continue };
         *f = artifact::mesh::fetch_attachment_via(t, &dir, name, prefer)
             .await
-            .map_err(|e| crate::api::failed(format!("{}: {e:#}", f.display())))?;
+            .map_err(|e| rpc_core::failed(format!("{}: {e:#}", f.display())))?;
     }
     Ok(files)
 }
@@ -195,7 +195,7 @@ pub async fn resolve_files_via(
 /// sessions plugin is running: the first peer to ask for its files.
 pub async fn owner_peer(session: SessionId) -> Option<PeerId> {
     sessionsync::actor()?;
-    let store = crate::api::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore)
+    let store = rpc_core::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore)
         .await
         .ok()?;
     let (owner, _) = store.owner(session).await.ok().flatten()?;
@@ -250,7 +250,7 @@ pub async fn expected(ext: &Extensions, session: SessionId) -> RpcResult<Option<
     let Some(engine) = sessionsync::owner::expected(session) else {
         return Ok(None);
     };
-    let store = crate::api::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+    let store = rpc_core::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
     match store
         .owner(session)
         .await
@@ -323,7 +323,7 @@ pub async fn route<T: DeserializeOwned>(
     if sessionsync::actor().is_none() {
         return Ok(None);
     }
-    let store = crate::api::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+    let store = rpc_core::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
     // Already forwarded once: run here if ours, never a second hop.
     if ext.get::<Forwarded>().is_some() {
         return admit_forwarded(&store, session).await.map(|()| None);
@@ -371,7 +371,7 @@ pub async fn to_engine<T: DeserializeOwned>(
     if ext.get::<Forwarded>().is_some() {
         return Ok(None);
     }
-    let store = crate::api::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+    let store = rpc_core::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
     if engine == store.engine() {
         return Ok(None);
     }

@@ -24,7 +24,7 @@ use agent::{
     GetEscalateModel, GetPeerMessage, GetSubagentModel, GetTitleModel, GetTodos, GetVisionModel,
     Harvest, ListAcp, ListActivity, ListAgents, ListLogins, ListModels, ListPeerMessages,
     ListPeers, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession,
-    LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, NewRootSession, PeerMessagePage,
+    LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, PeerMessagePage,
     PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo, QueuedInput, Redo,
     RefreshProviderModels, RefreshedModels, Regenerate, RemoveAcp, RemoveContext, RemoveProvider,
     RemoveSkill, RemoveSkillRepo, RenameSession, SendInput, SessionContextBreakdown,
@@ -61,7 +61,6 @@ use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::server::{PendingSubscriptionSink, SubscriptionMessage};
 use jsonrpsee::types::ErrorObjectOwned;
-use kameo::Actor;
 use kameo::actor::ActorRef;
 use kameo::error::SendError;
 use kameo::message::Message;
@@ -73,7 +72,7 @@ use knowledge::{
     SyncNow, Write,
 };
 use link::{
-    CancelPair, Enable, LINK_ACTOR, LinkActor, LinkConfig, LinkStatus, Pair, Pairing, Rename,
+    CancelPair, Enable, LinkConfig, LinkStatus, Pair, Pairing, Rename,
     RenameDevice, Revoke,
 };
 use parking_lot::RwLock;
@@ -106,13 +105,14 @@ use crate::bridge::Event;
 use crate::forward;
 use crate::pathac::PathCompletion;
 use crate::search::SearchResponse;
+use rpc_core::{ask, send, lookup, failed, peer, owner, dreaming_err, stub_err, ASK_FAILED, NOT_RUNNING, UNAUTHORIZED};
+use agent::rpc_support::owner_root;
+use link::rpc_support::{link, mint_as_holder};
+use mesh::rpc_support::mesh_actor;
+use roster::rpc_support::{roster_actor, attention_actor, mask_alerts};
+use schedule::rpc_support::schedule;
+use secrets::rpc_support::secrets;
 
-/// `ask` failed (handler error, actor stopped mid-call).
-pub(crate) const ASK_FAILED: i32 = -32000;
-/// The named actor is not registered.
-pub(crate) const NOT_RUNNING: i32 = -32001;
-/// The call reached the method without an authenticated connection behind it.
-pub(crate) const UNAUTHORIZED: i32 = -32002;
 /// 191: `a2a_forward` from a machine `mesh.messaging_off` lists: the words the contact hears
 /// (through the receiving machine), naming no machine.
 const A2A_FORWARD_MESSAGING_OFF: &str = "export unavailable: messages are off between our machines";
@@ -705,31 +705,6 @@ const CREATED_ROW_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 /// 183 §5.6: a new row from another engine not here after this long is a WARN.
 const CREATED_ROW_LAG: std::time::Duration = std::time::Duration::from_secs(6);
 
-pub(crate) fn lookup<A: Actor>(name: &str) -> RpcResult<ActorRef<A>> {
-    match ActorRef::<A>::lookup(name) {
-        Ok(Some(a)) => Ok(a),
-        Ok(None) => Err(ErrorObjectOwned::owned(
-            NOT_RUNNING,
-            format!("{name} not running"),
-            None::<()>,
-        )),
-        Err(e) => Err(ErrorObjectOwned::owned(
-            ASK_FAILED,
-            e.to_string(),
-            None::<()>,
-        )),
-    }
-}
-
-/// A `dreaming::rpc` / `autoresearch::rpc_impl` error → JSON-RPC: "not running" is `NOT_RUNNING`, anything else `ASK_FAILED`.
-fn dreaming_err(e: String) -> ErrorObjectOwned {
-    let code = if e.ends_with("is not running") {
-        NOT_RUNNING
-    } else {
-        ASK_FAILED
-    };
-    ErrorObjectOwned::owned(code, e, None::<()>)
-}
 
 /// 185 R1 A5: the hub's refusal of a forwarded Dream now, said as the hub's —
 /// "Dream now runs on the hub, which …" — with the code and data kept (a
@@ -747,27 +722,6 @@ fn hub_said(e: ErrorObjectOwned) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(e.code(), msg, e.data().map(|d| d.to_owned()))
 }
 
-/// Look up `name`, `ask` it `msg`, map every failure to a JSON-RPC error.
-pub(crate) async fn ask<A, M>(name: &str, msg: M) -> RpcResult<<A::Reply as Reply>::Ok>
-where
-    A: Actor + Message<M>,
-    M: Send + 'static,
-    <A::Reply as Reply>::Error: Display,
-{
-    send(&lookup::<A>(name)?, msg).await
-}
-
-/// `ask` a resolved actor; handler errors and a stopped actor become `ASK_FAILED`.
-async fn send<A, M>(actor: &ActorRef<A>, msg: M) -> RpcResult<<A::Reply as Reply>::Ok>
-where
-    A: Actor + Message<M>,
-    M: Send + 'static,
-    <A::Reply as Reply>::Error: Display,
-{
-    actor.ask(msg).await.map_err(|e: SendError<M, _>| {
-        ErrorObjectOwned::owned(ASK_FAILED, e.to_string(), None::<()>)
-    })
-}
 
 /// 139 §6.1 (D16): the supervisor refuses an input to a session mid-release-drain
 /// with a handler error whose `Display` form is `SessionDraining:<reason>[:<next owner>]`
@@ -873,18 +827,7 @@ fn nodes() -> RpcResult<ActorRef<nodes::NodesActor>> {
     })
 }
 
-/// The schedule actor; absent when `schedule.enabled: false` or the plugin is not loaded.
-fn schedule() -> RpcResult<ActorRef<schedule::Schedule>> {
-    lookup::<schedule::Schedule>(schedule::SCHEDULE_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "schedule is disabled", None::<()>),
-        _ => e,
-    })
-}
 
-/// The mesh actor; absent when the plugin is not loaded or its store failed (67 §4).
-fn mesh_actor() -> RpcResult<ActorRef<mesh::Mesh>> {
-    lookup::<mesh::Mesh>(mesh::MESH_ACTOR)
-}
 
 /// 191 (D8): each contact's `paired_on` engine id by that machine's name, looked up as
 /// `session_move` does: this machine's `self_name`, a mesh peer's name, else the id's first
@@ -913,20 +856,12 @@ async fn name_paired_on(contacts: &mut [a2a::contacts::Contact]) {
     }
 }
 
-/// The roster actor; absent when the plugin is not loaded or its store failed (67 §6).
-fn roster_actor() -> RpcResult<ActorRef<roster::Roster>> {
-    lookup::<roster::Roster>(roster::ROSTER_ACTOR)
-}
 
 /// The tasks actor; absent when the plugin is not loaded or its store failed (67 §7).
 fn tasks_actor() -> RpcResult<ActorRef<tasks::Tasks>> {
     lookup::<tasks::Tasks>(tasks::TASKS_ACTOR)
 }
 
-/// The attention actor; absent when the roster plugin is not loaded (70 HUD).
-fn attention_actor() -> RpcResult<ActorRef<roster::attention::Attention>> {
-    lookup::<roster::attention::Attention>(roster::attention::ATTENTION_ACTOR)
-}
 
 /// The sandbox actor; absent when `sandbox.enabled: false` or the plugin is not loaded (79).
 fn sandbox() -> RpcResult<ActorRef<sandbox::SandboxActor>> {
@@ -1019,14 +954,6 @@ fn apps() -> RpcResult<ActorRef<Apps>> {
     })
 }
 
-/// The authenticated connection behind a `with_extensions` call. Both
-/// listeners (local socket, link conn) put one in every admitted request;
-/// its absence means nothing authenticated the call — never "local".
-pub(crate) fn peer(ext: &Extensions) -> RpcResult<rpc_core::RpcPeer> {
-    ext.get::<rpc_core::RpcPeer>().cloned().ok_or_else(|| {
-        ErrorObjectOwned::owned(UNAUTHORIZED, "no authenticated connection", None::<()>)
-    })
-}
 
 /// The document principal behind a call (59 §8.3): a mode-2 guest conn is `Member{pub, device}`,
 /// everything else the owner on `device`. Returned with the peer so the caller can mark a guest
@@ -1044,18 +971,6 @@ fn principal(ext: &Extensions) -> RpcResult<(rpc_core::RpcPeer, document::Princi
     Ok((p, by))
 }
 
-/// Owner-only methods (59 §8: `doc_members`, links): a guest peer is refused before the actor sees it.
-fn owner(ext: &Extensions) -> RpcResult<rpc_core::RpcPeer> {
-    let p = peer(ext)?;
-    if p.guest().is_some() {
-        return Err(ErrorObjectOwned::owned(
-            UNAUTHORIZED,
-            "owner only",
-            None::<()>,
-        ));
-    }
-    Ok(p)
-}
 
 /// A member call's outcome as the guest's conn sees it (59 §8.3, §11): success scopes the conn
 /// (no `doc_join` needed on a return visit), a membership or role refusal counts toward the close.
@@ -1076,15 +991,6 @@ fn member_outcome<T>(peer: &rpc_core::RpcPeer, r: &RpcResult<T>) {
     }
 }
 
-/// The secrets actor; absent when the plugin is not loaded or the vault failed to open.
-fn secrets() -> RpcResult<ActorRef<secrets::SecretsActor>> {
-    lookup::<secrets::SecretsActor>(secrets::SECRETS_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => {
-            ErrorObjectOwned::owned(NOT_RUNNING, "secrets vault unavailable", None::<()>)
-        }
-        _ => e,
-    })
-}
 
 /// The document actor; absent when `documents.enabled: false` or the plugin is not loaded.
 fn documents() -> RpcResult<ActorRef<document::DocumentActor>> {
@@ -1229,21 +1135,6 @@ fn link_origin(relay: &str) -> String {
         .unwrap_or_else(|| relay.to_owned())
 }
 
-/// 184 §7.2 W-v (Z184-R2): only the synced lease holder mints `mesh/device_key`. `is_hub()` alone
-/// is also true on both sides of a dual-hub window, and two mints would leave the loser's mesh
-/// links dead. The id is read back after the mint, so a row that replicated in meanwhile wins.
-async fn mint_as_holder(vault: &secrets::Vault) -> Result<String, String> {
-    let holder = mesh::is_hub()
-        && mesh::synced()
-        && match mesh_actor() {
-            Ok(m) => send(&m, mesh::Status)
-                .await
-                .is_ok_and(|s| s.lease.holder.as_ref() == Some(&s.self_id)),
-            Err(_) => false,
-        };
-    link::mint_mesh_link_id(vault, holder).await?;
-    link::mesh_link_id(vault)?.ok_or_else(|| "the mesh has no link id yet".to_owned())
-}
 
 /// 184 §7.2 (W-v, Sky Q3): the mesh link id for a mesh link from a Link-off home: Link's pub-only
 /// read; with no `mesh/device_key` yet, the lease holder mints it (this engine when it holds the
@@ -1501,27 +1392,7 @@ where
     }
 }
 
-/// The owner console's root: `NewRootSession { scope: Owner }`, trusted
-/// because the caller authenticated as the owner over the socket or is the
-/// in-process TUI. Never promotes an existing root (50 §2.3).
-async fn owner_root() -> RpcResult<SessionId> {
-    ask::<Agents, _>(
-        agent::AGENT_ACTOR,
-        NewRootSession {
-            cwd: None,
-            scope: PeerScope::Owner,
-        },
-    )
-    .await
-}
 
-/// The link actor; absent when the plugin is not in this process's list.
-fn link() -> RpcResult<ActorRef<LinkActor>> {
-    lookup::<LinkActor>(LINK_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "link is disabled", None::<()>),
-        _ => e,
-    })
-}
 
 /// Write `bytes` as `<data_dir>/attachments/<sha256[..16]>.<ext>`; an existing
 /// file is not rewritten. Shared by `put_attachment` and the ACP prompt path;
@@ -1530,10 +1401,6 @@ pub(crate) fn save_blob(bytes: &[u8], ext: &str, data_dir: &Path) -> std::io::Re
     agent::context::save_blob(bytes, ext, data_dir)
 }
 
-/// An `ASK_FAILED` (`-32000`) error with `msg`.
-pub(crate) fn failed(msg: impl Into<String>) -> ErrorObjectOwned {
-    ErrorObjectOwned::owned(ASK_FAILED, msg.into(), None::<()>)
-}
 
 /// 184 §12.4: `msg` with engine id `id` replaced by its machine name, else by the id's first 8
 /// characters, as the UI shows an unknown machine.
@@ -1560,10 +1427,6 @@ fn cost_service() -> RpcResult<&'static agent::CostService> {
     })
 }
 
-/// 158 §15.2: a wave module's `anyhow` error as `ASK_FAILED` (the stubs' "not built yet" too).
-fn stub_err(e: anyhow::Error) -> ErrorObjectOwned {
-    failed(format!("{e:#}"))
-}
 
 /// 158 §7.2: the connection's `x-theuth-client` value for companion-only methods; `None` when
 /// the call did not come over the socket (the in-process TUI).
@@ -1627,32 +1490,6 @@ async fn attach_pty(
 }
 
 
-/// 155 §7.3 / §7.5: blank `alert` for this connection — every item whose
-/// session it focuses (a focused `finished` alert is marked seen first) and
-/// every `finished` alert it has already seen.
-fn mask_alerts(
-    items: &mut [roster::attention::AttentionItem],
-    focus: Option<&HashSet<String>>,
-    seen: &mut HashSet<String>,
-) {
-    for it in items {
-        let Some(alert) = it.alert.as_ref() else {
-            continue;
-        };
-        let focused = it
-            .session
-            .as_deref()
-            .zip(focus)
-            .is_some_and(|(s, f)| f.contains(s));
-        let finished = alert.class == roster::alert::AlertClass::Finished;
-        if focused && finished {
-            seen.insert(alert.id.clone());
-        }
-        if focused || (finished && seen.contains(&alert.id)) {
-            it.alert = None;
-        }
-    }
-}
 
 /// 129 §3.1: the event types a connection's focus filters and a stream merges
 /// while they wait. Everything else passes untouched.

@@ -19,6 +19,7 @@
 //! - events: [`SecretsEvent`]
 //! - [`Vault`] as a library, for `t --secret-set` and `--slack-setup`
 
+pub mod rpc_support;
 mod key;
 pub mod requests;
 pub mod store;
