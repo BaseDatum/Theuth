@@ -1,5 +1,8 @@
 use super::*;
 use crate::{model::{Command, Entry, Model}, topics::TopicNotification};
+impl PromptIds for () {
+    fn contains(&self, _: &str) -> bool { false }
+}
 use serde_json::json;
 
 // One stateful consumer exercises the neutral shell, not a feature DTO mirror.
@@ -54,7 +57,7 @@ impl Component for Counter {
 }
 pub(crate) fn core() -> CoreView<'static> {
     static MEMBERS: std::sync::LazyLock<std::collections::HashMap<SessionId, crate::model::AgentRow>> = std::sync::LazyLock::new(std::collections::HashMap::new);
-    CoreView { prompt: None, session_name: None, width: 0, private_members: None, members: &*MEMBERS, interactive: true, session: None, parent: None, private_root: None, project: None, inspecting: false, streaming: false, reasoning: false, agent: None, entries: &[] }
+    CoreView { prompts: &(), prompt: None, session_name: None, width: 0, private_members: None, members: &*MEMBERS, interactive: true, session: None, parent: None, private_root: None, project: None, inspecting: false, streaming: false, reasoning: false, agent: None, entries: &[] }
 }
 pub(crate) fn topic(name: &str, version: u32, event: serde_json::Value) -> TopicEvent {
     TopicEvent::Remote(Arc::new(TopicNotification { topic: name.into(), version, event }))
