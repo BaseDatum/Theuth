@@ -331,6 +331,13 @@ impl Check<'_> {
                 "items" | "additionalProperties" if x.is_object() && y.is_object() => {
                     self.schema(x, y, &p, view, receiver.and_then(|r| r.get(key)));
                 }
+                // Equal intersection layout still needs its referenced targets
+                // compared; changed intersections have no proven general rule.
+                "allOf" if x == y && x.is_array() => {
+                    for (i, (x, y)) in x.as_array().unwrap().iter().zip(y.as_array().unwrap()).enumerate() {
+                        self.schema(x, y, &path(&p, &i.to_string()), view, receiver.and_then(|r| r[key].get(i)));
+                    }
+                }
                 "anyOf" | "oneOf" if x.is_array() && y.is_array() => {
                     let (x, y) = (x.as_array().unwrap(), y.as_array().unwrap());
                     if x.len() > y.len() { self.add(ChangeClass::Breaking, &p, "union variant removed"); }

@@ -159,7 +159,6 @@ async fn topic_focus_merging_barriers_and_lagged_snapshot() {
 
 #[tokio::test]
 async fn private_child_bookkeeping_precedes_topic_selection_and_prompts_are_projected() {
-    use kameo::actor::Spawn;
     let dir = tempfile::tempdir().unwrap();
     let rt = Runtime::new(Default::default(), dir.path().to_path_buf());
     tools::declare_wire(&rt).await.unwrap();
@@ -200,10 +199,8 @@ async fn private_child_bookkeeping_precedes_topic_selection_and_prompts_are_proj
     let response: Value = serde_json::from_str(response.get()).unwrap();
     assert_eq!(response["error"]["code"], rpc_core::ASK_FAILED);
 
-    let approval = tools::Approval::spawn(tools::Approval::new(rt.clone(), Duration::from_secs(30)));
-    approval.register(tools::APPROVAL_ACTOR).unwrap();
-    let ask = tools::AskUser::spawn(tools::AskUser::new(rt.clone(), Duration::from_secs(30)));
-    ask.register(tools::ASK_ACTOR).unwrap();
+    let approval = rpc_core::lookup::<tools::Approval>(tools::APPROVAL_ACTOR).unwrap();
+    let ask = rpc_core::lookup::<tools::AskUser>(tools::ASK_ACTOR).unwrap();
     let mut prompt_events = topics(&a, json!(["tools.approval-requested", "tools.ask-requested"]), None, false).await;
     assert_eq!(next(&mut prompt_events).await, pending());
     let waiting = tokio::spawn({ let actor = approval.clone(); async move {

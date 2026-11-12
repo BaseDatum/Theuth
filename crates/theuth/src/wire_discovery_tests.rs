@@ -22,6 +22,15 @@ fn names(document: &Value) -> std::collections::BTreeSet<&str> {
 }
 
 #[tokio::test]
+async fn node_client_methods_exist_in_production_catalog() {
+    let (_, methods) = composition().await;
+    let names: std::collections::BTreeSet<_> = methods.method_names().collect();
+    for method in nodes::client::METHODS {
+        assert!(names.contains(method), "{method} missing from production RPC catalog");
+    }
+}
+
+#[tokio::test]
 async fn real_composition_discovery_is_cached_per_authenticated_view() {
     let (rt, methods) = composition().await;
     assert_eq!(reply(&methods, "rpc.discover").await["error"]["code"], rpc_core::UNAUTHORIZED);
@@ -47,9 +56,11 @@ async fn real_composition_discovery_is_cached_per_authenticated_view() {
     let guest_document = reply(&guest, "rpc.discover").await["result"].clone();
     assert_eq!(names(&guest_document), rpc_core::GUEST_METHODS.into_iter().collect());
     assert_eq!(guest_document["x-theuth"]["events"], json!([]));
-    assert_eq!(guest_document["x-theuth"]["plugins"], json!(["document", "rpc"]));
+    // origin/main admits notebook_get/notebook_items_list/source_get/cite_resolve
+    // (now agent-owned) and cell_latest; owner names are not capability grants.
+    assert_eq!(guest_document["x-theuth"]["plugins"], json!(["agent", "cells", "document", "rpc"]));
     assert!(!guest_document["components"]["schemas"].as_object().unwrap().keys()
-        .any(|name| name.starts_with("event.") || name.starts_with("method.agent.")));
+        .any(|name| name.starts_with("event.") || name.ends_with(".SessionSummary")));
     let guest_summary = reply(&guest, "rpc.capabilities").await["result"].clone();
     assert_eq!(guest_summary["schemaHash"], rpc_core::document_hash(&guest_document).unwrap());
     assert_ne!(guest_summary["schemaHash"], owner_summary["schemaHash"]);

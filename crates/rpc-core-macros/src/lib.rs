@@ -284,16 +284,14 @@ fn params(sig: &syn::Signature) -> syn::Result<Vec<Tokens>> {
 }
 
 fn rpc_result(ty: &Type) -> syn::Result<&Type> {
-    if let Type::Path(path) = ty {
-        if let Some(segment) = path.path.segments.last() {
-            if segment.ident == "RpcResult" {
-                if let PathArguments::AngleBracketed(args) = &segment.arguments {
-                    if args.args.len() == 1 {
-                        if let GenericArgument::Type(ty) = &args.args[0] { return Ok(ty); }
-                    }
-                }
-            }
-        }
+    if let Type::Path(path) = ty
+        && let Some(segment) = path.path.segments.last()
+        && segment.ident == "RpcResult"
+        && let PathArguments::AngleBracketed(args) = &segment.arguments
+        && args.args.len() == 1
+        && let GenericArgument::Type(ty) = &args.args[0]
+    {
+        return Ok(ty);
     }
     Err(syn::Error::new_spanned(ty, "unary results must be RpcResult<T>; custom result aliases are unsupported"))
 }

@@ -429,6 +429,11 @@ fn hub_said(e: ErrorObjectOwned) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(e.code(), msg, e.data().map(|d| d.to_owned()))
 }
 
+/// Build this domain's RPC module.
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(DreamsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("dreaming RPC descriptors")
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,8 +475,3 @@ mod tests {
     }
 }
 
-/// Build this domain's RPC module.
-pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
-    rpc_core::DescribedModule::new(DreamsApiServer::into_rpc(server), rpc_descriptors())
-        .expect("dreaming RPC descriptors")
-}

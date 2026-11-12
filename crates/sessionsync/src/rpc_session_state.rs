@@ -28,6 +28,7 @@ impl RpcSessionWaitExt for Server {
         tokio::spawn(async move {
             if !row_within(&store, session, CREATED_ROW_LAG - CREATED_ROW_WAIT).await {
                 tracing::warn!(
+                    target: "rpc::api",
                     "sessions: new row {session} from {engine} not here after {}s; forwarding by id",
                     CREATED_ROW_LAG.as_secs()
                 );
