@@ -171,10 +171,6 @@ pub enum UiEvent {
     Undone(String),
     /// Reply to [`Command::Redo`]: first line of the turn restored.
     Redone(String),
-    /// Reply to [`Command::ListJobs`].
-    Jobs(Vec<JobView>),
-    /// A background job started, wrote output or ended (bus event).
-    Job(JobEvent),
     /// Reply to [`Command::LinkStatus`] and the link commands that change it.
     Link(link::LinkStatus),
     /// Reply to [`Command::LinkPair`]: the string the QR card encodes.
@@ -341,15 +337,6 @@ pub enum Command {
     },
     /// `cancel`.
     Cancel(SessionId),
-    /// `list_jobs` for the shown session.
-    ListJobs(SessionId),
-    /// `cancel_job`.
-    CancelJob {
-        /// Owning session.
-        session: SessionId,
-        /// Job id, e.g. `j3`.
-        id: String,
-    },
     /// `session_take(id, "user")`: `/take` continues the open session on this engine (68 §10).
     TakeSession(SessionId),
     /// `compact`.

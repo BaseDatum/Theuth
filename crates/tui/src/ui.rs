@@ -70,7 +70,7 @@ const fn rgb(hex: u32) -> Color {
 /// Highlighted rows, focused labels.
 const BONE: Color = rgb(0xE8DCC8);
 /// Secondary text.
-const BONE_DIM: Color = rgb(0xC9B89A);
+pub(crate) const BONE_DIM: Color = rgb(0xC9B89A);
 /// Tertiary text, hints, quiet borders.
 pub(crate) const SAND: Color = rgb(0x9A8B72);
 /// Accent: focus borders, headings, hints, the human's turn.
@@ -808,7 +808,13 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let entries = m.entries[win.from..win.to]
         .iter()
         .enumerate()
-        .map(|(i, e)| entry(e, m.spinner(), if i == 0 { win.skip } else { 0 }, width));
+        .map(|(i, e)| {
+            let decorations = match e {
+                Entry::Tool { call_id, artifact: None, .. } => m.component_views(Surface::Entry { key: call_id, skipped: 0 }, usize::from(width), 0),
+                _ => Vec::new(),
+            };
+            entry(e, m.spinner(), if i == 0 { win.skip } else { 0 }, width, decorations)
+        });
     let transcript = if let (true, Some(t)) = (m.talk_view, &m.talk) {
         talk_pane(t, m.frame, width, view)
     } else if m.anchor.is_some() {
@@ -2034,7 +2040,7 @@ fn queued_text(text: &str) -> String {
 
 /// One transcript entry. `skip` drops that many leading rendered lines of a
 /// reply (`Model::window`): the part that cannot reach the screen.
-fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'static> {
+fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<crate::components::View>) -> AnyElement<'static> {
     match e {
         // Human turns: the same card shape as tools and peers, own colour and glyph.
         // A live-talk utterance shows its `[spoken, N s]` marker as a muted tag line.
@@ -2188,21 +2194,9 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
             args,
             result,
             expanded,
-            job,
             scrape,
             ..
         } => {
-            // Live job output: rows clipped, not wrapped, so the block never
-            // grows past `JOB_LINES` (border 2 + padding 2, then one less).
-            let fit = usize::from(width).saturating_sub(5);
-            let job = job.as_ref().map(|j| {
-                element! {
-                    View(flex_direction: FlexDirection::Column, margin_top: 1) {
-                        Text(content: j.header(), color: SAND, italic: true, wrap: TextWrap::NoWrap)
-                        #(j.rows().map(|l| element!(Text(content: l.chars().take(fit).collect::<String>(), color: BONE_DIM, wrap: TextWrap::NoWrap))))
-                    }
-                }
-            });
             let summary = match result {
                 None => (
                     format!("{spinner} {}", scrape.as_deref().unwrap_or("running…")),
@@ -2229,7 +2223,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
                     #(expanded.as_ref().map(|t| element!(View(flex_direction: FlexDirection::Column, margin_top: 1) {
                         #(t.view().lines().map(line))
                     })))
-                    #(job)
+                    #(decorations.into_iter().filter_map(|view| match view { crate::components::View::Element { element, .. } => Some(element), _ => None }))
                 }
             }
             .into_any()
@@ -2649,7 +2643,7 @@ mod tests {
             ] {
                 let frame = element! {
                     View(flex_direction: FlexDirection::Column, width, height: 20u16) {
-                        #(Some(entry(&e, "⠋", 0, width)))
+                        #(Some(entry(&e, "⠋", 0, width, Vec::new())))
                     }
                 }
                 .to_string();
@@ -2706,7 +2700,7 @@ mod tests {
             ] {
                 let frame = element! {
                     View(flex_direction: FlexDirection::Column, width, height: 20u16) {
-                        #(Some(entry(&e, "⠋", 0, width)))
+                        #(Some(entry(&e, "⠋", 0, width, Vec::new())))
                     }
                 }
                 .to_string();
@@ -2940,7 +2934,7 @@ mod tests {
         };
         let frame = element! {
             View(flex_direction: FlexDirection::Column, width: 60u16) {
-                #(entry(&e, "", 0, 60))
+                #(entry(&e, "", 0, 60, Vec::new()))
             }
         }
         .to_string();
@@ -2964,7 +2958,7 @@ mod tests {
             };
             element! {
                 View(flex_direction: FlexDirection::Column, width: 60u16) {
-                    #(entry(&e, "", 0, 60))
+                    #(entry(&e, "", 0, 60, Vec::new()))
                 }
             }
             .to_string()
@@ -2994,7 +2988,7 @@ mod tests {
             let e = Entry::Divider(label.into());
             let frame = element! {
                 View(flex_direction: FlexDirection::Column, width: 60u16) {
-                    #(entry(&e, "", 0, 60))
+                    #(entry(&e, "", 0, 60, Vec::new()))
                 }
             }
             .to_string();

@@ -216,7 +216,6 @@ pub(super) fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Ent
                 args,
                 name: shown,
                 call_id,
-                job: None,
                 artifact: None,
                 scrape: None,
                 result,

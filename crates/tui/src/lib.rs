@@ -1,6 +1,6 @@
 //! Terminal UI: one topic intake, in-process or attached, feeding the same
 //! synchronous model/component loop. Commands use the current RPC engine.
-//! Only local jobs retain a typed subscriber, preserving kernel visibility.
+//! Local kernel-job visibility is owned by the jobs component's adapter.
 
 use std::io::{IsTerminal, Write};
 use std::sync::Arc;
@@ -11,16 +11,13 @@ use agent::{AgentConfig, AgentEvent, CompactStyle};
 use futures::future::BoxFuture;
 use jsonrpsee::core::client::Error as ClientError;
 use jsonrpsee::ws_client::WsClient;
-use kameo::Actor;
-use kameo::actor::Spawn;
-use kameo::message::{Context, Message};
 use rpc::api::clients::*;
 use rpc::client::{Engine, Local};
 use rpc::engine::{Host, Running};
 use runtime::{Runtime, SessionId};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tools::{Decision, JobEvent, McpAuth};
+use tools::{Decision, McpAuth};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod attach;
@@ -83,11 +80,7 @@ impl runtime::Plugin for TuiPlugin {
         // Take the ring cursor before any asynchronous initialization.
         let local_stream = self.attached.is_none().then(|| rpc::topics::local_stream(rt));
         let local_jobs = Arc::new(AtomicBool::new(self.attached.is_none()));
-        let bridge = JobsBridge::spawn_with_mailbox(
-            JobsBridge { tx: events_tx.clone(), local: local_jobs.clone() },
-            runtime::subscriber_mailbox(),
-        );
-        rt.subscribe::<JobsBridge, JobEvent>(&bridge).await;
+        components::jobs::subscribe(rt, events_tx.clone(), local_jobs.clone()).await;
         if let Some(stream) = local_stream {
             tokio::spawn(topics::local(rt.clone(), stream, events_tx.clone()));
         }
@@ -181,22 +174,6 @@ impl runtime::Plugin for TuiPlugin {
             shutdown.cancel();
         });
         Ok(())
-    }
-}
-
-/// The only typed intake exception: the external wire projector hides kernels.
-#[derive(Actor)]
-struct JobsBridge {
-    tx: UnboundedSender<UiEvent>,
-    local: Arc<AtomicBool>,
-}
-
-impl Message<JobEvent> for JobsBridge {
-    type Reply = ();
-    async fn handle(&mut self, event: JobEvent, _: &mut Context<Self, ()>) {
-        if self.local.load(Ordering::Acquire) {
-            let _ = self.tx.send(UiEvent::Job(event));
-        }
     }
 }
 
@@ -463,7 +440,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 .await)?;
             return Ok(());
         }
-        Command::ListJobs(session) => UiEvent::Jobs(msg(api.list_jobs(session).await)?),
         Command::SetSessionProject { session, project } => {
             msg(api.set_session_project(session, project.clone()).await)?;
             UiEvent::Info(match project {
@@ -513,10 +489,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::TakeSession(id) => {
             let o = msg(api.session_take(id, "user".into()).await)?;
             UiEvent::Info(format!("taking session here (epoch {})", o.epoch))
-        }
-        Command::CancelJob { session, id } => {
-            msg(api.cancel_job(session, tools::JobId(id.clone())).await)?;
-            UiEvent::Info(format!("killed {id}"))
         }
         Command::Compact { session, style } => {
             let epoch = msg(api.compact(session, style).await)?;
@@ -1696,8 +1668,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             Some(e) => writeln!(out, "login: {} failed: {e}", f.provider),
         },
         UiEvent::Prompt(text) | UiEvent::Info(text) => writeln!(out, "{text}"),
-        UiEvent::Jobs(jobs) => writeln!(out, "{}", tools::jobs::table(jobs)),
-        UiEvent::Job(_) => Ok(()),
         UiEvent::Withdrawn { text, .. } => writeln!(out, "withdrawn: {text}"),
         // The `Error` line that follows names the failure; there is no editor to refill.
         UiEvent::Unsent { .. } => Ok(()),

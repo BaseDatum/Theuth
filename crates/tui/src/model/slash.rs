@@ -73,11 +73,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "talk with the session aloud; Esc cancels the reply or leaves the view, Ctrl+T stops",
     ),
     (
-        "/jobs",
-        "[kill <id>]",
-        "list this session's background jobs",
-    ),
-    (
         "/terminals",
         "",
         "PTY jobs of this session's tree (picker: ⏎ opens a read-only observer)",

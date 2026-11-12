@@ -154,10 +154,6 @@ impl Model {
             0 => String::new(),
             n => format!("  ·  {n} queued"),
         };
-        let jobs = match self.jobs.len() {
-            0 => String::new(),
-            n => format!("  ·  {n} job(s)"),
-        };
         let harness_skills: Vec<&str> = self
             .harness_commands
             .iter()
@@ -211,7 +207,7 @@ impl Model {
         let pinned = self.component_text(Surface::Status(StatusSlot::Pinned));
         let spoken = self.component_text(Surface::Status(StatusSlot::Spoken));
         format!(
-            "{session}  {state}{watch}{usage}{agents}{queued}{jobs}{work}{skills}{catalog}{editing}{scrolled}{todos}{pinned}{talk}{spoken}{attached}{resumed}"
+            "{session}  {state}{watch}{usage}{agents}{queued}{work}{skills}{catalog}{editing}{scrolled}{todos}{pinned}{talk}{spoken}{attached}{resumed}"
         )
     }
 

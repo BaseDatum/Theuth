@@ -1,5 +1,10 @@
     use super::*;
     use tokio::sync::mpsc::unbounded_channel;
+    use tools::JobEvent;
+    use crate::components::jobs::{Jobs, JOB_LINES};
+    fn job_event(event: JobEvent) -> UiEvent {
+        UiEvent::Wire(crate::topics::TopicEvent::Legacy(Arc::new(serde_json::to_value(event).unwrap())))
+    }
 
     fn component_request<R: Clone + 'static>(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
@@ -2916,7 +2921,7 @@
 
     #[test]
     fn screen_event_replaces_tail() {
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         let s = SessionId::new();
         m.session = Some(s);
         m.apply_agent(AgentEvent::ToolCallStarted {
@@ -2926,7 +2931,7 @@
             name: "start".into(),
             args: serde_json::json!({ "command": "python3 -q" }),
         });
-        m.apply(UiEvent::Job(JobEvent::Started {
+        m.apply(job_event(JobEvent::Started {
             session: s,
             id: tools::JobId("j1".into()),
             command: "python3 -q".into(),
@@ -2937,7 +2942,7 @@
             kind: tools::JobKind::Shell,
         }));
         let screen = |rows: &[&str]| {
-            UiEvent::Job(JobEvent::Screen {
+            job_event(JobEvent::Screen {
                 session: s,
                 id: tools::JobId("j1".into()),
                 rows: rows.iter().map(|r| (*r).to_owned()).collect(),
@@ -2945,13 +2950,7 @@
             })
         };
         let rows = |m: &Model| -> Vec<String> {
-            m.entries
-                .iter()
-                .find_map(|e| match e {
-                    Entry::Tool { job: Some(j), .. } => Some(j.rows().map(str::to_owned).collect()),
-                    _ => None,
-                })
-                .unwrap()
+            m.components.get::<Jobs>().unwrap().tail("c1").unwrap().rows().map(str::to_owned).collect()
         };
         m.apply(screen(&["Python 3.12", ">>> ", "", "   "]));
         assert_eq!(rows(&m), ["Python 3.12", ">>> "], "blank rows dropped");
@@ -2964,7 +2963,7 @@
         assert_eq!(got[0], "row 14");
         assert_eq!(got[JOB_LINES - 1], "row 23");
         // Another session's screen is not ours.
-        m.apply(UiEvent::Job(JobEvent::Screen {
+        m.apply(job_event(JobEvent::Screen {
             session: SessionId::new(),
             id: tools::JobId("j1".into()),
             rows: vec!["nope".into()],
@@ -3341,7 +3340,7 @@
     #[test]
     fn jobs_slash_args_and_status_count() {
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         m.submit("/jobs", &tx);
         assert!(rx.try_recv().is_err(), "no session");
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "no session"));
@@ -3349,11 +3348,11 @@
         let s = SessionId::new();
         m.session = Some(s);
         m.submit("/jobs", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListJobs(session)) if session == s));
+        assert!(matches!(rx.try_recv().ok().and_then(|command| match command { Command::Component(effect) => effect.request::<crate::components::jobs::Request>().cloned(), _ => None }), Some(crate::components::jobs::Request::ListJobs(session)) if session == s));
         m.submit("/jobs kill j3", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::CancelJob { session, id }) if session == s && id == "j3"
+            rx.try_recv().ok().and_then(|command| match command { Command::Component(effect) => effect.request::<crate::components::jobs::Request>().cloned(), _ => None }),
+            Some(crate::components::jobs::Request::CancelJob { session, id }) if session == s && id == "j3"
         ));
         for bad in ["/jobs foo", "/jobs kill"] {
             m.submit(bad, &tx);
@@ -3374,12 +3373,12 @@
             pty: false,
             kind: tools::JobKind::Shell,
         };
-        m.apply(UiEvent::Job(started(s, "j1")));
-        m.apply(UiEvent::Job(started(s, "j2")));
+        m.apply(job_event(started(s, "j1")));
+        m.apply(job_event(started(s, "j2")));
         // Another session's job does not count.
-        m.apply(UiEvent::Job(started(SessionId::new(), "j1")));
+        m.apply(job_event(started(SessionId::new(), "j1")));
         assert!(m.status().ends_with("2 job(s)"), "{}", m.status());
-        m.apply(UiEvent::Job(JobEvent::Finished {
+        m.apply(job_event(JobEvent::Finished {
             session: s,
             id: tools::JobId("j1".into()),
             command: "sleep 9".into(),
@@ -3404,7 +3403,7 @@
 
     #[test]
     fn shell_card_shows_the_job_tail_until_its_result_lands() {
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         let s = SessionId::new();
         m.session = Some(s);
         let turn = TurnId::new();
@@ -3418,16 +3417,10 @@
             });
         }
         let job = |m: &Model, c: &str| {
-            m.entries
-                .iter()
-                .find_map(|e| match e {
-                    Entry::Tool { call_id, job, .. } if call_id == c => Some(job.clone()),
-                    _ => None,
-                })
-                .unwrap()
+            m.components.get::<Jobs>().unwrap().tail(c).cloned()
         };
         let started = |id: &str, call: &str| {
-            UiEvent::Job(JobEvent::Started {
+            job_event(JobEvent::Started {
                 session: s,
                 id: tools::JobId(id.into()),
                 command: "make".into(),
@@ -3449,7 +3442,7 @@
             acc.push_str(&format!("\x1b[32mline {i}\x1b[0m\n"));
             acc
         });
-        m.apply(UiEvent::Job(JobEvent::Output {
+        m.apply(job_event(JobEvent::Output {
             session: s,
             id: tools::JobId("j2".into()),
             chunk: format!("{chunk}10%\r55%"),
@@ -3471,7 +3464,6 @@
             args: vec!["make".into()],
             result: None,
             expanded: None,
-            job: None,
             artifact: None,
             scrape: None,
         }
@@ -3481,11 +3473,11 @@
             .iter()
             .find(|e| matches!(e, Entry::Tool { call_id, .. } if call_id == "c2"))
             .unwrap();
-        assert_eq!(tool.height(80), base + 1 + 10);
+        assert_eq!(m.entry_height(tool, 80), base + 1 + 10);
 
         // Finished within grace: the result carries the output, the block goes.
         let finished = |id: &str, inline: bool| {
-            UiEvent::Job(JobEvent::Finished {
+            job_event(JobEvent::Finished {
                 session: s,
                 id: tools::JobId(id.into()),
                 command: "make".into(),

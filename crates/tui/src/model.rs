@@ -35,7 +35,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tools::git::SyncResult;
 use tools::{
     Answer, ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, AskId, AskRequested,
-    AskResolved, Decision, Gate, JobEvent, JobView, McpAuth, McpProgress, McpServer, McpToolInfo,
+    AskResolved, Decision, Gate, McpAuth, McpProgress, McpServer, McpToolInfo,
     PolicyAction, RepoInfo,
 };
 use tools::{JobId, Key, PtyPage, PtyScreenReply, PtyViewport, TerminalSummary};
@@ -176,8 +176,6 @@ pub struct Model {
     /// Steers of the shown session waiting for the current tool batch to
     /// end, oldest first; drawn below the transcript until `InputInjected`.
     pub queued: Vec<QueuedInput>,
-    /// Ids of the shown session's running background jobs (`JobEvent`).
-    pub jobs: BTreeSet<String>,
     /// Turn the last `InputInjected` joined: its `TurnStarted` is not echoed
     /// (the card moved into `entries` on injection).
     last_injected_turn: Option<TurnId>,
@@ -396,7 +394,6 @@ mod components;
 mod events;
 mod harnesses;
 mod history;
-mod jobs;
 mod lifecycle;
 mod menus;
 mod navigation;
@@ -439,7 +436,6 @@ pub use harnesses::{AcpRow, harness_options_lines, harness_option_set_line};
 use history::{revision, user_entries, cell_results, FENCE, from_history};
 #[cfg(test)]
 use history::{parent_view};
-pub use jobs::{JOB_LINES, JobTail};
 pub use menus::{window, Menu, Grouped, grouped_step, grouped_first, MenuKey};
 pub(crate) use network::{PairingCard};
 use network::{tick_card};

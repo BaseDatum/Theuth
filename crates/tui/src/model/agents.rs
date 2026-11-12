@@ -472,7 +472,6 @@ impl Model {
                     name: if inner { format!("↳ {name}") } else { name },
                     result: None,
                     expanded: None,
-                    job: None,
                     artifact: None,
                     scrape: None,
                 };

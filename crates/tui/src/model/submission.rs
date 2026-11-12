@@ -15,6 +15,7 @@ impl Model {
     }
 
     fn submit_with(&mut self, line: &str, interject: bool, tx: &UnboundedSender<Command>) {
+        self.component_commands = Some(tx.clone());
         let line = line.trim();
         // An empty note is an answer (keep / none); every other step waits for text.
         if line.is_empty()
@@ -211,20 +212,6 @@ impl Model {
                 None => self
                     .entries
                     .push(Entry::Info("this is the top-level session".into())),
-            },
-            "/jobs" => match (self.session, arg.split_once(' ')) {
-                (None, _) => self.entries.push(Entry::Info("no session".into())),
-                (Some(session), None) if arg.is_empty() => send(tx, Command::ListJobs(session)),
-                (Some(session), Some(("kill", id))) if !id.trim().is_empty() => send(
-                    tx,
-                    Command::CancelJob {
-                        session,
-                        id: id.trim().to_owned(),
-                    },
-                ),
-                _ => self
-                    .entries
-                    .push(Entry::Error("usage: /jobs [kill <id>]".into())),
             },
             "/project" => match (self.session, arg) {
                 (None, _) => self.entries.push(Entry::Info("no session".into())),
