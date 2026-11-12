@@ -239,6 +239,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         settled_only: false,
                     });
                     let _ = commands.send(Command::ListAgents(session));
+                    m.component_notify(crate::components::Lifecycle::SessionRefreshRequested);
                 }
                 // Root metadata moved while a grouped picker is open (51 §3): re-list it.
                 if std::mem::take(&mut m.refresh_grouping) {
@@ -512,6 +513,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     // Approval on top, then a secret request, then the model's questions;
     // otherwise whichever menu is open.
     let (width, height) = terminal_size;
+    let before_pinned = component_slot(&m, Surface::BeforePinned, width, height, None);
     let pinned = component_slot(&m, Surface::Pinned, width, height, None);
     let composer = component_slot(&m, Surface::Composer, width, height, None);
     let composer_header = component_slot(&m, Surface::ComposerHeader, width, height, None);
@@ -519,7 +521,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let hint = component_slot(&m, Surface::Hint, width, height, None);
     let badge = component_slot(&m, Surface::PromptBadge, width, height, None);
     // The composer body/hint replace the existing editor presentation, not its viewport budget.
-    let extra_rows = pinned.rows + badge.rows;
+    let extra_rows = before_pinned.rows + pinned.rows + badge.rows;
     *component_rows.write() = extra_rows;
     let modal = modal
         .or_else(|| component_slot(&m, Surface::Prompt(FocusClass::Secret), width, height, None).element())
@@ -605,6 +607,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
             }))
             #(board(&m, width))
+            #(before_pinned.element())
             #(pinned.element())
             #(modal)
             #(badge.element())

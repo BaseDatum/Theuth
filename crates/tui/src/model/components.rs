@@ -136,6 +136,7 @@ impl Model {
                 }
                 CoreAction::AwaitingEffort(pending) => self.awaiting_effort = pending,
                 CoreAction::AwaitingSession(pending) => self.awaiting_session = pending,
+                CoreAction::Descendants(list) => self.adopt_descendants(list),
                 CoreAction::PostTo(message) => {
                     if let Some(reply) = self.components.address(message) {
                         self.receive(UiEvent::Component(reply), emit);
@@ -189,6 +190,7 @@ impl Model {
                 }
                 CoreAction::Notice(text) => self.entries.push(Entry::Info(text)),
                 CoreAction::Interject(text) => self.interject(Entry::Info(text)),
+                CoreAction::InterjectError(text) => self.interject(Entry::Error(text)),
                 CoreAction::Error(text) => self.receive(UiEvent::Error(text), emit),
                 CoreAction::Reject(text) => self.entries.push(Entry::Error(text)),
                 CoreAction::AppendCard(card) => self.entries.push(card.into()),
@@ -308,18 +310,22 @@ impl Model {
         (!text.is_empty()).then_some(text)
     }
     pub(crate) fn component_views(&self, surface: Surface<'_>, width: usize, height: usize) -> Vec<View> {
+        let session_badge = |id| self.component_text(Surface::SessionBadge(id));
         let cx = ViewCx {
             core: core_view!(self, None),
             width, height, frame: self.frame,
             commands: self.component_commands.as_ref(), endpoint: None,
+            session_badge: Some(&session_badge),
         };
         self.components.views(surface, &cx).collect()
     }
     pub(crate) fn component_text(&self, surface: Surface<'_>) -> String {
+        let session_badge = |id| self.component_text(Surface::SessionBadge(id));
         let cx = ViewCx {
             core: core_view!(self, None),
             width: self.width, height: 0, frame: self.frame,
             commands: self.component_commands.as_ref(), endpoint: None,
+            session_badge: Some(&session_badge),
         };
         let mut text = String::new();
         for view in self.components.views(surface, &cx) {
@@ -364,6 +370,7 @@ impl Model {
                 if !self.historical { self.refresh_context = self.session.is_some(); }
                 if let (Some(session), Some(commands)) = (self.session, &self.component_commands) {
                     let _ = commands.send(Command::ListAgents(session));
+                    self.component_notify(Lifecycle::SessionRefreshRequested);
                 }
                 self.component_notify(Lifecycle::Resync);
             }
@@ -487,6 +494,12 @@ fn modal_replacement_closes_displaced_surface_without_losing_cache() {
 impl crate::components::SessionMembers for HashMap<SessionId, AgentRow> {
     fn member(&self, id: SessionId) -> Option<crate::components::SessionMember<'_>> {
         self.get(&id).map(|row| crate::components::SessionMember { name: &row.info.name, project: row.info.project.as_deref() })
+    }
+    fn agent_info(&self, id: SessionId) -> Option<&AgentInfo> {
+        self.get(&id).map(|row| &row.info)
+    }
+    fn visit(&self, visitor: &mut dyn FnMut(&AgentInfo)) {
+        for row in self.values() { visitor(&row.info); }
     }
 }
 

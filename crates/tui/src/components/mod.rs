@@ -294,6 +294,10 @@ pub struct SessionMember<'a> {
 pub trait SessionMembers: Sync {
     /// Find one known identity, independent of board visibility.
     fn member(&self, id: SessionId) -> Option<SessionMember<'_>>;
+    /// Borrow canonical descendant metadata without a presentation cache.
+    fn agent_info(&self, id: SessionId) -> Option<&agent::AgentInfo>;
+    /// Visit canonical descendants without allocating an inventory projection.
+    fn visit(&self, visitor: &mut dyn FnMut(&agent::AgentInfo));
 }
 /// Borrowed identity lookup for accepted core prompts, never their feature data.
 pub trait PromptIds: Sync {
@@ -334,6 +338,8 @@ pub enum Lifecycle<'a> {
     SessionReset,
     /// Core adopted a different selected session; read the updated session context.
     SessionChanged,
+    /// Core reached its existing selected-session membership refresh boundary.
+    SessionRefreshRequested,
     /// Release local resources and subscriptions.
     Shutdown,
     /// A lossy stream requires an authoritative re-read, never mutation replay.
@@ -457,6 +463,8 @@ impl HeaderSlot {
 /// Status contributions occupy fixed positions among retained core segments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatusSlot {
+    /// Contributions between usage and the queued-message count.
+    BeforeQueue,
     /// Background work, immediately after the queued-message count.
     Work,
     /// Capability badges after work and before the catalog contribution.
@@ -484,6 +492,8 @@ pub enum Surface<'a> {
     Status(StatusSlot),
     /// Transcript content replacement or append.
     Content,
+    /// Fixed rows after queued inputs and before the pinned region.
+    BeforePinned,
     /// Rows pinned below the transcript.
     Pinned,
     /// Modal slot after core prompts.
@@ -534,10 +544,16 @@ pub struct ViewCx<'a> {
     pub(crate) commands: Option<&'a tokio::sync::mpsc::UnboundedSender<crate::model::Command>>,
     /// Registry-supplied owner and engine fence for this view only.
     pub(crate) endpoint: Option<(ComponentToken, u64)>,
+    /// Read-only projection of existing session badge text, without peer state.
+    pub(crate) session_badge: Option<&'a dyn Fn(SessionId) -> String>,
 }
 impl ViewCx<'_> {
     /// Current spinner glyph, on the shared core animation clock.
     pub fn spinner(&self) -> &'static str { spinner(self.frame) }
+    /// Compose the existing session badge suffix at its measured row boundary.
+    pub fn session_badge(&self, session: SessionId) -> String {
+        self.session_badge.map_or_else(String::new, |project| project(session))
+    }
     /// Typed widget callback; neither editor handles nor mutable core state escape.
     pub fn callback<M: Send + 'static>(&self, make: impl Fn(String) -> M + Send + Sync + 'static) -> Option<impl Fn(String) + 'static> {
         let commands = self.commands?.clone();
@@ -690,6 +706,8 @@ pub enum CoreAction {
     Notice(String),
     /// Insert above a streaming tail using the existing transcript policy.
     Interject(String),
+    /// Insert an error above a streaming tail without generic failure transitions.
+    InterjectError(String),
     /// A local validation refusal, not a failed asynchronous command.
     Reject(String),
     /// Existing generic error semantics, including print-mode completion.
@@ -789,6 +807,8 @@ pub enum CoreAction {
     SessionCreated(SessionId),
     /// Adopt an independently opened session through the existing session reducer.
     SessionOpened(agent::SessionOpen),
+    /// Adopt the canonical descendant snapshot through existing membership policy.
+    Descendants(Vec<agent::AgentInfo>),
 }
 
 /// Owned effects and actions emitted during one deterministic dispatch.
