@@ -481,6 +481,7 @@ pub struct Outbox {
     consumed: bool,
     focus: Option<(ComponentToken, Option<FocusClass>)>,
     pub(crate) error_claimed: bool,
+    pub(crate) plain_claimed: bool,
 }
 /// Typed ports; the core view is read-only and mutations are deferred.
 pub struct Cx<'a, 'core, M> {
@@ -544,6 +545,8 @@ impl<M: Send + 'static> Cx<'_, '_, M> {
     // Step-11 group t3 Cx helpers: add below, in this block only.
     /// Keep an error inline after the core's existing generic failure transitions.
     pub fn claim_error(&mut self) { self.out.error_claimed = true; }
+    /// Own this event's plain output without bypassing core admission/bookkeeping.
+    pub fn claim_plain(&mut self) { self.out.plain_claimed = true; }
 }
 
 /// Synchronous owner-local state machine, erased only by Mounted<C>.
