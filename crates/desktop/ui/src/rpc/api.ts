@@ -383,6 +383,8 @@ export interface Api {
   add_provider(name: string, base_url: string, key?: string | null, runtime?: LocalRuntime | null): Promise<ProviderInfo>
   add_skill(name: string, description: string, body: string, always: boolean): Promise<SkillMeta>
   add_skill_repo(url: string, name: string | null): Promise<SkillMeta[]>
+  /** 194 R1: `/advisor on` — turn `session`'s advisor on with the live default (`advisor.model` / `advisor.effort`, read by the engine at the call). Rejects when no default model is set; `AdvisorChanged` follows on the stream. */
+  advisor_on(session: SessionId): Promise<AdvisorStatus>
   /** 125 §6.3: the advisor status of `session` (`state: 'off'` when it has none). */
   advisor_status(session: SessionId): Promise<AdvisorStatus>
   /** One message to many sessions (62 §0.1): server-side selector, one outcome row per session; `dry_run: true` previews. */
@@ -1466,6 +1468,7 @@ export const METHODS = [
   'add_provider',
   'add_skill',
   'add_skill_repo',
+  'advisor_on',
   'advisor_status',
   'agent_approve',
   'agent_get',
