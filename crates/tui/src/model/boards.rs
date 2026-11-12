@@ -13,23 +13,3 @@ impl Model {
 }
 
 
-/// `/roster`: `name · status · open` per roster agent (67 §12; `/agents` is the subagent picker).
-pub fn agents_table(rows: &[roster::AgentSummary]) -> String {
-    if rows.is_empty() {
-        return "no agents".into();
-    }
-    let mut out = vec!["name · status · open".to_owned()];
-    out.extend(rows.iter().map(|a| {
-        let status = a
-            .paused_label()
-            .or_else(|| a.waiting_label())
-            .unwrap_or_else(|| {
-                serde_json::to_value(a.status)
-                    .ok()
-                    .and_then(|v| v.as_str().map(str::to_owned))
-                    .unwrap_or_default()
-            });
-        format!("{} · {status} · {}", a.file.name.as_str(), a.open_tasks)
-    }));
-    out.join("\n")
-}

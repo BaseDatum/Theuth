@@ -3023,6 +3023,7 @@
     #[test]
     fn tasks_and_agents_slash_use_the_session_project_and_render_tables() {
         use crate::components::tasks::{tasks_table, Request as TasksRequest};
+        use crate::components::roster::{agents_table, Request as RosterRequest, Msg as RosterMsg};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::new(String::new(), false);
         m.mount_components(&tx);
@@ -3032,7 +3033,7 @@
         m.submit("/tasks", &tx);
         assert!(matches!(component_request::<TasksRequest>(&mut rx), Ok(TasksRequest::List(Some(p))) if p == "sre"));
         m.submit("/roster", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListRoster)));
+        assert!(matches!(component_request::<RosterRequest>(&mut rx), Ok(RosterRequest::ListRoster)));
 
         assert_eq!(tasks_table(None, &[]), "no tasks (all projects)");
         let task = tasks::Task {
@@ -3084,7 +3085,10 @@
             agents_table(&[agent]),
             "name · status · open\nops · waiting on scout +1 · 2"
         );
-        m.apply(UiEvent::Roster(vec![]));
+        m.apply(UiEvent::Component(crate::components::LocalReply {
+            to: m.components.token("roster"), engine_epoch: 0,
+            body: Box::new(RosterMsg::Loaded(Ok(vec![]))),
+        }));
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "no agents"));
     }
 

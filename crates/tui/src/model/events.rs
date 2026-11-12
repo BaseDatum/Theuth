@@ -184,8 +184,6 @@ pub enum UiEvent {
         Option<schedule::ScheduleInfo>,
         Vec<schedule::RunInfo>,
     ),
-    /// Reply to [`Command::ListRoster`] (67 §12).
-    Roster(Vec<roster::AgentSummary>),
     /// Reply to [`Command::LinkStatus`] and the link commands that change it.
     Link(link::LinkStatus),
     /// Reply to [`Command::LinkPair`]: the string the QR card encodes.
@@ -377,8 +375,6 @@ pub enum Command {
     AutoresearchControl(String, autoresearch::ControlOp),
     /// `autoresearch.steer`: `/autoresearch steer <slug> <text>`.
     AutoresearchSteer(String, String),
-    /// `agents_list`: the roster (67 §12).
-    ListRoster,
     /// `session_take(id, "user")`: `/take` continues the open session on this engine (68 §10).
     TakeSession(SessionId),
     /// `compact`.

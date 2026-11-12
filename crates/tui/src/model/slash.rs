@@ -102,11 +102,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "[<goal> | <slug> | list | pause|resume|stop|stop_now <slug> | steer <slug> <text>]",
         "autoresearch studies (140): list, open, pause/resume/stop/steer one directly; a goal or anything else hands the `autoresearch` skill to the model",
     ),
-    (
-        "/roster",
-        "",
-        "the agent roster: name, status, open tasks (67)",
-    ),
     ("/parent", "", "open the parent session (from a subagent)"),
     (
         "/sessions",

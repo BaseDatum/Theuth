@@ -11,6 +11,7 @@ pub mod update;
 pub mod computer;
 pub mod tasks;
 pub mod sandboxes;
+pub mod roster;
 pub use registry::{Registry, builtin};
 
 #[cfg(test)]

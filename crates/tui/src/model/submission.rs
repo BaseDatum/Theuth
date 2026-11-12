@@ -318,7 +318,6 @@ impl Model {
                 }
                 _ => self.use_skill("autoresearch".into(), arg.to_owned(), tx),
             },
-            "/roster" => send(tx, Command::ListRoster),
             "/compact" => self.compact_cmd(arg, tx),
             "/endless" => self.endless_cmd(arg, tx),
             "/shake" => self.shake_cmd(arg, tx),
