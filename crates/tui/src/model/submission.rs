@@ -296,7 +296,6 @@ impl Model {
             "/provider" => self.provider_cmd(arg, tx),
             "/secrets" => self.secrets_cmd(arg, tx),
             "/mesh" => self.mesh_cmd(arg, tx),
-            "/link" => self.link_cmd(arg, tx),
             "/nodes" => self.nodes_cmd(arg, tx),
             // `/<skill> [args]` hands the skill to the model (04 §2.4); any other `/word` — a path, a typo —
             // is message text and takes the arm below.

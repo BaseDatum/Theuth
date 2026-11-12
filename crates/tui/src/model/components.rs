@@ -222,7 +222,6 @@ impl Model {
                 self.refresh_artifacts = self.session.is_some();
                 self.refresh_advisor = self.session.is_some();
                 self.refresh_communication = true;
-                self.refresh_link = self.link.is_some();
                 self.refresh_nodes = self.nodes.is_some();
                 self.refresh_secrets = self.secrets.is_some();
                 self.component_notify(Lifecycle::Resync);
@@ -247,13 +246,13 @@ fn component_plain_output_precedes_core_actions_and_errors_keep_global_effects()
     assert!(matches!(&model.entries[..], [Entry::Info(text)] if text == "counter=4"));
     model.compacting = true;
     model.awaiting_cost = true;
-    model.awaiting_link = true;
+    model.components.get_mut::<crate::components::link::Link>().unwrap().awaiting = true;
     let mut completed = false;
     model.receive(UiEvent::Component(reply(token, 0, Msg::Fail("request failed".into()))), &mut |output| {
         completed |= crate::print_output(&mut bytes, output).0;
     });
     assert!(completed);
-    assert!(!model.compacting && !model.awaiting_cost && !model.awaiting_link);
+    assert!(!model.compacting && !model.awaiting_cost && !model.components.get::<crate::components::link::Link>().unwrap().awaiting);
     assert!(matches!(model.entries.last(), Some(Entry::Error(text)) if text == "request failed"));
 }
 

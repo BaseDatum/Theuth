@@ -693,31 +693,6 @@ impl Model {
             // The transcript reload that follows pushes the notice (`History`).
             UiEvent::Undone(t) => self.notice = Some(format!("undone: {t} — /redo restores")),
             UiEvent::Redone(t) => self.notice = Some(format!("restored: {t}")),
-            UiEvent::Link(status) => {
-                let open = matches!(self.menu, Some(Menu::Link { .. }));
-                if !open && !self.awaiting_link {
-                    self.entries.push(Entry::Info(link_line(&status)));
-                } else if !open {
-                    self.menu = Some(Menu::Link { cursor: 0 });
-                }
-                self.awaiting_link = false;
-                self.link = Some(status);
-            }
-            UiEvent::Pairing(p) => {
-                // One pending pairing per harness: a new key kills the old card.
-                if self.pairing.take().is_some() {
-                    self.set_link_card("pairing expired");
-                }
-                let card = PairingCard::new(p);
-                self.entries.push(Entry::Card {
-                    kind: CardKind::Link,
-                    title: "link pairing".into(),
-                    text: Box::new(markdown::Text::complete(&card.body())),
-                    expanded: true,
-                });
-                self.pairing = Some(card);
-            }
-            UiEvent::LinkEvent(ev) => self.apply_link(ev),
             UiEvent::Nodes(list) => {
                 // Never a transcript line: every node event refetches, and a
                 // presence flip is not worth a row. The verbs report themselves.
@@ -784,7 +759,6 @@ impl Model {
                 self.compacting = false;
                 self.awaiting_effort = false;
                 self.awaiting_vision = false;
-                self.awaiting_link = false;
                 self.awaiting_secrets = false;
                 self.awaiting_nodes = false;
                 self.awaiting_cost = false;

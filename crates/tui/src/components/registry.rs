@@ -11,6 +11,7 @@ pub fn builtin() -> Registry {
     // Step-11 group t1 (network and prompts): register below, in this block only.
     registry.register(computer::Computer).expect("built-in component registration");
     registry.register(sandboxes::Sandboxes).expect("built-in component registration");
+    registry.register(link::Link::default()).expect("built-in component registration");
 
     // Step-11 group t2 (boards, costs and artifacts): register below, in this block only.
     registry.register(tasks::Tasks).expect("built-in component registration");
@@ -262,6 +263,14 @@ impl Registry {
     /// Read-only owner query for composition and component integration tests.
     pub fn get<C: Component>(&self) -> Option<&C> {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()).find_map(|component| component.as_any().downcast_ref())
+    }
+    #[cfg(test)]
+    pub(crate) fn get_mut<C: Component>(&mut self) -> Option<&mut C> {
+        self.slots.iter_mut().filter_map(|slot| slot.component.as_mut()).find_map(|component| component.as_any_mut().downcast_mut())
+    }
+    #[cfg(test)]
+    pub(crate) fn focus_fixture(&mut self, id: &str, class: FocusClass) {
+        self.focus = Some((self.token(id), class));
     }
     /// Whether a component, rather than the chat editor, currently owns input.
     pub fn focused(&self) -> bool { self.focus.is_some() }
