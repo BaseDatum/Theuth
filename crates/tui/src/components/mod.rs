@@ -209,6 +209,8 @@ pub enum Lifecycle<'a> {
     CommandFailed(&'a str),
 
     // Step-11 group t1 Lifecycle variants: add below, in this block only.
+    /// Another component or a residual core modal acquired exclusive input.
+    FocusLost,
 
     // Step-11 group t2 Lifecycle variants: add below, in this block only.
 
@@ -409,6 +411,8 @@ pub struct Outbox {
     pub effects: Vec<Effect>,
     /// Pre-event non-TTY output.
     pub plain: Vec<Plain>,
+    /// New exclusive input claim, for residual core modal arbitration.
+    pub(crate) claimed: Option<FocusClass>,
     consumed: bool,
     focus: Option<(ComponentToken, Option<FocusClass>)>,
 }

@@ -15,6 +15,7 @@ impl Model {
     }
 
     fn submit_with(&mut self, line: &str, interject: bool, tx: &UnboundedSender<Command>) {
+        self.component_reconcile_core_focus();
         let line = line.trim();
         // An empty note is an answer (keep / none); every other step waits for text.
         if line.is_empty()
@@ -306,6 +307,7 @@ impl Model {
             }
             _ => self.send_text(line, interject, tx),
         }
+        self.component_reconcile_core_focus();
     }
 
     /// Send `line` as message text: a steer mid-turn (interjecting when
