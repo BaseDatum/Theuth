@@ -50,10 +50,6 @@ use app::{
 };
 use artifact::search::ArtifactMatchContext;
 use base64::Engine as _;
-use codeindex::{
-    CODEINDEX_ACTOR, ChangeLens, CodeindexActor, FitLens, HereLens, IndexStats, LensMeta,
-    LocateAnchor, Located, MapElement, MapExport, MapHit, MapIndex, MapJob,
-};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -1094,13 +1090,6 @@ fn knowledge() -> RpcResult<ActorRef<KnowledgeActor>> {
     })
 }
 
-/// The codeindex actor; `codeindex.enabled: false` means it was never spawned (60 §10).
-fn codeindex() -> RpcResult<ActorRef<CodeindexActor>> {
-    lookup::<CodeindexActor>(CODEINDEX_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "codeindex is disabled", None::<()>),
-        _ => e,
-    })
-}
 
 /// The A2A actor, or `None` for the one silent case: `a2a.enabled: false`
 /// (or no `a2a` section) and nothing registered. A malformed section, or

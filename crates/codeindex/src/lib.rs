@@ -40,6 +40,7 @@ pub mod store;
 pub mod syntax_hook;
 pub mod tools;
 pub mod walk;
+pub mod rpc_support;
 
 pub use event::{CodeToolSummary, CodeindexEvent, SummaryDefinition, SummaryImpact, SummaryRange};
 pub use index::{Codeindex, Reconciled, RootIndex};
