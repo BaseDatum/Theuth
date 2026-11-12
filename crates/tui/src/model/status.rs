@@ -54,7 +54,6 @@ impl Model {
             || self.agents.values().any(AgentRow::live)
             || self.components.wake().is_some()
             || self.components.animating()
-            || self.double_counting_down()
             || self.dictation.is_some()
             || self.talk_view
     }

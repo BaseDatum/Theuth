@@ -223,9 +223,6 @@ impl Model {
                     }
                 }
 
-                let approvals = &self.approvals;
-                let asks = &self.asks;
-                self.double.retain(|id, _| approvals.iter().any(|a| a.id.0.to_string() == *id) || asks.iter().any(|a| a.req.id.0.to_string() == *id));
                 let out = self.component_lifecycle(Lifecycle::Prompts(value));
                 for plain in &out.plain { emit(Output::Plain(plain)); }
                 self.component_finish(out, emit);
