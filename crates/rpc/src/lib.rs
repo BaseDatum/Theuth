@@ -51,7 +51,6 @@ pub mod acp;
 // `confirmed` and the extensions.
 #[allow(clippy::too_many_arguments)]
 pub mod api;
-pub mod bridge;
 mod cells; // 171:C (E1 owns the file)
 mod cells_latest; // 171:C (E2 owns the file)
 pub mod client;
@@ -144,20 +143,6 @@ impl runtime::Plugin for RpcPlugin {
         // 67 §4.2: the same ACP over the mesh's `theuth/acp/1` streams, and
         // mesh engines registered with `agent` as nodes.
         tokio::spawn(acp::serve_mesh(rt.clone(), module));
-        // 39 §3.4: how many frontends hold a receiver; the updater only
-        // restarts a service daemon when this is 0.
-        let rt = rt.clone();
-        tokio::spawn(async move {
-            let tx = bridge::start(&rt).await;
-            if let Some(u) = rt
-                .lookup_when::<update::UpdateActor>(update::UPDATE_ACTOR)
-                .await
-            {
-                let _ = u
-                    .tell(update::SetAttached(Arc::new(move || tx.receiver_count())))
-                    .await;
-            }
-        });
         Ok(())
     }
 }
@@ -168,17 +153,15 @@ pub fn configured_listen(rt: &Runtime) -> Option<String> {
     rt.config.find_value("rpc.listen").ok()?.into_string()
 }
 
-/// The full [`api`] surface as a jsonrpsee `Methods` object, fed by the shared
-/// [`bridge`]: what `serve` binds to the socket and what the link plugin
-/// dispatches decrypted requests into with `raw_json_request` (31 §6.2).
+/// Assemble RPC methods over the single owner-declared wire feed.
 pub async fn methods(rt: Runtime, module: ModuleFactory) -> jsonrpsee::Methods {
-    let events = bridge::start(&rt).await;
-    let mut server = new_server(rt);
-    server.events = events;
-    module(server).into()
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<api::StreamControl>().await
+        .expect("rpc.stream contract");
+    module(new_server(rt)).into()
 }
 
-/// Start the bridge and the server; returns the bound address. The server
+/// Start the server; returns the bound address. The server
 /// stops when `rt.shutdown` is cancelled.
 pub async fn serve(rt: &Runtime, cfg: RpcConfig, module: ModuleFactory) -> anyhow::Result<SocketAddr> {
     let token_path = rt.data_dir.join("token");

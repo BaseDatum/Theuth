@@ -1,6 +1,5 @@
 //! The JSON-RPC surface. Every method is a lazy registry lookup plus one
-//! `ask`; the subscription drains a `broadcast::Receiver` fed by
-//! [`crate::bridge`].
+//! `ask`; event subscriptions drain the owner-declared `wire` feed.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -101,7 +100,7 @@ use tools::{LiveCounts, LiveCountsRow};
 use uuid::Uuid;
 
 #[cfg(test)]
-use rpc_core::{Event, FocusMap, BACKLOG};
+use rpc_core::{FocusMap, BACKLOG};
 use agent::rpc_forward as forward;
 use crate::pathac::PathCompletion;
 use crate::search::SearchResponse;
@@ -112,6 +111,7 @@ use mesh::rpc_support::mesh_actor;
 use roster::rpc_support::{roster_actor, attention_actor, mask_alerts};
 use schedule::rpc_support::schedule;
 use secrets::rpc_support::secrets;
+use wire::{RuntimeWire as _, WireEvent as _, WireFrame, EventPolicy};
 
 /// 191: `a2a_forward` from a machine `mesh.messaging_off` lists: the words the contact hears
 /// (through the receiving machine), naming no machine.
@@ -362,6 +362,28 @@ impl PendingPrompts {
         out.asks.extend(admit(relayed.asks, &mut keep));
         out
     }
+}
+
+/// Always-delivered per-subscription controls, never published on the bus.
+#[derive(Clone, Debug, Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum StreamControl {
+    /// Initial pending state and refresh after loss.
+    PendingPrompts(PendingPrompts),
+    /// Number of discarded frames.
+    Lagged(Lagged),
+}
+
+/// The legacy loss notification body.
+#[derive(Clone, Debug, Serialize, schemars::JsonSchema)]
+#[serde(tag = "type")]
+pub struct Lagged {
+    /// Frames discarded by the ring or this subscription's backlog.
+    pub count: u64,
+}
+
+impl wire::WireEvent for StreamControl {
+    const TOPIC: &'static str = "rpc.stream";
 }
 
 /// 188: the flags Settings had no write path for: four `<section>.enabled` and
@@ -1183,14 +1205,11 @@ async fn attach_pty(
 /// owner; a `SubagentSpawned` (or 141 `ObservedChildChanged`) under a private
 /// parent enrols `child` first so its own later events are filtered too.
 /// Events naming no known member pass: durable trees are not tracked.
-fn admitted(ev: &serde_json::Value, peer: u64, private: &PrivateMap) -> bool {
-    let id = |k: &str| {
-        ev.get(k)
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<SessionId>().ok())
-    };
-    if announces_child(ev)
-        && let (Some(parent), Some(child)) = (id("parent"), id("child"))
+fn admitted(policy: &EventPolicy, peer: u64, private: &PrivateMap) -> bool {
+    let id = |s: Option<&str>| s.and_then(|s| s.parse::<SessionId>().ok());
+    if policy.announces_child
+        && let (Some(parent), Some(child)) =
+            (id(policy.parent.as_deref()), id(policy.child.as_deref()))
     {
         let known = private.read().get(&parent).copied();
         if let Some((root, owner)) = known {
@@ -1199,21 +1218,12 @@ fn admitted(ev: &serde_json::Value, peer: u64, private: &PrivateMap) -> bool {
         }
     }
     let map = private.read();
-    ["session", "parent", "child"]
+    [policy.session.as_deref(), policy.parent.as_deref(), policy.child.as_deref()]
         .into_iter()
         .filter_map(id)
         .all(|s| map.get(&s).is_none_or(|&(_, owner)| owner == peer))
 }
 
-/// `SubagentSpawned` or 141 `ObservedChildChanged`: the two events that
-/// introduce a `child` under a `parent` (the latter repeats on every change,
-/// which the enrolments below tolerate).
-fn announces_child(ev: &serde_json::Value) -> bool {
-    matches!(
-        ev.get("type").and_then(|t| t.as_str()),
-        Some("SubagentSpawned" | "ObservedChildChanged")
-    )
-}
 
 /// Does a subscription on `session` forward `ev`? With `tree` (descendants
 /// mode) an event passes when its `session` is in the tree, or it is a
@@ -1224,26 +1234,25 @@ fn announces_child(ev: &serde_json::Value) -> bool {
 /// cannot see ancestry, and the event carries only a session id and a
 /// revision (50 §10).
 fn wanted(
-    ev: &serde_json::Value,
+    policy: &EventPolicy,
     session: Option<&str>,
     tree: Option<&mut HashSet<String>>,
 ) -> bool {
-    let field = |k: &str| ev.get(k).and_then(|v| v.as_str());
-    if field("type") == Some("CommunicationChanged") {
+    if policy.always_wanted {
         return true;
     }
     let Some(tree) = tree else {
-        return match (session, field("session")) {
+        return match (session, policy.session.as_deref()) {
             (Some(want), Some(have)) => want == have,
             _ => true,
         };
     };
-    if field("session").is_some_and(|s| tree.contains(s)) {
+    if policy.session.as_deref().is_some_and(|s| tree.contains(s)) {
         return true;
     }
-    if announces_child(ev)
-        && field("parent").is_some_and(|p| tree.contains(p))
-        && let Some(child) = field("child")
+    if policy.announces_child
+        && policy.parent.as_deref().is_some_and(|p| tree.contains(p))
+        && let Some(child) = policy.child.as_deref()
     {
         tree.insert(child.to_owned());
         return true;
@@ -1254,6 +1263,27 @@ fn wanted(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Bind legacy JSON fixtures to owner policies without changing assertions.
+    fn policy(ev: &serde_json::Value) -> EventPolicy {
+        if ev["type"] == "CommunicationChanged" {
+            agent::CommunicationChanged::policy(ev)
+        } else {
+            agent::AgentEvent::policy(ev)
+        }
+    }
+
+    fn admitted(ev: &serde_json::Value, peer: u64, private: &PrivateMap) -> bool {
+        super::admitted(&policy(ev), peer, private)
+    }
+
+    fn wanted(ev: &serde_json::Value, session: Option<&str>, tree: Option<&mut HashSet<String>>) -> bool {
+        super::wanted(&policy(ev), session, tree)
+    }
+
+    fn is_delta(ev: &serde_json::Value) -> bool {
+        policy(ev).delta != wire::Delta::Control
+    }
 
     /// A diagram's "Save SVG…" goes through `put_attachment` on the desktop shell:
     /// `.svg` must be accepted (image cap), unknown extensions still refused.
@@ -1968,7 +1998,7 @@ use std::time::Duration;
 
         struct Harness {
             methods: jsonrpsee::Methods,
-            tx: broadcast::Sender<Event>,
+            tx: broadcast::Sender<Arc<WireFrame>>,
             focus: FocusMap,
             peer: rpc_core::RpcPeer,
             guard: Option<rpc_core::RpcPeerGuard>,
@@ -2017,7 +2047,9 @@ use std::time::Duration;
             }
 
             fn publish(&self, ev: serde_json::Value) {
-                self.tx.send(Arc::new(ev)).unwrap();
+                self.tx.send(Arc::new(WireFrame {
+                    policy: policy(&ev), descriptor: None, event: ev,
+                })).unwrap();
             }
         }
 
@@ -2612,7 +2644,7 @@ use std::time::Duration;
         };
         use kameo::actor::Spawn;
         use kameo::message::Context;
-        use tokio::sync::{broadcast, mpsc};
+        use tokio::sync::mpsc;
 
         /// Bus subscriber: `(resolved, id)` of every request and resolution, in order.
         #[derive(kameo::Actor)]
@@ -2635,15 +2667,7 @@ use std::time::Duration;
         /// A runtime with a capture on its bus and a live event feed (no subscriber at all
         /// short-circuits to "no renderer").
         async fn harness() -> (Runtime, mpsc::UnboundedReceiver<(bool, FenceSnapshotId)>) {
-            let (tx, rx) = broadcast::channel::<rpc_core::Event>(4);
-            artifact::preview::watch_feed(tx);
-            std::mem::forget(rx);
-            if let Ok(Some(b)) =
-                ActorRef::<crate::bridge::Bridge>::lookup(crate::bridge::BRIDGE_ACTOR)
-                && let Ok(tx) = b.ask(crate::bridge::Feed).await
-            {
-                std::mem::forget(tx.subscribe());
-            }
+            artifact::preview::watch_feed(Arc::new(|| 1));
             let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
             let (tx, events) = mpsc::unbounded_channel();
             let cap = Capture::spawn(Capture(tx));

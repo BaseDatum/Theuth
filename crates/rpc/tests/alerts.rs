@@ -11,6 +11,7 @@ use roster::attention::{Attention, AttentionItem, AttentionKind, Finished};
 use rpc::api::{hub, boards};
 use rpc_core::{FocusMap, SeenMap, Server};
 use runtime::{Runtime, SessionId};
+use wire::RuntimeWire as _;
 
 /// One authenticated connection to the shared server state.
 struct Conn {
@@ -22,7 +23,7 @@ struct Conn {
 impl Conn {
     fn new(
         rt: &Runtime,
-        events: &tokio::sync::broadcast::Sender<rpc_core::Event>,
+        events: &tokio::sync::broadcast::Sender<std::sync::Arc<wire::WireFrame>>,
         focus: &FocusMap,
         seen: &SeenMap,
     ) -> Self {
@@ -102,7 +103,8 @@ async fn attention_list_masks_alerts_per_connection() {
         serde_json::json!({ "roster": { "alert_delay_ms": 150 } }),
     ));
     let rt = Runtime::new(cfg, std::env::temp_dir());
-    let events = rpc::bridge::start(&rt).await;
+    roster::declare_wire(&rt).await.unwrap();
+    let events = rt.wire_feed();
     let dir = tempfile::tempdir().unwrap();
     let store = roster::store::Store::open(&dir.path().join("r.sqlite"))
         .await

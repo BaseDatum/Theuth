@@ -27,15 +27,15 @@
 //! generator, choosing its dialect and serialize/deserialize contract and sharing
 //! definitions across topics. `wire_receiver_count()` counts all feed receivers,
 //! not external RPC streams or rendering capabilities.
-//! RPC liveness, admission, controls, envelopes, and backlog policy remain the
-//! consumer's responsibility; this facility does not change the legacy bridge.
+//! External RPC stream leases are counted separately for owner liveness hooks;
+//! local feed receivers do not imply a renderer or attached frontend.
 
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
     future::Future,
     pin::Pin,
-    sync::{Arc, OnceLock},
+    sync::{Arc, OnceLock, atomic::{AtomicUsize, Ordering}},
 };
 
 use anyhow::{Result, bail};
@@ -131,7 +131,7 @@ pub struct EventDescriptor {
 }
 
 /// Shared feed item. A missing descriptor means legacy-only opaque JSON.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct WireFrame {
     /// Known local contract, or None for unknown old-peer payloads.
     pub descriptor: Option<Arc<EventDescriptor>>,
@@ -191,10 +191,25 @@ pub trait RuntimeWire {
 
     /// Subscribe at the current cursor. No startup replay or hidden receiver.
     fn wire_events(&self) -> broadcast::Receiver<Arc<WireFrame>>;
+    /// Shared broadcast seam for RPC transport assembly.
+    fn wire_feed(&self) -> broadcast::Sender<Arc<WireFrame>>;
+    /// Count external RPC subscriptions, excluding local feed consumers.
+    fn wire_external_stream_count(&self) -> usize;
+    /// Hold one external subscription alive until the returned lease drops.
+    fn wire_external_stream(&self) -> ExternalStream;
     /// Count actual feed receivers, not renderers or external RPC streams.
     fn wire_receiver_count(&self) -> usize;
     /// Sorted contract descriptors; does not invoke schema generation.
     fn wire_schema(&self) -> Vec<EventDescriptor>;
+}
+
+/// One external RPC subscription. Dropping its task releases owner liveness.
+pub struct ExternalStream(Arc<AtomicUsize>);
+
+impl Drop for ExternalStream {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 type Catalog = Arc<RwLock<Vec<EventDescriptor>>>;
@@ -240,6 +255,7 @@ struct State {
     hub: ActorRef<WireHub>,
     feed: broadcast::Sender<Arc<WireFrame>>,
     catalog: Catalog,
+    external: Arc<AtomicUsize>,
 }
 
 fn state(rt: &Runtime) -> Arc<State> {
@@ -257,7 +273,7 @@ fn state(rt: &Runtime) -> Arc<State> {
                 },
                 runtime::subscriber_mailbox(),
             );
-            Arc::new(State { hub, feed, catalog })
+            Arc::new(State { hub, feed, catalog, external: Arc::default() })
         })
         .clone()
 }
@@ -332,6 +348,20 @@ impl RuntimeWire for Runtime {
 
     fn wire_receiver_count(&self) -> usize {
         state(self).feed.receiver_count()
+    }
+
+    fn wire_feed(&self) -> broadcast::Sender<Arc<WireFrame>> {
+        state(self).feed.clone()
+    }
+
+    fn wire_external_stream_count(&self) -> usize {
+        state(self).external.load(Ordering::Relaxed)
+    }
+
+    fn wire_external_stream(&self) -> ExternalStream {
+        let count = state(self).external.clone();
+        count.fetch_add(1, Ordering::Relaxed);
+        ExternalStream(count)
     }
 
     fn wire_schema(&self) -> Vec<EventDescriptor> {
