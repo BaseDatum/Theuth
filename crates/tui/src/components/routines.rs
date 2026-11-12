@@ -1,5 +1,81 @@
+//! Existing schedule text commands, with no live subscription or scheduler UI.
+use rpc::api::clients::RoutinesApiClient;
+use crate::model::elapsed;
 use super::*;
 
+#[derive(Default)]
+pub struct Routines;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Request {
+    ListSchedules,
+    FireSchedule(String),
+    ScheduleHistory(String),
+    EnableSchedule(String, bool),
+    TestSchedule(String),
+}
+pub enum Msg { Loaded(Result<String, String>) }
+impl Component for Routines {
+    type Msg = Msg;
+    fn declaration(&self) -> Declaration {
+        Declaration { id: "routines", interests: &[], slash: &[("/schedules", "[run <name>|test <name>|history <name>|pause <name>|resume <name>]", "scheduled prompts: list, fire one now, show its runs, pause or resume a loop")], bindings: &[] }
+    }
+    fn decode(&self, _: &TopicEvent, _: &CoreView<'_>) -> Option<Msg> { None }
+    fn update(&mut self, input: Input<'_, Msg>, cx: &mut Cx<'_, '_, Msg>) {
+        match input {
+            Input::Slash { args, .. } => {
+                let request = match args.split_once(' ') {
+                    None if args.is_empty() => Request::ListSchedules,
+                    Some((verb, name)) if !name.trim().is_empty() => match verb {
+                        "run" => Request::FireSchedule(name.trim().to_owned()),
+                        "history" => Request::ScheduleHistory(name.trim().to_owned()),
+                        "pause" => Request::EnableSchedule(name.trim().to_owned(), false),
+                        "resume" => Request::EnableSchedule(name.trim().to_owned(), true),
+                        "test" => Request::TestSchedule(name.trim().to_owned()),
+                        _ => { cx.core(CoreAction::Notice(SCHEDULES_USAGE.into())); return; }
+                    },
+                    _ => { cx.core(CoreAction::Notice(SCHEDULES_USAGE.into())); return; }
+                };
+                cx.spawn_request(Lane::Concurrent, request, |api, request| async move {
+                    Msg::Loaded(run(&api, request).await)
+                });
+            }
+            Input::Message(Msg::Loaded(result)) => match result {
+                Ok(text) => {
+                    if cx.core.reasoning { cx.plain(Plain::Text("\x1b[0m\n".into())); }
+                    cx.plain(Plain::Line(text.clone()));
+                    cx.core(CoreAction::Notice(text));
+                }
+                Err(error) => cx.error(error),
+            },
+            _ => {}
+        }
+    }
+    fn view(&self, _: Surface<'_>, _: &ViewCx<'_>) -> Option<View> { None }
+}
+async fn run(api: &Engine, request: Request) -> Result<String, String> {
+    Ok(match request {
+        Request::ListSchedules => schedules_table(&api.list_schedules().await.map_err(crate::reason)?),
+        Request::FireSchedule(name) => {
+            let id = api.fire_schedule(name.clone()).await.map_err(crate::reason)?;
+            format!("fired {name} → session {id}")
+        }
+        Request::ScheduleHistory(name) => {
+            let rows = api.schedule_history(name.clone(), 20).await.map_err(crate::reason)?;
+            // ponytail: a second round trip for the loop header; fold into
+            // `schedule_history` if the RPC ever grows a combined reply.
+            let info = api.list_schedules().await.map_err(crate::reason)?.into_iter().find(|s| s.name == name);
+            schedule_history_table(&name, info.as_ref(), &rows)
+        }
+        Request::EnableSchedule(name, enabled) => {
+            api.enable_schedule(name.clone(), enabled).await.map_err(crate::reason)?;
+            format!("{name} {}", if enabled { "resumed" } else { "paused" })
+        }
+        Request::TestSchedule(name) => {
+            let verdict = api.test_schedule(name).await.map_err(crate::reason)?;
+            schedule::validate::render(&verdict)
+        }
+    })
+}
 /// The `/schedules` usage line, shown on a bad argument.
 pub const SCHEDULES_USAGE: &str =
     "usage: /schedules [run <name>|test <name>|history <name>|pause <name>|resume <name>]";

@@ -15,6 +15,7 @@ pub fn builtin() -> Registry {
     // Step-11 group t2 (boards, costs and artifacts): register below, in this block only.
     registry.register(tasks::Tasks).expect("built-in component registration");
     registry.register(roster::Roster).expect("built-in component registration");
+    registry.register(routines::Routines).expect("built-in component registration");
 
     // Step-11 group t3 (jobs, terminals, speech and search): register below, in this block only.
 

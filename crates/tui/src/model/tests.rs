@@ -3163,22 +3163,24 @@
 
     #[test]
     fn schedules_slash_args_and_loop_columns() {
+        use crate::components::routines::{Request as RoutineRequest, SCHEDULES_USAGE, schedules_table, schedule_history_table};
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
+        m.mount_components(&tx);
         m.submit("/schedules pause port", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::EnableSchedule(name, false)) if name == "port"
+            component_request::<RoutineRequest>(&mut rx),
+            Ok(RoutineRequest::EnableSchedule(name, false)) if name == "port"
         ));
         m.submit("/schedules resume port", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::EnableSchedule(name, true)) if name == "port"
+            component_request::<RoutineRequest>(&mut rx),
+            Ok(RoutineRequest::EnableSchedule(name, true)) if name == "port"
         ));
         m.submit("/schedules test port", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::TestSchedule(name)) if name == "port"
+            component_request::<RoutineRequest>(&mut rx),
+            Ok(RoutineRequest::TestSchedule(name)) if name == "port"
         ));
         for bad in ["/schedules pause", "/schedules stop x"] {
             m.submit(bad, &tx);

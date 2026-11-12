@@ -264,25 +264,6 @@ impl Model {
                 ),
                 None => self.entries.push(Entry::Info("no session".into())),
             },
-            "/schedules" => match arg.split_once(' ') {
-                None if arg.is_empty() => send(tx, Command::ListSchedules),
-                Some(("run", name)) if !name.trim().is_empty() => {
-                    send(tx, Command::FireSchedule(name.trim().to_owned()))
-                }
-                Some(("history", name)) if !name.trim().is_empty() => {
-                    send(tx, Command::ScheduleHistory(name.trim().to_owned()))
-                }
-                Some(("pause", name)) if !name.trim().is_empty() => {
-                    send(tx, Command::EnableSchedule(name.trim().to_owned(), false))
-                }
-                Some(("resume", name)) if !name.trim().is_empty() => {
-                    send(tx, Command::EnableSchedule(name.trim().to_owned(), true))
-                }
-                Some(("test", name)) if !name.trim().is_empty() => {
-                    send(tx, Command::TestSchedule(name.trim().to_owned()))
-                }
-                _ => self.entries.push(Entry::Info(SCHEDULES_USAGE.into())),
-            },
             // 140 §13.1: list/status/pause/resume/stop/steer are direct RPC; a goal (or a control in words) hands
             // the `autoresearch` skill to the model (the model calls autoresearch_draft/status/control).
             "/autoresearch" => match arg

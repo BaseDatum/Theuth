@@ -693,6 +693,8 @@ The computer component owns `/computer`, its permissions RPC, display DTO and
 identical transcript/plain formatting; no computer event or command remains in core.
 The sandboxes component owns inventory and desktop URL replies; desktop passwords
 remain private inside opaque local replies, never transcript or plain output.
+The routines component owns `/schedules` parsing, sequential history/info reads,
+direct controls and unchanged text tables; it adds no schedule event subscription.
 Focused components may expose an `Editor` port (hint, masking, empty-answer policy)
 on the mounted composer. Secret-class answers retain precedence over ask-user input.
 Component cards carry a stable UUID and named replacement group. Only the newest

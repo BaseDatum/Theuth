@@ -16,6 +16,7 @@ pub mod sandboxes;
 // Step-11 group t2 (boards, costs and artifacts): add modules below, in this block only.
 pub mod tasks;
 pub mod roster;
+pub mod routines;
 
 // Step-11 group t3 (jobs, terminals, speech and search): add modules below, in this block only.
 
