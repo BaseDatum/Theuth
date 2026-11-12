@@ -43,6 +43,8 @@ const ENGINE_DOWN: Duration = Duration::from_secs(60);
 /// 193 B2: the shim's request timeout: above the 300 s default `tools.approval_timeout_secs` a
 /// `session_call_tool` can wait on a human, +30 s (the shim cannot cheaply read the config).
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_secs(330);
+/// 193 #9: `list_tools` gets its own, shorter timeout so a hung engine cannot stall `tools/list`.
+const LIST_TOOLS_TIMEOUT: Duration = Duration::from_secs(30);
 /// Longest pause between redials.
 const REDIAL_MAX: Duration = Duration::from_secs(10);
 
@@ -176,12 +178,16 @@ impl ServerHandler for Shim {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         let client = self.client.borrow().clone();
-        // A failed `list_tools` still lists the shim's own three tools, never an error.
-        let specs =
-            Self::mapped(ToolingApiClient::list_tools(&*client).await).unwrap_or_else(|e| {
-                eprintln!("t mcp: list_tools failed: {e}");
-                Vec::new()
-            });
+        // A failed or timed-out `list_tools` still lists the shim's own three tools, never an error.
+        let listed =
+            tokio::time::timeout(LIST_TOOLS_TIMEOUT, ToolingApiClient::list_tools(&*client))
+                .await
+                .map_err(|_| format!("no answer in {}s", LIST_TOOLS_TIMEOUT.as_secs()))
+                .and_then(Self::mapped);
+        let specs = listed.unwrap_or_else(|e| {
+            eprintln!("t mcp: list_tools failed: {e}");
+            Vec::new()
+        });
         // 193 §7: the six registry tools, with the registry's own descriptions and schemas.
         let registry = specs
             .into_iter()
@@ -287,11 +293,7 @@ pub async fn run(data_dir: &Path, listen: &str, session: Option<String>) -> anyh
 
 /// The engine connection, tagged `client=mcp-bridge` (176 C3); `listen` is
 /// re-read from the engine record so a restarted engine is found.
-async fn dial(data_dir: &Path, listen: &str) -> anyhow::Result<WsClient> {
-    dial_with(data_dir, listen, None).await
-}
-
-/// [`dial`]; `Some(timeout)` is the `--session` shim's request timeout (193 B2).
+/// `Some(timeout)` is the `--session` shim's request timeout (193 B2).
 async fn dial_with(
     data_dir: &Path,
     listen: &str,
@@ -423,6 +425,14 @@ mod tests {
     /// A well-formed session id (the typed client parses it).
     const SID: &str = "0190d7b0-0000-7000-8000-000000000001";
 
+    /// A real `edit` call: `path` plus `edits` of both `range` and `old` entries.
+    fn edit_args() -> serde_json::Value {
+        json!({"path": "a.rs", "edits": [
+            {"range": "L1@1a2b3c4d", "new": "x\n"},
+            {"old": "y", "new": "z"},
+        ]})
+    }
+
     /// The nine tools over a real MCP connection against a fake engine:
     /// each maps to the right RPC method and params, and its text back.
     #[tokio::test]
@@ -477,9 +487,9 @@ mod tests {
                     assert_eq!(args["range"], "L1-L2@1a2b3c4d");
                     out("indented a.rs:1-2 by +1", false)
                 }
-                // 193 §7: array-valued `edits` reach the engine unchanged.
+                // 193 §7: the real `edit` shape (`path` + array-valued `edits`) reaches the engine unchanged.
                 "edit" => {
-                    assert_eq!(args["edits"], json!([{"at": "a.rs#L1@1a2b3c4d", "text": "x"}]));
+                    assert_eq!(args, edit_args());
                     out("edited", false)
                 }
                 _ => out("clip: no such ref", true),
@@ -577,17 +587,7 @@ mod tests {
             ),
             "indented a.rs:1-2 by +1"
         );
-        assert_eq!(
-            text(
-                call(
-                    "edit",
-                    json!({"edits": [{"at": "a.rs#L1@1a2b3c4d", "text": "x"}]})
-                )
-                .await
-                .unwrap()
-            ),
-            "edited"
-        );
+        assert_eq!(text(call("edit", edit_args()).await.unwrap()), "edited");
         let r = call("clip", json!({"name": "x", "src": "nope"}))
             .await
             .unwrap();
@@ -761,7 +761,7 @@ mod tests {
     async fn bridge_redials_then_exits_on_unknown_session() {
         let scratch = Scratch::new("redial");
         let (listen, first) = engine("127.0.0.1:0", true).await;
-        let client = dial(&scratch.0, &listen).await.unwrap();
+        let client = dial_with(&scratch.0, &listen, None).await.unwrap();
         assert!(!no_such_session(&client, "s1").await);
         let (tx, mut rx) = watch::channel(Arc::new(client));
         let (dir, at) = (scratch.0.clone(), listen.clone());
@@ -791,7 +791,7 @@ mod tests {
     async fn bridge_exits_after_engine_down_limit() {
         let scratch = Scratch::new("down");
         let (listen, engine) = engine("127.0.0.1:0", true).await;
-        let client = dial(&scratch.0, &listen).await.unwrap();
+        let client = dial_with(&scratch.0, &listen, None).await.unwrap();
         let (tx, _rx) = watch::channel(Arc::new(client));
         engine.stop().unwrap();
         engine.stopped().await;

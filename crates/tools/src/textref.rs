@@ -693,11 +693,20 @@ impl Clip {
     }
 }
 
-/// Every session's clips, with use ticks for the engine-wide LRU.
+/// One stored clip.
+struct ClipEntry {
+    clip: Arc<Clip>,
+    /// Use tick for the engine-wide LRU.
+    used: u64,
+    /// Bytes, measured before the lock: nothing walks lines under it.
+    size: usize,
+}
+
+/// Every session's clips.
 #[derive(Default)]
 pub(crate) struct Clips {
     engine_cap: usize,
-    all: HashMap<SessionId, BTreeMap<String, (Arc<Clip>, u64)>>,
+    all: HashMap<SessionId, BTreeMap<String, ClipEntry>>,
     tick: u64,
 }
 
@@ -723,7 +732,7 @@ impl Clips {
         let others: usize = mine
             .iter()
             .filter(|(n, _)| **n != name)
-            .map(|(_, (c, _))| c.bytes())
+            .map(|(_, e)| e.size)
             .sum();
         anyhow::ensure!(
             mine.contains_key(&name) || mine.len() < CLIP_COUNT,
@@ -734,7 +743,14 @@ impl Clips {
             "clips would hold {} bytes in this session; the limit is 16 MiB, reuse a name to replace one",
             others + size
         );
-        mine.insert(name, (clip, tick));
+        mine.insert(
+            name,
+            ClipEntry {
+                clip,
+                used: tick,
+                size,
+            },
+        );
         // ponytail: a linear scan over every clip per eviction; at most
         // 64 per session, fine until there are thousands of sessions.
         loop {
@@ -742,7 +758,7 @@ impl Clips {
                 .all
                 .values()
                 .flat_map(|m| m.values())
-                .map(|(c, _)| c.bytes())
+                .map(|e| e.size)
                 .sum();
             if total <= self.engine_cap {
                 break;
@@ -750,7 +766,7 @@ impl Clips {
             let Some((s, n)) = self
                 .all
                 .iter()
-                .flat_map(|(s, m)| m.iter().map(move |(n, (_, u))| (*u, *s, n.clone())))
+                .flat_map(|(s, m)| m.iter().map(move |(n, e)| (e.used, *s, n.clone())))
                 .filter(|(u, _, _)| *u != tick)
                 .min_by_key(|(u, _, _)| *u)
                 .map(|(_, s, n)| (s, n))
@@ -771,9 +787,9 @@ impl Clips {
         let mine = self.all.get_mut(&session);
         match mine {
             Some(m) => match m.get_mut(name) {
-                Some((c, used)) => {
-                    *used = tick;
-                    Ok(Arc::clone(c))
+                Some(e) => {
+                    e.used = tick;
+                    Ok(Arc::clone(&e.clip))
                 }
                 None => Err(m.keys().cloned().collect()),
             },

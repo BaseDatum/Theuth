@@ -9,11 +9,15 @@ use std::sync::Arc;
 /// A stand-in for codeindex's hook on `.fk` files: `fn NAME` / `type
 /// NAME` lines open symbols spanning their deeper-indented lines, `///`
 /// lines above widen them, a nested `fn` is `Type.fn`; lines after a line
-/// with one `"""` through the next such line are string interiors.
+/// with one `"""` through the next such line are string interiors. It
+/// panics on `.boom` files (a failed hook).
 struct Fake;
 
 impl Syntax for Fake {
     fn analyze(&self, path: &Path, text: &str) -> Option<SyntaxInfo> {
+        if path.extension()? == "boom" {
+            panic!("fake parser blew up");
+        }
         if path.extension()? != "fk" {
             return None;
         }
@@ -636,6 +640,76 @@ async fn indent_uses_detected_tab_and_editorconfig_units() {
         .await
         .unwrap();
     assert_eq!(t.get("n.txt"), "a\n    b\n");
+}
+
+/// 193 R3 #3: a failed syntax hook refuses the shift with its own message
+/// (not the no-parser note) and writes nothing; no parser keeps the note.
+#[tokio::test]
+async fn failed_syntax_hook_refuses_a_shift() {
+    let t = t();
+    let body = "a {\n  b\n}\n";
+    t.put("x.boom", body);
+    let id = t.id("x.boom").await;
+    let e = t
+        .indent("x.boom", &format!("L2@{id}"), Some(1), None)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("the syntax parser failed on"), "{e}");
+    assert!(!e.contains("no parser"), "{e}");
+    assert_eq!(t.get("x.boom"), body);
+
+    t.put("x.txt", body);
+    let id = t.id("x.txt").await;
+    let out = t
+        .indent("x.txt", &format!("L2@{id}"), Some(1), None)
+        .await
+        .unwrap();
+    assert!(out.content.contains("no parser"), "{}", out.content);
+}
+
+/// 193 R3 #8: an ACP child seated as `acp_session` seats it (the parent's
+/// seat inherited, then the child's own cwd): a relative path given to its
+/// tools resolves in the child's cwd, not the parent's.
+#[tokio::test]
+async fn an_acp_childs_relative_path_resolves_in_its_own_cwd() {
+    let t = t();
+    std::fs::create_dir_all(t.dir.join("parent")).unwrap();
+    std::fs::create_dir_all(t.dir.join("child")).unwrap();
+    t.put("parent/a.txt", "x\n");
+    t.put("child/a.txt", "x\n");
+    let (p, c) = (crate::SessionId::new(), t.cx.session);
+    crate::seat::set_cwd(p, Some(t.dir.join("parent")));
+    crate::seat::set_write_root(p, Some(t.dir.clone()));
+    crate::seat::inherit(c, p);
+    crate::seat::set_cwd(c, Some(t.dir.join("child")));
+    let read = Tool::call(
+        &ReadFile,
+        ReadFileArgs {
+            path: "a.txt".into(),
+            offset: None,
+            limit: None,
+            tail: None,
+            ranges: None,
+            numbers: true,
+            outline: false,
+        },
+        t.cx.clone(),
+    )
+    .await
+    .unwrap()
+    .content;
+    let args = IndentArgs {
+        path: "a.txt".into(),
+        range: format!("L1@{}", id_of(&read)),
+        by: Some(1),
+        r#match: None,
+    };
+    Tool::call(&Indent, args, t.cx.clone()).await.unwrap();
+    crate::seat::forget(c);
+    crate::seat::forget(p);
+    assert_eq!(t.get("child/a.txt"), "    x\n");
+    assert_eq!(t.get("parent/a.txt"), "x\n");
 }
 
 #[tokio::test]

@@ -18557,8 +18557,8 @@ pub(crate) mod tests {
     }
 
     /// 193 B1: an ACP child's seat cwd is its own spawn cwd, its write_root the parent's.
-    /// (This also covers a relative path in the shim's `session_call_tool` resolving in the
-    /// child's cwd: the registry resolves through this seat.)
+    /// (A relative path resolving in that cwd: tools'
+    /// `text::tests::an_acp_childs_relative_path_resolves_in_its_own_cwd`.)
     #[tokio::test]
     async fn acp_child_seat_is_its_spawn_cwd_with_the_parents_write_root() {
         let (_scratch, a) = agents().await;

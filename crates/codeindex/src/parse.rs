@@ -43,11 +43,12 @@ const GO_BUILTIN_TYPES: &[&str] = &[
 ];
 
 /// The parsers one worker owns: the tags runner (which holds its own
-/// `Parser` and exposes no tree) and a second `Parser` for the import query.
+/// `Parser` and exposes no tree) and a second `Parser` for the import query
+/// and `parse_tree`'s tree.
 pub struct Parsers {
     /// tree-sitter-tags context.
     pub tags: TagsContext,
-    /// For [`imports::imports`].
+    /// For [`imports::imports`] and `parse_tree`.
     pub tree: tree_sitter::Parser,
 }
 
@@ -124,19 +125,33 @@ pub fn parse<'c>(
     lang: Language,
     src: &[u8],
 ) -> Option<ParsedFile<'c>> {
-    parse_tree(p, cfg, lang, src).map(|(file, _)| file)
+    parse_with(p, cfg, lang, src, false).map(|(file, _)| file)
 }
 
-/// [`parse`], also returning the tree parsed for the import query so a caller
-/// that needs the syntax tree (the text-ref hook) does not parse again. The
-/// tags runner exposes no tree, so a file is still parsed twice; the tree is
-/// `None` only when the language has no import query or its grammar fails to
-/// load.
+/// [`parse`], also returning the syntax tree, for the text-ref hook (string
+/// interiors, declaration widening). Exactly two parses per call, always:
+/// `p.tree` builds the returned tree (the import query runs on it too), and
+/// tree-sitter-tags' `generate_tags` parses once more internally, because it
+/// takes only source bytes and exposes no tree (0.27). `None`: binary or
+/// non-UTF-8 `src`, or the grammar fails to load.
 pub(crate) fn parse_tree<'c>(
     p: &mut Parsers,
     cfg: &'c TagsConfiguration,
     lang: Language,
     src: &[u8],
+) -> Option<(ParsedFile<'c>, tree_sitter::Tree)> {
+    let (file, tree) = parse_with(p, cfg, lang, src, true)?;
+    Some((file, tree?))
+}
+
+/// [`parse`]; `want_tree` builds the tree even for a language without an
+/// import query (otherwise the tree exists only for that query).
+fn parse_with<'c>(
+    p: &mut Parsers,
+    cfg: &'c TagsConfiguration,
+    lang: Language,
+    src: &[u8],
+    want_tree: bool,
 ) -> Option<(ParsedFile<'c>, Option<tree_sitter::Tree>)> {
     if src[..src.len().min(NUL_CHECK)].contains(&0) || std::str::from_utf8(src).is_err() {
         return None;
@@ -147,9 +162,10 @@ pub(crate) fn parse_tree<'c>(
         src.iter().filter(|&&b| b == b'\n').count() as i64 + i64::from(src[src.len() - 1] != b'\n')
     };
     let query = imports::query(lang);
-    let tree = match query {
-        Some(_) if p.tree.set_language(&cfg.language).is_ok() => p.tree.parse(src, None),
-        _ => None,
+    let tree = if (want_tree || query.is_some()) && p.tree.set_language(&cfg.language).is_ok() {
+        p.tree.parse(src, None)
+    } else {
+        None
     };
     let imports = match (query, &tree) {
         (Some(q), Some(t)) => imports::imports(lang, q, t.root_node(), src),
