@@ -98,6 +98,11 @@ impl Model {
                     self.editor_prefixes.push(token);
                 }
                 CoreAction::Scroll { delta, rows, width } => self.scroll(delta, rows, width),
+                CoreAction::EditContext { session, expected_revision, targets } => {
+                    if let Some(commands) = &self.component_commands {
+                        send(commands, Command::RemoveContext { session, expected_revision, targets });
+                    }
+                }
                 CoreAction::ContextState { session, revision, editable, reason } => {
                     if self.session == Some(session) {
                         self.context_revision = revision;

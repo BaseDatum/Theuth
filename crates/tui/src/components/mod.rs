@@ -643,6 +643,16 @@ pub enum CoreAction {
         reason: Option<String>,
     },
 
+    /// Run the core context mutation and its settled reload as one transaction.
+    EditContext {
+        /// Session whose authoritative inventory supplied the targets.
+        session: SessionId,
+        /// Revision reviewed by the user.
+        expected_revision: String,
+        /// Exact core transcript targets, including protocol companions.
+        targets: Vec<agent::ContextTarget>,
+    },
+
     // Step-11 group t3 CoreAction variants: add below, in this block only.
     /// Move the shell-owned separate editor cursor without touching the chat draft.
     EditorCursor(usize),
