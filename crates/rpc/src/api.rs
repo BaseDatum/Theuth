@@ -221,8 +221,6 @@ pub mod artifacts;
 pub mod credentials;
 /// Kernels RPC server and client traits.
 pub mod kernels;
-/// Research RPC server and client traits.
-pub use autoresearch::rpc as research;
 /// Sandboxes RPC server and client traits.
 pub mod sandboxes;
 
@@ -246,7 +244,6 @@ pub use boards::{BoardsApiClient, BoardsApiServer};
 pub use artifacts::{ArtifactsApiClient, ArtifactsApiServer};
 pub use credentials::{CredentialsApiClient, CredentialsApiServer};
 pub use kernels::{KernelsApiClient, KernelsApiServer};
-pub use research::{ResearchApiClient, ResearchApiServer};
 pub use sandboxes::{SandboxesApiClient, SandboxesApiServer};
 
 /// All domain client traits for typed methods on any jsonrpsee client.
@@ -274,7 +271,7 @@ pub mod clients {
     pub use meeting::MeetingsApiClient;
     pub use super::kernels::KernelsApiClient;
     pub use dreaming::DreamsApiClient;
-    pub use super::research::ResearchApiClient;
+    pub use autoresearch::ResearchApiClient;
     pub use super::sandboxes::SandboxesApiClient;
 }
 
@@ -303,7 +300,7 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         talk::rpc_module(server.clone()),
         meeting::rpc_module(server.clone()),
         dreaming::rpc_module(server.clone()),
-        research::rpc_module(server.clone()),
+        autoresearch::rpc_module(server.clone()),
         kernels::rpc_module(server.clone()),
         sandboxes::rpc_module(server.clone()),
         settings::rpc_module(server),

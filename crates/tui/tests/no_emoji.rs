@@ -8,7 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const CRATES: &[&str] = &["agent", "rpc", "rpc-core", "dreaming", "meeting", "talk"];
+const CRATES: &[&str] = &["agent", "rpc", "rpc-core", "dreaming", "meeting", "talk", "autoresearch"];
 
 /// `Extended_Pictographic` ∪ `Emoji_Presentation` (Unicode 16) minus the arrows block and ™, which are
 /// typography; plus the emoji variation selector and the keycap combiner.

@@ -1,5 +1,5 @@
 //! The `autoresearch.*` RPC methods (design doc 140 §12.5) as plain async fns
-//! the `rpc` crate's `ResearchApiServer` delegates to: each asks the [`Studies`]
+//! [`crate::ResearchApiServer`] delegates to: each asks the [`Studies`]
 //! actor; absent actor → `Err("autoresearch is not running")`. Owned by W3
 //! after the skeleton (bodies here are complete delegation; W3 changes the
 //! actor, not this file, unless a method's shape changes).
@@ -10,7 +10,7 @@ use crate::config::AutoresearchConfig;
 use crate::types::*;
 use crate::{AUTORESEARCH_ACTOR, Studies};
 
-/// The method names the `rpc` crate registers (140 §12.5, 151 §4.4, 159 §5.11).
+/// The method names this crate registers (140 §12.5, 151 §4.4, 159 §5.11).
 pub const METHODS: [&str; 21] = [
     "autoresearch.list",
     "autoresearch.get",
