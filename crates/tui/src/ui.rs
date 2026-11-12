@@ -12,6 +12,7 @@ use tools::{Decision, Risk};
 
 use crate::clip;
 use crate::dictation::{self, Dictating, Phase};
+use crate::components::{FocusClass, Lifecycle, Surface};
 use crate::model::{
     ADVISORY_COLLAPSED, Grouped, ModelRow, PickTarget, advisory_rows, advisory_severity,
     advisory_title, providers, session_row, severity_name, terminal_row,
@@ -124,6 +125,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let approvals = links.approvals;
     let app_enabled = links.app_enabled;
     let catalog = links.catalog.clone();
+    let component_commands = links.commands.clone();
     let mut model = hooks.use_state({
         let catalog = catalog.clone();
         move || {
@@ -134,6 +136,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             m.favorite_models = favorite_models;
             m.app_enabled = app_enabled;
             m.catalog = Some(catalog);
+            m.mount_components(&component_commands);
             m.entries.push(Entry::Info(
                 concat!("theuth ", env!("CARGO_PKG_VERSION")).into(),
             ));
@@ -141,6 +144,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         }
     });
     let mut input = hooks.use_state(String::new);
+    let mut component_rows = hooks.use_ref_default::<usize>();
     let mut handle = hooks.use_ref_default::<TextInputHandle>();
     // The `/search` query has its own editor and handle (49 §6.1): the chat
     // draft, its cursor and paste tokens are never touched by a search.
@@ -205,6 +209,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     || model.read().terminal_wake().is_some_and(|t| t <= now)
                     || model.read().path.wake().is_some_and(|t| t <= now)
                     || model.read().suggestion_wake().is_some_and(|t| t <= now);
+                let due = due || model.read().components.wake().is_some_and(|at| at <= now);
                 if pending.is_empty() && !model.read().animating() && !due {
                     continue;
                 }
@@ -219,6 +224,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 m.search_tick(now, &commands);
                 m.terminal_tick(now, &commands);
+                m.component_tick(now);
                 let session = m.session;
                 m.path.tick(now, session, &commands);
                 // A withdrawn or unsent message comes back into the editor,
@@ -341,6 +347,10 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 m.sync_slash(&v);
                 input.set(v);
             };
+            if let TerminalEvent::Key(key) = &event
+                && key.kind != KeyEventKind::Release
+                && m.component_key(FocusClass::Interactive, key)
+            { return; }
             // 55 §3: the keyboard belongs to the program in the open terminal,
             // Ctrl-C included; only Ctrl-] comes back here.
             if m.terminal_interactive() {
@@ -358,14 +368,10 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 return;
             }
-            let TerminalEvent::Key(KeyEvent {
-                code,
-                kind,
-                modifiers,
-                ..
-            }) = event
+            let TerminalEvent::Key(key) = event
             else {
                 if let TerminalEvent::BracketedPaste(text) = event {
+                    if m.component_paste(&text) { return; }
                     // Search paste is query text at the cursor: never an
                     // attachment, paste token or slash command (49 §6.1).
                     if m.search_open() {
@@ -390,6 +396,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 return;
             };
+            let KeyEvent { code, kind, modifiers, .. } = key;
             if kind == KeyEventKind::Release {
                 return;
             }
@@ -397,6 +404,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 m.quit = true;
                 return;
             }
+            if m.component_key(FocusClass::Spoken, &key) { return; }
             // Talk (76 §0.12, §5.2): the pane owns the keys — Esc cancels the
             // agent's turn while it thinks or speaks, else leaves the pane (the
             // talk runs on); Ctrl+T stops it; the rest is swallowed; an
@@ -471,6 +479,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 return;
             }
+            if m.component_key(FocusClass::Secret, &key) { return; }
             // The masked box types into the editor; ⏎ stores, esc declines.
             if m.secret_request().is_some() {
                 match code {
@@ -489,6 +498,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 return;
             }
+            if m.component_key(FocusClass::Suggestion, &key) { return; }
             // The dictionary suggestion line (153 §6.4): `y` add · `n` not now ·
             // `N` never · `p` is the desktop's; Esc = not now; the rest is swallowed.
             if m.suggestion.is_some() {
@@ -517,6 +527,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 return;
             }
+            if m.component_key(FocusClass::Pinned, &key) { return; }
             // The todo card (47 §6.3): F2 opens and focuses / closes it; while
             // focused it takes the scroll keys, esc, tab and ⏎, so the draft is
             // neither sent nor cleared. Anything else hands the editor back:
@@ -565,9 +576,10 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             let todo = m
                 .todo_card(usize::from(w), usize::from(h))
                 .map_or(0, |c| c.height());
-            let view = view_rows(&m, h, &input.read(), todo);
+            let view = view_rows(&m, h, &input.read(), todo + *component_rows.read());
             // `/search` (49 §6.1): its own focus ring; the query editor's own
             // keys reach the search `TextInput`, everything else lands here.
+            if m.component_key(FocusClass::Search, &key) { return; }
             if m.search_open() {
                 let (inner, area, _, _) = search_layout(&m, w, view);
                 m.search_key(code, inner, area, &commands);
@@ -607,6 +619,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     }
                 }
             }
+            if m.component_key(FocusClass::Modal, &key) { return; }
             if m.menu.is_some() {
                 let text = input.read().to_string();
                 if let MenuKey::Input(text) = m.menu_key(code, &text, &commands) {
@@ -666,6 +679,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 let _ = commands.send(Command::OpenPath(path.to_owned()));
                 return;
             }
+            if m.component_key(FocusClass::Content, &key) { return; }
             // Transcript scrolling. ↑/↓ are the editor's while it spans
             // lines; terminals without mouse capture send them for the wheel.
             let step = match code {
@@ -703,6 +717,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         }
     });
 
+    if model.read().quit { model.write().component_notify(Lifecycle::Shutdown); }
     let m = model.read();
     if m.quit {
         let _ = crossterm::execute!(
@@ -731,6 +746,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     // Approval on top, then a secret request, then the model's questions;
     // otherwise whichever menu is open.
     let (width, height) = terminal_size;
+    let pinned = component_slot(&m, Surface::Pinned, width, height);
+    let composer = component_slot(&m, Surface::Composer, width, height);
+    let hint = component_slot(&m, Surface::Hint, width, height);
+    let badge = component_slot(&m, Surface::PromptBadge, width, height);
+    let extra_rows = pinned.rows + composer.rows + hint.rows + badge.rows;
+    *component_rows.write() = extra_rows;
     let modal = modal
         .or_else(|| secret_box(&m))
         .or_else(|| ask_box(&m))
@@ -739,12 +760,13 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 let todo = m
                     .todo_card(usize::from(width), usize::from(height))
                     .map_or(0, |c| c.height());
-                let budget = view_rows(&m, height, &input.read(), todo);
+                let budget = view_rows(&m, height, &input.read(), todo + extra_rows);
                 search_box(&m, model, search_handle, width, budget)
             })
         })
         .or_else(|| terminal_box(&m, width, height))
-        .or_else(|| menu(&m, &input.read(), width, height));
+        .or_else(|| menu(&m, &input.read(), width, height))
+        .or_else(|| component_slot(&m, Surface::Modal, width, height).element());
     // A secret's value (or a provider's key) shows as dots.
     let mask = (m.secret_request().is_some() || m.prompt.as_ref().is_some_and(Prompt::masked))
         .then_some('•');
@@ -762,7 +784,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         &m,
         height,
         &input.read(),
-        todo.as_ref().map_or(0, TodoCard::height),
+        todo.as_ref().map_or(0, TodoCard::height) + extra_rows,
     );
     let win = m.window(view, usize::from(width));
     let entries = m.entries[win.from..win.to]
@@ -790,6 +812,15 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         }
         .into_any()
     };
+    let content = component_slot(&m, Surface::Content, width, height);
+    let transcript = if content.replace {
+        content.element().unwrap_or(transcript)
+    } else if let Some(extra) = content.element() {
+        element!(View(flex_direction: FlexDirection::Column, height: 100pct) {
+            #(transcript)
+            #(extra)
+        }).into_any()
+    } else { transcript };
     element! {
         View(flex_direction: FlexDirection::Column, width, height) {
             View(flex_grow: 1.0_f32, min_height: 0, flex_direction: FlexDirection::Column) {
@@ -808,7 +839,9 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             }))
             #(board(&m, width))
             #(todo.map(todo_card))
+            #(pinned.element())
             #(modal)
+            #(badge.element())
             #(m.inspect_line().map(|hint| {
                 element!(View(height: 1, padding_left: 1) {
                     Text(content: hint, color: OCHRE, wrap: TextWrap::NoWrap)
@@ -848,6 +881,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         on_change: move |v: String| {
                             let mut m = model.write();
                             m.sync_slash(&v);
+                            m.component_notify(Lifecycle::ComposerEdited(&v));
                             // `TextInput` reports the new text before its cursor state moves,
                             // so the caret is read off the edit itself: the end of the
                             // inserted run, or the point of deletion.
@@ -864,6 +898,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 #(m.dictation.as_ref().map(|d| element!(MixedText(contents: dictation_region(d), wrap: TextWrap::Wrap))))
             }
+            #(composer.element())
+            #(hint.element())
             // The dictionary suggestion (153 §6.4): one line under the composer.
             #(m.suggestion.as_ref().map(|s| {
                 element!(View(height: 1, padding_left: 1) {
@@ -873,13 +909,44 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             #(path_box(&m, width))
             View(height: 1, padding_left: 1, padding_right: 1, justify_content: JustifyContent::SpaceBetween) {
                 View() {
-                    Text(content: m.status(), color: SAND)
+                    Text(content: format!("{}{}", m.status(), m.component_text(Surface::Status)), color: SAND)
                     #(m.advisor_segment().map(|(text, state)| element!(Text(content: text, color: advisor_color(state)))))
                 }
                 Text(content: m.mcp_status(), color: SAND)
             }
         }
     }
+}
+
+/// A slot is measured once from exactly the owned elements that are rendered.
+struct ComponentSlot {
+    elements: Vec<AnyElement<'static>>,
+    rows: usize,
+    replace: bool,
+}
+impl ComponentSlot {
+    fn element(self) -> Option<AnyElement<'static>> {
+        if self.elements.is_empty() { return None; }
+        Some(element!(View(flex_direction: FlexDirection::Column, height: self.rows as u32, flex_shrink: 0.0) {
+            #(self.elements)
+        }).into_any())
+    }
+}
+fn component_slot(m: &Model, at: Surface<'_>, width: u16, height: u16) -> ComponentSlot {
+    let mut slot = ComponentSlot { elements: Vec::new(), rows: 0, replace: false };
+    for view in m.component_views(at, usize::from(width), usize::from(height)) {
+        let (element, rows, replace) = match view {
+            crate::components::View::Text(text) => {
+                let rows = text.lines().count();
+                (element!(Text(content: text, wrap: TextWrap::NoWrap)).into_any(), rows, false)
+            }
+            crate::components::View::Element { element, rows, replace } => (element, rows, replace),
+        };
+        if replace { slot.elements.clear(); slot.rows = 0; slot.replace = true; }
+        slot.rows += rows;
+        slot.elements.push(element!(View(height: rows as u32, flex_shrink: 0.0) { #(element) }).into_any());
+    }
+    slot
 }
 
 /// The `/talk` pane (76 §0.12, §5.2) in a `width × height` content area: the

@@ -172,6 +172,7 @@ impl Model {
                     self.dictation_pending = Some((before, after));
                     return Some(Command::DictationStart {
                         pressed: std::time::Instant::now(),
+                        commands: COMMANDS.iter().chain(self.components.slash_specs()).map(|(name, _, _)| (*name).to_owned()).collect(),
                     });
                 }
                 voice::ModelState::Loading => "dictation: model loading…".to_owned(),

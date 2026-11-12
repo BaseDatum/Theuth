@@ -36,6 +36,7 @@ const ALLOWED: &[&str] = &[
     "update",
     "voice",
     "web",
+    "wire",
 ];
 const ALLOWED_DEV: &[&str] = &[];
 

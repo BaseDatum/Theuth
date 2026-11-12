@@ -60,6 +60,7 @@ use agent::rpc_forward as forward;
 mod forward_tests;
 pub mod pathac;
 pub mod search;
+pub mod topics;
 
 mod diag;
 mod wslog;

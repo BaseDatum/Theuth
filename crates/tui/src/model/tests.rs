@@ -1918,8 +1918,8 @@
             version: "0.2.0".into(),
             applied: true,
         };
-        m.apply(UiEvent::UpdateReady(ev.clone()));
-        m.apply(UiEvent::UpdateReady(ev));
+        m.apply(UiEvent::Wire(crate::topics::TopicEvent::Remote(Arc::new(crate::topics::TopicNotification { topic: "update.ready".into(), version: 1, event: serde_json::to_value(ev.clone()).unwrap() }))));
+        m.apply(UiEvent::Wire(crate::topics::TopicEvent::Remote(Arc::new(crate::topics::TopicNotification { topic: "update.ready".into(), version: 1, event: serde_json::to_value(ev).unwrap() }))));
         assert!(m.header(&catalog).0.ends_with("  ·  0.2.0 ready"));
         let lines = m
             .entries
