@@ -98,6 +98,13 @@ impl Model {
                     self.editor_prefixes.push(token);
                 }
                 CoreAction::Scroll { delta, rows, width } => self.scroll(delta, rows, width),
+                CoreAction::ContextState { session, revision, editable, reason } => {
+                    if self.session == Some(session) {
+                        self.context_revision = revision;
+                        self.context_editable = editable;
+                        if !editable { self.context_reason = reason; }
+                    }
+                }
                 CoreAction::Notice(text) => self.entries.push(Entry::Info(text)),
                 CoreAction::Interject(text) => self.interject(Entry::Info(text)),
                 CoreAction::Error(text) => self.receive(UiEvent::Error(text), emit),

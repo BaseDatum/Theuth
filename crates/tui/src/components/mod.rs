@@ -631,6 +631,18 @@ pub enum CoreAction {
 
     // Step-11 group t2 CoreAction variants: add below, in this block only.
 
+    /// Apply authoritative revision/editability metadata without retaining an inventory.
+    ContextState {
+        /// Selected session whose context was read.
+        session: SessionId,
+        /// Revision required by a future core edit transaction.
+        revision: String,
+        /// Whether the authoritative snapshot permits edits.
+        editable: bool,
+        /// Refusal reason; retained only for a non-editable snapshot.
+        reason: Option<String>,
+    },
+
     // Step-11 group t3 CoreAction variants: add below, in this block only.
     /// Move the shell-owned separate editor cursor without touching the chat draft.
     EditorCursor(usize),
