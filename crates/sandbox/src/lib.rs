@@ -30,6 +30,7 @@ pub mod takeover;
 pub mod tools;
 pub mod types;
 pub mod vm;
+pub mod rpc_support;
 
 use std::path::PathBuf;
 use std::sync::Arc;

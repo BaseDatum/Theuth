@@ -633,13 +633,6 @@ fn tasks_actor() -> RpcResult<ActorRef<tasks::Tasks>> {
 }
 
 
-/// The sandbox actor; absent when `sandbox.enabled: false` or the plugin is not loaded (79).
-fn sandbox() -> RpcResult<ActorRef<sandbox::SandboxActor>> {
-    lookup::<sandbox::SandboxActor>(sandbox::SANDBOX_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "sandbox is disabled", None::<()>),
-        _ => e,
-    })
-}
 
 /// The update actor; absent when `update.enabled: false` or the plugin is not loaded.
 fn update_actor() -> RpcResult<ActorRef<update::UpdateActor>> {
