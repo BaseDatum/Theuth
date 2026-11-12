@@ -8,6 +8,7 @@ import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
 import { LOCAL, useEngines } from '@/link/engines'
 import type { McpServer } from '@/rpc/bindings/McpServer'
+import type { McpToolInfo } from '@/rpc/bindings/McpToolInfo'
 import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
 import { Tools } from './Tools'
 
@@ -40,12 +41,21 @@ const servers: McpServer[] = [
   server({ name: 'portable', everywhere: true, state: 'unavailable_here', reason: 'portable-mcp is not installed on xeus' }),
   server({ name: 'linear', home_here: true, state: 'error', auth: 'required' }),
 ]
+// The chat `s1`'s view: one running server with two tools, none hidden yet.
+const tool = (name: string): McpToolInfo => ({ name, description: '', gate: null, risk: 'read_only', action: 'allow', registered: name, hidden: false })
+const chat: McpServer[] = [
+  server({ name: 'fs', home: 'id-xeus', home_name: 'xeus', home_here: true, state: 'running', connected: true, tools: [tool('read_file'), tool('write_file')] }),
+]
 
 const calls: [string, unknown][] = []
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
   useApi: () => ({
-    list_mcp: async () => servers,
+    list_mcp: async (session: string | null) => (session ? chat : servers),
+    set_mcp_hidden: async (session: string, names: string[], hidden: boolean) => {
+      calls.push(['set_mcp_hidden', [session, names, hidden]])
+      return null
+    },
     mesh_status: async () => mesh,
     mcp_status: async () => ({ connecting: [], connected: [], failed: [], homes_problem: '/d/mcp/homes.yaml is invalid: line 1' }),
     set_mcp_home: async (name: string, action: string) => {
@@ -65,15 +75,15 @@ vi.mock('@/lib/rpc', async (original) => ({
 
 const client = () => new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
 
-async function mount() {
+async function mount(session: string | null = null) {
   const el = document.createElement('div')
   document.body.append(el)
   const root = createRoot(el)
-  await act(async () => root.render(createElement(QueryClientProvider, { client: client(), children: createElement(Tools, { session: null }) })))
+  await act(async () => root.render(createElement(QueryClientProvider, { client: client(), children: createElement(Tools, { session }) })))
   await vi.waitFor(() => {
-    expect(el.textContent).toContain('portable-mcp is not installed on xeus')
+    expect(el.textContent).toContain(session ? 'fs2 tools' : 'portable-mcp is not installed on xeus')
     expect(el.textContent).toContain('homes.yaml is invalid: line 1')
-    expect(el.textContent).toContain('Move home here')
+    if (!session) expect(el.textContent).toContain('Move home here')
   })
   const button = (label: string) => [...el.querySelectorAll('button')].filter((b) => b.textContent === label)
   const unmount = () => {
@@ -87,6 +97,29 @@ afterEach(() => {
   calls.length = 0
   useEngines.setState({ active: LOCAL })
   vi.restoreAllMocks()
+})
+
+test('Settings without a chat: "Off here" is greyed with the way to the chat’s own sheet', async () => {
+  const { el, button, unmount } = await mount()
+  expect(button('Off here')[0]?.disabled).toBe(true)
+  expect(el.querySelector('[title="Open from a chat: ⋯ › Tools… or /tools"]')).not.toBeNull()
+  unmount()
+})
+
+test('in a chat, "Off here" hides every tool of the server and a tool’s switch hides that tool, both for that chat', async () => {
+  const { el, button, unmount } = await mount('s1')
+  const hides = () => calls.filter(([m]) => m === 'set_mcp_hidden')
+  expect(button('Off here')[0]?.disabled).toBe(false)
+  await act(async () => button('Off here')[0]!.click())
+  await vi.waitFor(() => expect(hides()).toEqual([['set_mcp_hidden', ['s1', ['read_file', 'write_file'], true]]]))
+  // The tools open under the row; the first one's switch turns it off here.
+  await act(async () => [...el.querySelectorAll('button')].find((b) => b.textContent?.includes('fs'))!.click())
+  const switches = () => [...el.querySelectorAll<HTMLButtonElement>('[role="switch"]')]
+  await vi.waitFor(() => expect(switches()).toHaveLength(2))
+  expect(switches()[0]!.disabled).toBe(false)
+  await act(async () => switches()[0]!.click())
+  await vi.waitFor(() => expect(hides()[1]).toEqual(['set_mcp_hidden', ['s1', ['read_file'], true]]))
+  unmount()
 })
 
 test('188 D2: no home chip and no home actions until the mesh answers (no "on this machine" flicker)', () => {

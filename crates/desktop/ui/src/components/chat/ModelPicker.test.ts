@@ -1,8 +1,10 @@
-import { expect, test } from 'vitest'
+import '../settings/test-dom'
+import { afterEach, expect, test, vi } from 'vitest'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
-import { createElement } from 'react'
+import { act, createElement } from 'react'
+import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { contextLabel, favoriteTarget, ModelPicker, type View, viewFor, withExtra } from './ModelPicker'
+import { contextLabel, type Effort, favoriteTarget, ModelPicker, type ModelPickerProps, type View, viewFor, withExtra } from './ModelPicker'
 
 const model = (provider: string, id: string, name: string, extra: Partial<ModelInfo> = {}): ModelInfo => ({
   id,
@@ -141,4 +143,108 @@ test('177 U4: local models and their providers carry the "local" tag; `localFirs
   expect(lead).toMatch(/>LFM3 1\.7B<\/span><span[^>]*>local</)
   expect(lead).toMatch(/>gpt-oss 20B<\/span><span[^>]*>local</)
   expect(tags(lead)).toBe(4)
+})
+
+// ── 2026-11-11: the effort chips under the selected model's row ──────────────────────────────────────────────────
+
+window.HTMLElement.prototype.scrollIntoView = () => {}
+afterEach(() => {
+  document.body.innerHTML = ''
+})
+
+const withEfforts = models.map((m) => (m.id === 'openai/gpt-5.4' ? { ...m, efforts: ['low', 'medium', 'high'] } : m))
+const effortOn = (current: string | null, extra: Omit<Partial<Effort>, 'onSelect'> = {}) => ({ levels: ['low', 'medium', 'high'], current, onSelect: vi.fn(), ...extra })
+
+async function mount(props: Partial<ModelPickerProps>) {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onSelect = vi.fn()
+  await act(async () => createRoot(host).render(createElement(ModelPicker, { models: withEfforts, model: 'openai/gpt-5.4', onSelect, ...props })))
+  const item = (value: string) => host.querySelector<HTMLElement>(`[cmdk-item][data-value="${value}"]`)
+  /** The chip row directly under `row` (its next sibling) as labels, the active one starred; `null` when none follows. */
+  const chipsAfter = (row: Element | null | undefined) => {
+    const g = row?.nextElementSibling
+    return g?.getAttribute('aria-label') === 'Effort' ? [...g.children].map((c) => `${c.textContent}${c.querySelector('svg') ? '*' : ''}`) : null
+  }
+  const chip = (label: string) => [...host.querySelectorAll<HTMLElement>('[aria-label="Effort"] > *')].find((c) => c.textContent === label)!
+  const lead = (text: string) => [...host.querySelectorAll('button')].find((b) => b.textContent === text)
+  const values = () => [...host.querySelectorAll('[cmdk-item]')].map((e) => e.getAttribute('data-value'))
+  const selected = () => host.querySelector('[cmdk-item][data-selected="true"]')?.getAttribute('data-value')
+  const input = host.querySelector('input')!
+  const key = (k: string) => act(async () => void input.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true })))
+  const type = (text: string) =>
+    act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(input, text)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  const click = (el: HTMLElement) => act(async () => void el.click())
+  return { host, onSelect, item, chipsAfter, chip, lead, values, selected, key, type, click }
+}
+
+test('chips: one row directly under the Current row (plain buttons), Default first, the active level marked; no bottom Effort group; the highlight still starts on the first provider', async () => {
+  const effort = effortOn('high')
+  const p = await mount({ effort })
+  expect(p.chipsAfter(p.lead('GPT-5.4openai'))).toEqual(['Default', 'low', 'medium', 'high*'])
+  expect(p.host.querySelectorAll('[aria-label="Effort"]')).toHaveLength(1)
+  expect([...p.host.querySelectorAll('[cmdk-group-heading]')].map((h) => h.textContent)).toEqual(['Providers'])
+  expect(p.host.textContent).not.toContain('clear')
+  expect(p.values()).toEqual(['provider:anthropic', 'provider:openai'])
+  expect(p.selected()).toBe('provider:anthropic')
+  expect(p.chip('high').getAttribute('aria-pressed')).toBe('true')
+  await p.click(p.chip('medium'))
+  await p.click(p.chip('Default'))
+  expect(effort.onSelect.mock.calls).toEqual([['medium'], [null]])
+  expect(p.onSelect).not.toHaveBeenCalled()
+})
+
+test('chips under a favorite row are cmdk items in DOM order right after it: ↓ reaches them, Enter applies', async () => {
+  const effort = effortOn(null)
+  const p = await mount({ effort, favorites: ['openai/gpt-5.4-mini', 'openai/gpt-5.4'], onToggleFavorite() {} })
+  expect(p.chipsAfter(p.item('fav:openai/gpt-5.4'))).toEqual(['Default*', 'low', 'medium', 'high'])
+  expect(p.chipsAfter(p.item('fav:openai/gpt-5.4-mini'))).toBeNull()
+  expect(p.values()).toEqual(['fav:openai/gpt-5.4-mini', 'fav:openai/gpt-5.4', 'effort-default', 'effort:low', 'effort:medium', 'effort:high', 'provider:anthropic', 'provider:openai'])
+  expect(p.selected()).toBe('fav:openai/gpt-5.4-mini')
+  await p.key('ArrowDown')
+  await p.key('ArrowDown')
+  await p.key('ArrowDown')
+  expect(p.selected()).toBe('effort:low')
+  await p.key('Enter')
+  expect(effort.onSelect).toHaveBeenCalledWith('low')
+  expect(p.host.querySelectorAll('[aria-label="Effort"]')).toHaveLength(1)
+})
+
+test('chips inside the provider’s model list: under the current model’s row, before the next model', async () => {
+  const effort = effortOn('medium')
+  const p = await mount({ effort })
+  await p.key('ArrowDown')
+  await p.key('Enter') // provider:openai
+  expect(p.chipsAfter(p.item('model:openai/gpt-5.4'))).toEqual(['Default', 'low', 'medium*', 'high'])
+  expect(p.chipsAfter(p.item('model:openai/gpt-5.4-mini'))).toBeNull()
+  expect(p.values()).toEqual(['model:openai/gpt-5.4', 'effort-default', 'effort:low', 'effort:medium', 'effort:high', 'model:openai/gpt-5.4-mini'])
+  // Another provider's list has no selected row, so no chips.
+  await p.key('Backspace')
+  await p.click(p.item('provider:anthropic')!)
+  expect(p.values()).toEqual(['model:anthropic/claude-opus-4-1', 'model:anthropic/claude-sonnet-4-5'])
+  expect(p.host.querySelector('[aria-label="Effort"]')).toBeNull()
+})
+
+test('chips in search: under the Current row that leads the results; the highlight starts on the first result and Enter picks it', async () => {
+  const effort = effortOn('low')
+  const p = await mount({ effort })
+  await p.type('mini')
+  expect(p.chipsAfter(p.lead('GPT-5.4openai'))).toEqual(['Default', 'low*', 'medium', 'high'])
+  expect(p.values()).toEqual(['model:openai/gpt-5.4-mini'])
+  expect(p.selected()).toBe('model:openai/gpt-5.4-mini')
+  await p.key('Enter')
+  expect(p.onSelect).toHaveBeenCalledWith('openai/gpt-5.4-mini')
+  expect(effort.onSelect).not.toHaveBeenCalled()
+})
+
+test('no chips without levels; `required` drops Default and `labels` name the levels; a selected none row carries them', async () => {
+  expect((await mount({ effort: effortOn(null, { levels: [] }) })).host.querySelector('[aria-label="Effort"]')).toBeNull()
+  expect((await mount({ model: 'openai/gpt-5.4-mini' })).host.querySelector('[aria-label="Effort"]')).toBeNull()
+  const harness = await mount({ effort: effortOn('high', { levels: ['off', 'high', 'xhigh'], labels: { off: 'Off', high: 'High', xhigh: 'Extra high' }, required: true }) })
+  expect(harness.chipsAfter(harness.lead('GPT-5.4openai'))).toEqual(['Off', 'High*', 'Extra high'])
+  const none = await mount({ model: undefined, none: { value: '__none__', label: 'Node default' }, effort: effortOn('high') })
+  expect(none.chipsAfter(none.lead('Node default'))).toEqual(['Default', 'low', 'medium', 'high*'])
 })

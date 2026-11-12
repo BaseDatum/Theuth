@@ -1965,6 +1965,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "",
         "interactive apps the agent built, run on desktop/web (picker: ⏎ opens, s shows source, e exports to ~/Downloads)",
     ),
+    ("/tools", "[add <url|json>|sync]", "same as /mcp"),
     ("/exit", "", "same as /quit"),
 ];
 
@@ -7195,11 +7196,11 @@ impl Model {
                 Some(cmd) => send(tx, Command::Double(cmd)),
                 None => self.entries.push(Entry::Error(DoubleCmd::USAGE.into())),
             },
-            "/mcp" if arg.is_empty() => {
+            "/mcp" | "/tools" if arg.is_empty() => {
                 self.awaiting_mcp = true;
                 send(tx, Command::ListMcp(self.session));
             }
-            "/mcp" => self.mcp_cmd(arg, tx),
+            "/mcp" | "/tools" => self.mcp_cmd(arg, tx),
             "/acp" if arg.is_empty() => {
                 self.awaiting_acp = true;
                 send(tx, Command::ListAcp { probe: false });
@@ -15803,7 +15804,8 @@ mod tests {
         // A refresh with no menu open and no `/mcp` typed must not open one.
         m.apply(UiEvent::Mcp(vec![fresh(None, None, false)]));
         assert!(m.menu.is_none());
-        m.submit("/mcp", &tx);
+        // `/tools` is `/mcp` (the other tests type `/mcp`).
+        m.submit("/tools", &tx);
         assert!(matches!(rx.try_recv(), Ok(Command::ListMcp(Some(s))) if s == sid));
         m.apply(UiEvent::Mcp(vec![fresh(
             Some(Gate::Destructive),

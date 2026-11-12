@@ -56,7 +56,8 @@ pub struct EndpointRow {
     pub paired_ms: Option<i64>,
     /// NULL = an anchor; set when a later ceremony barred it (unused since D1's roster).
     pub barred_ms: Option<i64>,
-    /// 191 (P2): the engine id of our machine whose ceremony wrote this pin (NULL before P2).
+    /// 191 (P2): the engine ids of our machines whose ceremonies wrote this pin, a JSON array
+    /// (a set: a later ceremony adds itself; NULL before P2, a bare id from P2's first builds).
     pub pinned_by: Option<String>,
 }
 
@@ -103,7 +104,8 @@ pub struct RosterRow {
 }
 
 /// The `contact_rosters` rows and what the reconcile keys on: the rows are immutable, so
-/// `(count, max hlc)` stands for their content (D2).
+/// `(count, max hlc)` and their ids stand for their content (D2). The ids are hashed too: a
+/// delete plus an older row's late arrival can leave both stamp values equal.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Rosters {
     /// By id.
@@ -115,6 +117,9 @@ pub struct Rosters {
 impl Hash for Rosters {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.stamp.hash(state);
+        for r in &self.rows {
+            r.id.hash(state);
+        }
     }
 }
 
@@ -175,7 +180,7 @@ pub struct Records {
     /// A chat export's session → whether it is native (`sessions.agent IS NULL`); absent
     /// when this machine has no such session (yet).
     pub sessions: BTreeMap<String, bool>,
-    /// 191 (P2): `contact_rosters`, hashed by `(count, max hlc)` only.
+    /// 191 (P2): `contact_rosters`, hashed by `(count, max hlc)` and the row ids.
     pub rosters: Rosters,
     /// 191 (P2): `contact_roster_heads`, by id.
     pub heads: Vec<HeadRow>,
@@ -458,7 +463,7 @@ impl Store {
 
     /// Tests: `session` is owned by `owner`, as the session log applies another machine's
     /// take (off the capture connection).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) async fn owned_elsewhere(&self, session: SessionId, owner: &str) {
         sqlx::query("UPDATE sessions SET owner = ? WHERE id = ?")
             .bind(owner)
@@ -615,6 +620,41 @@ mod tests {
             (row.alias.as_deref(), row.blocked),
             (Some("robert"), Some(1))
         );
+    }
+
+    /// 191 (P2, review NIT): a roster row pruned while an older one arrives late leaves the
+    /// `(count, max hlc)` stamp as it was; the content hash still moves (the ids are in it).
+    #[tokio::test]
+    async fn the_content_hash_moves_when_a_prune_and_a_late_row_keep_the_stamp() {
+        let (store, _, _dir) = fresh().await;
+        let row = |id: &str| {
+            RecordWrite::new(
+                RecordTable::Rosters,
+                id,
+                vec![("contact", Cell::Text("c".into()))],
+            )
+        };
+        let hlc = |id: &'static str, hlc: &'static str| {
+            sqlx::query("UPDATE contact_rosters SET hlc = ? WHERE id = ?")
+                .bind(hlc)
+                .bind(id)
+                .execute(&store.write)
+        };
+        store
+            .write_contact_records(&[row("a"), row("b")])
+            .await
+            .unwrap();
+        hlc("a", "0000000000005-0000-x").await.unwrap();
+        hlc("b", "0000000000003-0000-x").await.unwrap();
+        let before = store.contact_records().await.unwrap();
+        store
+            .write_contact_records(&[RecordWrite::delete(RecordTable::Rosters, "b"), row("c")])
+            .await
+            .unwrap();
+        hlc("c", "0000000000002-0000-x").await.unwrap();
+        let after = store.contact_records().await.unwrap();
+        assert_eq!(after.rosters.stamp, before.rosters.stamp);
+        assert_ne!(after.content_hash(), before.content_hash());
     }
 
     /// 191 (D3, S4): the contact paths' owner predicate is strict: this engine's row is ours;

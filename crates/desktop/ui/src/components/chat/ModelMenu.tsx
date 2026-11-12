@@ -1,12 +1,10 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Cpu, Eye, RotateCcw } from 'lucide-react'
+import { Bot, ChevronDown, ChevronLeft, ChevronRight, Cpu, Eye, RotateCcw } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { routed } from '@/lib/owner'
 import { Button } from '@/components/ui/button'
-import { Command, CommandDialog, CommandEmpty, type CommandFilter, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { defaultFilter } from 'cmdk'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useDraftTarget, useDrafts } from '@/lib/drafts'
 import { usePanes } from '@/lib/panes'
@@ -19,13 +17,13 @@ import type { ConfigOption } from '@/rpc/bindings/ConfigOption'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import { useAdvisor, useSetAdvisor } from './advisor'
 import { MenuRow } from './HeaderMenu'
-import { ModelPicker } from './ModelPicker'
+import { ModelPicker, stubModel } from './ModelPicker'
 import { surfaceOf } from './slash'
 
 /** `harness_options(session)` (75 §8); refetched on `HarnessModelChanged` and at every turn end (a queued change lands then). */
 const harnessOptionsKey = (session: string) => ['harness-options', session] as const
 
-/** The two option groups the harness picker shows (75 §8): the `model` select and the `thought_level` one, when offered. */
+/** The two options the harness picker shows (75 §8): the `model` select (the rows) and the `thought_level` one (the chips), when offered. */
 export function harnessGroups(options: readonly ConfigOption[]): { model?: ConfigOption; effort?: ConfigOption } {
   return {
     model: options.find((o) => o.category === 'model') ?? options.find((o) => /model/i.test(o.id) || /model/i.test(o.name)),
@@ -38,25 +36,6 @@ export function harnessCurrent(option: ConfigOption | undefined, pending: string
   if (!option) return undefined
   if (pending !== undefined) return `→ ${pending} (after this turn)`
   return option.options.find((v) => v.value === option.current)?.name ?? option.current
-}
-
-/** The cmdk value of a harness option row (`HarnessGroup`); `pinnedFilter` compares against it. */
-export function harnessItemValue(heading: string, v: { name: string; value: string }): string {
-  return `${heading} ${v.name} ${v.value}`
-}
-
-/** `items` with the one `is` picks first, the rest in their given order; unchanged when none matches. */
-function pinFirst<T>(items: T[], is: (item: T) => boolean): T[] {
-  const i = items.findIndex(is)
-  return i <= 0 ? items : [...items.slice(i, i + 1), ...items.slice(0, i), ...items.slice(i + 1)]
-}
-
-const norm = (s: string) => s.trim().toLowerCase()
-
-/** cmdk's `defaultFilter`, except the row whose value is `pinned` always scores 1: it stays first and no search hides it. */
-export function pinnedFilter(pinned: string | undefined): CommandFilter {
-  const p = pinned === undefined ? undefined : norm(pinned)
-  return (value, search, keywords) => (p !== undefined && norm(value) === p ? 1 : defaultFilter(value, search, keywords))
 }
 
 /**
@@ -113,7 +92,7 @@ type Props = {
 }
 
 /** The picker's state shared by the header button, the compact row and the dialog. */
-type Model = {
+export type Model = {
   agent: string | null | undefined
   /** 141: a watch-only harness subagent — the label is the harness's model (or `—`), nothing opens. */
   watching: boolean
@@ -247,35 +226,34 @@ function useModel({ session }: Props, done: () => void): Model {
   }
 }
 
-/** One harness option as a cmdk group (75 §8): the harness's values verbatim, the current one checked (first, for the Model group), a queued one marked. */
-function HarnessGroup({ heading, option, pending, pin, onSelect }: { heading: string; option: ConfigOption; pending: string | undefined; pin?: boolean; onSelect(value: string): void }) {
-  const options = pin ? pinFirst(option.options, (v) => v.value === option.current) : option.options
-  return (
-    <CommandGroup heading={heading}>
-      {options.map((v) => (
-        <CommandItem key={v.value} value={harnessItemValue(heading, v)} forceMount={(pin && v.value === option.current) || undefined} onSelect={() => onSelect(v.value)}>
-          <span className="truncate">{v.name}</span>
-          {v.value !== v.name && <span className="ml-auto truncate text-xs text-fg-tertiary">{v.value}</span>}
-          {v.value === pending ? <span className="text-xs text-fg-tertiary">after this turn</span> : v.value === option.current && <Check className="size-4" />}
-        </CommandItem>
-      ))}
-    </CommandGroup>
-  )
-}
-
-/** The cmdk body for an ACP child: the harness's model and effort/thinking options (75 §8). */
-function HarnessCommand({ m, listClassName }: { m: Model; listClassName?: string }) {
+/**
+ * 75 §8 through the standard picker: the harness's model options are the rows (provider = the value's `provider/`
+ * prefix, else the harness) and its thought_level option the chips under the current one — every value verbatim, no
+ * Default chip. A value queued for the turn's end reads `<name> · after this turn`. A harness with no model select gets
+ * one row for whatever it runs, so its chips still have a home.
+ */
+export function HarnessPicker({ m, className, listClassName }: { m: Model; className?: string; listClassName?: string }) {
   const { model, effort } = harnessGroups(m.harness ?? [])
+  const agent = m.agent ?? 'harness'
+  const named = (option: ConfigOption, v: { name: string; value: string }) => (v.value === m.pending[option.id] ? `${v.name} · after this turn` : v.name)
+  const models = model ? model.options.map((v) => stubModel(v.value, named(model, v), v.value.includes('/') ? v.value.split('/')[0]! : agent)) : [stubModel(agent, m.harnessModel ?? agent, agent)]
   return (
-    <>
-      <CommandInput placeholder="Search harness options" />
-      <CommandList className={cn('max-h-96', listClassName)}>
-        <CommandEmpty>No option matches.</CommandEmpty>
-        {model && <HarnessGroup heading="Model" option={model} pending={m.pending[model.id]} pin onSelect={(v) => void m.setHarnessOption(model.id, v)} />}
-        {model && effort && <CommandSeparator />}
-        {effort && <HarnessGroup heading="Effort" option={effort} pending={m.pending[effort.id]} onSelect={(v) => void m.setHarnessOption(effort.id, v)} />}
-      </CommandList>
-    </>
+    <ModelPicker
+      models={models}
+      model={model ? model.current : agent}
+      onSelect={(v) => (model ? void m.setHarnessOption(model.id, v) : m.done())}
+      effort={
+        effort && {
+          levels: effort.options.map((v) => v.value),
+          labels: Object.fromEntries(effort.options.map((v) => [v.value, named(effort, v)])),
+          current: effort.current,
+          required: true,
+          onSelect: (v) => v !== null && void m.setHarnessOption(effort.id, v),
+        }
+      }
+      className={className}
+      listClassName={listClassName}
+    />
   )
 }
 
@@ -284,13 +262,6 @@ function harnessLabel(m: Model): string {
   const { model } = harnessGroups(m.harness ?? [])
   const current = harnessCurrent(model, model && m.pending[model.id]) ?? m.harnessModel
   return current ? `${m.agent} · ${current}` : (m.agent ?? '')
-}
-
-/** The cmdk value `pinnedFilter` keeps on top: an ACP child's current harness model option. */
-function pinnedValue(m: Model): string | undefined {
-  const { model } = harnessGroups(m.harness ?? [])
-  const current = model?.options.find((v) => v.value === model.current)
-  return current && harnessItemValue('Model', current)
 }
 
 /**
@@ -333,7 +304,7 @@ const LEAD_ROW = 'flex w-full cursor-default items-center gap-2 px-3 py-2 text-s
  * 125 §8.1: the Advisor level — 124's picker over the same catalog with `Off` as the lead row and the advisor model's
  * effort levels; a pick calls `set_advisor` (never `set_model`, so the session's own default is untouched).
  */
-function AdvisorCommand({ session, m, onBack, className, listClassName }: { session: string; m: Model; onBack(): void; className?: string; listClassName?: string }) {
+export function AdvisorCommand({ session, m, onBack, className, listClassName }: { session: string; m: Model; onBack(): void; className?: string; listClassName?: string }) {
   const status = useAdvisor(session)
   const set = useSetAdvisor(session)
   const model = status && status.state !== 'off' ? (status.model ?? undefined) : undefined
@@ -379,7 +350,7 @@ function AdvisorRow({ session, models, onOpen, className }: { session: string; m
   )
 }
 
-/** The cmdk body: providers → models, word search, then the current model's effort levels (124 §3); the Advisor row below (125 §8.1). */
+/** The cmdk body: providers → models, word search, the current model's effort chips under its row (124 §3); the Advisor row below (125 §8.1). */
 function ModelCommand({ m, session, advisor, className, listClassName, footerClassName }: { m: Model; session: string | null; advisor: boolean; className?: string; listClassName?: string; footerClassName?: string }) {
   const [level, setLevel] = useState<'model' | 'advisor'>(advisor ? 'advisor' : 'model')
   if (level === 'advisor' && session) return <AdvisorCommand session={session} m={m} onBack={() => setLevel('model')} className={className} listClassName={listClassName} />
@@ -402,11 +373,10 @@ function ModelCommand({ m, session, advisor, className, listClassName, footerCla
 
 /**
  * ChatGPT's header slot: the model name with a cmdk-filtered list from
- * `list_models`, then the selected model's effort levels. A fresh chat keeps its
+ * `list_models`, the selected model's effort levels as chips under its row. A fresh chat keeps its
  * model and effort pick in the UI until submit creates the session (148 R1: never the default).
- * An ACP child (75 §8) gets the same picker over its harness's own options —
- * a Model group and, when the harness offers one, an Effort group; with the
- * process gone it shows `omp · <model>` as plain text.
+ * An ACP child (75 §8) gets the same picker over its harness's own options (`HarnessPicker`);
+ * with the process gone it shows `omp · <model>` as plain text.
  * `small` (157 D1): the 28 px, text-xs trigger of a column header (the notebook chat) instead of the 36 px headline.
  */
 export function ModelMenu({ small = false, ...props }: Props & { small?: boolean }) {
@@ -449,13 +419,7 @@ export function ModelMenu({ small = false, ...props }: Props & { small?: boolean
           </Button>
         </PopoverTrigger>
         <PopoverContent align="start" className="w-80 p-0">
-          {m.agent ? (
-            <Command filter={pinnedFilter(pinnedValue(m))}>
-              <HarnessCommand m={m} />
-            </Command>
-          ) : (
-            <ModelCommand m={m} session={props.session} advisor={advisor} />
-          )}
+          {m.agent ? <HarnessPicker m={m} /> : <ModelCommand m={m} session={props.session} advisor={advisor} />}
         </PopoverContent>
       </Popover>
       {resume}
@@ -484,21 +448,15 @@ export function ModelDialog({ open, onOpenChange, ...props }: Props & { open: bo
   useOpenAdvisor(props.session, () => (setAdvisor(true), onOpenChange(true)))
   if (m.watching || (m.agent && !m.harness)) return null
   const place = dialogPlacement(touch())
-  if (m.agent) {
-    return (
-      <CommandDialog open={open} onOpenChange={onOpenChange} filter={pinnedFilter(pinnedValue(m))} title="Harness" description="Pick from the harness's options" className={cn('max-w-sm', place.content)}>
-        <HarnessCommand m={m} listClassName={place.list} />
-      </CommandDialog>
-    )
-  }
+  const picker = cn('[&_[cmdk-input]]:h-12 **:data-[slot=command-input-wrapper]:h-12', place.picker)
   return (
     <Dialog open={open} onOpenChange={(o) => (onOpenChange(o), !o && setAdvisor(false))}>
       <DialogHeader className="sr-only">
-        <DialogTitle>Model</DialogTitle>
-        <DialogDescription>Pick the model and effort</DialogDescription>
+        <DialogTitle>{m.agent ? 'Harness' : 'Model'}</DialogTitle>
+        <DialogDescription>{m.agent ? "Pick from the harness's options" : 'Pick the model and effort'}</DialogDescription>
       </DialogHeader>
       <DialogContent className={cn('max-w-sm overflow-hidden p-0', place.content)}>
-        <ModelCommand m={m} session={props.session} advisor={advisor} className={cn('[&_[cmdk-input]]:h-12 **:data-[slot=command-input-wrapper]:h-12', place.picker)} listClassName={place.list} footerClassName={place.footer} />
+        {m.agent ? <HarnessPicker m={m} className={picker} listClassName={place.list} /> : <ModelCommand m={m} session={props.session} advisor={advisor} className={picker} listClassName={place.list} footerClassName={place.footer} />}
       </DialogContent>
     </Dialog>
   )
