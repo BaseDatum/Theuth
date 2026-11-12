@@ -1150,13 +1150,18 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             };
             let model_row = |on: bool, i: &agent::ModelInfo| {
                 format!(
-                    "{} {:<44} {:<32} {}{}",
-                    marks(on, m.favorite_models.contains(&i.id)),
+                    "{} {:<44} {:<32} {}{}{}",
+                    // The harness picker stars nothing (⇥ is off there).
+                    marks(
+                        on,
+                        *target != PickTarget::Harness && m.favorite_models.contains(&i.id)
+                    ),
                     i.id,
                     i.name,
                     // A harness row has no catalog facts.
                     if i.context > 0 { k(i.context) } else { String::new() },
-                    if i.image { " · vision" } else { "" }
+                    if i.image { " · vision" } else { "" },
+                    if i.local { " · local" } else { "" }
                 )
             };
             let picked = m.pick_current();
@@ -1174,7 +1179,11 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                     ModelRow::Provider { id, count, current } => {
                         format!("{} {id:<24} {count:>4} models", marks(*current, false))
                     }
-                    ModelRow::Efforts(c) => effort_chips_row(c, (n == *cursor).then_some(*chip)),
+                    ModelRow::Efforts(c) => effort_chips_row(
+                        c,
+                        (n == *cursor).then_some(*chip),
+                        usize::from(width).saturating_sub(7),
+                    ),
                 })
                 .collect();
             (title, rows, *cursor)
@@ -1487,7 +1496,9 @@ fn fit_title(parts: &[String], room: usize) -> String {
 
 /// The chip row under the picked model (194 D6): `effort  Default  ●high  low`,
 /// `●` on the active chip, `[…]` around `chip` while the cursor is on the row.
-fn effort_chips_row(c: &EffortChips, chip: Option<usize>) -> String {
+/// Within `room` cells the chips shown are a window around the focused one
+/// (`chip`, else the active one), `…` where chips are hidden.
+fn effort_chips_row(c: &EffortChips, chip: Option<usize>, room: usize) -> String {
     let chips: Vec<String> = c
         .levels
         .iter()
@@ -1502,7 +1513,33 @@ fn effort_chips_row(c: &EffortChips, chip: Option<usize>) -> String {
             }
         })
         .collect();
-    format!("   effort {}", chips.join(" "))
+    let head = "   effort ";
+    let n = chips.len();
+    if n == 0 {
+        return head.to_owned();
+    }
+    let cells = |lo: usize, hi: usize| {
+        let marks = 2 * (usize::from(lo > 0) + usize::from(hi < n));
+        let body: usize = chips[lo..hi].iter().map(|s| search::cells(s) + 1).sum();
+        search::cells(head) + body - 1 + marks
+    };
+    let focus = chip.or(c.active).unwrap_or(0).min(n - 1);
+    let (mut lo, mut hi) = (focus, focus + 1);
+    loop {
+        if hi < n && cells(lo, hi + 1) <= room {
+            hi += 1;
+        } else if lo > 0 && cells(lo - 1, hi) <= room {
+            lo -= 1;
+        } else {
+            break;
+        }
+    }
+    format!(
+        "{head}{}{}{}",
+        if lo > 0 { "… " } else { "" },
+        chips[lo..hi].join(" "),
+        if hi < n { " …" } else { "" }
+    )
 }
 
 /// The path completion list under the editor (PATH-AC): a window of rows
@@ -2819,6 +2856,94 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// 194 D6: at a narrow width the chip row is a window around the focused
+    /// chip, `…` where chips are hidden, so the highlighted chip always shows.
+    #[test]
+    fn focused_chip_stays_visible_at_narrow_widths() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut m = Model::new("openai/gpt-5.4".into(), false);
+        m.session = Some(SessionId::new());
+        m.apply(UiEvent::Models(vec![ModelInfo {
+            id: "openai/gpt-5.4".into(),
+            name: "GPT-5.4".into(),
+            provider: "openai".into(),
+            context: 200_000,
+            reasoning: true,
+            image: false,
+            efforts: ["low", "medium", "high", "xhigh", "max"]
+                .map(str::to_owned)
+                .to_vec(),
+            budget_min: None,
+            budget_max: None,
+            local: false,
+        }]));
+        m.menu_key(KeyCode::Down, "", &tx);
+        for _ in 0..5 {
+            m.menu_key(KeyCode::Right, "", &tx);
+        }
+        let width = 40u16;
+        let modal = menu(&m, "", width, 30).unwrap();
+        let frame = element! {
+            View(flex_direction: FlexDirection::Column, width, height: 30u16) {
+                #(Some(modal))
+            }
+        }
+        .to_string();
+        let chips = frame.lines().find(|l| l.contains("   effort ")).unwrap();
+        assert!(chips.contains("[max]"), "{frame}");
+        assert!(chips.contains("… "), "{frame}");
+        assert!(!chips.contains("Default"), "{frame}");
+        assert!(chips.chars().count() <= usize::from(width), "{frame}");
+    }
+
+    /// D1 parity: a local model's row carries the `local` tag; a favorite is
+    /// starred in the model picker but never in the harness picker (⇥ is off there).
+    #[test]
+    fn rows_tag_local_models_and_harness_rows_have_no_stars() {
+        let model = |id: &str, local: bool| ModelInfo {
+            id: id.into(),
+            name: id.into(),
+            provider: "ollama".into(),
+            context: 32_000,
+            reasoning: false,
+            image: false,
+            efforts: Vec::new(),
+            budget_min: None,
+            budget_max: None,
+            local,
+        };
+        let mut m = Model::new("ollama/qwen3".into(), false);
+        m.favorite_models = vec!["ollama/qwen3".into(), "a/x".into()];
+        m.apply(UiEvent::Models(vec![
+            model("ollama/qwen3", true),
+            model("ollama/cloudy", false),
+        ]));
+        let frame = menu(&m, "", 120, 30).unwrap().to_string();
+        let line = |id: &str| {
+            frame
+                .lines()
+                .find(|l| l.contains(&format!("{id} ")))
+                .unwrap_or_else(|| panic!("no {id} row:\n{frame}"))
+                .to_owned()
+        };
+        assert!(line("ollama/qwen3").contains("· local"), "{frame}");
+        assert!(line("ollama/qwen3").contains('★'), "{frame}");
+        assert!(!line("ollama/cloudy").contains("local"), "{frame}");
+        // The harness picker: `a/x` is a normal favorite, yet its row has no star.
+        m.menu = None;
+        m.session = Some(SessionId::new());
+        m.agent = Some("omp".into());
+        let options: Vec<acp::ConfigOption> = serde_json::from_value(serde_json::json!([
+            {"id":"model","name":"Model","category":"model","current":"a/x",
+             "options":[{"value":"a/x","name":"X","description":null}]}
+        ]))
+        .unwrap();
+        m.apply(UiEvent::HarnessOptions(options));
+        let frame = menu(&m, "", 120, 30).unwrap().to_string();
+        let row = frame.lines().find(|l| l.contains("a/x ")).unwrap();
+        assert!(row.contains('●') && !row.contains('★'), "{frame}");
     }
 
     /// Eight live children: six rows, one fold line, and no row wider than

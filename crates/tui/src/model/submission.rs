@@ -123,22 +123,7 @@ impl Model {
                 );
             }
             // 194 D6: the `/model` picker with the cursor on the current model's chips.
-            "/effort" if arg.is_empty() => {
-                let offered = self
-                    .catalog
-                    .as_ref()
-                    .and_then(|c| c.closest(&self.model_id))
-                    .is_some_and(|m| !m.efforts().is_empty());
-                if offered {
-                    self.pick_effort = true;
-                    send(tx, Command::ListModels);
-                } else {
-                    self.entries.push(Entry::Info(format!(
-                        "{} has no reasoning effort levels",
-                        self.model_id
-                    )));
-                }
-            }
+            "/effort" if arg.is_empty() => self.effort_picker(tx),
             "/effort" => self.set_effort((arg != "clear").then(|| arg.to_owned()), tx),
             "/aws" if arg.is_empty() => send(tx, Command::ListAwsProfiles),
             "/aws" => send(
