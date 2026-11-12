@@ -224,6 +224,11 @@ impl Message<SessionDrained> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: SessionDrained, ctx: &mut Context<Self, Self::Reply>) {
+        // 191 (D3): a release moves the session: its first-contact holds fail ("the chat
+        // moved; send again"), never released; its full contact tasks complete as receipts.
+        if m.hold.is_some() {
+            self.network_session_drained(m.session).await;
+        }
         self.drop_queued(m.session).await;
         self.sessions.remove(&m.session);
         self.running.remove(&m.session);

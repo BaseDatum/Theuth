@@ -1,10 +1,10 @@
 //! 191 (D2): the mesh-wide contact records — `contacts`, `contact_endpoints`, `contact_grants`
-//! and `a2a_exports` (plus, from P2, `contact_rosters` and `contact_roster_heads`, and
-//! `contact_threads`) — ride the record replica beside `projects`. Only the a2a plugin
-//! interprets them (its reconcile stages them row by row and quarantines a bad one); this
-//! module reads them whole and writes single columns, so a write never rolls back a column
-//! another machine changed since the read. `contact_addrs` and `contact_roster_local` are
-//! local. `sessions.contact_inbox` (D4) is a session-log column.
+//! and `a2a_exports` (plus, from P2, `contact_rosters` and `contact_roster_heads`, from P3
+//! `contact_holds`, and `contact_threads`) — ride the record replica beside `projects`. Only
+//! the a2a plugin interprets them (its reconcile stages them row by row and quarantines a bad
+//! one); this module reads them whole and writes single columns, so a write never rolls back
+//! a column another machine changed since the read. `contact_addrs` and
+//! `contact_roster_local` are local. `sessions.contact_inbox` (D4) is a session-log column.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
@@ -15,7 +15,7 @@ use sqlx::FromRow;
 use super::Store;
 
 /// The replicated 191 tables, attached by [`Store::replicate_records`].
-pub const RECORD_TABLES: [&str; 7] = [
+pub const RECORD_TABLES: [&str; 8] = [
     "contacts",
     "contact_endpoints",
     "contact_grants",
@@ -23,6 +23,7 @@ pub const RECORD_TABLES: [&str; 7] = [
     "contact_threads",
     "contact_rosters",
     "contact_roster_heads",
+    "contact_holds",
 ];
 
 /// One `contacts` row. Every column may be NULL: a replicated row can arrive a column at a
@@ -151,6 +152,29 @@ pub struct LocalRow {
     pub history: String,
 }
 
+/// 191 (D4, P3): one `contact_holds` row: `id` = the oldest held task's id of one (contact,
+/// export) on `owner`. Another machine's row is data: every column may be NULL or hostile,
+/// and the reader cleans and cuts it.
+#[allow(missing_docs)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, FromRow)]
+pub struct HoldRow {
+    pub id: String,
+    /// The contact's alias.
+    pub contact: Option<String>,
+    /// The contact's machine, from its card.
+    pub machine: Option<String>,
+    /// The export's name.
+    pub export: Option<String>,
+    pub session: Option<String>,
+    /// The engine id that holds the tasks.
+    pub owner: Option<String>,
+    pub since_ms: Option<i64>,
+    pub waiting: Option<i64>,
+    pub preview: Option<String>,
+    /// When the newest held task expires (ms since epoch).
+    pub until_ms: Option<i64>,
+}
+
 /// Everything the a2a reconcile stages, read in one snapshot. Its content (never a row's
 /// `hlc`, which is a max over columns and misses a remote column write older than the
 /// row's newest) is what [`Records::content_hash`] covers.
@@ -220,6 +244,8 @@ pub enum RecordTable {
     Heads,
     /// `contact_roster_local` (P2, local): keyed by `record`.
     Local,
+    /// `contact_holds` (P3): the owner's own rows only.
+    Holds,
 }
 
 impl RecordTable {
@@ -232,6 +258,7 @@ impl RecordTable {
             Self::Rosters => "contact_rosters",
             Self::Heads => "contact_roster_heads",
             Self::Local => "contact_roster_local",
+            Self::Holds => "contact_holds",
         }
     }
 
@@ -272,6 +299,10 @@ impl RecordTable {
                 "at_ms",
             ],
             Self::Local => &["chain", "version", "hash", "roster", "history"],
+            Self::Holds => &[
+                "contact", "machine", "export", "session", "owner", "since_ms", "waiting",
+                "preview", "until_ms",
+            ],
         }
     }
 }
@@ -454,6 +485,29 @@ impl Store {
             .session(session)
             .await?
             .is_some_and(|row| row.owner == *self.me))
+    }
+
+    /// 191 (D4, P3): every `contact_holds` row (every machine's), by id.
+    pub async fn contact_holds(&self) -> anyhow::Result<Vec<HoldRow>> {
+        Ok(sqlx::query_as(
+            "SELECT id, contact, machine, export, session, owner, since_ms, waiting, preview, \
+             until_ms FROM contact_holds ORDER BY id",
+        )
+        .fetch_all(&self.read)
+        .await?)
+    }
+
+    /// 191 (D4, P3): at boot, this engine's own `contact_holds` rows go: its holds lived in
+    /// memory and were failed by the restart. Returns how many.
+    pub async fn clear_own_contact_holds(&self) -> anyhow::Result<u64> {
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query("DELETE FROM contact_holds WHERE owner = ?")
+            .bind(&*self.me)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        tx.commit().await?;
+        Ok(n)
     }
 
     /// Tests: `session` is owned by `owner`, as the session log applies another machine's
