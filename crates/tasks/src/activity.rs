@@ -127,6 +127,7 @@ pub struct ActivityFilter {
 /// Bus event: a row was appended (the UI's live feed).
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct ActivityAppended {
     /// The row.

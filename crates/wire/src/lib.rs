@@ -53,6 +53,17 @@ use schemars::{JsonSchema, Schema};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::broadcast;
+/// Add the serialized `type` tag that schemars omits on named serde structs.
+/// Use with `#[serde(tag = "type")]` and the default serde/schema type name.
+pub fn serde_type_tag<T: JsonSchema>(schema: &mut Schema) {
+    let object = schema.ensure_object();
+    object.entry("properties").or_insert_with(|| serde_json::json!({}))["type"] =
+        serde_json::json!({ "type": "string", "const": T::schema_name() });
+    object.entry("required").or_insert_with(|| serde_json::json!([]))
+        .as_array_mut().expect("derived object schema has an array of required fields")
+        .push(Value::String("type".into()));
+}
+
 
 /// An owner-declared event family; Rust type names never identify wire topics.
 pub trait WireEvent: Clone + Send + Serialize + JsonSchema + 'static {

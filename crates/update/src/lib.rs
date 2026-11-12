@@ -84,6 +84,7 @@ impl Default for UpdateConfig {
     Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
 )]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct UpdateReady {
     /// The version that is ready (`0.2.0`).

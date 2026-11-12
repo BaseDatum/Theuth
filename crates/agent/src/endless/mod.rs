@@ -436,6 +436,7 @@ pub struct SessionMemory {
 /// Bus event on the session stream, ≤ 1 per 500 ms per session (§11.2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct EndlessProgress {
     /// The session.

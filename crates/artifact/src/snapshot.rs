@@ -79,6 +79,7 @@ impl From<PictureLang> for FenceLang {
 /// Event: a channel reply wants a fence drawn as a PNG.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct FenceSnapshotRequested {
     /// Use in `answer_fence_snapshot`.
@@ -102,6 +103,7 @@ impl wire::WireEvent for FenceSnapshotRequested {
 /// Event: the request was answered or timed out; clients drop late renders.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct FenceSnapshotResolved {
     /// The request.

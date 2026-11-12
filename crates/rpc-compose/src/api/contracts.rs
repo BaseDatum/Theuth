@@ -77,6 +77,7 @@ pub struct Info {
 /// what the engine reports (31 §7.3).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct PendingPrompts {
     /// Pending approvals.
@@ -137,6 +138,7 @@ pub enum StreamControl {
 
 /// The legacy loss notification body.
 #[derive(Clone, Debug, Serialize, schemars::JsonSchema)]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct Lagged {
     /// Frames discarded by the ring or this subscription's backlog.

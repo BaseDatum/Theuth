@@ -2539,6 +2539,7 @@ pub struct Logout {
 /// Event: the login started by [`Login`] ended.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct LoginFinished {
     /// genai namespace (`openai`).

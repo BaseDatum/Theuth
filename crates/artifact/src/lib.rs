@@ -190,6 +190,7 @@ pub struct Artifact {
 /// Event: a `show` call completed (35 §3.3). Wire shape `{ "type": "ArtifactShown", … }`.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct ArtifactShown {
     /// Owning session.

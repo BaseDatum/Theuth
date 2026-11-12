@@ -18,6 +18,7 @@ pub struct ProgressCx {
 /// Live URLs for one search/scrape/crawl/map call. Wire `{ "type": "ScrapeProgress", … }`.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct ScrapeProgress {
     /// Owning session.

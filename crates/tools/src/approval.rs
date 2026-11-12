@@ -39,6 +39,7 @@ pub enum Decision {
 /// Event: a tool call is waiting on a human. Every UI subscribes.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct ApprovalRequested {
     /// Use in [`Resolve`].
@@ -62,6 +63,7 @@ impl wire::WireEvent for ApprovalRequested {
 /// their prompt on this.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct ApprovalResolved {
     /// The request.
