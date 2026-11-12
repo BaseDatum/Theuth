@@ -38,9 +38,8 @@ wire! {
         /// The reviewer (140 §9.1).
         pub review: Review,
         /// Model overrides per role (140 §9.3 as amended by R1-D5); `None` = default.
+        /// 194: each role's effort sits beside its model (`models.*_effort`, `review.effort`).
         pub models: Models,
-        /// Effort per role.
-        pub effort: Effort,
         /// The brief's caps (140 §7).
         pub brief: BriefConfig,
         /// The novelty check (140 §7.3).
@@ -132,6 +131,8 @@ wire! {
     pub struct Review as "AutoresearchReview" {
         /// `None` = other-vendor default; `"off"` disables.
         pub model: Option<String>,
+        /// 194: the reviewer's effort beside `model`; `None` = Default (no reasoning setting).
+        pub effort: Option<String>,
         /// What a SUSPICIOUS verdict does.
         pub on_suspicious: OnSuspicious,
         /// Review flags in the study that pause it.
@@ -163,23 +164,12 @@ wire! {
     pub struct Models as "AutoresearchModels" {
         /// Default `agent.model`.
         pub executor: Option<String>,
+        /// 194: the executor session's effort beside `executor`; `None` = `agent.effort`.
+        pub executor_effort: Option<String>,
         /// Default 125's advisor when configured, else the executor.
         pub advisor: Option<String>,
-    }
-}
-
-wire! {
-    /// `effort:` per role (140 §9.3). Reserved: neither `runtime::SideCall`
-    /// (reviewer, advisor) nor a schedule file (executor) carries an effort
-    /// today, so these values are stored and shown but not applied (R-72;
-    /// hand-off: `SideCall.effort` in `runtime` + `agent`).
-    pub struct Effort as "AutoresearchEffort" {
-        /// The study session.
-        pub executor: String,
-        /// The reviewer call.
-        pub review: String,
-        /// The plateau consult.
-        pub advisor: String,
+        /// 194: the plateau consult's effort beside `advisor`; `None` = Default.
+        pub advisor_effort: Option<String>,
     }
 }
 
@@ -251,7 +241,6 @@ impl Default for AutoresearchConfig {
             pause: Pause::default(),
             review: Review::default(),
             models: Models::default(),
-            effort: Effort::default(),
             brief: BriefConfig::default(),
             novelty: Novelty::default(),
             bench: Bench::default(),
@@ -317,18 +306,9 @@ impl Default for Review {
     fn default() -> Self {
         Self {
             model: None,
+            effort: None,
             on_suspicious: OnSuspicious::Revert,
             pause_after: 3,
-        }
-    }
-}
-
-impl Default for Effort {
-    fn default() -> Self {
-        Self {
-            executor: "high".into(),
-            review: "low".into(),
-            advisor: "high".into(),
         }
     }
 }
@@ -458,10 +438,162 @@ impl AutoresearchConfig {
             .or_else(|| pick(&self.models.advisor))
             .map(str::to_owned)
     }
+
+    /// 194 D4a/d: the executor's effort goes with the model it was picked with — the study's
+    /// `models.executor_effort` with its `executor`, else the section's; `None` (= `agent.effort`)
+    /// when neither picks a model.
+    pub fn executor_effort(&self, spec: &crate::types::ModelsSpec) -> Option<String> {
+        with_model(&[
+            (&spec.executor, &spec.executor_effort),
+            (&self.models.executor, &self.models.executor_effort),
+        ])
+    }
+
+    /// 194: the reviewer's effort, paired like [`Self::executor_effort`] (`review.effort`);
+    /// `None` for the other-vendor default and for `off`.
+    pub fn reviewer_effort(&self, spec: &crate::types::ModelsSpec) -> Option<String> {
+        if pick(&spec.review).or_else(|| pick(&self.review.model)) == Some("off") {
+            return None;
+        }
+        with_model(&[
+            (&spec.review, &spec.review_effort),
+            (&self.review.model, &self.review.effort),
+        ])
+    }
+
+    /// 194: the plateau consult's effort, paired like [`Self::executor_effort`].
+    pub fn advisor_effort(&self, spec: &crate::types::ModelsSpec) -> Option<String> {
+        with_model(&[
+            (&spec.advisor, &spec.advisor_effort),
+            (&self.models.advisor, &self.models.advisor_effort),
+        ])
+    }
+
+    /// 194: a prompt artefact's target effort: `models.target_effort` with its `target`, else
+    /// the executor's (the target defaults to the executor).
+    pub fn target_effort(&self, spec: &crate::types::ModelsSpec) -> Option<String> {
+        with_model(&[
+            (&spec.target, &spec.target_effort),
+            (&spec.executor, &spec.executor_effort),
+            (&self.models.executor, &self.models.executor_effort),
+        ])
+    }
+}
+
+/// 194: the effort beside the first `(model, effort)` pair whose model is picked; `None` when none is.
+pub(crate) fn with_model(pairs: &[(&Option<String>, &Option<String>)]) -> Option<String> {
+    pairs
+        .iter()
+        .find(|(m, _)| pick(m).is_some())
+        .and_then(|(_, e)| pick(e).map(str::to_owned))
 }
 
 fn pick(m: &Option<String>) -> Option<&str> {
     m.as_deref().map(str::trim).filter(|m| !m.is_empty())
+}
+
+/// 194 D4b–d: a role's effort as `autoresearch.settings.set` stores it, checked against the
+/// role's model (`was` = the model before the set); `off` and Default carry none.
+pub async fn settle_role(
+    model: &Option<String>,
+    effort: &Option<String>,
+    was: &Option<String>,
+) -> std::result::Result<Option<String>, String> {
+    let m = pick(model).filter(|m| *m != "off");
+    let info = agent::lifecycle::effort_model(m).await;
+    agent::lifecycle::settle_effort(m, &info, effort.as_deref(), pick(model) != pick(was))
+}
+
+/// 194 D4b–d: the section's role efforts settled against their models, `was` = the section
+/// saved before this set (D4c) — `Studies::SetSettings` and [`set_unloaded`] alike.
+pub async fn settle_settings(
+    cfg: &mut AutoresearchConfig,
+    was: &AutoresearchConfig,
+) -> std::result::Result<(), String> {
+    let m = &mut cfg.models;
+    for (key, model, effort, was) in [
+        (
+            "models.executor_effort",
+            &m.executor,
+            &mut m.executor_effort,
+            &was.models.executor,
+        ),
+        (
+            "models.advisor_effort",
+            &m.advisor,
+            &mut m.advisor_effort,
+            &was.models.advisor,
+        ),
+        (
+            "review.effort",
+            &cfg.review.model,
+            &mut cfg.review.effort,
+            &was.review.model,
+        ),
+    ] {
+        *effort = settle_role(model, effort, was)
+            .await
+            .map_err(|e| format!("{key}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// 194 D4b–d: every `*_effort` of a study's `models:` settled against its model, `was` = the
+/// models before this change (D4c; the same models when there is none, so a bad pick is
+/// refused) — the panel's `draft_edit` and the `autoresearch_draft` tool alike.
+pub async fn settle_models(
+    m: &mut crate::types::ModelsSpec,
+    was: &crate::types::ModelsSpec,
+) -> std::result::Result<(), String> {
+    for (key, model, effort, was) in [
+        (
+            "executor_effort",
+            &m.executor,
+            &mut m.executor_effort,
+            &was.executor,
+        ),
+        (
+            "review_effort",
+            &m.review,
+            &mut m.review_effort,
+            &was.review,
+        ),
+        (
+            "advisor_effort",
+            &m.advisor,
+            &mut m.advisor_effort,
+            &was.advisor,
+        ),
+        (
+            "target_effort",
+            &m.target,
+            &mut m.target_effort,
+            &was.target,
+        ),
+        ("judge_effort", &m.judge, &mut m.judge_effort, &was.judge),
+    ] {
+        *effort = settle_role(model, effort, was)
+            .await
+            .map_err(|e| format!("models.{key}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// `autoresearch.settings.set` while the plugin is not running: [`settle_settings`] against
+/// the section `config.yaml` holds now, then [`persist`]; the stored section is returned.
+pub async fn set_unloaded(
+    data_dir: &Path,
+    mut cfg: AutoresearchConfig,
+) -> std::result::Result<AutoresearchConfig, String> {
+    let path = data_dir.join("config.yaml");
+    let was: AutoresearchConfig = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_yaml::from_str::<serde_yaml::Value>(&t).ok())
+        .and_then(|v| serde_yaml::from_value(v.get("autoresearch")?.clone()).ok())
+        .unwrap_or_default();
+    settle_settings(&mut cfg, &was).await?;
+    persist(&path, &cfg).map_err(|e| format!("config.yaml: {e}"))?;
+    Ok(cfg)
 }
 
 /// Persist the whole `autoresearch:` section of `config.yaml` (the block is
@@ -521,6 +653,76 @@ mod tests {
         assert_eq!(c.gate.z, 2.5);
         assert_eq!(c.gate.z_fast, 3.5);
         assert_eq!(c.review.model.as_deref(), Some("off"));
+    }
+
+    /// 194 rows 19/20: each role's effort goes with the model it was picked with — the study's
+    /// pair first, then the section's; a Default model (or `review: off`) carries none, and a
+    /// section written before 194 (with the old reserved `effort:` block) loads as Default.
+    #[test]
+    fn role_efforts_ride_with_their_models() {
+        let old: AutoresearchConfig = serde_yaml::from_str(
+            "effort: {executor: high, review: low, advisor: high}\nmodels: {executor: a/b}",
+        )
+        .unwrap();
+        let none = crate::types::ModelsSpec::default();
+        assert_eq!(old.executor_effort(&none), None, "Default until picked");
+        let cfg: AutoresearchConfig = serde_yaml::from_str(
+            "models: {executor: a/b, executor_effort: low, advisor_effort: high}\nreview: {model: c/d, effort: high}",
+        )
+        .unwrap();
+        assert_eq!(cfg.executor_effort(&none).as_deref(), Some("low"));
+        assert_eq!(cfg.reviewer_effort(&none).as_deref(), Some("high"));
+        assert_eq!(
+            cfg.advisor_effort(&none),
+            None,
+            "no advisor model: no effort"
+        );
+        assert_eq!(
+            cfg.target_effort(&none).as_deref(),
+            Some("low"),
+            "the target is the executor"
+        );
+        let spec = crate::types::ModelsSpec {
+            executor: Some("x/y".into()),
+            target: Some("t/u".into()),
+            target_effort: Some("high".into()),
+            review: Some("off".into()),
+            review_effort: Some("high".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.executor_effort(&spec),
+            None,
+            "the study's model, the study's effort"
+        );
+        assert_eq!(cfg.target_effort(&spec).as_deref(), Some("high"));
+        assert_eq!(cfg.reviewer_effort(&spec), None, "off");
+        let back: crate::types::ModelsSpec = serde_json::from_str(r#"{"executor":"x/y"}"#).unwrap();
+        assert_eq!(back.executor_effort, None, "an old draft loads");
+    }
+
+    /// 194 D4b–d at `autoresearch.settings.set`: an unknown word is refused on the same model,
+    /// dropped when the model changed; Default and `off` keep none.
+    #[tokio::test]
+    async fn settle_role_refuses_drops_and_clears() {
+        let s = |v: &str| Some(v.to_owned());
+        assert_eq!(
+            settle_role(&s("a/b"), &s("high"), &s("a/b")).await,
+            Ok(s("high"))
+        );
+        assert_eq!(
+            settle_role(&s("a/b"), &s("loud"), &s("a/b")).await,
+            Err("unknown effort loud".into())
+        );
+        assert_eq!(
+            settle_role(&s("c/d"), &s("loud"), &s("a/b")).await,
+            Ok(None)
+        );
+        assert_eq!(settle_role(&None, &s("high"), &None).await, Ok(None));
+        assert_eq!(
+            settle_role(&s("off"), &s("high"), &s("off")).await,
+            Ok(None)
+        );
     }
 
     /// R1-D5: executor = `agent.model`; reviewer = the first other-vendor model; `off` disables.

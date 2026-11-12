@@ -32,6 +32,7 @@ export function RuntimeFields({ d, set }: { d: Draft; set: Setter }) {
   const models = useModels()
   const harnesses = useHarnesses()
   const efforts = models.data?.find((m) => m.id === d.model)?.efforts ?? EFFORTS
+  const memory = models.data?.find((m) => m.id === d.memory_model)
   const sandboxes = useSandboxes()
   // The named VMs of the list, plus the one on file when it is not (destroyed, or on another hub) so the value stays selectable.
   const pinned = d.runs_in.startsWith('vm:') ? d.runs_in.slice(3) : null
@@ -50,7 +51,7 @@ export function RuntimeFields({ d, set }: { d: Draft; set: Setter }) {
           effort={{ levels: efforts, current: d.effort, onSelect: (level) => set('effort', level) }}
         />
       </Field>
-      <Field label="Memory summary model" id="rt-memory-model" hint="Writes the endless memory summaries of its desk; a chat's own pick wins. Default = Settings › Memory.">
+      <Field label="Memory summary model" id="rt-memory-model" hint="Writes the endless memory summaries of its desk, and its thinking effort; a chat's own pick wins. Default = Settings › Memory.">
         <ModelCombobox
           id="rt-memory-model"
           aria-label="Memory summary model"
@@ -59,7 +60,13 @@ export function RuntimeFields({ d, set }: { d: Draft; set: Setter }) {
           models={models.data ?? []}
           value={d.memory_model}
           none={{ label: 'Use default' }}
-          onChange={(v) => set('memory_model', v ?? undefined)}
+          onChange={(v) => {
+            set('memory_model', v ?? undefined)
+            // 194 D4c/D4d: the effort goes with a cleared model, and with one that does not take it.
+            const next = models.data?.find((m) => m.id === v)
+            if (d.memory_effort && !next?.efforts.includes(d.memory_effort)) set('memory_effort', undefined)
+          }}
+          effort={memory && memory.efforts.length > 0 ? { levels: memory.efforts, current: d.memory_effort, onSelect: (level) => set('memory_effort', level ?? undefined) } : undefined}
         />
       </Field>
       <Field label="Tools ceiling" id="rt-tools" hint="The riskiest tool class it and its children may call; inherited downwards.">

@@ -22,6 +22,10 @@ pub struct RosterConfig {
     /// on; `None` = the default for new sessions. Written back by
     /// [`crate::SetTheuthModel`]; the roster keeps the live value.
     pub theuth_model: Option<String>,
+    /// 194 rows 4–5: the effort theuth's desk and its work run on; `None` = the
+    /// default for new sessions. Written back by [`crate::SetTheuthEffort`] (and
+    /// cleared or dropped by [`crate::SetTheuthModel`]); the roster keeps the live value.
+    pub theuth_effort: Option<String>,
     /// 155 §7.4: an attention item's `alert` becomes visible only after this
     /// many ms, if the item is still there (herdr's re-checking delay).
     pub alert_delay_ms: u64,
@@ -36,6 +40,7 @@ impl Default for RosterConfig {
             journal_max_bytes: 8192,
             max_rounds: 3,
             theuth_model: None,
+            theuth_effort: None,
             alert_delay_ms: 2000,
         }
     }

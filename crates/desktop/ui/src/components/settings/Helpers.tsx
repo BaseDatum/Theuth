@@ -12,29 +12,40 @@ export function Helpers() {
     queryKey: queryKeys.titleModel,
     queryFn: () => api.title_model(),
   })
+  const titleEffort = useQuery({ queryKey: queryKeys.titleEffort, queryFn: () => api.title_effort() })
   const visionModel = useQuery({
     queryKey: queryKeys.visionModel,
     queryFn: () => api.vision_model(),
   })
+  const visionEffort = useQuery({ queryKey: queryKeys.visionEffort, queryFn: () => api.vision_effort() })
 
+  // 194 D4c/D4d: a model change may drop the stored effort (Off clears it), so its key refetches too.
   const setTitleModel = useAction((id: string) => api.set_title_model(id === 'off' ? null : id), {
-    keys: [queryKeys.titleModel, queryKeys.escalateModel],
+    keys: [queryKeys.titleModel, queryKeys.titleEffort, queryKeys.escalateModel],
   })
+  const setTitleEffort = useAction((level: string | null) => api.set_title_effort(level), { keys: [queryKeys.titleEffort] })
   const setVisionModel = useAction((id: string) => api.set_vision_model(id === 'off' ? null : id), {
-    keys: [queryKeys.visionModel],
+    keys: [queryKeys.visionModel, queryKeys.visionEffort],
   })
+  const setVisionEffort = useAction((level: string | null) => api.set_vision_effort(level), { keys: [queryKeys.visionEffort] })
   const escalateModel = useQuery({
     queryKey: queryKeys.escalateModel,
     queryFn: () => api.escalate_model(),
   })
+  const escalateEffort = useQuery({ queryKey: queryKeys.escalateEffort, queryFn: () => api.escalate_effort() })
   // 57 §0.9: the effective model follows the title model, so both keys refresh.
   const setEscalateModel = useAction((id: string) => api.set_escalate_model(id === 'off' ? null : id), {
-    keys: [queryKeys.escalateModel],
+    keys: [queryKeys.escalateModel, queryKeys.escalateEffort],
   })
+  const setEscalateEffort = useAction((level: string | null) => api.set_escalate_effort(level), { keys: [queryKeys.escalateEffort] })
 
   // 52 §3.2: only models whose backend can actually receive images (`ModelInfo.image` is effective support).
   const visionModels = models.data?.filter((m) => m.image) ?? []
   const vision = visionModel.data
+  // 194 D5: each row's chips are the levels of the model it shows as selected.
+  const title = models.data?.find((m) => m.id === titleModel.data?.id)
+  const visionInfo = visionModels.find((m) => m.id === vision?.id)
+  const escalate = models.data?.find((m) => m.id === escalateModel.data?.model?.id)
   // A saved selection whose provider went away stays visible as unavailable, never as Off.
   const unavailable =
     vision && models.isSuccess && !visionModels.some((m) => m.id === vision.id) ? vision.id : null
@@ -48,7 +59,8 @@ export function Helpers() {
           models={models.data ?? []}
           value={titleModel.data?.id}
           none={{ label: 'Off' }}
-          disabled={titleModel.isPending || setTitleModel.isPending}
+          effort={title && title.efforts.length > 0 ? { levels: title.efforts, current: titleEffort.data, onSelect: (level) => setTitleEffort.mutate(level) } : undefined}
+          disabled={titleModel.isPending || setTitleModel.isPending || setTitleEffort.isPending}
           onChange={(v) => setTitleModel.mutate(v ?? 'off')}
         />
       </Row>
@@ -69,7 +81,8 @@ export function Helpers() {
           models={visionModels}
           value={vision?.id}
           none={{ label: 'Off' }}
-          disabled={!visionModel.isSuccess || setVisionModel.isPending}
+          effort={visionInfo && visionInfo.efforts.length > 0 ? { levels: visionInfo.efforts, current: visionEffort.data, onSelect: (level) => setVisionEffort.mutate(level) } : undefined}
+          disabled={!visionModel.isSuccess || setVisionModel.isPending || setVisionEffort.isPending}
           onChange={(v) => setVisionModel.mutate(v ?? 'off')}
         />
       </Row>
@@ -92,7 +105,8 @@ export function Helpers() {
           models={models.data ?? []}
           value={escalateModel.data?.model?.id}
           none={{ label: escalateModel.data?.effective ? `Off (inherits title model ${escalateModel.data.effective.id})` : 'Off (inherits title model)' }}
-          disabled={!escalateModel.isSuccess || setEscalateModel.isPending}
+          effort={escalate && escalate.efforts.length > 0 ? { levels: escalate.efforts, current: escalateEffort.data, onSelect: (level) => setEscalateEffort.mutate(level) } : undefined}
+          disabled={!escalateModel.isSuccess || setEscalateModel.isPending || setEscalateEffort.isPending}
           onChange={(v) => setEscalateModel.mutate(v ?? 'off')}
         />
       </Row>

@@ -218,6 +218,8 @@ mod tests {
             backlog: None,
             model_override: None,
             model_source: "settings".into(),
+            effort: None,
+            effort_override: None,
             spend_today_usd: 0.0,
         }
     }

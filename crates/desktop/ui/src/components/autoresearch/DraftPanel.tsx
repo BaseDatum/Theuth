@@ -12,6 +12,7 @@ import { cn } from '@/lib/utils'
 import type { DraftField } from '@/rpc/bindings/DraftField'
 import type { DraftView } from '@/rpc/bindings/DraftView'
 import type { StartWhen } from '@/rpc/bindings/StartWhen'
+import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import { experimentsText, usd } from './model'
 import { useControl, useDiscardDraft, useDraftConfirm, useDraftEdit, useStartDraft, useStudy } from './queries'
 import { ADVANCED, LEAVES, PROBE_OF, STATE_BADGE, discardMessage, editMessage, leafValue, rowLabel, sparkPoints } from './setup'
@@ -195,7 +196,7 @@ function Row({ field: f, draft, editing, busy, onOk, onEdit, onSave }: { field: 
   )
 }
 
-/** §4.3: one text input per leaf of the row, in the engine's grammar (a `models.*` leaf is the standard model picker; empty = default); Save sends `draft_edit` for every changed leaf. */
+/** §4.3: one text input per leaf of the row, in the engine's grammar (a `models.*` leaf is the standard model picker; empty = default; 194: its `_effort` leaf is the picker's chips); Save sends `draft_edit` for every changed leaf. */
 function Editor({ row, draft, busy, onSave }: { row: string; draft: DraftView; busy: boolean; onSave: (changes: Change[]) => Promise<void> }) {
   const leaves = LEAVES[row] ?? [row]
   const models = useModels()
@@ -210,13 +211,13 @@ function Editor({ row, draft, busy, onSave }: { row: string; draft: DraftView; b
         if (changes.length) void onSave(changes)
       }}
     >
-      {leaves.map((l) => (
+      {leaves.filter((l) => !l.endsWith('_effort')).map((l) => (
         <Fragment key={l}>
           <label htmlFor={`leaf-${l}`} className="font-mono text-[11px] text-fg-tertiary">
             {l}
           </label>
           {l.startsWith('models.') ? (
-            <ModelCombobox id={`leaf-${l}`} aria-label={l} size="sm" className="h-7 w-full text-xs" models={models.data ?? []} value={values[l] || null} none={{ label: 'Default' }} onChange={(id) => setValues({ ...values, [l]: id ?? '' })} />
+            <LeafModel leaf={l} values={values} setValues={setValues} models={models.data ?? []} />
           ) : (
             <Input id={`leaf-${l}`} value={values[l] ?? ''} className="h-7 font-mono text-base md:text-xs" autoFocus={l === leaves[0]} onChange={(e) => setValues({ ...values, [l]: e.target.value })} />
           )}
@@ -226,6 +227,26 @@ function Editor({ row, draft, busy, onSave }: { row: string; draft: DraftView; b
         Save
       </Button>
     </form>
+  )
+}
+
+/** 194 row 20: a `models.*` leaf's picker; the row's `<leaf>_effort` (when it has one) is its chip row, kept only while the picked model takes it. */
+export function LeafModel({ leaf, values, setValues, models }: { leaf: string; values: Record<string, string>; setValues: (v: Record<string, string>) => void; models: ModelInfo[] }) {
+  const e = `${leaf}_effort`
+  const has = e in values
+  const levels = models.find((m) => m.id === values[leaf])?.efforts ?? []
+  return (
+    <ModelCombobox
+      id={`leaf-${leaf}`}
+      aria-label={leaf}
+      size="sm"
+      className="h-7 w-full text-xs"
+      models={models}
+      value={values[leaf] || null}
+      effort={has && levels.length > 0 ? { levels, current: values[e] || null, onSelect: (level) => setValues({ ...values, [e]: level ?? '' }) } : undefined}
+      none={{ label: 'Default' }}
+      onChange={(id) => setValues({ ...values, [leaf]: id ?? '', ...(has ? { [e]: models.find((m) => m.id === id)?.efforts.includes(values[e] ?? '') ? (values[e] ?? '') : '' } : {}) })}
+    />
   )
 }
 

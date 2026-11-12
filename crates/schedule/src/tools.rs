@@ -110,6 +110,8 @@ pub struct ScheduleArgs {
     pub quiet: bool,
     /// Model for the run; default the harness default.
     pub model: Option<String>,
+    /// Reasoning effort for that model (a level it takes, e.g. `low`/`high`); needs `model`; default the harness default.
+    pub effort: Option<String>,
     /// Shell command run in cwd before each fire: exit 0 = the loop is done and the file is removed,
     /// 1 = run again (its output tail arrives in `<until>`), anything else = broken, loop ends.
     pub until: Option<String>,
@@ -177,6 +179,7 @@ fn render_args_on(a: &ScheduleArgs, engine: Option<&str>) -> String {
         at: a.at.as_deref(),
         quiet: a.quiet,
         model: a.model.as_deref(),
+        effort: a.effort.as_deref(),
         prompt: &a.prompt,
         until: a.until.as_deref(),
         max_runs: a.max_runs,
@@ -223,7 +226,8 @@ impl Tool for ScheduleTool {
          own session. With `until` or `max_runs` it is a loop that runs again until done. Returns the \
          next fire time. A name already used by a routine that runs on another machine is refused \
          (\"a routine named <x> already runs on <machine>; choose another name\"): pick a new name, never \
-         overwrite it. Read, list and delete schedules with the file tools."
+         overwrite it. `effort` sets the run model's reasoning effort (with `model`). Read, list and delete \
+         schedules with the file tools."
             .into()
     }
 
@@ -249,6 +253,15 @@ impl Tool for ScheduleTool {
             Ok(s) => s,
             Err(e) => return Ok(ToolOutput::err(e)),
         };
+        // 194 D4b: an effort the run's model does not take is refused, as the editor refuses it.
+        if let Some(e) = &spec.effort {
+            let info = agent::lifecycle::effort_model(spec.model.as_deref()).await;
+            let settled =
+                agent::lifecycle::settle_effort(spec.model.as_deref(), &info, Some(e), false);
+            if let Err(why) = settled {
+                return Ok(ToolOutput::err(format!("effort: {why}")));
+            }
+        }
         // 40 §1.12: resolve the sensor (and CPython), dry-run twice, probe; refuse
         // on `Err` — nothing is written. `subject=` from the payload titles the session.
         let verdict = match &spec.sensor {
@@ -279,6 +292,9 @@ impl Tool for ScheduleTool {
         }
         if let Some(n) = spec.max_runs {
             content.push_str(&format!(" · up to {n} runs"));
+        }
+        if let Some(e) = &spec.effort {
+            content.push_str(&format!(" · effort {e}"));
         }
         if !spec.approvals {
             content.push_str(" · approvals off");

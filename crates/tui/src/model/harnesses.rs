@@ -85,6 +85,31 @@ impl Model {
         }
         MenuKey::Consumed
     }
+
+    /// Bare `/model` / `/effort` on an ACP session (75 §8, 194 D6): the
+    /// harness picker — the `model` select's values as the rows, the
+    /// `thought_level` values as the chips under the current one (no
+    /// Default). A harness offering neither lists its options as lines;
+    /// `/effort` without a `thought_level` option is a notice.
+    pub(super) fn open_harness(&mut self, options: Vec<acp::ConfigOption>) {
+        let chips = std::mem::take(&mut self.pick_effort);
+        let agent = self.agent.clone().unwrap_or_else(|| "harness".into());
+        match harness_groups(&options) {
+            (_, None) if chips => self.entries.push(Entry::Info(format!(
+                "{agent} has no reasoning effort levels"
+            ))),
+            (None, None) => {
+                for line in harness_options_lines(&options) {
+                    self.entries.push(Entry::Info(line));
+                }
+            }
+            _ => {
+                let running = self.harness_model.as_deref().unwrap_or(&self.model_id);
+                let items = harness_models(&options, &agent, running);
+                self.open_models(items, PickTarget::Harness, options, chips);
+            }
+        }
+    }
 }
 
 /// `/model` / `/effort` on an ACP session (75 §8): one line per harness
@@ -106,6 +131,56 @@ pub fn harness_options_lines(options: &[acp::ConfigOption]) -> Vec<String> {
             format!("{label}: {}  (has: {})", o.current, values.join(", "))
         })
         .collect()
+}
+
+/// The harness's `model` select and `thought_level` option, when offered
+/// (the desktop's `harnessGroups`).
+pub(super) fn harness_groups(
+    options: &[acp::ConfigOption],
+) -> (Option<&acp::ConfigOption>, Option<&acp::ConfigOption>) {
+    let named = |s: &str| s.to_lowercase().contains("model");
+    let model = options
+        .iter()
+        .find(|o| o.category.as_deref() == Some("model"))
+        .or_else(|| options.iter().find(|o| named(&o.id) || named(&o.name)));
+    let effort = options
+        .iter()
+        .find(|o| o.category.as_deref() == Some("thought_level"));
+    (model, effort)
+}
+
+/// The harness picker's rows (the desktop's `HarnessPicker`): one per
+/// `model` value, its provider the value's `provider/` prefix else `agent`;
+/// without a model select one row for what it runs (`running`, else
+/// `agent`). Every row carries the `thought_level` values as its efforts.
+pub(super) fn harness_models(
+    options: &[acp::ConfigOption],
+    agent: &str,
+    running: &str,
+) -> Vec<ModelInfo> {
+    let (model, effort) = harness_groups(options);
+    let efforts: Vec<String> = effort
+        .map(|o| o.options.iter().map(|v| v.value.clone()).collect())
+        .unwrap_or_default();
+    let row = |id: &str, name: &str| ModelInfo {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        provider: id.split_once('/').map_or(agent, |(p, _)| p).to_owned(),
+        context: 0,
+        reasoning: !efforts.is_empty(),
+        image: false,
+        efforts: efforts.clone(),
+        budget_min: None,
+        budget_max: None,
+        local: false,
+    };
+    match model {
+        Some(o) => o.options.iter().map(|v| row(&v.value, &v.name)).collect(),
+        None => {
+            let id = if running.is_empty() { agent } else { running };
+            vec![row(id, id)]
+        }
+    }
 }
 
 /// The announcement after `set_harness_option` (75 §8): `model → x`, or

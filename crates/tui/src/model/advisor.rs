@@ -153,11 +153,9 @@ pub fn advisor_status_lines(s: &AdvisorStatus) -> Vec<String> {
     out
 }
 
-/// Why a `set_advisor` / `advisor_status` call was made (125 §7.1).
+/// Why an `advisor_status` call was made (125 §7.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AdvisorReply {
     /// `/advisor status`: print the lines of §7.3.
     Status,
-    /// A model pick: chain into the advisor's effort picker when it has levels.
-    Pick,
 }
