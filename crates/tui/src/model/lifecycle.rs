@@ -26,10 +26,10 @@ impl Model {
             catalog: self.catalog.take(),
             skills: std::mem::take(&mut self.skills),
             width: self.width,
+            terminal_height: self.terminal_height,
             viewport: self.viewport,
             components: std::mem::replace(&mut self.components, crate::components::Registry::empty()),
             component_commands: self.component_commands.take(),
-            todo_open: std::mem::take(&mut self.todo_open),
             app_enabled: self.app_enabled,
             advisor_default: std::mem::take(&mut self.advisor_default),
             vision_model: self.vision_model.take(),
@@ -131,7 +131,6 @@ impl Model {
             self.context = n;
             self.context_estimated = true;
         }
-        self.loaded_todos(loaded.todos);
     }
 }
 
@@ -142,7 +141,7 @@ impl Model {
     /// revision is not behind the one on screen. Otherwise the transcript
     /// stays as it is, marked stale until the next settled notification;
     /// a pending notice (our own removal) lands anyway.
-    pub(super) fn refresh(&mut self, mut loaded: Loaded) {
+    pub(super) fn refresh(&mut self, loaded: Loaded) {
         let (theirs, ours) = (
             revision(&loaded.context_revision),
             revision(&self.context_revision),
@@ -156,7 +155,6 @@ impl Model {
             && self.notice.is_none()
         {
             self.component_notify(crate::components::Lifecycle::SessionRead(&loaded));
-            self.loaded_todos(loaded.todos.take());
             return;
         }
         if !loaded.settled || self.streaming || theirs < ours {
@@ -173,7 +171,6 @@ impl Model {
                     "{reason} — transcript refreshes when it settles"
                 )));
             }
-            self.loaded_todos(loaded.todos.take());
             return;
         }
         // A picker over the old inventory would be refused as stale anyway.

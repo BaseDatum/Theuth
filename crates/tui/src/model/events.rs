@@ -44,9 +44,6 @@ pub enum UiEvent {
     },
     /// Reply to [`Command::RemoveContext`]: what was removed; the transcript reload follows.
     ContextRemoved(SessionId, ContextRemoval),
-    /// Reply to [`Command::GetTodos`]: the session's latest committed plan
-    /// (47 §5.1); `None` when the read failed, which marks the plan stale.
-    Todos(SessionId, Option<TodoSnapshot>),
     /// Reply to [`Command::Fork`]: the new session, already loaded.
     Forked(SessionId, Loaded),
     /// Reply to [`Command::Send`]: the session the turn went to.
@@ -315,8 +312,6 @@ pub enum Command {
         /// The `/shake` argument, echoed in the reply.
         category: Option<ShakeCategory>,
     },
-    /// `get_todos`: the latest committed plan, readable mid-turn (47 §5.1).
-    GetTodos(SessionId),
     /// `remove_context`, then `load_session(settled_only: true)`.
     RemoveContext {
         /// Session.

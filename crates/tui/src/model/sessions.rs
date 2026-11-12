@@ -116,6 +116,7 @@ impl Model {
         self.approvals = approvals;
         self.asks = asks;
         self.session = Some(id);
+        self.component_notify(crate::components::Lifecycle::SessionChanged);
         send(
             tx,
             Command::Load {

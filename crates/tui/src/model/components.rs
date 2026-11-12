@@ -26,6 +26,8 @@ macro_rules! core_view {
             prompt: $model.prompt_id(),
             prompts: &(&$model.approvals, &$model.asks),
             viewport: $model.viewport,
+            terminal_height: $model.terminal_height,
+            modal_open: $model.modal_menu() || $model.components.captures(FocusClass::Secret),
         }
     };
 }
@@ -96,6 +98,18 @@ impl Model {
                     self.editor_prefixes.push(token);
                 }
                 CoreAction::Scroll { delta, rows, width } => self.scroll(delta, rows, width),
+                CoreAction::EditContext { session, expected_revision, targets } => {
+                    if let Some(commands) = &self.component_commands {
+                        send(commands, Command::RemoveContext { session, expected_revision, targets });
+                    }
+                }
+                CoreAction::ContextState { session, revision, editable, reason } => {
+                    if self.session == Some(session) {
+                        self.context_revision = revision;
+                        self.context_editable = editable;
+                        if !editable { self.context_reason = reason; }
+                    }
+                }
                 CoreAction::Notice(text) => self.entries.push(Entry::Info(text)),
                 CoreAction::Interject(text) => self.interject(Entry::Info(text)),
                 CoreAction::Error(text) => self.receive(UiEvent::Error(text), emit),

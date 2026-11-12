@@ -174,11 +174,6 @@ impl Model {
                 + 1;
             format!("  ·  editing #{n} — ⏎ sends, esc cancels")
         });
-        let todos = if self.todo_focused() {
-            "  ·  todos: ↑↓ scroll · esc closes · tab editor"
-        } else {
-            ""
-        };
         let talk = match &self.talk {
             Some(t) if !self.talk_view => {
                 let state = format!("{:?}", t.state).to_lowercase();
@@ -203,7 +198,7 @@ impl Model {
         let pinned = self.component_text(Surface::Status(StatusSlot::Pinned));
         let spoken = self.component_text(Surface::Status(StatusSlot::Spoken));
         format!(
-            "{session}  {state}{watch}{usage}{agents}{queued}{work}{skills}{catalog}{editing}{scrolled}{todos}{pinned}{talk}{spoken}{attached}{resumed}"
+            "{session}  {state}{watch}{usage}{agents}{queued}{work}{skills}{catalog}{editing}{scrolled}{pinned}{talk}{spoken}{attached}{resumed}"
         )
     }
 
