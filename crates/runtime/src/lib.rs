@@ -19,6 +19,9 @@ pub use kameo_actors;
 pub mod side_call;
 pub use side_call::{CallKind, ModelRole, SideCall, SideCallable, SideReply};
 
+type Extensions =
+    std::collections::HashMap<std::any::TypeId, Box<dyn std::any::Any + Send + Sync>>;
+
 /// Shared handles handed to every plugin at start.
 #[derive(Clone)]
 pub struct Runtime {
@@ -30,6 +33,8 @@ pub struct Runtime {
     pub data_dir: PathBuf,
     /// Cancelled when the process should exit (UI quit, ctrl-c, RPC shutdown).
     pub shutdown: CancellationToken,
+    /// Plugin-neutral state shared by Runtime clones, keyed by component type.
+    extensions: std::sync::Arc<parking_lot::Mutex<Extensions>>,
 }
 
 impl Runtime {
@@ -47,7 +52,20 @@ impl Runtime {
             config,
             data_dir,
             shutdown: CancellationToken::new(),
+            extensions: Default::default(),
         }
+    }
+
+    /// One slot per type; a private T lets only its owning crate reach the slot.
+    /// Initialization runs unlocked and may race; the first inserted value wins.
+    pub fn extension<T: Clone + Send + Sync + 'static>(&self, init: impl FnOnce() -> T) -> T {
+        if let Some(value) = self.extensions.lock().get(&std::any::TypeId::of::<T>()) {
+            return value.downcast_ref::<T>().unwrap().clone();
+        }
+        let value = init();
+        let mut slots = self.extensions.lock();
+        let value = slots.entry(std::any::TypeId::of::<T>()).or_insert_with(|| Box::new(value));
+        value.downcast_ref::<T>().unwrap().clone()
     }
 
     /// Publish an event to every actor registered for `T`.
@@ -503,6 +521,20 @@ mod tests {
     use super::{write_config_value, write_nested_config_value};
     use figment::providers::Format as _;
     use std::path::{Path, PathBuf};
+
+    #[tokio::test]
+    async fn extension_initializers_can_access_another_slot() {
+        let rt = super::Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cloned = rt.clone();
+        let thread = std::thread::spawn(move || {
+            tx.send(cloned.extension(|| (cloned.extension(|| 41_u32), 1_u8))).unwrap();
+        });
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap(), (41, 1));
+        thread.join().unwrap();
+        assert_eq!(rt.extension(|| 99_u32), 41);
+        assert_eq!(rt.extension::<(u32, u8)>(|| panic!("initialized twice")), (41, 1));
+    }
 
     fn tmp() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("theuth-wb-{}", uuid::Uuid::new_v4()));
