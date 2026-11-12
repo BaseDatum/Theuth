@@ -361,6 +361,7 @@ dependencies = [
  "uuid",
  "voice",
  "web",
+ "wire",
  "wiremock",
 ]
 
@@ -17576,6 +17577,7 @@ dependencies = [
  "voice",
  "web",
  "windows-sys 0.61.2",
+ "wire",
 ]
 
 [[package]]

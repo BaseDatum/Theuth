@@ -137,6 +137,10 @@ pub struct NotebookAsk {
     pub event: AskEvent,
 }
 
+impl wire::WireEvent for NotebookAsk {
+    const TOPIC: &'static str = "agent.notebook-ask";
+}
+
 /// `notebook_ask` reply.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]

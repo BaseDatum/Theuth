@@ -46,7 +46,7 @@ const ALLOWED: &[&str] = &[
     "voice",
     "web",
 ];
-const ALLOWED_DEV: &[&str] = &["agent"];
+const ALLOWED_DEV: &[&str] = &["agent", "wire"];
 
 #[test]
 fn workspace_dependencies_only_shrink() {
