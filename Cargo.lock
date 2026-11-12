@@ -698,6 +698,7 @@ dependencies = [
  "tracing-subscriber",
  "ts-rs",
  "uuid",
+ "wire",
 ]
 
 [[package]]
@@ -1054,6 +1055,7 @@ dependencies = [
  "typst-pdf",
  "typst-render",
  "uuid",
+ "wire",
  "zip 9.2.2",
 ]
 
@@ -2644,6 +2646,7 @@ dependencies = [
  "url",
  "uuid",
  "web",
+ "wire",
 ]
 
 [[package]]
@@ -18967,6 +18970,7 @@ dependencies = [
  "ts-rs",
  "uuid",
  "windows-sys 0.61.2",
+ "wire",
  "zeroize",
 ]
 
