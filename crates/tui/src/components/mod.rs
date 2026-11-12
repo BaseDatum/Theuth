@@ -346,6 +346,14 @@ pub struct ViewCx<'a> {
     /// Animation frame.
     pub frame: usize,
 }
+impl ViewCx<'_> {
+    /// Current spinner glyph, on the shared core animation clock.
+    pub fn spinner(&self) -> &'static str { spinner(self.frame) }
+}
+pub(crate) fn spinner(frame: usize) -> &'static str {
+    const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    FRAMES[(frame / 5) % FRAMES.len()]
+}
 /// Owned presentation; requested rows are used for both layout and view.
 pub enum View {
     /// Plain header/status segment, or non-wrapping slot text.

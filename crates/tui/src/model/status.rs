@@ -110,8 +110,7 @@ impl Model {
 
     /// Current spinner glyph.
     pub fn spinner(&self) -> &'static str {
-        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        FRAMES[(self.frame / 5) % FRAMES.len()]
+        crate::components::spinner(self.frame)
     }
 
     /// One animation frame: advance the spinner and reveal a slice of the
