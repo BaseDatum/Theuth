@@ -202,7 +202,7 @@ export function endlessFixture(api: Api): Api {
       return Promise.resolve(changed)
     },
     set_session_compactor_effort: (_s, effort) => {
-      changed = { ...current(), effort }
+      changed = { ...current(), effort, effort_override: effort }
       return Promise.resolve(changed)
     },
     endless_zoom: (_s, id, n) => Promise.resolve(children(id, n)),
