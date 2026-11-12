@@ -150,22 +150,22 @@ export function FirstButtons({ contact, exp, elsewhere = false }: { contact: str
       )
         .filter(([v]) => !(elsewhere && v === 'ask'))
         .map(([v, label]) => (
-        <Button
-          key={v}
-          variant={v === 'block' ? 'ghost' : 'outline'}
-          size="sm"
-          className="pointer-coarse:min-h-11"
-          disabled={answer.isPending || answer.isSuccess}
-          onClick={() => answer.mutate({ contact, exp, answer: v })}
-        >
-          {label}
-        </Button>
-      ))}
+          <Button
+            key={v}
+            variant={v === 'block' ? 'ghost' : 'outline'}
+            size="sm"
+            className="pointer-coarse:min-h-11"
+            disabled={answer.isPending || answer.isSuccess}
+            onClick={() => answer.mutate({ contact, exp, answer: v })}
+          >
+            {label}
+          </Button>
+        ))}
     </span>
   )
 }
 
-/** One held first message: its line and the three answers. */
+/** One held first message: its line and its answers. */
 export function WaitingRow({ w }: { w: FirstWaiting }) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg bg-layer-2 px-2.5 py-1.5 text-[13px]">

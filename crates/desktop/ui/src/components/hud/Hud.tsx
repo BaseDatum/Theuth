@@ -275,6 +275,17 @@ function HomeActions({ item, size, busy, act, then }: { item: AttentionItem; siz
   )
 }
 
+/** 191: a `contact_first` item's Allow once, unless another machine holds the message (that answer is the holder's). */
+function AllowOnce({ first, size, disabled, onClick }: { first: { contact: string; exp: string }; size: 'xs' | 'sm' | 'default'; disabled: boolean; onClick: () => void }) {
+  const elsewhere = useFirstWaiting().data?.some((w) => w.elsewhere && w.contact === first.contact && w.export === first.exp) ?? false
+  if (elsewhere) return null
+  return (
+    <Button size={size} disabled={disabled} onClick={onClick}>
+      Allow once
+    </Button>
+  )
+}
+
 /**
  * The per-kind buttons of an inbox item — the card's inline block and the plain screen's action row (101 D7) share it.
  * `onResolved` fires after a mutation that removes the item from the list succeeded (101 D11: the screen moves on).
@@ -288,8 +299,6 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
   const handoffId = item.kind === 'handoff' ? item.id.replace(/^handoff:/, '') : null
   const rows = useSecretRequestRows(item.kind === 'secret')
   const first = item.kind === 'contact_first' ? contactFirstOf(item.id) : null
-  // 191: a message another machine holds offers no Allow once (that is the holder's).
-  const elsewhere = useFirstWaiting(first !== null).data?.some((w) => w.elsewhere && w.contact === first?.contact && w.export === first?.exp) ?? false
   // `useAction` already toasts the failure; the swallowed rejection only keeps the screen where it is.
   const then = (p: Promise<unknown>) => void p.then(() => onResolved?.(), () => undefined)
   return (
@@ -391,11 +400,7 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
       {first && (
         // 183 W-27, C3 call 7: Allow once lets this task through and keeps asking; Always and Block are remembered.
         <>
-          {!elsewhere && (
-            <Button size={size} disabled={busy} onClick={() => then(act.contactFirst.mutateAsync({ ...first, answer: 'ask' }))}>
-              Allow once
-            </Button>
-          )}
+          <AllowOnce first={first} size={size} disabled={busy} onClick={() => then(act.contactFirst.mutateAsync({ ...first, answer: 'ask' }))} />
           <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.contactFirst.mutateAsync({ ...first, answer: 'allow' }))}>
             Always
           </Button>
