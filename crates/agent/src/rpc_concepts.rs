@@ -10,6 +10,7 @@ use rpc_core::{ask, Server};
 use agent::rpc_support::RpcServerExt;
 
 /// Concepts RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "agent", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait AgentConceptsApi {
     /// Harvest `session`'s finished frame now (design doc 10 §5.2). Refused while a turn is running.
@@ -33,6 +34,7 @@ impl AgentConceptsApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    AgentConceptsApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(AgentConceptsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("agent RPC descriptors")
 }

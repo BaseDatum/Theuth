@@ -16,6 +16,7 @@ use crate::pathac;
 use agent::rpc_support::RpcServerExt;
 
 /// Hub RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "agent", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait AgentHubApi {
     /// PTY jobs of `session` (and, with `descendants: true`, its subtree)
@@ -278,6 +279,7 @@ impl AgentHubApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    AgentHubApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(AgentHubApiServer::into_rpc(server), rpc_descriptors())
+        .expect("agent RPC descriptors")
 }

@@ -11,6 +11,7 @@ description = "User cells: code the user runs with one press in chat, notes and 
 runtime = { workspace = true }
 wire = { workspace = true }
 rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
 replica = { workspace = true }
 jsonrpsee = { workspace = true }
 tools = { workspace = true }  # 171 §5.5 `StartPty{program, cell}`, `Mark`, `PtyChunk`, `RegisterPrompt`, `secrets::redact`

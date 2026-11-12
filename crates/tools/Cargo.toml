@@ -7,6 +7,7 @@ description = "Tool registry, approval gate, builtin tools (shell, fs), MCP tool
 
 [dependencies]
 rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
 jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }

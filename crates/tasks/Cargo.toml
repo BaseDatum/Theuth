@@ -7,6 +7,7 @@ description = "Task records: states, wakes, checkout, disposition, no-progress b
 
 [dependencies]
 rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
 jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }

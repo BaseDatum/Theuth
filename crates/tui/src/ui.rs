@@ -4,7 +4,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent::todo::Status as TodoStatus;
 use agent::{AdvisorSeverity, AdvisorState, AdvisoryKind, CompactStyle};
 use iocraft::prelude::*;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -20,7 +19,7 @@ use crate::model::{
 };
 use crate::model::{
     AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch,
-    TodoCard, TurnAction, UiEvent, action_name, describe, gate_name,
+    TurnAction, UiEvent, action_name, describe, gate_name,
     k, now_ms, progress_line, result_line, short, window,
 };
 use crate::pathac;
@@ -69,7 +68,7 @@ const fn rgb(hex: u32) -> Color {
     }
 }
 /// Highlighted rows, focused labels.
-const BONE: Color = rgb(0xE8DCC8);
+pub(crate) const BONE: Color = rgb(0xE8DCC8);
 /// Secondary text.
 pub(crate) const BONE_DIM: Color = rgb(0xC9B89A);
 /// Tertiary text, hints, quiet borders.
@@ -211,7 +210,9 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 let mut m = model.write();
                 // Assistant text renders at the width current when it starts (30 §7).
-                m.width = crossterm::terminal::size().map_or(0, |(w, _)| usize::from(w));
+                let (width, height) = crossterm::terminal::size().unwrap_or((0, 0));
+                m.width = usize::from(width);
+                m.terminal_height = usize::from(height);
                 for ev in pending.drain(..) {
                     m.apply(ev);
                 }
@@ -311,6 +312,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         let commands = commands.clone();
         move |event| {
             let mut m = model.write();
+            m.width = usize::from(terminal_size.0);
+            m.terminal_height = usize::from(terminal_size.1);
             // At the cursor; `TextInput` sees an insertion there and moves
             // its cursor past it. `State`/`Ref` are `Copy`: `move` leaves
             // `input` free for the key handling below.
@@ -482,28 +485,17 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 return;
             }
+            let captured = m.components.captures(FocusClass::Pinned);
             if m.component_key(FocusClass::Pinned, &key) { return; }
-            // The todo card (47 §6.3): F2 opens and focuses / closes it; while
-            // focused it takes the scroll keys, esc, tab and ⏎, so the draft is
-            // neither sent nor cleared. Anything else hands the editor back:
-            // a typed char is inserted here, since `TextInput` saw this key
-            // unfocused. Modals above kept their answers; a modal menu keeps its keys.
-            let (w, h) = terminal_size;
-            if code == KeyCode::F(2) && !m.modal_menu() {
-                m.toggle_todos(&commands);
+            // TextInput saw this key unfocused; a yielding capture returns typing to it.
+            if captured && !m.components.captures(FocusClass::Pinned)
+                && let KeyCode::Char(c) = code
+                && !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            {
+                insert_at_cursor(&mut m, &c.to_string());
                 return;
             }
-            if m.todo_focused() {
-                if m.todo_key(code, usize::from(w), usize::from(h)) {
-                    return;
-                }
-                if let KeyCode::Char(c) = code
-                    && !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                {
-                    insert_at_cursor(&mut m, &c.to_string());
-                    return;
-                }
-            }
+            let (w, h) = terminal_size;
             // Shift+Enter: the input inserts the newline itself.
             if code == KeyCode::Enter && modifiers.contains(KeyModifiers::SHIFT) {
                 return;
@@ -528,10 +520,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 return;
             }
-            let todo = m
-                .todo_card(usize::from(w), usize::from(h))
-                .map_or(0, |c| c.height());
-            let view = view_rows(&m, h, &input.read(), todo + *component_rows.read());
+            let view = view_rows(&m, h, &input.read(), *component_rows.read());
             m.width = usize::from(w);
             m.viewport = view;
             // `/search` (49 §6.1): its own focus ring; the query editor's own
@@ -721,10 +710,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         .or_else(|| ask_box(&m))
         .or_else(|| {
             m.search_open().then(|| {
-                let todo = m
-                    .todo_card(usize::from(width), usize::from(height))
-                    .map_or(0, |c| c.height());
-                let budget = view_rows(&m, height, &input.read(), todo + extra_rows);
+                let budget = view_rows(&m, height, &input.read(), extra_rows);
                 search_box(&m, model, search_handle, width, budget)
             })
         })
@@ -744,12 +730,11 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     };
 
     // Only the slice that can reach the screen is built; see `Model::window`.
-    let todo = m.todo_card(usize::from(width), usize::from(height));
     let view = view_rows(
         &m,
         height,
         &input.read(),
-        todo.as_ref().map_or(0, TodoCard::height) + extra_rows,
+        extra_rows,
     );
     let win = m.window(view, usize::from(width));
     let entries = m.entries[win.from..win.to]
@@ -809,7 +794,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
             }))
             #(board(&m, width))
-            #(todo.map(todo_card))
             #(pinned.element())
             #(modal)
             #(badge.element())
@@ -888,7 +872,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     Text(content: m.status(), color: SAND)
                     #(m.advisor_segment().map(|(text, state)| element!(Text(content: text, color: advisor_color(state)))))
                 }
-                Text(content: m.mcp_status(), color: SAND)
+                Text(content: format!("{}{}", m.mcp_status(), m.component_text(Surface::Status(crate::components::StatusSlot::Right))), color: SAND)
             }
         }
     }
@@ -1768,29 +1752,6 @@ fn board(m: &Model, width: u16) -> Option<AnyElement<'static>> {
     )
 }
 
-/// The fixed todo card (47 §6.3): the trigger row, then while open the
-/// body rows in view and the overflow indicator. Session chrome beside the
-/// board, never a transcript entry; F2 gives it the keys.
-fn todo_card(c: TodoCard) -> AnyElement<'static> {
-    let border = if c.focused { OCHRE } else { SAND };
-    let head = if c.focused { BONE } else { BONE_DIM };
-    let paint = |s: Option<TodoStatus>| match s {
-        Some(TodoStatus::InProgress) => FAIENCE,
-        Some(TodoStatus::Pending) => BONE_DIM,
-        Some(TodoStatus::Blocked) => OCHRE,
-        Some(TodoStatus::Done | TodoStatus::Dropped) | None => SAND,
-    };
-    element! {
-        View(border_style: BorderStyle::Round, border_color: border, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
-            Text(content: c.header, color: head, wrap: TextWrap::NoWrap)
-            #(c.rows.into_iter().map(|(status, text)| {
-                element!(Text(content: text, color: paint(status), wrap: TextWrap::NoWrap))
-            }))
-            #(c.overflow.map(|s| element!(Text(content: s, color: SAND, wrap: TextWrap::NoWrap))))
-        }
-    }
-    .into_any()
-}
 
 /// Split after `n` chars (not bytes): `("⠹ ", rest)`.
 fn split_chars(s: &str, n: usize) -> (&str, &str) {

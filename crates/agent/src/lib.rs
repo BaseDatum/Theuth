@@ -60,8 +60,8 @@ pub mod rpc_skills;
 pub mod rpc_turns;
 
 /// Assemble agent-owned RPC domains.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    rpc_core::merge([
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::merge_described([
         rpc_artifacts::rpc_module(server.clone()),
         rpc_concepts::rpc_module(server.clone()),
         rpc_documents::rpc_module(server.clone()),
@@ -74,7 +74,7 @@ pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Se
         rpc_jobs::rpc_module(server.clone()),
         rpc_skills::rpc_module(server.clone()),
         rpc_turns::rpc_module(server),
-    ])
+    ]).expect("agent RPC composition")
 }
 
 pub mod acp_child;

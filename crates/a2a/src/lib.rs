@@ -42,11 +42,11 @@ pub mod rpc_messaging;
 pub mod rpc_hub;
 
 /// Assemble this plugin's RPC methods.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    rpc_core::merge([
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::merge_described([
         rpc_messaging::rpc_module(server.clone()),
         rpc_hub::rpc_module(server),
-    ])
+    ]).expect("a2a RPC composition")
 }
 
 pub mod rpc_support;

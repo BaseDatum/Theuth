@@ -8,6 +8,7 @@ description = "Screenshot, pointer/keyboard, accessibility-tree and clipboard to
 [dependencies]
 runtime = { workspace = true }
 rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
 agent = { workspace = true }
 browser = { workspace = true }
 jsonrpsee = { workspace = true }

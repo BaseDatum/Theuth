@@ -13,6 +13,7 @@ use agent::rpc_support::RpcServerExt;
 use base64::Engine as _;
 
 /// Artifacts RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "artifact", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait ArtifactArtifactsApi {
     /// A client's answer to a `PagePreviewRequested` (120 §11.2): `Started`
@@ -292,6 +293,7 @@ impl ArtifactArtifactsApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    ArtifactArtifactsApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(ArtifactArtifactsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("artifact RPC descriptors")
 }

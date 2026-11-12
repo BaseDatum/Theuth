@@ -11,11 +11,13 @@ use nodes::rpc_support::nodes;
 use rpc_core::{Server, failed, send, UNAUTHORIZED};
 use secrets::rpc_support::secrets;
 
+#[rpc_core_macros::rpc_descriptors(owner = "nodes", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait NetworkApi {
     /// 184 §7.2: the mesh link id (`mesh/device_key`'s public id), minted only on the lease holder
     /// (`not the hub` elsewhere). Mesh-internal — accepted only over `theuth/rpc/1` (`Forwarded`).
     #[method(name = "link_mesh_id", with_extensions)]
+    #[rpc_audience("mesh")]
     async fn link_mesh_id(&self) -> RpcResult<String>;
     /// Link state: relay, uplink, paired devices, pending pairing (31 §6.4).
     #[method(name = "link_status")]
@@ -285,6 +287,7 @@ impl NetworkApiServer for Server {
 }
 
 /// Build this domain's RPC module.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    NetworkApiServer::into_rpc(server)
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(NetworkApiServer::into_rpc(server), rpc_descriptors())
+        .expect("nodes RPC descriptors")
 }

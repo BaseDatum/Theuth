@@ -8,6 +8,7 @@ description = "A live, interruptible spoken conversation between the user and on
 [dependencies]
 runtime = { workspace = true }
 rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
 jsonrpsee = { workspace = true }
 wire = { workspace = true }
 tools = { workspace = true }     # `RegisterPrompt` (76 §0.11)

@@ -25,6 +25,7 @@ pub fn builtin() -> Registry {
     registry.register(costs::Costs::default()).expect("built-in component registration");
     registry.register(web_progress::WebProgress::default()).expect("built-in component registration");
     registry.register(double::Double::default()).expect("built-in component registration");
+    registry.register(todos::Todos::default()).expect("built-in component registration");
 
     // Step-11 group t3 (jobs, terminals, speech and search): register below, in this block only.
     registry.register(jobs::Jobs::default()).expect("built-in component registration");
@@ -322,6 +323,10 @@ impl Registry {
     /// Any mounted owner needs the shared animation clock.
     pub fn animating(&self) -> bool {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()).any(|component| component.animating())
+    }
+    /// Whether any mounted owner intrinsically captures this input boundary.
+    pub fn captures(&self, class: FocusClass) -> bool {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).any(|component| component.captures(class))
     }
     /// Read-only owner query for composition and component integration tests.
     pub fn get<C: Component>(&self) -> Option<&C> {

@@ -40,6 +40,7 @@ pub use contracts::{Info, PendingPrompts, StreamControl, Lagged, ConfigFlagKey, 
 pub mod clients;
 
 /// Irreducible cross-plugin RPC operations.
+#[rpc_core_macros::rpc_descriptors(owner = "rpc-compose", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait CompositionApi {
     /// Version, data dir, default model, approvals and compaction style in one

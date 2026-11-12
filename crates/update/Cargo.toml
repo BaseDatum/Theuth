@@ -7,6 +7,7 @@ description = "Self-update: check the release manifest, verify, replace the runn
 
 [dependencies]
 rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
 jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }

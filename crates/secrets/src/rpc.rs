@@ -5,6 +5,7 @@ use jsonrpsee::proc_macros::rpc;
 use rpc_core::{Server, send};
 use secrets::rpc_support::secrets;
 
+#[rpc_core_macros::rpc_descriptors(owner = "secrets", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait CredentialsApi {
     /// Every secret's name, note and version history (37 §3.1). Never values.
@@ -104,6 +105,7 @@ impl CredentialsApiServer for Server {
 }
 
 /// Build this domain's RPC module.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    CredentialsApiServer::into_rpc(server)
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(CredentialsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("secrets RPC descriptors")
 }

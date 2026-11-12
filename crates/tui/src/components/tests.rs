@@ -17,6 +17,7 @@ pub(crate) enum Msg {
     Add(i64),
     Fail(String),
     Work(Lane, Box<dyn FnOnce(Arc<Engine>) -> BoxFuture<'static, Msg> + Send>),
+    Ensure(i64),
 }
 impl Counter {
     pub(crate) fn new(id: &'static str) -> Self { Self { id, value: 0, bindings: &[], slash: &[], capture: None } }
@@ -42,6 +43,7 @@ impl Component for Counter {
             }
             Input::Message(Msg::Fail(error)) => cx.error(error),
             Input::Message(Msg::Work(lane, work)) => cx.spawn(lane, work),
+            Input::Message(Msg::Ensure(value)) => cx.ensure_session(move |_, _| async move { Msg::Add(value) }, Msg::Fail),
             Input::Key(_) if self.capture.is_some() => { self.value += 1; cx.consume_key(); }
             Input::Key(key) if key.code == KeyCode::Esc => { cx.close(); cx.consume_key(); }
             Input::Key(_) => { cx.focus(self.bindings[0].class); cx.consume_key(); }
@@ -57,7 +59,7 @@ impl Component for Counter {
 }
 pub(crate) fn core() -> CoreView<'static> {
     static MEMBERS: std::sync::LazyLock<std::collections::HashMap<SessionId, crate::model::AgentRow>> = std::sync::LazyLock::new(std::collections::HashMap::new);
-    CoreView { viewport: 0, prompts: &(), prompt: None, session_name: None, width: 0, private_members: None, members: &*MEMBERS, interactive: true, session: None, parent: None, private_root: None, project: None, inspecting: false, streaming: false, reasoning: false, agent: None, entries: &[] }
+    CoreView { modal_open: false, terminal_height: 0, viewport: 0, prompts: &(), prompt: None, session_name: None, width: 0, private_members: None, members: &*MEMBERS, interactive: true, session: None, parent: None, private_root: None, project: None, inspecting: false, streaming: false, reasoning: false, agent: None, entries: &[] }
 }
 pub(crate) fn topic(name: &str, version: u32, event: serde_json::Value) -> TopicEvent {
     TopicEvent::Remote(Arc::new(TopicNotification { topic: name.into(), version, event }))

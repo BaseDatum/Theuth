@@ -27,6 +27,7 @@ pub mod costs;
 pub mod web_progress;
 pub mod artifacts_apps;
 pub mod double;
+pub mod todos;
 
 // Step-11 group t3 (jobs, terminals, speech and search): add modules below, in this block only.
 pub mod jobs;
@@ -88,6 +89,17 @@ impl std::fmt::Debug for Effect {
 impl Effect {
     pub(crate) fn request<R: 'static>(&self) -> Option<&R> {
         self.request.as_ref()?.downcast_ref()
+    }
+}
+
+/// Deferred owner work; its original reply endpoint survives modal closure.
+pub struct SessionContinuation {
+    pub(crate) work: Box<dyn FnOnce(SessionId) -> Effect + Send>,
+    pub(crate) fail: Box<dyn FnOnce(String) -> LocalReply + Send>,
+}
+impl std::fmt::Debug for SessionContinuation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SessionContinuation { .. }")
     }
 }
 
@@ -194,6 +206,12 @@ pub struct CoreView<'a> {
     /// Membership in accepted core prompt queues, independent of shown identity.
     pub prompts: &'a dyn PromptIds,
 
+
+    /// Full terminal height; distinct from the transcript row budget.
+    pub terminal_height: usize,
+
+    /// Existing modal menu or intrinsic secret editor suspends lower-priority capture.
+    pub modal_open: bool,
 
     // Step-11 group t3 CoreView fields: add below, in this block only.
     /// Measured transcript row budget at the current key dispatch boundary.
@@ -379,6 +397,8 @@ pub enum StatusSlot {
     Pinned,
     /// Spoken-view hint, before the attached-engine label.
     Spoken,
+    /// Right-aligned status text, separate from the left status contributions.
+    Right,
 }
 
 /// Fixed layout locations, never feature names.
@@ -624,6 +644,28 @@ pub enum CoreAction {
 
     // Step-11 group t2 CoreAction variants: add below, in this block only.
 
+    /// Apply authoritative revision/editability metadata without retaining an inventory.
+    ContextState {
+        /// Selected session whose context was read.
+        session: SessionId,
+        /// Revision required by a future core edit transaction.
+        revision: String,
+        /// Whether the authoritative snapshot permits edits.
+        editable: bool,
+        /// Refusal reason; retained only for a non-editable snapshot.
+        reason: Option<String>,
+    },
+
+    /// Run the core context mutation and its settled reload as one transaction.
+    EditContext {
+        /// Session whose authoritative inventory supplied the targets.
+        session: SessionId,
+        /// Revision reviewed by the user.
+        expected_revision: String,
+        /// Exact core transcript targets, including protocol companions.
+        targets: Vec<agent::ContextTarget>,
+    },
+
     // Step-11 group t3 CoreAction variants: add below, in this block only.
     /// Move the shell-owned separate editor cursor without touching the chat draft.
     EditorCursor(usize),
@@ -644,6 +686,8 @@ pub enum CoreAction {
     SetReadOnly(bool),
     /// Deliver owner input synchronously after preceding core operations.
     Post(LocalReply),
+    /// Adopt one core-created draft before releasing queued owner work.
+    EnsureSession(SessionContinuation),
 }
 
 /// Owned effects and actions emitted during one deterministic dispatch.
@@ -742,6 +786,38 @@ impl<M: Send + 'static> Cx<'_, '_, M> {
     pub fn claim_error(&mut self) { self.out.error_claimed = true; }
     /// Own this event's plain output without bypassing core admission/bookkeeping.
     pub fn claim_plain(&mut self) { self.out.plain_claimed = true; }
+    /// Run owner work after core adopts a session, sharing any creation in flight.
+    pub fn ensure_session<F, Fut, E>(&mut self, work: F, on_fail: E)
+    where F: FnOnce(Arc<Engine>, SessionId) -> Fut + Send + 'static,
+          Fut: Future<Output = M> + Send + 'static,
+          E: FnOnce(String) -> M + Send + 'static,
+    {
+        self.ensure_session_request((), move |engine, session, ()| work(engine, session), on_fail);
+    }
+    /// Carry the owner's typed request on the effect released after session adoption.
+    pub fn ensure_session_request<R, F, Fut, E>(&mut self, request: R, work: F, on_fail: E)
+    where R: Clone + Send + 'static,
+          F: FnOnce(Arc<Engine>, SessionId, R) -> Fut + Send + 'static,
+          Fut: Future<Output = M> + Send + 'static,
+          E: FnOnce(String) -> M + Send + 'static,
+    {
+        let (to, engine_epoch) = (self.token, self.epoch);
+        self.core(CoreAction::EnsureSession(SessionContinuation {
+            work: Box::new(move |session| {
+                #[cfg(test)]
+                let observed = request.clone();
+                Effect {
+                    lane: Lane::Concurrent,
+                    #[cfg(test)]
+                    request: Some(Box::new(observed)),
+                    work: Box::new(move |engine| Box::pin(async move {
+                        LocalReply { to, engine_epoch, body: Box::new(work(engine, session, request).await) }
+                    })),
+                }
+            }),
+            fail: Box::new(move |error| LocalReply { to, engine_epoch, body: Box::new(on_fail(error)) }),
+        }));
+    }
 }
 
 /// Synchronous owner-local state machine, erased only by Mounted<C>.

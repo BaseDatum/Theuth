@@ -5,6 +5,7 @@ use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use rpc_core::{Server, send, stub_err};
 
+#[rpc_core_macros::rpc_descriptors(owner = "meeting", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait MeetingsApi {
     /// Processes Core Audio knows about, the ones playing audio first (53, 01 §4.1):
@@ -668,6 +669,7 @@ impl MeetingsApiServer for Server {
 }
 
 /// Build this domain's RPC module.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    MeetingsApiServer::into_rpc(server)
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(MeetingsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("meeting RPC descriptors")
 }

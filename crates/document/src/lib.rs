@@ -26,11 +26,11 @@ pub mod rpc_documents;
 pub mod rpc_notebooks;
 
 /// Assemble this plugin's RPC methods.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    rpc_core::merge([
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::merge_described([
         rpc_documents::rpc_module(server.clone()),
         rpc_notebooks::rpc_module(server),
-    ])
+    ]).expect("document RPC composition")
 }
 
 pub mod rpc_support;

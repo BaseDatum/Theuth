@@ -6,6 +6,7 @@ use rpc_core::{send, failed, Server};
 use a2a::rpc_support::{a2a, contacts, name_paired_on};
 
 /// Messaging RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "a2a", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait A2aMessagingApi {
     /// A2A network status (50 §10): listener, configured peers and exports,
@@ -172,6 +173,7 @@ impl A2aMessagingApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    A2aMessagingApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(A2aMessagingApiServer::into_rpc(server), rpc_descriptors())
+        .expect("a2a RPC descriptors")
 }

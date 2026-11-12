@@ -9,6 +9,7 @@ use app::rpc_support::apps;
 use agent::rpc_support::RpcServerExt;
 
 /// Artifacts RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "app", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait AppArtifactsApi {
     /// Publish a reply fence's OpenUI source as an app artifact of `session` without a
@@ -80,6 +81,7 @@ impl AppArtifactsApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    AppArtifactsApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(AppArtifactsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("app RPC descriptors")
 }

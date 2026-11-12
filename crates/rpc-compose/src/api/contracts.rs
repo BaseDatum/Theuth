@@ -151,7 +151,7 @@ impl wire::WireEvent for StreamControl {
 /// the two `allow_private_network` keys behind Network's "Local network
 /// access" (16 §5, amended 2026-11-11). Any other string fails to
 /// deserialize, an `INVALID_PARAMS` error listing these.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ConfigFlagKey {
     /// `decision.enabled` (57 §7.1): off, the decision actor escalates every ask.
@@ -222,7 +222,7 @@ impl ConfigFlagKey {
 }
 
 /// 188: a [`ConfigFlagKey`] as config.yaml holds it and as this engine runs it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ConfigFlag {
     /// Which flag.

@@ -263,7 +263,7 @@ impl Component for Secrets {
                 Ok(None) => {}
             },
             Input::Message(Msg::Event(event)) => self.event(event, cx),
-            Input::Tick { .. } => if std::mem::take(&mut self.refresh) { self.request(Request::ListSecrets, cx); },
+            Input::Tick { .. } => if std::mem::take(&mut self.refresh) && cx.core.interactive { self.request(Request::ListSecrets, cx); },
             Input::Lifecycle(Lifecycle::Prompts(value)) => if let Some(rows) = value["secrets"].as_array() {
                 self.requests.clear();
                 for row in rows { if let Ok(event) = ::secrets::SecretsEvent::deserialize(row) { self.event(event, cx); } }
@@ -321,6 +321,8 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let session = SessionId::new();
         let mut model = Model::new("model".into(), true);
+        model.components = crate::components::Registry::empty();
+        model.components.register(Secrets::default()).unwrap();
         model.session = Some(session);
         model.mount_components(&tx);
         let approval = tools::ApprovalRequested { id: tools::ApprovalId(uuid::Uuid::now_v7()), session, tool: "shell".into(), args: json!({"command":"echo hi"}), risk: tools::Risk::ReadOnly };

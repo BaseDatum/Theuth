@@ -296,6 +296,12 @@ async fn execute_current(api: &Api, cmd: Command, tx: &UnboundedSender<UiEvent>)
 async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<()> {
     let reply = match cmd {
         Command::Component(_) | Command::ComponentInput(_) => unreachable!("component work uses the generic dispatcher"),
+        Command::CreateDraft(options) => {
+            return match open_draft(api, options, tx).await {
+                Ok(_) => Ok(()),
+                Err(error) => { let _ = tx.send(UiEvent::DraftFailed(error.to_string())); Ok(()) }
+            };
+        }
         Command::Resolve { id, decision } => {
             if !msg(api.resolve_approval(id, decision).await)? {
                 anyhow::bail!("approval {} was no longer pending", id.0);
@@ -538,15 +544,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             api.path_complete(session, input, cursor, None).await.ok(),
         ),
         Command::ListAgents(session) => UiEvent::Agents(msg(api.list_agents(session).await)?),
-        // A failed read must not leave the card looking current: the plan is
-        // marked stale first, then the error line explains why (47 §5.4).
-        Command::GetTodos(session) => match msg(api.get_todos(session).await) {
-            Ok(s) => UiEvent::Todos(session, Some(s)),
-            Err(e) => {
-                let _ = tx.send(UiEvent::Todos(session, None));
-                return Err(e);
-            }
-        },
         Command::Load {
             session,
             settled_only,
@@ -1245,7 +1242,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         let _ = writeln!(out, "\x1b[0m");
     }
     let _ = match ev {
-        UiEvent::Wire(_) | UiEvent::Component(_) => unreachable!("intake is dispatched before printing"),
+        UiEvent::Wire(_) | UiEvent::Component(_) | UiEvent::DraftFailed(_) => unreachable!("intake is dispatched before printing"),
         UiEvent::Agent(AgentEvent::ReasoningDelta { text, .. }) => {
             let head = if thinking { "" } else { "\x1b[2m┆ " };
             write!(out, "{head}{text}").and_then(|()| out.flush())
@@ -1573,15 +1570,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             "provider {}  {}  {} models — /model {}/<id>",
             p.name, p.base_url, p.models, p.name
         ),
-        // `/todos` in print mode: plain rows, no card (47 §6.3); a failed
-        // read prints its error line instead.
-        UiEvent::Todos(_, snapshot) => snapshot.iter().flat_map(|s| &s.items).try_for_each(|t| {
-            writeln!(out, "[{}] {}", model::status_label(t.status), t.text).and_then(|()| {
-                t.reason
-                    .as_deref()
-                    .map_or(Ok(()), |r| writeln!(out, "    {r}"))
-            })
-        }),
         UiEvent::SessionOpened(o) => writeln!(
             out,
             "session {}{}",

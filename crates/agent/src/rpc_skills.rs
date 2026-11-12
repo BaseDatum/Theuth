@@ -12,6 +12,7 @@ use rpc_core::{Server, ask};
 use runtime::SessionId;
 use tools::git::SyncResult;
 
+#[rpc_core_macros::rpc_descriptors(owner = "agent", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait SkillsApi {
     /// Every skill under `<data_dir>/skills`.
@@ -129,6 +130,7 @@ impl SkillsApiServer for Server {
 }
 
 /// Build this domain's RPC module.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    SkillsApiServer::into_rpc(server)
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(SkillsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("agent RPC descriptors")
 }

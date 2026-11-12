@@ -11,6 +11,7 @@ use tasks::rpc_support::{route_question, tasks_actor};
 use sessionsync::rpc_support::RpcSessionMoveExt;
 
 /// Hub RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "tasks", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait TasksHubApi {
     /// Answer a pending approval; `true` if it was still pending.
@@ -154,6 +155,7 @@ impl TasksHubApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    TasksHubApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(TasksHubApiServer::into_rpc(server), rpc_descriptors())
+        .expect("tasks RPC descriptors")
 }

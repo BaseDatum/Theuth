@@ -28,11 +28,11 @@ pub mod rpc_tooling;
 pub mod rpc_settings;
 
 /// Assemble this plugin's RPC methods.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    rpc_core::merge([
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::merge_described([
         rpc_tooling::rpc_module(server.clone()),
         rpc_settings::rpc_module(server),
-    ])
+    ]).expect("tools RPC composition")
 }
 
 pub mod activity;
@@ -287,7 +287,7 @@ pub struct ToolCall {
 
 /// Result returned to the model. Errors are content, not `Err`: the model
 /// must see them.
-#[derive(Clone, Debug, Serialize, Deserialize, kameo::Reply)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, kameo::Reply)]
 pub struct ToolOutput {
     /// Text handed back to the model.
     pub content: String,

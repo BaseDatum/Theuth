@@ -13,6 +13,8 @@ fn unsupported_contracts_fail_closed() {
         quote!(#[rpc(server)] trait Api { #[subscription(name="x", item=u32)] fn x(&self); }),
         quote!(#[rpc(server)] trait Api { #[subscription(name="subscribe_x")] fn x(&self); }),
         quote!(#[rpc(server)] trait Api { #[method(name="x")] fn x(&self, #[cfg(test)] x: u32) -> RpcResult<()>; }),
+        quote!(#[rpc(server)] trait Api { #[rpc_audience("guest")] #[method(name="x")] fn x(&self) -> RpcResult<()>; }),
+        quote!(#[rpc(server)] trait Api { #[rpc_audience("mesh")] #[rpc_audience("owner")] #[method(name="x")] fn x(&self) -> RpcResult<()>; }),
     ];
     for declaration in declarations {
         assert!(expand(quote!(owner="tiny", descriptors=descriptors), syn::parse2(declaration).unwrap()).is_err());

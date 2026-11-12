@@ -164,7 +164,7 @@ async fn prompts_resolve_everywhere_and_replay_only_while_pending() {
 }
 
 fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    rpc_core::merge([
+    rpc_core::merge_described([
         rpc_compose::rpc_module(server.clone()),
         a2a::rpc_module(server.clone()),
         agent::rpc_module(server.clone()),
@@ -177,5 +177,5 @@ fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server
         app::rpc_module(server.clone()),
         rpc::rpc_module(server.clone()),
         tools::rpc_module(server),
-    ])
+    ]).expect("test RPC descriptors").module
 }

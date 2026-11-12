@@ -5,7 +5,7 @@ impl Model {
     /// Fold one event into the state.
     pub(super) fn reduce(&mut self, ev: UiEvent, error_claimed: bool) {
         match ev {
-            UiEvent::Wire(_) | UiEvent::Component(_) => unreachable!("intake is dispatched before reduction"),
+            UiEvent::Wire(_) | UiEvent::Component(_) | UiEvent::DraftFailed(_) => unreachable!("intake is dispatched before reduction"),
             UiEvent::Agent(ev) => self.apply_agent(ev),
             UiEvent::Approval(req) => {
                 if let Some(row) = self.agents.get_mut(&req.session) {
@@ -125,12 +125,6 @@ impl Model {
                 category,
                 snapshot,
             } => self.open_shake(session, category, snapshot),
-            // A failed read leaves the plan on screen, labelled stale (47 §5.4).
-            UiEvent::Todos(id, snapshot) => {
-                if self.session == Some(id) {
-                    self.loaded_todos(snapshot);
-                }
-            }
             // The transcript reload that follows pushes the notice (`Refreshed`).
             UiEvent::ContextRemoved(id, r) => {
                 if self.session == Some(id) {

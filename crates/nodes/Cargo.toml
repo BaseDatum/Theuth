@@ -8,6 +8,7 @@ description = "Paired remote harnesses: control conns, presence, dial transport 
 [dependencies]
 runtime = { workspace = true }
 rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
 wire = { workspace = true }
 link = { workspace = true }
 platform = { workspace = true }

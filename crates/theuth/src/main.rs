@@ -1990,8 +1990,16 @@ async fn sigterm() {
 }
 
 fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_composition(server).0
+}
+
+/// Assemble dispatch and discovery from the production owner list, without
+/// starting plugins. Step 9c supplies the declaration pass before this snapshot.
+fn rpc_composition(server: rpc_core::Server) -> (jsonrpsee::RpcModule<rpc_core::Server>, rpc_core::Discovery) {
+    use wire::RuntimeWire as _;
+    let rt = server.rt.clone();
     rpc_compose::prepare(&server.rt);
-    rpc_core::merge([
+    let composition = rpc_core::merge_described([
         rpc::rpc_module(server.clone()),
         rpc_compose::rpc_module(server.clone()),
         agent::rpc_module(server.clone()),
@@ -2023,7 +2031,31 @@ fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server
         autoresearch::rpc_module(server.clone()),
         cells::rpc_module(server.clone()),
         sandbox::rpc_module(server),
-    ])
+    ]).expect("production RPC descriptors");
+    let discovery = rpc_core::Discovery {
+        descriptors: composition.descriptors,
+        events: rt.wire_schema(),
+        plugins: engine_plugins(true, true).iter().map(|plugin| plugin.name().to_owned()).collect(),
+    };
+    (composition.module, discovery)
+}
+
+#[cfg(test)]
+mod wire_contract_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[tokio::test]
+    async fn real_composition_descriptors_match_served_methods() {
+        let rt = Runtime::new(Figment::new(), std::env::temp_dir());
+        let (module, discovery) = rpc_composition(rpc_core::Server::new(rt));
+        discovery.descriptors.validate_methods(module.method_names()).unwrap();
+        let document = discovery.document().unwrap();
+        let described: BTreeSet<_> = document["methods"].as_array().unwrap().iter()
+            .map(|method| method["name"].as_str().unwrap()).collect();
+        let served: BTreeSet<_> = module.method_names().collect();
+        assert_eq!(described, served);
+    }
 }
 
 /// The engine's plugin list (every mode but `--acp` and `--link-signal`):

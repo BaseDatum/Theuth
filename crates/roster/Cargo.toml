@@ -7,6 +7,7 @@ description = "Agents as files: agents/ directory, desks and episodes, journal, 
 
 [dependencies]
 rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
 jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }

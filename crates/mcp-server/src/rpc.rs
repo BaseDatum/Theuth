@@ -13,6 +13,7 @@ use tools::{
     McpProgress, McpServer, Progress, RemoveServer, RepoInfo, SetGate, SetMcpHome, SyncMcp,
 };
 
+#[rpc_core_macros::rpc_descriptors(owner = "mcp-server", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait McpApi {
     /// MCP servers, their tools, and their `mcp/config.yaml` risk lines; with
@@ -181,6 +182,7 @@ impl McpApiServer for Server {
 }
 
 /// Build this domain's RPC module.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    McpApiServer::into_rpc(server)
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(McpApiServer::into_rpc(server), rpc_descriptors())
+        .expect("mcp-server RPC descriptors")
 }
