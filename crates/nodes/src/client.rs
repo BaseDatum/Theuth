@@ -14,7 +14,7 @@ use crate::conn::Channel;
 
 /// Every `Api` method this plugin calls on a node; a test checks each is in
 /// `bindings/methods.json` so a rename fails a test instead of a node.
-pub const METHODS: [&str; 4] = ["info", "link_pair", "link_revoke_device", "link_status"];
+pub const METHODS: [&str; 6] = ["info", "link_pair", "link_revoke_device", "link_status", "rpc.capabilities", "rpc.discover"];
 
 /// Per-request deadline over the relay.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -63,6 +63,7 @@ impl TransportReceiverT for Receiver {
 /// A node's `Api` over its control conn. Dropping it closes the conn.
 pub struct Rpc {
     client: Client,
+    discovery: tokio::sync::OnceCell<Option<rpc_core::NegotiatedDiscovery>>,
 }
 
 impl Rpc {
@@ -72,7 +73,7 @@ impl Rpc {
         let client = ClientBuilder::default()
             .request_timeout(REQUEST_TIMEOUT)
             .build_with_tokio(Sender(tx), Receiver(rx));
-        Self { client }
+        Self { client, discovery: tokio::sync::OnceCell::new() }
     }
 
     /// Resolves when the conn is gone.
@@ -108,6 +109,11 @@ impl Rpc {
         method: &str,
         params: jsonrpsee::core::params::ArrayParams,
     ) -> Result<R, String> {
+        self.discovery.get_or_try_init(|| async {
+            rpc_core::DiscoveryCache::default()
+                .negotiate(&self.client, "authenticated node control", rpc_core::DiscoveryView::Owner).await
+                .map_err(|error| format!("discovery: {error:#}"))
+        }).await?;
         self.client
             .request(method, params)
             .await

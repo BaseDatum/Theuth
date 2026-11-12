@@ -8,6 +8,12 @@ use crate::diag;
 #[rpc_core::rpc_descriptors(owner = "rpc", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait InfraApi {
+    /// Stable declared contract summary for this authenticated audience.
+    #[method(name = "rpc.capabilities", with_extensions)]
+    fn capabilities(&self) -> RpcResult<std::sync::Arc<rpc_core::Capabilities>>;
+    /// Standard no-argument OpenRPC 1.3.2 discovery, not a readiness/auth grant.
+    #[method(name = "rpc.discover", with_extensions)]
+    fn discover(&self) -> RpcResult<rpc_core::OpenRpcDocument>;
     /// 176 C1: liveness only — answers `null` at once. Asks no actor and awaits nothing, so a
     /// busy engine still answers; probe with this, not `info`, to tell a dead socket from a
     /// slow handler.
@@ -24,6 +30,16 @@ pub trait InfraApi {
 
 #[async_trait]
 impl InfraApiServer for Server {
+    fn capabilities(&self, ext: &Extensions) -> RpcResult<std::sync::Arc<rpc_core::Capabilities>> {
+        Ok(rpc_core::discovery_document(&self.rt, rpc_core::discovery_view(ext)?)
+            .map_err(|error| rpc_core::failed(error.to_string()))?.capabilities)
+    }
+
+    fn discover(&self, ext: &Extensions) -> RpcResult<rpc_core::OpenRpcDocument> {
+        Ok(rpc_core::discovery_document(&self.rt, rpc_core::discovery_view(ext)?)
+            .map_err(|error| rpc_core::failed(error.to_string()))?.document)
+    }
+
 
     fn ping(&self) -> RpcResult<()> {
         Ok(())

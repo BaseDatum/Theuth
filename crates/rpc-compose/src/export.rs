@@ -1,14 +1,9 @@
-//! `just ts`: `cargo test -p rpc-compose --features ts export_bindings` writes
-//! `bindings/*.ts` for every wire type and `bindings/methods.json`, the sorted
-//! list of every registered method name (25 §7), plus the surface catalog as
-//! `bindings/surface-catalog.json` (JSON Schema) and
-//! `bindings/surface-catalog-compact.txt` (30 §6).
+//! Transitional ts-rs roots until step 10 migrates the generated clients.
 
-#[cfg(feature = "ts")]
-#[tokio::test]
-async fn export_bindings() {
+/// Write the legacy TypeScript roots; method/schema catalogs belong exclusively
+/// to the binary's real declaration-only composition.
+pub fn typescript(out: &str) {
     use ts_rs::TS;
-    let out = "../../bindings";
     let cfg = ts_rs::Config::new().with_out_dir(out);
     macro_rules! export {
         ($($t:ty),*) => {$( <$t>::export_all(&cfg).expect(stringify!($t)); )*};
@@ -868,24 +863,4 @@ async fn export_bindings() {
         agent::limits::UsageLimits
     );
 
-    use crate::api::test_rpc_module;
-    let rt = runtime::Runtime::new(figment::Figment::new(), std::env::temp_dir());
-    let module = test_rpc_module(crate::new_server(rt));
-    let mut names: Vec<&str> = module.method_names().collect();
-    names.sort_unstable();
-    std::fs::write(
-        format!("{out}/methods.json"),
-        serde_json::to_string_pretty(&names).expect("methods.json"),
-    )
-    .expect("write methods.json");
-    std::fs::write(
-        format!("{out}/surface-catalog.json"),
-        serde_json::to_string_pretty(&surface::catalog_schema()).expect("surface-catalog.json"),
-    )
-    .expect("write surface-catalog.json");
-    std::fs::write(
-        format!("{out}/surface-catalog-compact.txt"),
-        surface::catalog_compact(),
-    )
-    .expect("write surface-catalog-compact.txt");
 }

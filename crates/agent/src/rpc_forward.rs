@@ -518,6 +518,7 @@ pub async fn forward_within(
 /// [`Forwarded`] with the opening peer. `methods` is the full API ([`crate::methods`]).
 pub async fn serve(rt: Runtime, transport: Arc<dyn Transport>, mut methods: jsonrpsee::Methods) {
     methods.extensions_mut().insert(rpc_core::RpcPeer::internal());
+    methods.extensions_mut().insert(rpc_core::DiscoveryView::Mesh);
     loop {
         let accepted = tokio::select! {
             () = rt.shutdown.cancelled() => return,

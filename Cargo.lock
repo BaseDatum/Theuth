@@ -17692,6 +17692,7 @@ name = "rpc-core"
 version = "2.19.5"
 dependencies = [
  "anyhow",
+ "hex",
  "jsonrpsee",
  "kameo",
  "parking_lot",
@@ -17700,7 +17701,9 @@ dependencies = [
  "rpc-core-macros",
  "runtime",
  "schemars 1.2.3",
+ "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tokio",
  "tokio-util",
  "toml 1.1.8+spec-1.1.0",

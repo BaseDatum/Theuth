@@ -67,6 +67,10 @@ impl runtime::Plugin for CellsPlugin {
         PLUGIN
     }
 
+    async fn declare_wire(&mut self, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await
+    }
+
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
         declare_wire(rt).await?;
         let cfg = CellsConfig::from_runtime(rt);
