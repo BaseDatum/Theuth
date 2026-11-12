@@ -145,6 +145,10 @@ pub struct Editor {
 pub struct CoreView<'a> {
     /// Current selected session; None for an unsent draft.
     pub session: Option<SessionId>,
+    /// Selected session parent and active private-tree root, independent of board state.
+    pub parent: Option<SessionId>,
+    /// Root of the active private lease, when present.
+    pub private_root: Option<SessionId>,
     /// Effective project of the selected root.
     pub project: Option<&'a str>,
     /// Historical inspection must not be overwritten by live recovery.
@@ -179,6 +183,8 @@ pub enum Lifecycle<'a> {
     EngineChanged,
     /// Clear session-scoped state, not persistent global caches.
     SessionReset,
+    /// Core adopted a different selected session; read the updated session context.
+    SessionChanged,
     /// Release local resources and subscriptions.
     Shutdown,
     /// A lossy stream requires an authoritative re-read, never mutation replay.
@@ -241,6 +247,8 @@ impl<'a, M> Input<'a, M> {
 pub enum Surface<'a> {
     /// Header suffix.
     Header,
+    /// Owner presentation beside one session row, independent of feature DTOs.
+    SessionBadge(SessionId),
     /// Status suffix.
     Status,
     /// Transcript content replacement or append.
