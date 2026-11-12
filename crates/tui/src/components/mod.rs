@@ -448,7 +448,7 @@ impl ViewCx<'_> {
     /// Current spinner glyph, on the shared core animation clock.
     pub fn spinner(&self) -> &'static str { spinner(self.frame) }
     /// Typed widget callback; neither editor handles nor mutable core state escape.
-    pub fn callback<M: Send + 'static>(&self, make: fn(String) -> M) -> Option<impl Fn(String) + 'static> {
+    pub fn callback<M: Send + 'static>(&self, make: impl Fn(String) -> M + Send + Sync + 'static) -> Option<impl Fn(String) + 'static> {
         let commands = self.commands?.clone();
         let (to, engine_epoch) = self.endpoint?;
         Some(move |value| {
