@@ -2,11 +2,15 @@
 // model limits, the pickers' local tags and Settings › Memory's Test summary call. Dev only, behind
 // `localStorage.local-fixture` (or `VITE_LOCAL_FIXTURE`): `"1"` — the test call succeeds; `"fail"` — it fails on thinking.
 // Every other call is the engine's; an omlx provider `mlx` (Sky's setup) is added to its providers and models.
+// 191 D8: Network › Contacts answers from `contacts` below (a sound contact with a machine that left, an alert, a
+// refused and a waiting record); `dev/contacts-fixture.html` renders them with no engine.
 
 import type { Api } from '@/rpc/api'
 import type { LocalServer } from '@/rpc/bindings/LocalServer'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import type { ProviderInfo } from '@/rpc/bindings/ProviderInfo'
+import type { Contact } from '@/rpc/bindings/Contact'
+import type { Export } from '@/rpc/bindings/Export'
 import type { ProviderModel } from '@/rpc/bindings/ProviderModel'
 import type { SummaryTest } from '@/rpc/bindings/SummaryTest'
 
@@ -63,6 +67,51 @@ const failed: SummaryTest = {
   hint: 'The server ignored enable_thinking: false. Turn thinking off for this model in omlx (model settings › enable_thinking), or pick a model without a thinking template.',
 }
 
+const NOW = Date.now()
+const contact = (c: Partial<Contact> & Pick<Contact, 'name' | 'id'>): Contact => ({
+  machine: 'laptop',
+  endpoint: 'e7ac7242a74ef96fc15d964ef848e564f6971cf2bc08b08a94308c4a6e020825',
+  fingerprint: '46WH EQVH J34W 7QK5 SZHP',
+  path: 'offline',
+  cap: 'read_only',
+  exports: [],
+  first_contact: {},
+  blocked: false,
+  paired_ms: NOW - 86_400_000,
+  shared: [],
+  full_capable: true,
+  problem_kind: null,
+  paired_on: 'studio',
+  machines: [],
+  ...c,
+})
+const machine = (eid: string, name: string, left = false) => ({ eid, name, left })
+/** One of each D8 row: sound (one of its machines left), alert, refused, waiting (a rename in flight, so two `bob`s). */
+const contacts: Contact[] = [
+  contact({
+    name: 'bob',
+    id: 'r-bob',
+    machine: "Bob's MacBook",
+    path: 'lan',
+    exports: ['research'],
+    first_contact: { research: 'allow' },
+    machines: [machine('k3j9q2m4x7p1r8t5', "Bob's MacBook"), machine('p8t5w6y0k3j9q2m4', 'workshop'), machine('z9y8x7w6v5u4t3s2', 'old-imac', true)],
+  }),
+  contact({
+    name: 'carol',
+    id: 'r-carol',
+    machine: 'thinkpad',
+    path: 'relay',
+    paired_on: 'xeus',
+    problem: 'a machine of carol follows a roster we never signed; one of ours may be compromised',
+    problem_kind: 'alert',
+    machines: [machine('c4r0l5x7p1r8t5w6', 'thinkpad')],
+  }),
+  contact({ name: 'dave', id: 'r-dave', machine: 'pi', paired_on: '3f9a1c07', problem: "cannot verify this contact's machines", problem_kind: 'refused', machines: [machine('d4v3q2m4x7p1r8t5', 'd4v3q2m4')] }),
+  contact({ name: 'bob', id: 'r-bob-2', machine: 'phone', problem: 'its name is taken by another contact (renaming)', problem_kind: 'waiting', machines: [machine('b0b2q2m4x7p1r8t5', 'b0b2q2m4')] }),
+]
+const exports: Export[] = [{ id: 'x-research', name: 'research', target: { kind: 'agent', agent: 'research@studio' }, description: 'research@studio', paused: null }]
+
 const later = <T>(v: T, ms: number) => new Promise<T>((resolve) => setTimeout(() => resolve(v), ms))
 
 /** Remove on `mlx` hides it (and its models) until reload. */
@@ -91,6 +140,10 @@ export function localFixture(api: Api): Api {
       return Promise.resolve(m)
     },
     test_summary_call: (m) => later({ ...(flag() === 'fail' ? failed : ok), model: m }, 1_500),
+    contact_list: () => Promise.resolve(contacts),
+    contact_remove: () => Promise.resolve(null),
+    contact_first_waiting: () => Promise.resolve([]),
+    a2a_exports: () => Promise.resolve(exports),
   }
   wrapped.set(api, fixture)
   return fixture
