@@ -54,5 +54,8 @@ sha2 = { workspace = true }
 unicode-width = { workspace = true }
 iso_currency = { version = "0.7.1", features = ["iterator"] }
 
+[dev-dependencies]
+toml = { workspace = true }
+
 [lints]
 workspace = true
