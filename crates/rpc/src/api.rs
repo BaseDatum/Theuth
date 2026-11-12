@@ -50,12 +50,10 @@ use app::{
 };
 use artifact::search::ArtifactMatchContext;
 use base64::Engine as _;
-use browser::{BROWSER_ACTOR, Browsers, Screenshot};
 use codeindex::{
     CODEINDEX_ACTOR, ChangeLens, CodeindexActor, FitLens, HereLens, IndexStats, LensMeta,
     LocateAnchor, Located, MapElement, MapExport, MapHit, MapIndex, MapJob,
 };
-use computer::{COMPUTER_ACTOR, Computer, Permissions, ScreenContext};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
