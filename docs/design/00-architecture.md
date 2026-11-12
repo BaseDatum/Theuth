@@ -222,6 +222,8 @@ shared dictation lookup from `talk::rpc_support`; main registers
 The `nodes` crate owns the network wire methods (link, nodes, mesh and vault
 rotation); main registers `nodes::rpc_module` directly. Its node lookup lives
 in `nodes::rpc_support`.
+The `schedule` crate owns routine RPC methods and exports
+`schedule::rpc_module`; its shared actor lookup stays in `schedule::rpc_support`.
 
 Events: a plugin may publish one struct per event or one `#[serde(tag =
 "type")]` enum per event *stream* — `agent::AgentEvent` is the latter because
