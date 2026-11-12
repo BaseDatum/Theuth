@@ -38,6 +38,8 @@ pub mod gate;
 pub mod git;
 pub mod hooks;
 pub mod judge;
+/// Dreaming-backed landing for learned sidecar studies.
+pub mod landing;
 pub mod literature;
 pub mod mechanism;
 pub mod novelty;
@@ -46,6 +48,9 @@ pub mod population;
 pub mod record;
 pub mod refs;
 pub mod review;
+/// JSON-RPC server and client contracts for research.
+pub mod rpc;
+pub use rpc::{ResearchApiClient, ResearchApiServer, rpc_module};
 pub mod rpc_impl;
 pub mod runner;
 pub mod scanner;
