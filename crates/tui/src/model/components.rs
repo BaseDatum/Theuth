@@ -27,6 +27,7 @@ macro_rules! core_view {
             prompts: &(&$model.approvals, &$model.asks),
             viewport: $model.viewport,
             terminal_height: $model.terminal_height,
+            modal_open: $model.modal_menu() || $model.components.captures(FocusClass::Secret),
         }
     };
 }

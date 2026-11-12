@@ -198,6 +198,9 @@ pub struct CoreView<'a> {
     /// Full terminal height; distinct from the transcript row budget.
     pub terminal_height: usize,
 
+    /// Existing modal menu or intrinsic secret editor suspends lower-priority capture.
+    pub modal_open: bool,
+
     // Step-11 group t3 CoreView fields: add below, in this block only.
     /// Measured transcript row budget at the current key dispatch boundary.
     pub viewport: usize,
