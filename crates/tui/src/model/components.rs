@@ -90,6 +90,8 @@ impl Model {
                     self.present_transcript(presentation);
                     self.receive(UiEvent::Component(reply), emit);
                 }
+                CoreAction::SetReadOnly(read_only) => self.historical = read_only,
+                CoreAction::Post(reply) => self.receive(UiEvent::Component(reply), emit),
                 CoreAction::EditorCursor(caret) => self.widget_cursor = Some(caret),
                 CoreAction::HoldReference(reference) => {
                     let token = self.attach_ref(reference);
