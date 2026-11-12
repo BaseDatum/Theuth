@@ -7,7 +7,7 @@
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use genai::chat::{ChatMessage, ChatStreamEvent, StreamEnd};
+use genai::chat::{ChatMessage, ChatStreamEvent, ReasoningEffort, StreamEnd};
 use models::Resolved;
 use uuid::Uuid;
 
@@ -30,14 +30,21 @@ pub(crate) struct Side {
     auth: crate::supervisor::Auth,
     /// 177 R2-6: a title call (thinking off on a local server).
     short: bool,
+    /// 194 D4e: the reasoning effort the call carries ([`Side::effort`]); `None` = no setting.
+    effort: Option<ReasoningEffort>,
 }
 
 impl Shared {
-    /// The role's model: `Escalate` → escalate → title → session; `Title` →
-    /// title → session; `Polish` → polish → title → session (153 §9.3);
-    /// `Vision` → the fallback or an error; `Session` → the session's model
-    /// (its resolution error, if any); `Named` → the catalog.
-    pub(crate) fn role_model(&self, role: &ModelRole) -> Result<Resolved, String> {
+    /// The role's model and the effort of the setting that resolved it (194
+    /// D4e): `Escalate` → escalate → title → session; `Title` → title →
+    /// session; `Polish` → polish → title → session (153 §9.3); `Vision` → the
+    /// fallback or an error; `Session` → the session's model (its resolution
+    /// error, if any); `Named`/`NamedWithEffort` → the catalog. The effort is
+    /// the answering setting's own; a session-model fallback carries none.
+    pub(crate) fn role_model(
+        &self,
+        role: &ModelRole,
+    ) -> Result<(Resolved, Option<String>), String> {
         let slot = |s: &std::sync::RwLock<Option<Resolved>>| {
             s.read().unwrap_or_else(|p| p.into_inner()).clone()
         };
@@ -48,21 +55,31 @@ impl Shared {
                 None => Ok(current.model.clone()),
             }
         };
+        let named = |id: &str| {
+            self.catalog
+                .resolve(id, &*crate::supervisor::configured(self.auth.clone()))
+        };
+        // 194 S1(b): the Title/Escalate/Vision/Polish efforts are filled in here.
         match role {
             ModelRole::Escalate => slot(&self.escalate_model)
                 .or_else(|| slot(&self.title_model))
-                .map_or_else(session, Ok),
-            ModelRole::Title => slot(&self.title_model).map_or_else(session, Ok),
+                .map_or_else(session, Ok)
+                .map(|m| (m, None)),
+            ModelRole::Title => slot(&self.title_model)
+                .map_or_else(session, Ok)
+                .map(|m| (m, None)),
             ModelRole::Polish => slot(&self.polish_model)
                 .or_else(|| slot(&self.title_model))
-                .map_or_else(session, Ok),
-            ModelRole::Vision => {
-                slot(&self.vision_model).ok_or_else(|| "no vision fallback model is set".to_owned())
+                .map_or_else(session, Ok)
+                .map(|m| (m, None)),
+            ModelRole::Vision => slot(&self.vision_model)
+                .map(|m| (m, None))
+                .ok_or_else(|| "no vision fallback model is set".to_owned()),
+            ModelRole::Session => session().map(|m| (m, None)),
+            ModelRole::Named(id) => named(id).map(|m| (m, None)),
+            ModelRole::NamedWithEffort { model, effort } => {
+                named(model).map(|m| (m, effort.clone()))
             }
-            ModelRole::Session => session(),
-            ModelRole::Named(id) => self
-                .catalog
-                .resolve(id, &*crate::supervisor::configured(self.auth.clone())),
         }
     }
 
@@ -78,6 +95,7 @@ impl Shared {
             client: self.client.clone(),
             auth: self.auth.clone(),
             short: false,
+            effort: None,
         }
     }
 }
@@ -87,6 +105,24 @@ impl Side {
     /// the thinking-off template kwargs on a local server.
     pub(crate) fn short(mut self, short: bool) -> Self {
         self.short = short;
+        self
+    }
+
+    /// 194 D4e: carry `effort` (a keyword or token budget) on `model`'s call.
+    /// One the model does not take — or no known word — is dropped with a
+    /// warning, so a stale setting never 400s the call; `None` sends no setting.
+    pub(crate) fn effort(mut self, model: &Resolved, effort: Option<&str>) -> Self {
+        self.effort = effort.and_then(|e| {
+            if let Some(Err(why)) = model.model.as_ref().map(|m| m.validate_effort(e)) {
+                tracing::warn!(model = %model.id, "side-call effort `{e}` dropped: {why}");
+                return None;
+            }
+            let out = crate::effort_of(e);
+            if out.is_none() && e != "default" {
+                tracing::warn!(model = %model.id, "side-call effort `{e}` dropped: unknown effort");
+            }
+            out
+        });
         self
     }
 
@@ -102,7 +138,8 @@ impl Side {
         budget: Duration,
         kind: CallKind,
     ) -> Result<SideReply, String> {
-        let current = Current::new(model, None, &self.client, &self.auth);
+        let mut current = Current::new(model, None, &self.client, &self.auth);
+        current.effort = self.effort.clone();
         let transport = current.backend.transport(&current.model).await?;
         let message = ChatMessage::user(user);
         // 116: the reply budget from the model's own limits; no calibration here.
@@ -112,7 +149,13 @@ impl Side {
             .as_ref()
             .map_or((0, 0), |m| (m.limit.context, m.limit.output));
         let est = compact::est(&message).saturating_add((system.len() / 4) as u32);
-        let reply = compact::reply_budget(output, window, est, None, 0);
+        // 116: an effort on Anthropic floors the reply above its thinking budget.
+        let floor = if self.effort.is_some() {
+            current.reply_floor(transport)
+        } else {
+            0
+        };
+        let reply = compact::reply_budget(output, window, est, None, floor);
         let frame = Frame {
             tools: &[],
             system,
@@ -122,11 +165,15 @@ impl Side {
             strip_reasoning: false,
             max_tokens: (reply > 0).then_some(reply),
         };
-        let (req, opts) = frame.request(transport, self.session, None);
+        let (req, opts) = frame.request(transport, self.session, self.effort.clone());
         // 177 E2 / R2-6: a title (a short summary-style call) to a local
-        // OpenAI-protocol server thinks not; consult, advisor, notebook
-        // insights, ask, polish and escalate keep the model's thinking.
-        let opts = if self.short && current.backend.local_openai(&current.model) {
+        // OpenAI-protocol server thinks not — unless its setting picked an
+        // effort (194); consult, advisor, notebook insights, ask, polish and
+        // escalate keep the model's thinking.
+        let opts = if self.short
+            && self.effort.is_none()
+            && current.backend.local_openai(&current.model)
+        {
             crate::backend::thinking_off(opts)
         } else {
             opts
