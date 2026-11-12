@@ -150,9 +150,20 @@ fn shape(card: &Card<'_>) -> String {
                     let cmd = args.get("command").and_then(|c| c.as_str()).unwrap_or("");
                     format!("approval:shell:{risk}:{}", shell_shape(cmd))
                 }
-                "edit" | "write_file" => {
-                    let path = args.get("path").and_then(|p| p.as_str()).unwrap_or("");
-                    format!("approval:{tool}:{risk}:{}", path_shape(path))
+                "edit" | "write_file" | "move_text" | "copy_text" | "indent" => {
+                    // One class per touched-path shape set (move_text: source + target,
+                    // so approving a move inside one tree does not cover a move across trees).
+                    let mut shapes: Vec<String> = Vec::new();
+                    for p in touched_paths(tool, args) {
+                        let s = path_shape(p);
+                        if !shapes.contains(&s) {
+                            shapes.push(s);
+                        }
+                    }
+                    if shapes.is_empty() {
+                        shapes.push(path_shape(""));
+                    }
+                    format!("approval:{tool}:{risk}:{}", shapes.join("+"))
                 }
                 _ if *mcp || tool.contains("__") => {
                     let mut keys: Vec<&str> = args
@@ -228,6 +239,28 @@ fn is_assignment(t: &str) -> bool {
     !name.is_empty()
         && !name.starts_with(|c: char| c.is_ascii_digit())
         && name.bytes().all(|b| b == b'_' || b.is_ascii_alphanumeric())
+}
+
+/// Paths a path-shaped tool call touches. Refs split at the last `#`; `clip:` refs have none.
+fn touched_paths<'a>(tool: &str, args: &'a serde_json::Value) -> Vec<&'a str> {
+    let get = |k: &str| args.get(k).and_then(|v| v.as_str());
+    let ref_path =
+        |s: &'a str| (!s.starts_with("clip:")).then(|| s.rsplit_once('#').map_or(s, |(p, _)| p));
+    let target = || {
+        ["before", "after", "at"]
+            .into_iter()
+            .find_map(get)
+            .and_then(ref_path)
+    };
+    match tool {
+        "move_text" => get("src")
+            .and_then(ref_path)
+            .into_iter()
+            .chain(target())
+            .collect(),
+        "copy_text" => target().into_iter().collect(),
+        _ => get("path").into_iter().collect(),
+    }
 }
 
 /// The first path component under the home directory, or the first two when
@@ -356,6 +389,26 @@ mod tests {
                 Requester::Root
             ),
             "approval:edit:mutating:.theuth:root"
+        );
+        assert_eq!(
+            approval(
+                "move_text",
+                json!({ "src": format!("{home}/Develop/theuth/a.rs#L1-L3@1a2b3c4d"), "after": format!("{home}/.theuth/b.md#Sym") }),
+                Risk::Mutating,
+                false,
+                Requester::Root
+            ),
+            "approval:move_text:mutating:Develop/theuth+.theuth:root"
+        );
+        assert_eq!(
+            approval(
+                "copy_text",
+                json!({ "src": "clip:x", "at": format!("{home}/.theuth/b.md#end") }),
+                Risk::Mutating,
+                false,
+                Requester::Root
+            ),
+            "approval:copy_text:mutating:.theuth:root"
         );
         assert_eq!(
             approval(

@@ -65,10 +65,8 @@ pub(crate) async fn transcript(session: SessionId) -> Result<Transcript> {
                     t.messages.push((seq, text.clone()));
                 }
             }
-            agent::HistoryEntry::Tool { name, args, .. }
-                if matches!(name.as_str(), "edit" | "write_file") =>
-            {
-                if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
+            agent::HistoryEntry::Tool { name, args, .. } => {
+                for p in edited_paths(name, args) {
                     let p = PathBuf::from(p);
                     t.edited.push(match (&cwd, p.is_relative()) {
                         (Some(c), true) => c.join(p),
@@ -80,6 +78,31 @@ pub(crate) async fn transcript(session: SessionId) -> Result<Transcript> {
         }
     }
     Ok(t)
+}
+
+/// Paths a tool call edits: `edit`/`write_file`/`indent` → `path`; `move_text` → its `src`
+/// and target ref paths; `copy_text` → its target ref path (`clip:` refs have no path).
+/// A ref's path is everything before its last `#`.
+fn edited_paths<'a>(tool: &str, args: &'a serde_json::Value) -> Vec<&'a str> {
+    let get = |k: &str| args.get(k).and_then(|v| v.as_str());
+    let ref_path =
+        |s: &'a str| (!s.starts_with("clip:")).then(|| s.rsplit_once('#').map_or(s, |(p, _)| p));
+    let target = || {
+        ["before", "after", "at"]
+            .into_iter()
+            .find_map(get)
+            .and_then(ref_path)
+    };
+    match tool {
+        "edit" | "write_file" | "indent" => get("path").into_iter().collect(),
+        "move_text" => get("src")
+            .and_then(ref_path)
+            .into_iter()
+            .chain(target())
+            .collect(),
+        "copy_text" => target().into_iter().collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// The cells of a markdown text: closed fences whose body parses as a cell, in order. The
@@ -169,5 +192,16 @@ mod tests {
             surface::cell::digest("#| cwd: /tmp\n#| name: a\nls\n")
         );
         assert_eq!(cells[1].cell.code, "pwd");
+    }
+
+    #[test]
+    fn text_ref_tools_edit_their_ref_paths() {
+        use serde_json::json;
+        let mv = json!({ "src": "a/x.rs#L1-L2@1a2b3c4d", "after": "b/y.rs#Sym" });
+        assert_eq!(edited_paths("move_text", &mv), ["a/x.rs", "b/y.rs"]);
+        let cp = json!({ "src": "clip:c", "at": "b/y.rs#end" });
+        assert_eq!(edited_paths("copy_text", &cp), ["b/y.rs"]);
+        assert_eq!(edited_paths("indent", &json!({ "path": "z.rs" })), ["z.rs"]);
+        assert!(edited_paths("clip", &json!({ "name": "c", "src": "a#L1" })).is_empty());
     }
 }
