@@ -932,7 +932,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             #(path_box(&m, width))
             View(height: 1, padding_left: 1, padding_right: 1, justify_content: JustifyContent::SpaceBetween) {
                 View() {
-                    Text(content: format!("{}{}", m.status(), m.component_text(Surface::Status)), color: SAND)
+                    Text(content: m.status(), color: SAND)
                     #(m.advisor_segment().map(|(text, state)| element!(Text(content: text, color: advisor_color(state)))))
                 }
                 Text(content: m.mcp_status(), color: SAND)
@@ -1506,7 +1506,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
         // Drawn by `terminal_box`, never here.
         Menu::Terminal(_) => return None,
     };
-    let cursor = cursor.min(rows.len().saturating_sub(1));
     // A diff or the cost breakdown gets the screen minus the frame around the box; lists stay short.
     let tall = matches!(
         m.menu,
@@ -1517,6 +1516,19 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             } | Menu::Cost { .. }
         )
     );
+    Some(menu_view(title, rows, cursor, width, height, tall))
+}
+
+/// Shared modal frame, selection window and clipping for component-owned rows.
+pub(crate) fn menu_view(
+    title: String,
+    rows: Vec<String>,
+    cursor: usize,
+    width: u16,
+    height: u16,
+    tall: bool,
+) -> AnyElement<'static> {
+    let cursor = cursor.min(rows.len().saturating_sub(1));
     let max = if tall {
         usize::from(height).saturating_sub(10).max(MENU_ROWS)
     } else {
@@ -1525,7 +1537,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
     let shown = window(rows.len(), cursor, max);
     // border 2 + padding 2 + cursor glyph 2, then one less.
     let fit = usize::from(width).saturating_sub(7);
-    Some(
         element! {
             View(border_style: BorderStyle::Round, border_color: SAND, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
                 Text(content: title, color: SAND)
@@ -1543,8 +1554,7 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 }))
             }
         }
-        .into_any(),
-    )
+        .into_any()
 }
 
 /// The path completion list under the editor (PATH-AC): a window of rows

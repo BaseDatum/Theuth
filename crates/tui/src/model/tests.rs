@@ -4490,7 +4490,7 @@
             },
         ));
         let rows = m.slash_rows("/");
-        assert_eq!(rows.len(), slash_matches("/", m.app_enabled).len() + 2);
+        assert_eq!(rows.len(), m.command_specs("/").len() + 2);
         assert!(!rows[0].raw);
         let harness: Vec<(&str, &str)> = rows
             .iter()
