@@ -151,10 +151,6 @@ impl Model {
             "/a2a" => self
                 .entries
                 .push(Entry::Error("usage: /a2a [reload]".into())),
-            "/double" => match DoubleCmd::parse(arg) {
-                Some(cmd) => send(tx, Command::Double(cmd)),
-                None => self.entries.push(Entry::Error(DoubleCmd::USAGE.into())),
-            },
             "/mcp" | "/tools" if arg.is_empty() => {
                 self.awaiting_mcp = true;
                 send(tx, Command::ListMcp(self.session));

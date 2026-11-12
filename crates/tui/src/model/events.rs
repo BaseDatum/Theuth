@@ -20,10 +20,6 @@ pub enum UiEvent {
     Ask(AskRequested),
     /// An ask was answered or dismissed (by anyone).
     AskResolved(AskResolved),
-    /// The double predicted a card's answer (126 §10); keyed by `question_id`.
-    DoublePredicted(DoublePredicted),
-    /// The double answered a card at L2/L3 (126 §10).
-    DoubleAnswered(DoubleAnswered),
     /// Reply to [`Command::ListSessions`].
     Sessions(Vec<SessionSummary>),
     /// Reply to [`Command::Search`], tagged with the view generation that asked (49 §6.1).
@@ -463,8 +459,6 @@ pub enum Command {
         /// On or off.
         enabled: bool,
     },
-    /// `/double …` (126 §10): one `double_*` call, answered with an `Info` line.
-    Double(DoubleCmd),
     /// `get_prompt`.
     ShowPrompt(Option<SessionId>),
     /// `list_skills`.

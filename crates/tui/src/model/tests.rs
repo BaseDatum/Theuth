@@ -1,4 +1,5 @@
     use super::*;
+    use crate::components::double::{Double, DoubleCmd, double_chip};
     use agent::{CostBucket, CostScope, Coverage, Money, SessionCost};
     use crate::components::costs::{cost_lines, cost_short, money_units};
     use tokio::sync::mpsc::unbounded_channel;
@@ -7522,8 +7523,8 @@
             explain: Default::default(),
         };
         // The prediction arrives before the card: kept, shown once the card is.
-        m.apply(UiEvent::DoublePredicted(pred(None)));
-        assert_eq!(m.double_chip(), None);
+        m.apply(wire_event("double.predicted", pred(None)));
+        assert_eq!(m.components.get::<Double>().unwrap().chip(), None);
         assert!(!m.animating());
         m.apply(UiEvent::Approval(ApprovalRequested {
             id,
@@ -7532,7 +7533,7 @@
             args: serde_json::json!({"command": "git push"}),
             risk: tools::Risk::Mutating,
         }));
-        assert_eq!(m.double_chip().as_deref(), Some("double: Allow 91 % · L1"));
+        assert_eq!(m.components.get::<Double>().unwrap().chip().as_deref(), Some("double: Allow 91 % · L1"));
         // L2: the countdown is derived from `will_act_at` and keeps frames coming.
         let p = pred(Some("2030-01-01T00:00:30Z".into()));
         let t0 = chrono::DateTime::parse_from_rfc3339("2030-01-01T00:00:12Z").unwrap();
@@ -7540,7 +7541,7 @@
             double_chip(&p, u64::try_from(t0.timestamp_millis()).unwrap()),
             "double: Allow 91 % · L1 · answers in 18 s (answer to take over)"
         );
-        m.apply(UiEvent::DoublePredicted(p));
+        m.apply(wire_event("double.predicted", p));
         assert!(m.animating());
         // Resolution drops it; a later answer line names the choice.
         m.apply(UiEvent::Resolved(ApprovalResolved {
@@ -7548,9 +7549,9 @@
             decision: Decision::Allow,
             timed_out: false,
         }));
-        assert_eq!(m.double_chip(), None);
-        assert!(m.double.is_empty());
-        m.apply(UiEvent::DoubleAnswered(double::DoubleAnswered {
+        assert_eq!(m.components.get::<Double>().unwrap().chip(), None);
+        assert!(m.components.get::<Double>().unwrap().predictions.is_empty());
+        m.apply(wire_event("double.answered", double::DoubleAnswered {
             question_id: id.0.to_string(),
             session: Some(s),
             class: "approval:shell:mutating:git push:root".into(),

@@ -697,7 +697,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             .peer_name(req.session)
             .map_or_else(String::new, |n| format!("  [agent: {n}]"));
         let open = if Some(req.session) == m.session { "" } else { "  [o] open" };
-        let chip = m.double_chip();
+        let chip = m.component_text(Surface::PromptBadge);
+        let chip = (!chip.is_empty()).then_some(chip);
         element! {
             View(border_style: BorderStyle::Double, border_color: OCHRE, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
                 Text(content: format!("approval: {}  ({}){agent}", req.tool, risk_name(req.risk)), weight: Weight::Bold)
@@ -1073,7 +1074,8 @@ fn ask_box(m: &Model) -> Option<AnyElement<'static>> {
         };
         format!("[↑↓] move  {pick}[s] skip  [esc] dismiss (ends the turn)")
     };
-    let chip = m.double_chip();
+    let chip = m.component_text(Surface::PromptBadge);
+    let chip = (!chip.is_empty()).then_some(chip);
     Some(
         element! {
             View(border_style: BorderStyle::Double, border_color: FAIENCE, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {

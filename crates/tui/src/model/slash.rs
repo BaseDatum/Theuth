@@ -125,11 +125,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "network (A2A) status: listener, configured peers and exports; reload swaps peers.yaml",
     ),
     (
-        "/double",
-        "[status|off|pause [off]|train [a|b] [venue]|rollback <version>|cap <class> <rung> [opt-in]]",
-        "the owner's double (126): its numbers, learning on/off, a training run, caps",
-    ),
-    (
         "/cancel",
         "",
         "abort the in-flight turn (Esc; Esc x3 within 1 s stops its subagents too)",

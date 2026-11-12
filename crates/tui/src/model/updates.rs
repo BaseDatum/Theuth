@@ -31,7 +31,6 @@ impl Model {
                     self.approval_done(session);
                 }
                 self.approvals.retain(|a| a.id != r.id);
-                self.double.remove(&r.id.0.to_string());
                 self.component_notify(crate::components::Lifecycle::PromptChanged { resolved: Some(r.id.0) });
             }
             UiEvent::Ask(req) => {
@@ -45,19 +44,7 @@ impl Model {
             }
             UiEvent::AskResolved(r) => {
                 self.asks.retain(|a| a.req.id != r.id);
-                self.double.remove(&r.id.0.to_string());
                 self.component_notify(crate::components::Lifecycle::PromptChanged { resolved: Some(r.id.0) });
-            }
-            UiEvent::DoublePredicted(p) => {
-                self.double.insert(p.question_id.clone(), p);
-            }
-            UiEvent::DoubleAnswered(a) => {
-                self.double.remove(&a.question_id);
-                if a.session.is_none_or(|s| {
-                    self.session == Some(s) || self.agents.contains_key(&s)
-                }) {
-                    self.entries.push(Entry::Info(double::chip::answered(&a)));
-                }
             }
             UiEvent::Sessions(list) => {
                 if list.is_empty() {

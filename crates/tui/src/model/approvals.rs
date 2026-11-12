@@ -1,92 +1,5 @@
 use super::*;
 
-/// One `/double` subcommand (126 §10).
-#[derive(Clone, Debug, PartialEq)]
-pub enum DoubleCmd {
-    /// `double_status`.
-    Status,
-    /// `enabled: false` in config.yaml via `double_settings_set`; takes effect at restart.
-    Off,
-    /// `double_pause(on)`.
-    Pause(bool),
-    /// `double_train(tier, venue)`.
-    Train {
-        /// `a` | `b`.
-        tier: double::Tier,
-        /// `auto` | `local` | `node:<name>`.
-        venue: double::Venue,
-    },
-    /// `double_rollback(version)`.
-    Rollback(String),
-    /// `double_set_cap(class, rung, mutating_opt_in)`.
-    Cap {
-        /// The §3 key.
-        class: String,
-        /// 0..=3.
-        rung: u8,
-        /// `opt-in` was given.
-        opt_in: bool,
-    },
-}
-
-impl DoubleCmd {
-    /// The usage line.
-    pub const USAGE: &'static str = "usage: /double [status|off|pause [off]|train [a|b] [auto|local|node:<name>]|rollback <version>|cap <class> <rung> [opt-in]]";
-
-    /// Parse the text after `/double`; `None` is a usage error. A class key may
-    /// contain spaces (`approval:shell:mutating:git push:root`), so `cap` reads
-    /// its trailing `<rung> [opt-in]` first and the rest is the key.
-    pub fn parse(arg: &str) -> Option<Self> {
-        let mut w = arg.split_whitespace();
-        let head = w.next().unwrap_or("status");
-        if head == "cap" {
-            let mut rest: Vec<&str> = w.collect();
-            let opt_in = rest.last() == Some(&"opt-in");
-            if opt_in {
-                rest.pop();
-            }
-            let rung: u8 = rest.pop()?.parse().ok().filter(|r| *r <= 3)?;
-            if rest.is_empty() {
-                return None;
-            }
-            return Some(Self::Cap {
-                class: rest.join(" "),
-                rung,
-                opt_in,
-            });
-        }
-        Some(match (head, w.next(), w.next(), w.next()) {
-            ("status", None, ..) => Self::Status,
-            ("off", None, ..) => Self::Off,
-            ("pause", None, ..) => Self::Pause(true),
-            ("pause", Some("off"), None, _) => Self::Pause(false),
-            ("train", tier, venue, None) => Self::Train {
-                tier: match tier.unwrap_or("a") {
-                    "a" => double::Tier::A,
-                    "b" => double::Tier::B,
-                    _ => return None,
-                },
-                venue: match double::Venue::parse(venue.unwrap_or("auto"))? {
-                    double::Venue::Off => return None,
-                    v => v,
-                },
-            },
-            ("rollback", Some(v), None, _) => Self::Rollback(v.to_owned()),
-            _ => return None,
-        })
-    }
-}
-
-/// The chip text for one card's prediction (126 §10): `double: Allow 91 % · L1`, or at L2
-/// the countdown `double: Allow 91 % · L2 · answers in 18 s (answer to take over)`.
-/// `none` is the double saying it is unsure.
-pub fn double_chip(p: &DoublePredicted, now_ms: u64) -> String {
-    let mut s = format!("double: {} {:.0} % · L{}", p.choice, p.p * 100.0, p.rung);
-    if let Some(left) = double::chip::grace_left_s(p, now_ms) {
-        s.push_str(&format!(" · answers in {left} s (answer to take over)"));
-    }
-    s
-}
 
 /// A pending `ask_user` being answered one question at a time.
 #[derive(Debug)]
@@ -142,26 +55,6 @@ impl Model {
         self.asks.front()
     }
 
-    /// The double's prediction for the shown approval (first) or ask, when it has one.
-    fn shown_prediction(&self) -> Option<&DoublePredicted> {
-        let id = match (self.approval(), self.ask()) {
-            (Some(a), _) => a.id.0,
-            (None, Some(a)) => a.req.id.0,
-            (None, None) => return None,
-        };
-        self.double.get(&id.to_string())
-    }
-
-    /// The double's chip for the shown approval or ask, when it has predicted it.
-    pub fn double_chip(&self) -> Option<String> {
-        self.shown_prediction().map(|p| double_chip(p, now_ms()))
-    }
-
-    /// The shown card is in an L2 grace: frames are needed for the countdown.
-    pub(super) fn double_counting_down(&self) -> bool {
-        self.shown_prediction()
-            .is_some_and(|p| p.will_act_at.is_some())
-    }
 }
 
 impl Model {

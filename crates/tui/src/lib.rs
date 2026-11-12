@@ -31,7 +31,7 @@ pub mod search;
 pub mod talk;
 mod ui;
 
-use model::{Command, DoubleCmd, LoginRow, Model, UiEvent};
+use model::{Command, LoginRow, Model, UiEvent};
 
 /// The plugin.
 pub struct TuiPlugin {
@@ -644,51 +644,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::SetApprovals { session, enabled } => {
             UiEvent::Approvals(msg(api.set_approvals(session, enabled, None).await)?)
         }
-        Command::Double(cmd) => UiEvent::Info(match cmd {
-            DoubleCmd::Status => double_status_line(&msg(api.double_status().await)?),
-            DoubleCmd::Off => {
-                let mut cfg = msg(api.double_settings_get().await)?;
-                cfg.enabled = false;
-                msg(api.double_settings_set(cfg).await)?;
-                "double: disabled in config.yaml — takes effect at the next engine start".into()
-            }
-            DoubleCmd::Pause(on) => {
-                let s = msg(api.double_pause(on).await)?;
-                format!(
-                    "double: learning {}; {}",
-                    if s.paused { "paused" } else { "resumed" },
-                    double_status_line(&s)
-                )
-            }
-            DoubleCmd::Train { tier, venue } => format!(
-                "double: training run {} started (tier {}, venue {})",
-                msg(api.double_train(tier, venue.clone()).await)?.0,
-                tier.as_str(),
-                venue.as_config()
-            ),
-            DoubleCmd::Rollback(v) => double_status_line(&msg(api.double_rollback(v).await)?),
-            DoubleCmd::Cap {
-                class,
-                rung,
-                opt_in,
-            } => {
-                let c = msg(api.double_set_cap(class, rung, opt_in).await)?;
-                format!(
-                    "double: {} cap L{}{}{}",
-                    c.key,
-                    c.cap,
-                    c.cap_reason
-                        .as_deref()
-                        .map(|r| format!(" ({r})"))
-                        .unwrap_or_default(),
-                    if c.mutating_opt_in {
-                        " · mutating opt-in"
-                    } else {
-                        ""
-                    }
-                )
-            }
-        }),
         Command::ShowPrompt(session) => UiEvent::Prompt(msg(api.get_prompt(session).await)?),
         Command::ListSkills => UiEvent::Skills(msg(api.list_skills().await)?),
         Command::LoadSkill(name) => UiEvent::Skill(msg(api.load_skill(name).await)?),
@@ -1095,26 +1050,6 @@ fn msg<T>(r: Result<T, ClientError>) -> anyhow::Result<T> {
     r.map_err(|e| anyhow::anyhow!("{}", reason(e)))
 }
 
-/// `/double status`: one line from `double_status` (126 §13).
-fn double_status_line(s: &double::DoubleStatus) -> String {
-    format!(
-        "double: {}{} · version {} · venue {} · 30 d: n={} acc {:.0} % (baseline {:.0} %) ece {:.3} · asks avoided {} · {:.0} min saved{}",
-        if s.enabled { "on" } else { "off" },
-        if s.paused { " (learning paused)" } else { "" },
-        s.active_version.as_deref().unwrap_or("baseline"),
-        s.venue,
-        s.kpis.n,
-        s.kpis.accuracy * 100.0,
-        s.baseline.accuracy * 100.0,
-        s.kpis.ece,
-        s.kpis.asks_avoided,
-        s.kpis.minutes_saved,
-        s.next_window
-            .as_deref()
-            .map(|w| format!(" · next window {w}"))
-            .unwrap_or_default()
-    )
-}
 
 /// The user-facing text of a failed call: the harness's message for a
 /// refusal, the transport's for a lost socket. An `OwnerUnreachable` refusal
@@ -1595,10 +1530,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             model::describe(&req.tool, &req.args).join("\n")
         ),
         UiEvent::Resolved(_) => Ok(()),
-        UiEvent::DoublePredicted(p) => {
-            writeln!(out, "{}", model::double_chip(p, model::now_ms()))
-        }
-        UiEvent::DoubleAnswered(a) => writeln!(out, "{}", double::chip::answered(a)),
         UiEvent::Ask(req) => req.questions.iter().try_for_each(|q| {
             let opts = q.options.iter().enumerate().map(|(i, c)| {
                 let rec = if q.recommended == Some(i) {

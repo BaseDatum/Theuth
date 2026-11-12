@@ -26,7 +26,6 @@ use agent::{
     CreateSessionOptions, MemoryMode, Retention,
     SessionOpen,
 };
-use double::{DoubleAnswered, DoublePredicted};
 use iocraft::KeyCode;
 use models::Catalog;
 use runtime::{InputId, SessionId, TurnId};
@@ -141,9 +140,6 @@ pub struct Model {
     pub approvals: VecDeque<ApprovalRequested>,
     /// Pending `ask_user` calls for the current session or its subtree, oldest first; the front is shown.
     pub asks: VecDeque<Ask>,
-    /// The double's prediction per pending card (`question_id` as text), from `DoublePredicted`;
-    /// dropped when the card resolves.
-    pub double: HashMap<String, DoublePredicted>,
     /// `tools.approvals` (global); false = never prompts.
     pub approvals_global: bool,
     /// The root session opted out of prompts (`/approvals off`).
@@ -368,7 +364,7 @@ pub use advisor::{ADVISORY_COLLAPSED, ADVISOR_GLYPH, severity_name, advisory_sev
 pub(crate) use advisor::{AdvisorReply};
 pub use agents::{AgentRow, sort_agents, agent_row, WATCH_GLYPH, source_tag, observed_word};
 use agents::{rank, harness_word};
-pub use approvals::{DoubleCmd, double_chip, Ask};
+pub use approvals::Ask;
 pub use artifacts::{Owner, artifact_rows, Progress, progress_line};
 use artifacts::{SHOW, APP};
 pub use catalog::{PickTarget, ModelRow, rank_models, providers, provider_models, title_model_line, vision_model_line, aws_profile_line};
