@@ -51,11 +51,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "subagents of this session (picker: ⏎ opens one)",
     ),
     (
-        "/talk",
-        "",
-        "talk with the session aloud; Esc cancels the reply or leaves the view, Ctrl+T stops",
-    ),
-    (
         "/project",
         "<label|off>",
         "label this session's root for grouping in /sessions and /artifacts (off clears)",

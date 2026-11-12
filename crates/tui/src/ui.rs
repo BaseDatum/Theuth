@@ -22,7 +22,6 @@ use crate::model::{
     k, now_ms, result_line, window,
 };
 use crate::pathac;
-use crate::talk::{self, Look, Talking};
 
 /// Channels handed to the app through iocraft context (owned so the receiver
 /// can be taken out on first render, per design doc §11.5).
@@ -319,33 +318,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 m.quit = true;
                 return;
             }
-            // Talk (76 §0.12, §5.2): the pane owns the keys — Esc cancels the
-            // agent's turn while it thinks or speaks, else leaves the pane (the
-            // talk runs on); Ctrl+T stops it; the rest is swallowed; an
-            // approval prompt on top keeps its own keys.
-            let ctrl_t = code == KeyCode::Char('t') && modifiers.contains(KeyModifiers::CONTROL);
-            if m.talk_view && m.approval().is_none() {
-                match code {
-                    KeyCode::Esc => {
-                        if let Some(cmd) = m.talk_escape() {
-                            let _ = commands.send(cmd);
-                        }
-                    }
-                    _ if ctrl_t => {
-                        if let Some(cmd) = m.toggle_talk(true) {
-                            let _ = commands.send(cmd);
-                        }
-                    }
-                    _ => {}
-                }
-                return;
-            }
-            if ctrl_t && !m.components.captures(FocusClass::Spoken) && m.menu.is_none() && !m.components.editor().is_some_and(|(class, _)| class == FocusClass::Secret) {
-                if let Some(cmd) = m.toggle_talk(true) {
-                    let _ = commands.send(cmd);
-                }
-                return;
-            }
             if m.component_key_with_editor(FocusClass::Spoken, &key, &input.read(), handle.read().cursor_offset()) { return; }
             // Chat-only: a search menu on top must not toggle transcript cards.
             if code == KeyCode::Char('o')
@@ -614,9 +586,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             };
             entry(e, m.spinner(), if i == 0 { win.skip } else { 0 }, width, decorations, m.entry_summary(e))
         });
-    let transcript = if let (true, Some(t)) = (m.talk_view, &m.talk) {
-        talk_pane(t, m.frame, width, view)
-    } else if m.anchor.is_some() {
+    let transcript = if m.anchor.is_some() {
         // Anchored: the first `top` rows of the first entry sit above the fold.
         element! {
             View(overflow: Overflow::Hidden, width: 100pct, height: 100pct) {
@@ -635,7 +605,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         }
         .into_any()
     };
-    let content = component_slot(&m, Surface::Content, width, height, None);
+    let content = component_slot(&m, Surface::Content, width, u16::try_from(view).unwrap_or(u16::MAX), None);
     let transcript = if content.replace {
         content.element().unwrap_or(transcript)
     } else if let Some(extra) = content.element() {
@@ -675,20 +645,15 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
             )))
             View(height: 1, padding_left: 1) {
-                #(composer_header.element().unwrap_or_else(|| if m.talk_view {
-                    element!(Text(content: "● talk  (Esc cancels / leaves · Ctrl+T stops)", color: SAND)).into_any()
-                } else { element!(Text(content: header, color: header_color)).into_any() }))
+                #(composer_header.element().unwrap_or_else(|| element!(Text(content: header, color: header_color)).into_any()))
             }
             // `flex_shrink: 0`: once the transcript fills the screen the box
             // would otherwise be squeezed back to `min_height` as it grows.
-            // While dictating the box turns cyan and shows the region (54 §6)
-            // over a hidden, still-mounted editor: unmounting it would lose
-            // its cursor state and the handle the stop restores through. The
-            // talk pane (76) drops the border and the editor the same way —
-            // never `display: None` on a bordered view: iocraft draws a border
-            // of width 0 - 2 and panics.
-            View(border_style: if m.talk_view || composer_mode == crate::components::ComposerMode::Hidden { BorderStyle::None } else { BorderStyle::Round }, border_color: if composer_mode == crate::components::ComposerMode::ReadOnly { FAIENCE } else { OCHRE }, min_height: if m.talk_view || composer_mode == crate::components::ComposerMode::Hidden { 0 } else { 3 }, flex_shrink: 0.0, flex_direction: FlexDirection::Column) {
-                View(width: 100pct, display: if m.talk_view || composer_mode != crate::components::ComposerMode::Default { Display::None } else { Display::Flex }) {
+            // Keep the editor mounted while an owner supplies a read-only or
+            // hidden region: its cursor and restore handle must survive.
+            // Never hide a bordered view itself; iocraft would draw width 0 - 2.
+            View(border_style: if composer_mode == crate::components::ComposerMode::Hidden { BorderStyle::None } else { BorderStyle::Round }, border_color: if composer_mode == crate::components::ComposerMode::ReadOnly { FAIENCE } else { OCHRE }, min_height: if composer_mode == crate::components::ComposerMode::Hidden { 0 } else { 3 }, flex_shrink: 0.0, flex_direction: FlexDirection::Column) {
+                View(width: 100pct, display: if composer_mode != crate::components::ComposerMode::Default { Display::None } else { Display::Flex }) {
                     TextInput(
                         handle,
                         has_focus,
@@ -775,44 +740,6 @@ fn component_slot(m: &Model, at: Surface<'_>, width: u16, height: u16, handle: O
     slot
 }
 
-/// The `/talk` pane (76 §0.12, §5.2) in a `width × height` content area: the
-/// orb centred, the agent line (foreground) and the user line (muted) under
-/// it, two rows each and tail-clamped, then the headphones caption. Colours
-/// are the palette's: accent while speaking, muted while idle, the
-/// terminal's own foreground while thinking.
-fn talk_pane(t: &Talking, frame: usize, width: u16, height: usize) -> AnyElement<'static> {
-    // Two subtitle blocks of two rows, one caption row, two gap rows.
-    const RESERVE: usize = 7;
-    let look = talk::look(t.state);
-    let color = match look {
-        Look::Idle => Some(SAND),
-        Look::Thinking => None,
-        Look::Speaking => Some(OCHRE),
-    };
-    let r = talk::radius(usize::from(width), height, RESERVE);
-    let rows = talk::orb(look, t.orb_frame(frame), t.level, r);
-    let agent = t.agent.as_ref().map_or("", |(_, s)| s.as_str()).to_owned();
-    let user = t.user.clone().unwrap_or_default();
-    let caption = if t.degraded { talk::DEGRADED } else { "" };
-    element! {
-        View(width: 100pct, height: 100pct, flex_direction: FlexDirection::Column, align_items: AlignItems::Center, justify_content: JustifyContent::Center) {
-            View(flex_direction: FlexDirection::Column) {
-                #(rows.into_iter().map(|row| element!(Text(content: row, color, wrap: TextWrap::NoWrap))))
-            }
-            // Bottom-aligned in a fixed two-row box: a long line clips at its head, the tail stays.
-            View(width: 100pct, height: 2, margin_top: 1, padding_left: 2, padding_right: 2, overflow: Overflow::Hidden, flex_direction: FlexDirection::Column, justify_content: JustifyContent::FlexEnd) {
-                Text(content: agent, wrap: TextWrap::Wrap, align: TextAlign::Center)
-            }
-            View(width: 100pct, height: 2, margin_top: 1, padding_left: 2, padding_right: 2, overflow: Overflow::Hidden, flex_direction: FlexDirection::Column, justify_content: JustifyContent::FlexEnd) {
-                Text(content: user, color: SAND, wrap: TextWrap::Wrap, align: TextAlign::Center)
-            }
-            View(height: 1) {
-                Text(content: caption, color: SAND, wrap: TextWrap::NoWrap)
-            }
-        }
-    }
-    .into_any()
-}
 
 
 
@@ -2332,6 +2259,7 @@ mod tests {
     #[test]
     fn talk_pane_is_centred_at_both_sizes() {
         use ::talk::{State, TalkEvent, TalkId};
+        use crate::components::talk::{talk_pane, state::{self as talk, Talking}};
         let mut t = Talking::new(TalkId::new(), SessionId::new());
         let id = t.id;
         t.apply(

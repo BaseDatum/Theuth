@@ -36,7 +36,6 @@ use uuid::Uuid;
 
 use crate::clip::Image;
 use crate::pathac::PathState;
-use crate::talk::Talking;
 
 
 /// UI state.
@@ -263,12 +262,6 @@ pub struct Model {
     pub pending_input: Option<(String, usize)>,
     /// Editor text to submit exactly once through the existing input path.
     pub pending_send: Option<String>,
-    /// The talk this view started (76 §0.12); `Some` whether or not the view is open.
-    pub talk: Option<Talking>,
-    /// The `/talk` pane covers the transcript; Esc closes it, the talk keeps running.
-    pub talk_view: bool,
-    /// `/talk` sent, waiting for `talk_start`'s reply.
-    talk_pending: bool,
     /// When Esc last cancelled (133 §5): three within [`ESC_TAPS_WINDOW`] stop the subtree too.
     esc_taps: Vec<std::time::Instant>,
 }
@@ -291,7 +284,6 @@ mod paste;
 mod prompts;
 mod sessions;
 mod slash;
-mod speech;
 mod status;
 mod submission;
 mod transcript;

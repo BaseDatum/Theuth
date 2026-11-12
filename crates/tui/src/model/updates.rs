@@ -410,19 +410,6 @@ impl Model {
                     .into(),
                 ));
             }
-            UiEvent::Voice(ev) => self.apply_voice(ev),
-            UiEvent::Talk(ev) => self.apply_talk(ev),
-            UiEvent::TalkStarting(id) => {
-                self.talk_pending = false;
-                // `SessionOpened` came first when `/talk` had to create the session.
-                let Some(session) = self.session else { return };
-                self.talk = Some(Talking::new(id, session));
-                self.talk_view = true;
-            }
-            UiEvent::TalkFailed(m) => {
-                self.talk_pending = false;
-                self.entries.push(Entry::Error(format!("talk: {m}")));
-            }
         }
     }
 }

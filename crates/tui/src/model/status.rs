@@ -53,7 +53,6 @@ impl Model {
             || self.agents.values().any(AgentRow::live)
             || self.components.wake().is_some()
             || self.components.animating()
-            || self.talk_view
     }
 }
 
@@ -167,13 +166,6 @@ impl Model {
                 + 1;
             format!("  ·  editing #{n} — ⏎ sends, esc cancels")
         });
-        let talk = match &self.talk {
-            Some(t) if !self.talk_view => {
-                let state = format!("{:?}", t.state).to_lowercase();
-                format!("  ·  ● talk: {state} (/talk)")
-            }
-            _ => String::new(),
-        };
         let attached = self
             .attached
             .as_deref()
@@ -191,7 +183,7 @@ impl Model {
         let pinned = self.component_text(Surface::Status(StatusSlot::Pinned));
         let spoken = self.component_text(Surface::Status(StatusSlot::Spoken));
         format!(
-            "{session}  {state}{watch}{usage}{agents}{queued}{work}{skills}{catalog}{editing}{scrolled}{pinned}{talk}{spoken}{attached}{resumed}"
+            "{session}  {state}{watch}{usage}{agents}{queued}{work}{skills}{catalog}{editing}{scrolled}{pinned}{spoken}{attached}{resumed}"
         )
     }
 

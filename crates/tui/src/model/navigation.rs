@@ -10,7 +10,6 @@ impl Model {
             || (self.components.focused() && self.components.editor().is_none())
             || self.components.composer_mode() != crate::components::ComposerMode::Default
             || self.components.captures(crate::components::FocusClass::Suggestion)
-            || self.talk_view
         {
             return false;
         }
