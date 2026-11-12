@@ -48,6 +48,7 @@ dependencies = [
  "ts-rs",
  "url",
  "uuid",
+ "wire",
  "zeroize",
 ]
 
@@ -5281,6 +5282,7 @@ dependencies = [
  "uuid",
  "voice",
  "web",
+ "wire",
  "yrs",
 ]
 
@@ -10653,6 +10655,7 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
+ "wire",
 ]
 
 [[package]]
@@ -11465,6 +11468,7 @@ dependencies = [
  "tracing",
  "ts-rs",
  "url",
+ "wire",
 ]
 
 [[package]]
@@ -12115,6 +12119,7 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
+ "wire",
  "zeroize",
 ]
 
@@ -13433,6 +13438,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "ts-rs",
+ "wire",
 ]
 
 [[package]]
@@ -17575,6 +17581,7 @@ dependencies = [
  "voice",
  "web",
  "windows-sys 0.61.2",
+ "wire",
 ]
 
 [[package]]
@@ -18539,6 +18546,7 @@ dependencies = [
  "tools",
  "tracing",
  "ts-rs",
+ "wire",
 ]
 
 [[package]]
@@ -23942,6 +23950,7 @@ dependencies = [
  "tokio",
  "tracing",
  "ts-rs",
+ "wire",
 ]
 
 [[package]]
@@ -24758,6 +24767,7 @@ dependencies = [
  "tracing",
  "ts-rs",
  "url",
+ "wire",
  "wiremock",
  "wreq",
  "wreq-util",

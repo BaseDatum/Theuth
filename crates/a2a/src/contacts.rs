@@ -306,6 +306,11 @@ pub enum ContactEvent {
     Nearby(Vec<NearbyAgent>),
 }
 
+impl wire::WireEvent for ContactEvent {
+    const TOPIC: &'static str = "a2a.contacts";
+    const VERSION: u32 = 1;
+}
+
 // ---------------------------------------------------------------------------
 // Invite ticket and ceremony (§7.4; engine-internal, no TS)
 // ---------------------------------------------------------------------------

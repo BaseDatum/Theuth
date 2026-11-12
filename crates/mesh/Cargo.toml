@@ -8,6 +8,7 @@ description = "Leaderless engine mesh: iroh endpoint, pairing, peer set, stabili
 [dependencies]
 replica = { workspace = true }
 runtime = { workspace = true }
+wire = { workspace = true }
 tools = { workspace = true }
 platform = { workspace = true }
 secrets = { workspace = true }

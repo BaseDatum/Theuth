@@ -83,6 +83,17 @@ pub struct UpdateReady {
     pub applied: bool,
 }
 
+impl wire::WireEvent for UpdateReady {
+    const TOPIC: &'static str = "update.ready";
+    const VERSION: u32 = 1;
+}
+
+/// Declare wire contracts before starting producers, including disabled services.
+pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<UpdateReady>().await
+}
+
 /// `ask` → `Option<UpdateReady>`: the latest event, if any (39 §4.3).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Status;
@@ -588,6 +599,7 @@ impl runtime::Plugin for UpdatePlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: UpdateConfig = rt.section("update").unwrap_or_else(|e| {
             tracing::debug!("no [update] config section, using defaults: {e}");
             UpdateConfig::default()

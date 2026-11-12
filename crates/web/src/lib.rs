@@ -137,6 +137,12 @@ pub type SharedConfig = Arc<RwLock<WebConfig>>;
 /// description tells the user how to add one.
 pub struct WebPlugin;
 
+/// Declare wire contracts before starting producers, including disabled services.
+pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<progress::ScrapeProgress>().await
+}
+
 #[async_trait::async_trait]
 impl runtime::Plugin for WebPlugin {
     fn name(&self) -> &'static str {
@@ -144,6 +150,7 @@ impl runtime::Plugin for WebPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: WebConfig = rt.section("web").unwrap_or_else(|e| {
             tracing::debug!("no [web] config section, using defaults: {e}");
             WebConfig::default()

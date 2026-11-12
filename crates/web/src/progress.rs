@@ -32,6 +32,11 @@ pub struct ScrapeProgress {
     pub limit: usize,
 }
 
+impl wire::WireEvent for ScrapeProgress {
+    const TOPIC: &'static str = "web.scrape-progress";
+    const VERSION: u32 = 1;
+}
+
 /// Publish one progress snapshot; a no-op without a bus or a call context.
 pub async fn report(
     rt: Option<&Runtime>,

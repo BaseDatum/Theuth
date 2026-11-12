@@ -186,6 +186,11 @@ pub enum LinkEvent {
     DevicesChanged,
 }
 
+impl wire::WireEvent for LinkEvent {
+    const TOPIC: &'static str = "link.events";
+    const VERSION: u32 = 1;
+}
+
 /// `ask` → [`LinkStatus`].
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Status;

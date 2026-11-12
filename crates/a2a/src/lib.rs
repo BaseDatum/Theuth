@@ -151,6 +151,18 @@ pub struct Reload;
 #[serde(tag = "type")]
 pub struct A2aChanged {}
 
+impl wire::WireEvent for A2aChanged {
+    const TOPIC: &'static str = "a2a.changed";
+    const VERSION: u32 = 1;
+}
+
+/// Declare wire contracts before starting producers, including disabled services.
+pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<A2aChanged>().await?;
+    rt.register_wire_event::<contacts::ContactEvent>().await
+}
+
 /// The plugin.
 pub struct A2aPlugin;
 
@@ -1338,6 +1350,7 @@ impl runtime::Plugin for A2aPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         // Absent section = defaults (off). A present but malformed section
         // fails closed and stays visible through the actor's status.
         let (cfg, config_error) = if rt.config.find_value("a2a").is_ok() {

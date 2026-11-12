@@ -7,6 +7,7 @@ description = "Self-update: check the release manifest, verify, replace the runn
 
 [dependencies]
 runtime = { workspace = true }
+wire = { workspace = true }
 platform = { workspace = true }
 agent = { workspace = true }
 kameo = { workspace = true }

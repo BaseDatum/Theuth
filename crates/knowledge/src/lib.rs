@@ -128,6 +128,17 @@ pub struct KnowledgeChanged {
     pub commit: Option<String>,
 }
 
+impl wire::WireEvent for KnowledgeChanged {
+    const TOPIC: &'static str = "knowledge.changed";
+    const VERSION: u32 = 1;
+}
+
+/// Declare wire contracts before starting producers, including disabled services.
+pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<KnowledgeChanged>().await
+}
+
 /// The [`KNOWLEDGE_ACTOR`] actor: wraps the store. Handlers await the store on
 /// the mailbox — local I/O (sqlite, files, `spawn_blocking` for the repo).
 #[derive(kameo::Actor)]
@@ -554,6 +565,7 @@ impl runtime::Plugin for KnowledgePlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: KnowledgeConfig = rt.section("knowledge").unwrap_or_else(|e| {
             tracing::debug!("no [knowledge] config section, using defaults: {e}");
             KnowledgeConfig::default()
