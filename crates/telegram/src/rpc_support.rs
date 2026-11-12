@@ -1,3 +1,5 @@
+//! Telegram actor lookup for RPC method owners.
+
 use crate as telegram;
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::types::ErrorObjectOwned;

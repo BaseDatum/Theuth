@@ -1,3 +1,5 @@
+//! Update actor lookup for RPC method owners.
+
 use crate as update;
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::types::ErrorObjectOwned;

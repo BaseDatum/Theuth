@@ -1,3 +1,5 @@
+//! Attachment decoding and decoded-size limits shared by agent RPC methods.
+
 use jsonrpsee::core::RpcResult;
 use rpc_core::failed;
 use base64::Engine as _;

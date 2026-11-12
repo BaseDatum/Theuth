@@ -1,9 +1,13 @@
+//! Bounded replication waits for remotely created session rows.
+
 use agent::Agents;
 use runtime::SessionId;
 use tokio::time::Instant;
 use rpc_core::{ask, Server};
 
+/// Wait briefly for a session created by another engine to replicate here.
 pub trait RpcSessionWaitExt {
+    /// Wait up to the initial deadline, then monitor late arrival in the background.
     fn wait_for_row<'a>(&'a self, session: SessionId, engine: &'a str)-> impl Future<Output = ()> + Send + 'a;
 }
 

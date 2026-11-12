@@ -1,3 +1,5 @@
+//! Knowledge actor lookup for RPC method owners.
+
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::types::ErrorObjectOwned;
 use kameo::actor::ActorRef;

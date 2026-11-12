@@ -1,8 +1,12 @@
+//! Connection ownership tracking for newly opened private session trees.
+
 use crate::SessionOpen;
 use tools::Retention;
 use rpc_core::Server;
 
+/// Track private-session ownership for an RPC connection.
 pub trait RpcSessionTrackExt {
+    /// Bind the opened private tree and its known members to `peer`.
     fn track(&self, open: &SessionOpen, peer: u64);
 }
 

@@ -1,3 +1,5 @@
+//! Link identifiers, origins and mesh-aware document sharing for RPC calls.
+
 use crate as link;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::RpcResult;

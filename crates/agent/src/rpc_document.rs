@@ -1,3 +1,5 @@
+//! Agent-owned document forwarding, notebook decoration and insight startup hooks.
+
 use crate as agent;
 use std::sync::Arc;
 use agent::{Agents, rpc_forward as forward};

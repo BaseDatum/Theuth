@@ -1,3 +1,5 @@
+//! Document actor lookup, hub refusals and guest membership admission for RPC calls.
+
 use crate as document;
 use std::fmt::Display;
 use jsonrpsee::Extensions;

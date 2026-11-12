@@ -1,3 +1,5 @@
+//! Artifact actor lookup for RPC method owners.
+
 use crate as artifact;
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::types::ErrorObjectOwned;

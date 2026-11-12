@@ -1,3 +1,5 @@
+//! A2A actor lookup, contact routing and paired-engine decoration for RPC calls.
+
 use crate as a2a;
 use std::fmt::Display;
 use a2a::{A2A_ACTOR, A2aActor};

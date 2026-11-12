@@ -1,3 +1,5 @@
+//! Task actor lookup and routing questions to their owning engine for RPC calls.
+
 use crate as tasks;
 use agent::{Agents, rpc_forward as forward};
 use kameo::actor::ActorRef;

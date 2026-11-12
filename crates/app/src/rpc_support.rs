@@ -1,3 +1,5 @@
+//! App actor lookup for RPC method owners.
+
 use crate as app;
 use app::Apps;
 use jsonrpsee::core::RpcResult;
