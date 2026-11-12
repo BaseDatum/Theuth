@@ -1,3 +1,4 @@
+use crate as agent;
 use agent::rpc_forward as forward;
 use agent::{AgentInfo, Agents, DeleteSession, ListAgents, ListSessions, LoadSession, Loaded, PinSession, RenameSession, SessionSummary, CloseResult, LeaveSession, ListProjectStyles, ProjectStyle, ResumePrivate, SessionCost, SessionCostQuery, SessionOpen, SetProjectStyle, SetSessionProject, SpendReport, SpendReportQuery};
 use jsonrpsee::Extensions;
@@ -9,6 +10,7 @@ use agent::rpc_support::{owner_root, cost_service};
 use agent::rpc_support::RpcServerExt;
 use agent::rpc_session_state::RpcSessionTrackExt;
 
+/// Sessions RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait AgentSessionsApi {
     /// Create an idle `owner`-scope root (50 §2.3; the caller authenticated

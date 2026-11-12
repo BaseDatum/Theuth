@@ -1,9 +1,11 @@
+use crate as document;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use rpc_core::Server;
 use document::rpc_support::{doc_send, documents, member_outcome, nb_result, principal};
 
+/// Notebooks RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait DocumentNotebooksApi {
     /// What `notebook_delete` would do (144 §3.4): note count, exclusive sources, sources also in other notebooks.

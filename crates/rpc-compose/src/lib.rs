@@ -12,10 +12,15 @@ pub mod search;
 /// Owner-aware local topic intake and stream controls.
 pub mod topics;
 
-pub use bootstrap::{RpcPlugin, new_server, methods, serve};
+pub use bootstrap::{RpcPlugin, new_server, methods, serve, prepare};
 pub use search::SearchToolsPlugin;
 pub use acp::AcpPlugin;
 pub use api::clients;
+
+/// Assemble the cross-plugin RPC methods.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    api::CompositionApiServer::into_rpc(server)
+}
 
 #[cfg(test)]
 use bootstrap::install_forward_hooks;

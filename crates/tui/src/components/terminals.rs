@@ -2,7 +2,7 @@
 use super::*;
 use super::Component;
 use iocraft::prelude::{View as BoxView, *};
-use rpc::api::clients::{AgentHubApiClient, JobsApiClient};
+use rpc_compose::api::clients::{AgentHubApiClient, JobsApiClient};
 use runtime::SessionId;
 use tools::{JobId, Key, PtyPage, PtyScreenReply, PtyViewport, TerminalSummary};
 use crate::model::{short, now_ms};

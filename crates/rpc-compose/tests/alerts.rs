@@ -8,8 +8,6 @@ use jsonrpsee::core::server::Subscription;
 use kameo::actor::ActorRef;
 use roster::alert::AlertClass;
 use roster::attention::{Attention, AttentionItem, AttentionKind, Finished};
-use rpc::api::hub;
-use roster::rpc as boards;
 use rpc_core::{FocusMap, SeenMap, Server};
 use runtime::{Runtime, SessionId};
 use wire::RuntimeWire as _;
@@ -216,7 +214,17 @@ async fn attention_list_masks_alerts_per_connection() {
 
 fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
     rpc_core::merge([
-        hub::rpc_module(server.clone()),
-        boards::rpc_module(server),
+        rpc_compose::rpc_module(server.clone()),
+        a2a::rpc_module(server.clone()),
+        agent::rpc_module(server.clone()),
+        sessionsync::rpc_module(server.clone()),
+        tasks::rpc_module(server.clone()),
+        artifact::rpc_module(server.clone()),
+        link::rpc_module(server.clone()),
+        talk::rpc_module(server.clone()),
+        search_providers::rpc_module(server.clone()),
+        app::rpc_module(server.clone()),
+        rpc::rpc_module(server.clone()),
+        roster::rpc_module(server),
     ])
 }

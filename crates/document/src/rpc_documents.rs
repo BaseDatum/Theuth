@@ -1,3 +1,4 @@
+use crate as document;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -7,6 +8,7 @@ use rpc_core::{failed, peer, UNAUTHORIZED, Server};
 use document::rpc_support::{doc_send, documents, join_outcome, member_outcome, principal};
 use base64::Engine as _;
 
+/// Documents RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait DocumentDocumentsApi {
     /// Live documents, newest first (design doc 59 §6.1); `limit` defaults to 100.

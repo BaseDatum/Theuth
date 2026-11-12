@@ -48,7 +48,8 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tools::{ApprovalRequested, Decision, Risk};
 
 use crate::api::clients::*;
-use crate::client::{Engine, Local, mirror};
+use rpc::client::{Engine, Local};
+use crate::client_mirror::mirror;
 use crate::methods;
 
 /// Registry name of the process-wide [`Relay`].
@@ -58,7 +59,7 @@ pub const ACP_RELAY_ACTOR: &str = "acp.relay";
 /// `rt.shutdown`. Nothing else may write to stdout in this mode.
 pub struct AcpPlugin {
     /// Attached to a running engine (63 §2.3): its socket; `None` when this
-    /// process is the engine. Events arrive through [`crate::client::mirror`];
+    /// process is the engine. Events arrive through [`crate::client_mirror::mirror`];
     /// the socket closing ends the process (the editor restarts it).
     pub remote: Option<Arc<WsClient>>,
     /// Method assembly retained by every local fallback.

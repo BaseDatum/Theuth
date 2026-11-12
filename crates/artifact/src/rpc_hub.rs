@@ -1,3 +1,4 @@
+use crate as artifact;
 use std::path::PathBuf;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
@@ -6,6 +7,7 @@ use rpc_core::{send, failed, owner, Server};
 use artifact::rpc_support::artifact;
 use document::rpc_support::{doc_send, documents, member_outcome, principal};
 
+/// Hub RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait ArtifactHubApi {
     /// Export `doc` (72): `markdown` = `doc_markdown`'s text, `pdf` = the print lowering through Typst

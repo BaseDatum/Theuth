@@ -2179,7 +2179,7 @@ mod tests {
     /// category plus a `show more` row, as the menu would show it.
     fn search_model() -> Model {
         use ::search::{MatchRange, SearchPage, TextMatch};
-        use rpc::search::{SearchGroup, SearchResponse};
+        use rpc_compose::search::{SearchGroup, SearchResponse};
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut m = Model::default();
         m.open_search("日本語 deploy", &tx);

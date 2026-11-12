@@ -219,7 +219,7 @@ Dependency order: `runtime ← link ← signal ← rpc ← tui ← theuth`. `lin
 with the channel plugins below `rpc` (which names its types, like every
 plugin's); `signal` imports `link::qr` (one QR renderer); `tui` renders
 `link`'s status and QR. The `Methods` that `link` dispatches into is not
-injected by the binary (00 §1.4): `rpc::RpcPlugin::start` sends
+injected by the binary (00 §1.4): `rpc_compose::RpcPlugin::start` sends
 `link::SetDispatch { methods, acp }` to the `link` actor (`lookup_when`,
 like `signal`/`slack` resolve their peers); a conn arriving first waits for
 it (§6.2). `acp` is 32 §4.3's mode-1 server.
@@ -528,8 +528,8 @@ it reloads like the desktop does (25 §6.1 step 6). A conn is `Device.online`
 from handshake to close; `last_seen_ms` is written on close (one write, not
 per frame).
 
-**Methods object**: `rpc::RpcPlugin::start` builds `rpc::methods(rt)`
-(`rpc::api::Server { events: rpc::bridge::start(rt).await, rt }.into_rpc()`)
+**Methods object**: `rpc_compose::RpcPlugin::start` builds `rpc_compose::methods(rt, module)`
+(`module(rpc_compose::new_server(rt)).into()`)
 and `tell`s the `link` actor `SetDispatch { methods, acp }`; the actor stores
 it in the shared `Ctx` (`OnceCell` + `Notify`) and every conn task awaits it
 before its first dispatch — no error path, the handshake deadline bounds
@@ -973,7 +973,7 @@ Deviations from the sections above:
 
 - **`link` does not depend on `rpc`** (§3 table, §6.2 "Methods object"): the
   dispatch arrives as a `SetDispatch { methods, acp }` message from
-  `rpc::RpcPlugin::start` (32 §3.1); the `MethodsFactory` that `theuth/main.rs`
+  `rpc_compose::RpcPlugin::start` (32 §3.1); the `MethodsFactory` that `theuth/main.rs`
   first injected was removed as 00 §1.4 god-wiring.
 - **`LinkPaired` is published before `LinkPairing { None }`** (§6.2 events):
   a listener sees the device before the pending row clears.

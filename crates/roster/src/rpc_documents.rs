@@ -1,3 +1,4 @@
+use crate as roster;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -6,6 +7,7 @@ use rpc_core::Server;
 use agent::rpc_document::doc_forward;
 use document::rpc_support::{doc_send, documents};
 
+/// Documents RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait RosterDocumentsApi {
     /// The document bound to an agent-charter `binding`, created from `markdown` when there is none

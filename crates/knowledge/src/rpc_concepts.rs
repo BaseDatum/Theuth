@@ -1,3 +1,4 @@
+use crate as knowledge;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use knowledge::search::HistoricalConcept;
@@ -5,6 +6,7 @@ use knowledge::{Change, Concept, Delete, Get, History, HistoryOf, Hit, List, Met
 use rpc_core::{send, Server};
 use knowledge::rpc_support::knowledge;
 
+/// Concepts RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait KnowledgeConceptsApi {
     /// Search the knowledge bundle (design doc 10 §8); `limit` defaults to 10, max 50.

@@ -31,6 +31,16 @@ use runtime::Runtime;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+/// Hub RPC methods and typed clients.
+pub mod rpc_hub;
+
+/// Assemble this plugin's RPC methods.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_core::merge([
+        rpc_hub::rpc_module(server),
+    ])
+}
+
 pub mod rpc_sharing;
 /// Provider-owned helpers used by RPC method owners.
 pub mod rpc_support;

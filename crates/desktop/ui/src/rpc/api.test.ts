@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { expect, test } from 'vitest'
 import { METHODS } from './api'
 
-// Written by `cargo test -p rpc --features ts export_bindings` (25 §7).
+// Written by `cargo test -p rpc-compose --features ts export_bindings` (25 §7).
 const METHODS_JSON = fileURLToPath(new URL('../../../../../bindings/methods.json', import.meta.url))
 
 // Stream pairs are `RpcClient.subscribe` / `RpcClient.stream`, not `Api` methods.

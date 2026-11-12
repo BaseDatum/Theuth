@@ -1833,7 +1833,7 @@ async fn run() -> anyhow::Result<()> {
     let plugins: Vec<Box<dyn Plugin>> = if let Some((ws, running)) = attached {
         // A client of the running engine: no engine plugins here (63 §2.3).
         if cli.acp {
-            vec![Box::new(rpc::AcpPlugin { remote: Some(ws), module: rpc_module })]
+            vec![Box::new(rpc_compose::AcpPlugin { remote: Some(ws), module: rpc_module })]
         } else {
             let prompt = match cli.prompt {
                 Some(p) if p.is_empty() => Some(std::io::read_to_string(std::io::stdin())?),
@@ -1888,16 +1888,16 @@ async fn run() -> anyhow::Result<()> {
             // 171: user cells (`Cells` actor, kernels, run store); after agent and tools.
             Box::new(cells::CellsPlugin), // 171:E1
             // The `search` tool (49 §4.4): registration only.
-            Box::new(rpc::SearchToolsPlugin),
+            Box::new(rpc_compose::SearchToolsPlugin),
             // 63 §6.4: attachable, on a loopback port; stdout untouched.
-            Box::new(rpc::RpcPlugin { implicit: true, module: rpc_module }),
+            Box::new(rpc_compose::RpcPlugin { implicit: true, module: rpc_module }),
             Box::new(signal::SignalPlugin {
                 channel: false,
                 link: None,
             }),
             Box::new(slack::SlackPlugin { channel: false }),
             Box::new(telegram::TelegramPlugin { channel: false }),
-            Box::new(rpc::AcpPlugin { remote: None, module: rpc_module }),
+            Box::new(rpc_compose::AcpPlugin { remote: None, module: rpc_module }),
         ]
     } else {
         let mut plugins = engine_plugins(cli.headless, cli.serve || cli.headless);
@@ -1990,30 +1990,39 @@ async fn sigterm() {
 }
 
 fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_compose::prepare(&server.rt);
     rpc_core::merge([
-        rpc::api::hub::rpc_module(server.clone()),
-        rpc::api::sessions::rpc_module(server.clone()),
+        rpc::rpc_module(server.clone()),
+        rpc_compose::rpc_module(server.clone()),
         agent::rpc_module(server.clone()),
-        rpc::api::tooling::rpc_module(server.clone()),
+        a2a::rpc_module(server.clone()),
+        app::rpc_module(server.clone()),
+        artifact::rpc_module(server.clone()),
+        document::rpc_module(server.clone()),
+        knowledge::rpc_module(server.clone()),
+        link::rpc_module(server.clone()),
+        roster::rpc_module(server.clone()),
+        search_providers::rpc_module(server.clone()),
+        sessionsync::rpc_module(server.clone()),
+        signal::rpc_module(server.clone()),
+        slack::rpc_module(server.clone()),
+        talk::rpc_module(server.clone()),
+        tasks::rpc_module(server.clone()),
+        telegram::rpc_module(server.clone()),
+        tools::rpc_module(server.clone()),
+        update::rpc_module(server.clone()),
+        web::rpc_module(server.clone()),
         computer::rpc_module(server.clone()),
         mcp_server::rpc_module(server.clone()),
-        rpc::api::concepts::rpc_module(server.clone()),
-        rpc::api::documents::rpc_module(server.clone()),
-        rpc::api::notebooks::rpc_module(server.clone()),
         codeindex::rpc_module(server.clone()),
-        rpc::api::messaging::rpc_module(server.clone()),
         nodes::rpc_module(server.clone()),
         schedule::rpc_module(server.clone()),
-        roster::rpc_module(server.clone()),
-        rpc::api::artifacts::rpc_module(server.clone()),
         secrets::rpc_module(server.clone()),
-        talk::rpc_module(server.clone()),
         meeting::rpc_module(server.clone()),
         dreaming::rpc_module(server.clone()),
         autoresearch::rpc_module(server.clone()),
         cells::rpc_module(server.clone()),
-        sandbox::rpc_module(server.clone()),
-        rpc::api::settings::rpc_module(server),
+        sandbox::rpc_module(server),
     ])
 }
 
@@ -2042,7 +2051,7 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         Box::new(autoresearch::AutoresearchPlugin),
         // 171: user cells (`Cells` actor, kernels, run store); after agent and tools.
         Box::new(cells::CellsPlugin), // 171:E1
-        Box::new(rpc::SearchToolsPlugin),
+        Box::new(rpc_compose::SearchToolsPlugin),
         Box::new(signal::SignalPlugin {
             channel: headless,
             link: None,
@@ -2074,7 +2083,7 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
     ];
     // 58 §6.1: capture backends per OS; `MeetingStatus.supported` says what this host can do.
     plugins.push(Box::new(meeting::MeetingPlugin));
-    plugins.push(Box::new(rpc::RpcPlugin { implicit: !serve, module: rpc_module }));
+    plugins.push(Box::new(rpc_compose::RpcPlugin { implicit: !serve, module: rpc_module }));
     plugins
 }
 

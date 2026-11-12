@@ -6,70 +6,19 @@ publish.workspace = true
 description = "JSON-RPC 2.0 over WebSocket: commands as methods, bus events as a subscription"
 
 [dependencies]
-platform = { workspace = true }
-dirs = { workspace = true }
 runtime = { workspace = true }
 rpc-core = { workspace = true }
-wire = { workspace = true }
-figment = { workspace = true }  # 188: `config_flag_get` reads config.yaml's `enabled` fresh
-tools = { workspace = true }
-agent = { workspace = true }
-document = { workspace = true }
-knowledge = { workspace = true }
-codeindex = { workspace = true }
-search = { workspace = true }
-signal = { workspace = true }
-slack = { workspace = true }
-telegram = { workspace = true }
-acp = { workspace = true }
-browser = { workspace = true }
-computer = { workspace = true }
-surface = { workspace = true }
-link = { workspace = true }
-nodes = { workspace = true }
-a2a = { workspace = true }
-schedule = { workspace = true }
-mesh = { workspace = true }
-sessionsync = { workspace = true }
-replica = { workspace = true }
-roster = { workspace = true }
-tasks = { workspace = true }
-sandbox = { workspace = true }
-artifact = { workspace = true }
-app = { workspace = true }
-secrets = { workspace = true }
-web = { workspace = true }
-search-providers = { workspace = true }
-update = { workspace = true }
-voice = { workspace = true }
-talk = { workspace = true }
-meeting = { workspace = true }
-mcp-server = { workspace = true }  # 158 §12: `McpServerConfig` / `McpServerStatus` / `AuditLine` for the `mcp_server_*` methods
-decision = { workspace = true }
-double = { workspace = true }
-dreaming = { workspace = true }
-autoresearch = { workspace = true }
-cells = { workspace = true }  # 171 `cell_*` methods
-agent-client-protocol = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
 futures = { workspace = true }
-async-trait = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-schemars = { workspace = true }
 tracing = { workspace = true }
-kameo = { workspace = true }
 jsonrpsee = { workspace = true, features = ["ws-client"] }
 tower = { workspace = true }
 uuid = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
-base64 = { workspace = true }
 parking_lot = { workspace = true }
 chrono = { workspace = true }
-ts-rs = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -78,15 +27,10 @@ libc = { workspace = true }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
+figment = { workspace = true }
 toml = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
-tracing-subscriber = { workspace = true }  # 183 §5.6: `tests/new_chat_elsewhere.rs` reads the WARN
 tempfile = "3"
-serde_yaml = { workspace = true }  # 170: `slack_manifest` parses as YAML
-agent = { workspace = true, features = ["test-support"] }  # 51 §4.2: a model-less live engine for `tests/private_*.rs`
-
-[features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "document/ts", "knowledge/ts", "codeindex/ts", "search/ts", "agent/ts", "signal/ts", "slack/ts", "telegram/ts", "acp/ts", "browser/ts", "computer/ts", "surface/ts", "link/ts", "nodes/ts", "a2a/ts", "schedule/ts", "mesh/ts", "sessionsync/ts", "roster/ts", "tasks/ts", "sandbox/ts", "artifact/ts", "app/ts", "secrets/ts", "web/ts", "search-providers/ts", "update/ts", "voice/ts", "talk/ts", "meeting/ts", "mcp-server/ts", "decision/ts", "double/ts", "dreaming/ts", "autoresearch/ts", "cells/ts"]
 
 [lints]
 workspace = true

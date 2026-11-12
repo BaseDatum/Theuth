@@ -1,3 +1,4 @@
+use crate as agent;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -6,6 +7,7 @@ use rpc_core::{owner, Server};
 use agent::rpc_document::doc_forward;
 use document::rpc_support::{doc_send, documents};
 
+/// Documents RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait AgentDocumentsApi {
     /// A document's members and share links (59 §8; owner only).

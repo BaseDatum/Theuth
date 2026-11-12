@@ -1,7 +1,9 @@
+use crate as search_providers;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use rpc_core::{ask, Server};
 
+/// Hub RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait SearchProvidersHubApi {
     /// Settings › Search (16 §8): the four external providers (enabled, base

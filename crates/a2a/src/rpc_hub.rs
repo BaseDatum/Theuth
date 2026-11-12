@@ -1,3 +1,4 @@
+use crate as a2a;
 use agent::rpc_forward as forward;
 use agent::{Agents, ArchiveSession};
 use jsonrpsee::Extensions;
@@ -9,6 +10,7 @@ use rpc_core::{ask, ASK_FAILED, UNAUTHORIZED, Server};
 use a2a::rpc_support::{A2A_FORWARD_MESSAGING_OFF, a2a};
 use agent::rpc_support::RpcServerExt;
 
+/// Hub RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait A2aHubApi {
     /// 191 (D3): a contact's unary call (`POST path` with the JSON-RPC `body`) that another

@@ -9,12 +9,11 @@ use agent::{Authorize, CreateSessionOptions, SessionOpen};
 use base64::Engine as _;
 use jsonrpsee::core::server::MethodsError;
 use jsonrpsee::types::ErrorObjectOwned;
-use rpc::api::{hub, sessions, artifacts};
 
 use runtime::{Runtime, SessionId};
 
 /// `ask` failed: a handler error, here `authorize` refusing or the path
-/// check (`rpc::api::ASK_FAILED`).
+/// check (`rpc_core::ASK_FAILED`).
 const ASK_FAILED: i32 = -32000;
 
 /// One authenticated connection to the shared server state.
@@ -54,7 +53,7 @@ async fn private_get_attachment_serves_the_owner_only_and_only_with_the_session(
     let agents = agent::spawn_test_agents(rt.clone(), |_: &str| true)
         .await
         .unwrap();
-    let base: jsonrpsee::Methods = rpc_module(rpc::new_server(rt)).into();
+    let base: jsonrpsee::Methods = rpc_module(rpc_compose::new_server(rt)).into();
     let (a, peer_a, _guard_a) = conn(&base);
     let (b, _peer_b, _guard_b) = conn(&base);
 
@@ -114,8 +113,16 @@ async fn private_get_attachment_serves_the_owner_only_and_only_with_the_session(
 
 fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
     rpc_core::merge([
-        hub::rpc_module(server.clone()),
-        sessions::rpc_module(server.clone()),
-        artifacts::rpc_module(server),
+        rpc_compose::rpc_module(server.clone()),
+        a2a::rpc_module(server.clone()),
+        agent::rpc_module(server.clone()),
+        sessionsync::rpc_module(server.clone()),
+        tasks::rpc_module(server.clone()),
+        artifact::rpc_module(server.clone()),
+        link::rpc_module(server.clone()),
+        talk::rpc_module(server.clone()),
+        search_providers::rpc_module(server.clone()),
+        app::rpc_module(server.clone()),
+        rpc::rpc_module(server),
     ])
 }

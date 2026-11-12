@@ -1,3 +1,4 @@
+use crate as artifact;
 use agent::rpc_forward as forward;
 use std::path::{Path, PathBuf};
 use artifact::search::ArtifactMatchContext;
@@ -11,6 +12,7 @@ use artifact::rpc_support::artifact;
 use agent::rpc_support::RpcServerExt;
 use base64::Engine as _;
 
+/// Artifacts RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait ArtifactArtifactsApi {
     /// A client's answer to a `PagePreviewRequested` (120 §11.2): `Started`

@@ -13,13 +13,12 @@ use agent::{Authorize, CreateSessionOptions, SessionOpen};
 use jsonrpsee::core::server::MethodsError;
 use jsonrpsee::types::ErrorObjectOwned;
 use kameo::actor::{ActorRef, Spawn};
-use rpc::api::{hub, sessions, artifacts};
 
 use runtime::{Runtime, SessionId};
 use serde::de::DeserializeOwned;
 
 /// `ask` failed: a handler error, here `authorize` refusing or the lookup
-/// missing the record (`rpc::api::ASK_FAILED`).
+/// missing the record (`rpc_core::ASK_FAILED`).
 const ASK_FAILED: i32 = -32000;
 
 /// An empty zip: the end-of-central-directory record alone.
@@ -93,7 +92,7 @@ async fn private_artifacts_are_served_to_the_owner_with_the_session_only() {
     let artifacts = artifact::ArtifactActor::spawn(artifact::ArtifactActor::new(stores.clone()));
     artifacts.register(artifact::ARTIFACT_ACTOR).unwrap();
 
-    let base: jsonrpsee::Methods = rpc_module(rpc::new_server(rt)).into();
+    let base: jsonrpsee::Methods = rpc_module(rpc_compose::new_server(rt)).into();
     let (a, peer_a, _guard_a) = conn(&base);
     let (b, _peer_b, _guard_b) = conn(&base);
 
@@ -262,8 +261,16 @@ async fn private_artifacts_are_served_to_the_owner_with_the_session_only() {
 
 fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
     rpc_core::merge([
-        hub::rpc_module(server.clone()),
-        sessions::rpc_module(server.clone()),
-        artifacts::rpc_module(server),
+        rpc_compose::rpc_module(server.clone()),
+        a2a::rpc_module(server.clone()),
+        agent::rpc_module(server.clone()),
+        sessionsync::rpc_module(server.clone()),
+        tasks::rpc_module(server.clone()),
+        artifact::rpc_module(server.clone()),
+        link::rpc_module(server.clone()),
+        talk::rpc_module(server.clone()),
+        search_providers::rpc_module(server.clone()),
+        app::rpc_module(server.clone()),
+        rpc::rpc_module(server),
     ])
 }

@@ -1,3 +1,4 @@
+use crate as agent;
 use agent::rpc_forward as forward;
 use agent::{Agents, AnswerPeerRequest, CommunicationState, GetCommunication, GetPeerMessage, ListPeerMessages, ListPeers, PeerMessagePage, PeerPage, PeerReceipt, PeerRecord, PeerScope, SetCommunication, SetPeerScope};
 use jsonrpsee::Extensions;
@@ -8,6 +9,7 @@ use uuid::Uuid;
 use rpc_core::{ask, Server};
 use agent::rpc_support::RpcServerExt;
 
+/// Messaging RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait AgentMessagingApi {
     /// Effective communication state (50 §10): the global switch alone with

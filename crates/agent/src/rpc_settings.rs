@@ -1,3 +1,4 @@
+use crate as agent;
 use agent::rpc_forward as forward;
 use agent::{SetModelFavorite, AddAcp, AddProvider, Agents, CompactStyle, EscalateModel, GetCompactStyle, GetEscalateModel, GetSubagentModel, GetTitleModel, GetVisionModel, ListAcp, ListLogins, ListModels, ListProviders, ListRegistry, Login, LoginInfo, Logout, ModelInfo, ProviderInfo, RefreshProviderModels, RefreshedModels, RemoveAcp, RemoveProvider, SetCompactStyle, SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetVisionModel, AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, SetAdvisor, SetAdvisorDefaults, SyncBacklog, AwsProfiles, ListAwsProfiles, SetAwsProfile, EndlessConfig, GetPolishModel, SetPolishModel};
 use agent::supervisor::{ChildResumed, HarnessOptions, ResumeChild, SetHarnessOption};
@@ -8,6 +9,7 @@ use runtime::SessionId;
 use rpc_core::{ask, Server};
 use agent::rpc_support::RpcServerExt;
 
+/// Settings RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait AgentSettingsApi {
     /// The live default compaction style (`agent.compact_style`).

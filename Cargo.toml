@@ -24,6 +24,7 @@ knowledge = { path = "crates/knowledge" }
 search = { path = "crates/search" }  # shared fuzzy matching/snippet/page envelope (design doc 49 §4.1)
 agent = { path = "crates/agent" }
 rpc = { path = "crates/rpc" }
+rpc-compose = { path = "crates/rpc-compose" }
 rpc-core = { path = "crates/rpc-core" }
 rpc-core-macros = { path = "crates/rpc-core-macros" }
 tui = { path = "crates/tui" }

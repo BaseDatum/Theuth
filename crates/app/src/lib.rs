@@ -12,6 +12,19 @@
 //! - events: [`AppCallChanged`]
 //! - [`skill`] (the bundled `apps` skill), [`HASH`] (library compatibility hash)
 
+/// Artifacts RPC methods and typed clients.
+pub mod rpc_artifacts;
+/// Hub RPC methods and typed clients.
+pub mod rpc_hub;
+
+/// Assemble this plugin's RPC methods.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_core::merge([
+        rpc_artifacts::rpc_module(server.clone()),
+        rpc_hub::rpc_module(server),
+    ])
+}
+
 pub mod rpc_support;
 pub mod actor;
 pub mod agent_draft;

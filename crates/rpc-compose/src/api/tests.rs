@@ -3,6 +3,7 @@ use std::fmt::Display;
 use std::sync::Arc;
 use agent::rpc_forward as forward;
 use agent::SpendReport;
+use agent::rpc_tooling::SESSION_TOOLS;
 use jsonrpsee::Extensions;
 use jsonrpsee::types::ErrorObjectOwned;
 use kameo::message::Message;
@@ -21,34 +22,41 @@ use agent::rpc_document::named;
 use document::rpc_support::join_outcome;
 use link::rpc_sharing::{link_ids, link_origin};
 use base64::Engine as _;
-use wire::WireEvent as _;
 
 /// Unit-test/export composition only; production assembly belongs to main.
 pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
     rpc_core::merge([
-        hub::rpc_module(server.clone()),
-        sessions::rpc_module(server.clone()),
+        rpc::rpc_module(server.clone()),
+        crate::rpc_module(server.clone()),
         agent::rpc_module(server.clone()),
-        tooling::rpc_module(server.clone()),
+        a2a::rpc_module(server.clone()),
+        app::rpc_module(server.clone()),
+        artifact::rpc_module(server.clone()),
+        document::rpc_module(server.clone()),
+        knowledge::rpc_module(server.clone()),
+        link::rpc_module(server.clone()),
+        roster::rpc_module(server.clone()),
+        search_providers::rpc_module(server.clone()),
+        sessionsync::rpc_module(server.clone()),
+        signal::rpc_module(server.clone()),
+        slack::rpc_module(server.clone()),
+        talk::rpc_module(server.clone()),
+        tasks::rpc_module(server.clone()),
+        telegram::rpc_module(server.clone()),
+        tools::rpc_module(server.clone()),
+        update::rpc_module(server.clone()),
+        web::rpc_module(server.clone()),
         computer::rpc_module(server.clone()),
         mcp_server::rpc_module(server.clone()),
-        concepts::rpc_module(server.clone()),
-        documents::rpc_module(server.clone()),
-        notebooks::rpc_module(server.clone()),
-        ::codeindex::rpc_module(server.clone()),
-        messaging::rpc_module(server.clone()),
+        codeindex::rpc_module(server.clone()),
         nodes::rpc_module(server.clone()),
         schedule::rpc_module(server.clone()),
-        roster::rpc_module(server.clone()),
-        artifacts::rpc_module(server.clone()),
         secrets::rpc_module(server.clone()),
-        talk::rpc_module(server.clone()),
         meeting::rpc_module(server.clone()),
         dreaming::rpc_module(server.clone()),
         autoresearch::rpc_module(server.clone()),
-        ::cells::rpc_module(server.clone()),
-        ::sandbox::rpc_module(server.clone()),
-        settings::rpc_module(server),
+        cells::rpc_module(server.clone()),
+        sandbox::rpc_module(server),
     ])
 }
 
@@ -1562,7 +1570,7 @@ use std::time::Duration;
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
             let methods: jsonrpsee::Methods = test_rpc_module(crate::new_server(rt.clone())).into();
-            tokio::spawn(crate::accept(
+            tokio::spawn(rpc::accept(
                 listener,
                 methods,
                 "t".into(),

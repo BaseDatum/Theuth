@@ -5,7 +5,8 @@ use runtime::Runtime;
 use rpc_core::ModuleFactory;
 use tokio::net::TcpListener;
 use agent::rpc_forward as forward;
-use crate::{RpcConfig, configured_listen, accept, api, engine, acp};
+use rpc::{RpcConfig, configured_listen, accept, engine};
+use crate::{api, acp};
 
 /// Install immutable forwarding hooks that keep reading the current registries.
 pub(crate) fn install_forward_hooks() {
@@ -20,10 +21,15 @@ pub(crate) fn install_forward_hooks() {
     });
 }
 
+/// Install the existing forwarding and per-runtime insight hooks.
+pub fn prepare(rt: &Runtime) {
+    install_forward_hooks();
+    agent::rpc_document::install_insight_hooks(rt);
+}
+
 /// Construct shared RPC state after installing plugin-owned startup hooks.
 pub fn new_server(rt: Runtime) -> rpc_core::Server {
-    install_forward_hooks();
-    agent::rpc_document::install_insight_hooks(&rt);
+    prepare(&rt);
     rpc_core::Server::new(rt)
 }
 

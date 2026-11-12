@@ -239,14 +239,14 @@ fn empty_pending_replaces_categories_and_loss_resync_preserves_inspection() {
     model.inspect = Some(crate::search::Inspect { session, seq: 12, found: true });
     model.pending_input = Some(("unsent draft".into(), 12));
     model.entries.push(Entry::Info("historical page".into()));
-    model.apply(UiEvent::Wire(TopicEvent::control(rpc::topics::lagged(5))));
+    model.apply(UiEvent::Wire(TopicEvent::control(rpc_compose::topics::lagged(5))));
     assert!(!model.refresh_context);
     assert_eq!(model.inspect.as_ref().unwrap().seq, 12);
     assert_eq!(model.pending_input, Some(("unsent draft".into(), 12)));
     assert!(matches!(&model.entries[..], [Entry::Info(text)] if text == "historical page"));
     assert!(shown(&model.components).contains(&"counter=-1".into()));
     model.inspect = None;
-    model.apply(UiEvent::Wire(TopicEvent::control(rpc::topics::lagged(1))));
+    model.apply(UiEvent::Wire(TopicEvent::control(rpc_compose::topics::lagged(1))));
     assert!(model.refresh_context);
 }
 

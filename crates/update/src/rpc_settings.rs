@@ -1,8 +1,10 @@
+use crate as update;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use rpc_core::{send, Server};
 use update::rpc_support::update_actor;
 
+/// Settings RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait UpdateSettingsApi {
     /// The self-updater's latest state: `null`, or the version that is on disk

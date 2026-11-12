@@ -1,9 +1,11 @@
+use crate as telegram;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use telegram::{PairingLink, TelegramStatus};
 use rpc_core::{send, Server};
 use telegram::rpc_support::telegram;
 
+/// Messaging RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait TelegramMessagingApi {
     /// Telegram bot identity, poller state, trust lists, groups and bound threads (98 §13).

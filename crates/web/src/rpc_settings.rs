@@ -1,9 +1,11 @@
+use crate as web;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use runtime::SessionId;
 use tools::ToolRegistry;
 use rpc_core::{ask, Server};
 
+/// Settings RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait WebSettingsApi {
     /// One probe query through one registered provider (built-in or external):

@@ -1,8 +1,10 @@
+use crate as tools;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use tools::{SetPtyIdle, ToolRegistry};
 use rpc_core::{ask, Server};
 
+/// Settings RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait ToolsSettingsApi {
     /// Persist `tools.pty_idle_secs` (61 §1.6); `start` calls without `idle_secs` use it from then on. `0` = never.

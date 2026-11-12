@@ -26,6 +26,25 @@ use std::sync::Arc;
 use runtime::{InputId, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 
+/// Artifacts RPC methods and typed clients.
+pub mod rpc_artifacts;
+/// Concepts RPC methods and typed clients.
+pub mod rpc_concepts;
+/// Documents RPC methods and typed clients.
+pub mod rpc_documents;
+/// Notebooks RPC methods and typed clients.
+pub mod rpc_notebooks;
+/// Sessions RPC methods and typed clients.
+pub mod rpc_sessions;
+/// Tooling RPC methods and typed clients.
+pub mod rpc_tooling;
+/// Messaging RPC methods and typed clients.
+pub mod rpc_messaging;
+/// Hub RPC methods and typed clients.
+pub mod rpc_hub;
+/// Settings RPC methods and typed clients.
+pub mod rpc_settings;
+pub mod pathac;
 pub mod rpc_session_state;
 pub mod rpc_document;
 pub mod rpc_attachments;
@@ -43,6 +62,15 @@ pub mod rpc_turns;
 /// Assemble agent-owned RPC domains.
 pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
     rpc_core::merge([
+        rpc_artifacts::rpc_module(server.clone()),
+        rpc_concepts::rpc_module(server.clone()),
+        rpc_documents::rpc_module(server.clone()),
+        rpc_notebooks::rpc_module(server.clone()),
+        rpc_sessions::rpc_module(server.clone()),
+        rpc_tooling::rpc_module(server.clone()),
+        rpc_messaging::rpc_module(server.clone()),
+        rpc_hub::rpc_module(server.clone()),
+        rpc_settings::rpc_module(server.clone()),
         rpc_jobs::rpc_module(server.clone()),
         rpc_skills::rpc_module(server.clone()),
         rpc_turns::rpc_module(server),

@@ -1,9 +1,11 @@
+use crate as a2a;
 use a2a::A2aStatus;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use rpc_core::{send, failed, Server};
 use a2a::rpc_support::{a2a, contacts, name_paired_on};
 
+/// Messaging RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait A2aMessagingApi {
     /// A2A network status (50 §10): listener, configured peers and exports,

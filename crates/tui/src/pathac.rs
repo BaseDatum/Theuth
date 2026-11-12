@@ -5,7 +5,7 @@
 //! the list is up re-asks after [`DEBOUNCE_MS`].
 
 use iocraft::KeyCode;
-use rpc::pathac::{PathCandidate, PathCompletion, trigger};
+use agent::pathac::{PathCandidate, PathCompletion, trigger};
 use runtime::SessionId;
 use tokio::sync::mpsc::UnboundedSender;
 

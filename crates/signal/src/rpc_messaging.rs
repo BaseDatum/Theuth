@@ -1,8 +1,10 @@
+use crate as signal;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use signal::{Allow, Link, RemoveAllowed, SIGNAL_ACTOR, Signal, SignalStatus, Status, Unlink};
 use rpc_core::{ask, Server};
 
+/// Messaging RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait SignalMessagingApi {
     /// Start Signal linking (if not registered); returns the provisioning URL

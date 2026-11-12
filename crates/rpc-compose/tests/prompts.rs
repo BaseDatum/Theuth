@@ -6,8 +6,7 @@ use std::time::Duration;
 
 use jsonrpsee::core::server::Subscription;
 use kameo::actor::Spawn;
-use rpc::api::{hub, tooling};
-use rpc::api::PendingPrompts;
+use rpc_compose::api::PendingPrompts;
 use rpc_core::Server;
 use runtime::{Runtime, SessionId};
 use tools::{Approval, AskUser, Decision};
@@ -166,7 +165,17 @@ async fn prompts_resolve_everywhere_and_replay_only_while_pending() {
 
 fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
     rpc_core::merge([
-        hub::rpc_module(server.clone()),
-        tooling::rpc_module(server),
+        rpc_compose::rpc_module(server.clone()),
+        a2a::rpc_module(server.clone()),
+        agent::rpc_module(server.clone()),
+        sessionsync::rpc_module(server.clone()),
+        tasks::rpc_module(server.clone()),
+        artifact::rpc_module(server.clone()),
+        link::rpc_module(server.clone()),
+        talk::rpc_module(server.clone()),
+        search_providers::rpc_module(server.clone()),
+        app::rpc_module(server.clone()),
+        rpc::rpc_module(server.clone()),
+        tools::rpc_module(server),
     ])
 }

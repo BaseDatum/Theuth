@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use agent::{CreateSessionOptions, DurableStore, PinTitle, SessionOpen, UnloadSession};
 use kameo::actor::ActorRef;
-use rpc::api::{hub, tooling};
 
 use runtime::{Runtime, SessionId};
 use tools::{HiddenTools, ListTools, RestoreHidden, ToolRegistry};
@@ -58,7 +57,7 @@ async fn hides_survive_an_actor_restart_and_unhide_clears_them() {
     .unwrap();
 
     let (peer, _guard) = rpc_core::RpcPeer::open();
-    let mut api: jsonrpsee::Methods = rpc_module(rpc::new_server(rt)).into();
+    let mut api: jsonrpsee::Methods = rpc_module(rpc_compose::new_server(rt)).into();
     api.extensions_mut().insert(peer);
     let open: SessionOpen = api
         .call("create_session", (CreateSessionOptions::default(),))
@@ -121,7 +120,17 @@ async fn hides_survive_an_actor_restart_and_unhide_clears_them() {
 
 fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
     rpc_core::merge([
-        hub::rpc_module(server.clone()),
-        tooling::rpc_module(server),
+        rpc_compose::rpc_module(server.clone()),
+        a2a::rpc_module(server.clone()),
+        agent::rpc_module(server.clone()),
+        sessionsync::rpc_module(server.clone()),
+        tasks::rpc_module(server.clone()),
+        artifact::rpc_module(server.clone()),
+        link::rpc_module(server.clone()),
+        talk::rpc_module(server.clone()),
+        search_providers::rpc_module(server.clone()),
+        app::rpc_module(server.clone()),
+        rpc::rpc_module(server.clone()),
+        tools::rpc_module(server),
     ])
 }

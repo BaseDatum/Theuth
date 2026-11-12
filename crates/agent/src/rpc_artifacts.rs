@@ -1,3 +1,4 @@
+use crate as agent;
 use std::path::PathBuf;
 use agent::context::save_blob;
 use jsonrpsee::Extensions;
@@ -8,6 +9,7 @@ use rpc_core::{failed, Server};
 use agent::rpc_attachments::decode_attachment;
 use agent::rpc_support::RpcServerExt;
 
+/// Artifacts RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait AgentArtifactsApi {
     /// Store base64 `bytes` under `session`'s tree (51 §8.1): the durable

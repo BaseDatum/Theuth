@@ -1,3 +1,4 @@
+use crate as agent;
 use agent::rpc_forward as forward;
 use agent::{Agents, Harvest};
 use jsonrpsee::Extensions;
@@ -8,6 +9,7 @@ use runtime::SessionId;
 use rpc_core::{ask, Server};
 use agent::rpc_support::RpcServerExt;
 
+/// Concepts RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait AgentConceptsApi {
     /// Harvest `session`'s finished frame now (design doc 10 §5.2). Refused while a turn is running.

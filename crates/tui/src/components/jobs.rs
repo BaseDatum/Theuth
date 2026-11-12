@@ -6,7 +6,7 @@ use kameo::actor::Spawn;
 use runtime::{Runtime, SessionId};
 use serde::Deserialize;
 use tools::{JobEvent, JobView};
-use rpc::api::clients::JobsApiClient;
+use rpc_compose::api::clients::JobsApiClient;
 use super::*;
 
 #[derive(Default)]

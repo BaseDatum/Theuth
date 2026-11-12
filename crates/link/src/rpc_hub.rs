@@ -1,3 +1,4 @@
+use crate as link;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -12,6 +13,7 @@ use agent::rpc_document::doc_forward;
 use document::rpc_support::{doc_send, documents};
 use base64::Engine as _;
 
+/// Hub RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait LinkHubApi {
     /// Remove a member (59 §8.4; owner only): `Closed{revoked}`, their connections dropped, the next

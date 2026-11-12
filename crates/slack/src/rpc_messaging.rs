@@ -1,8 +1,10 @@
+use crate as slack;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use slack::{SLACK_ACTOR, Slack, SlackStatus};
 use rpc_core::{ask, Server};
 
+/// Messaging RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait SlackMessagingApi {
     /// The Slack app manifest this engine's Slack code expects (`slack::MANIFEST`,

@@ -1,3 +1,4 @@
+use crate as sessionsync;
 use agent::rpc_forward as forward;
 use std::path::Path;
 use agent::{Agents, CreateSession, CreateSessionOptions, SessionOpen};
@@ -13,6 +14,7 @@ use agent::rpc_support::RpcServerExt;
 use agent::rpc_session_state::RpcSessionTrackExt;
 use sessionsync::rpc_session_state::RpcSessionWaitExt;
 
+/// Hub RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait SessionsyncHubApi {
     /// 181: send `session`, owned here, to the paired engine `to` (its mesh

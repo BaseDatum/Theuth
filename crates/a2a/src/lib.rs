@@ -36,6 +36,19 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+/// Messaging RPC methods and typed clients.
+pub mod rpc_messaging;
+/// Hub RPC methods and typed clients.
+pub mod rpc_hub;
+
+/// Assemble this plugin's RPC methods.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_core::merge([
+        rpc_messaging::rpc_module(server.clone()),
+        rpc_hub::rpc_module(server),
+    ])
+}
+
 pub mod rpc_support;
 pub mod client;
 pub mod config;

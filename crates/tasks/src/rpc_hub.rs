@@ -1,3 +1,4 @@
+use crate as tasks;
 use agent::Agents;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
@@ -9,6 +10,7 @@ use rpc_core::{ask, send, ASK_FAILED, Server};
 use tasks::rpc_support::{route_question, tasks_actor};
 use sessionsync::rpc_support::RpcSessionMoveExt;
 
+/// Hub RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait TasksHubApi {
     /// Answer a pending approval; `true` if it was still pending.

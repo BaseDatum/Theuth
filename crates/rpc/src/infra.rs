@@ -4,8 +4,9 @@ use jsonrpsee::proc_macros::rpc;
 use rpc_core::{peer, Server};
 use crate::diag;
 
+/// Transport-only liveness and client diagnostics.
 #[rpc(server, client)]
-pub trait RpcHubApi {
+pub trait InfraApi {
     /// 176 C1: liveness only — answers `null` at once. Asks no actor and awaits nothing, so a
     /// busy engine still answers; probe with this, not `info`, to tell a dead socket from a
     /// slow handler.
@@ -21,7 +22,7 @@ pub trait RpcHubApi {
 }
 
 #[async_trait]
-impl RpcHubApiServer for Server {
+impl InfraApiServer for Server {
 
     fn ping(&self) -> RpcResult<()> {
         Ok(())
@@ -41,5 +42,5 @@ impl RpcHubApiServer for Server {
 }
 
 pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    RpcHubApiServer::into_rpc(server)
+    InfraApiServer::into_rpc(server)
 }

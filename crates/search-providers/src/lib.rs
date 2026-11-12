@@ -22,6 +22,16 @@ use kameo::message::{Context, Message};
 use serde::{Deserialize, Serialize};
 use web::{Provider, ProviderError};
 
+/// Hub RPC methods and typed clients.
+pub mod rpc_hub;
+
+/// Assemble this plugin's RPC methods.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_core::merge([
+        rpc_hub::rpc_module(server),
+    ])
+}
+
 pub mod brave;
 pub mod firecrawl;
 pub mod openserp;

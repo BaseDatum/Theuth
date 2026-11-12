@@ -1,3 +1,4 @@
+use crate as app;
 use app::{AppDoc, AppToolResult, CallArgs, CallStatusOf, CallTool, CloseApp, PublishFromUi};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
@@ -7,6 +8,7 @@ use rpc_core::{send, peer, Server};
 use app::rpc_support::apps;
 use agent::rpc_support::RpcServerExt;
 
+/// Artifacts RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait AppArtifactsApi {
     /// Publish a reply fence's OpenUI source as an app artifact of `session` without a

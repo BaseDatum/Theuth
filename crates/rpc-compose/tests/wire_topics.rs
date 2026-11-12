@@ -52,9 +52,9 @@ async fn filters_envelopes_opaque_old_peer_and_external_liveness() {
     signal::declare_wire(&rt).await.unwrap();
     slack::declare_wire(&rt).await.unwrap();
     sessionsync::declare_wire(&rt).await.unwrap();
-    let base = rpc::methods(rt.clone(), rpc::api::hub::rpc_module).await;
+    let base = rpc_compose::methods(rt.clone(), rpc_compose::rpc_module).await;
     // Repeated assembly must neither install a second actor nor duplicate events.
-    let _again = rpc::methods(rt.clone(), rpc::api::hub::rpc_module).await;
+    let _again = rpc_compose::methods(rt.clone(), rpc_compose::rpc_module).await;
     let (methods, _, _guard) = connection(&base);
     let local = rt.wire_events();
     assert_eq!(rt.wire_external_stream_count(), 0);
@@ -120,9 +120,9 @@ async fn topic_focus_merging_barriers_and_lagged_snapshot() {
     let rt = runtime();
     agent::declare_wire(&rt).await.unwrap();
     a2a::declare_wire(&rt).await.unwrap();
-    let server = rpc::new_server(rt.clone());
+    let server = rpc_compose::new_server(rt.clone());
     let focus = server.focus.clone();
-    let base: jsonrpsee::Methods = rpc::api::hub::rpc_module(server).into();
+    let base: jsonrpsee::Methods = rpc_compose::rpc_module(server).into();
     let (methods, peer, _guard) = connection(&base);
     let mut stream = topics(&methods, json!(["agent.events", "a2a.changed"]), None, false).await;
     assert_eq!(next(&mut stream).await, pending());
@@ -167,11 +167,12 @@ async fn private_child_bookkeeping_precedes_topic_selection_and_prompts_are_proj
     a2a::declare_wire(&rt).await.unwrap();
     tools::registry::start(&rt).await.unwrap();
     let agents = agent::spawn_test_agents(rt.clone(), |_: &str| true).await.unwrap();
-    let server = rpc::new_server(rt.clone());
+    let server = rpc_compose::new_server(rt.clone());
     let private = server.private.clone();
     let base: jsonrpsee::Methods = rpc_core::merge([
-        rpc::api::hub::rpc_module(server.clone()),
-        rpc::api::sessions::rpc_module(server),
+        rpc_compose::rpc_module(server.clone()),
+        agent::rpc_module(server.clone()),
+        sessionsync::rpc_module(server),
     ]).into();
     let (a, owner, _a_guard) = connection(&base);
     let (b, _, _b_guard) = connection(&base);
@@ -238,7 +239,7 @@ impl OldEngineServer for Server {
         pending: jsonrpsee::server::PendingSubscriptionSink,
         ext: &jsonrpsee::Extensions,
     ) -> jsonrpsee::core::SubscriptionResult {
-        rpc::api::CoreApiServer::subscribe_events(self, pending, ext, None, None).await
+        rpc_compose::api::CompositionApiServer::subscribe_events(self, pending, ext, None, None).await
     }
 }
 
@@ -247,7 +248,7 @@ async fn old_engine_probe_falls_back_to_explicit_bare_legacy_mode() {
     let rt = runtime();
     signal::declare_wire(&rt).await.unwrap();
     slack::declare_wire(&rt).await.unwrap();
-    let base: jsonrpsee::Methods = OldEngineServer::into_rpc(rpc::new_server(rt.clone())).into();
+    let base: jsonrpsee::Methods = OldEngineServer::into_rpc(rpc_compose::new_server(rt.clone())).into();
     let (methods, _, _guard) = connection(&base);
     let (response, _) = methods.raw_json_request(
         r#"{"jsonrpc":"2.0","id":1,"method":"subscribe_topics","params":[null,null,null]}"#, 1,

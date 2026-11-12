@@ -1,4 +1,4 @@
-//! `just ts`: `cargo test -p rpc --features ts export_bindings` writes
+//! `just ts`: `cargo test -p rpc-compose --features ts export_bindings` writes
 //! `bindings/*.ts` for every wire type and `bindings/methods.json`, the sorted
 //! list of every registered method name (25 §7), plus the surface catalog as
 //! `bindings/surface-catalog.json` (JSON Schema) and
@@ -18,8 +18,8 @@ async fn export_bindings() {
         crate::api::PendingPrompts,
         crate::api::ConfigFlag,
         agent::rpc_forward::FrontDoorError,
-        crate::pathac::PathCompletion,
-        crate::pathac::PathCandidate,
+        agent::pathac::PathCompletion,
+        agent::pathac::PathCandidate,
         agent::AgentEvent,
         agent::SessionSummary,
         agent::ProjectStyle,

@@ -58,7 +58,7 @@ pub enum UiEvent {
     /// Reply to [`Command::ListModels`].
     Models(Vec<ModelInfo>),
     /// Reply to [`Command::PathComplete`]: the generation that asked, `None` when the call failed.
-    PathComplete(u64, Option<rpc::pathac::PathCompletion>),
+    PathComplete(u64, Option<agent::pathac::PathCompletion>),
     /// Reply to [`Command::SetModel`].
     ModelSet(ModelInfo),
     /// Reply to [`Command::SetEffort`]: the value now in force.

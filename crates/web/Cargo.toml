@@ -6,6 +6,8 @@ publish.workspace = true
 description = "Web search and fetch: search_web / read_url tools, SSRF-guarded fetcher, RRF aggregator, keyless engines, provider registry (design doc 16)"
 
 [dependencies]
+rpc-core = { workspace = true }
+jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }
 tools = { workspace = true }
@@ -22,6 +24,7 @@ kameo = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
 chrono = { workspace = true }
+uuid = { workspace = true }
 html-to-markdown-rs = { workspace = true }
 rand = { workspace = true }
 flate2 = { workspace = true }

@@ -1,9 +1,11 @@
+use crate as talk;
 use agent::{Agents, GetPolishModel};
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use rpc_core::{ask, send, Server};
 use talk::rpc_support::dictation;
 
+/// Hub RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait TalkHubApi {
     /// 153 F1: the live user-facing `voice.*` settings — what `set_shape`, `set_end_phrases`,

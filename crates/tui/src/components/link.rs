@@ -1,7 +1,7 @@
 //! Link inventory, pairing countdown and composer-backed rename/revoke prompts.
 use super::*;
 use serde::Deserialize;
-use rpc::api::clients::NetworkApiClient;
+use rpc_compose::api::clients::NetworkApiClient;
 use crate::model::{ago, now_ms};
 
 /// Global cache survives session resets; prompt and countdown state do not.

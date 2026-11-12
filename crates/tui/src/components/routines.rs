@@ -1,5 +1,5 @@
 //! Existing schedule text commands, with no live subscription or scheduler UI.
-use rpc::api::clients::RoutinesApiClient;
+use rpc_compose::api::clients::RoutinesApiClient;
 use crate::model::elapsed;
 use super::*;
 

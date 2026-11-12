@@ -1,3 +1,4 @@
+use crate as agent;
 use agent::rpc_forward as forward;
 use std::path::PathBuf;
 use agent::{Agents, ListAgents};
@@ -14,6 +15,7 @@ use document::rpc_support::{doc_send, documents, nb_result};
 use crate::pathac;
 use agent::rpc_support::RpcServerExt;
 
+/// Hub RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait AgentHubApi {
     /// PTY jobs of `session` (and, with `descendants: true`, its subtree)

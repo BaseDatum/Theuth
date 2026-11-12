@@ -1,3 +1,4 @@
+use crate as agent;
 use agent::{Agents, SessionSummary};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
@@ -8,6 +9,7 @@ use rpc_core::{lookup, owner, ASK_FAILED, Server};
 use agent::rpc_document::{check_session_cites, doc_forward, level_str, notebook_chat_counts};
 use document::rpc_support::{doc_send, documents, member_outcome, nb_result, principal};
 
+/// Notebooks RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait AgentNotebooksApi {
     /// Notebooks (144 §13.3): live ones newest first; `archived` includes archived. Any engine, from the replica.

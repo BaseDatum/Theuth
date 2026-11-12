@@ -1,3 +1,4 @@
+use crate as agent;
 use agent::rpc_forward as forward;
 use agent::{Agents, ShowPrompt};
 use jsonrpsee::Extensions;
@@ -21,6 +22,7 @@ pub const SESSION_TOOLS: [&str; 6] = [
     "clip",
 ];
 
+/// Tooling RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait AgentToolingApi {
     /// 193 §7: run one registry tool ([`SESSION_TOOLS`] only) in `session` — its cwd, approval

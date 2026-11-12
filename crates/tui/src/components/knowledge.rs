@@ -2,7 +2,7 @@
 use super::*;
 use iocraft::KeyCode;
 use ::knowledge::{Change, ChangeStatus, HarvestResult, History, Meta, Revision};
-use rpc::api::clients::{AgentConceptsApiClient, KnowledgeConceptsApiClient};
+use rpc_compose::api::clients::{AgentConceptsApiClient, KnowledgeConceptsApiClient};
 use runtime::SessionId;
 
 #[derive(Default)]

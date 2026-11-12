@@ -1,3 +1,4 @@
+use crate as app;
 use app::{AppDoc, GetApp};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
@@ -8,6 +9,7 @@ use app::rpc_support::apps;
 use artifact::rpc_support::artifact;
 use agent::rpc_support::RpcServerExt;
 
+/// Hub RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait AppHubApi {
     /// A committed app record: its artifact, source, compatibility hash,

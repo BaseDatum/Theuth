@@ -1,3 +1,4 @@
+use crate as sessionsync;
 use agent::rpc_forward as forward;
 use agent::{Agents, ListSessions};
 use jsonrpsee::Extensions;
@@ -9,6 +10,7 @@ use sessionsync::types::{SessionOwner, SessionsStatus};
 use rpc_core::{ask, Server};
 use agent::rpc_support::RpcServerExt;
 
+/// Sessions RPC methods owned by this plugin.
 #[rpc(server, client)]
 pub trait SessionsyncSessionsApi {
     /// Take `session` here (68 §4.2): `reason` is `user` (continue here, at

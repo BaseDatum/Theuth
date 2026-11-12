@@ -4,51 +4,8 @@
 use std::{collections::BTreeSet, fs, path::Path};
 use toml::Value;
 
-const ALLOWED: &[&str] = &[
-    "a2a",
-    "acp",
-    "agent",
-    "app",
-    "artifact",
-    "autoresearch",
-    "browser",
-    "cells",
-    "codeindex",
-    "computer",
-    "decision",
-    "document",
-    "double",
-    "dreaming",
-    "knowledge",
-    "link",
-    "mcp-server",
-    "meeting",
-    "mesh",
-    "nodes",
-    "platform",
-    "replica",
-    "roster",
-    "rpc-core",
-    "runtime",
-    "sandbox",
-    "schedule",
-    "search",
-    "search-providers",
-    "secrets",
-    "sessionsync",
-    "signal",
-    "slack",
-    "surface",
-    "talk",
-    "tasks",
-    "telegram",
-    "tools",
-    "update",
-    "voice",
-    "web",
-    "wire",
-];
-const ALLOWED_DEV: &[&str] = &["agent"];
+const ALLOWED: &[&str] = &["rpc-core", "runtime"];
+const ALLOWED_DEV: &[&str] = &[];
 
 #[test]
 fn workspace_dependencies_only_shrink() {
