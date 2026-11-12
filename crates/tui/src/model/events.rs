@@ -350,12 +350,6 @@ pub enum Command {
         /// Job id, e.g. `j3`.
         id: String,
     },
-    /// `autoresearch.list` / `autoresearch.get` + last 10 experiments: `/autoresearch [<slug>]` (140 §13.1).
-    AutoresearchStatus(Option<String>),
-    /// `autoresearch.control`: `/autoresearch pause|resume|stop|stop_now <slug>`.
-    AutoresearchControl(String, autoresearch::ControlOp),
-    /// `autoresearch.steer`: `/autoresearch steer <slug> <text>`.
-    AutoresearchSteer(String, String),
     /// `session_take(id, "user")`: `/take` continues the open session on this engine (68 §10).
     TakeSession(SessionId),
     /// `compact`.

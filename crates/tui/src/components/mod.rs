@@ -17,6 +17,7 @@ pub mod sandboxes;
 pub mod tasks;
 pub mod roster;
 pub mod routines;
+pub mod autoresearch;
 
 // Step-11 group t3 (jobs, terminals, speech and search): add modules below, in this block only.
 

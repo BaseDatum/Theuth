@@ -695,6 +695,9 @@ The sandboxes component owns inventory and desktop URL replies; desktop password
 remain private inside opaque local replies, never transcript or plain output.
 The routines component owns `/schedules` parsing, sequential history/info reads,
 direct controls and unchanged text tables; it adds no schedule event subscription.
+The autoresearch component owns direct study controls and text rendering; goals
+use the existing named-skill submission path. Injected study cards remain core
+transcript content, with no new study event subscription.
 Focused components may expose an `Editor` port (hint, masking, empty-answer policy)
 on the mounted composer. Secret-class answers retain precedence over ask-user input.
 Component cards carry a stable UUID and named replacement group. Only the newest

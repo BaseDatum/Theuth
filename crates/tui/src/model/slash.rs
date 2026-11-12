@@ -92,11 +92,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "<label|off>",
         "label this session's root for grouping in /sessions and /artifacts (off clears)",
     ),
-    (
-        "/autoresearch",
-        "[<goal> | <slug> | list | pause|resume|stop|stop_now <slug> | steer <slug> <text>]",
-        "autoresearch studies (140): list, open, pause/resume/stop/steer one directly; a goal or anything else hands the `autoresearch` skill to the model",
-    ),
     ("/parent", "", "open the parent session (from a subagent)"),
     (
         "/sessions",
