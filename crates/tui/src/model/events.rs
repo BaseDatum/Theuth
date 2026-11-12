@@ -37,22 +37,10 @@ pub enum UiEvent {
     SessionCreated(SessionId),
     /// Draft creation failed; deliver each queued owner's typed failure.
     DraftFailed(String),
-    /// Reply to [`Command::ListModels`].
-    Models(Vec<ModelInfo>),
     /// Reply to [`Command::PathComplete`]: the generation that asked, `None` when the call failed.
     PathComplete(u64, Option<agent::pathac::PathCompletion>),
-    /// Reply to [`Command::SetModel`].
-    ModelSet(ModelInfo),
-    /// Reply to [`Command::SetEffort`]: the value now in force.
-    EffortSet(Option<String>),
     /// Reply to [`Command::SetAdvisor`] / [`Command::AdvisorStatus`] (125 §7.1).
     AdvisorStatus(AdvisorStatus),
-    /// Reply to [`Command::SetModelFavorite`]: the engine's favorite list now (127 §3).
-    FavoriteModels(Vec<String>),
-    /// Reply to [`Command::HarnessOptions`] (75 §8): the harness's option list.
-    HarnessOptions(Vec<acp::ConfigOption>),
-    /// Reply to [`Command::SetHarnessOption`]: the option key asked for, the value, and the result.
-    HarnessOptionSet(String, String, acp::SetOptionResult),
     /// Reply to [`Command::SetApprovals`].
     Approvals(ApprovalsState),
     /// Reply to [`Command::ShowPrompt`].
@@ -75,8 +63,6 @@ pub enum UiEvent {
     Info(String),
     /// Reply to [`Command::GetCompactStyle`].
     CompactStyle(CompactStyle),
-    /// Reply to [`Command::GetTitleModel`] / [`Command::SetTitleModel`].
-    TitleModel(Option<ModelInfo>),
     /// Reply to [`Command::GetVisionModel`] / [`Command::SetVisionModel`]:
     /// the harness-wide vision fallback (52 §3), `None` = off.
     VisionModel(Option<ModelInfo>),
@@ -231,10 +217,6 @@ pub enum Command {
     GetCompactStyle,
     /// `set_compact_style`.
     SetCompactStyle(CompactStyle),
-    /// `title_model`.
-    GetTitleModel,
-    /// `set_title_model`; `None` clears it.
-    SetTitleModel(Option<String>),
     /// `vision_model`.
     GetVisionModel,
     /// `set_vision_model`; `None` turns the fallback off.
@@ -278,8 +260,6 @@ pub enum Command {
         /// One per question, in order.
         answers: Option<Vec<Answer>>,
     },
-    /// `list_models`.
-    ListModels,
     /// `path_complete` (PATH-AC): the token under `cursor` in `input`, listed by `session`'s engine.
     PathComplete {
         /// The listing session (`None`: this engine, its cwd).
@@ -290,22 +270,6 @@ pub enum Command {
         cursor: usize,
         /// Echoed in the reply so a superseded request is inert.
         generation: u64,
-    },
-    /// `set_model`: the shown session only (148 R1); with no session yet the
-    /// pick is the draft's (`Model::draft`), no command.
-    SetModel {
-        /// Session to switch now.
-        session: SessionId,
-        /// `provider/model` id.
-        model: String,
-    },
-    /// `set_effort`: the shown session only (148 R1); with no session yet the
-    /// pick is the draft's (`Model::draft`), no command.
-    SetEffort {
-        /// Session to switch from its next turn.
-        session: SessionId,
-        /// Effort keyword or token budget; `None` clears it (provider default).
-        effort: Option<String>,
     },
     /// `set_advisor` (125 §7.1): `model: None` turns the advisor off.
     SetAdvisor {
@@ -320,25 +284,6 @@ pub enum Command {
     AdvisorStatus(SessionId),
     /// `set_advisor_max_consults` (R1.2): the per-turn `consult` cap, 0-32.
     SetAdvisorMaxConsults(u8),
-    /// `set_model_favorite` (127 §3): star (`true`) or unstar `model` on the engine.
-    SetModelFavorite {
-        /// `provider/model` id.
-        model: String,
-        /// `true` stars, `false` unstars.
-        favorite: bool,
-    },
-    /// `harness_options` on an ACP session (75 §8).
-    HarnessOptions(SessionId),
-    /// `set_harness_option` on an ACP session (75 §8): `config_id` is an
-    /// option id or the alias `model` / `effort`.
-    SetHarnessOption {
-        /// The ACP session.
-        session: SessionId,
-        /// Option id or alias.
-        config_id: String,
-        /// One of the option's listed values.
-        value: String,
-    },
     /// `resume_child` on the open ACP session (75 §10).
     ResumeChild(SessionId),
     /// `set_approvals`.

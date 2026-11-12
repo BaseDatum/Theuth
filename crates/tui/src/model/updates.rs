@@ -140,28 +140,7 @@ impl Model {
                     self.entries.push(Entry::Error(message));
                 }
             }
-            UiEvent::Models(items) => {
-                let target = std::mem::take(&mut self.pick_target);
-                let chips = std::mem::take(&mut self.pick_effort);
-                if items.is_empty() {
-                    self.entries
-                        .push(Entry::Error("no models: no provider is configured".into()));
-                } else {
-                    self.open_models(items, target, Vec::new(), chips);
-                }
-            }
             UiEvent::PathComplete(generation, reply) => self.path.reply(generation, reply),
-            // 194 D6: the effort is the chip row's, under the model in the picker; no second step.
-            UiEvent::ModelSet(info) => self.model_id = info.id,
-            UiEvent::FavoriteModels(models) => self.set_favorites(models),
-            UiEvent::EffortSet(effort) => {
-                self.awaiting_effort = false;
-                self.entries.push(Entry::Info(match &effort {
-                    Some(e) => format!("effort: {e}"),
-                    None => "effort cleared".to_owned(),
-                }));
-                self.effort = effort;
-            }
             // The reply of `/advisor …` or a load's refresh (125 §7.1): installed
             // silently; `status` prints its lines.
             UiEvent::AdvisorStatus(status) => {
@@ -175,11 +154,6 @@ impl Model {
                         self.entries.push(Entry::Info(line));
                     }
                 }
-            }
-            UiEvent::HarnessOptions(options) => self.open_harness(options),
-            UiEvent::HarnessOptionSet(key, value, r) => {
-                self.entries
-                    .push(Entry::Info(harness_option_set_line(&key, &value, &r)));
             }
             UiEvent::Acp(list) => match &mut self.menu {
                 Some(Menu::Acp { entries, .. }) => *entries = list,
@@ -293,7 +267,6 @@ impl Model {
             UiEvent::CompactStyle(s) => self.entries.push(Entry::Info(format!(
                 "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
             ))),
-            UiEvent::TitleModel(m) => self.entries.push(Entry::Info(title_model_line(m.as_ref()))),
             // The startup fetch only primes the attach notice; `/vision` prints.
             UiEvent::VisionModel(m) => {
                 if std::mem::take(&mut self.awaiting_vision) {

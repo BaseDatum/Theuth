@@ -2,21 +2,10 @@ use super::*;
 
 /// Slash commands: name, argument hint (`<x>` required, `[x]` optional, `""` none), description.
 pub const COMMANDS: &[(&str, &str, &str)] = &[
-    ("/model", "[id]", "switch model (picker without id)"),
-    (
-        "/title",
-        "[model|off]",
-        "model that names sessions in the history list (off = the session's model)",
-    ),
     (
         "/vision",
         "[model|off]",
         "model that inspects images when the main model cannot (off = images are omitted)",
-    ),
-    (
-        "/effort",
-        "[level|clear]",
-        "reasoning effort (picker without arg)",
     ),
     (
         "/advisor",

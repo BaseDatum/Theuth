@@ -41,7 +41,8 @@ pub mod dictation_voice;
 pub mod talk;
 
 // Model-picker panels (after design 194): add modules below, in this block only.
-pub use registry::{Registry, builtin, builtin_with};
+pub mod models;
+pub use registry::{Registry, builtin, builtin_with, configured};
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -266,7 +267,7 @@ pub struct CoreView<'a> {
     /// Model reported by the external harness.
     pub harness_model: Option<&'a str>,
     /// Existing read-only model capability catalog.
-    pub catalog: Option<&'a models::Catalog>,
+    pub catalog: Option<&'a ::models::Catalog>,
     /// Current shared animation frame before this dispatch.
     pub frame: usize,
     /// A mounted owner currently requests a read-only composer region.

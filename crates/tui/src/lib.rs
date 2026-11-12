@@ -101,17 +101,16 @@ impl runtime::Plugin for TuiPlugin {
         let engine = api.read().clone();
         let info = engine.info().await.ok();
         let interactive = self.prompt.is_none() && std::io::stdout().is_terminal();
-        let components = components::builtin_with(info.as_ref().is_some_and(|i| i.app_enabled), interactive);
+        let components = components::configured(info.as_ref(), rt, interactive);
         tokio::spawn(run_commands(api, commands_rx, events_tx));
 
-        let (default_model, default_effort, advisor, favorite_models) = info.map_or_else(
+        let (default_model, default_effort, advisor) = info.map_or_else(
             || {
                 let cfg = rt.section::<AgentConfig>("agent").unwrap_or_default();
                 (
                     cfg.model,
                     cfg.effort,
                     Default::default(),
-                    cfg.favorite_models,
                 )
             },
             |i| {
@@ -119,7 +118,6 @@ impl runtime::Plugin for TuiPlugin {
                     i.default_model,
                     i.default_effort,
                     i.advisor,
-                    i.favorite_models,
                 )
             },
         );
@@ -139,7 +137,6 @@ impl runtime::Plugin for TuiPlugin {
                     default_model,
                     default_effort,
                     advisor,
-                    favorite_models,
                     approvals,
                     components: Some(components),
                     catalog,
@@ -504,10 +501,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             msg(api.set_compact_style(style).await)?;
             UiEvent::Info(format!("compact style: {style}"))
         }
-        Command::GetTitleModel => UiEvent::TitleModel(msg(api.title_model().await)?),
-        Command::SetTitleModel(model) => {
-            UiEvent::TitleModel(msg(api.set_title_model(model).await)?)
-        }
         Command::GetVisionModel => UiEvent::VisionModel(msg(api.vision_model().await)?),
         Command::SetVisionModel(model) => {
             UiEvent::VisionModel(msg(api.set_vision_model(model).await)?)
@@ -545,15 +538,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 UiEvent::History(session, loaded)
             }
         }
-        Command::ListModels => UiEvent::Models(msg(api.list_models(None).await)?),
-        // 148 R1: this session only; the default is the Settings UI's to set.
-        Command::SetModel { session, model } => {
-            UiEvent::ModelSet(msg(api.set_model(Some(session), model, None).await)?)
-        }
-        Command::SetEffort { session, effort } => {
-            msg(api.set_effort(Some(session), effort.clone(), None).await)?;
-            UiEvent::EffortSet(effort)
-        }
         // 125 §7.1: `None` model = off; both replies carry the same status.
         Command::SetAdvisor {
             session,
@@ -567,22 +551,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::SetAdvisorMaxConsults(n) => {
             let d = msg(api.set_advisor_max_consults(n).await)?;
             UiEvent::Info(format!("advisor consults → {}", d.max_consults))
-        }
-        Command::SetModelFavorite { model, favorite } => {
-            UiEvent::FavoriteModels(msg(api.set_model_favorite(model, favorite).await)?)
-        }
-        Command::HarnessOptions(session) => {
-            UiEvent::HarnessOptions(msg(api.harness_options(session).await)?)
-        }
-        Command::SetHarnessOption {
-            session,
-            config_id,
-            value,
-        } => {
-            let r = msg(api
-                .set_harness_option(session, config_id.clone(), value.clone())
-                .await)?;
-            UiEvent::HarnessOptionSet(config_id, value, r)
         }
         Command::ResumeChild(session) => {
             // 146 D8: a child that died mid-prompt continues its task.
@@ -1095,20 +1063,10 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             model::vision_line(*stage, model, sources.len())
         ),
         UiEvent::Agent(_) => Ok(()),
-        UiEvent::ModelSet(info) => writeln!(out, "model → {}", info.id),
-        UiEvent::EffortSet(Some(e)) => writeln!(out, "effort: {e}"),
-        UiEvent::EffortSet(None) => writeln!(out, "effort cleared"),
         UiEvent::AdvisorStatus(s) => model::advisor_status_lines(s)
             .iter()
             .try_for_each(|l| writeln!(out, "{l}")),
-        UiEvent::FavoriteModels(models) => writeln!(out, "favorites → {} models", models.len()),
-        UiEvent::HarnessOptions(options) => model::harness_options_lines(options)
-            .iter()
-            .try_for_each(|l| writeln!(out, "{l}")),
-        UiEvent::HarnessOptionSet(key, value, r) => {
-            writeln!(out, "{}", model::harness_option_set_line(key, value, r))
-        }
-        UiEvent::Models(_) | UiEvent::PathComplete(..) => {
+        UiEvent::PathComplete(..) => {
             writeln!(out, "menus need a TTY")
         }
         UiEvent::Logins(rows) => rows
@@ -1129,7 +1087,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             out,
             "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
         ),
-        UiEvent::TitleModel(m) => writeln!(out, "{}", model::title_model_line(m.as_ref())),
         UiEvent::VisionModel(m) => writeln!(out, "{}", model::vision_model_line(m.as_ref())),
         UiEvent::AwsProfiles { info, .. } => writeln!(out, "{}", model::aws_profile_line(info)),
         UiEvent::Skills(list) | UiEvent::SkillsAdded(list) => list.iter().try_for_each(|s| {

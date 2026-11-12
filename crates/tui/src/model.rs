@@ -85,10 +85,6 @@ pub struct Model {
     /// session this view opens is created with these options (never the
     /// default); the header shows them meanwhile. Cleared once a session is adopted.
     pub draft: Option<CreateSessionOptions>,
-    /// The engine's starred models (`Info.favorite_models`, then
-    /// `FavoriteModelsChanged` / the `set_model_favorite` reply, 127 §3), in
-    /// starring order; `/model` lists them first.
-    pub favorite_models: Vec<String>,
     /// The LLM an ACP child's harness reports (06 §8.2); the header shows
     /// `model_id · harness_model`. `None` for native sessions.
     pub harness_model: Option<String>,
@@ -237,10 +233,6 @@ pub struct Model {
     /// `Info.advisor` (125 §6.5): the last remembered pick, served by `/advisor on`;
     /// follows every `AdvisorChanged` with a model.
     pub advisor_default: AdvisorDefaults,
-    /// Where the next `UiEvent::Models` picker sends its pick.
-    pick_target: PickTarget,
-    /// Bare `/effort` (194 D6): the next picker opens with the cursor on the chip row.
-    pick_effort: bool,
     /// What the next `UiEvent::AdvisorStatus` reply is for; `None` installs it silently.
     advisor_reply: Option<AdvisorReply>,
     /// Seqs of the Advisory rows `AdvisoryAdded` carded: a `TurnStarted`
@@ -294,14 +286,12 @@ pub(crate) use advisor::{AdvisorReply};
 pub use agents::{AgentRow, sort_agents, agent_row, WATCH_GLYPH, source_tag, observed_word};
 use agents::{rank, harness_word};
 pub use approvals::Ask;
-pub use catalog::{PickTarget, ModelRow, EffortChips, rank_models, providers, provider_models, title_model_line, vision_model_line, aws_profile_line};
-#[cfg(test)]
-use catalog::{search_terms};
+pub use catalog::{vision_model_line, aws_profile_line};
 pub use credentials::LoginRow;
 pub use events::{UiEvent, Command};
 pub(crate) use components::Output;
 pub(crate) use events::{send};
-pub use harnesses::{AcpRow, harness_options_lines, harness_option_set_line};
+pub use harnesses::AcpRow;
 use history::{revision, user_entries, cell_results, FENCE};
 pub(crate) use history::from_history;
 #[cfg(test)]
@@ -323,4 +313,4 @@ pub use transcript::{Entry, CardKind, moved_title, injected, describe, output_ma
 use transcript::{split_engine_restart, card, attachment_labels, first_arg, wrapper_kind};
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

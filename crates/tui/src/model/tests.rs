@@ -1,4 +1,70 @@
     use super::*;
+    use crate::components::models::{Models, Msg as ModelsMsg, Request as ModelsRequest, Picker, Selection,
+        ModelRow, rank_models, providers, provider_models, search_terms, harness_options_lines};
+
+    pub(crate) fn models(m: &Model) -> &Models { m.components.get::<Models>().unwrap() }
+    pub(crate) fn models_mut(m: &mut Model) -> &mut Models { m.components.get_mut::<Models>().unwrap() }
+    pub(crate) fn models_core(m: &Model) -> crate::components::CoreView<'_> {
+        crate::components::CoreView {
+            session: m.session, model_id: &m.model_id, effort: m.effort.as_deref(),
+            default_effort: m.default_effort.as_deref(), draft_options: m.draft.as_ref(),
+            harness: m.agent.as_deref(), harness_model: m.harness_model.as_deref(), catalog: m.catalog.as_deref(),
+            ..crate::components::tests::core()
+        }
+    }
+    pub(crate) fn models_selection(m: &Model) -> Selection {
+        let (session, to) = (m.session, m.components.token("models"));
+        let mut selection = Selection::external(
+            "model".into(), Some(m.model_id.clone()), m.effort.clone(), false, false, true,
+            Box::new(move |pick| Some(crate::components::CoreAction::Post(crate::components::LocalReply {
+                to, engine_epoch: 0, body: Box::new(ModelsMsg::Picked { session, pick }),
+            }))),
+        );
+        selection.native = Some(session);
+        selection
+    }
+    pub(crate) fn models_reply(m: &mut Model, items: Vec<ModelInfo>) {
+        if models(m).pending.is_none() {
+            let selection = models_selection(m);
+            models_mut(m).pending = Some((selection, false));
+        }
+        let serial = models(m).serial;
+        m.component_message::<Models>(ModelsMsg::Loaded { serial, result: Ok(items) });
+    }
+    pub(crate) fn harness_reply(m: &mut Model, options: Vec<acp::ConfigOption>, chips: bool) {
+        m.component_message::<Models>(ModelsMsg::HarnessOptions { session: m.session.unwrap(), chips, options });
+    }
+    pub(crate) fn models_key(m: &mut Model, code: KeyCode, tx: &UnboundedSender<Command>) {
+        m.component_commands = Some(tx.clone());
+        component_menu_key(m, "models", code);
+    }
+
+    #[test]
+    fn models_picker_completion_keeps_original_draft_after_another_picker_opened() {
+        let (tx, _rx) = unbounded_channel();
+        let mut m = Model::new("openai/gpt-5.4".into(), false);
+        m.submit("/model", &tx);
+        let items = vec![ModelInfo {
+            id: "openai/gpt-5.4-mini".into(), name: "GPT-5.4 mini".into(), provider: "openai".into(),
+            context: 200_000, reasoning: false, image: false, efforts: Vec::new(),
+            budget_min: None, budget_max: None, local: false,
+        }];
+        models_reply(&mut m, items.clone());
+        let original = models_mut(&mut m).menu.take().unwrap().selection.complete;
+        let selection = Selection::external(
+            "another setting".into(), None, None, true, false, true,
+            Box::new(|_| Some(crate::components::CoreAction::Reject("wrong requester".into()))),
+        );
+        m.component_message::<Models>(ModelsMsg::Open { selection, chips: false });
+        models_reply(&mut m, items);
+        let Some(crate::components::CoreAction::Post(reply)) =
+            original(crate::components::models::Pick::Model(Some("openai/gpt-5.4-mini".into()), None))
+        else { panic!("original draft endpoint"); };
+        m.apply(UiEvent::Component(reply));
+        assert_eq!(m.draft.as_ref().unwrap().model.as_deref(), Some("openai/gpt-5.4-mini"));
+        assert_eq!(models(&m).menu.as_ref().unwrap().selection.noun, "another setting");
+        assert!(!m.entries.iter().any(|entry| matches!(entry, Entry::Error(text) if text == "wrong requester")));
+    }
     use agent::{ContextItem, ContextKind, ContextSnapshot};
     use crate::components::shake::{ShakePanel, ShakeCategory, ShakeStage, expand, SHAKE_USAGE, Msg as ShakeMsg, Request as ShakeRequest};
     use agent::todo::{Status as TodoStatus, TodoSnapshot, TodoSource};
@@ -114,7 +180,7 @@
     #[test]
     fn slash_tab_completes_and_enter_asks_for_required_arg() {
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         m.sync_slash("/mo");
         assert_eq!(
             m.menu_key(KeyCode::Tab, "/mo", &tx),
@@ -4124,27 +4190,27 @@
         let s = SessionId::new();
         let mut m = Model {
             session: Some(s),
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
         m.submit("/effort high", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetEffort { session, effort: Some(e) }) if session == s && e == "high"
+            component_request::<ModelsRequest>(&mut rx),
+            Ok(ModelsRequest::SetEffort { session, effort: Some(e) }) if session == s && e == "high"
         ));
         m.submit("/effort clear", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetEffort { effort: None, .. })
+            component_request::<ModelsRequest>(&mut rx),
+            Ok(ModelsRequest::SetEffort { effort: None, .. })
         ));
         // 194 D6: bare `/effort` on a model without levels is a notice, no picker.
         m.submit("/effort", &tx);
         assert!(rx.try_recv().is_err());
-        assert!(m.menu.is_none());
+        assert!(models(&m).menu.is_none());
         assert!(
             matches!(m.entries.last(), Some(Entry::Info(t)) if t.ends_with("no reasoning effort levels"))
         );
         // The reply lands in the header; the echo event is not announced twice.
-        m.apply(UiEvent::EffortSet(Some("high".into())));
+        m.component_message::<Models>(ModelsMsg::EffortSet(Some("high".into())));
         assert_eq!(m.effort.as_deref(), Some("high"));
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "effort: high"));
     }
@@ -4212,8 +4278,8 @@
         // In the session the same commands switch that session only.
         m.submit("/model openai/gpt-5.4", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetModel { session, model }) if session == s && model == "openai/gpt-5.4"
+            component_request::<ModelsRequest>(&mut rx),
+            Ok(ModelsRequest::SetModel { session, model }) if session == s && model == "openai/gpt-5.4"
         ));
         m.submit("/new", &tx);
         assert_eq!(m.model_id, "google/gemini-2.5-pro");
@@ -4388,22 +4454,22 @@
     #[test]
     fn acp_session_model_and_effort_go_to_the_harness() {
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         let id = SessionId::new();
         m.session = Some(id);
         m.agent = Some("omp".into());
         m.submit("/model", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::HarnessOptions(s)) if s == id));
+        assert!(matches!(component_request::<ModelsRequest>(&mut rx), Ok(ModelsRequest::HarnessOptions(s)) if s == id));
         m.submit("/effort xhigh", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetHarnessOption { session, config_id, value })
+            component_request::<ModelsRequest>(&mut rx),
+            Ok(ModelsRequest::SetHarnessOption { session, config_id, value })
                 if session == id && config_id == "effort" && value == "xhigh"
         ));
         m.submit("/model openai/gpt-5.4", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetHarnessOption { config_id, value, .. })
+            component_request::<ModelsRequest>(&mut rx),
+            Ok(ModelsRequest::SetHarnessOption { config_id, value, .. })
                 if config_id == "model" && value == "openai/gpt-5.4"
         ));
         let options: Vec<acp::ConfigOption> = serde_json::from_value(serde_json::json!([
@@ -4420,7 +4486,7 @@
                 "effort: medium  (has: low, medium)"
             ]
         );
-        m.apply(UiEvent::HarnessOptionSet(
+        m.component_message::<Models>(ModelsMsg::HarnessOptionSet(
             "model".into(),
             "b/y".into(),
             acp::SetOptionResult {
@@ -4446,9 +4512,9 @@
         let mut m = Model {
             session: Some(id),
             agent: Some("omp".into()),
-            favorite_models: vec!["b/y".into()],
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
+        models_mut(&mut m).favorite_models = vec!["b/y".into()];
         let options: Vec<acp::ConfigOption> = serde_json::from_value(serde_json::json!([
                 {"id":"model","name":"Model","category":"model","current":"a/x",
                  "options":[{"value":"a/x","name":"X","description":null},{"value":"b/y","name":"Y","description":null}]},
@@ -4457,72 +4523,72 @@
             ]))
             .unwrap();
         m.submit("/model", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::HarnessOptions(s)) if s == id));
-        m.apply(UiEvent::HarnessOptions(options.clone()));
+        assert!(matches!(component_request::<ModelsRequest>(&mut rx), Ok(ModelsRequest::HarnessOptions(s)) if s == id));
+        harness_reply(&mut m, options.clone(), false);
         assert_eq!(model_row_ids(&m), ["●a/x", "~low|*medium", "●a:1", "b:1"]);
         assert_eq!(models_cursor(&m), 2);
         // ⇥ stars nothing; a chip sets the thought_level option and closes.
-        m.menu_key(KeyCode::Up, "", &tx);
-        m.menu_key(KeyCode::Up, "", &tx);
-        m.menu_key(KeyCode::Tab, "", &tx);
-        m.menu_key(KeyCode::Down, "", &tx);
+        models_key(&mut m, KeyCode::Up, &tx);
+        models_key(&mut m, KeyCode::Up, &tx);
+        models_key(&mut m, KeyCode::Tab, &tx);
+        models_key(&mut m, KeyCode::Down, &tx);
         assert_eq!(models_chip(&m), 1);
-        m.menu_key(KeyCode::Left, "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        models_key(&mut m, KeyCode::Left, &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetHarnessOption { session, config_id, value })
+            component_request::<ModelsRequest>(&mut rx),
+            Ok(ModelsRequest::SetHarnessOption { session, config_id, value })
                 if session == id && config_id == "thinking" && value == "low"
         ));
-        assert!(m.menu.is_none());
+        assert!(models(&m).menu.is_none());
         // A model row sets the model select.
-        m.apply(UiEvent::HarnessOptions(options.clone()));
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        harness_reply(&mut m, options.clone(), false);
+        models_key(&mut m, KeyCode::Down, &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
         assert_eq!(model_row_ids(&m), ["b/y"]);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetHarnessOption { config_id, value, .. })
+            component_request::<ModelsRequest>(&mut rx),
+            Ok(ModelsRequest::SetHarnessOption { config_id, value, .. })
                 if config_id == "model" && value == "b/y"
         ));
         // Bare `/effort`: the same picker on the active chip.
         m.submit("/effort", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::HarnessOptions(_))));
-        m.apply(UiEvent::HarnessOptions(options.clone()));
+        assert!(matches!(component_request::<ModelsRequest>(&mut rx), Ok(ModelsRequest::HarnessOptions(_))));
+        harness_reply(&mut m, options.clone(), true);
         assert_eq!((models_cursor(&m), models_chip(&m)), (1, 1));
-        m.menu = None;
+        models_mut(&mut m).menu = None;
         // No thought_level: `/effort` is a notice; `/model` still picks the model.
         let models_only = options[..1].to_vec();
         m.submit("/effort", &tx);
         rx.try_recv().unwrap();
-        m.apply(UiEvent::HarnessOptions(models_only.clone()));
-        assert!(m.menu.is_none());
+        harness_reply(&mut m, models_only.clone(), true);
+        assert!(models(&m).menu.is_none());
         assert!(
             matches!(m.entries.last(), Some(Entry::Info(t)) if t == "omp has no reasoning effort levels")
         );
         m.submit("/model", &tx);
         rx.try_recv().unwrap();
-        m.apply(UiEvent::HarnessOptions(models_only));
+        harness_reply(&mut m, models_only, false);
         assert_eq!(model_row_ids(&m)[..2], ["●a/x", "●a:1"]);
-        m.menu = None;
+        models_mut(&mut m).menu = None;
         // Only the effort: one row for what it runs (the harness's LLM, not
         // the harness name in `model_id`), still with its chips.
         m.model_id = "omp".into();
         m.harness_model = Some("claude-x".into());
         m.submit("/model", &tx);
         rx.try_recv().unwrap();
-        m.apply(UiEvent::HarnessOptions(options[1..].to_vec()));
+        harness_reply(&mut m, options[1..].to_vec(), false);
         assert_eq!(model_row_ids(&m), ["claude-x", "~low|*medium"]);
-        m.menu = None;
+        models_mut(&mut m).menu = None;
         // Neither: the option lines, no picker.
         let mode: Vec<acp::ConfigOption> = serde_json::from_value(serde_json::json!([
             {"id":"mode","name":"Mode","category":"mode","current":"default",
              "options":[{"value":"default","name":"Default","description":null}]}
         ]))
         .unwrap();
-        m.apply(UiEvent::HarnessOptions(mode));
-        assert!(m.menu.is_none());
+        harness_reply(&mut m, mode, false);
+        assert!(models(&m).menu.is_none());
         assert!(
             matches!(m.entries.last(), Some(Entry::Info(t)) if t == "mode: default  (has: default)")
         );
@@ -4538,8 +4604,8 @@
             m.entries.clear();
             m.submit("/effort", &tx);
             rx.try_recv().unwrap();
-            m.apply(UiEvent::HarnessOptions(options));
-            assert!(m.menu.is_none());
+            harness_reply(&mut m, options, true);
+            assert!(models(&m).menu.is_none());
             assert!(
                 matches!(&m.entries[..], [.., Entry::Info(t)] if t == "omp has no reasoning effort levels"),
                 "{:?}",
@@ -7592,7 +7658,7 @@
     }
 
     fn model_row_ids(m: &Model) -> Vec<String> {
-        m.models_rows()
+        models(m).rows(&models_core(m))
             .iter()
             .map(|r| match r {
                 ModelRow::Off { current } => format!("{}off", if *current { "●" } else { "" }),
@@ -7620,8 +7686,8 @@
     }
 
     fn models_cursor(m: &Model) -> usize {
-        match &m.menu {
-            Some(Menu::Models { cursor, .. }) => *cursor,
+        match &models(&m).menu {
+            Some(Picker { cursor, .. }) => *cursor,
             other => panic!("no models menu: {other:?}"),
         }
     }
@@ -7631,9 +7697,9 @@
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model {
             model_id: "openai/gpt-5.4".into(),
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
-        m.apply(UiEvent::Models(model_catalog()));
+        models_reply(&mut m, model_catalog());
         // Providers level: the current model first, its provider marked, cursor on the first provider.
         assert_eq!(
             model_row_ids(&m),
@@ -7648,15 +7714,15 @@
         );
         assert_eq!(models_cursor(&m), 1);
         // Up stops at the Current row; Down clamps at the last provider.
-        m.menu_key(KeyCode::Up, "", &tx);
-        m.menu_key(KeyCode::Up, "", &tx);
+        models_key(&mut m, KeyCode::Up, &tx);
+        models_key(&mut m, KeyCode::Up, &tx);
         assert_eq!(models_cursor(&m), 0);
         for _ in 0..9 {
-            m.menu_key(KeyCode::Down, "", &tx);
+            models_key(&mut m, KeyCode::Down, &tx);
         }
         assert_eq!(models_cursor(&m), 5);
         // Enter on a provider descends: its models by name, the current one still a Model row.
-        m.menu_key(KeyCode::Enter, "", &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
         assert_eq!(
             model_row_ids(&m),
             ["openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/o3-pro"]
@@ -7664,29 +7730,29 @@
         assert_eq!(models_cursor(&m), 0);
         assert!(rx.try_recv().is_err());
         // Left ascends to the providers level with the cursor home again.
-        m.menu_key(KeyCode::Left, "", &tx);
+        models_key(&mut m, KeyCode::Left, &tx);
         assert_eq!(model_row_ids(&m)[1], "amazon-bedrock:2");
         assert_eq!(models_cursor(&m), 1);
         // Left on the providers level is a no-op; Right descends like Enter.
-        m.menu_key(KeyCode::Left, "", &tx);
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Right, "", &tx);
+        models_key(&mut m, KeyCode::Left, &tx);
+        models_key(&mut m, KeyCode::Down, &tx);
+        models_key(&mut m, KeyCode::Right, &tx);
         assert_eq!(
             model_row_ids(&m),
             ["anthropic/claude-opus-4-1", "anthropic/claude-sonnet-4-5"]
         );
         // Backspace on an empty filter ascends.
-        m.menu_key(KeyCode::Backspace, "", &tx);
+        models_key(&mut m, KeyCode::Backspace, &tx);
         assert_eq!(model_row_ids(&m)[0], "●openai/gpt-5.4");
         // Right on the Current row does nothing; Enter on a model row sets it and closes.
-        m.menu_key(KeyCode::Up, "", &tx);
-        m.menu_key(KeyCode::Right, "", &tx);
+        models_key(&mut m, KeyCode::Up, &tx);
+        models_key(&mut m, KeyCode::Right, &tx);
         assert_eq!(models_cursor(&m), 0);
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        models_key(&mut m, KeyCode::Down, &tx);
+        models_key(&mut m, KeyCode::Down, &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
+        models_key(&mut m, KeyCode::Down, &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
         // No session yet (148 R1): the pick is the draft's, shown in the header; no command.
         assert!(rx.try_recv().is_err());
         assert_eq!(
@@ -7694,7 +7760,7 @@
             Some("anthropic/claude-sonnet-4-5")
         );
         assert_eq!(m.model_id, "anthropic/claude-sonnet-4-5");
-        assert!(m.menu.is_none());
+        assert!(models(&m).menu.is_none());
     }
 
     #[test]
@@ -7704,22 +7770,22 @@
         let mut m = Model {
             session: Some(s),
             model_id: "openai/o3-pro".into(),
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
-        m.apply(UiEvent::Models(model_catalog()));
+        models_reply(&mut m, model_catalog());
         // Descend into google, then type: search runs over every model, the
         // Current row stays on top even though it does not match, and the
         // cursor lands on the best match.
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        models_key(&mut m, KeyCode::Down, &tx);
+        models_key(&mut m, KeyCode::Down, &tx);
+        models_key(&mut m, KeyCode::Down, &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
         assert_eq!(
             model_row_ids(&m),
             ["google/gemini-2.5-flash-thinking", "google/gemini-2.5-pro"]
         );
         for c in "gpt".chars() {
-            m.menu_key(KeyCode::Char(c), "", &tx);
+            models_key(&mut m, KeyCode::Char(c), &tx);
         }
         assert_eq!(
             model_row_ids(&m),
@@ -7734,18 +7800,18 @@
         // A query matching only the current model lists it once, as the Current
         // row, and the Current row stays when nothing matches at all.
         for _ in 0..3 {
-            m.menu_key(KeyCode::Backspace, "", &tx);
+            models_key(&mut m, KeyCode::Backspace, &tx);
         }
         for c in "o3".chars() {
-            m.menu_key(KeyCode::Char(c), "", &tx);
+            models_key(&mut m, KeyCode::Char(c), &tx);
         }
         assert_eq!(model_row_ids(&m), ["●openai/o3-pro"]);
         assert_eq!(models_cursor(&m), 0);
-        m.menu_key(KeyCode::Char('x'), "", &tx);
+        models_key(&mut m, KeyCode::Char('x'), &tx);
         assert_eq!(model_row_ids(&m), ["●openai/o3-pro"]);
         // Clearing the filter returns to the remembered provider level.
         for _ in 0..3 {
-            m.menu_key(KeyCode::Backspace, "", &tx);
+            models_key(&mut m, KeyCode::Backspace, &tx);
         }
         assert_eq!(
             model_row_ids(&m),
@@ -7754,14 +7820,14 @@
         assert_eq!(models_cursor(&m), 0);
         // Enter in search mode picks the best match.
         for c in "GPT-5.4".chars() {
-            m.menu_key(KeyCode::Char(c), "", &tx);
+            models_key(&mut m, KeyCode::Char(c), &tx);
         }
-        m.menu_key(KeyCode::Enter, "", &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetModel { session, model }) if session == s && model == "cursor/gpt-5.4"
+            component_request::<ModelsRequest>(&mut rx),
+            Ok(ModelsRequest::SetModel { session, model }) if session == s && model == "cursor/gpt-5.4"
         ));
-        assert!(m.menu.is_none());
+        assert!(models(&m).menu.is_none());
     }
 
     #[test]
@@ -7769,32 +7835,32 @@
         let (tx, _rx) = unbounded_channel();
         let mut m = Model {
             model_id: "openai/gpt-5.4".into(),
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
         let items: Vec<ModelInfo> = model_catalog()
             .into_iter()
             .filter(|i| i.provider == "openai")
             .collect();
-        m.apply(UiEvent::Models(items));
+        models_reply(&mut m, items);
         let level = ["openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/o3-pro"];
         assert_eq!(model_row_ids(&m), level);
         assert_eq!(models_cursor(&m), 0);
-        m.menu_key(KeyCode::Left, "", &tx);
-        m.menu_key(KeyCode::Backspace, "", &tx);
+        models_key(&mut m, KeyCode::Left, &tx);
+        models_key(&mut m, KeyCode::Backspace, &tx);
         assert_eq!(model_row_ids(&m), level);
         assert!(matches!(
-            &m.menu,
-            Some(Menu::Models { provider: Some(p), .. }) if p == "openai"
+            &models(&m).menu,
+            Some(Picker { provider: Some(p), .. }) if p == "openai"
         ));
         // Search still works and clearing it comes back to the models level.
         // `o`: o3-pro by name (90) beats the provider-prefix hits (65); the current model shows once.
-        m.menu_key(KeyCode::Char('o'), "", &tx);
+        models_key(&mut m, KeyCode::Char('o'), &tx);
         assert_eq!(
             model_row_ids(&m),
             ["●openai/gpt-5.4", "openai/o3-pro", "openai/gpt-5.4-mini"]
         );
         assert_eq!(models_cursor(&m), 1);
-        m.menu_key(KeyCode::Backspace, "", &tx);
+        models_key(&mut m, KeyCode::Backspace, &tx);
         assert_eq!(model_row_ids(&m), level);
     }
 
@@ -7918,14 +7984,14 @@
         let mut m = Model {
             session: Some(s),
             model_id: "openai/gpt-5.4".into(),
-            favorite_models: vec![
+            ..Model::new(String::new(), false)
+        };
+        models_mut(&mut m).favorite_models = vec![
                 "google/gemini-2.5-pro".into(),
                 "gone/provider-unkeyed".into(),
                 "anthropic/claude-opus-4-1".into(),
-            ],
-            ..Model::default()
-        };
-        m.apply(UiEvent::Models(model_catalog()));
+            ];
+        models_reply(&mut m, model_catalog());
         assert_eq!(
             model_row_ids(&m),
             [
@@ -7941,26 +8007,26 @@
         );
         assert_eq!(models_cursor(&m), 0);
         // Tab on a favorite asks to unstar it; the menu stays open.
-        m.menu_key(KeyCode::Tab, "", &tx);
+        models_key(&mut m, KeyCode::Tab, &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetModelFavorite { model, favorite: false }) if model == "google/gemini-2.5-pro"
+            component_request::<ModelsRequest>(&mut rx),
+            Ok(ModelsRequest::SetModelFavorite { model, favorite: false }) if model == "google/gemini-2.5-pro"
         ));
-        assert!(m.menu.is_some());
+        assert!(models(&m).menu.is_some());
         // Tab on the Current row asks to star it.
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Tab, "", &tx);
+        models_key(&mut m, KeyCode::Down, &tx);
+        models_key(&mut m, KeyCode::Down, &tx);
+        models_key(&mut m, KeyCode::Tab, &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetModelFavorite { model, favorite: true }) if model == "openai/gpt-5.4"
+            component_request::<ModelsRequest>(&mut rx),
+            Ok(ModelsRequest::SetModelFavorite { model, favorite: true }) if model == "openai/gpt-5.4"
         ));
         // Tab on a provider row does nothing.
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Tab, "", &tx);
+        models_key(&mut m, KeyCode::Down, &tx);
+        models_key(&mut m, KeyCode::Tab, &tx);
         assert!(rx.try_recv().is_err());
         // The engine answers: the current model is now a favorite and shows once, as a favorite.
-        m.apply(UiEvent::Agent(AgentEvent::FavoriteModelsChanged {
+        m.apply(wire_event("agent.events", AgentEvent::FavoriteModelsChanged {
             models: vec!["anthropic/claude-opus-4-1".into(), "openai/gpt-5.4".into()],
         }));
         assert_eq!(
@@ -7976,45 +8042,45 @@
             ]
         );
         // Enter on a favorite sets it like any model row.
-        m.menu_key(KeyCode::Up, "", &tx);
-        m.menu_key(KeyCode::Up, "", &tx);
-        m.menu_key(KeyCode::Up, "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        models_key(&mut m, KeyCode::Up, &tx);
+        models_key(&mut m, KeyCode::Up, &tx);
+        models_key(&mut m, KeyCode::Up, &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetModel { session, model }) if session == s && model == "anthropic/claude-opus-4-1"
+            component_request::<ModelsRequest>(&mut rx),
+            Ok(ModelsRequest::SetModel { session, model }) if session == s && model == "anthropic/claude-opus-4-1"
         ));
-        assert!(m.menu.is_none());
+        assert!(models(&m).menu.is_none());
         // The command reply applies the list too, and a shrinking list clamps an open cursor.
-        m.apply(UiEvent::Models(model_catalog()));
+        models_reply(&mut m, model_catalog());
         for _ in 0..9 {
-            m.menu_key(KeyCode::Down, "", &tx);
+            models_key(&mut m, KeyCode::Down, &tx);
         }
         assert_eq!(models_cursor(&m), 6);
-        m.apply(UiEvent::FavoriteModels(vec![]));
-        assert!(m.favorite_models.is_empty());
+        m.component_message::<Models>(ModelsMsg::FavoriteModels(vec![]));
+        assert!(models(&m).favorite_models.is_empty());
         assert_eq!(model_row_ids(&m)[0], "●openai/gpt-5.4");
         assert_eq!(models_cursor(&m), 5);
         // Tab on a provider's models level and in search results toggles the highlighted model.
-        m.menu_key(KeyCode::Enter, "", &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
         assert_eq!(model_row_ids(&m)[0], "openai/gpt-5.4");
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Tab, "", &tx);
+        models_key(&mut m, KeyCode::Down, &tx);
+        models_key(&mut m, KeyCode::Tab, &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetModelFavorite { model, favorite: true }) if model == "openai/gpt-5.4-mini"
+            component_request::<ModelsRequest>(&mut rx),
+            Ok(ModelsRequest::SetModelFavorite { model, favorite: true }) if model == "openai/gpt-5.4-mini"
         ));
-        m.menu_key(KeyCode::Char('n'), "", &tx);
-        m.menu_key(KeyCode::Char('o'), "", &tx);
-        m.menu_key(KeyCode::Char('v'), "", &tx);
-        m.menu_key(KeyCode::Char('a'), "", &tx);
-        m.menu_key(KeyCode::Tab, "", &tx);
+        models_key(&mut m, KeyCode::Char('n'), &tx);
+        models_key(&mut m, KeyCode::Char('o'), &tx);
+        models_key(&mut m, KeyCode::Char('v'), &tx);
+        models_key(&mut m, KeyCode::Char('a'), &tx);
+        models_key(&mut m, KeyCode::Tab, &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetModelFavorite { model, favorite: true })
+            component_request::<ModelsRequest>(&mut rx),
+            Ok(ModelsRequest::SetModelFavorite { model, favorite: true })
                 if model == "amazon-bedrock/amazon.nova-pro-v1:0"
         ));
-        assert!(m.menu.is_some());
+        assert!(models(&m).menu.is_some());
     }
 
     /// `model_catalog()` with effort levels on `openai/gpt-5.4` only.
@@ -8025,8 +8091,8 @@
     }
 
     fn models_chip(m: &Model) -> usize {
-        match &m.menu {
-            Some(Menu::Models { chip, .. }) => *chip,
+        match &models(&m).menu {
+            Some(Picker { chip, .. }) => *chip,
             other => panic!("no models menu: {other:?}"),
         }
     }
@@ -8042,9 +8108,9 @@
             session: Some(SessionId::new()),
             model_id: "openai/gpt-5.4".into(),
             effort: Some("medium".into()),
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
-        m.apply(UiEvent::Models(chips_catalog()));
+        models_reply(&mut m, chips_catalog());
         assert_eq!(
             model_row_ids(&m)[..3],
             ["●openai/gpt-5.4", CHIPS, "amazon-bedrock:2"]
@@ -8055,7 +8121,7 @@
             "home skips the Current row and its chips"
         );
         // Starred, its favorite row carries them and the Current row is gone.
-        m.apply(UiEvent::FavoriteModels(vec![
+        m.component_message::<Models>(ModelsMsg::FavoriteModels(vec![
             "google/gemini-2.5-pro".into(),
             "openai/gpt-5.4".into(),
         ]));
@@ -8070,9 +8136,9 @@
         );
         // Its provider's list: under its own row only.
         for _ in 0..9 {
-            m.menu_key(KeyCode::Down, "", &tx);
+            models_key(&mut m, KeyCode::Down, &tx);
         }
-        m.menu_key(KeyCode::Enter, "", &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
         assert_eq!(
             model_row_ids(&m),
             [
@@ -8084,7 +8150,7 @@
         );
         // Search: under the Current row, also when nothing else matches.
         for c in "gpt".chars() {
-            m.menu_key(KeyCode::Char(c), "", &tx);
+            models_key(&mut m, KeyCode::Char(c), &tx);
         }
         assert_eq!(
             model_row_ids(&m),
@@ -8096,7 +8162,7 @@
             ]
         );
         assert_eq!(models_cursor(&m), 2);
-        m.menu_key(KeyCode::Char('x'), "", &tx);
+        models_key(&mut m, KeyCode::Char('x'), &tx);
         assert_eq!(model_row_ids(&m), ["●openai/gpt-5.4", CHIPS]);
         // No stored effort: Default is active; before a session the draft's
         // pick is (none: Default, whatever the header shows).
@@ -8127,57 +8193,57 @@
             session: Some(s),
             model_id: "openai/gpt-5.4".into(),
             effort: Some("medium".into()),
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
-        m.apply(UiEvent::Models(chips_catalog()));
-        m.menu_key(KeyCode::Up, "", &tx);
+        models_reply(&mut m, chips_catalog());
+        models_key(&mut m, KeyCode::Up, &tx);
         assert_eq!((models_cursor(&m), models_chip(&m)), (1, 2));
-        m.menu_key(KeyCode::Tab, "", &tx);
+        models_key(&mut m, KeyCode::Tab, &tx);
         for _ in 0..3 {
-            m.menu_key(KeyCode::Left, "", &tx);
+            models_key(&mut m, KeyCode::Left, &tx);
         }
         assert_eq!(models_chip(&m), 0);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetEffort { session, effort: None }) if session == s
+            component_request::<ModelsRequest>(&mut rx),
+            Ok(ModelsRequest::SetEffort { session, effort: None }) if session == s
         ));
-        assert!(m.menu.is_none());
-        m.apply(UiEvent::Models(chips_catalog()));
-        m.menu_key(KeyCode::Up, "", &tx);
+        assert!(models(&m).menu.is_none());
+        models_reply(&mut m, chips_catalog());
+        models_key(&mut m, KeyCode::Up, &tx);
         for _ in 0..3 {
-            m.menu_key(KeyCode::Right, "", &tx);
+            models_key(&mut m, KeyCode::Right, &tx);
         }
         assert_eq!(models_chip(&m), 3);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetEffort { effort: Some(e), .. }) if e == "high"
+            component_request::<ModelsRequest>(&mut rx),
+            Ok(ModelsRequest::SetEffort { effort: Some(e), .. }) if e == "high"
         ));
         // On a provider's level ← on the chips moves the chip, not the level.
-        m.apply(UiEvent::Models(chips_catalog()));
+        models_reply(&mut m, chips_catalog());
         for _ in 0..9 {
-            m.menu_key(KeyCode::Down, "", &tx);
+            models_key(&mut m, KeyCode::Down, &tx);
         }
-        m.menu_key(KeyCode::Enter, "", &tx);
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Left, "", &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
+        models_key(&mut m, KeyCode::Down, &tx);
+        models_key(&mut m, KeyCode::Left, &tx);
         assert!(matches!(
-            &m.menu,
-            Some(Menu::Models { provider: Some(p), chip: 1, .. }) if p == "openai"
+            &models(&m).menu,
+            Some(Picker { provider: Some(p), chip: 1, .. }) if p == "openai"
         ));
         // A model pick closes; its reply opens nothing.
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        models_key(&mut m, KeyCode::Down, &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetModel { model, .. }) if model == "openai/gpt-5.4-mini"
+            component_request::<ModelsRequest>(&mut rx),
+            Ok(ModelsRequest::SetModel { model, .. }) if model == "openai/gpt-5.4-mini"
         ));
-        m.apply(UiEvent::ModelSet(ModelInfo {
+        m.component_message::<Models>(ModelsMsg::ModelSet(ModelInfo {
             efforts: vec!["low".into()],
             ..chips_catalog()[8].clone()
         }));
-        assert!(m.menu.is_none());
+        assert!(models(&m).menu.is_none());
         assert_eq!(m.model_id, "openai/gpt-5.4-mini");
     }
 
@@ -8196,7 +8262,7 @@
             session: Some(s),
             model_id: "anthropic/claude-sonnet-4-5".into(),
             catalog: Some(Arc::new(catalog)),
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
         let levels = m
             .catalog
@@ -8207,21 +8273,21 @@
         let level = levels.last().cloned().unwrap();
         m.effort = Some(level.clone());
         m.submit("/effort", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListModels)));
+        assert!(matches!(component_request::<ModelsRequest>(&mut rx), Ok(ModelsRequest::ListModels)));
         let mut items = model_catalog();
         items[3].efforts.clone_from(&levels);
-        m.apply(UiEvent::Models(items));
+        models_reply(&mut m, items);
         assert_eq!((models_cursor(&m), models_chip(&m)), (1, levels.len()));
-        m.menu_key(KeyCode::Enter, "", &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetEffort { session, effort: Some(e) }) if session == s && e == level
+            component_request::<ModelsRequest>(&mut rx),
+            Ok(ModelsRequest::SetEffort { session, effort: Some(e) }) if session == s && e == level
         ));
         // The next `/model` opens at home again: past the Current row and its chips.
         m.submit("/model", &tx);
         let mut items = model_catalog();
         items[3].efforts = levels;
-        m.apply(UiEvent::Models(items));
+        models_reply(&mut m, items);
         assert_eq!(models_cursor(&m), 2);
     }
 
@@ -8235,12 +8301,12 @@
         let mut m = Model {
             session: Some(s),
             model_id: "openai/o3-pro".into(),
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
         m.advisor = advisor_status(s, AdvisorState::Idle, "openai/gpt-5.4");
         m.submit("/advisor", &tx);
         rx.try_recv().unwrap();
-        m.apply(UiEvent::Models(chips_catalog()));
+        models_reply(&mut m, chips_catalog());
         assert_eq!(
             model_row_ids(&m)[..4],
             [
@@ -8251,27 +8317,27 @@
             ]
         );
         assert_eq!(models_cursor(&m), 3);
-        m.menu_key(KeyCode::Up, "", &tx);
-        m.menu_key(KeyCode::Left, "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        models_key(&mut m, KeyCode::Up, &tx);
+        models_key(&mut m, KeyCode::Left, &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
         assert!(matches!(
             rx.try_recv(),
             Ok(Command::SetAdvisor { session, model: Some(model), effort: Some(e) })
                 if session == s && model == "openai/gpt-5.4" && e == "medium"
         ));
-        assert!(m.menu.is_none());
+        assert!(models(&m).menu.is_none());
         m.advisor = advisor_status(s, AdvisorState::Idle, "openai/gpt-5.4-mini");
         m.submit("/advisor", &tx);
         rx.try_recv().unwrap();
-        m.apply(UiEvent::Models(chips_catalog()));
+        models_reply(&mut m, chips_catalog());
         for c in "openai gpt".chars() {
-            m.menu_key(KeyCode::Char(c), "", &tx);
+            models_key(&mut m, KeyCode::Char(c), &tx);
         }
         assert_eq!(
             model_row_ids(&m),
             ["●openai/gpt-5.4-mini", "openai/gpt-5.4"]
         );
-        m.menu_key(KeyCode::Enter, "", &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
         assert!(matches!(
             rx.try_recv(),
             Ok(Command::SetAdvisor { model: Some(model), effort: Some(e), .. })
@@ -8328,27 +8394,27 @@
         let mut m = Model {
             session: Some(s),
             model_id: "openai/gpt-5.4".into(),
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
         m.submit("/advisor", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListModels)));
-        m.apply(UiEvent::Models(model_catalog()));
+        assert!(matches!(component_request::<ModelsRequest>(&mut rx), Ok(ModelsRequest::ListModels)));
+        models_reply(&mut m, model_catalog());
         assert_eq!(model_row_ids(&m)[..2], ["●off", "amazon-bedrock:2"]);
         assert_eq!(models_cursor(&m), 1, "home skips the Off row");
         assert!(!model_row_ids(&m).iter().any(|r| r == "●openai/gpt-5.4"));
-        m.menu_key(KeyCode::Up, "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        models_key(&mut m, KeyCode::Up, &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
         assert!(matches!(
             rx.try_recv(),
             Ok(Command::SetAdvisor { session, model: None, effort: None }) if session == s
         ));
-        assert!(m.menu.is_none());
+        assert!(models(&m).menu.is_none());
         // With an advisor set: `Off` unmarked, the advisor's model is the Current row,
         // ⏎ on a model goes to `set_advisor`, and `/model` has no Off row at all.
         m.advisor = advisor_status(s, AdvisorState::Idle, "anthropic/claude-opus-4-1");
         m.submit("/advisor", &tx);
         rx.try_recv().unwrap();
-        m.apply(UiEvent::Models(model_catalog()));
+        models_reply(&mut m, model_catalog());
         assert_eq!(
             model_row_ids(&m)[..4],
             [
@@ -8359,10 +8425,10 @@
             ]
         );
         assert_eq!(models_cursor(&m), 2);
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        models_key(&mut m, KeyCode::Down, &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
+        models_key(&mut m, KeyCode::Down, &tx);
+        models_key(&mut m, KeyCode::Enter, &tx);
         assert!(matches!(
             rx.try_recv(),
             Ok(Command::SetAdvisor { session, model: Some(model), effort: None })
@@ -8370,7 +8436,7 @@
         ));
         m.submit("/model", &tx);
         rx.try_recv().unwrap();
-        m.apply(UiEvent::Models(model_catalog()));
+        models_reply(&mut m, model_catalog());
         assert_eq!(model_row_ids(&m)[0], "●openai/gpt-5.4");
     }
 

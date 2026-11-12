@@ -34,11 +34,7 @@ impl Model {
                 self.default_model = model;
                 return;
             }
-            // 127 §3: global; an open `/model` picker re-renders from it.
-            AgentEvent::FavoriteModelsChanged { models } => {
-                self.set_favorites(models);
-                return;
-            }
+            AgentEvent::FavoriteModelsChanged { .. } => return,
             // 83 §3: global; the draft header (no session open) follows it
             // unless the draft picked its own effort (148 R1).
             AgentEvent::DefaultEffortChanged { effort } => {

@@ -123,12 +123,8 @@ impl Model {
         }
         for action in out.actions {
             match action {
-                CoreAction::PickModel(model) => {
-                    if let Some(commands) = self.component_commands.clone() { self.pick_model(model, &commands); }
-                }
-                CoreAction::SetEffort(effort) => {
-                    if let Some(commands) = self.component_commands.clone() { self.set_effort(effort, &commands); }
-                }
+                CoreAction::PickModel(model) => self.pick_model(model),
+                CoreAction::SetEffort(effort) => self.set_effort(effort),
                 CoreAction::ModelApplied(model) => self.model_id = model,
                 CoreAction::EffortApplied(effort) => {
                     self.awaiting_effort = false;
