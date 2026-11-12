@@ -161,6 +161,12 @@ pub struct CoreView<'a> {
     pub agent: Option<&'a agent::AgentEvent>,
     /// Accepted transcript entries; components retain only their own projection.
     pub entries: &'a [crate::model::Entry],
+
+    // Step-11 group t1 CoreView fields: add below, in this block only.
+
+    // Step-11 group t2 CoreView fields: add below, in this block only.
+
+    // Step-11 group t3 CoreView fields: add below, in this block only.
 }
 impl CoreView<'_> {
     /// Only the newest card in a named replacement group may keep updating.
@@ -201,6 +207,12 @@ pub enum Lifecycle<'a> {
     Prompts(&'a serde_json::Value),
     /// Preserve the old cross-panel generic-error transitions.
     CommandFailed(&'a str),
+
+    // Step-11 group t1 Lifecycle variants: add below, in this block only.
+
+    // Step-11 group t2 Lifecycle variants: add below, in this block only.
+
+    // Step-11 group t3 Lifecycle variants: add below, in this block only.
 }
 /// Owner-local input; no feature message is added to the central UiEvent enum.
 pub enum Input<'a, M> {
@@ -270,6 +282,12 @@ pub enum Surface<'a> {
         /// Rows already clipped above this entry.
         skipped: usize,
     },
+
+    // Step-11 group t1 Surface variants: add below, in this block only.
+
+    // Step-11 group t2 Surface variants: add below, in this block only.
+
+    // Step-11 group t3 Surface variants: add below, in this block only.
 }
 /// Read-only layout context; no iocraft Hooks or editor handles.
 pub struct ViewCx<'a> {
@@ -350,6 +368,12 @@ pub enum CoreAction {
         /// New markdown body.
         body: String,
     },
+
+    // Step-11 group t1 CoreAction variants: add below, in this block only.
+
+    // Step-11 group t2 CoreAction variants: add below, in this block only.
+
+    // Step-11 group t3 CoreAction variants: add below, in this block only.
 }
 
 /// Owned effects and actions emitted during one deterministic dispatch.
@@ -418,6 +442,12 @@ impl<M: Send + 'static> Cx<'_, '_, M> {
     pub fn error(&mut self, text: String) { self.core(CoreAction::Error(text)); }
     /// Format against pre-event state before mutating component state.
     pub fn plain(&mut self, text: Plain) { self.out.plain.push(text); }
+
+    // Step-11 group t1 Cx helpers: add below, in this block only.
+
+    // Step-11 group t2 Cx helpers: add below, in this block only.
+
+    // Step-11 group t3 Cx helpers: add below, in this block only.
 }
 
 /// Synchronous owner-local state machine, erased only by Mounted<C>.
@@ -438,6 +468,12 @@ pub trait Component: Send + Sync + 'static {
     fn entry_rows(&self, _key: &str) -> usize { 0 }
     /// Next Unix-millisecond deadline; idle components do not wake the loop.
     fn wake(&self) -> Option<u64> { None }
+
+    // Step-11 group t1 Component methods (with defaults): add below, in this block only.
+
+    // Step-11 group t2 Component methods (with defaults): add below, in this block only.
+
+    // Step-11 group t3 Component methods (with defaults): add below, in this block only.
 }
 
 trait ErasedComponent: Send + Sync {
