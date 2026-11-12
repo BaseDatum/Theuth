@@ -3,11 +3,16 @@ use super::*;
 impl Model {
     /// Fresh state showing `default_model` in the header.
     pub fn new(default_model: String, approvals: bool) -> Self {
+        Self::with_components(default_model, approvals, crate::components::builtin())
+    }
+
+    /// Fresh core state with a boot-configured registry, without rebuilding its owners.
+    pub fn with_components(default_model: String, approvals: bool, components: crate::components::Registry) -> Self {
         Self {
             model_id: default_model.clone(),
             default_model,
             approvals_global: approvals,
-            components: crate::components::builtin(),
+            components,
             ..Self::default()
         }
     }
@@ -21,7 +26,6 @@ impl Model {
             catalog: self.catalog.take(),
             skills: std::mem::take(&mut self.skills),
             width: self.width,
-            secrets: self.secrets.take(),
             components: std::mem::replace(&mut self.components, crate::components::Registry::empty()),
             component_commands: self.component_commands.take(),
             todo_open: std::mem::take(&mut self.todo_open),

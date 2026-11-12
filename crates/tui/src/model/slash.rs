@@ -178,16 +178,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "providers: built-in opencode (Zen) / openrouter keyed via /secrets add; add prompts for a custom provider's name, url, key (no key for a local server); refresh lists a provider's models again; limits sets a model's context/output (0 = unknown); find probes local model servers",
     ),
     (
-        "/secrets",
-        "[add [name]|rm <name>|restore <name> [n]]",
-        "encrypted secrets the agent uses by name",
-    ),
-    (
-        "/mesh",
-        "devices [list|add [name]|rm <id>|name <id> <name>]",
-        "devices paired with the mesh (any node serves them)",
-    ),
-    (
         "/artifacts",
         "",
         "files the agent showed (picker: ⏎ opens, s shows inline, e exports to ~/Downloads)",
@@ -267,7 +257,7 @@ impl Model {
 
     /// Open or close the slash popup to match what the input box holds.
     pub fn sync_slash(&mut self, input: &str) {
-        if self.prompt.is_some() || self.ask().is_some() || self.secret_request().is_some() {
+        if self.prompt.is_some() || self.ask().is_some() || self.components.editor().is_some() {
             return;
         }
         // 141 §10.1: the watch-only editor lets go once the slash command is gone.

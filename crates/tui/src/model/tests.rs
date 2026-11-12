@@ -1823,19 +1823,21 @@
 
     #[test]
     fn mesh_devices_command_mirrors_the_cli() {
+        use crate::components::mesh_devices::{MeshDevices, Msg, Request, mesh_device_line};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.mount_components(&tx);
         m.submit("/mesh devices", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::MeshDevicesList)));
+        assert!(matches!(component_request::<Request>(&mut rx), Ok(Request::MeshDevicesList)));
         m.submit("/mesh devices add", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::MeshDevicesAdd(None))));
+        assert!(matches!(component_request::<Request>(&mut rx), Ok(Request::MeshDevicesAdd(None))));
         m.submit("/mesh devices add work phone", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::MeshDevicesAdd(Some(n))) if n == "work phone"));
+        assert!(matches!(component_request::<Request>(&mut rx), Ok(Request::MeshDevicesAdd(Some(n))) if n == "work phone"));
         m.submit("/mesh devices rm abcd1234", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::MeshDevicesRevoke(id)) if id == "abcd1234"));
+        assert!(matches!(component_request::<Request>(&mut rx), Ok(Request::MeshDevicesRevoke(id)) if id == "abcd1234"));
         m.submit("/mesh devices name abcd1234 Sky's phone", &tx);
         assert!(
-            matches!(rx.try_recv(), Ok(Command::MeshDevicesRename(id, n)) if id == "abcd1234" && n == "Sky's phone")
+            matches!(component_request::<Request>(&mut rx), Ok(Request::MeshDevicesRename(id, n)) if id == "abcd1234" && n == "Sky's phone")
         );
         // Anything but `devices` is usage, sent nowhere.
         m.submit("/mesh status", &tx);
@@ -1863,16 +1865,16 @@
             ..row.clone()
         };
         assert!(mesh_device_line(&revoked, now).ends_with("· revoked"));
-        m.apply(UiEvent::MeshDevices(vec![]));
+        component_reply(&mut m, "mesh-devices", Msg::Listed { notice: None, result: Ok(vec![]) });
         assert!(
             matches!(m.entries.last(), Some(Entry::Info(s)) if s == "mesh devices: none paired")
         );
-        m.apply(UiEvent::MeshDevicePairing(link::PairingPayload {
+        component_reply(&mut m, "mesh-devices", Msg::Pairing(Ok(link::PairingPayload {
             string: "https://relay.example/link#1.AAAA.d29yaw.QWJDLV8xMjM".into(),
             expires_ms: now + 300_000,
             pending_id: "AbC-_123".into(),
-        }));
-        assert!(m.invite.is_some());
+        })));
+        assert!(m.components.get::<MeshDevices>().unwrap().invite.is_some());
         assert!(
             matches!(m.entries.last(), Some(Entry::Card { kind: CardKind::Component { group: "node-invite", .. }, title, .. }) if title.ends_with("pending AbC-_123"))
         );
@@ -2279,44 +2281,46 @@
 
     #[test]
     fn secrets_add_and_request_never_show_the_value() {
+        use crate::components::secrets::{Secrets, Prompt as SecretPrompt, Request as SecretRpc, Msg as SecretMsg};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.mount_components(&tx);
         // `/secrets add`: name → masked value → note; the note may be empty.
         m.submit("/secrets add", &tx);
-        assert!(matches!(m.prompt, Some(Prompt::SecretName)));
-        assert!(!m.prompt.as_ref().unwrap().masked());
+        assert!(matches!(m.components.get::<Secrets>().unwrap().prompt, Some(SecretPrompt::SecretName)));
+        assert!(!m.components.get::<Secrets>().unwrap().prompt.as_ref().unwrap().masked());
         m.submit("bad name", &tx);
-        assert!(matches!(m.prompt, Some(Prompt::SecretName)));
+        assert!(matches!(m.components.get::<Secrets>().unwrap().prompt, Some(SecretPrompt::SecretName)));
         m.submit("github", &tx);
         assert!(matches!(
-            m.prompt,
-            Some(Prompt::SecretValue { current: None, .. })
+            m.components.get::<Secrets>().unwrap().prompt,
+            Some(SecretPrompt::SecretValue { current: None, .. })
         ));
-        assert!(m.prompt.as_ref().unwrap().masked());
+        assert!(m.components.get::<Secrets>().unwrap().prompt.as_ref().unwrap().masked());
         m.submit("ghp_topsecret", &tx);
-        assert!(matches!(m.prompt, Some(Prompt::SecretNote { .. })));
+        assert!(matches!(m.components.get::<Secrets>().unwrap().prompt, Some(SecretPrompt::SecretNote { .. })));
         m.submit("", &tx);
-        assert!(m.prompt.is_none());
+        assert!(m.components.get::<Secrets>().unwrap().prompt.is_none());
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetSecret { name, value, note: None }) if name == "github" && value == "ghp_topsecret"
+            component_request::<SecretRpc>(&mut rx),
+            Ok(SecretRpc::SetSecret { name, value, note: None }) if name == "github" && value == "ghp_topsecret"
         ));
         let mut list = secrets_list();
         list.secrets[0].current = 1;
         list.secrets[0].versions.truncate(1);
-        m.apply(UiEvent::SecretSet(list.secrets[0].clone()));
+        component_reply(&mut m, "secrets", SecretMsg::Set(Ok(list.secrets[0].clone())));
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "github: v1 set"));
         // Once listed, adding to a known name says which version it replaces.
-        m.apply(UiEvent::Secrets(list));
+        component_reply(&mut m, "secrets", SecretMsg::Listed(Ok(list)));
         m.submit("/secrets add github", &tx);
         assert!(
             matches!(
-                &m.prompt,
-                Some(Prompt::SecretValue {
+                &m.components.get::<Secrets>().unwrap().prompt,
+                Some(SecretPrompt::SecretValue {
                     current: Some(1),
                     ..
                 })
-            ) && m
+            ) && m.components.get::<Secrets>().unwrap()
                 .prompt
                 .as_ref()
                 .unwrap()
@@ -2326,15 +2330,15 @@
         m.submit("ghp_second", &tx);
         m.submit("rotated", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetSecret { note: Some(n), .. }) if n == "rotated"
+            component_request::<SecretRpc>(&mut rx),
+            Ok(SecretRpc::SetSecret { note: Some(n), .. }) if n == "rotated"
         ));
         // `secret_request`: ours opens the masked box; a stranger's does not.
         let session = SessionId::new();
         m.session = Some(session);
         let id: secrets::RequestId =
             serde_json::from_str("\"6f1a2b3c-4d5e-4f60-8a9b-0c1d2e3f4a5b\"").unwrap();
-        m.apply(UiEvent::SecretsEvent(secrets::SecretsEvent::Requested {
+        m.apply(wire_event("secrets.events", secrets::SecretsEvent::Requested {
             id,
             session: SessionId::new(),
             name: "other".into(),
@@ -2343,8 +2347,8 @@
             title: None,
             fields: vec![],
         }));
-        assert!(m.secret_request().is_none());
-        m.apply(UiEvent::SecretsEvent(secrets::SecretsEvent::Requested {
+        assert!(m.components.get::<Secrets>().unwrap().requests.front().is_none());
+        m.apply(wire_event("secrets.events", secrets::SecretsEvent::Requested {
             id,
             session,
             name: "github".into(),
@@ -2353,16 +2357,16 @@
             title: None,
             fields: vec![],
         }));
-        assert!(m.secret_request().is_some() && m.input_focused());
-        m.answer_secret(Some("ghp_requested".into()), &tx);
-        assert!(m.secret_request().is_none());
+        assert!(m.components.get::<Secrets>().unwrap().requests.front().is_some() && m.input_focused());
+        m.component_submit("ghp_requested");
+        assert!(m.components.get::<Secrets>().unwrap().requests.front().is_none());
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::AnswerSecret { id: i, value: Some(v) }) if i == id && v == "ghp_requested"
+            component_request::<SecretRpc>(&mut rx),
+            Ok(SecretRpc::AnswerSecret { id: i, value: Some(v) }) if i == id && v == "ghp_requested"
         ));
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "github: stored"));
         // Resolved elsewhere (or timed out): the box goes away.
-        m.apply(UiEvent::SecretsEvent(secrets::SecretsEvent::Requested {
+        m.apply(wire_event("secrets.events", secrets::SecretsEvent::Requested {
             id,
             session,
             name: "github".into(),
@@ -2371,12 +2375,12 @@
             title: None,
             fields: vec![],
         }));
-        m.apply(UiEvent::SecretsEvent(secrets::SecretsEvent::Resolved {
+        m.apply(wire_event("secrets.events", secrets::SecretsEvent::Resolved {
             id,
             stored: None,
             timed_out: true,
         }));
-        assert!(m.secret_request().is_none());
+        assert!(m.components.get::<Secrets>().unwrap().requests.front().is_none());
         for v in ["ghp_topsecret", "ghp_second", "ghp_requested"] {
             assert!(!leaked(&m, v), "{v} must not land in the transcript");
         }
@@ -2384,76 +2388,78 @@
 
     #[test]
     fn secrets_menu_history_restore_delete() {
+        use crate::components::secrets::{Secrets, Prompt as SecretPrompt, Menu as SecretMenu, Request as SecretRpc, Msg as SecretMsg};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.mount_components(&tx);
         m.submit("/secrets", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListSecrets)));
-        m.apply(UiEvent::Secrets(secrets_list()));
-        assert!(matches!(m.menu, Some(Menu::Secrets { .. })) && !m.input_focused());
-        assert!(m.secrets_title().starts_with("secrets · key: keychain"));
+        assert!(matches!(component_request::<SecretRpc>(&mut rx), Ok(SecretRpc::ListSecrets)));
+        component_reply(&mut m, "secrets", SecretMsg::Listed(Ok(secrets_list())));
+        assert!(matches!(m.components.get::<Secrets>().unwrap().menu, Some(SecretMenu::Secrets { .. })) && !m.input_focused());
+        assert!(m.components.get::<Secrets>().unwrap().secrets_title().starts_with("secrets · key: keychain"));
         assert!(
-            m.secrets_rows()[0].starts_with("github")
-                && m.secrets_rows()[0].contains("v2 (2 kept)")
+            m.components.get::<Secrets>().unwrap().secrets_rows()[0].starts_with("github")
+                && m.components.get::<Secrets>().unwrap().secrets_rows()[0].contains("v2 (2 kept)")
         );
         // `h` opens the history; ⏎ on the current row is a no-op, on v1 restores it.
-        m.menu_key(KeyCode::Char('h'), "", &tx);
-        let rows = m.secrets_rows();
+        component_menu_key(&mut m, "secrets", KeyCode::Char('h'));
+        let rows = m.components.get::<Secrets>().unwrap().secrets_rows();
         assert!(
             rows[0].starts_with("v2") && rows[0].ends_with("current") && rows[1].starts_with("v1")
         );
-        m.menu_key(KeyCode::Enter, "", &tx);
+        component_menu_key(&mut m, "secrets", KeyCode::Enter);
         assert!(rx.try_recv().is_err());
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        component_menu_key(&mut m, "secrets", KeyCode::Down);
+        component_menu_key(&mut m, "secrets", KeyCode::Enter);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::RestoreSecret { name, back: 1 }) if name == "github"
+            component_request::<SecretRpc>(&mut rx),
+            Ok(SecretRpc::RestoreSecret { name, back: 1 }) if name == "github"
         ));
         // A change re-lists while the menu is open; Esc leaves the history first.
-        m.apply(UiEvent::SecretsEvent(secrets::SecretsEvent::Changed));
-        assert!(std::mem::take(&mut m.refresh_secrets));
-        m.menu_key(KeyCode::Esc, "", &tx);
-        assert!(matches!(m.menu, Some(Menu::Secrets { history: None, .. })));
+        m.apply(wire_event("secrets.events", secrets::SecretsEvent::Changed));
+        assert!(std::mem::take(&mut m.components.get_mut::<Secrets>().unwrap().refresh));
+        component_menu_key(&mut m, "secrets", KeyCode::Esc);
+        assert!(matches!(m.components.get::<Secrets>().unwrap().menu, Some(SecretMenu::Secrets { history: None, .. })));
         // `r` replaces the highlighted value, knowing its version.
-        m.menu_key(KeyCode::Char('r'), "", &tx);
+        component_menu_key(&mut m, "secrets", KeyCode::Char('r'));
         assert!(
             matches!(
-                m.prompt,
-                Some(Prompt::SecretValue {
+                m.components.get::<Secrets>().unwrap().prompt,
+                Some(SecretPrompt::SecretValue {
                     current: Some(2),
                     ..
                 })
-            ) && m.menu.is_none()
+            ) && m.components.get::<Secrets>().unwrap().menu.is_none()
         );
-        m.cancel_prompt();
+        component_menu_key(&mut m, "secrets", KeyCode::Esc);
         // `d` deletes only when the name is typed back.
-        m.menu = Some(Menu::Secrets {
+        m.components.get_mut::<Secrets>().unwrap().menu = Some(SecretMenu::Secrets {
             cursor: 0,
             history: None,
         });
-        m.menu_key(KeyCode::Char('d'), "", &tx);
-        assert!(matches!(m.prompt, Some(Prompt::SecretDelete { .. })));
+        component_menu_key(&mut m, "secrets", KeyCode::Char('d'));
+        assert!(matches!(m.components.get::<Secrets>().unwrap().prompt, Some(SecretPrompt::SecretDelete { .. })));
         m.submit("nope", &tx);
-        assert!(rx.try_recv().is_err() && m.prompt.is_none());
-        m.menu = Some(Menu::Secrets {
+        assert!(rx.try_recv().is_err() && m.components.get::<Secrets>().unwrap().prompt.is_none());
+        m.components.get_mut::<Secrets>().unwrap().menu = Some(SecretMenu::Secrets {
             cursor: 0,
             history: None,
         });
-        m.menu_key(KeyCode::Char('d'), "", &tx);
+        component_menu_key(&mut m, "secrets", KeyCode::Char('d'));
         m.submit("github", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::DeleteSecret(n)) if n == "github"));
+        assert!(matches!(component_request::<SecretRpc>(&mut rx), Ok(SecretRpc::DeleteSecret(n)) if n == "github"));
         // One-shot forms.
         m.submit("/secrets rm github", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::DeleteSecret(n)) if n == "github"));
+        assert!(matches!(component_request::<SecretRpc>(&mut rx), Ok(SecretRpc::DeleteSecret(n)) if n == "github"));
         m.submit("/secrets restore github", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::RestoreSecret { back: 1, .. })
+            component_request::<SecretRpc>(&mut rx),
+            Ok(SecretRpc::RestoreSecret { back: 1, .. })
         ));
         m.submit("/secrets restore github 3", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::RestoreSecret { back: 3, .. })
+            component_request::<SecretRpc>(&mut rx),
+            Ok(SecretRpc::RestoreSecret { back: 3, .. })
         ));
         m.submit("/secrets restore github 9", &tx);
         assert!(rx.try_recv().is_err() && matches!(m.entries.last(), Some(Entry::Error(_))));

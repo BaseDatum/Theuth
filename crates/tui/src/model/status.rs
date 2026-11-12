@@ -56,7 +56,6 @@ impl Model {
             || self.components.wake().is_some()
             || self.components.animating()
             || self.double_counting_down()
-            || self.invite.is_some()
             || self.dictation.is_some()
             || self.talk_view
     }
@@ -130,7 +129,6 @@ impl Model {
                 t.reveal((backlog / 16).max(1));
             }
         }
-        tick_card(&mut self.entries, &mut self.invite);
     }
 }
 

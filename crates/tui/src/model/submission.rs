@@ -20,7 +20,6 @@ impl Model {
         let line = line.trim();
         // An empty note is an answer (keep / none); every other step waits for text.
         if line.is_empty()
-            && !matches!(self.prompt, Some(Prompt::SecretNote { .. }))
             && !self.components.editor().is_some_and(|(_, editor)| editor.submit_empty)
         {
             return;
@@ -269,8 +268,6 @@ impl Model {
             "/regen" => self.turn_cmd(TurnAction::Regen, cmd, arg, tx),
             "/fork" => self.turn_cmd(TurnAction::Fork, cmd, arg, tx),
             "/provider" => self.provider_cmd(arg, tx),
-            "/secrets" => self.secrets_cmd(arg, tx),
-            "/mesh" => self.mesh_cmd(arg, tx),
             // `/<skill> [args]` hands the skill to the model (04 §2.4); any other `/word` — a path, a typo —
             // is message text and takes the arm below.
             // A watch-only child takes neither (141 §10.1): the hint instead.

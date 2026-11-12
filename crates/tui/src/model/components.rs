@@ -151,6 +151,21 @@ impl Model {
         self.component_finish(out, &mut |_| {});
         true
     }
+    /// Dispatch the existing entry operation with a stable identity, without copying it.
+    pub(crate) fn component_entry_action(&mut self, index: usize, operation: crate::components::EntryOperation) -> bool {
+        let Some(key) = self.entries.get(index).and_then(Entry::key) else { return false };
+        let core = CoreView { session_name: self.session_name.as_deref(), width: self.width, private_members: self.private.as_ref().map(|p| &p.members), members: &self.agents, interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
+        let out = self.components.entry_action(key, operation, &core);
+        let consumed = out.consumed();
+        self.component_finish(out, &mut |_| {});
+        consumed
+    }
+    /// Latest openable entry in the current exchange; transcript order, not registry order.
+    pub(crate) fn component_open_latest_entry(&mut self) -> bool {
+        let index = self.entries.iter().enumerate().rev().take_while(|(_, entry)| !matches!(entry, Entry::User { .. }))
+            .find_map(|(index, entry)| entry.key().filter(|key| self.components.entry_openable(key)).map(|_| index));
+        index.is_some_and(|index| self.component_entry_action(index, crate::components::EntryOperation::Open))
+    }
     /// One owner summary at the raw transcript entry's existing row.
     pub(crate) fn entry_summary(&self, entry: &Entry) -> Option<String> {
         let key = match entry { Entry::Tool { call_id, .. } | Entry::Pending { call_id, .. } => call_id, _ => return None };
@@ -182,7 +197,6 @@ impl Model {
         match value["type"].as_str() {
             Some("PendingPrompts") => {
                 // Replace even empty sets; repeat live Requested messages are idempotent.
-                // Secrets remain in the residual owner until its own migration.
                 if let Some(rows) = value["approvals"].as_array() {
                     self.approvals.clear();
                     for row in rows {
@@ -203,20 +217,13 @@ impl Model {
                         }
                     }
                 }
-                if let Some(rows) = value["secrets"].as_array() {
-                    self.secret_requests.clear();
-                    for row in rows {
-                        if let Ok(request) = <secrets::SecretsEvent as serde::Deserialize>::deserialize(row) {
-                            let event = UiEvent::SecretsEvent(request);
-                            emit(Output::Event(self, &event));
-                            self.reduce(event, false);
-                        }
-                    }
-                }
+
                 let approvals = &self.approvals;
                 let asks = &self.asks;
                 self.double.retain(|id, _| approvals.iter().any(|a| a.id.0.to_string() == *id) || asks.iter().any(|a| a.req.id.0.to_string() == *id));
-                self.component_notify(Lifecycle::Prompts(value));
+                let out = self.component_lifecycle(Lifecycle::Prompts(value));
+                for plain in &out.plain { emit(Output::Plain(plain)); }
+                self.component_finish(out, emit);
             }
             Some("Lagged") => {
                 // Never overwrite an inspected historical page or clear the draft.
@@ -227,7 +234,6 @@ impl Model {
                 self.refresh_artifacts = self.session.is_some();
                 self.refresh_advisor = self.session.is_some();
                 self.refresh_communication = true;
-                self.refresh_secrets = self.secrets.is_some();
                 self.component_notify(Lifecycle::Resync);
             }
             _ => {}

@@ -168,10 +168,6 @@ pub enum UiEvent {
     /// Reply to [`Command::Redo`]: first line of the turn restored.
     Redone(String),
 
-    /// Reply to [`Command::MeshDevicesList`] (and the commands that change it): the mesh's replicated registry (69 §3).
-    MeshDevices(Vec<link::DeviceInfo>),
-    /// Reply to [`Command::MeshDevicesAdd`]: the 4-part string a device scans and its pending id (69 decision 4).
-    MeshDevicePairing(link::PairingPayload),
     /// A `show` call produced a file (bus event, design doc 35).
     ArtifactShown(artifact::ArtifactShown),
     /// Reply to [`Command::ListArtifacts`]: the session subtree's artifacts, newest first;
@@ -188,12 +184,6 @@ pub enum UiEvent {
         /// group under (51 §3); empty otherwise.
         sessions: Vec<SessionSummary>,
     },
-    /// Reply to [`Command::ListSecrets`]: names, notes, versions. Never values.
-    Secrets(secrets::SecretsList),
-    /// Reply to [`Command::SetSecret`] / [`Command::RestoreSecret`]: the new version.
-    SecretSet(secrets::SecretInfo),
-    /// Secrets plugin traffic (bus event): a change, a `secret_request`, its resolution.
-    SecretsEvent(secrets::SecretsEvent),
     /// Reply to [`Command::GetCommunication`], [`Command::SetCommunication`]
     /// and [`Command::SetPeerScope`]: the authoritative switches (50 §10);
     /// `state.session` says whose, so a reply for a session left behind is dropped.
@@ -607,14 +597,6 @@ pub enum Command {
     },
     /// `list_providers`.
     ListProviders,
-    /// `devices_list` (69 §3).
-    MeshDevicesList,
-    /// `device_pair_start(name)`: the mesh pairing QR.
-    MeshDevicesAdd(Option<String>),
-    /// `device_revoke(id)`, then `devices_list`.
-    MeshDevicesRevoke(String),
-    /// `device_rename(id, name)`, then `devices_list`.
-    MeshDevicesRename(String, String),
     /// `list_artifacts(session, descendants: true)`; `pick` opens the `/artifacts`
     /// menu, `apps` keeps only [`artifact::Kind::App`] records (`/apps`).
     ListArtifacts {
@@ -636,33 +618,6 @@ pub enum Command {
     },
     /// Open a local file with the OS default handler ([`platform::open::open_path`], detached).
     OpenPath(PathBuf),
-    /// `list_secrets`.
-    ListSecrets,
-    /// `set_secret(name, value, note)`. The value transits once and is never shown again.
-    SetSecret {
-        /// Name.
-        name: String,
-        /// The value (source `user`).
-        value: String,
-        /// `None` keeps the old note.
-        note: Option<String>,
-    },
-    /// `restore_secret(name, back)`: version `-back` becomes current, as a new version.
-    RestoreSecret {
-        /// Name.
-        name: String,
-        /// Versions back, 1..=4.
-        back: u8,
-    },
-    /// `delete_secret`: the name and every version.
-    DeleteSecret(String),
-    /// `answer_secret`: `None` declines a `secret_request`.
-    AnswerSecret {
-        /// The request.
-        id: secrets::RequestId,
-        /// The typed value.
-        value: Option<String>,
-    },
     /// `get_communication`; `None` reads the global default alone.
     GetCommunication(Option<SessionId>),
     /// `set_communication`, then `get_communication(view)`: the reply is the

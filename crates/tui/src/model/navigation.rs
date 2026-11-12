@@ -1,4 +1,5 @@
 use super::*;
+use crate::components::artifacts_apps::artifact_text;
 
 impl Model {
 
@@ -15,9 +16,6 @@ impl Model {
             return false;
         }
         if self.components.editor().is_some_and(|(class, _)| class == crate::components::FocusClass::Secret) {
-            return true;
-        }
-        if self.secret_request().is_some() {
             return true;
         }
         if let Some(a) = self.ask() {

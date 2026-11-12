@@ -228,16 +228,6 @@ pub struct Model {
     /// A loaded transcript holds `show` cards: the event loop asks
     /// `list_artifacts` to join their artifacts back (35 §0.3).
     pub refresh_artifacts: bool,
-    /// The residual mesh-device pairing card, redrawn by [`Model::tick`].
-    invite: Option<PairingCard>,
-    /// Latest `list_secrets` (the `/secrets` menu, the `replaces vN` hint); `None` until fetched.
-    pub secrets: Option<secrets::SecretsList>,
-    /// `/secrets` was typed; the next `UiEvent::Secrets` opens the menu.
-    awaiting_secrets: bool,
-    /// The vault changed while a list is held: the event loop re-asks `list_secrets`.
-    pub refresh_secrets: bool,
-    /// Pending `secret_request`s for the current session or its subtree, oldest first; the front is shown.
-    pub secret_requests: VecDeque<SecretRequest>,
     /// Context revision of the shown transcript (`Loaded.context_revision`,
     /// 48 §3.1); empty until loaded. A `ContextChanged` with a newer one
     /// sets `refresh_context`; an older settled reload is dropped.
@@ -366,7 +356,6 @@ mod lifecycle;
 pub(crate) use lifecycle::markdown_options;
 mod menus;
 mod navigation;
-mod network;
 mod paste;
 mod peers;
 mod prompts;
@@ -386,15 +375,13 @@ pub(crate) use advisor::{AdvisorReply};
 pub use agents::{AgentRow, sort_agents, agent_row, WATCH_GLYPH, source_tag, observed_word};
 use agents::{rank, harness_word};
 pub use approvals::{DoubleCmd, double_chip, Ask};
-pub use artifacts::{Owner, artifact_rows, APP_WHERE, bytes_label, Progress, progress_line, artifact_size, artifact_row};
+pub use artifacts::{Owner, artifact_rows, Progress, progress_line};
 use artifacts::{SHOW, APP};
-pub(crate) use artifacts::{artifact_read_path, artifact_text};
 pub use catalog::{PickTarget, ModelRow, rank_models, providers, provider_models, title_model_line, vision_model_line, aws_profile_line};
 #[cfg(test)]
 use catalog::{search_terms};
 pub use concepts::{meta_line, HISTORY_PAGE, revision_rows};
-pub use credentials::{LoginRow, SecretRequest};
-use credentials::{bad_secret_name};
+pub use credentials::LoginRow;
 pub use events::{UiEvent, Command};
 pub(crate) use components::Output;
 pub(crate) use events::{send};
@@ -403,9 +390,6 @@ use history::{revision, user_entries, cell_results, FENCE, from_history};
 #[cfg(test)]
 use history::{parent_view};
 pub use menus::{window, Menu, Grouped, grouped_step, grouped_first, MenuKey};
-pub(crate) use network::{PairingCard};
-use network::{tick_card};
-pub use network::mesh_device_line;
 pub use paste::{Paste, paste_token};
 use peers::{on_off, short_uuid, peer_card, contact_row};
 pub(crate) use peers::{clean, outside_card};
@@ -422,6 +406,7 @@ pub(crate) use status::elapsed;
 
 pub use todos::{TODO_ROWS, TodoCard, status_label};
 pub use tooling::{Row, Target, Switch, action_name, gate_name, git_url, mcp_entry};
+pub(crate) use transcript::markdown_rows;
 pub use transcript::{Entry, CardKind, moved_title, injected, describe, output_markdown, result_line, Window, vision_line, note_title, attachment_label};
 use transcript::{split_engine_restart, card, unescape, attr, attachment_labels, first_arg};
 

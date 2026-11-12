@@ -230,12 +230,12 @@ fn empty_pending_replaces_categories_and_loss_resync_preserves_inspection() {
     model.apply(UiEvent::Ask(ask.clone()));
     assert_eq!(model.approvals.iter().map(|r| r.id).collect::<Vec<_>>(), [request.id]);
     assert_eq!(model.asks.iter().map(|r| r.req.id).collect::<Vec<_>>(), [ask.id]);
-    assert_eq!(model.secret_requests.front().unwrap().name, "token");
+    assert_eq!(model.components.get::<super::secrets::Secrets>().unwrap().requests.front().unwrap().name, "token");
     model.apply(UiEvent::Wire(TopicEvent::control(json!({"type":"PendingPrompts","approvals":[]}))));
     assert!(model.approvals.is_empty());
     assert_eq!(model.asks.front().unwrap().req.id, ask.id);
     model.apply(UiEvent::Wire(TopicEvent::control(json!({"type":"PendingPrompts","approvals":[],"asks":[],"secrets":[]}))));
-    assert!(model.asks.is_empty() && model.secret_requests.is_empty());
+    assert!(model.asks.is_empty() && model.components.get::<super::secrets::Secrets>().unwrap().requests.is_empty());
     model.inspect = Some(crate::search::Inspect { session, seq: 12, found: true });
     model.pending_input = Some(("unsent draft".into(), 12));
     model.entries.push(Entry::Info("historical page".into()));
@@ -339,4 +339,53 @@ fn intrinsic_capture_precedes_an_earlier_focused_owner_without_stealing_focus() 
     assert_eq!(shown(&registry), ["focused=0", "capture=1"]);
     registry.unmount(capture);
     assert!(registry.key(FocusClass::Spoken, &KeyEvent::new(iocraft::KeyEventKind::Press, KeyCode::Char('q')), &core()).consumed());
+}
+
+#[test]
+fn intrinsic_secret_editor_restores_underlying_wizard_without_focus_loss() {
+    struct PromptOwner { id: &'static str, secret: bool, open: bool, lost: usize }
+    impl Component for PromptOwner {
+        type Msg = ();
+        fn declaration(&self) -> Declaration {
+            Declaration { id: self.id, interests: &[], slash: &[], bindings: &[] }
+        }
+        fn decode(&self, _: &TopicEvent, _: &CoreView<'_>) -> Option<()> { None }
+        fn update(&mut self, input: Input<'_, ()>, cx: &mut Cx<'_, '_, ()>) {
+            match input {
+                Input::Message(()) => {
+                    self.open = true;
+                    if !self.secret { cx.focus(FocusClass::Modal); }
+                }
+                Input::Submit(_) if self.open => {
+                    self.open = false;
+                    cx.consume_key();
+                }
+                Input::Lifecycle(Lifecycle::FocusLost) => { self.open = false; self.lost += 1; }
+                _ => {}
+            }
+        }
+        fn captures(&self, class: FocusClass) -> bool {
+            self.secret && self.open && class == FocusClass::Secret
+        }
+        fn editor(&self) -> Option<Editor> {
+            self.open.then(|| Editor { hint: self.id.into(), masked: self.secret, submit_empty: false })
+        }
+        fn view(&self, _: Surface<'_>, _: &ViewCx<'_>) -> Option<View> { None }
+    }
+    let mut registry = Registry::empty();
+    let wizard = registry.register(PromptOwner { id: "wizard", secret: false, open: false, lost: 0 }).unwrap();
+    let secret = registry.register(PromptOwner { id: "secret", secret: true, open: false, lost: 0 }).unwrap();
+    registry.reply(LocalReply { to: wizard, engine_epoch: 0, body: Box::new(()) }, &core());
+    registry.reply(LocalReply { to: secret, engine_epoch: 0, body: Box::new(()) }, &core());
+    let (class, editor) = registry.editor().unwrap();
+    assert_eq!(class, FocusClass::Secret);
+    assert!(editor.masked);
+    registry.submit("private", &core());
+    let (class, editor) = registry.editor().unwrap();
+    assert_eq!(class, FocusClass::Modal);
+    assert_eq!(editor.hint, "wizard");
+    assert!(!editor.masked);
+    assert_eq!(registry.get::<PromptOwner>().unwrap().lost, 0);
+    registry.submit("continue wizard", &core());
+    assert!(registry.editor().is_none());
 }
