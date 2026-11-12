@@ -263,6 +263,10 @@ async fn run_commands(api: Api, mut rx: UnboundedReceiver<Command>, tx: Unbounde
         }
     });
     while let Some(cmd) = rx.recv().await {
+        if let Command::ComponentInput(reply) = cmd {
+            let _ = tx.send(UiEvent::Component(reply));
+            continue;
+        }
         if matches!(&cmd, Command::Component(effect) if effect.lane == components::Lane::OrderedInput)
         {
             let _ = keys_tx.send(cmd);
@@ -291,7 +295,7 @@ async fn execute_current(api: &Api, cmd: Command, tx: &UnboundedSender<UiEvent>)
 
 async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<()> {
     let reply = match cmd {
-        Command::Component(_) => unreachable!("component effects use the generic executor"),
+        Command::Component(_) | Command::ComponentInput(_) => unreachable!("component work uses the generic dispatcher"),
         Command::Resolve { id, decision } => {
             if !msg(api.resolve_approval(id, decision).await)? {
                 anyhow::bail!("approval {} was no longer pending", id.0);
@@ -1227,6 +1231,7 @@ fn print_output(out: &mut impl Write, output: model::Output<'_>) -> (bool, bool)
             };
             return (finished, matches!(event, UiEvent::Search(..)));
         }
+        model::Output::Plain(components::Plain::Finished) => return (true, false),
         model::Output::Plain(components::Plain::Text(text)) => {
             let _ = out.write_all(text.as_bytes()).and_then(|()| out.flush());
         }

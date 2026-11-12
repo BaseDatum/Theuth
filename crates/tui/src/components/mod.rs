@@ -153,6 +153,7 @@ pub struct Editor {
 }
 
 /// Borrowed from disjoint core fields; never a mutable Model or stored event cache.
+#[derive(Clone, Copy)]
 pub struct CoreView<'a> {
     /// Current selected session; None for an unsent draft.
     pub session: Option<SessionId>,
@@ -399,6 +400,7 @@ pub enum Surface<'a> {
     Activity,
 }
 /// Read-only layout context; no iocraft Hooks or editor handles.
+#[derive(Clone, Copy)]
 pub struct ViewCx<'a> {
     /// Pre-render core state.
     pub core: CoreView<'a>,
@@ -408,10 +410,24 @@ pub struct ViewCx<'a> {
     pub height: usize,
     /// Animation frame.
     pub frame: usize,
+    /// Mounted shell mailbox; absent for detached read-only rendering.
+    pub(crate) commands: Option<&'a tokio::sync::mpsc::UnboundedSender<crate::model::Command>>,
+    /// Registry-supplied owner and engine fence for this view only.
+    pub(crate) endpoint: Option<(ComponentToken, u64)>,
 }
 impl ViewCx<'_> {
     /// Current spinner glyph, on the shared core animation clock.
     pub fn spinner(&self) -> &'static str { spinner(self.frame) }
+    /// Typed widget callback; neither editor handles nor mutable core state escape.
+    pub fn callback<M: Send + 'static>(&self, make: fn(String) -> M) -> Option<impl Fn(String) + 'static> {
+        let commands = self.commands?.clone();
+        let (to, engine_epoch) = self.endpoint?;
+        Some(move |value| {
+            let _ = commands.send(crate::model::Command::ComponentInput(LocalReply {
+                to, engine_epoch, body: Box::new(make(value)),
+            }));
+        })
+    }
 }
 pub(crate) fn spinner(frame: usize) -> &'static str {
     const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -439,6 +455,8 @@ pub enum Plain {
     Line(String),
     /// Notice that the requested interaction needs a terminal.
     TtyRequired(String),
+    /// Existing query-reply completion predicate, with no printable bytes.
+    Finished,
 }
 /// Owned transcript presentation, with no feature DTO in core.
 pub struct TranscriptCard {
