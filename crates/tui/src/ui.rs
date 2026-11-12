@@ -78,7 +78,7 @@ const OCHRE: Color = rgb(0xC47A2C);
 /// Success / done.
 const MALACHITE: Color = rgb(0x4A8A6E);
 /// Info / agent state: tools, peers, asks.
-const FAIENCE: Color = rgb(0x5B8F8A);
+pub(crate) const FAIENCE: Color = rgb(0x5B8F8A);
 /// Error / stop.
 const CARNELIAN: Color = rgb(0xC45A48);
 /// Human turn cards.
@@ -95,8 +95,6 @@ const SKILL: Color = OCHRE;
 const PROMPT: Color = SAND;
 /// Finished background job cards.
 const JOB: Color = MALACHITE;
-/// `/link pair` and `/nodes` invite QR cards.
-const LINK: Color = FAIENCE;
 
 /// Run the fullscreen UI until the user quits. Mouse capture stays off so
 /// the terminal's own selection (and copy-on-select) keeps working. Ctrl+C
@@ -251,12 +249,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 if std::mem::take(&mut m.refresh_mcp) {
                     let _ = commands.send(Command::ListMcp(m.session));
-                }
-                if std::mem::take(&mut m.refresh_link) {
-                    let _ = commands.send(Command::LinkStatus);
-                }
-                if std::mem::take(&mut m.refresh_nodes) {
-                    let _ = commands.send(Command::ListNodes);
                 }
                 if std::mem::take(&mut m.refresh_secrets) {
                     let _ = commands.send(Command::ListSecrets);
@@ -932,7 +924,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             #(path_box(&m, width))
             View(height: 1, padding_left: 1, padding_right: 1, justify_content: JustifyContent::SpaceBetween) {
                 View() {
-                    Text(content: format!("{}{}", m.status(), m.component_text(Surface::Status)), color: SAND)
+                    Text(content: m.status(), color: SAND)
                     #(m.advisor_segment().map(|(text, state)| element!(Text(content: text, color: advisor_color(state)))))
                 }
                 Text(content: m.mcp_status(), color: SAND)
@@ -1448,8 +1440,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 .collect(),
             *cursor,
         ),
-        Menu::Link { cursor } => (m.link_title(), m.link_rows(), *cursor),
-        Menu::Nodes { cursor } => (m.nodes_title(), m.nodes_rows(), *cursor),
         Menu::Secrets { cursor, history } => {
             (m.secrets_title(), m.secrets_rows(), history.unwrap_or(*cursor))
         }
@@ -1506,7 +1496,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
         // Drawn by `terminal_box`, never here.
         Menu::Terminal(_) => return None,
     };
-    let cursor = cursor.min(rows.len().saturating_sub(1));
     // A diff or the cost breakdown gets the screen minus the frame around the box; lists stay short.
     let tall = matches!(
         m.menu,
@@ -1517,6 +1506,19 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             } | Menu::Cost { .. }
         )
     );
+    Some(menu_view(title, rows, cursor, width, height, tall))
+}
+
+/// Shared modal frame, selection window and clipping for component-owned rows.
+pub(crate) fn menu_view(
+    title: String,
+    rows: Vec<String>,
+    cursor: usize,
+    width: u16,
+    height: u16,
+    tall: bool,
+) -> AnyElement<'static> {
+    let cursor = cursor.min(rows.len().saturating_sub(1));
     let max = if tall {
         usize::from(height).saturating_sub(10).max(MENU_ROWS)
     } else {
@@ -1525,7 +1527,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
     let shown = window(rows.len(), cursor, max);
     // border 2 + padding 2 + cursor glyph 2, then one less.
     let fit = usize::from(width).saturating_sub(7);
-    Some(
         element! {
             View(border_style: BorderStyle::Round, border_color: SAND, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
                 Text(content: title, color: SAND)
@@ -1543,8 +1544,7 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 }))
             }
         }
-        .into_any(),
-    )
+        .into_any()
 }
 
 /// The path completion list under the editor (PATH-AC): a window of rows
@@ -2054,7 +2054,6 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
                 CardKind::Skill => SKILL,
                 CardKind::Prompt => PROMPT,
                 CardKind::Job | CardKind::Schedule => JOB,
-                CardKind::Link | CardKind::Node => LINK,
                 CardKind::Component { color, .. } => *color,
                 CardKind::Artifact => TOOL,
                 CardKind::Removed => PROMPT,

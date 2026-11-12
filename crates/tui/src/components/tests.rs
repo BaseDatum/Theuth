@@ -46,18 +46,18 @@ impl Component for Counter {
         }
     }
     fn view(&self, at: Surface<'_>, _: &ViewCx<'_>) -> Option<View> {
-        matches!(at, Surface::Status).then(|| View::Text(format!("{}={}", self.id, self.value)))
+        matches!(at, Surface::Status(StatusSlot::Work)).then(|| View::Text(format!("{}={}", self.id, self.value)))
     }
 }
 fn core() -> CoreView<'static> {
-    CoreView { session: None, parent: None, private_root: None, project: None, inspecting: false, streaming: false, reasoning: false, agent: None, entries: &[] }
+    CoreView { interactive: true, session: None, parent: None, private_root: None, project: None, inspecting: false, streaming: false, reasoning: false, agent: None, entries: &[] }
 }
 pub(crate) fn topic(name: &str, version: u32, event: serde_json::Value) -> TopicEvent {
     TopicEvent::Remote(Arc::new(TopicNotification { topic: name.into(), version, event }))
 }
 fn shown(registry: &Registry) -> Vec<String> {
     let cx = ViewCx { core: core(), width: 80, height: 24, frame: 0 };
-    registry.views(Surface::Status, &cx).filter_map(|v| match v { View::Text(t) => Some(t), _ => None }).collect()
+    registry.views(Surface::Status(StatusSlot::Work), &cx).filter_map(|v| match v { View::Text(t) => Some(t), _ => None }).collect()
 }
 pub(crate) fn reply(to: ComponentToken, engine_epoch: u64, message: Msg) -> LocalReply {
     LocalReply { to, engine_epoch, body: Box::new(message) }

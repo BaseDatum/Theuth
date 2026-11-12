@@ -1,5 +1,6 @@
     use super::*;
     use tokio::sync::mpsc::unbounded_channel;
+    use crate::components::nodes::{NodesArg, parse_nodes_arg, find_node};
 
     fn component_request<R: Clone + 'static>(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
@@ -8,6 +9,18 @@
             Command::Component(effect) => effect.request::<R>().expect("owner request").clone(),
             _ => panic!("expected component effect"),
         })
+    }
+
+    fn component_reply<M: Send + 'static>(model: &mut Model, id: &str, message: M) {
+        model.apply(UiEvent::Component(crate::components::LocalReply {
+            to: model.components.token(id), engine_epoch: 0, body: Box::new(message),
+        }));
+    }
+
+    fn component_menu_key(model: &mut Model, id: &str, code: KeyCode) {
+        use crate::components::FocusClass;
+        model.components.focus_fixture(id, FocusClass::Modal);
+        model.component_key(FocusClass::Modal, &iocraft::KeyEvent::new(iocraft::KeyEventKind::Press, code));
     }
 
     #[test]
@@ -1827,14 +1840,17 @@
         }));
         assert!(m.invite.is_some());
         assert!(
-            matches!(m.entries.last(), Some(Entry::Card { kind: CardKind::Node, title, .. }) if title.ends_with("pending AbC-_123"))
+            matches!(m.entries.last(), Some(Entry::Card { kind: CardKind::Component { group: "node-invite", .. }, title, .. }) if title.ends_with("pending AbC-_123"))
         );
     }
 
     #[test]
     fn link_menu_pairs_and_card_follows_events() {
+        use crate::components::link::{Link, Menu as LinkMenu, Prompt as LinkPrompt, Msg, Reply, Request};
+        fn panel(model: &Model) -> &Link { model.components.get::<Link>().unwrap() }
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.mount_components(&tx);
         let device = link::Device {
             id: "abcd1234".into(),
             name: "phone".into(),
@@ -1855,31 +1871,33 @@
         };
         // Bare `/link` asks, the reply opens the modal; `/link off` alone only reports.
         m.submit("/link", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::LinkStatus)));
-        m.apply(UiEvent::Link(status.clone()));
-        assert!(matches!(m.menu, Some(Menu::Link { .. })) && !m.input_focused());
+        let Command::Component(effect) = rx.try_recv().unwrap() else { panic!("link effect") };
+        assert!(matches!(effect.request::<Request>(), Some(Request::Status)));
+        component_reply(&mut m, "link", Msg::Reply(Ok(Reply::Status(status.clone()))));
+        assert!(matches!(panel(&m).menu, Some(LinkMenu::Link { .. })) && !m.input_focused());
         assert!(
-            m.link_title()
+            panel(&m).link_title()
                 .starts_with("link · relay.example:8787 · connected · Studio (HsAbCdEf…)")
         );
-        assert!(m.link_rows()[0].starts_with("○ phone"));
+        assert!(panel(&m).link_rows()[0].starts_with("○ phone"));
         // `x` confirms through a prompt; `n` keeps.
-        m.menu_key(KeyCode::Char('x'), "", &tx);
-        assert!(matches!(m.prompt, Some(Prompt::LinkRevoke { .. })) && m.menu.is_none());
+        component_menu_key(&mut m, "link", KeyCode::Char('x'));
+        assert!(matches!(panel(&m).prompt, Some(LinkPrompt::LinkRevoke { .. })) && panel(&m).menu.is_none());
         m.submit("n", &tx);
-        assert!(rx.try_recv().is_err() && m.prompt.is_none());
+        assert!(rx.try_recv().is_err() && panel(&m).prompt.is_none());
         // `p` pairs: the card counts down, then reads `paired: <name>`.
-        m.menu = Some(Menu::Link { cursor: 0 });
-        m.menu_key(KeyCode::Char('p'), "", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::LinkPair)));
-        m.apply(UiEvent::Pairing(link::Pairing {
+        m.components.get_mut::<Link>().unwrap().menu = Some(LinkMenu::Link { cursor: 0 });
+        component_menu_key(&mut m, "link", KeyCode::Char('p'));
+        let Command::Component(effect) = rx.try_recv().unwrap() else { panic!("link effect") };
+        assert!(matches!(effect.request::<Request>(), Some(Request::Pair)));
+        component_reply(&mut m, "link", Msg::Reply(Ok(Reply::Pairing(link::Pairing {
             key: "https://relay.example:8787/link#1.AAAA.QQ".into(),
             expires_at_ms: now_ms() + 300_000,
-        }));
+        }))));
         assert!(m.animating());
         let body = |m: &Model| match m.entries.last() {
             Some(Entry::Card {
-                kind: CardKind::Link,
+                kind: CardKind::Component { group: "link", .. },
                 text,
                 ..
             }) => {
@@ -1893,7 +1911,7 @@
             _ => panic!("no pairing card"),
         };
         assert!(body(&m).contains("expires in 4:5") || body(&m).contains("expires in 5:00"));
-        m.apply(UiEvent::LinkEvent(link::LinkEvent::LinkPaired {
+        component_reply(&mut m, "link", Msg::Event(link::LinkEvent::LinkPaired {
             device: link::Device {
                 id: "zzzz9999".into(),
                 name: "Sky's iPhone".into(),
@@ -1902,16 +1920,17 @@
         }));
         assert!(!m.animating());
         assert!(body(&m).contains("paired: Sky's iPhone"));
-        assert_eq!(m.link.as_ref().map(|s| s.devices.len()), Some(2));
+        assert_eq!(panel(&m).link.as_ref().map(|s| s.devices.len()), Some(2));
         // `/link off` with the menu closed: a one-line notice, no menu.
-        m.menu = None;
+        m.components.get_mut::<Link>().unwrap().menu = None;
         m.submit("/link off", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::LinkEnable(false))));
-        m.apply(UiEvent::Link(link::LinkStatus {
+        let Command::Component(effect) = rx.try_recv().unwrap() else { panic!("link effect") };
+        assert!(matches!(effect.request::<Request>(), Some(Request::Enable(false))));
+        component_reply(&mut m, "link", Msg::Reply(Ok(Reply::Status(link::LinkStatus {
             enabled: false,
             ..status
-        }));
-        assert!(m.menu.is_none());
+        }))));
+        assert!(panel(&m).menu.is_none());
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "link off"));
     }
 
@@ -1996,8 +2015,11 @@
 
     #[test]
     fn nodes_menu_rows_keys_and_invite_card() {
+        use crate::components::nodes::{Nodes, Menu as NodesMenu, Prompt as NodesPrompt, Msg, Request};
+        fn panel(model: &Model) -> &Nodes { model.components.get::<Nodes>().unwrap() }
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.mount_components(&tx);
         let node = nodes::Node {
             id: "abcd1234".into(),
             name: "build-box".into(),
@@ -2020,11 +2042,11 @@
         };
         // Bare `/nodes` asks; the reply opens the modal.
         m.submit("/nodes", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListNodes)));
-        m.apply(UiEvent::Nodes(vec![node.clone(), offline]));
-        assert!(matches!(m.menu, Some(Menu::Nodes { .. })) && !m.input_focused());
-        assert!(m.nodes_title().starts_with("nodes · 2 paired"));
-        let rows = m.nodes_rows();
+        assert!(matches!(component_request::<Request>(&mut rx), Ok(Request::ListNodes)));
+        component_reply(&mut m, "nodes", Msg::Listed { notice: None, result: Ok(vec![node.clone(), offline]) });
+        assert!(matches!(panel(&m).menu, Some(NodesMenu::Nodes { .. })) && !m.input_focused());
+        assert!(panel(&m).nodes_title().starts_with("nodes · 2 paired"));
+        let rows = panel(&m).nodes_rows();
         assert!(
             rows[0].starts_with("● build-box") && rows[0].contains("2 running   paired 3d ago")
         );
@@ -2036,37 +2058,37 @@
         );
         assert!(m.header(&catalog).0.ends_with("  ·  nodes ●1"));
         // `x` confirms through a prompt; `n` keeps.
-        m.menu_key(KeyCode::Char('x'), "", &tx);
-        assert!(matches!(m.prompt, Some(Prompt::NodeRemove { .. })) && m.menu.is_none());
+        component_menu_key(&mut m, "nodes", KeyCode::Char('x'));
+        assert!(matches!(panel(&m).prompt, Some(NodesPrompt::NodeRemove { .. })) && panel(&m).menu.is_none());
         m.submit("n", &tx);
-        assert!(rx.try_recv().is_err() && m.prompt.is_none());
+        assert!(rx.try_recv().is_err() && panel(&m).prompt.is_none());
         // `a` prompts for the key; the reply reopens the menu.
-        m.menu = Some(Menu::Nodes { cursor: 0 });
-        m.menu_key(KeyCode::Char('a'), "", &tx);
-        assert!(matches!(m.prompt, Some(Prompt::NodeKey)));
+        m.components.get_mut::<Nodes>().unwrap().menu = Some(NodesMenu::Nodes { cursor: 0 });
+        component_menu_key(&mut m, "nodes", KeyCode::Char('a'));
+        assert!(matches!(panel(&m).prompt, Some(NodesPrompt::NodeKey)));
         m.submit(" https://relay.example/link#1.AAAA.QQ ", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::AddNode(k, None)) if k == "https://relay.example/link#1.AAAA.QQ"
+            component_request::<Request>(&mut rx),
+            Ok(Request::AddNode(k, None)) if k == "https://relay.example/link#1.AAAA.QQ"
         ));
-        m.apply(UiEvent::Nodes(vec![node.clone()]));
-        assert!(matches!(m.menu, Some(Menu::Nodes { .. })));
+        component_reply(&mut m, "nodes", Msg::Listed { notice: None, result: Ok(vec![node.clone()]) });
+        assert!(matches!(panel(&m).menu, Some(NodesMenu::Nodes { .. })));
         // `i` invites: a node card counting down, untouched by link pairing events.
-        m.menu_key(KeyCode::Char('i'), "", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::InviteNode(id)) if id == "abcd1234"));
-        m.apply(UiEvent::NodeInvite(
+        component_menu_key(&mut m, "nodes", KeyCode::Char('i'));
+        assert!(matches!(component_request::<Request>(&mut rx), Ok(Request::InviteNode(id)) if id == "abcd1234"));
+        component_reply(&mut m, "nodes", Msg::Invited(Ok((
             "build-box".into(),
             link::Pairing {
                 key: "https://relay.example/link#1.BBBB.QQ".into(),
                 expires_at_ms: now_ms() + 300_000,
             },
-        ));
+        ))));
         assert!(m.animating());
         assert!(matches!(
             m.entries.last(),
-            Some(Entry::Card { kind: CardKind::Node, title, .. }) if title == "node invite · build-box"
+            Some(Entry::Card { kind: CardKind::Component { group: "node-invite", .. }, title, .. }) if title == "node invite · build-box"
         ));
-        m.apply(UiEvent::LinkEvent(link::LinkEvent::LinkPairing {
+        component_reply(&mut m, "link", crate::components::link::Msg::Event(link::LinkEvent::LinkPairing {
             key: None,
             expires_at_ms: None,
         }));
@@ -2075,13 +2097,13 @@
             "a link pairing ending leaves the node invite live"
         );
         // Any node event re-asks the list; verbs resolve later, in the command task.
-        m.apply(UiEvent::NodeEvent(nodes::NodeEvent::NodeRemoved {
+        component_reply(&mut m, "nodes", Msg::Event(nodes::NodeEvent::NodeRemoved {
             id: "zzzz9999".into(),
         }));
-        assert!(std::mem::take(&mut m.refresh_nodes));
-        m.menu = None;
+        assert!(std::mem::take(&mut m.components.get_mut::<Nodes>().unwrap().refresh));
+        m.components.get_mut::<Nodes>().unwrap().menu = None;
         m.submit("/nodes rm mac-mini", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::RemoveNode(n)) if n == "mac-mini"));
+        assert!(matches!(component_request::<Request>(&mut rx), Ok(Request::RemoveNode(n)) if n == "mac-mini"));
         m.submit("/nodes frob", &tx);
         assert!(
             matches!(m.entries.last(), Some(Entry::Error(e)) if e.starts_with("usage: /nodes"))
@@ -4490,7 +4512,7 @@
             },
         ));
         let rows = m.slash_rows("/");
-        assert_eq!(rows.len(), slash_matches("/", m.app_enabled).len() + 2);
+        assert_eq!(rows.len(), m.command_specs("/").len() + 2);
         assert!(!rows[0].raw);
         let harness: Vec<(&str, &str)> = rows
             .iter()

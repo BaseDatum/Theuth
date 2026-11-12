@@ -52,7 +52,7 @@ impl Model {
             || self.vision.is_some()
             || self.advisor.state == AdvisorState::Reviewing
             || self.agents.values().any(AgentRow::live)
-            || self.pairing.is_some()
+            || self.components.wake().is_some()
             || self.double_counting_down()
             || self.invite.is_some()
             || self.dictation.is_some()
@@ -128,8 +128,7 @@ impl Model {
                 t.reveal((backlog / 16).max(1));
             }
         }
-        tick_card(&mut self.entries, &mut self.pairing, CardKind::Link);
-        tick_card(&mut self.entries, &mut self.invite, CardKind::Node);
+        tick_card(&mut self.entries, &mut self.invite);
     }
 }
 
@@ -205,8 +204,13 @@ impl Model {
         let watch = self
             .watch_hint()
             .map_or_else(String::new, |h| format!("  ·  {h}"));
+        use crate::components::{StatusSlot, Surface};
+        let work = self.component_text(Surface::Status(StatusSlot::Work));
+        let catalog = self.component_text(Surface::Status(StatusSlot::Catalog));
+        let pinned = self.component_text(Surface::Status(StatusSlot::Pinned));
+        let spoken = self.component_text(Surface::Status(StatusSlot::Spoken));
         format!(
-            "{session}  {state}{watch}{usage}{agents}{queued}{jobs}{skills}{editing}{scrolled}{todos}{talk}{attached}{resumed}"
+            "{session}  {state}{watch}{usage}{agents}{queued}{jobs}{work}{skills}{catalog}{editing}{scrolled}{todos}{pinned}{talk}{spoken}{attached}{resumed}"
         )
     }
 
@@ -277,33 +281,39 @@ impl Model {
                 };
                 (
                     format!(
-                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}{}{}{}{}{}{}",
+                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}",
                         k(limit),
-                        self.cost_tag(),
-                        self.advisor_tag(),
-                        self.approvals_tag(),
-                        self.communication_tag(),
-                        self.link_tag(),
-                        self.nodes_tag(),
-                        self.component_text(crate::components::Surface::Header)
+                        self.header_suffix()
                     ),
                     level,
                 )
             }
             _ => (
                 format!(
-                    "{model}{effort}  ·  ctx {used}{cache}{}{}{}{}{}{}{}",
-                    self.cost_tag(),
-                    self.advisor_tag(),
-                    self.approvals_tag(),
-                    self.communication_tag(),
-                    self.link_tag(),
-                    self.nodes_tag(),
-                    self.component_text(crate::components::Surface::Header)
+                    "{model}{effort}  ·  ctx {used}{cache}{}",
+                    self.header_suffix()
                 ),
                 Level::Normal,
             ),
         }
+    }
+
+    fn header_suffix(&self) -> String {
+        use crate::components::{HeaderSlot, Surface};
+        let mut text = String::new();
+        for slot in HeaderSlot::ALL {
+            match slot {
+                HeaderSlot::Costs => text.push_str(&self.cost_tag()),
+                HeaderSlot::Advisor => text.push_str(&self.advisor_tag()),
+                HeaderSlot::Approvals => text.push_str(self.approvals_tag()),
+                HeaderSlot::Communication => text.push_str(&self.communication_tag()),
+                HeaderSlot::Link => {}
+                HeaderSlot::Nodes => {}
+                HeaderSlot::Update => {}
+            }
+            text.push_str(&self.component_text(Surface::Header(slot)));
+        }
+        text
     }
 
     /// `  ·  advisor $0.012` (125 §7.5): the advisor session's spend from the
@@ -348,27 +358,7 @@ impl Model {
         }
     }
 
-    /// `  ·  link ●N` (N = devices online) while the uplink is registered
-    /// and a device is paired; empty otherwise.
-    fn link_tag(&self) -> String {
-        match &self.link {
-            Some(s) if s.connected && !s.devices.is_empty() => {
-                format!(
-                    "  ·  link ●{}",
-                    s.devices.iter().filter(|d| d.online).count()
-                )
-            }
-            _ => String::new(),
-        }
-    }
 
-    /// `  ·  nodes ●N` (N = nodes online) while a node is paired; empty otherwise.
-    fn nodes_tag(&self) -> String {
-        match self.nodes.as_deref() {
-            Some([]) | None => String::new(),
-            Some(list) => format!("  ·  nodes ●{}", list.iter().filter(|n| n.online).count()),
-        }
-    }
 
 }
 
@@ -396,6 +386,6 @@ pub(crate) fn when(rfc3339: &str) -> String {
 }
 
 /// Time since a turn ended, coarse: `48s ago`, `3m ago`, `2h ago`, `3d ago`.
-pub(super) fn ago(d: chrono::Duration) -> String {
+pub(crate) fn ago(d: chrono::Duration) -> String {
     format!("{} ago", crate::broadcast::since(d))
 }

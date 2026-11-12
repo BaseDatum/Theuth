@@ -11,6 +11,8 @@ pub fn builtin() -> Registry {
     // Step-11 group t1 (network and prompts): register below, in this block only.
     registry.register(computer::Computer).expect("built-in component registration");
     registry.register(sandboxes::Sandboxes).expect("built-in component registration");
+    registry.register(link::Link::default()).expect("built-in component registration");
+    registry.register(nodes::Nodes::default()).expect("built-in component registration");
 
     // Step-11 group t2 (boards, costs and artifacts): register below, in this block only.
     registry.register(tasks::Tasks).expect("built-in component registration");
@@ -31,6 +33,7 @@ pub struct Registry {
     by_slash: HashMap<&'static str, ComponentToken>,
     focus: Option<(ComponentToken, FocusClass)>,
     epoch: u64,
+    interactive: bool,
 }
 impl Default for Registry { fn default() -> Self { Self::empty() } }
 impl std::fmt::Debug for Registry {
@@ -46,9 +49,13 @@ impl Registry {
         ).expect("registered component");
         ComponentToken { slot, generation: self.slots[slot].generation }
     }
+    /// Set presentation mode before mounting components.
+    pub fn set_interactive(&mut self, interactive: bool) { self.interactive = interactive; }
+    /// Read presentation mode without borrowing the component slots.
+    pub fn interactive(&self) -> bool { self.interactive }
     /// Empty shell for fixed composition and isolated contract consumers.
     pub fn empty() -> Self {
-        Self { slots: Vec::new(), by_topic: HashMap::new(), by_slash: HashMap::new(), focus: None, epoch: 0 }
+        Self { slots: Vec::new(), by_topic: HashMap::new(), by_slash: HashMap::new(), focus: None, epoch: 0, interactive: true }
     }
     /// Reject duplicate ids, reserved slash/aliases and equal-class key chords.
     pub fn register<C: Component>(&mut self, component: C) -> Result<ComponentToken, &'static str> {
@@ -92,10 +99,31 @@ impl Registry {
         self.by_slash.retain(|_, to| *to != token);
         if self.focus.is_some_and(|(owner, _)| owner == token) { self.focus = None; }
     }
-    fn finish(&mut self, out: &mut Outbox) {
+    fn lose_focus(&mut self, core: &CoreView<'_>, out: &mut Outbox) {
+        if let Some((token, _)) = self.focus.take()
+            && let Some(component) = &mut self.slots[token.slot].component
+        {
+            component.input(Input::Lifecycle(Lifecycle::FocusLost), core, token, self.epoch, out);
+            out.focus = None;
+        }
+    }
+    /// A residual core modal acquired input; close the displaced owner's surface.
+    pub fn release_focus(&mut self, core: &CoreView<'_>) -> Outbox {
+        let mut out = Outbox::default();
+        self.lose_focus(core, &mut out);
+        out
+    }
+    fn finish(&mut self, out: &mut Outbox, core: &CoreView<'_>) {
         if let Some((token, class)) = out.focus.take() {
-            if let Some(class) = class { self.focus = Some((token, class)); }
-            else if self.focus.is_some_and(|(owner, _)| owner == token) { self.focus = None; }
+            if let Some(class) = class {
+                if self.focus.is_some_and(|(owner, _)| owner != token) {
+                    self.lose_focus(core, out);
+                }
+                self.focus = Some((token, class));
+                out.claimed = Some(class);
+            } else if self.focus.is_some_and(|(owner, _)| owner == token) {
+                self.focus = None;
+            }
         }
     }
     /// Fan out borrowed JSON once per interested recipient in registration order.
@@ -121,7 +149,7 @@ impl Registry {
                 }
             }
         }
-        self.finish(&mut out);
+        self.finish(&mut out, core);
         out
     }
     /// Drop stale/removed/wrong-owner replies before the typed adapter sees them.
@@ -132,7 +160,7 @@ impl Registry {
             && slot.generation == reply.to.generation
             && let Some(component) = &mut slot.component
         { component.reply(reply, core, &mut out); }
-        self.finish(&mut out);
+        self.finish(&mut out, core);
         out
     }
     /// Broadcast lifecycle state; engine replacement advances the reply fence.
@@ -148,7 +176,7 @@ impl Registry {
                 component.input(Input::Lifecycle(event), core, ComponentToken { slot: index, generation: slot.generation }, self.epoch, &mut out);
             }
         }
-        self.finish(&mut out);
+        self.finish(&mut out, core);
         out
     }
     /// Deliver only due deadlines using the existing frame/line-printer loop.
@@ -159,24 +187,35 @@ impl Registry {
                 && component.wake().is_some_and(|at| at <= now_ms)
             { component.input(Input::Tick { now_ms, frame }, core, ComponentToken { slot: index, generation: slot.generation }, self.epoch, &mut out); }
         }
-        self.finish(&mut out);
+        self.finish(&mut out, core);
         out
     }
     /// Dispatch at one fixed precedence boundary, stopping after consumption.
     pub fn key(&mut self, class: FocusClass, key: &KeyEvent, core: &CoreView<'_>) -> Outbox {
         let mut out = Outbox::default();
+        if let Some((token, focused_class)) = self.focus {
+            if class == focused_class {
+                if let Some(component) = &mut self.slots[token.slot].component {
+                    component.input(Input::Key(key), core, token, self.epoch, &mut out);
+                }
+                self.finish(&mut out, core);
+                return out;
+            }
+            if (focused_class == FocusClass::Modal || self.editor().is_some())
+                && !matches!(class, FocusClass::Interactive | FocusClass::Spoken)
+            { return out; }
+        }
         for (index, slot) in self.slots.iter_mut().enumerate() {
             let token = ComponentToken { slot: index, generation: slot.generation };
             if let Some(component) = &mut slot.component {
-                let focused = self.focus == Some((token, class));
                 let bound = component.declaration().bindings.iter().any(|binding|
                     binding.class == class && binding.code == key.code && binding.modifiers == key.modifiers
                 );
-                if focused || bound { component.input(Input::Key(key), core, token, self.epoch, &mut out); }
+                if bound { component.input(Input::Key(key), core, token, self.epoch, &mut out); }
                 if out.consumed { break; }
             }
         }
-        self.finish(&mut out);
+        self.finish(&mut out, core);
         out
     }
     /// Deliver bracketed paste only to the exclusive focus owner.
@@ -185,7 +224,7 @@ impl Registry {
         if let Some((token, _)) = self.focus
             && let Some(component) = &mut self.slots[token.slot].component
         { component.input(Input::Paste(text), core, token, self.epoch, &mut out); }
-        self.finish(&mut out);
+        self.finish(&mut out, core);
         out
     }
     /// Deliver a submitted line only to the exclusive focus owner.
@@ -194,7 +233,7 @@ impl Registry {
         if let Some((token, _)) = self.focus
             && let Some(component) = &mut self.slots[token.slot].component
         { component.input(Input::Submit(text), core, token, self.epoch, &mut out); }
-        self.finish(&mut out);
+        self.finish(&mut out, core);
         out
     }
     /// Return None for unknown commands so skill/raw-text fallback stays intact.
@@ -203,7 +242,7 @@ impl Registry {
         let component = self.slots[token.slot].component.as_mut()?;
         let mut out = Outbox::default();
         component.input(Input::Slash { name, args }, core, token, self.epoch, &mut out);
-        self.finish(&mut out);
+        self.finish(&mut out, core);
         Some(out)
     }
     /// Registration-ordered rows shared by completion/help and dictation.
@@ -212,7 +251,12 @@ impl Registry {
     }
     /// Render in registration order; elements own all retained presentation data.
     pub fn views<'a>(&'a self, at: Surface<'a>, cx: &'a ViewCx<'a>) -> impl Iterator<Item = View> + 'a {
-        self.slots.iter().filter_map(move |slot| slot.component.as_ref()?.view(at, cx))
+        self.slots.iter().enumerate().filter_map(move |(index, slot)| {
+            if matches!(at, Surface::Modal)
+                && !self.focus.is_some_and(|(token, _)| token.slot == index)
+            { return None; }
+            slot.component.as_ref()?.view(at, cx)
+        })
     }
     /// Earliest deadline, without a second scheduler or per-component task.
     pub fn wake(&self) -> Option<u64> {
@@ -225,6 +269,14 @@ impl Registry {
     /// Read-only owner query for composition and component integration tests.
     pub fn get<C: Component>(&self) -> Option<&C> {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()).find_map(|component| component.as_any().downcast_ref())
+    }
+    #[cfg(test)]
+    pub(crate) fn get_mut<C: Component>(&mut self) -> Option<&mut C> {
+        self.slots.iter_mut().filter_map(|slot| slot.component.as_mut()).find_map(|component| component.as_any_mut().downcast_mut())
+    }
+    #[cfg(test)]
+    pub(crate) fn focus_fixture(&mut self, id: &str, class: FocusClass) {
+        self.focus = Some((self.token(id), class));
     }
     /// Whether a component, rather than the chat editor, currently owns input.
     pub fn focused(&self) -> bool { self.focus.is_some() }

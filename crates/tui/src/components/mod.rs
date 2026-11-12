@@ -12,6 +12,8 @@ pub mod update;
 // Step-11 group t1 (network and prompts): add modules below, in this block only.
 pub mod computer;
 pub mod sandboxes;
+pub mod link;
+pub mod nodes;
 
 // Step-11 group t2 (boards, costs and artifacts): add modules below, in this block only.
 pub mod tasks;
@@ -165,6 +167,8 @@ pub struct CoreView<'a> {
     // Step-11 group t1 CoreView fields: add below, in this block only.
 
     // Step-11 group t2 CoreView fields: add below, in this block only.
+    /// Whether this registry is mounted on an interactive terminal surface.
+    pub interactive: bool,
 
     // Step-11 group t3 CoreView fields: add below, in this block only.
 }
@@ -209,6 +213,8 @@ pub enum Lifecycle<'a> {
     CommandFailed(&'a str),
 
     // Step-11 group t1 Lifecycle variants: add below, in this block only.
+    /// Another component or a residual core modal acquired exclusive input.
+    FocusLost,
 
     // Step-11 group t2 Lifecycle variants: add below, in this block only.
 
@@ -254,15 +260,52 @@ impl<'a, M> Input<'a, M> {
     }
 }
 
+
+/// Stable header geometry, independent of registry composition order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeaderSlot {
+    /// Session spend.
+    Costs,
+    /// Advisor spend.
+    Advisor,
+    /// Approval policy.
+    Approvals,
+    /// Peer communication.
+    Communication,
+    /// Paired phones.
+    Link,
+    /// Connected nodes.
+    Nodes,
+    /// Available update.
+    Update,
+}
+impl HeaderSlot {
+    /// The existing left-to-right header order.
+    pub const ALL: [Self; 7] = [Self::Costs, Self::Advisor, Self::Approvals,
+        Self::Communication, Self::Link, Self::Nodes, Self::Update];
+}
+/// Status contributions occupy fixed positions among retained core segments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusSlot {
+    /// Background work, immediately after the queued-message count.
+    Work,
+    /// Loaded capabilities, before edit/history hints.
+    Catalog,
+    /// Focused pinned-view hints, after history.
+    Pinned,
+    /// Spoken-view hint, before the attached-engine label.
+    Spoken,
+}
+
 /// Fixed layout locations, never feature names.
 #[derive(Clone, Copy)]
 pub enum Surface<'a> {
-    /// Header suffix.
-    Header,
+    /// One explicitly ordered header segment.
+    Header(HeaderSlot),
     /// Owner presentation beside one session row, independent of feature DTOs.
     SessionBadge(SessionId),
-    /// Status suffix.
-    Status,
+    /// A fixed position in the status line, independent of registration order.
+    Status(StatusSlot),
     /// Transcript content replacement or append.
     Content,
     /// Rows pinned below the transcript.
@@ -385,6 +428,8 @@ pub struct Outbox {
     pub effects: Vec<Effect>,
     /// Pre-event non-TTY output.
     pub plain: Vec<Plain>,
+    /// New exclusive input claim, for residual core modal arbitration.
+    pub(crate) claimed: Option<FocusClass>,
     consumed: bool,
     focus: Option<(ComponentToken, Option<FocusClass>)>,
 }
@@ -486,6 +531,8 @@ trait ErasedComponent: Send + Sync {
     fn wake(&self) -> Option<u64>;
     fn entry_rows(&self, key: &str) -> usize;
     fn as_any(&self) -> &dyn Any;
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 struct Mounted<C>(C);
 impl<C: Component> ErasedComponent for Mounted<C> {
@@ -510,6 +557,8 @@ impl<C: Component> ErasedComponent for Mounted<C> {
     fn wake(&self) -> Option<u64> { self.0.wake() }
     fn entry_rows(&self, key: &str) -> usize { self.0.entry_rows(key) }
     fn as_any(&self) -> &dyn Any { &self.0 }
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> &mut dyn Any { &mut self.0 }
 }
 
 /// Fixed generic effect envelope, never a feature-specific Command or reply.

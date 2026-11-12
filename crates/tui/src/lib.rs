@@ -907,33 +907,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 .await)?;
             UiEvent::Info(format!("{provider}/{}", m.line()))
         }
-        Command::LinkStatus => UiEvent::Link(msg(api.link_status().await)?),
-        Command::LinkEnable(enabled) => {
-            msg(api.link_enable(enabled, None).await)?;
-            UiEvent::Link(msg(api.link_status().await)?)
-        }
-        Command::LinkRelay(url) => {
-            let enabled = msg(api.link_status().await)?.enabled;
-            msg(api.link_enable(enabled, Some(url)).await)?;
-            UiEvent::Link(msg(api.link_status().await)?)
-        }
-        Command::LinkPair => UiEvent::Pairing(msg(api.link_pair().await)?),
-        Command::LinkCancelPair => {
-            msg(api.link_cancel_pair().await)?;
-            UiEvent::Info("pairing cancelled".into())
-        }
-        Command::LinkRename(name) => {
-            msg(api.link_rename(name).await)?;
-            UiEvent::Link(msg(api.link_status().await)?)
-        }
-        Command::LinkRenameDevice(id, name) => {
-            msg(api.link_rename_device(id, name).await)?;
-            UiEvent::Link(msg(api.link_status().await)?)
-        }
-        Command::LinkRevoke(id) => {
-            msg(api.link_revoke_device(id).await)?;
-            UiEvent::Link(msg(api.link_status().await)?)
-        }
         Command::MeshDevicesList => UiEvent::MeshDevices(msg(api.devices_list().await)?),
         Command::MeshDevicesAdd(name) => {
             UiEvent::MeshDevicePairing(msg(api.device_pair_start(name).await)?)
@@ -947,31 +920,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             msg(api.device_rename(id.clone(), name.clone()).await)?;
             let _ = tx.send(UiEvent::Info(format!("renamed device {id} → {name}")));
             UiEvent::MeshDevices(msg(api.devices_list().await)?)
-        }
-        Command::ListNodes => UiEvent::Nodes(msg(api.list_nodes().await)?),
-        Command::AddNode(key, name) => {
-            let node = msg(api.add_node(key, name).await)?;
-            let _ = tx.send(UiEvent::Info(format!("paired node {}", node.name)));
-            UiEvent::Nodes(msg(api.list_nodes().await)?)
-        }
-        Command::RemoveNode(n) => {
-            let node = resolve_node(api, &n).await?;
-            msg(api.remove_node(node.id).await)?;
-            let _ = tx.send(UiEvent::Info(format!("removed node {}", node.name)));
-            UiEvent::Nodes(msg(api.list_nodes().await)?)
-        }
-        Command::RenameNode(n, name) => {
-            let node = resolve_node(api, &n).await?;
-            msg(api.rename_node(node.id, name.clone()).await)?;
-            let _ = tx.send(UiEvent::Info(format!(
-                "renamed node {} → {name}",
-                node.name
-            )));
-            UiEvent::Nodes(msg(api.list_nodes().await)?)
-        }
-        Command::InviteNode(n) => {
-            let node = resolve_node(api, &n).await?;
-            UiEvent::NodeInvite(node.name, msg(api.invite_node(node.id).await)?)
         }
         Command::ListArtifacts {
             session,
@@ -1303,13 +1251,6 @@ fn reason(e: ClientError) -> String {
     }
 }
 
-/// The node `/nodes <verb> <n>` names (exact name, else a unique id prefix).
-async fn resolve_node(api: &Engine, n: &str) -> anyhow::Result<nodes::Node> {
-    let list = msg(api.list_nodes().await)?;
-    model::find_node(&list, n)
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("no node named {n}"))
-}
 
 /// Non-TTY fallback and `-p` print mode: print what streams in, read lines
 /// from stdin. `y`/`n` answer a pending approval; anything else goes through
@@ -1325,6 +1266,7 @@ async fn line_printer(
     prompt: Option<String>,
 ) {
     let mut model = Model::new(String::new(), approvals);
+    model.components.set_interactive(false);
     model.app_enabled = app_enabled;
     model.mount_components(&commands);
     if let Some(id) = resume {
@@ -1904,32 +1846,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             "provider {}  {}  {} models — /model {}/<id>",
             p.name, p.base_url, p.models, p.name
         ),
-        UiEvent::Link(s) => writeln!(out, "{}", model::link_line(s)),
-        UiEvent::Pairing(p) => writeln!(out, "{}\n{}", link::qr(&p.key), p.key),
-        UiEvent::LinkEvent(link::LinkEvent::LinkPaired { device }) => {
-            writeln!(out, "paired: {}", device.name)
-        }
-        UiEvent::LinkEvent(_) => Ok(()),
-        UiEvent::Nodes(list) => list.iter().try_for_each(|n| {
-            writeln!(
-                out,
-                "{} {}  {}  theuth {}  {}",
-                if n.online { "●" } else { "○" },
-                n.name,
-                n.platform,
-                n.version,
-                if n.revoked {
-                    "revoked"
-                } else if n.online {
-                    "online"
-                } else {
-                    "offline"
-                }
-            )
-        }),
-        UiEvent::NodeInvite(name, p) => {
-            writeln!(out, "node invite · {name}\n{}\n{}", link::qr(&p.key), p.key)
-        }
         UiEvent::MeshDevices(list) if list.is_empty() => writeln!(out, "mesh devices: none paired"),
         UiEvent::MeshDevices(list) => {
             let now = model::now_ms();
@@ -1943,10 +1859,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             p.string,
             p.pending_id
         ),
-        UiEvent::NodeEvent(nodes::NodeEvent::NodeAdded { node }) => {
-            writeln!(out, "paired node {}", node.name)
-        }
-        UiEvent::NodeEvent(_) => Ok(()),
         UiEvent::Secrets(list) => writeln!(out, "key: {}", list.key_store).and_then(|()| {
             list.secrets.iter().try_for_each(|s| {
                 writeln!(
