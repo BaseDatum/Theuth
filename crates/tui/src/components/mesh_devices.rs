@@ -112,7 +112,7 @@ impl Component for MeshDevices {
                         ::link::Pairing { key: pairing.string, expires_at_ms: pairing.expires_ms }, cx));
                 }
             },
-            Input::Tick { now_ms, .. } => if let Some(card) = &mut self.invite { if !card.tick(now_ms, cx) { self.invite = None; } },
+            Input::Tick { now_ms, .. } => if let Some(card) = &mut self.invite && !card.tick(now_ms, cx) { self.invite = None; },
             Input::Lifecycle(Lifecycle::SessionReset | Lifecycle::TranscriptReplaced) => self.invite = None,
             _ => {}
         }
@@ -134,6 +134,8 @@ pub fn mesh_device_line(d: &::link::DeviceInfo, now: u64) -> String {
 fn mesh_pairing_freezes_previous_node_invite() {
     use crate::model::{CardKind, Entry, Model, UiEvent};
     let mut model = Model::default();
+    model.components.register(super::nodes::Nodes::default()).unwrap();
+    model.components.register(MeshDevices::default()).unwrap();
     let now = now_ms();
     let node_token = model.components.token("nodes");
     model.apply(UiEvent::Component(LocalReply { to: node_token, engine_epoch: 0,

@@ -192,6 +192,7 @@ impl Peers {
             }
             return;
         }
+        #[expect(clippy::large_enum_variant, reason = "This synchronous local action moves the card without allocating.")]
         enum Act { Move(usize), Open(SessionId), Inspect(TranscriptCard), Answer(Prompt), Refresh, Note(&'static str), Close, Nothing }
         let Some(Menu::Peers { session, cursor, .. }) = &self.menu else { return };
         let session = *session;

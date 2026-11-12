@@ -389,8 +389,8 @@ fn component_plain_output_precedes_core_actions_and_errors_keep_global_effects()
     let mut bytes = Vec::new();
     model.receive(UiEvent::Wire(topic("test.counter", 1, json!({"type":"Add","value":4}))), &mut |output| {
         let completion_output = matches!(&output, Output::Plain(crate::components::Plain::Finished));
-        assert_eq!(crate::print_output(&mut bytes, output), false);
-        assert_eq!(completion_output, false);
+        assert!(!crate::print_output(&mut bytes, output));
+        assert!(!completion_output);
     });
     assert_eq!(bytes, b"counter: 0 -> 4\n");
     assert!(matches!(&model.entries[..], [Entry::Info(text)] if text == "counter=4"));
@@ -441,7 +441,7 @@ fn header_slots_preserve_order_across_core_and_reverse_registered_owners() {
 #[cfg(test)]
 #[test]
 fn modal_replacement_closes_displaced_surface_without_losing_cache() {
-    use crate::components::{Component, Cx, Declaration, Input, Registry};
+    use crate::components::{Component, Cx, Declaration, Input};
     struct Modal { id: &'static str, open: bool, cached: usize }
     impl Component for Modal {
         type Msg = ();
@@ -465,13 +465,12 @@ fn modal_replacement_closes_displaced_surface_without_losing_cache() {
         }
     }
     let mut model = Model::default();
-    model.components = Registry::empty();
     for id in ["first", "second"] {
         model.components.register(Modal { id, open: false, cached: 0 }).unwrap();
     }
     model.components.register(crate::components::providers_login::ProvidersLogin::default()).unwrap();
     model.menu = Some(Menu::Sessions { items: Vec::new(), cursor: 0 });
-    model.components.get_mut::<crate::components::providers_login::ProvidersLogin>().unwrap().prompt = Some(crate::components::providers_login::Prompt::ProviderName);
+    model.components.get_mut::<crate::components::providers_login::ProvidersLogin>().unwrap().prompt = Some(crate::components::providers_login::Prompt::Name);
     model.components.focus_fixture("providers-login", FocusClass::Modal);
     model.component_slash("/first", "");
     assert!(model.menu.is_none() && model.components.get::<crate::components::providers_login::ProvidersLogin>().unwrap().prompt.is_none());
@@ -578,9 +577,7 @@ fn owner_plain_claim_prints_once_without_skipping_core_tail_bookkeeping() {
         fn view(&self, _: Surface<'_>, _: &ViewCx<'_>) -> Option<View> { None }
     }
     let session = SessionId::new();
-    let mut model = Model::default();
-    model.session = Some(session);
-    model.streaming = true;
+    let mut model = Model { session: Some(session), streaming: true, ..Model::default() };
     model.entries.push(Entry::Reasoning { text: "thinking".into(), done: false });
     model.components.register(HarvestOutput).unwrap();
     let event = AgentEvent::Harvested { session, added: 2, updated: 3 };
@@ -595,7 +592,7 @@ fn owner_plain_claim_prints_once_without_skipping_core_tail_bookkeeping() {
 
 #[test]
 fn wrapper_projection_is_tag_owned_and_shared_by_history_and_live_rows() {
-    use crate::components::{Component, Declaration, Input, Cx, Registry, Wrapper, WrapperView};
+    use crate::components::{Component, Declaration, Input, Cx, Wrapper, WrapperView};
     struct Projector(&'static str);
     impl Component for Projector {
         type Msg = ();
@@ -616,7 +613,6 @@ fn wrapper_projection_is_tag_owned_and_shared_by_history_and_live_rows() {
         }
     }
     let mut model = Model::default();
-    model.components = Registry::empty();
     let token = model.components.register(Projector("projection")).unwrap();
     assert_eq!(model.components.register(Projector("ambiguous")), Err("duplicate wrapper tag"));
     let parsed = injected("<message from=\"parsed\">\none\n</message>\n<message from=\"parsed\">\nduplicate\n</message>\n<job_idle id=\"j4\" quiet=\"5\">\nscreen\n</job_idle>", |row| model.components.wrapper(row)).unwrap();

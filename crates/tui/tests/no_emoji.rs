@@ -2,45 +2,82 @@
 //! (NO-EMOJI; the desktop's own tree is scanned by `crates/desktop/ui/src/lib/no-emoji.test.ts`). Glyphs in
 //! terminal text — the TUI, and `surface`'s text lowerings for the TUI, Signal and export — are allowed
 //! (Sky, 2026-10-07: "glyphs in the tui are acceptable, just no emojis in desktop"), so only the crates whose
-//! strings reach the desktop as chrome are scanned: see `CRATES`. Each offender is named as `file:line`;
+//! strings reach the desktop as chrome are scanned, following RPC source moves, not whole owner crates.
 //! a line that legitimately needs one ends with `// no-emoji: allow`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const CRATES: &[&str] = &[
-    "agent",
-    "rpc",
-    "rpc-core",
-    "rpc-compose",
-    "document",
-    "a2a",
-    "knowledge",
-    "artifact",
-    "sessionsync",
-    "slack",
-    "telegram",
-    "app",
-    "signal",
-    "tasks",
-    "link",
-    "web",
-    "tools",
-    "search-providers",
-    "update",
-    "cells",
-    "mcp-server",
-    "sandbox",
-    "computer",
-    "codeindex",
-    "dreaming",
-    "meeting",
-    "talk",
-    "autoresearch",
-    "nodes",
-    "schedule",
-    "secrets",
-    "roster",
+const CRATES: &[&str] = &["agent", "rpc", "rpc-core", "rpc-compose"];
+
+// Only former RPC sources moved into these owners belong to this boundary.
+// Their existing channel, terminal and test strings were never desktop chrome.
+const MOVED_SOURCES: &[&str] = &[
+    "a2a/src/rpc_hub.rs",
+    "a2a/src/rpc_messaging.rs",
+    "a2a/src/rpc_support.rs",
+    "app/src/rpc_artifacts.rs",
+    "app/src/rpc_hub.rs",
+    "app/src/rpc_support.rs",
+    "artifact/src/rpc_artifacts.rs",
+    "artifact/src/rpc_hub.rs",
+    "artifact/src/rpc_support.rs",
+    "autoresearch/src/landing.rs",
+    "autoresearch/src/rpc.rs",
+    "autoresearch/src/rpc_impl.rs",
+    "cells/src/cells_guard.rs",
+    "cells/src/kernel_latest.rs",
+    "cells/src/kernel_rpc.rs",
+    "cells/src/rpc.rs",
+    "cells/src/rpc_test_support.rs",
+    "codeindex/src/rpc.rs",
+    "codeindex/src/rpc_support.rs",
+    "computer/src/rpc.rs",
+    "decision/src/rpc_support.rs",
+    "document/src/rpc_documents.rs",
+    "document/src/rpc_notebooks.rs",
+    "document/src/rpc_support.rs",
+    "dreaming/src/rpc.rs",
+    "dreaming/src/rpc_api.rs",
+    "knowledge/src/rpc_concepts.rs",
+    "knowledge/src/rpc_support.rs",
+    "link/src/rpc_hub.rs",
+    "link/src/rpc_sharing.rs",
+    "link/src/rpc_support.rs",
+    "mcp-server/src/rpc.rs",
+    "meeting/src/rpc.rs",
+    "meeting/src/rpc_support.rs",
+    "mesh/src/rpc_support.rs",
+    "nodes/src/rpc.rs",
+    "nodes/src/rpc_support.rs",
+    "roster/src/rpc.rs",
+    "roster/src/rpc_documents.rs",
+    "roster/src/rpc_support.rs",
+    "sandbox/src/rpc.rs",
+    "sandbox/src/rpc_support.rs",
+    "schedule/src/rpc.rs",
+    "schedule/src/rpc_support.rs",
+    "search-providers/src/rpc_hub.rs",
+    "secrets/src/rpc.rs",
+    "secrets/src/rpc_support.rs",
+    "sessionsync/src/rpc_hub.rs",
+    "sessionsync/src/rpc_session_state.rs",
+    "sessionsync/src/rpc_sessions.rs",
+    "sessionsync/src/rpc_support.rs",
+    "signal/src/rpc_messaging.rs",
+    "slack/src/rpc_messaging.rs",
+    "talk/src/rpc.rs",
+    "talk/src/rpc_hub.rs",
+    "talk/src/rpc_support.rs",
+    "tasks/src/rpc_hub.rs",
+    "tasks/src/rpc_support.rs",
+    "telegram/src/rpc_messaging.rs",
+    "telegram/src/rpc_support.rs",
+    "tools/src/rpc_settings.rs",
+    "tools/src/rpc_tooling.rs",
+    "update/src/rpc_settings.rs",
+    "update/src/rpc_support.rs",
+    "web/src/rpc_settings.rs",
 ];
 
 /// `Extended_Pictographic` ∪ `Emoji_Presentation` (Unicode 16) minus the arrows block and ™, which are
@@ -81,6 +118,7 @@ fn no_emoji_in_desktop_chrome_strings() {
     for c in CRATES {
         rs_files(&crates.join(c).join("src"), &mut files);
     }
+    files.extend(MOVED_SOURCES.iter().map(|source| crates.join(source)));
     let mut hits = Vec::new();
     for f in &files {
         for (i, line) in fs::read_to_string(f).unwrap().lines().enumerate() {

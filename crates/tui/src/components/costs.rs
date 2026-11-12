@@ -21,6 +21,7 @@ pub enum Request {
     SessionCost(SessionId),
 }
 /// Summary completion or accepted ledger invalidation.
+#[expect(clippy::large_enum_variant, reason = "Owner replies are already boxed by the registry.")]
 pub enum Msg {
     /// Session, owner result and whether the request was manual.
     Loaded(SessionId, Result<SessionCost, String>, bool),

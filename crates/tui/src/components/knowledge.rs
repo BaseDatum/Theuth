@@ -7,6 +7,7 @@ use runtime::SessionId;
 
 #[derive(Default)]
 pub(crate) struct Knowledge { pub(crate) menu: Option<Menu>, pub(crate) harvesting: bool }
+#[expect(clippy::large_enum_variant, reason = "The single held menu already lives in its boxed owner.")]
 pub(crate) enum Menu {
     /// `/knowledge [query]` picker (10 §6).
     Knowledge {

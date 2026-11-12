@@ -97,7 +97,7 @@ fn registry_rejects_ambiguous_ids_commands_and_chords() {
     registry.register(Counter::new("a")).unwrap();
     assert!(registry.register(Counter::new("a")).is_err());
     let mut counter = Counter::new("reserved");
-    counter.slash = &[("/model", "", "reserved")];
+    counter.slash = &[("/quit", "", "reserved")];
     assert!(registry.register(counter).is_err());
     let mut counter = Counter::new("aliases");
     counter.slash = &[("/counter", "", "one"), ("/counter", "", "two")];

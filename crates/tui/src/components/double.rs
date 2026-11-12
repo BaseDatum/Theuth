@@ -251,6 +251,8 @@ fn empty_pending_approvals_removes_its_prediction_without_resolving_the_ask() {
     let mut model = Model::new("model".into(), true);
     model.session = Some(session);
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    model.components = Registry::empty();
+    model.components.register(Double::default()).unwrap();
     model.mount_components(&tx);
     model.apply(UiEvent::Approval(tools::ApprovalRequested { id: approval, session, tool: "shell".into(), args: json!({"command":"echo hi"}), risk: tools::Risk::ReadOnly }));
     model.apply(UiEvent::Ask(tools::AskRequested { id: ask, session, questions: vec![tools::Question { id: "q".into(), question: "Which?".into(), options: vec![], recommended: None }] }));

@@ -41,6 +41,7 @@ pub(crate) struct ArtifactsApps {
 }
 /// Existing owner operation, retained as typed effect metadata for bindings.
 #[derive(Clone)]
+#[expect(clippy::large_enum_variant, reason = "Requests move into an already boxed effect; do not double-box artifacts.")]
 pub(crate) enum Request {
     /// List the selected tree; optionally open a filtered picker.
     ListArtifacts { session: SessionId, pick: bool, apps: bool },
@@ -153,7 +154,7 @@ impl Component for ArtifactsApps {
                 Self::fence(cx);
                 let a = &event.artifact;
                 cx.plain(Plain::Line(if a.kind == artifact::Kind::App { format!("[app: {} · {APP_WHERE} → source {}]", a.name, a.path.display()) } else { format!("[artifact: {} → {}]", a.name, a.path.display()) }));
-                if cx.core.session == Some(event.session) { self.attach(event.artifact, &cx.core); }
+                if cx.core.session == Some(event.session) { self.attach(event.artifact, cx.core); }
             }
             Input::Message(Msg::Listed { session, generation, pick, apps, result }) => match result {
                 Err(error) => cx.error(error),
@@ -162,10 +163,10 @@ impl Component for ArtifactsApps {
                     if items.is_empty() { cx.plain(Plain::Line(if apps { "no apps" } else { "no artifacts" }.into())); }
                     else { for item in &items { cx.plain(Plain::Line(artifact_row(item))); } }
                     if generation != self.generation || cx.core.session != Some(session) { return; }
-                    if !pick { for item in items { self.attach(item, &cx.core); } }
+                    if !pick { for item in items { self.attach(item, cx.core); } }
                     else if items.is_empty() { cx.core(CoreAction::Notice(if apps { "no apps" } else { "no artifacts" }.into())); }
                     else {
-                        let items = artifact_rows(items, |id| Self::owner(&cx.core, &sessions, id));
+                        let items = artifact_rows(items, |id| Self::owner(cx.core, &sessions, id));
                         let cursor = self.menu.as_ref().map_or_else(|| grouped_first(&items), |menu| menu.cursor);
                         self.menu = Some(Picker { items, cursor, apps }); cx.focus(FocusClass::Modal);
                     }

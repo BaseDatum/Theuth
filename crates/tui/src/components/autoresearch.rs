@@ -116,7 +116,6 @@ fn autoresearch_control_vs_goal_uses_existing_skill_path() {
     use crate::model::{Command, Model};
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut model = Model::new(String::new(), false);
-    model.mount_components(&tx);
     model.submit("/autoresearch pause study-a", &tx);
     let Command::Component(effect) = rx.try_recv().unwrap() else { panic!("control effect") };
     assert!(matches!(effect.request::<Request>(), Some(Request::Control(slug, ::autoresearch::ControlOp::Pause)) if slug == "study-a"));

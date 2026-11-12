@@ -106,6 +106,7 @@ pub fn sandbox_line(i: &sandbox::SandboxInfo) -> String {
 fn desktop_password_never_reaches_output_transcript_or_debug() {
     use crate::model::{Entry, Model, UiEvent};
     let mut model = Model::default();
+    model.components.register(Sandboxes).unwrap();
     let reply = LocalReply {
         to: model.components.token("sandboxes"), engine_epoch: 0,
         body: Box::new(Msg::Desktop("dev".into(), Ok(sandbox::types::DesktopAccess {

@@ -18,6 +18,7 @@ pub(crate) struct SearchAttach {
     pub(crate) inspect: Option<state::Inspect>,
     pane: u64,
 }
+#[expect(clippy::large_enum_variant, reason = "One Loaded page per already boxed reply, matching state::Reply.")]
 pub(crate) enum Msg {
     Reply { generation: u64, reply: state::Reply },
     Edited { pane: u64, value: String },

@@ -27,7 +27,7 @@ impl Model {
             width: self.width,
             terminal_height: self.terminal_height,
             viewport: self.viewport,
-            components: std::mem::replace(&mut self.components, crate::components::Registry::empty()),
+            components: std::mem::take(&mut self.components),
             component_commands: self.component_commands.take(),
 
             private: self.private.take(),

@@ -781,6 +781,7 @@ pub enum CoreAction {
         width: usize,
     },
     /// Reset the old frame, build with its retained registry, then deliver the typed receipt.
+    #[expect(clippy::type_complexity, reason = "The one-shot owner callback stays beside its sole action.")]
     PresentTranscript(Box<dyn FnOnce(&mut Registry) -> (TranscriptPresentation, LocalReply) + Send>),
     /// Change only the core historical-frame input/admission mode.
     SetReadOnly(bool),
@@ -1010,6 +1011,7 @@ pub trait Component: Send + Sync + 'static {
     /// Override disclosure eligibility for an owned entry; None keeps core policy.
     fn entry_toggleable(&self, _key: &str) -> Option<bool> { None }
     /// Consume an owned history row, or return it unchanged for the next owner/core.
+    #[expect(clippy::result_large_err, reason = "Returning unclaimed history by value avoids a per-owner allocation.")]
     fn history_entry(&mut self, row: agent::HistoryEntry, _opts: &markdown::Options) -> Result<Vec<crate::model::Entry>, agent::HistoryEntry> { Err(row) }
     /// Plain projection of a canonical row; None preserves core formatting.
     fn history_plain(&self, _row: &agent::HistoryEntry) -> Option<Vec<String>> { None }
@@ -1038,6 +1040,7 @@ trait ErasedComponent: Send + Sync {
     fn session_hidden(&self, session: SessionId) -> bool;
     fn turn_hidden(&self, seq: i64) -> bool;
     fn entry_toggleable(&self, key: &str) -> Option<bool>;
+    #[expect(clippy::result_large_err, reason = "Erasure preserves the allocation-free owned-history handoff.")]
     fn history_entry(&mut self, row: agent::HistoryEntry, opts: &markdown::Options) -> Result<Vec<crate::model::Entry>, agent::HistoryEntry>;
     fn history_plain(&self, row: &agent::HistoryEntry) -> Option<Vec<String>>;
     fn as_any(&self) -> &dyn Any;

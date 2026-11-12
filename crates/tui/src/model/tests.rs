@@ -116,7 +116,7 @@
         assert!(m.components.editor().is_some_and(|(_, editor)| editor.masked));
         component_menu_key(&mut m, "providers-login", KeyCode::Esc);
         assert!(providers_login(&m).menu.is_none());
-        assert!(matches!(providers_login(&m).prompt, Some(ProviderPrompt::ProviderKey { .. })));
+        assert!(matches!(providers_login(&m).prompt, Some(ProviderPrompt::Key { .. })));
         assert!(m.input_focused());
         m.submit("private-key", &tx);
         assert!(matches!(component_request::<ProviderRequest>(&mut rx),
@@ -126,7 +126,7 @@
 
     #[test]
     fn late_login_completion_keeps_canceled_wizard_closed_and_other_editor_intact() {
-        use crate::components::{FocusClass, secrets::{Secrets, Prompt as SecretPrompt}};
+        use crate::components::secrets::{Secrets, Prompt as SecretPrompt};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::new(String::new(), false);
         m.submit("/provider add cloud https://cloud.example/v1", &tx);
@@ -135,10 +135,11 @@
         m.submit("/secrets add github", &tx);
         m.apply(wire_event("agent.login", agent::LoginFinished { provider: "openai".into(), error: None }));
         assert!(providers_login(&m).prompt.is_none());
-        assert!(m.components.editor().is_some_and(|(class, editor)| class == FocusClass::Secret && editor.masked));
+        assert!(m.components.editor().is_some_and(|(_, editor)| editor.masked));
+        assert!(m.input_focused());
         m.submit("private-value", &tx);
         assert!(matches!(&m.components.get::<Secrets>().unwrap().prompt,
-            Some(SecretPrompt::SecretNote { name, value }) if name == "github" && value == "private-value"));
+            Some(SecretPrompt::Note { name, value }) if name == "github" && value == "private-value"));
         assert!(rx.try_recv().is_err());
         assert!(!leaked(&m, "private-value"));
     }
@@ -1043,6 +1044,7 @@
     fn shake_categories_preselect_and_review_once() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(ShakePanel::default()).unwrap();
         let session = SessionId::new();
         m.session = Some(session);
         // Unknown argument: usage, no request, no chat input.
@@ -1104,6 +1106,7 @@
     fn shake_bare_and_messages_tick_nothing_and_zero_matches_write_nothing() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(ShakePanel::default()).unwrap();
         m.component_commands = Some(tx.clone());
         let session = SessionId::new();
         m.session = Some(session);
@@ -2292,6 +2295,7 @@
         use crate::components::mesh_devices::{MeshDevices, Msg, Request, mesh_device_line};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(MeshDevices::default()).unwrap();
         m.mount_components(&tx);
         m.submit("/mesh devices", &tx);
         assert!(matches!(component_request::<Request>(&mut rx), Ok(Request::MeshDevicesList)));
@@ -2352,6 +2356,7 @@
         fn panel(model: &Model) -> &Link { model.components.get::<Link>().unwrap() }
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(Link::default()).unwrap();
         m.mount_components(&tx);
         let device = link::Device {
             id: "abcd1234".into(),
@@ -2384,7 +2389,7 @@
         assert!(panel(&m).link_rows()[0].starts_with("○ phone"));
         // `x` confirms through a prompt; `n` keeps.
         component_menu_key(&mut m, "link", KeyCode::Char('x'));
-        assert!(matches!(panel(&m).prompt, Some(LinkPrompt::LinkRevoke { .. })) && panel(&m).menu.is_none());
+        assert!(matches!(panel(&m).prompt, Some(LinkPrompt::Revoke { .. })) && panel(&m).menu.is_none());
         m.submit("n", &tx);
         assert!(rx.try_recv().is_err() && panel(&m).prompt.is_none());
         // `p` pairs: the card counts down, then reads `paired: <name>`.
@@ -2521,6 +2526,8 @@
         fn panel(model: &Model) -> &Nodes { model.components.get::<Nodes>().unwrap() }
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(Nodes::default()).unwrap();
+        m.components.register(crate::components::link::Link::default()).unwrap();
         m.mount_components(&tx);
         let node = nodes::Node {
             id: "abcd1234".into(),
@@ -2561,13 +2568,13 @@
         assert!(m.header(&catalog).0.ends_with("  ·  nodes ●1"));
         // `x` confirms through a prompt; `n` keeps.
         component_menu_key(&mut m, "nodes", KeyCode::Char('x'));
-        assert!(matches!(panel(&m).prompt, Some(NodesPrompt::NodeRemove { .. })) && panel(&m).menu.is_none());
+        assert!(matches!(panel(&m).prompt, Some(NodesPrompt::Remove { .. })) && panel(&m).menu.is_none());
         m.submit("n", &tx);
         assert!(rx.try_recv().is_err() && panel(&m).prompt.is_none());
         // `a` prompts for the key; the reply reopens the menu.
         m.components.get_mut::<Nodes>().unwrap().menu = Some(NodesMenu::Nodes { cursor: 0 });
         component_menu_key(&mut m, "nodes", KeyCode::Char('a'));
-        assert!(matches!(panel(&m).prompt, Some(NodesPrompt::NodeKey)));
+        assert!(matches!(panel(&m).prompt, Some(NodesPrompt::Key)));
         m.submit(" https://relay.example/link#1.AAAA.QQ ", &tx);
         assert!(matches!(
             component_request::<Request>(&mut rx),
@@ -2617,12 +2624,12 @@
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::new(String::new(), false);
         m.submit("/provider add", &tx);
-        assert!(matches!(providers_login(&m).prompt, Some(ProviderPrompt::ProviderName)));
+        assert!(matches!(providers_login(&m).prompt, Some(ProviderPrompt::Name)));
         assert!(rx.try_recv().is_err());
         m.submit("rwx", &tx);
-        assert!(matches!(providers_login(&m).prompt, Some(ProviderPrompt::ProviderUrl { .. })));
+        assert!(matches!(providers_login(&m).prompt, Some(ProviderPrompt::Url { .. })));
         m.submit("https://api.ai.rwx.dev/v1", &tx);
-        assert!(matches!(providers_login(&m).prompt, Some(ProviderPrompt::ProviderKey { .. })));
+        assert!(matches!(providers_login(&m).prompt, Some(ProviderPrompt::Key { .. })));
         m.submit("sk-secret", &tx);
         assert!(providers_login(&m).prompt.is_none());
         let Ok(ProviderRequest::AddProvider {
@@ -2750,21 +2757,22 @@
         use crate::components::secrets::{Secrets, Prompt as SecretPrompt, Request as SecretRpc, Msg as SecretMsg};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(Secrets::default()).unwrap();
         m.mount_components(&tx);
         // `/secrets add`: name → masked value → note; the note may be empty.
         m.submit("/secrets add", &tx);
-        assert!(matches!(m.components.get::<Secrets>().unwrap().prompt, Some(SecretPrompt::SecretName)));
+        assert!(matches!(m.components.get::<Secrets>().unwrap().prompt, Some(SecretPrompt::Name)));
         assert!(!m.components.get::<Secrets>().unwrap().prompt.as_ref().unwrap().masked());
         m.submit("bad name", &tx);
-        assert!(matches!(m.components.get::<Secrets>().unwrap().prompt, Some(SecretPrompt::SecretName)));
+        assert!(matches!(m.components.get::<Secrets>().unwrap().prompt, Some(SecretPrompt::Name)));
         m.submit("github", &tx);
         assert!(matches!(
             m.components.get::<Secrets>().unwrap().prompt,
-            Some(SecretPrompt::SecretValue { current: None, .. })
+            Some(SecretPrompt::Value { current: None, .. })
         ));
         assert!(m.components.get::<Secrets>().unwrap().prompt.as_ref().unwrap().masked());
         m.submit("ghp_topsecret", &tx);
-        assert!(matches!(m.components.get::<Secrets>().unwrap().prompt, Some(SecretPrompt::SecretNote { .. })));
+        assert!(matches!(m.components.get::<Secrets>().unwrap().prompt, Some(SecretPrompt::Note { .. })));
         m.submit("", &tx);
         assert!(m.components.get::<Secrets>().unwrap().prompt.is_none());
         assert!(matches!(
@@ -2782,7 +2790,7 @@
         assert!(
             matches!(
                 &m.components.get::<Secrets>().unwrap().prompt,
-                Some(SecretPrompt::SecretValue {
+                Some(SecretPrompt::Value {
                     current: Some(1),
                     ..
                 })
@@ -2857,6 +2865,7 @@
         use crate::components::secrets::{Secrets, Prompt as SecretPrompt, Menu as SecretMenu, Request as SecretRpc, Msg as SecretMsg};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(Secrets::default()).unwrap();
         m.mount_components(&tx);
         m.submit("/secrets", &tx);
         assert!(matches!(component_request::<SecretRpc>(&mut rx), Ok(SecretRpc::ListSecrets)));
@@ -2891,7 +2900,7 @@
         assert!(
             matches!(
                 m.components.get::<Secrets>().unwrap().prompt,
-                Some(SecretPrompt::SecretValue {
+                Some(SecretPrompt::Value {
                     current: Some(2),
                     ..
                 })
@@ -2904,7 +2913,7 @@
             history: None,
         });
         component_menu_key(&mut m, "secrets", KeyCode::Char('d'));
-        assert!(matches!(m.components.get::<Secrets>().unwrap().prompt, Some(SecretPrompt::SecretDelete { .. })));
+        assert!(matches!(m.components.get::<Secrets>().unwrap().prompt, Some(SecretPrompt::Delete { .. })));
         m.submit("nope", &tx);
         assert!(rx.try_recv().is_err() && m.components.get::<Secrets>().unwrap().prompt.is_none());
         m.components.get_mut::<Secrets>().unwrap().menu = Some(SecretMenu::Secrets {
@@ -3500,6 +3509,7 @@
         use crate::components::computer::{Msg, Request, computer_line};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(crate::components::computer::Computer).unwrap();
         m.mount_components(&tx);
         m.submit("/computer", &tx);
         let Command::Component(effect) = rx.try_recv().unwrap() else { panic!("computer effect") };
@@ -3548,7 +3558,6 @@
         use crate::components::roster::{agents_table, Request as RosterRequest, Msg as RosterMsg};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::new(String::new(), false);
-        m.mount_components(&tx);
         m.submit("/tasks", &tx);
         assert!(matches!(component_request::<TasksRequest>(&mut rx), Ok(TasksRequest::List(None))));
         m.project = Some("sre".into());
@@ -3688,7 +3697,6 @@
         use crate::components::routines::{Request as RoutineRequest, SCHEDULES_USAGE, schedules_table, schedule_history_table};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::new(String::new(), false);
-        m.mount_components(&tx);
         m.submit("/schedules pause port", &tx);
         assert!(matches!(
             component_request::<RoutineRequest>(&mut rx),
@@ -5740,7 +5748,7 @@
         m.submit("/skills", &tx);
         assert!(matches!(component_request::<SkillsRequest>(&mut rx), Ok(SkillsRequest::ListSkills)));
         component_reply(&mut m, "skills-prompt", SkillsMsg::Skills(vec![meta("caveman"), meta("ponytail")]));
-        assert!(matches!(skills(&m).menu, Some(_)));
+        assert!(skills(&m).menu.is_some());
         component_menu_key(&mut m, "skills-prompt", KeyCode::Down);
         component_menu_key(&mut m, "skills-prompt", KeyCode::Char('s'));
         assert!(matches!(component_request::<SkillsRequest>(&mut rx), Ok(SkillsRequest::LoadSkill(n)) if n == "ponytail"));
@@ -7021,6 +7029,7 @@
     fn todos_follow_versions_survive_stale_loads_and_session_switches() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(Todos::default()).unwrap();
         let (a, b) = (SessionId::new(), SessionId::new());
         m.session = Some(a);
         // Nothing loaded: no card. A load carries the plan.
@@ -7107,6 +7116,7 @@
         use tools::{AskId, AskRequested, Question};
         let (tx, _rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(Todos::default()).unwrap();
         let s = SessionId::new();
         m.session = Some(s);
         set_todos(&mut m, plan(1, 8));
@@ -7191,6 +7201,7 @@
             session: Some(SessionId::new()),
             ..Model::default()
         };
+        m.components.register(Todos::default()).unwrap();
         let item = |status, reason: Option<&str>| Todo {
             text: "t".into(),
             status,
@@ -7930,7 +7941,7 @@
     }
 
     fn models_cursor(m: &Model) -> usize {
-        match &models(&m).menu {
+        match &models(m).menu {
             Some(Picker { cursor, .. }) => *cursor,
             other => panic!("no models menu: {other:?}"),
         }
@@ -8335,7 +8346,7 @@
     }
 
     fn models_chip(m: &Model) -> usize {
-        match &models(&m).menu {
+        match &models(m).menu {
             Some(Picker { chip, .. }) => *chip,
             other => panic!("no models menu: {other:?}"),
         }

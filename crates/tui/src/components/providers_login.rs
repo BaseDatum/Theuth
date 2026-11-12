@@ -36,14 +36,14 @@ pub(crate) struct LoginRow {
 #[derive(Debug)]
 pub(crate) enum Prompt {
     /// Asking for the gateway name.
-    ProviderName,
+    Name,
     /// Asking for the base URL.
-    ProviderUrl {
+    Url {
         /// Name already collected.
         name: String,
     },
     /// Asking for the API key.
-    ProviderKey {
+    Key {
         /// Name already collected.
         name: String,
         /// Normalized URL already collected.
@@ -55,11 +55,11 @@ impl Prompt {
     /// Line shown above the input.
     pub fn hint(&self) -> String {
         match self {
-            Prompt::ProviderName => "provider add  name  (esc cancel)".into(),
-            Prompt::ProviderUrl { name } => {
+            Prompt::Name => "provider add  name  (esc cancel)".into(),
+            Prompt::Url { name } => {
                 format!("provider add  {name}  base url  (esc cancel)")
             }
-            Prompt::ProviderKey { name, .. } => {
+            Prompt::Key { name, .. } => {
                 format!("provider add  {name}  api key  (esc cancel)")
             }
         }
@@ -68,7 +68,7 @@ impl Prompt {
     /// Notice when Esc drops the flow.
     fn cancelled(&self) -> &'static str {
         match self {
-            Prompt::ProviderName | Prompt::ProviderUrl { .. } | Prompt::ProviderKey { .. } => {
+            Prompt::Name | Prompt::Url { .. } | Prompt::Key { .. } => {
                 "provider add cancelled"
             }
         }
@@ -78,7 +78,7 @@ impl Prompt {
     pub fn masked(&self) -> bool {
         matches!(
             self,
-            Prompt::ProviderKey { .. }
+            Prompt::Key { .. }
         )
     }
 }
@@ -94,7 +94,7 @@ impl ProvidersLogin {
         match (sub, rest) {
             ("", _) => self.request(Request::ListProviders, cx),
             ("add", "") => {
-                self.prompt = Some(Prompt::ProviderName);
+                self.prompt = Some(Prompt::Name);
                 cx.core(CoreAction::Notice("provider add: name".into()));
             }
             ("add", rest) => {
@@ -109,7 +109,7 @@ impl ProvidersLogin {
                     return;
                 }
                 if url.is_empty() {
-                    self.prompt = Some(Prompt::ProviderUrl {
+                    self.prompt = Some(Prompt::Url {
                         name: name.to_owned(),
                     });
                     cx.core(CoreAction::Notice(format!("provider add {name}: base url")));
@@ -117,7 +117,7 @@ impl ProvidersLogin {
                 }
                 // 177 E10: a local server needs no key; a cloud one is asked for.
                 if key.is_empty() && !agent::local::private_url(url) {
-                    self.prompt = Some(Prompt::ProviderKey {
+                    self.prompt = Some(Prompt::Key {
                         name: name.to_owned(),
                         url: url.to_owned(),
                     });
@@ -164,13 +164,13 @@ impl ProvidersLogin {
     /// Advance a prompt flow one field. An API key is never written to the transcript.
     fn prompt_submit(&mut self, line: &str, cx: &mut Cx<'_, '_, Msg>) {
         match self.prompt.take() {
-            Some(Prompt::ProviderName) => {
-                self.prompt = Some(Prompt::ProviderUrl {
+            Some(Prompt::Name) => {
+                self.prompt = Some(Prompt::Url {
                     name: line.to_owned(),
                 });
                 cx.core(CoreAction::Notice(format!("name: {line}")));
             }
-            Some(Prompt::ProviderUrl { name }) => {
+            Some(Prompt::Url { name }) => {
                 cx.core(CoreAction::Notice(format!("url: {line}")));
                 // 177 E10: a local server needs no key.
                 if agent::local::private_url(line) {
@@ -180,13 +180,13 @@ impl ProvidersLogin {
                             key: String::new(),
                         }, cx);
                 } else {
-                    self.prompt = Some(Prompt::ProviderKey {
+                    self.prompt = Some(Prompt::Key {
                         name: name.clone(),
                         url: line.to_owned(),
                     });
                 }
             }
-            Some(Prompt::ProviderKey { name, url }) => {
+            Some(Prompt::Key { name, url }) => {
                 cx.core(CoreAction::Notice("api key: set".into()));
                 self.request(Request::AddProvider {
                         name,
