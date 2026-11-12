@@ -59,7 +59,7 @@ impl Component for Counter {
 }
 pub(crate) fn core() -> CoreView<'static> {
     static MEMBERS: std::sync::LazyLock<std::collections::HashMap<SessionId, crate::model::AgentRow>> = std::sync::LazyLock::new(std::collections::HashMap::new);
-    CoreView { modal_open: false, terminal_height: 0, editor: None, commands: &[], input_focused: true, menu_open: false, secret_editor: false, approval: false, awaiting_session: false, viewport: 0, prompts: &(), prompt: None, session_name: None, parent: None, private_root: None, project: None, inspecting: false, streaming: false, reasoning: false, agent: None, entries: &[], width: 0, private_members: None, members: &*MEMBERS, interactive: true, session: None }
+    CoreView { frame: 0, modal_open: false, terminal_height: 0, editor: None, commands: &[], input_focused: true, menu_open: false, secret_editor: false, approval: false, awaiting_session: false, viewport: 0, prompts: &(), prompt: None, session_name: None, parent: None, private_root: None, project: None, inspecting: false, streaming: false, reasoning: false, agent: None, entries: &[], width: 0, private_members: None, members: &*MEMBERS, interactive: true, session: None }
 }
 pub(crate) fn topic(name: &str, version: u32, event: serde_json::Value) -> TopicEvent {
     TopicEvent::Remote(Arc::new(TopicNotification { topic: name.into(), version, event }))
