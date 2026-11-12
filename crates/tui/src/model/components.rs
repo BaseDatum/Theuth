@@ -40,6 +40,7 @@ macro_rules! core_view {
             default_effort: $model.default_effort.as_deref(),
             harness: $model.agent.as_deref(),
             harness_model: $model.harness_model.as_deref(),
+            harness_commands: &$model.harness_commands,
             catalog: $model.catalog.as_deref(),
             frame: $model.frame,
             composer_read_only: $model.components.composer_read_only(),

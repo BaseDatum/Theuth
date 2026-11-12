@@ -177,11 +177,12 @@ impl Model {
             .map_or_else(String::new, |h| format!("  ·  {h}"));
         use crate::components::{StatusSlot, Surface};
         let work = self.component_text(Surface::Status(StatusSlot::Work));
+        let before_catalog = self.component_text(Surface::Status(StatusSlot::BeforeCatalog));
         let catalog = self.component_text(Surface::Status(StatusSlot::Catalog));
         let pinned = self.component_text(Surface::Status(StatusSlot::Pinned));
         let spoken = self.component_text(Surface::Status(StatusSlot::Spoken));
         format!(
-            "{session}  {state}{watch}{usage}{agents}{queued}{work}{skills}{catalog}{editing}{scrolled}{pinned}{spoken}{attached}{resumed}"
+            "{session}  {state}{watch}{usage}{agents}{queued}{work}{skills}{before_catalog}{catalog}{editing}{scrolled}{pinned}{spoken}{attached}{resumed}"
         )
     }
 
