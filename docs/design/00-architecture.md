@@ -189,14 +189,15 @@ its 400-line ceiling and puts each contract next to the code that enforces
 it. (Earlier draft put the tool contract in `runtime`; dropped once the
 agent needed `tools` anyway for the registry actor type.)
 
-The wire-layer extraction adds `rpc-core` below method owners: its only normal
-workspace dependency is `runtime`. It owns `Server`, connection identity
-(`RpcPeer`, `Guest`, `Client`, `ConnId`), original-actor follow leases, the
-shared event-feed item and unchanged stream backlog, and actor/error helpers.
-It contains no plugin registration, domain RPC traits, sessions registry calls
-or artifact operations. Every domain implements its server trait on this one
-`Server`; clones share all six handles. New servers share only process-wide,
-insert-only private-tree membership; focus, seen and follow maps remain local.
+The wire-layer extraction adds `rpc-core` below method owners: its normal
+workspace dependencies are `runtime` and plugin-neutral `wire`. It owns `Server`,
+connection identity (`RpcPeer`, `Guest`, `Client`, `ConnId`), original-actor follow
+leases, the `Arc<wire::WireFrame>` feed seam and policy-driven stream backlog,
+and actor/error helpers. It contains no plugin registration, domain RPC traits,
+sessions registry calls or artifact operations. Every domain implements its
+server trait on this one `Server`; clones share all six handles. New servers use
+the Runtime's one wire feed and process-wide insert-only private membership;
+focus, seen and follow maps remain local.
 
 `rpc::new_server` installs plugin hooks before constructing the pure state.
 `agent::rpc_forward` owns forwarding; five immutable hooks read current
@@ -574,6 +575,18 @@ The RPC layer is generic glue, not a second protocol:
   `#[serde(tag = "type")]`; `descendants: true` widens the filter to the
   session's subtree, including `SubagentSpawned` whose parent is inside it
   (19 §2.2).
+- **Topic subscriptions** = `subscribe_topics(topics?, session?, descendants?)`
+  yields `{topic, version, event}` over that same single owner-declared feed.
+  Topics are exact strings: null selects all declared topics, [] no event data;
+  unknown topics select nothing. `rpc.stream` version 1 controls always arrive:
+  PendingPrompts first, then Lagged followed by a fresh snapshot after loss.
+  Snapshots contain only selected prompt families admitted to the connection.
+  Child enrollment and privacy run before topic selection, then focus and backlog.
+  The legacy sink remains indefinitely and emits only unchanged inner JSON.
+  Unknown old-peer payloads remain legacy-only; paired-engine bytes are unchanged.
+  Both streams remain live-only and lossy (1024 ring, 8192 non-delta backlog,
+  40 ms delta flush), not durable replay or bounded producer backpressure.
+  Artifact/update count external RPC stream leases, never local feed receivers.
 - Method params/results and event payloads are the plugins' own types; the
   RPC crate defines none. TypeScript bindings for Tauri are generated with
   `ts-rs` 12 from the same types (`#[derive(TS)]` behind a feature).

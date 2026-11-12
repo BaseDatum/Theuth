@@ -1423,10 +1423,7 @@ mod tests {
     impl Rig {
         /// A fake desktop renderer on this rig's bus; the count of requests it saw.
         async fn renderer(&self, png: Vec<u8>) -> Arc<Mutex<usize>> {
-            // The feed is process-wide and set once; a forgotten receiver keeps it live.
-            let (tx, rx) = tokio::sync::broadcast::channel::<Arc<serde_json::Value>>(4);
-            artifact::preview::watch_feed(tx);
-            std::mem::forget(rx);
+            artifact::preview::watch_feed(Arc::new(|| 1));
             let requests = Arc::new(Mutex::new(0));
             let actor = kameo::actor::Spawn::spawn_with_mailbox(
                 FakeRenderer {

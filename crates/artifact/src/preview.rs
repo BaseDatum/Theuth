@@ -18,7 +18,7 @@ use std::time::Duration;
 use runtime::{Runtime, SessionId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 
 use crate::store::Stores;
 use tools::{Risk, Tool, ToolCx, ToolOutput};
@@ -173,21 +173,17 @@ pub struct PreviewArgs {
 static PENDING: LazyLock<Mutex<HashMap<PreviewId, mpsc::UnboundedSender<PagePreviewAnswer>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// The rpc bridge's broadcast sender, when the rpc plugin runs: its
-/// `receiver_count()` is how many event subscribers exist at all (§11.4).
-static FEED: OnceLock<broadcast::Sender<Arc<serde_json::Value>>> = OnceLock::new();
+/// External RPC stream liveness, installed by artifact composition.
+static FEED: OnceLock<Arc<dyn Fn() -> usize + Send + Sync>> = OnceLock::new();
 
-/// Install the event feed whose subscriber count gates the "no renderer"
-/// short-circuit. Called once by the rpc bridge; later calls are ignored.
-pub fn watch_feed(tx: broadcast::Sender<Arc<serde_json::Value>>) {
-    let _ = FEED.set(tx);
+/// Install the external-stream counter used by the renderer heuristic.
+pub fn watch_feed(count: Arc<dyn Fn() -> usize + Send + Sync>) {
+    let _ = FEED.set(count);
 }
 
-/// `true` when at least one event subscriber exists, so a client may answer
-/// a [`render`]; `false` with no rpc bridge or no subscriber. `show`'s page
-/// check (150 §D4) waits for nobody when this is `false`.
+/// A local generic feed consumer does not imply a connected renderer.
 pub fn feed_live() -> bool {
-    FEED.get().is_some_and(|tx| tx.receiver_count() > 0)
+    FEED.get().is_some_and(|count| count() > 0)
 }
 
 /// A client's answer. `true` if the preview was still pending: the first
@@ -239,7 +235,7 @@ pub async fn render(
     width: u32,
     appearance: Option<Appearance>,
 ) -> Outcome {
-    if FEED.get().is_some_and(|tx| tx.receiver_count() == 0) {
+    if FEED.get().is_some_and(|count| count() == 0) {
         return Outcome::NoRenderer;
     }
     let id = PreviewId(uuid::Uuid::now_v7());
@@ -597,10 +593,8 @@ mod tests {
 
         impl Harness {
             pub async fn new() -> Self {
-                // The feed is process-wide and set once; a forgotten receiver keeps it live.
-                let (tx, rx) = broadcast::channel::<Arc<serde_json::Value>>(4);
-                watch_feed(tx);
-                std::mem::forget(rx);
+                // The liveness hook is process-wide and set once.
+                watch_feed(Arc::new(|| 1));
                 assert!(feed_live());
                 let dir = tempfile::tempdir().unwrap();
                 let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());

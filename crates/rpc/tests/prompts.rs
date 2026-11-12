@@ -11,6 +11,7 @@ use rpc::api::PendingPrompts;
 use rpc_core::Server;
 use runtime::{Runtime, SessionId};
 use tools::{Approval, AskUser, Decision};
+use wire::RuntimeWire as _;
 
 /// The next `subscribe_events` item, decoded.
 async fn next(sub: &mut Subscription) -> serde_json::Value {
@@ -45,7 +46,8 @@ fn snapshot(v: &serde_json::Value) -> PendingPrompts {
 #[tokio::test]
 async fn prompts_resolve_everywhere_and_replay_only_while_pending() {
     let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-    let events = rpc::bridge::start(&rt).await;
+    tools::declare_wire(&rt).await.unwrap();
+    let events = rt.wire_feed();
     let ask = AskUser::spawn(AskUser::new(rt.clone(), Duration::from_secs(30)));
     ask.register(tools::ASK_ACTOR).unwrap();
     let approval = Approval::spawn(Approval::new(rt.clone(), Duration::from_secs(30)));

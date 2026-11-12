@@ -219,9 +219,7 @@ mod tests {
     #[tokio::test]
     async fn raw_fence_is_delivered_as_a_picture_in_place() {
         let (dir, transport, handle) = fixture();
-        let (tx, rx) = tokio::sync::broadcast::channel::<Arc<serde_json::Value>>(4);
-        artifact::preview::watch_feed(tx);
-        std::mem::forget(rx);
+        artifact::preview::watch_feed(Arc::new(|| 1));
         let mut image = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13];
         image.extend(b"IHDR");
         image.extend(1120u32.to_be_bytes());

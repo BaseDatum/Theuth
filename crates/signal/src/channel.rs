@@ -2303,9 +2303,7 @@ mod tests {
 
     /// Installs the live feed and a renderer on `f`'s bus; returns its request counter.
     async fn fake_renderer(f: &Fixture, png: &[u8]) -> Arc<std::sync::atomic::AtomicUsize> {
-        let (tx, rx) = tokio::sync::broadcast::channel::<Arc<serde_json::Value>>(4);
-        artifact::preview::watch_feed(tx);
-        std::mem::forget(rx);
+        artifact::preview::watch_feed(Arc::new(|| 1));
         let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let actor = FakeRenderer::spawn_with_mailbox(
             FakeRenderer {
