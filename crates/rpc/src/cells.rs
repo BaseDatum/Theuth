@@ -22,7 +22,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use rpc_core::Server;
-use crate::api::RpcServerExt;
+use agent::rpc_support::RpcServerExt;
 use rpc_core::{NOT_RUNNING, UNAUTHORIZED};
 
 #[path = "cells_guard.rs"]

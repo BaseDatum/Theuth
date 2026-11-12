@@ -6,6 +6,7 @@ publish.workspace = true
 description = "Transcript replication with transferable ownership: ships the agent store's per-commit changeset log over the mesh and applies peers' logs (design doc 68)"
 
 [dependencies]
+jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 rpc-core = { workspace = true }
 replica = { workspace = true }

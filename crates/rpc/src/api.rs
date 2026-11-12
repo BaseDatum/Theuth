@@ -37,7 +37,7 @@ use agent::{
     AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, SetAdvisor, SetAdvisorDefaults, SyncBacklog,
 };
 use agent::{
-    Authorize, Authorized, CloseResult, CreateSession, CreateSessionOptions, LeaveSession,
+    CloseResult, CreateSession, CreateSessionOptions, LeaveSession,
     ListProjectStyles, PeerDeliver, PeerEnvelope, PrivateTrees, ProjectStyle, ResumePrivate,
     SessionCost, SessionCostQuery, SessionOpen, SetProjectStyle, SetSessionProject, SpendReport,
     SpendReportQuery,
@@ -107,7 +107,7 @@ use agent::rpc_forward as forward;
 use crate::pathac::PathCompletion;
 use crate::search::SearchResponse;
 use rpc_core::{is_delta, Stream, Backlog, Next, ask, send, lookup, failed, peer, owner, dreaming_err, stub_err, ASK_FAILED, NOT_RUNNING, UNAUTHORIZED};
-use agent::rpc_support::owner_root;
+use agent::rpc_support::{owner_root, RpcServerExt};
 use link::rpc_support::{link, mint_as_holder};
 use mesh::rpc_support::mesh_actor;
 use roster::rpc_support::{roster_actor, attention_actor, mask_alerts};
@@ -465,239 +465,20 @@ pub struct ConfigFlag {
 
 use rpc_core::{Server, PrivateMap};
 
-pub(super) trait DreamConfigExt {
-    fn double_config(&self) -> double::DoubleConfig;
-    fn dreaming_config(&self) -> dreaming::DreamConfig;
-}
 
-impl DreamConfigExt for Server {
-    /// The `double:` section as read at start (126 §12); defaults when absent.
-    fn double_config(&self) -> double::DoubleConfig {
-        self.rt.section("double").unwrap_or_default()
-    }
 
-    /// The `dreaming:` section as read at start (136 §9.2); defaults when absent.
-    fn dreaming_config(&self) -> dreaming::DreamConfig {
-        self.rt.section("dreaming").unwrap_or_default()
-    }
 
-}
 
-pub(super) trait ResearchConfigExt {
-    fn autoresearch_config(&self) -> autoresearch::AutoresearchConfig;
-}
 
-impl ResearchConfigExt for Server {
-    /// The `autoresearch:` section as read at start (140 §12.2); defaults when absent.
-    fn autoresearch_config(&self) -> autoresearch::AutoresearchConfig {
-        self.rt.section("autoresearch").unwrap_or_default()
-    }
 
-}
 
-pub(super) trait SpeechConfigExt {
-    fn write_voice_config(&self, key: &[&str], value: &str) -> RpcResult<()>;
-}
 
-impl SpeechConfigExt for Server {
-    /// 153 §14.3: persist `voice.<key>` (one or two levels; the value is YAML flow syntax).
-    fn write_voice_config(&self, key: &[&str], value: &str) -> RpcResult<()> {
-        let path = self.rt.data_dir.join("config.yaml");
-        match key {
-            [k] => runtime::write_config_value(&path, "voice", k, value),
-            [sub, k] => runtime::write_nested_config_value(&path, "voice", sub, k, value),
-            _ => unreachable!("one or two key levels"),
-        }
-        .map_err(|e| failed(format!("config.yaml: {e}")))
-    }
 
-}
 
-pub(super) trait SettingsConfigExt {
-    fn config_flag(&self, key: ConfigFlagKey) -> ConfigFlag;
-}
 
-impl SettingsConfigExt for Server {
-    /// 188: `key` in config.yaml now (read fresh) and in the boot config (never re-read).
-    fn config_flag(&self, key: ConfigFlagKey) -> ConfigFlag {
-        use figment::providers::{Format, Yaml};
-        let file = figment::Figment::from(Yaml::file_exact(self.rt.data_dir.join("config.yaml")));
-        let (enabled, running) = (key.read(&file), key.read(&self.rt.config));
-        ConfigFlag {
-            key,
-            enabled,
-            running,
-            restart_required: enabled != running,
-        }
-    }
 
-}
 
-/// Actor authorization shared by RPC method owners.
-pub trait RpcServerExt {
-    /// Admit an authenticated peer to the named session.
-    fn authorize<'a>(
-        &'a self,
-        ext: &'a Extensions,
-        session: SessionId,
-    ) -> impl std::future::Future<Output = RpcResult<Authorized>> + Send + 'a;
-    /// Admit a session when one is named.
-    fn authorize_opt<'a>(
-        &'a self,
-        ext: &'a Extensions,
-        session: Option<SessionId>,
-    ) -> impl std::future::Future<Output = RpcResult<()>> + Send + 'a;
-    /// Admit a forwardable session, including a creator-owned pending row.
-    fn authorize_fwd<'a>(
-        &'a self,
-        ext: &'a Extensions,
-        session: SessionId,
-    ) -> impl std::future::Future<Output = RpcResult<()>> + Send + 'a;
-    /// Admit an optional forwardable session.
-    fn authorize_opt_fwd<'a>(
-        &'a self,
-        ext: &'a Extensions,
-        session: Option<SessionId>,
-    ) -> impl std::future::Future<Output = RpcResult<()>> + Send + 'a;
-}
 
-impl RpcServerExt for Server {
-    /// The one admission check (51 §4.2): the calling connection may act on
-    /// `session`. Durable sessions admit any authenticated peer; a private
-    /// one only its owner; unknown or closing ids fail closed.
-    async fn authorize(
-        &self,
-        ext: &Extensions,
-        session: SessionId,
-    ) -> RpcResult<Authorized> {
-        let peer = peer(ext)?.id();
-        ask::<Agents, _>(
-            agent::AGENT_ACTOR,
-            Authorize {
-                session,
-                peer: Some(peer),
-            },
-        )
-        .await
-    }
-
-    /// `authorize` when a session is named; `None` is the caller's own root
-    /// or the global scope, nothing to admit.
-    async fn authorize_opt(
-        &self,
-        ext: &Extensions,
-        session: Option<SessionId>,
-    ) -> RpcResult<()> {
-        if let Some(s) = session {
-            self.authorize(ext, s).await?;
-        }
-        Ok(())
-    }
-
-    /// [`Self::authorize`] for a handler that forwards (`forward::route`,
-    /// `forward::to_creator`): 183 §5.6, a chat another engine just created
-    /// for us whose row is not here yet is admitted (durable chats only, see
-    /// `create_session`), since the call goes to that engine, which admits
-    /// it. Every other handler keeps the strict check and fails closed.
-    async fn authorize_fwd(
-        &self,
-        ext: &Extensions,
-        session: SessionId,
-    ) -> RpcResult<()> {
-        peer(ext)?;
-        if let Some(forward::Expected { here: false, .. }) = forward::expected(ext, session).await?
-        {
-            return Ok(());
-        }
-        self.authorize(ext, session).await.map(drop)
-    }
-
-    /// [`Self::authorize_fwd`] when a session is named.
-    async fn authorize_opt_fwd(
-        &self,
-        ext: &Extensions,
-        session: Option<SessionId>,
-    ) -> RpcResult<()> {
-        if let Some(s) = session {
-            self.authorize_fwd(ext, s).await?;
-        }
-        Ok(())
-    }
-
-}
-
-pub(super) trait SessionStateExt {
-    fn track(&self, open: &SessionOpen, peer: u64);
-    fn wait_for_row<'a>(&'a self, session: SessionId, engine: &'a str)-> impl std::future::Future<Output = ()> + Send + 'a;
-}
-
-impl SessionStateExt for Server {
-    /// Record a freshly opened private tree as `peer`'s: every known member
-    /// of its root moves to `peer` (a resume rebinds the whole tree), and
-    /// the opened session and root join.
-    fn track(&self, open: &SessionOpen, peer: u64) {
-        if open.retention != Retention::Private {
-            return;
-        }
-        let mut map = self.private.write();
-        for v in map.values_mut() {
-            if v.0 == open.root {
-                v.1 = peer;
-            }
-        }
-        map.insert(open.root, (open.root, peer));
-        map.insert(open.session, (open.root, peer));
-    }
-
-    /// 183 §5.6: wait, at most [`CREATED_ROW_WAIT`], for a session `engine`
-    /// just created to replicate here (§13 row 11: on timeout the caller
-    /// answers anyway; calls for it are forwarded by id meanwhile). A row
-    /// still missing after [`CREATED_ROW_LAG`] is a WARN: normal replication
-    /// takes a few seconds and logs nothing.
-    async fn wait_for_row(&self, session: SessionId, engine: &str) {
-        let Ok(store) = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await else {
-            return;
-        };
-        if row_within(&store, session, CREATED_ROW_WAIT).await {
-            return;
-        }
-        let engine = engine.to_owned();
-        tokio::spawn(async move {
-            if !row_within(&store, session, CREATED_ROW_LAG - CREATED_ROW_WAIT).await {
-                tracing::warn!(
-                    "sessions: new row {session} from {engine} not here after {}s; forwarding by id",
-                    CREATED_ROW_LAG.as_secs()
-                );
-            }
-        });
-    }
-
-}
-
-/// `session`'s row is in `store` within `wait` (polled every 100 ms).
-async fn row_within(
-    store: &agent::store::Store,
-    session: SessionId,
-    wait: std::time::Duration,
-) -> bool {
-    let deadline = Instant::now() + wait;
-    loop {
-        if store.session(session).await.ok().flatten().is_some() {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-}
-
-/// 183 §5.6: how long `create_session{engine}` waits for the new row before it
-/// answers (the chat works by id meanwhile; the wait only spares a lookup).
-const CREATED_ROW_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
-
-/// 183 §5.6: a new row from another engine not here after this long is a WARN.
-const CREATED_ROW_LAG: std::time::Duration = std::time::Duration::from_secs(6);
 
 
 /// 185 R1 A5: the hub's refusal of a forwarded Dream now, said as the hub's —

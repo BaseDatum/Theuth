@@ -700,3 +700,23 @@ impl SettingsApiServer for Server {
         })
     }
 }
+
+pub(super) trait SettingsConfigExt {
+    fn config_flag(&self, key: ConfigFlagKey) -> ConfigFlag;
+}
+
+impl SettingsConfigExt for Server {
+    /// 188: `key` in config.yaml now (read fresh) and in the boot config (never re-read).
+    fn config_flag(&self, key: ConfigFlagKey) -> ConfigFlag {
+        use figment::providers::{Format, Yaml};
+        let file = figment::Figment::from(Yaml::file_exact(self.rt.data_dir.join("config.yaml")));
+        let (enabled, running) = (key.read(&file), key.read(&self.rt.config));
+        ConfigFlag {
+            key,
+            enabled,
+            running,
+            restart_required: enabled != running,
+        }
+    }
+
+}

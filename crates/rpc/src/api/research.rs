@@ -328,3 +328,15 @@ impl ResearchApiServer for Server {
         }
     }
 }
+
+pub(super) trait ResearchConfigExt {
+    fn autoresearch_config(&self) -> autoresearch::AutoresearchConfig;
+}
+
+impl ResearchConfigExt for Server {
+    /// The `autoresearch:` section as read at start (140 §12.2); defaults when absent.
+    fn autoresearch_config(&self) -> autoresearch::AutoresearchConfig {
+        self.rt.section("autoresearch").unwrap_or_default()
+    }
+
+}

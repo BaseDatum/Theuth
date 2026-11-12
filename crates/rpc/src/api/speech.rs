@@ -518,3 +518,21 @@ impl SpeechApiServer for Server {
         send(&talk()?, talk::TalkStatus).await
     }
 }
+
+pub(super) trait SpeechConfigExt {
+    fn write_voice_config(&self, key: &[&str], value: &str) -> RpcResult<()>;
+}
+
+impl SpeechConfigExt for Server {
+    /// 153 §14.3: persist `voice.<key>` (one or two levels; the value is YAML flow syntax).
+    fn write_voice_config(&self, key: &[&str], value: &str) -> RpcResult<()> {
+        let path = self.rt.data_dir.join("config.yaml");
+        match key {
+            [k] => runtime::write_config_value(&path, "voice", k, value),
+            [sub, k] => runtime::write_nested_config_value(&path, "voice", sub, k, value),
+            _ => unreachable!("one or two key levels"),
+        }
+        .map_err(|e| failed(format!("config.yaml: {e}")))
+    }
+
+}

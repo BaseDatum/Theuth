@@ -1,4 +1,5 @@
 use super::*;
+use decision::rpc_support::RpcDecisionExt;
 
 #[rpc(server, client)]
 pub trait DreamsApi {
@@ -385,30 +386,22 @@ impl DreamsApiServer for Server {
     }
 }
 
-/// Decision mode operations shared by dreams and meetings.
-pub trait RpcDecisionExt {
-    /// Current mode and checkpoint availability.
-    fn decision_mode<'a>(&'a self, prefix: String) -> impl std::future::Future<Output = RpcResult<decision::ModeInfo>> + Send + 'a;
-    /// Persist and apply a family mode.
-    fn set_decision_mode<'a>(
-        &'a self,
-        prefix: String,
-        mode: decision::Mode,
-    ) -> impl std::future::Future<Output = RpcResult<decision::ModeInfo>> + Send + 'a;
+
+
+pub(super) trait DreamConfigExt {
+    fn double_config(&self) -> double::DoubleConfig;
+    fn dreaming_config(&self) -> dreaming::DreamConfig;
 }
 
-impl RpcDecisionExt for Server {
-    async fn decision_mode(&self, prefix: String) -> RpcResult<decision::ModeInfo> {
-        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::GetMode { prefix }).await
+impl DreamConfigExt for Server {
+    /// The `double:` section as read at start (126 §12); defaults when absent.
+    fn double_config(&self) -> double::DoubleConfig {
+        self.rt.section("double").unwrap_or_default()
     }
 
-    async fn set_decision_mode(
-        &self,
-        prefix: String,
-        mode: decision::Mode,
-    ) -> RpcResult<decision::ModeInfo> {
-        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetMode { prefix, mode })
-            .await
+    /// The `dreaming:` section as read at start (136 §9.2); defaults when absent.
+    fn dreaming_config(&self) -> dreaming::DreamConfig {
+        self.rt.section("dreaming").unwrap_or_default()
     }
 
 }
