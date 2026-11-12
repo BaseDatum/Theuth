@@ -12004,6 +12004,7 @@ dependencies = [
  "uuid",
  "voice",
  "windows 0.54.0",
+ "wire",
 ]
 
 [[package]]
@@ -17576,6 +17577,7 @@ dependencies = [
  "voice",
  "web",
  "windows-sys 0.61.2",
+ "wire",
 ]
 
 [[package]]
@@ -19635,6 +19637,7 @@ dependencies = [
  "ts-rs",
  "uuid",
  "voice",
+ "wire",
 ]
 
 [[package]]
@@ -19869,6 +19872,7 @@ dependencies = [
  "ts-rs",
  "uuid",
  "voice",
+ "wire",
 ]
 
 [[package]]
@@ -21114,6 +21118,7 @@ dependencies = [
  "ts-rs",
  "uuid",
  "voice",
+ "wire",
 ]
 
 [[package]]
@@ -21747,6 +21752,7 @@ dependencies = [
  "ts-rs",
  "uuid",
  "voice",
+ "wire",
  "wiremock",
 ]
 
@@ -24396,6 +24402,7 @@ dependencies = [
  "ts-rs",
  "uuid",
  "wavekat-vad",
+ "wire",
  "xn",
 ]
 

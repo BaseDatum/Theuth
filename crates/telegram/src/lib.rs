@@ -190,6 +190,16 @@ pub enum TelegramEvent {
     Starting,
 }
 
+impl wire::WireEvent for TelegramEvent {
+    const TOPIC: &'static str = "telegram.events";
+}
+
+/// Declare wire contracts before starting producers, even when disabled.
+pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<TelegramEvent>().await
+}
+
 /// `getMe` (98 §3.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -618,6 +628,7 @@ impl runtime::Plugin for TelegramPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: TelegramConfig = rt.section("telegram").unwrap_or_else(|e| {
             tracing::debug!("no [telegram] config section, using defaults: {e}");
             TelegramConfig::default()

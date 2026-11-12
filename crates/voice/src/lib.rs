@@ -627,6 +627,16 @@ pub enum VoiceEvent {
     },
 }
 
+impl wire::WireEvent for VoiceEvent {
+    const TOPIC: &'static str = "voice.events";
+}
+
+/// Declare wire contracts before starting producers, even when disabled.
+pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<VoiceEvent>().await
+}
+
 /// `voice:` config section.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
@@ -1239,6 +1249,7 @@ impl runtime::Plugin for VoicePlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: VoiceConfig = rt.section("voice").unwrap_or_else(|e| {
             tracing::debug!("no [voice] config section, using defaults: {e}");
             VoiceConfig::default()

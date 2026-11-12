@@ -407,6 +407,16 @@ pub enum TalkEvent {
     },
 }
 
+impl wire::WireEvent for TalkEvent {
+    const TOPIC: &'static str = "talk.events";
+}
+
+/// Declare wire contracts before starting producers, even when disabled.
+pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<TalkEvent>().await
+}
+
 /// Prompt block registered as `RegisterPrompt { plugin: "talk" }` (76 §0.11).
 const PROMPT: &str = "## Live talk\n\
 You are talking out loud. Your reply is synthesised to speech and played on the user's speaker \
@@ -1348,6 +1358,7 @@ impl runtime::Plugin for TalkPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: TalkConfig = rt.section("talk").unwrap_or_else(|e| {
             tracing::debug!("no [talk] config section, using defaults: {e}");
             TalkConfig::default()
