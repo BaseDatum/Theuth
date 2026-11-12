@@ -5,7 +5,7 @@ impl Model {
     /// Fold one event into the state.
     pub(super) fn reduce(&mut self, ev: UiEvent, error_claimed: bool) {
         match ev {
-            UiEvent::Wire(_) | UiEvent::Component(_) => unreachable!("intake is dispatched before reduction"),
+            UiEvent::Wire(_) | UiEvent::Component(_) | UiEvent::DraftFailed(_) => unreachable!("intake is dispatched before reduction"),
             UiEvent::Agent(ev) => self.apply_agent(ev),
             UiEvent::Approval(req) => {
                 if let Some(row) = self.agents.get_mut(&req.session) {

@@ -296,6 +296,12 @@ async fn execute_current(api: &Api, cmd: Command, tx: &UnboundedSender<UiEvent>)
 async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<()> {
     let reply = match cmd {
         Command::Component(_) | Command::ComponentInput(_) => unreachable!("component work uses the generic dispatcher"),
+        Command::CreateDraft(options) => {
+            return match open_draft(api, options, tx).await {
+                Ok(_) => Ok(()),
+                Err(error) => { let _ = tx.send(UiEvent::DraftFailed(error.to_string())); Ok(()) }
+            };
+        }
         Command::Resolve { id, decision } => {
             if !msg(api.resolve_approval(id, decision).await)? {
                 anyhow::bail!("approval {} was no longer pending", id.0);
@@ -1245,7 +1251,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         let _ = writeln!(out, "\x1b[0m");
     }
     let _ = match ev {
-        UiEvent::Wire(_) | UiEvent::Component(_) => unreachable!("intake is dispatched before printing"),
+        UiEvent::Wire(_) | UiEvent::Component(_) | UiEvent::DraftFailed(_) => unreachable!("intake is dispatched before printing"),
         UiEvent::Agent(AgentEvent::ReasoningDelta { text, .. }) => {
             let head = if thinking { "" } else { "\x1b[2m┆ " };
             write!(out, "{head}{text}").and_then(|()| out.flush())

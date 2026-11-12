@@ -63,6 +63,8 @@ pub struct Model {
     pub prompt: Option<Prompt>,
     /// A `Send { session: None }` is in flight; adopt the next `TurnStarted`.
     awaiting_session: bool,
+    /// FIFO owner continuations waiting for the one in-flight session creation.
+    pending_session: parking_lot::Mutex<Vec<crate::components::SessionContinuation>>,
     /// A routing failure of that send (`Error { turn: None }`) that arrived
     /// before `SessionCreated` named the session: shown once it does, if the
     /// ids agree; another session's error is dropped.
