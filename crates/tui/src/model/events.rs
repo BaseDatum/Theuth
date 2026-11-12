@@ -48,6 +48,8 @@ pub enum UiEvent {
     Forked(SessionId, Loaded),
     /// Reply to [`Command::Send`]: the session the turn went to.
     SessionCreated(SessionId),
+    /// Draft creation failed; deliver each queued owner's typed failure.
+    DraftFailed(String),
     /// Reply to [`Command::ListModels`].
     Models(Vec<ModelInfo>),
     /// Reply to [`Command::PathComplete`]: the generation that asked, `None` when the call failed.
@@ -541,6 +543,8 @@ pub enum Command {
     },
     /// `create_session`: explicit creation, private or durable (51 §4.1).
     CreateSession(CreateSessionOptions),
+    /// Open an unsent draft without resetting the composer or component owners.
+    CreateDraft(CreateSessionOptions),
     /// `leave_session`: release the private root this view owns (51 §4.3).
     LeaveSession {
         /// The root.

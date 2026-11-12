@@ -872,7 +872,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     Text(content: m.status(), color: SAND)
                     #(m.advisor_segment().map(|(text, state)| element!(Text(content: text, color: advisor_color(state)))))
                 }
-                Text(content: m.mcp_status(), color: SAND)
+                Text(content: format!("{}{}", m.mcp_status(), m.component_text(Surface::Status(crate::components::StatusSlot::Right))), color: SAND)
             }
         }
     }

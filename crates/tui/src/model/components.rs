@@ -38,6 +38,13 @@ impl Model {
 
     pub(crate) fn receive(&mut self, event: UiEvent, emit: &mut impl FnMut(Output<'_>)) {
         let (residual, out) = match event {
+            UiEvent::DraftFailed(error) => {
+                self.awaiting_session = false;
+                for continuation in std::mem::take(self.pending_session.get_mut()) {
+                    self.receive(UiEvent::Component((continuation.fail)(error.clone())), emit);
+                }
+                return;
+            }
             UiEvent::Wire(event) => {
                 let residual = crate::topics::residual(&event);
                 let core = core_view!(self, match &residual { Some(UiEvent::Agent(event)) => Some(event), _ => None });
@@ -68,6 +75,13 @@ impl Model {
                 let changed = self.component_lifecycle(Lifecycle::SessionChanged);
                 self.component_finish(changed, emit);
             }
+            if let Some(session) = self.session {
+                for continuation in std::mem::take(self.pending_session.get_mut()) {
+                    if let Some(commands) = &self.component_commands {
+                        let _ = commands.send(Command::Component((continuation.work)(session)));
+                    }
+                }
+            }
         }
         self.component_finish(out, emit);
         self.component_reconcile_core_focus();
@@ -87,6 +101,21 @@ impl Model {
         }
         for action in out.actions {
             match action {
+                CoreAction::EnsureSession(continuation) => {
+                    if let Some(session) = self.session {
+                        if let Some(commands) = &self.component_commands {
+                            let _ = commands.send(Command::Component((continuation.work)(session)));
+                        }
+                    } else {
+                        self.pending_session.get_mut().push(continuation);
+                        if !self.awaiting_session {
+                            self.awaiting_session = true;
+                            if let Some(commands) = &self.component_commands {
+                                let _ = commands.send(Command::CreateDraft(self.draft_options().unwrap_or_default()));
+                            }
+                        }
+                    }
+                }
                 CoreAction::PresentTranscript(build) => {
                     let (presentation, reply) = build(&self.components);
                     self.present_transcript(presentation);
@@ -551,4 +580,68 @@ impl crate::components::PromptIds for (&VecDeque<ApprovalRequested>, &VecDeque<A
         self.0.iter().any(|request| request.id.0 == id)
             || self.1.iter().any(|ask| ask.req.id.0 == id)
     }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn ensure_session_shares_creation_releases_fifo_and_reset_drops_work() {
+    use crate::components::{tests::{Counter, Msg, reply}, execute};
+    let (tx, mut commands) = tokio::sync::mpsc::unbounded_channel();
+    let mut model = Model::default();
+    let token = model.components.register(Counter::new("ensure")).unwrap();
+    model.component_commands = Some(tx);
+    model.draft = Some(CreateSessionOptions { model: Some("picked/model".into()), effort: Some("high".into()), ..Default::default() });
+    for value in [1, 2] {
+        model.apply(UiEvent::Component(reply(token, 0, Msg::Ensure(value))));
+    }
+    assert!(matches!(commands.try_recv(), Ok(Command::CreateDraft(options))
+        if options.model.as_deref() == Some("picked/model") && options.effort.as_deref() == Some("high")));
+    assert!(commands.try_recv().is_err());
+    model.components.release_focus(&crate::components::tests::core());
+    let session = SessionId::new();
+    model.apply(UiEvent::SessionCreated(session));
+    assert_eq!(model.session, Some(session));
+    assert!(model.draft.is_none());
+    let rt = runtime::Runtime::new(Default::default(), std::env::temp_dir());
+    let engine = std::sync::Arc::new(rpc::client::Engine::Local(rpc::client::Local::new(rt.clone(), jsonrpsee::RpcModule::new)));
+    for value in [1, 2] {
+        let Command::Component(effect) = commands.try_recv().unwrap() else { panic!("owner effect") };
+        let UiEvent::Component(reply) = execute(effect, engine.clone()).await else { panic!("owner reply") };
+        assert_eq!(reply.to, token);
+        model.apply(UiEvent::Component(reply));
+        assert!(matches!(model.entries.last(), Some(Entry::Info(text)) if text == &format!("ensure={}", if value == 1 { 1 } else { 3 })));
+    }
+    assert!(commands.try_recv().is_err());
+    model.reset();
+    model.awaiting_session = true;
+    model.apply(UiEvent::Component(reply(token, 0, Msg::Ensure(4))));
+    assert!(commands.try_recv().is_err());
+    model.apply(UiEvent::SessionCreated(SessionId::new()));
+    assert!(matches!(commands.try_recv(), Ok(Command::Component(_))));
+    model.reset();
+    model.apply(UiEvent::Component(reply(token, 0, Msg::Ensure(8))));
+    assert!(matches!(commands.try_recv(), Ok(Command::CreateDraft(_))));
+    model.reset();
+    model.apply(UiEvent::SessionCreated(SessionId::new()));
+    assert!(commands.try_recv().is_err());
+    rt.shutdown.cancel();
+}
+
+#[cfg(test)]
+#[test]
+fn ensure_session_failure_delivers_owner_failure_and_discards_queued_work() {
+    use crate::components::tests::{Counter, Msg, reply};
+    let (tx, mut commands) = tokio::sync::mpsc::unbounded_channel();
+    let mut model = Model::default();
+    let token = model.components.register(Counter::new("ensure")).unwrap();
+    model.component_commands = Some(tx);
+    model.apply(UiEvent::Component(reply(token, 0, Msg::Ensure(7))));
+    assert!(matches!(commands.try_recv(), Ok(Command::CreateDraft(_))));
+    model.compacting = true;
+    model.apply(UiEvent::DraftFailed("creation refused".into()));
+    assert!(!model.awaiting_session && model.pending_session.get_mut().is_empty());
+    assert!(!model.compacting);
+    assert!(matches!(model.entries.last(), Some(Entry::Error(error)) if error == "creation refused"));
+    model.apply(UiEvent::SessionCreated(SessionId::new()));
+    assert!(commands.try_recv().is_err());
 }

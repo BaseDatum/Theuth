@@ -17,6 +17,7 @@ pub(crate) enum Msg {
     Add(i64),
     Fail(String),
     Work(Lane, Box<dyn FnOnce(Arc<Engine>) -> BoxFuture<'static, Msg> + Send>),
+    Ensure(i64),
 }
 impl Counter {
     pub(crate) fn new(id: &'static str) -> Self { Self { id, value: 0, bindings: &[], slash: &[], capture: None } }
@@ -42,6 +43,7 @@ impl Component for Counter {
             }
             Input::Message(Msg::Fail(error)) => cx.error(error),
             Input::Message(Msg::Work(lane, work)) => cx.spawn(lane, work),
+            Input::Message(Msg::Ensure(value)) => cx.ensure_session(move |_, _| async move { Msg::Add(value) }, Msg::Fail),
             Input::Key(_) if self.capture.is_some() => { self.value += 1; cx.consume_key(); }
             Input::Key(key) if key.code == KeyCode::Esc => { cx.close(); cx.consume_key(); }
             Input::Key(_) => { cx.focus(self.bindings[0].class); cx.consume_key(); }
