@@ -2009,7 +2009,7 @@ fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server
         rpc::api::boards::rpc_module(server.clone()),
         rpc::api::artifacts::rpc_module(server.clone()),
         rpc::api::credentials::rpc_module(server.clone()),
-        rpc::api::speech::rpc_module(server.clone()),
+        talk::rpc_module(server.clone()),
         meeting::rpc_module(server.clone()),
         rpc::api::dreams::rpc_module(server.clone()),
         rpc::api::research::rpc_module(server.clone()),

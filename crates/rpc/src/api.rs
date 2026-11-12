@@ -219,8 +219,6 @@ pub mod boards;
 pub mod artifacts;
 /// Credentials RPC server and client traits.
 pub mod credentials;
-/// Speech RPC server and client traits during the owner registration cutover.
-pub use talk::rpc as speech;
 /// Kernels RPC server and client traits.
 pub mod kernels;
 /// Dreams RPC server and client traits.
@@ -249,7 +247,6 @@ pub use routines::{RoutinesApiClient, RoutinesApiServer};
 pub use boards::{BoardsApiClient, BoardsApiServer};
 pub use artifacts::{ArtifactsApiClient, ArtifactsApiServer};
 pub use credentials::{CredentialsApiClient, CredentialsApiServer};
-pub use speech::{SpeechApiClient, SpeechApiServer};
 pub use kernels::{KernelsApiClient, KernelsApiServer};
 pub use dreams::{DreamsApiClient, DreamsApiServer};
 pub use research::{ResearchApiClient, ResearchApiServer};
@@ -276,7 +273,8 @@ pub mod clients {
     pub use super::boards::BoardsApiClient;
     pub use super::artifacts::ArtifactsApiClient;
     pub use super::credentials::CredentialsApiClient;
-    pub use super::speech::SpeechApiClient;
+    pub use talk::SpeechApiClient;
+    pub use meeting::MeetingsApiClient;
     pub use super::kernels::KernelsApiClient;
     pub use super::dreams::DreamsApiClient;
     pub use super::research::ResearchApiClient;
@@ -305,7 +303,7 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         boards::rpc_module(server.clone()),
         artifacts::rpc_module(server.clone()),
         credentials::rpc_module(server.clone()),
-        speech::rpc_module(server.clone()),
+        talk::rpc_module(server.clone()),
         meeting::rpc_module(server.clone()),
         dreams::rpc_module(server.clone()),
         research::rpc_module(server.clone()),

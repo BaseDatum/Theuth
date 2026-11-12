@@ -212,6 +212,11 @@ cross-domain callers use those contracts rather than generated wire traits.
 Configuration and private-session tracking/wait extensions stay domain-local.
 The `meeting` crate owns the meeting, calendar and brief wire methods and
 their actor/client helpers; main registers `meeting::rpc_module` directly.
+The `talk` crate owns speech, dictation and live-conversation RPC methods,
+the voice config extension and their actor/history helpers. Hub imports the
+shared dictation lookup from `talk::rpc_support`; main registers
+`talk::rpc_module`. Generated clients remain available through
+`rpc::api::clients` without adding consumer dependencies on the owners.
 
 Events: a plugin may publish one struct per event or one `#[serde(tag =
 "type")]` enum per event *stream* — `agent::AgentEvent` is the latter because
