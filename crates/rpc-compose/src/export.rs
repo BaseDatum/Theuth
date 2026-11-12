@@ -397,7 +397,6 @@ async fn export_bindings() {
         autoresearch::config::Review,
         autoresearch::config::OnSuspicious,
         autoresearch::config::Models,
-        autoresearch::config::Effort,
         autoresearch::config::BriefConfig,
         autoresearch::config::Novelty,
         autoresearch::config::Bench,

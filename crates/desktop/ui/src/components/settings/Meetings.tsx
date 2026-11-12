@@ -65,6 +65,8 @@ export function MeetingDefaults() {
   const { settings, block: s, save, set, busy } = useMeetingBlock()
   const templates = useQuery({ queryKey: queryKeys.meetingTemplates, queryFn: () => api.meeting_templates() })
   const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
+  // 194: the summary model's effort chips (none while it follows the meeting model).
+  const summary = models.data?.find((m) => m.id === s?.summary_model)
   const projects = [...new Set([...useProjects(), ...Object.keys(useProjectStyles())])].sort()
   // §6.4: once per install, offer the start form's remembered model as `meeting.model` when the engine has none.
   useEffect(() => {
@@ -72,6 +74,8 @@ export function MeetingDefaults() {
     const saved = useMeetingSettings.getState().model
     offerMeetingDefault({ block: s, saved, label: models.data.find((m) => m.id === saved)?.name, write: (next) => save.mutate(next) })
   }, [s, models.data, save.mutate])
+  // 194 row 16: `meeting.effort` beside `meeting.model`; the engine drops it on a model change or the none row.
+  const meetingModel = models.data?.find((m) => m.id === s?.model)
   // W4 fills `meeting_templates`; until then the one slug on file reads "General".
   const templateRows = templates.data?.length ? templates.data : [{ slug: s?.template ?? 'meeting', name: 'General' }]
   return (
@@ -83,6 +87,7 @@ export function MeetingDefaults() {
           className="max-w-64 max-md:w-full max-md:max-w-none"
           models={models.data ?? []}
           value={s?.model}
+          effort={meetingModel && meetingModel.efforts.length > 0 ? { levels: meetingModel.efforts, current: s?.effort, onSelect: (effort) => set({ effort }) } : undefined}
           none={SAME_AS_NEW}
           disabled={busy}
           onChange={(model) => set({ model })}
@@ -97,6 +102,7 @@ export function MeetingDefaults() {
           none={SAME_AS_MEETING}
           disabled={busy}
           onChange={(summary_model) => set({ summary_model })}
+          effort={summary && summary.efforts.length > 0 ? { levels: summary.efforts, current: s?.summary_effort, onSelect: (summary_effort) => set({ summary_effort }) } : undefined}
         />
       </Row>
       <Row label="Template" description="The note template a meeting gets unless the start form, the prompt or the event picks another.">

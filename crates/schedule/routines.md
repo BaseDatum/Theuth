@@ -45,6 +45,7 @@ trigger *and* a stop *and* a run choice — say it as composition, not as a "typ
 | Run | `quiet` | `true` / `false` (default) | the reply is not delivered; only `message_user` reaches the user |
 | Run | `approvals` | `true` (default) / `false` | `false`: the run never asks permission — only when nobody will answer, and say so; a watcher whose prompt pushes, merges, commits or writes needs it |
 | Run | `model` | model id | default: the engine's |
+| Run | `effort` | a reasoning level `model` takes (`low`, `high`, …) | needs `model`; default: the engine's |
 | Run | `cwd` | directory, `~` allowed | must exist; where `until` and the sensor run and the session starts |
 | Run | `run_timeout` | duration ≥ `30s` (`45m`) | default: Settings › Agent loop › Routines |
 | Run | `agent` + `project` | roster agent name; project label | each fire creates a task owned by the agent instead of running in the routine's session |
@@ -174,7 +175,7 @@ One routine per card (one element in `routines`, normally). The args are the `sc
 }]}
 ```
 
-Keys: `name`, `sentence`, `cron` | `every` | `at`, `prompt`, `quiet`, `model`, `until`, `max_runs`,
+Keys: `name`, `sentence`, `cron` | `every` | `at`, `prompt`, `quiet`, `model`, `effort`, `until`, `max_runs`,
 `run_timeout`, `cwd`, `approvals`, `agent`, `project`, `when`, `fire`, `for`, `cooldown`, `mode`,
 `memory`, `expires`, `timeout`. The tool validates the draft as `schedule` would (name rule, the
 rendered file parses, the sensor resolves) and refuses with the engine's message — fix and call

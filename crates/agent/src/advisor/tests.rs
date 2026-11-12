@@ -25,8 +25,8 @@ use crate::providers::Gateway;
 use crate::store::Store;
 use crate::supervisor::{Agents, Resolve, Roster, tests::agents_on};
 use crate::{
-    AdvisorStatusOf, HistoryEntry, ListAgents, ListSessions, SessionKind, SetAdvisor,
-    SetAdvisorDefaults, Usage,
+    AdvisorOnDefault, AdvisorStatusOf, HistoryEntry, ListAgents, ListSessions, SessionKind,
+    SetAdvisor, SetAdvisorDefaults, Usage,
 };
 
 // region:    --- fake provider
@@ -181,6 +181,15 @@ struct Rig {
 
 impl Rig {
     async fn new(cfg: AdvisorConfig) -> Self {
+        Self::keyed(cfg, |_: &str| false).await
+    }
+
+    /// [`Self::new`] with `configured` deciding which providers count as keyed
+    /// (194 R1: `SetAdvisorDefaults.model` refuses an un-keyed one).
+    async fn keyed(
+        cfg: AdvisorConfig,
+        configured: impl Fn(&str) -> bool + Send + Sync + 'static,
+    ) -> Self {
         crate::loop_::advisor_tests::clear_stale::<Agents>(AGENT_ACTOR);
         crate::loop_::advisor_tests::clear_stale::<Advisors>(ADVISORS_ACTOR);
         let reg_scratch = crate::TestDir::new("adv-reg");
@@ -197,7 +206,8 @@ impl Rig {
             .await;
         let scratch = crate::TestDir::new("adv-rig");
         let dir = scratch.0.clone();
-        let a = agents_on(dir.clone(), None, true).await;
+        let mut a = agents_on(dir.clone(), None, true).await;
+        a.set_test_keyed(configured);
         a.test_auth()
             .gateways
             .write()
@@ -411,6 +421,15 @@ fn advisors_contract() {
         reset_replays(&mut r).await;
         isolation(&mut r).await;
         off_disposes(&mut r).await;
+    });
+}
+
+/// 194 R1: `/advisor on` uses the default as it is when the call lands.
+#[test]
+fn advisor_on_uses_the_live_default() {
+    crate::with_test_registry(async {
+        let mut r = Rig::keyed(AdvisorConfig::default(), |_: &str| true).await;
+        on_uses_the_live_default(&mut r).await;
     });
 }
 
@@ -932,6 +951,40 @@ async fn off_disposes(r: &mut Rig) {
             .await
             .is_err()
     );
+}
+
+/// 194 R1: `/advisor on` (`AdvisorOnDefault`) uses the default as it is when the
+/// call lands — one set after a client read `Info.advisor` included — and refuses
+/// with none set.
+async fn on_uses_the_live_default(r: &mut Rig) {
+    let advised = r.advised().await;
+    let set = |model: Option<&str>| SetAdvisorDefaults {
+        model: Some(model.map(Into::into)),
+        ..SetAdvisorDefaults::default()
+    };
+    r.agents.ask(set(None)).await.unwrap();
+    let err = r
+        .agents
+        .ask(AdvisorOnDefault { session: advised })
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no remembered advisor model"), "{err}");
+    // Settings moves the default (no event to a client's cache): the engine reads it now.
+    r.agents.ask(set(Some("fake/m2"))).await.unwrap();
+    let on = r
+        .agents
+        .ask(AdvisorOnDefault { session: advised })
+        .await
+        .unwrap();
+    assert_eq!(on.model.as_deref(), Some("fake/m2"));
+    r.agents.ask(set(Some("fake/m"))).await.unwrap();
+    let on = r
+        .agents
+        .ask(AdvisorOnDefault { session: advised })
+        .await
+        .unwrap();
+    assert_eq!(on.model.as_deref(), Some("fake/m"), "a re-pick follows too");
 }
 
 /// (12) after a restart the link reloads, the cursor re-seeds and the first

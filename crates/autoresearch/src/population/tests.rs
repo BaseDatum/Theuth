@@ -732,6 +732,7 @@ impl Backend for Bench {
         _: &StudyRecord,
         n: u32,
         _: &str,
+        _: Option<&str>,
         _: &runtime::Runtime,
     ) -> Result<ReviewVerdict> {
         Ok(if *self.flag.lock() == Some(n) {

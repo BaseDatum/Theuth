@@ -2050,6 +2050,31 @@ mod wire_contract_tests {
         let rt = Runtime::new(Figment::new(), std::env::temp_dir());
         let (module, discovery) = rpc_composition(rpc_core::Server::new(rt));
         discovery.descriptors.validate_methods(module.method_names()).unwrap();
+        // 194's source-scan uniqueness check belongs at the real composition:
+        // validate_methods rejects duplicate names, including aliases and unsubscribers.
+        for (name, owner) in [
+            ("title_effort", "agent"),
+            ("set_title_effort", "agent"),
+            ("polish_effort", "agent"),
+            ("set_polish_effort", "agent"),
+            ("vision_effort", "agent"),
+            ("set_vision_effort", "agent"),
+            ("escalate_effort", "agent"),
+            ("set_escalate_effort", "agent"),
+            ("subagent_effort", "agent"),
+            ("set_subagent_effort", "agent"),
+            ("advisor_on", "agent"),
+            ("set_advisor_default_model", "agent"),
+            ("set_session_compactor_effort", "agent"),
+            ("theuth_agent_effort", "roster"),
+            ("set_theuth_agent_effort", "roster"),
+            ("autoresearch.settings.set", "autoresearch"),
+        ] {
+            let method = discovery.descriptors.methods.iter()
+                .find(|method| method.name == name)
+                .unwrap_or_else(|| panic!("missing RPC method: {name}"));
+            assert_eq!(method.owner, owner, "{name}");
+        }
         let document = discovery.document().unwrap();
         let described: BTreeSet<_> = document["methods"].as_array().unwrap().iter()
             .map(|method| method["name"].as_str().unwrap()).collect();

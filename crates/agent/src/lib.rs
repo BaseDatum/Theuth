@@ -801,6 +801,19 @@ pub struct SetTitleModel {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetTitleModel;
 
+/// `ask` → `Result<Option<String>, String>` (194): persist `agent.title_effort`
+/// and use it for the next title call; refused when the title model does not
+/// take it. `None` clears it (no reasoning setting). Replies the stored value.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetTitleEffort {
+    /// An effort keyword or token budget, or `None`.
+    pub effort: Option<String>,
+}
+
+/// `ask` → `Option<String>`: the live `agent.title_effort`.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetTitleEffort;
+
 /// `ask` → `Result<Option<ModelInfo>, String>`: persist `voice.polish_model` (153 §9.2)
 /// and use it for the next polish side call; `None` clears it (title model, then session).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -812,6 +825,19 @@ pub struct SetPolishModel {
 /// `ask` → `Option<ModelInfo>`: the live polish model, if set.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetPolishModel;
+
+/// `ask` → `Result<Option<String>, String>` (194): persist `voice.polish_effort`,
+/// used when the polish model answers; refused when the model polish resolves
+/// to does not take it. `None` clears it. Replies the stored value.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetPolishEffort {
+    /// An effort keyword or token budget, or `None`.
+    pub effort: Option<String>,
+}
+
+/// `ask` → `Option<String>`: the live `voice.polish_effort`.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetPolishEffort;
 
 /// `ask` → `Result<PolishReply, String>`: polish a dictation transcript for a human reader
 /// (153 §9) on `ModelRole::Polish`, charged to `session` when given.
@@ -868,6 +894,19 @@ pub struct SetVisionModel {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetVisionModel;
 
+/// `ask` → `Result<Option<String>, String>` (194): persist `agent.vision_effort`
+/// and use it for the next vision consultation; refused when the fallback model
+/// does not take it. `None` clears it (the model's default). Replies the stored value.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetVisionEffort {
+    /// An effort keyword or token budget, or `None`.
+    pub effort: Option<String>,
+}
+
+/// `ask` → `Option<String>`: the live `agent.vision_effort`.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetVisionEffort;
+
 /// `ask` → `Result<Option<ModelInfo>, String>`: persist `agent.escalate_model`
 /// (57 §0.9, tier 2 of the decision oracle); `None` clears it (inherits the
 /// title model, then the session's model). Same validation as the title model:
@@ -881,6 +920,19 @@ pub struct SetEscalateModel {
 /// `ask` → [`EscalateModel`]: the escalation model and what it resolves to.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetEscalateModel;
+
+/// `ask` → `Result<Option<String>, String>` (194): persist `agent.escalate_effort`,
+/// used when the escalation model answers a tier-2 call; refused when the
+/// effective escalation model does not take it. `None` clears it. Replies the stored value.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetEscalateEffort {
+    /// An effort keyword or token budget, or `None`.
+    pub effort: Option<String>,
+}
+
+/// `ask` → `Option<String>`: the live `agent.escalate_effort`.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetEscalateEffort;
 
 /// The escalation slot as the UI shows it: what is set and what would answer.
 #[derive(Clone, Debug, Serialize, Deserialize, kameo::Reply, schemars::JsonSchema)]
@@ -910,6 +962,22 @@ pub struct SetSubagentModel {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetSubagentModel;
 
+/// `ask` → `Result<Option<String>, String>` (194 row 3): persist
+/// `agent.subagents.effort` and use it, live, for every native child spawned
+/// without an explicit `effort`. Validated against the effective subagent
+/// model (`agent.subagents.model`, else `agent.model`) with
+/// `Model::validate_effort`'s message. `None` clears it (children inherit
+/// `agent.effort`). The reply is the stored value.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetSubagentEffort {
+    /// Effort keyword or token budget; `None` clears.
+    pub effort: Option<String>,
+}
+
+/// `ask` → `Option<String>`: the live subagent default effort, if set.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetSubagentEffort;
+
 /// `ask` → `Result<ModelInfo, String>` (148 R4): resolve `model` through the
 /// catalog AND refuse a provider without credentials, exactly as
 /// [`SetSubagentModel`] validates ("provider `x` has no credentials"). No
@@ -920,6 +988,20 @@ pub struct GetSubagentModel;
 pub struct ResolveModel {
     /// `provider/model` or a bare model id.
     pub model: String,
+}
+
+/// `ask` → `Result<(), String>` (194 D4b): `effort` against what `model`
+/// resolves to — `Model::validate_effort`'s message for a catalog model;
+/// for `None` or an id with no catalog entry, only that the word is a known
+/// effort. No side effects: the roster validates `roster.theuth_effort`, the
+/// meeting and dreaming settings check their efforts with it and drop one a
+/// changed model does not take (D4c).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ValidateEffort {
+    /// The setting's effective model, if any.
+    pub model: Option<String>,
+    /// Effort keyword or token budget.
+    pub effort: String,
 }
 
 /// `ask` → `Result<knowledge::HarvestResult, String>`: harvest a session's
@@ -1041,6 +1123,29 @@ pub struct SetDeskModel {
     pub session: SessionId,
     /// Configured model id, or `None` to follow the defaults.
     pub model: Option<String>,
+    /// 194: the agent's configured effort (a hired agent's `effort:`,
+    /// `roster.theuth_effort` for theuth). Native children of the desk spawned
+    /// without `effort` start on it before `agent.subagents.effort`; the desk
+    /// row is put on it now. Dropped when the desk's model does not take it.
+    /// `None` after a configured one puts the desk back on `agent.effort`.
+    #[serde(default)]
+    pub effort: Option<String>,
+}
+
+/// `ask` → `()` (194 R1): the agent's configured effort was explicitly changed
+/// (`roster.theuth_effort` set or cleared) while its desk is not open. The
+/// persisted desk row is put on it now — `None` = `agent.effort`, each
+/// filtered by `model` (else `agent.model`) as [`SetDeskModel`] does — so the
+/// next open starts on the setting. A desk-local `/effort` survives every
+/// open that follows no such change.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetDeskEffort {
+    /// The desk session.
+    pub session: SessionId,
+    /// The agent's configured model, or `None` for the default.
+    pub model: Option<String>,
+    /// The agent's configured effort, or `None` for the default.
+    pub effort: Option<String>,
 }
 
 /// `ask` → `Option<String>`: the model id stored on `session`'s row (148 R1
@@ -1048,6 +1153,12 @@ pub struct SetDeskModel {
 /// `None` for an unknown session.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct SessionModel(pub SessionId);
+
+/// `ask` → `Option<String>` (194): the effort stored on `session`'s row —
+/// the meeting summary turn's switch puts it back afterwards; `None` for no
+/// effort or an unknown session.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SessionEffort(pub SessionId);
 
 /// `ask` → `Option<SessionId>`: the session marked as the bare-named agent's
 /// desk on this engine (STALE-WAKE-DESKS: one desk per agent, reused across
@@ -1162,6 +1273,17 @@ pub struct SetSessionCompactorModel {
     pub model: Option<String>,
 }
 
+/// `ask` → `Result<SessionMemory, String>` (194 `set_session_compactor_effort`):
+/// this chat's own compactor effort (`None` = the choosing link's); refused
+/// when the model in force does not take it; persisted and live.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetSessionCompactorEffort {
+    /// Target session.
+    pub session: SessionId,
+    /// Effort keyword or token budget; `None` clears the chat's own.
+    pub effort: Option<String>,
+}
+
 /// `ask` → `Result<SessionMemory, String>` (137G): the desk agent's
 /// `memory_model` for its desk session — the roster sends it at desk open.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1170,6 +1292,9 @@ pub struct SetAgentCompactorModel {
     pub session: SessionId,
     /// The agent file's `memory_model`; `None` clears it.
     pub model: Option<String>,
+    /// 194: the agent file's `memory_effort`; dropped with `model: None`.
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 /// `ask` → `Result<Vec<ViewLine>, String>` (137 §9 `zoom`): the two lines
@@ -2150,6 +2275,16 @@ pub struct SetAdvisor {
     pub effort: Option<String>,
 }
 
+/// `ask` → `Result<AdvisorStatus, String>` (194 R1, `/advisor on`): turn the
+/// advisor of `session` on with the live default — `advisor.model` /
+/// `advisor.effort` as read when this lands, so a client's cached
+/// `Info.advisor` cannot be stale. `Err` when no default model is set.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct AdvisorOnDefault {
+    /// The advised session.
+    pub session: SessionId,
+}
+
 /// `ask` → `AdvisorStatus` of `session` (`state: Off` when it has none).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct AdvisorStatusOf {
@@ -2162,7 +2297,13 @@ pub struct AdvisorStatusOf {
 /// `None` leaves its key alone; `effort: Some(None)` clears it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SetAdvisorDefaults {
-    /// `advisor.effort`.
+    /// `advisor.model` (194 row 6): resolved like the manual pick (an unknown or
+    /// un-keyed id is refused); `Some(None)` clears it and `advisor.effort`, and a
+    /// model that does not take the stored `advisor.effort` drops it (194 D4c/d).
+    #[serde(default)]
+    pub model: Option<Option<String>>,
+    /// `advisor.effort`, validated against `advisor.model` (194 D4b; only the word
+    /// when no model is set).
     pub effort: Option<Option<String>>,
     /// `advisor.max_notes_per_update`.
     pub max_notes_per_update: Option<u8>,
@@ -3916,14 +4057,20 @@ pub struct AgentConfig {
     pub compact_style: CompactStyle,
     /// Model for session titles (07 §15), ideally cheap and fast; unset = the session's model.
     pub title_model: Option<String>,
+    /// 194: the title call's reasoning effort (keyword or token budget); unset = no setting.
+    pub title_effort: Option<String>,
     /// Model that answers the main model's questions about images it cannot
     /// see itself (52 §3); unset = no fallback, never the main model. Must be
     /// an exact catalog entry that accepts images through its backend.
     pub vision_model: Option<String>,
+    /// 194: the vision fallback call's reasoning effort; unset = the model's default.
+    pub vision_effort: Option<String>,
     /// Tier-2 model of the local decision oracle (57 §0.9): answers a typed
     /// question the oracle abstained on, in one cheap no-tools side call.
     /// Unset = `title_model`; both unset = the session's model.
     pub escalate_model: Option<String>,
+    /// 194: a tier-2 call's reasoning effort when `escalate_model` answers; unset = no setting.
+    pub escalate_effort: Option<String>,
     /// How the loop uses the knowledge plugin (12 §9.2); the store itself is `knowledge.enabled`.
     pub knowledge: KnowledgeUse,
     /// Human broadcast limits (62 §7).
@@ -3971,8 +4118,11 @@ impl Default for AgentConfig {
             compact_at: 0.8,
             compact_style: CompactStyle::Summary,
             title_model: None,
+            title_effort: None,
             vision_model: None,
+            vision_effort: None,
             escalate_model: None,
+            escalate_effort: None,
             knowledge: KnowledgeUse::default(),
             broadcast: BroadcastConfig::default(),
             compaction: CompactionConfig::default(),
@@ -4164,7 +4314,8 @@ impl AdvisorConfig {
 pub struct SubagentsConfig {
     /// Child model; defaults to `agent.model`.
     pub model: Option<String>,
-    /// Child reasoning effort; defaults to `agent.effort`.
+    /// Child reasoning effort; defaults to `agent.effort`. Boot value of the live
+    /// setting [`SetSubagentEffort`] changes (194 row 3).
     pub effort: Option<String>,
     /// Sessions at depth ≥ this cannot spawn.
     pub max_depth: u8,

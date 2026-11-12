@@ -41,6 +41,8 @@ const keys = {
   status: ['voice', 'status'] as const,
   settings: ['voice', 'settings'] as const,
   polishModel: ['polish-model'] as const,
+  /** `polish_effort()` (194); refetched with `polishModel` (a model change may drop it). */
+  polishEffort: ['polish-effort'] as const,
   history: ['voice', 'history'] as const,
   dictation: ['voice', 'dictation-status'] as const,
 }
@@ -130,10 +132,13 @@ export function Dictation() {
   const settings = useQuery({ queryKey: keys.settings, queryFn: () => api.voice_settings() })
   const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
   const polishModel = useQuery({ queryKey: keys.polishModel, queryFn: () => api.polish_model() })
+  const polishEffort = useQuery({ queryKey: keys.polishEffort, queryFn: () => api.polish_effort() })
 
   const setShape = useAction(({ surface, preset }: { surface: Surface; preset: Preset }) => api.set_shape(surface, preset), { keys: [keys.settings] })
   const setEnd = useAction((p: EndPhrases) => api.set_end_phrases(p), { keys: [keys.settings] })
-  const setPolishModel = useAction((id: string | null) => api.set_polish_model(id), { keys: [keys.polishModel, keys.settings] })
+  const setPolishModel = useAction((id: string | null) => api.set_polish_model(id), { keys: [keys.polishModel, keys.polishEffort, keys.settings] })
+  const setPolishEffort = useAction((level: string | null) => api.set_polish_effort(level), { keys: [keys.polishEffort] })
+  const polish = models.data?.find((m) => m.id === polishModel.data?.id)
 
   const shape = settings.data?.shape
   const end = settings.data?.end_commands ?? END_DEFAULTS
@@ -197,7 +202,8 @@ export function Dictation() {
             models={models.data ?? []}
             value={polishModel.data?.id}
             none={{ label: 'Chain (title model, then session)' }}
-            disabled={polishModel.isPending || setPolishModel.isPending}
+            effort={polish && polish.efforts.length > 0 ? { levels: polish.efforts, current: polishEffort.data, onSelect: (level) => setPolishEffort.mutate(level) } : undefined}
+            disabled={polishModel.isPending || setPolishModel.isPending || setPolishEffort.isPending}
             onChange={(v) => setPolishModel.mutate(v)}
           />
         </Row>

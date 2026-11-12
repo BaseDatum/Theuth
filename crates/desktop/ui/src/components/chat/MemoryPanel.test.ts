@@ -11,13 +11,14 @@ import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
 import type { Stalled } from '@/rpc/bindings/Stalled'
 import type { ViewLine } from '@/rpc/bindings/ViewLine'
-import { INITIAL, LineNode, MemoryBadge, MemoryFooter, SummaryModel, ViewNote, badgeTip, flatten, foldMutation, highlight, modelMutation, nextTry, pauseMutation, reduce, retryMutation } from './MemoryPanel'
+import { INITIAL, LineNode, MemoryBadge, MemoryFooter, SummaryModel, ViewNote, badgeTip, effortMutation, flatten, foldMutation, highlight, modelMutation, nextTry, pauseMutation, reduce, retryMutation } from './MemoryPanel'
 import { isFoldedNote } from '@/lib/endless'
 import type { EndlessBacklog } from '@/rpc/bindings/EndlessBacklog'
 import type * as Combobox from './ModelCombobox'
+import type { Effort } from './ModelPicker'
 
 // 177 R1-10: what the summary picker was given (its closed popover renders no list to read the order from).
-const pickers = vi.hoisted(() => [] as { 'aria-label'?: string; localFirst?: boolean }[])
+const pickers = vi.hoisted(() => [] as { 'aria-label'?: string; effort?: Effort }[])
 vi.mock('./ModelCombobox', async (original) => {
   const m = await original<typeof Combobox>()
   return { ...m, ModelCombobox: (p: Parameters<typeof m.ModelCombobox>[0]) => (pickers.push(p), createElement(m.ModelCombobox, p)) }
@@ -249,6 +250,7 @@ test('Fold now, Pause/Resume and the summary model call their RPC and write the 
     endless_fold: reply({ backlog: null, settling: false }),
     endless_pause: reply({ backlog: { ...waiting, paused: true, paused_by: 'user' } }),
     set_session_compactor_model: reply({ model: 'openai/gpt-5-mini', model_override: 'openai/gpt-5-mini', model_source: 'chat' }),
+    set_session_compactor_effort: reply({ effort: 'high' }),
   }
   qc.setQueryData(key, backlogged)
   await new MutationObserver(qc, foldMutation(api as unknown as Api, qc, 's1')).mutate()
@@ -264,6 +266,12 @@ test('Fold now, Pause/Resume and the summary model call their RPC and write the 
   expect(qc.getQueryData<SessionMemory>(key)?.model_source).toBe('chat')
   await new MutationObserver(qc, modelMutation(api as unknown as Api, qc, 's1')).mutate(null)
   expect(api.set_session_compactor_model).toHaveBeenLastCalledWith('s1', null)
+  // 194: the effort chips; the Default chip sends null.
+  await new MutationObserver(qc, effortMutation(api as unknown as Api, qc, 's1')).mutate('high')
+  expect(api.set_session_compactor_effort).toHaveBeenCalledWith('s1', 'high')
+  expect(qc.getQueryData<SessionMemory>(key)?.effort).toBe('high')
+  await new MutationObserver(qc, effortMutation(api as unknown as Api, qc, 's1')).mutate(null)
+  expect(api.set_session_compactor_effort).toHaveBeenLastCalledWith('s1', null)
 })
 
 test('the summary model picker shows the model in force and which link chose it', () => {
@@ -278,14 +286,30 @@ test('the summary model picker shows the model in force and which link chose it'
   expect(html).toContain('agent default')
   expect(paint({ ...memory, model_source: 'chat' })).toContain('this chat')
   expect(paint({ ...memory, model_source: 'session' })).toContain('chat model')
-  // 177 U4: local models first, and a local model in force carries the tag.
-  const summary = pickers.filter((p) => p['aria-label'] === 'Summary model')
-  expect(summary.length).toBeGreaterThan(0)
-  expect(summary.every((p) => p.localFirst === true)).toBe(true)
+  // 177 U4: a local model in force carries the tag.
   const qc = new QueryClient()
   qc.setQueryData(queryKeys.models, [{ id: 'mlx/LFM3', name: 'LFM3', provider: 'mlx', context: 0, efforts: [], local: true }])
   const local = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(SummaryModel, { session: 's1', m: { ...memory, model: 'mlx/LFM3' } }) as ReactNode }))
   expect(local).toMatch(/LFM3<\/span><span[^>]*>local<\/span>/)
+})
+
+test("194: the summary chips belong to the chat's own pick, at its own stored effort; none on \"Use default\" or for a model without efforts", () => {
+  const paint = (m: SessionMemory, efforts: string[]) => {
+    const qc = new QueryClient()
+    qc.setQueryData(queryKeys.models, [{ id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5', provider: 'anthropic', context: 200_000, efforts }])
+    pickers.length = 0
+    renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(SummaryModel, { session: 's1', m }) as ReactNode }))
+    return pickers.find((p) => p['aria-label'] === 'Summary model')
+  }
+  const own: SessionMemory = { ...memory, model_override: 'anthropic/claude-haiku-4-5', effort_override: 'high', effort: 'high' }
+  const chips = paint(own, ['low', 'high'])?.effort
+  expect(chips?.levels).toEqual(['low', 'high'])
+  expect(chips?.current).toBe('high')
+  // The effort in force is another link's: this chat's own is the Default chip.
+  expect(paint({ ...own, effort_override: null, effort: 'low' }, ['low', 'high'])?.effort?.current).toBeNull()
+  // "Use default": the inherited model's chips are not this chat's to set.
+  expect(paint({ ...memory, model_override: null, effort: 'high' }, ['low', 'high'])?.effort).toBeUndefined()
+  expect(paint(own, [])?.effort).toBeUndefined()
 })
 
 test('both placeholder kinds are muted italic notes; a mechanical line carries the excerpt tag, a model line none', () => {

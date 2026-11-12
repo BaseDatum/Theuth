@@ -95,6 +95,8 @@ export function Memory({ focus = null }: { focus?: string | null }) {
   const testModel = s?.model ?? title.data?.id
   // R1-D3: `null` resolves to the title model when one is set; the picker's first row names what that is right now.
   const resolved = useCompactorLabel(null)
+  // 194: the picked compactor model's effort chips (none while unset: the fallback chain has no effort).
+  const compactor = models.data?.find((m) => m.id === s?.model)
   // The control is disabled until the settings load, and a disabled control takes no focus.
   useEffect(() => {
     if (busy) return
@@ -188,18 +190,18 @@ export function Memory({ focus = null }: { focus?: string | null }) {
         <Row
           stack
           label="Compactor model"
-          description="Writes the one-line summaries in the background. Unset, it follows the title model (your cheap side-call choice) when one is set, else the session's own model. A change applies to the next summary call, and calls still running on the previous model are cancelled; no restart. Local models summarise one call at a time with a longer timeout: slower, but they finish."
+          description="Writes the one-line summaries in the background. Unset, it follows the title model (your cheap side-call choice) when one is set, else the session's own model. A change applies to the next summary call, and calls still running on the previous model are cancelled; no restart. Local models summarise one call at a time with a longer timeout: slower, but they finish. Its effort chips set how hard it thinks; Default keeps thinking off."
         >
           <ModelCombobox
             id="compactor-model"
             aria-label="Compactor model"
             className="max-w-64 max-md:w-full max-md:max-w-none"
             models={models.data ?? []}
-            localFirst
             value={s?.model}
             none={{ label: resolved }}
             disabled={busy}
             onChange={(id) => patch({ model: id })}
+            effort={compactor && compactor.efforts.length > 0 ? { levels: compactor.efforts, current: s?.effort, onSelect: (effort) => patch({ effort }) } : undefined}
           />
         </Row>
         <Row

@@ -54,6 +54,8 @@ struct Fake {
     /// novelty threshold handed to `novelty` — the mechanism's overlay must reach both.
     brief_cfg: Mutex<Option<(crate::config::BriefConfig, u8)>>,
     novelty_threshold: Mutex<Option<f64>>,
+    /// 194 D4e: `(call, model, effort)` of every review, advise and report_prose call.
+    roles: Mutex<Vec<(&'static str, String, Option<String>)>>,
 }
 
 impl Default for Fake {
@@ -93,6 +95,7 @@ impl Default for Fake {
             bases: Default::default(),
             brief_cfg: Default::default(),
             novelty_threshold: Default::default(),
+            roles: Default::default(),
         }
     }
 }
@@ -346,9 +349,12 @@ impl Backend for Fake {
         _: &Store,
         _: &StudyRecord,
         _: u32,
-        _: &str,
+        model: &str,
+        effort: Option<&str>,
         _: &runtime::Runtime,
     ) -> Result<ReviewVerdict> {
+        let call = ("review", model.to_owned(), effort.map(str::to_owned));
+        self.roles.lock().push(call);
         Ok(self.review.lock().clone().unwrap_or(ReviewVerdict::Clean {
             reason: "fine".into(),
         }))
@@ -357,9 +363,14 @@ impl Backend for Fake {
         &self,
         _: &Store,
         _: &StudyRecord,
-        _: Option<&str>,
+        model: Option<&str>,
+        effort: Option<&str>,
         _: &runtime::Runtime,
     ) -> Result<Vec<IdeaDraft>> {
+        let model = model.unwrap_or_default().to_owned();
+        self.roles
+            .lock()
+            .push(("advise", model, effort.map(str::to_owned)));
         Ok(vec![IdeaDraft {
             text: "try SIMD".into(),
             category: "algorithm".into(),
@@ -417,10 +428,13 @@ impl Backend for Fake {
     async fn report_prose(
         &self,
         _: &StudyRecord,
-        _: &str,
+        model: &str,
+        effort: Option<&str>,
         _: &str,
         user: String,
     ) -> Result<String> {
+        let call = ("report_prose", model.to_owned(), effort.map(str::to_owned));
+        self.roles.lock().push(call);
         *self.report_user.lock() = Some(user);
         Ok("The study asked for speed and found it.".into())
     }
@@ -1377,10 +1391,19 @@ async fn crash_streak_pauses_with_attention_and_resume_counts_paused_time() {
     }
 }
 
+/// 194 D4e: `(model, effort)` of every `call` the backend got.
+fn roles_of(fake: &Fake, call: &str) -> Vec<(String, Option<String>)> {
+    let roles = fake.roles.lock();
+    let of = roles.iter().filter(|r| r.0 == call);
+    of.map(|(_, m, e)| (m.clone(), e.clone())).collect()
+}
+
 #[tokio::test]
 async fn plateau_explores_once_then_stops() {
     let mut cfg = AutoresearchConfig::default();
     cfg.plateau.window = 2;
+    cfg.models.advisor = Some("a/adv".into());
+    cfg.models.advisor_effort = Some("low".into());
     let fake = Fake::with_values(&[
         100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
     ]);
@@ -1445,12 +1468,18 @@ async fn plateau_explores_once_then_stops() {
             .len(),
         1
     );
+    // 194 D4e: the consult carries the advisor role's effort.
+    let want = ("a/adv".to_owned(), Some("low".to_owned()));
+    assert_eq!(roles_of(&fake, "advise"), vec![want]);
 }
 
 #[tokio::test]
 async fn review_reverts_a_suspicious_keep_and_restore_queues_it() {
     let fake = Fake::with_values(&[100.0, 100.0, 100.0, 50.0, 50.0]);
-    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let mut cfg = AutoresearchConfig::default();
+    cfg.review.model = Some("r/rev".into());
+    cfg.review.effort = Some("high".into());
+    let mut h = harness(fake.clone(), cfg).await;
     let session = started(&mut h, "t1", 10).await;
     begin(
         &mut h.studies,
@@ -1591,6 +1620,9 @@ async fn review_reverts_a_suspicious_keep_and_restore_queues_it() {
     .unwrap_err()
     .to_string();
     assert!(e.contains("no experiment #7"), "{e}");
+    // 194 D4e: both reviews carry the reviewer role's effort.
+    let want = ("r/rev".to_owned(), Some("high".to_owned()));
+    assert_eq!(roles_of(&fake, "review"), vec![want.clone(), want]);
 }
 
 #[tokio::test]
@@ -2502,7 +2534,10 @@ async fn overfit_event_feeds_the_stop_view() {
 #[tokio::test]
 async fn finalize_writes_the_report_prose_before_the_tables() {
     let fake = Fake::with_values(&[100.0, 100.0, 100.0, 95.0]);
-    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let mut cfg = AutoresearchConfig::default();
+    cfg.models.executor = Some("x/exec".into());
+    cfg.models.executor_effort = Some("medium".into());
+    let mut h = harness(fake.clone(), cfg).await;
     let session = started(&mut h, "t1", 1).await;
     begin(&mut h.studies, b(session)).await.unwrap();
     *fake.spend.lock() = Ok(0.5); // the tree spent $0.50 between begin and close
@@ -2526,6 +2561,9 @@ async fn finalize_writes_the_report_prose_before_the_tables() {
         user.contains("<brief>") && user.contains("<tables>"),
         "{user}"
     );
+    // 194 D4e: the report prose carries the executor role's effort.
+    let want = ("x/exec".to_owned(), Some("medium".to_owned()));
+    assert_eq!(roles_of(&fake, "report_prose"), vec![want]);
     assert_eq!(
         h.studies
             .store

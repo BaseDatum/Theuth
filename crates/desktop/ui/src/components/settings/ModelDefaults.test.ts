@@ -1,7 +1,9 @@
+import './test-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { createElement, type ReactNode } from 'react'
+import { act, createElement, type ReactNode } from 'react'
+import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { expect, test, vi } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import type { Info } from '@/rpc/extra'
@@ -15,18 +17,22 @@ vi.mock('@/store/connection', async (original) => ({
   useConnection: (pick: (s: unknown) => unknown) => pick({ info, api: null }),
 }))
 
-const sonnet = { id: 'anthropic/claude-sonnet-4-5', name: 'Claude Sonnet 4.5', efforts: ['low', 'high'] } as ModelInfo
-const haiku = { id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5', efforts: [] as string[] } as ModelInfo
-const opus = { id: 'anthropic/claude-opus-4-8', name: 'Claude Opus 4.8', efforts: ['high'] } as ModelInfo
+const sonnet = { id: 'anthropic/claude-sonnet-4-5', name: 'Claude Sonnet 4.5', provider: 'anthropic', efforts: ['low', 'high'] } as ModelInfo
+const haiku = { id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5', provider: 'anthropic', efforts: [] as string[] } as ModelInfo
+const opus = { id: 'anthropic/claude-opus-4-8', name: 'Claude Opus 4.8', provider: 'anthropic', efforts: ['high'] } as ModelInfo
 
 const api = {
   list_models: vi.fn(async () => [sonnet, haiku, opus]),
-  subagent_model: vi.fn(async () => haiku),
+  subagent_model: vi.fn(async (): Promise<ModelInfo | null> => haiku),
+  subagent_effort: vi.fn(async (): Promise<string | null> => null),
   theuth_agent_model: vi.fn(async (): Promise<ModelInfo | null> => null),
+  theuth_agent_effort: vi.fn(async (): Promise<string | null> => null),
   set_model: vi.fn(),
   set_effort: vi.fn(),
-  set_subagent_model: vi.fn(),
+  set_subagent_model: vi.fn(async (id: string | null) => [sonnet, haiku, opus].find((m) => m.id === id) ?? null),
+  set_subagent_effort: vi.fn(async (level: string | null) => level),
   set_theuth_agent_model: vi.fn(),
+  set_theuth_agent_effort: vi.fn(async (level: string | null) => level),
 }
 
 vi.mock('@/lib/rpc', async (original) => ({
@@ -62,4 +68,58 @@ test('148: the new-sessions row follows DefaultModelChanged (the Info patch), an
   const html = await render()
   expect(html).toMatch(/aria-label="New sessions model"[^>]*>.*?Claude Haiku 4\.5<\/span>/s)
   expect(html).not.toContain('Claude Haiku 4.5 · high')
+})
+
+// ── 194: the Subagents and theuth agent rows carry their effort chips ──────────────────────────────────────────────
+
+window.HTMLElement.prototype.scrollIntoView = () => {}
+afterEach(() => {
+  document.body.innerHTML = ''
+})
+
+/** Mount the section for real (the picker opens in a portal); wait until `label`'s trigger reads `ready` and its queries settled (enabled). */
+async function mount(label: string, ready: string): Promise<void> {
+  const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+  const host = document.createElement('div')
+  document.body.append(host)
+  await act(async () => createRoot(host).render(createElement(QueryClientProvider, { client: qc, children: createElement(ModelDefaults) as ReactNode })))
+  await vi.waitFor(() => expect([trigger(label).textContent?.includes(ready), trigger(label).disabled]).toEqual([true, false]))
+}
+const trigger = (label: string) => document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!
+const open = (label: string) => act(async () => void trigger(label).click())
+const chips = () => [...document.querySelectorAll<HTMLElement>('[aria-label="Effort"] > *')]
+
+test('194: a subagent model with efforts shows its stored effort and chips; a chip calls set_subagent_effort and refetches it', async () => {
+  info = { default_model: sonnet.id }
+  api.subagent_model.mockImplementation(async () => sonnet)
+  api.subagent_effort.mockImplementation(async () => 'high')
+  await mount('Subagent model', 'Claude Sonnet 4.5 · high')
+  await open('Subagent model')
+  expect(chips().map((c) => c.textContent)).toEqual(['Default', 'low', 'high'])
+  const reads = api.subagent_effort.mock.calls.length
+  await act(async () => void chips()[1]!.click())
+  await vi.waitFor(() => expect(api.subagent_effort.mock.calls.length).toBeGreaterThan(reads))
+  expect(api.set_subagent_effort).toHaveBeenLastCalledWith('low')
+})
+
+test('194: the "Same as new sessions" row shows no chips (theuth agent unset)', async () => {
+  await mount('theuth agent model', 'Same as new sessions')
+  await open('theuth agent model')
+  await vi.waitFor(() => expect(document.querySelector('[cmdk-item]')).not.toBeNull())
+  expect(document.querySelector('[aria-label="Effort"]')).toBeNull()
+})
+
+test('194: picking another subagent model refetches the subagent effort (the engine may have dropped it)', async () => {
+  api.subagent_model.mockImplementation(async () => sonnet)
+  await mount('Subagent model', 'Claude Sonnet 4.5')
+  const reads = api.subagent_effort.mock.calls.length
+  await open('Subagent model')
+  const input = document.querySelector<HTMLInputElement>('[cmdk-input]')!
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(input, 'opus')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await act(async () => void input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+  await vi.waitFor(() => expect(api.subagent_effort.mock.calls.length).toBeGreaterThan(reads))
+  expect(api.set_subagent_model).toHaveBeenLastCalledWith(opus.id)
 })
