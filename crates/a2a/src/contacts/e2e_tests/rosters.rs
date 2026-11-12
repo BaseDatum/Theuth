@@ -736,7 +736,7 @@ impl mesh::net::ContactAlpn for Answers {
                 hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let body = match code {
                     Some(c) => serde_json::json!({"jsonrpc": "2.0", "id": "x",
-                        "error": {"code": c, "message": "refused"}}),
+                        "error": {"code": c, "message": agent::communication::network::NOT_OWNER_TEXT}}),
                     None => serde_json::json!({"jsonrpc": "2.0", "id": "x", "result": {"ok": 1}}),
                 };
                 async move {
@@ -752,9 +752,9 @@ impl mesh::net::ContactAlpn for Answers {
     }
 }
 
-/// 191 (D3, S4): a member answering `NOT_OWNER` (or unreachable) moves the call to the next
+/// 191 (D3, S4): a member answering `not owner` (or unreachable) moves the call to the next
 /// member, which is then tried first; any other answer after admission is final (never sent
-/// again elsewhere).
+/// again elsewhere); when every member refuses, each tried once, the caller gets `not owner`.
 #[tokio::test]
 async fn not_owner_moves_the_call_to_the_next_member() {
     let stand_in = |code: Option<i32>| async move {
@@ -764,9 +764,11 @@ async fn not_owner_moves_the_call_to_the_next_member() {
         net.set_contacts(Arc::new(Answers(code, hits.clone())));
         (net, hits, dir)
     };
-    let (owner_elsewhere, h1, _d1) = stand_in(Some(agent::communication::mesh::NOT_OWNER)).await;
+    let (owner_elsewhere, h1, _d1) =
+        stand_in(Some(agent::communication::network::NOT_OWNER_CODE)).await;
     let (owner, h2, _d2) = stand_in(None).await;
     let (busy, h3, _d3) = stand_in(Some(a2a_types::error_code::TASK_NOT_FOUND)).await;
+    let (elsewhere, h4, _d4) = stand_in(Some(agent::communication::network::NOT_OWNER_CODE)).await;
     let dir = tempfile::tempdir().unwrap();
     let me = node("me", dir.path()).await;
     let addr = |n: &Arc<mesh::net::Net>| {
@@ -811,6 +813,7 @@ async fn not_owner_moves_the_call_to_the_next_member() {
     me.set_contacts(Arc::new(Hints(vec![
         (owner.id.0.clone(), addr(&owner)),
         (busy.id.0.clone(), addr(&busy)),
+        (elsewhere.id.0.clone(), addr(&elsewhere)),
     ])));
     let v = t
         .call(&Default::default(), "SendMessage", serde_json::json!({}))
@@ -858,5 +861,45 @@ async fn not_owner_moves_the_call_to_the_next_member() {
             h3.load(std::sync::atomic::Ordering::SeqCst)
         ),
         (before.0, before.1 + 1)
+    );
+    // Every member refuses (two `not owner`, one unreachable): each tried once, and the
+    // caller gets `not owner`, never "unreachable" nor an internal error.
+    let (h1_before, h4_before) = (
+        h1.load(std::sync::atomic::Ordering::SeqCst),
+        h4.load(std::sync::atomic::Ordering::SeqCst),
+    );
+    let none = reach::IrohTransport {
+        net: me.clone(),
+        eid: owner_elsewhere.id.0.clone(),
+        hints: reach::Hints {
+            addrs: addr(&owner_elsewhere),
+            relay: None,
+        },
+        export: None,
+        members: vec![
+            elsewhere.id.0.clone(),
+            owner_elsewhere.id.0.clone(),
+            iroh::SecretKey::generate().public().to_string(),
+        ],
+        answered: Default::default(),
+    };
+    let e = none
+        .call(&Default::default(), "SendMessage", serde_json::json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (e.code, e.message.as_str()),
+        (
+            agent::communication::network::NOT_OWNER_CODE,
+            agent::communication::network::NOT_OWNER_TEXT
+        )
+    );
+    assert_eq!(
+        (
+            h1.load(std::sync::atomic::Ordering::SeqCst) - h1_before,
+            h4.load(std::sync::atomic::Ordering::SeqCst) - h4_before
+        ),
+        (1, 1),
+        "each member once"
     );
 }

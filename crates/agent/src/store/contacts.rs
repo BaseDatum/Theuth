@@ -444,15 +444,16 @@ impl Store {
         Ok(())
     }
 
-    /// 191 (D3, S4): `session`'s row exists here and this engine owns it, strictly: an
-    /// unknown row, an empty owner or another engine's is not ours (unlike [`super::Store`]'s
-    /// `here`, which reads empty as local). The predicate of every contact path.
+    /// 191 (D3, S4): `session`'s row exists and reads here and this engine owns it, strictly:
+    /// an unknown row, another engine's, or (on a mesh engine) an empty owner is not ours,
+    /// unlike [`super::Store`]'s `here`, which reads empty as local. A lone engine (no mesh
+    /// id: `me` is `""`) owns its own `''` rows. An unreadable row is `Err`. The predicate of
+    /// every contact path.
     pub async fn owned_here(&self, session: SessionId) -> anyhow::Result<bool> {
-        let row: Option<(String,)> = sqlx::query_as("SELECT owner FROM sessions WHERE id = ?")
-            .bind(session.to_string())
-            .fetch_optional(&self.read)
-            .await?;
-        Ok(row.is_some_and(|(owner,)| owner == *self.me))
+        Ok(self
+            .session(session)
+            .await?
+            .is_some_and(|row| row.owner == *self.me))
     }
 
     /// Tests: `session` is owned by `owner`, as the session log applies another machine's
@@ -617,8 +618,9 @@ mod tests {
     }
 
     /// 191 (D3, S4): the contact paths' owner predicate is strict: this engine's row is ours;
-    /// an unknown row, an empty owner and another engine's are not (where `here` would read
-    /// the empty owner as local).
+    /// an unknown row, an empty owner on a mesh engine (where `here` reads it as local) and
+    /// another engine's are not, and an unreadable row is an error (refused). A lone engine
+    /// (no mesh id) owns its own `''` rows.
     #[tokio::test]
     async fn only_a_row_this_engine_owns_is_owned_here() {
         let scratch = crate::TestDir::new("contacts");
@@ -643,9 +645,20 @@ mod tests {
             store.session(id).await.unwrap().unwrap().here,
             "`here` reads it as local"
         );
-        assert!(!store.owned_here(id).await.unwrap(), "empty");
+        assert!(
+            !store.owned_here(id).await.unwrap(),
+            "empty, on a mesh engine"
+        );
         store.owned_elsewhere(id, "other-engine").await;
         assert!(!store.owned_here(id).await.unwrap(), "another engine's");
+        store.owned_elsewhere(id, "me-engine").await;
+        store.break_session_for_test(id).await;
+        assert!(store.owned_here(id).await.is_err(), "unreadable");
+        // A lone engine: its rows are `''` and so is its id.
+        let (lone, mine, _dir) = fresh().await;
+        assert!(lone.owned_here(mine).await.unwrap());
+        lone.owned_elsewhere(mine, "other-engine").await;
+        assert!(!lone.owned_here(mine).await.unwrap());
     }
 
     /// 191 (D4): every local inbox of a session this machine owns gets

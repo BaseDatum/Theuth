@@ -356,16 +356,20 @@ impl IrohTransport {
         all
     }
 
-    /// One JSON-RPC call on a fresh stream, to the first member that admits it. A refusal at
-    /// the gate (not a contact, no export granted) is `UNSUPPORTED_OPERATION`, so the sender
-    /// records it as refused; anything after the request left is `INTERNAL_ERROR` (the
-    /// outcome is unknown) and is never sent again elsewhere.
+    /// One JSON-RPC call on a fresh stream, to the first member that admits it, each member
+    /// tried at most once. A refusal at the gate (not a contact, no export granted) is
+    /// `UNSUPPORTED_OPERATION`, so the sender records it as refused; anything after the
+    /// request left is `INTERNAL_ERROR` (the outcome is unknown) and is never sent again
+    /// elsewhere. 191 (D3, S4): a member answering `not owner` moves the call on; when every
+    /// member refused and one of them said `not owner`, that error is the answer (never
+    /// "unreachable" nor an internal error, the deadline included).
     pub(crate) async fn call(
         &self,
         params: &ServiceParams,
         method: &str,
         payload: serde_json::Value,
     ) -> Result<serde_json::Value, A2AError> {
+        let not_owner = parking_lot::Mutex::new(None::<A2AError>);
         let go = async {
             let mut last = None;
             for eid in self.order() {
@@ -376,16 +380,26 @@ impl IrohTransport {
                     }
                     Err((true, e)) => {
                         tracing::debug!(%eid, "a2a: contact member refused ({}); trying the next", e.message);
+                        if e.code == agent::communication::network::NOT_OWNER_CODE {
+                            *not_owner.lock() = Some(e.clone());
+                        }
                         last = Some(e);
                     }
                     Err((false, e)) => return Err(e),
                 }
             }
-            Err(last.unwrap_or_else(|| refused("contact unreachable")))
+            let seen = not_owner.lock().take();
+            Err(seen
+                .or(last)
+                .unwrap_or_else(|| refused("contact unreachable")))
         };
-        tokio::time::timeout(CALL_TIMEOUT, go)
-            .await
-            .map_err(|_| A2AError::internal("no answer from the contact in time"))?
+        match tokio::time::timeout(CALL_TIMEOUT, go).await {
+            Ok(r) => r,
+            Err(_) => Err(not_owner
+                .lock()
+                .take()
+                .unwrap_or_else(|| A2AError::internal("no answer from the contact in time"))),
+        }
     }
 
     async fn call_on(
@@ -436,12 +450,11 @@ impl IrohTransport {
             .map_err(|e| after(A2AError::internal(format!("contact request: {e}"))))?;
         match resp.status() {
             s if s.is_success() => {}
-            // Refused at that member's gate: nothing was admitted there.
+            // Refused at that member's gate or router: nothing was admitted there (a member
+            // that does not publish the export, a chat not on it yet, refuses with 404).
             hyper::StatusCode::UNAUTHORIZED => return Err((true, refused("not a contact there"))),
             hyper::StatusCode::NOT_FOUND => {
-                return Err(after(refused(
-                    "the contact grants no export to this engine",
-                )));
+                return Err((true, refused("the contact grants no export to this engine")));
             }
             s => {
                 return Err(after(A2AError::internal(format!(
@@ -457,9 +470,9 @@ impl IrohTransport {
         let rpc: JsonRpcResponse = serde_json::from_slice(&body)
             .map_err(|e| after(A2AError::internal(format!("contact response: {e}"))))?;
         if let Some(err) = rpc.error {
-            // 191 (D3, S4): the session is owned by another of the contact's machines; the
-            // next member is tried (P3 forwards instead).
-            let next = err.code == agent::communication::mesh::NOT_OWNER;
+            // 191 (D3, S4): `not owner`: another of the contact's machines owns the session;
+            // the next member is tried (P3 forwards instead).
+            let next = err.code == agent::communication::network::NOT_OWNER_CODE;
             return Err((next, A2AError::new(err.code, err.message)));
         }
         rpc.result

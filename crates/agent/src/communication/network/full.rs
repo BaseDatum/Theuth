@@ -120,27 +120,25 @@ fn gone() -> A2AError {
     A2AError::task_not_found("conversation")
 }
 
-/// 191 (D3, S4): `NOT_OWNER`: the session is not this engine's (another machine owns it, its
-/// owner is empty, or its row is unknown here). The contact's client tries its next member
-/// (P3 forwards instead). Never served here.
-pub(crate) fn not_owner(session: SessionId) -> A2AError {
-    A2AError::new(
-        crate::communication::mesh::NOT_OWNER,
-        format!("NOT_OWNER: session {session} is not this machine's"),
-    )
+/// 191 (D3, S4): [`super::NOT_OWNER_CODE`] "not owner": the session is not this engine's
+/// (another machine owns it, its owner is empty on a mesh engine, its row is unknown or
+/// unreadable here). The contact's client tries its next member (P3 forwards instead).
+pub(crate) fn not_owner() -> A2AError {
+    A2AError::new(super::NOT_OWNER_CODE, super::NOT_OWNER_TEXT)
 }
 
 impl Agents {
     /// 191 (D3, S4): the strict owner predicate of every contact path: the row exists and
-    /// this engine owns it (never "unknown or empty reads as local"). `Err`: a refusal.
-    pub(super) async fn contact_owned(&self, session: SessionId) -> Result<(), A2AError> {
+    /// reads here and this engine owns it (never "unknown or empty reads as local"); else
+    /// [`not_owner`].
+    pub(crate) async fn contact_owned(&self, session: SessionId) -> Result<(), A2AError> {
         match self.store.owned_here(session).await {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(not_owner(session)),
-            Err(e) => Err(A2AError::unsupported_operation(format!(
-                "the session's owner could not be read: {e:#}"
-            ))),
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(%session, "a2a: session row unreadable: {e:#}"),
         }
+        tracing::info!(%session, "191: contact path refused: not owner");
+        Err(not_owner())
     }
 }
 

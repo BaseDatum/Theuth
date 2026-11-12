@@ -680,6 +680,18 @@ impl Handler {
         })
     }
 
+    /// 191 (D3, S4): the strict session resolve of a contact's message, before any task
+    /// exists: served only by the machine that owns the session (its row here, its owner
+    /// this engine), else the A2A error `not owner` (`NOT_OWNER_CODE`), and the contact's
+    /// client tries its next roster member.
+    async fn owned(&self, p: &A2aPrincipal) -> Result<(), A2AError> {
+        if p.contact.is_some() {
+            self.ask(agent::communication::network::ContactOwned(p.session))
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Ask the agent; the supervisor answers some commands through a
     /// `DelegatedReply`, so the bound is on the reply's `Ok`/`Error`, not its shape.
     async fn ask<M>(
@@ -766,6 +778,7 @@ impl RequestHandler for Handler {
                 .await;
         }
         let principal = self.admit(params).await?;
+        self.owned(&principal).await?;
         validate_send(&req)?;
         let history_length = req.configuration.as_ref().and_then(|c| c.history_length);
         let mut response = self
@@ -786,6 +799,7 @@ impl RequestHandler for Handler {
         req: SendMessageRequest,
     ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
         let principal = self.admit(params).await?;
+        self.owned(&principal).await?;
         validate_send(&req)?;
         let stream = self
             .ask(A2aStream {

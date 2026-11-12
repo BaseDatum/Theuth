@@ -100,6 +100,28 @@ pub struct A2aPrincipal {
     pub ask_first: bool,
 }
 
+/// 191 (D3, S4): the A2A JSON-RPC error of a contact path aimed at a machine that does not own
+/// the session: `{"code": -32030, "message": "not owner"}`. It collides with no code of
+/// theuth (-32000..-32014, -32020) or of A2A (-32001..-32009). The contact's client tries its
+/// next roster member on it, each once.
+pub const NOT_OWNER_CODE: i32 = -32030;
+/// [`NOT_OWNER_CODE`]'s message.
+pub const NOT_OWNER_TEXT: &str = "not owner";
+
+/// `ask` → `Result<(), A2AError>` (191 D3, S4): the a2a router's strict session resolve for a
+/// contact's request, before any task exists: `Err` ([`NOT_OWNER_CODE`]) unless the session's
+/// row exists here and this engine owns it.
+#[derive(Clone, Copy, Debug)]
+pub struct ContactOwned(pub SessionId);
+
+impl Message<ContactOwned> for Agents {
+    type Reply = Result<(), A2AError>;
+
+    async fn handle(&mut self, m: ContactOwned, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.contact_owned(m.0).await
+    }
+}
+
 /// `ask` → `Result<SessionId, A2AError>` (183 §7.6): the capped inbox of (contact
 /// `binding`, `origin.export`), an agent export: created on the first request (an isolated
 /// root titled `<contact> · <export>`, recorded in `a2a_contexts`), reused after, and its cap
@@ -7018,11 +7040,7 @@ mod tests {
                 a.store.owned_elsewhere(session, owner).await;
             }
             let r = a.full_return(answer(ctx, id)).await;
-            assert_eq!(
-                r.err().map(|e| e.code),
-                Some(crate::communication::mesh::NOT_OWNER),
-                "{id}"
-            );
+            assert_eq!(r.err().map(|e| e.code), Some(NOT_OWNER_CODE), "{id}");
             assert_eq!(
                 a.store.exchange_by_request_id(&peer, id).await.unwrap(),
                 None,
@@ -7034,11 +7052,16 @@ mod tests {
             Ok(SendMessageResponse::Message(m)) => assert!(is_receipt(m.metadata.as_ref())),
             other => panic!("served, got {other:?}"),
         }
+        // An unreadable row proves nothing: refused too.
+        a.store.break_session_for_test(session).await;
+        let r = a.full_return(answer("ctx-1", "r-unreadable")).await;
+        assert_eq!(r.err().map(|e| e.code), Some(NOT_OWNER_CODE));
     }
 
     /// 191 (D3, S4): a contact's message into a chat whose owner is empty (not this engine's,
     /// and no other engine to take it: no W-40) is `NOT_OWNER` at admission, before anything is
-    /// accepted; one held before the owner went empty is never delivered full.
+    /// accepted; one held before the owner went empty is never delivered full. A drained inbox
+    /// still in the insert-only `inboxes` set never short-circuits the check.
     #[tokio::test]
     async fn a_contact_message_into_a_session_not_strictly_ours_is_never_delivered() {
         let scratch = crate::TestDir::new("agents");
@@ -7059,31 +7082,39 @@ mod tests {
             contact: Some(bob("research", tools::Risk::ReadOnly)),
             ask_first,
         };
-        let held = a.admit_send(&p(true), &send("m-1")).await.unwrap().task;
-        assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+        // Two held first, so they reach delivery only after the owner changed.
+        for id in ["m-1", "m-2"] {
+            let held = a.admit_send(&p(true), &send(id)).await.unwrap().task;
+            assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+        }
         let generation = a.admit_principal(&p(false)).await.unwrap();
-        let h = a
+        let mut held = a
             .network
             .held
             .remove(&("bob".into(), "research".into()))
-            .unwrap()
-            .remove(0);
-        h.watch.abort();
+            .unwrap();
+        let not_owner = |t: &A2aTask| {
+            t.status == A2aTaskStatus::Failed && t.error.as_deref() == Some(NOT_OWNER_TEXT)
+        };
+        // An empty owner on a mesh engine.
         a.store.owned_elsewhere(session, "").await;
-        let refused = a.admit_send(&p(false), &send("m-2")).await.err();
-        assert_eq!(
-            refused.map(|e| e.code),
-            Some(crate::communication::mesh::NOT_OWNER)
-        );
+        let refused = a.admit_send(&p(false), &send("m-3")).await.err();
+        assert_eq!(refused.map(|e| e.code), Some(NOT_OWNER_CODE));
+        let h = held.remove(0);
+        h.watch.abort();
+        let task = a.start_or_queue(h.task, generation.clone(), h.route).await;
+        assert!(not_owner(&task), "{task:?}");
+        // A drained inbox: still in `inboxes`, now another engine's.
+        a.store.owned_elsewhere(session, "other-engine").await;
+        a.network.inboxes.insert(session);
+        let refused = a.admit_send(&p(false), &send("m-4")).await.err();
+        assert_eq!(refused.map(|e| e.code), Some(NOT_OWNER_CODE));
+        let h = held.remove(0);
+        h.watch.abort();
+        // Its task row cannot even be failed here (the store refuses writes to a session
+        // another engine owns): it is never started nor delivered.
         let task = a.start_or_queue(h.task, generation, h.route).await;
-        assert_eq!(task.status, A2aTaskStatus::Failed);
-        assert!(
-            task.error
-                .as_deref()
-                .is_some_and(|e| e.starts_with("NOT_OWNER")),
-            "{:?}",
-            task.error
-        );
+        assert_eq!(task.status, A2aTaskStatus::AuthRequired, "{task:?}");
         assert!(a.network.full_inbound.is_empty(), "never delivered full");
     }
 }

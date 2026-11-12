@@ -1019,7 +1019,9 @@ async fn a_broken_http_peer_does_not_block_a_contact_edit() {
     );
 }
 
-/// Pair `a` (inviter) and `b` by ticket; A's alias for B and B's alias for A.
+/// Pair `a` (inviter) and `b` by ticket; A's alias for B and B's alias for A. 191 (P2): it
+/// returns once each side based its record on the other's version 1 (the pushes and card
+/// fetches of the pairing have landed, so no background pass races the caller's).
 async fn paired(a: &Engine, b: &Engine) -> (String, String) {
     let w = a.ctx.open_window().await.unwrap();
     let vb = b
@@ -1041,6 +1043,25 @@ async fn paired(a: &Engine, b: &Engine) -> (String, String) {
     };
     let a_alias = until("A pinned B", || of(a, b)).await;
     let b_alias = until("B pinned A", || of(b, a)).await;
+    for (e, alias) in [(a, &a_alias), (b, &b_alias)] {
+        let record = e.ctx.shared.read().staged.contacts[alias].id.clone();
+        let mut based = false;
+        for _ in 0..400 {
+            if e.ctx
+                .records()
+                .await
+                .is_ok_and(|r| r.local.iter().any(|l| l.record == record))
+            {
+                based = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(based, "{alias} based on the other side's roster");
+        // The pass that basing started has finished.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        drop(e.ctx.reload_lock.lock().await);
+    }
     (a_alias, b_alias)
 }
 
