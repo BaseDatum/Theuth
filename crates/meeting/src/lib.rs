@@ -49,6 +49,7 @@ pub mod note;
 pub mod ogg;
 pub mod oracle;
 pub mod post;
+pub mod rpc_support;
 pub mod search;
 pub mod session;
 pub mod speakers;

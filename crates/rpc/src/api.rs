@@ -705,14 +705,6 @@ fn telegram() -> RpcResult<ActorRef<telegram::Telegram>> {
     })
 }
 
-/// The meeting actor; absent when `meeting.enabled: false`, off macOS, or the plugin is not loaded.
-fn meeting() -> RpcResult<ActorRef<meeting::Meeting>> {
-    lookup::<meeting::Meeting>(meeting::MEETING_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "meetings are disabled", None::<()>),
-        _ => e,
-    })
-}
-
 /// The artifact actor; absent when `artifact.enabled: false` or the plugin is not loaded.
 fn artifact() -> RpcResult<ActorRef<artifact::ArtifactActor>> {
     lookup::<artifact::ArtifactActor>(artifact::ARTIFACT_ACTOR).map_err(|e| match e.code() {
@@ -1196,12 +1188,6 @@ fn cost_service() -> RpcResult<&'static agent::CostService> {
     })
 }
 
-
-/// 158 §7.2: the connection's `x-theuth-client` value for companion-only methods; `None` when
-/// the call did not come over the socket (the in-process TUI).
-fn client_of(ext: &Extensions) -> Option<&'static str> {
-    ext.get::<rpc_core::Client>().map(|c| c.0)
-}
 
 /// Largest decoded image `put_attachment` accepts (17 §1: Anthropic's 5 MB); an
 /// `.svg` (a saved diagram) shares the cap.
