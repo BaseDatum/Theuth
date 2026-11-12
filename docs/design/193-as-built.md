@@ -2,7 +2,7 @@
 
 Contract: [193-text-refs.md](193-text-refs.md). Rebased in R2 onto main 9c439c3c (the wire split). All of §1-§8 is built, §7 included. §7's one supervisor change is the R2 seat fix (B1), which the orchestrator allowed despite §7's "no new supervisor plumbing".
 
-The file:line references in the sections below are from R1. For what R2 changed, see [`## R2`](#r2) at the end; R2 cites symbols, not lines.
+The file:line references in the sections below are from R1. For what R2 changed, see [`## R2`](#r2); for R3, [`## R3`](#r3) at the end. R2 and R3 cite symbols, not lines.
 
 ## What was built (file:line at the docs commit)
 
@@ -326,3 +326,37 @@ Every Rust command ran with `BUILD_LABEL=193 build-lock mbx …`, except the bar
   - `bunx tsc -b --noEmit`: 0 errors.
   - `vitest run src/rpc/api.test.ts` twice: 2/2 passed both times.
   - The generated bindings are gitignored and not committed.
+
+## R3
+
+R3 fixed the small findings of `review-193-r2.md` as decided in the R3 brief. Numbers are that review's.
+
+### Fixed
+1. **#1, dead `dial`:** deleted from `crates/theuth/src/mcp.rs`; its two tests call `dial_with(.., None)`. A plain `check -p theuth` has 0 warnings.
+2. **#3, a failed syntax hook:** `text::block_of` no longer turns the hook's `Err` into `None`. When string protection is wanted (`indent`, `move_text`, `copy_text`, `clip`) the call is refused with the hook's own message (`the syntax parser failed on <file>: …`) plus `: multi-line strings cannot be protected`; nothing is written. No parser at all (`Ok(None)`) keeps the "no parser for this language" note.
+3. **#5, parses:** `parse::parse_tree` now always returns the tree, so the hook never parses a third time. Each `SyntaxHook::analyze` call parses exactly twice: `Parsers.tree` builds the one tree that the import query, string interiors and declaration widening all use, and tree-sitter-tags' `generate_tags` parses once more internally. It takes only source bytes and exposes no tree (0.27.1), so symbols cannot come from our tree without reimplementing the tags runner. The indexer's `parse` still builds the tree only for languages with an import query.
+4. **#6, clip sizes:** `Clips` stores a `ClipEntry { clip, used, size }`; `size` is measured by `put_clip` before the lock. The per-session and engine-wide sums read the stored sizes, so nothing walks clip lines under `CLIPS`.
+5. **#7:** `tools_proxy_to_the_engine` sends the real `edit` shape (`path` plus `edits` with one `range` and one `old` entry) and the fake engine checks the whole argument object.
+6. **#8:** new `text::tests::an_acp_childs_relative_path_resolves_in_its_own_cwd` (tools, seat level). The child is seated as `acp_session` does it (parent seat inherited, then its own cwd); a relative `read_file` and `indent` touch the child's file, not the parent's. The supervisor test's comment now points there instead of claiming that case.
+7. **#9, `list_tools` timeout:** the shim's `list_tools` call is wrapped in its own 30 s `LIST_TOOLS_TIMEOUT`; on timeout it lists the shim's own three tools, as on failure. The 330 s `SESSION_REQUEST_TIMEOUT` is tied to the default `tools.approval_timeout_secs` (300 s). A user who raises that setting above 330 s reopens the late-approval race: the shim gives up on a call the engine may still run after approval.
+
+### Declined
+- **#10**, one shared paths helper across `double` (`touched_paths`), `cells` (`edited_paths`) and `agent` (`written_paths`): follow-up.
+- **#11**, `edit` not in `files_written`: pre-existing, left as is.
+- #2 and #4 were already done in R2.
+
+### Tests (R3)
+- **tools:** `text::tests::failed_syntax_hook_refuses_a_shift` (the test hook panics on `.boom`; a `.txt` keeps the no-parser note), `text::tests::an_acp_childs_relative_path_resolves_in_its_own_cwd`.
+- **theuth:** `tools_proxy_to_the_engine` changed (#7).
+- No test for the 30 s `list_tools` timeout: it needs a 30 s hang; it shares the failure fallback that `failed_list_tools_lists_only_the_own_three` covers.
+
+### Gates (R3, final tree)
+Every Rust command ran with `BUILD_LABEL=193r3 build-lock mbx …`, except the bare test runs. Logs are in `/tmp/193r3/`.
+- **fmt:** `cargo fmt -p tools -p codeindex -p theuth`; `git status` showed only the intended files.
+- **check** `-p tools -p codeindex -p theuth`: 0 errors, 0 warnings. With `--tests`: 0 errors; 1 warning, the pre-existing `codeindex/src/map/export.rs:627`.
+- **clippy** `--no-deps -D warnings`: `tools --tests` clean; `codeindex` clean (with `--tests` it fails only on that pre-existing import); `theuth --tests` with `-A clippy::chunks_exact_to_as_chunks -A deprecated` clean.
+- **tests:** `--no-run`, then bare `mbx test -p tools -p codeindex -p theuth --no-fail-fast`:
+  - `tools` lib: 270 passed, 3 ignored; `fd_count`: 1 passed.
+  - `codeindex` lib: 102 passed, 1 ignored; `codemap` 7, `locate` 1; `index`: 21 passed, 2 failed (`map_and_symbol`, `impact_on_this_repository`, known on main).
+  - `theuth` (`t`): 13 passed.
+  - Second run of `text::`, `textref::`, `syntax_hook::`, `mcp::tests`: 60 tools, 18 codeindex, 7 theuth, all passed.
