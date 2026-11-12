@@ -683,6 +683,10 @@ pub enum CoreAction {
     },
     /// Build after registry mutation ends, present the frame, then deliver its typed receipt.
     PresentTranscript(Box<dyn FnOnce(&Registry) -> (TranscriptPresentation, LocalReply) + Send>),
+    /// Change only the core historical-frame input/admission mode.
+    SetReadOnly(bool),
+    /// Deliver owner input synchronously after preceding core operations.
+    Post(LocalReply),
     /// Adopt one core-created draft before releasing queued owner work.
     EnsureSession(SessionContinuation),
 }
@@ -772,6 +776,12 @@ impl<M: Send + 'static> Cx<'_, '_, M> {
             let (presentation, message) = build(registry);
             (presentation, LocalReply { to, engine_epoch, body: Box::new(message) })
         })));
+    }
+    /// Continue after queued core mutations, retaining the slot/engine fence.
+    pub fn post(&mut self, message: M) {
+        self.core(CoreAction::Post(LocalReply {
+            to: self.token, engine_epoch: self.epoch, body: Box::new(message),
+        }));
     }
     /// Keep an error inline after the core's existing generic failure transitions.
     pub fn claim_error(&mut self) { self.out.error_claimed = true; }
