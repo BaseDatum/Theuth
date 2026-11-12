@@ -2,7 +2,7 @@
 //! Never republish decoded remote events on the runtime bus.
 use std::sync::Arc;
 use jsonrpsee::{core::client::Error, ws_client::WsClient};
-use rpc::api::clients::CoreApiClient;
+use rpc_compose::api::clients::CompositionApiClient;
 use runtime::Runtime;
 use serde::Deserialize;
 use serde_json::Value;
@@ -68,15 +68,15 @@ impl TopicEvent {
 }
 
 /// Forward one trusted local stream, releasing its ring cursor on shutdown.
-pub async fn local(rt: Runtime, mut stream: rpc::topics::LocalStream, tx: UnboundedSender<UiEvent>) {
+pub async fn local(rt: Runtime, mut stream: rpc_compose::topics::LocalStream, tx: UnboundedSender<UiEvent>) {
     loop {
         tokio::select! {
             _ = rt.shutdown.cancelled() => return,
             _ = tx.closed() => return,
             item = stream.next() => {
                 let event = match item {
-                    Some(rpc::topics::LocalEvent::Frame(frame)) => TopicEvent::Local(frame),
-                    Some(rpc::topics::LocalEvent::Control(value)) => TopicEvent::control(value),
+                    Some(rpc_compose::topics::LocalEvent::Frame(frame)) => TopicEvent::Local(frame),
+                    Some(rpc_compose::topics::LocalEvent::Control(value)) => TopicEvent::control(value),
                     None => return,
                 };
                 if tx.send(UiEvent::Wire(event)).is_err() { return; }

@@ -2,7 +2,7 @@
 use super::*;
 use iocraft::KeyCode;
 use agent::{AgentInfo, BroadcastReceipt, BroadcastRequest, BroadcastTargets};
-use rpc::api::clients::TurnsApiClient;
+use rpc_compose::api::clients::TurnsApiClient;
 /// Existing picker, compose, review and receipt formatting state.
 pub mod state;
 use state::{Broadcast, BroadcastStage};

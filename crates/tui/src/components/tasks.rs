@@ -1,5 +1,5 @@
 //! Project-scoped task inventory; no live subscription or modal state.
-use rpc::api::clients::BoardsApiClient;
+use rpc_compose::api::clients::BoardsApiClient;
 use super::*;
 
 /// Project-scoped task listing.

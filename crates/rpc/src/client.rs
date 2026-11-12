@@ -1,10 +1,8 @@
 //! One client shape for both ends of the wire (63 §2.3). [`Engine`] is either
-//! the in-process [`Local`] (the whole [`crate::api`] dispatched through
+//! the in-process [`Local`] (the injected owner methods dispatched through
 //! its own `Methods`, as the owner peer) or a WebSocket to another process's
 //! engine; both implement jsonrpsee's `ClientT`, so the generated
-//! [`crate::api::clients`] gives every frontend the same typed methods.
-//! [`mirror`] republishes the remote engine's event stream on the local bus,
-//! so bus subscribers (the TUI bridge, the ACP relay) work unchanged.
+//! owner client traits give every frontend the same typed methods.
 
 use jsonrpsee::Methods;
 use jsonrpsee::core::client::{BatchResponse, ClientT, Error, Subscription, SubscriptionClientT};
@@ -19,8 +17,6 @@ use std::sync::Arc;
 
 use rpc_core::ModuleFactory;
 use crate::engine::Running;
-pub use crate::client_mirror::mirror;
-use crate::new_server;
 
 /// The in-process client: the owner console's peer on every call.
 pub struct Local(Methods);
@@ -28,7 +24,7 @@ pub struct Local(Methods);
 impl Local {
     /// The full API over `rt`'s actors, every call as the owner console.
     pub fn new(rt: Runtime, module: ModuleFactory) -> Self {
-        let mut methods: Methods = module(new_server(rt)).into();
+        let mut methods: Methods = module(rpc_core::Server::new(rt)).into();
         methods.extensions_mut().insert(rpc_core::RpcPeer::internal());
         Self(methods)
     }

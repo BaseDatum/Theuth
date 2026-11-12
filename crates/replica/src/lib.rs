@@ -62,7 +62,7 @@ pub const ALPN_DOUBLE: &str = "theuth/double/1";
 pub struct RegisterTransport(pub Arc<dyn Transport>);
 
 /// `ask` → the registered transport, `None` until the mesh registers one.
-/// Other ALPN users (`rpc::acp` for `theuth/acp`, knowledge sync) reach peers through it.
+/// Other ALPN users (`rpc_compose::acp` for `theuth/acp`, knowledge sync) reach peers through it.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GetTransport;
 

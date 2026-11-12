@@ -16,6 +16,16 @@
 //!
 //! The rules live in [`ledger`]; this file is the actor around them.
 
+/// Hub RPC methods and typed clients.
+pub mod rpc_hub;
+
+/// Assemble this plugin's RPC methods.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_core::merge([
+        rpc_hub::rpc_module(server),
+    ])
+}
+
 pub mod rpc_support;
 pub mod activity;
 pub mod config;

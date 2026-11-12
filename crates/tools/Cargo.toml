@@ -6,6 +6,8 @@ publish.workspace = true
 description = "Tool registry, approval gate, builtin tools (shell, fs), MCP tool source"
 
 [dependencies]
+rpc-core = { workspace = true }
+jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }
 replica = { workspace = true }

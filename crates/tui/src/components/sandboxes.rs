@@ -1,6 +1,6 @@
 //! Sandbox inventory and desktop URL; passwords never cross the presentation ports.
 use super::*;
-use rpc::api::clients::SandboxesApiClient;
+use rpc_compose::api::clients::SandboxesApiClient;
 
 /// Stateless RPC-only surface, not an embedded VM desktop.
 #[derive(Default)]

@@ -6,6 +6,8 @@ publish.workspace = true
 description = "External search providers (Brave, Firecrawl, SearXNG, OpenSERP) registered with the web plugin over the bus (design doc 16 §3), plus the search_x tool over xAI's x_search (design doc 80)"
 
 [dependencies]
+rpc-core = { workspace = true }
+jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 web = { workspace = true }
 secrets = { workspace = true }

@@ -34,6 +34,16 @@ use serde::{Deserialize, Serialize};
 // Leading `::`: the `tools` crate, not this crate's `tools` module.
 use ::tools::{REGISTRY_ACTOR, ToolRegistry};
 
+/// Concepts RPC methods and typed clients.
+pub mod rpc_concepts;
+
+/// Assemble this plugin's RPC methods.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_core::merge([
+        rpc_concepts::rpc_module(server),
+    ])
+}
+
 pub mod rpc_support;
 pub mod harvest;
 pub mod repo;

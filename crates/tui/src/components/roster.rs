@@ -1,5 +1,5 @@
 //! Read-only agent roster, distinct from the subagent picker and activity board.
-use rpc::api::clients::BoardsApiClient;
+use rpc_compose::api::clients::BoardsApiClient;
 use super::*;
 
 /// Read-only agent roster listing.

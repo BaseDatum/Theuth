@@ -22,7 +22,7 @@ use document::search::NoteSearchHit;
 use knowledge::search::{ConceptSearchHit, HistoricalConcept, HistorySearchHit, HistorySide};
 use knowledge::{ChangeStatus, Concept, Revision};
 use meeting::search::MeetingSearchHit;
-use rpc::search::{SearchGroup, SearchResponse};
+use rpc_compose::search::{SearchGroup, SearchResponse};
 use runtime::SessionId;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 

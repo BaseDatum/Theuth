@@ -8,7 +8,7 @@
  *   await rec.waitFor((e) => e.type === "TurnFinished", 30_000, "turn");
  *
  * Params are jsonrpsee positional arrays (`rpc.call("set_model", [session, model])`).
- * Auth is `Authorization: Bearer <data_dir>/token` on the upgrade, as `rpc::serve` requires.
+ * Auth is `Authorization: Bearer <data_dir>/token` on the upgrade, as `rpc_compose::serve` requires.
  * No dependencies beyond Bun's WebSocket.
  */
 import { readFileSync } from "node:fs";

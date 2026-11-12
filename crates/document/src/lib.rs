@@ -20,6 +20,19 @@ use kameo::actor::{ActorRef, Spawn};
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 
+/// Documents RPC methods and typed clients.
+pub mod rpc_documents;
+/// Notebooks RPC methods and typed clients.
+pub mod rpc_notebooks;
+
+/// Assemble this plugin's RPC methods.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_core::merge([
+        rpc_documents::rpc_module(server.clone()),
+        rpc_notebooks::rpc_module(server),
+    ])
+}
+
 pub mod rpc_support;
 pub mod actor;
 pub mod cells;

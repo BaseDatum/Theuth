@@ -31,6 +31,16 @@ use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 use tools::{Risk, Tool, ToolCx, ToolOutput};
 
+/// Messaging RPC methods and typed clients.
+pub mod rpc_messaging;
+
+/// Assemble this plugin's RPC methods.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_core::merge([
+        rpc_messaging::rpc_module(server),
+    ])
+}
+
 pub mod rpc_support;
 pub mod api;
 pub mod approvals;

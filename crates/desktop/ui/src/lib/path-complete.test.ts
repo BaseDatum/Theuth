@@ -5,7 +5,7 @@ import { type PathPopup, accept, pathKey, pathTrigger, step } from './path-compl
 /** `|` marks the caret. */
 const at = (s: string): [string, number] => [s.replace('|', ''), s.indexOf('|')]
 
-// The same vectors as `rpc::pathac::tests::trigger_vectors`.
+// The same vectors as `agent::pathac::tests::trigger_vectors`.
 test('path trigger vectors', () => {
   const yes: [string, [number, number]][] = [
     ['~/De|', [0, 4]],

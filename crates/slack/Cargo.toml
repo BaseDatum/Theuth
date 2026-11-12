@@ -6,6 +6,8 @@ publish.workspace = true
 description = "Slack frontend for the daemon over Socket Mode (design doc 21)"
 
 [dependencies]
+rpc-core = { workspace = true }
+jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }
 agent = { workspace = true }

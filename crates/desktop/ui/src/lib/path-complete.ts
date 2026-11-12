@@ -1,5 +1,5 @@
 // PATH-AC: path autocomplete in the composer. `pathTrigger` is a verbatim port of
-// `rpc::pathac::trigger` (same vectors in path-complete.test.ts); the listing is the
+// `agent::pathac::trigger` (same vectors in path-complete.test.ts); the listing is the
 // engine's (`path_complete`), so a remote session completes on its own machine.
 import type { PathCandidate } from '@/rpc/bindings/PathCandidate'
 

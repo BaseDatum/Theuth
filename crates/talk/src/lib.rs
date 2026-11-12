@@ -32,10 +32,21 @@ use voice::{ModelState, SpeechId, VoiceEvent};
 
 use policy::{Action, Input, Policy, Timer};
 
+/// Hub RPC methods and typed clients.
+pub mod rpc_hub;
+
+/// Assemble this plugin's RPC methods.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_core::merge([
+        rpc::rpc_module(server.clone()),
+        rpc_hub::rpc_module(server),
+    ])
+}
+
 mod policy;
 /// Speech, dictation and live-conversation RPC methods.
 pub mod rpc;
-pub use rpc::{SpeechApiClient, rpc_module};
+pub use rpc::{SpeechApiClient};
 pub mod rpc_support;
 
 /// Registry name of the [`Talk`] actor.

@@ -1,7 +1,7 @@
 //! A remote child over the mesh (67 §4.2, decision 4): the ACP a node serves
 //! over a link mode-1 conn, carried on a `theuth/acp/1` QUIC stream instead.
 //! One stream per child; newline-delimited JSON-RPC, as on stdio. Both ends
-//! frame with [`line_duplex`]: the dialer here, the accept loop in `rpc::acp`.
+//! frame with [`line_duplex`]: the dialer here, the accept loop in `rpc_compose::acp`.
 
 use std::fmt;
 use std::io;

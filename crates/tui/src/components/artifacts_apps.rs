@@ -208,7 +208,7 @@ pub(crate) fn open_path(path: &std::path::Path) -> Result<(), String> {
 }
 /// Existing export destination and display line, shared by artifact and search effects.
 pub(crate) async fn export_artifact(api: &rpc::client::Engine, id: String, name: String, session: Option<runtime::SessionId>) -> Result<String, String> {
-    use rpc::api::clients::ArtifactsApiClient;
+    use rpc_compose::api::clients::ArtifactArtifactsApiClient;
     let dest = std::env::home_dir().ok_or_else(|| "no home directory".to_owned())?.join("Downloads").join(name);
     let path = api.export_artifact(id, dest, session).await.map_err(crate::reason)?;
     Ok(format!("exported → {}", path.display()))

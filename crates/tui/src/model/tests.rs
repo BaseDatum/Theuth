@@ -1109,8 +1109,8 @@
             search::Reply::Results {
                 categories,
                 limit,
-                result: Ok(rpc::search::SearchResponse {
-                    groups: vec![rpc::search::SearchGroup::Sessions {
+                result: Ok(rpc_compose::search::SearchResponse {
+                    groups: vec![rpc_compose::search::SearchGroup::Sessions {
                         page: ::search::SearchPage::ready(hits, 10),
                     }],
                 }),

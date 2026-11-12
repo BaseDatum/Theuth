@@ -11,7 +11,7 @@ use agent::{AgentConfig, AgentEvent, CompactStyle};
 use futures::future::BoxFuture;
 use jsonrpsee::core::client::Error as ClientError;
 use jsonrpsee::ws_client::WsClient;
-use rpc::api::clients::*;
+use rpc_compose::api::clients::*;
 use rpc::client::{Engine, Local};
 use rpc::engine::{Host, Running};
 use runtime::{Runtime, SessionId};
@@ -77,7 +77,7 @@ impl runtime::Plugin for TuiPlugin {
         let (events_tx, events_rx) = unbounded_channel();
         let (commands_tx, commands_rx) = unbounded_channel();
         // Take the ring cursor before any asynchronous initialization.
-        let local_stream = self.attached.is_none().then(|| rpc::topics::local_stream(rt));
+        let local_stream = self.attached.is_none().then(|| rpc_compose::topics::local_stream(rt));
         let local_jobs = Arc::new(AtomicBool::new(self.attached.is_none()));
         components::jobs::subscribe(rt, events_tx.clone(), local_jobs.clone()).await;
         if let Some(stream) = local_stream {
@@ -197,7 +197,7 @@ async fn supervise(rt: Runtime, api: Api, tx: UnboundedSender<UiEvent>, attached
                 let Some(start) = start_engine.take() else {
                     return;
                 };
-                let stream = rpc::topics::local_stream(&rt);
+                let stream = rpc_compose::topics::local_stream(&rt);
                 local_jobs.store(true, Ordering::Release);
                 match start(rt.clone()).await {
                     Ok(()) => {

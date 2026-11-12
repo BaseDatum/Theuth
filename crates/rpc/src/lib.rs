@@ -1,10 +1,5 @@
-//! RPC plugin. Methods are `ask`s on named actors; `subscribe_events` streams
-//! every wire-visible bus event as `{"type": ..., ...}`. See design doc §7.
-//!
-//! [`api`] contains the domain traits for harness commands. In-process callers
-//! (the TUI) dispatch through [`rpc_core::Server`] from [`new_server`] and its
-//! domain server methods directly; `serve` exposes the merged methods over the
-//! socket for remote clients.
+//! Generic JSON-RPC transport, connection authentication and engine discovery.
+//! Owners supply method modules through [`rpc_core::ModuleFactory`].
 
 #[cfg(test)]
 use std::net::SocketAddr;
@@ -28,35 +23,18 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tower::Service;
 
-mod bootstrap;
-mod client_mirror;
-pub use bootstrap::{RpcPlugin, new_server, methods, serve};
-#[cfg(test)]
-use bootstrap::install_forward_hooks;
-
-pub mod acp;
-// 171:C jsonrpsee drops method attributes: `cell_run` has §15.2's six params, CELLAFTER's
-// `confirmed` and the extensions.
-#[allow(clippy::too_many_arguments)]
-pub mod api;
-
+/// Transport-only methods and typed clients.
+pub mod infra;
 pub mod client;
 pub mod engine;
-#[cfg(test)]
-mod forward_tests;
-pub mod pathac;
-pub mod search;
-pub mod topics;
 
 mod diag;
 mod wslog;
 
-#[cfg(test)]
-mod export;
-
-pub use self::search::SearchToolsPlugin;
-pub use acp::AcpPlugin;
-pub use api::clients;
+/// Assemble transport-only RPC methods.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    infra::rpc_module(server)
+}
 
 /// `[rpc]` config section.
 #[derive(Clone, Debug, Serialize, Deserialize)]

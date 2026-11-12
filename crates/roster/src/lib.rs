@@ -11,11 +11,22 @@
 //! - [`file::parse`]: `agents/<name>.md` → [`AgentFile`]
 //! - [`Desks`]: the shared read model handed to the tasks plugin
 
+/// Documents RPC methods and typed clients.
+pub mod rpc_documents;
+
+/// Assemble this plugin's RPC methods.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_core::merge([
+        rpc::rpc_module(server.clone()),
+        rpc_documents::rpc_module(server),
+    ])
+}
+
 /// Provider-owned helpers used by RPC method owners.
 pub mod rpc_support;
 /// Boards RPC methods and typed client.
 pub mod rpc;
-pub use rpc::{BoardsApiClient, rpc_module};
+pub use rpc::{BoardsApiClient};
 pub mod alert;
 pub mod attention;
 pub mod budget;

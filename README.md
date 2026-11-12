@@ -106,7 +106,7 @@ the passages relevant to the query in the same call — [`docs/design/16-web.md`
 over the bus), `acp` (external
 harnesses over the Agent Client Protocol: agents.yaml, registry, harness
 connection), `signal` (phone frontend
-over Signal messenger), `slack` (Slack frontend over Socket Mode), `telegram` (Telegram frontend over Bot API long polling), `rpc` (jsonrpsee;
+over Signal messenger), `slack` (Slack frontend over Socket Mode), `telegram` (Telegram frontend over Bot API long polling), `rpc-compose` (jsonrpsee composition over the generic `rpc` transport;
 also registers the `search` tool — one fuzzy search over this harness's saved
 sessions, shown artifacts, current knowledge and knowledge history, for when
 you ask the agent to find something you did earlier —
