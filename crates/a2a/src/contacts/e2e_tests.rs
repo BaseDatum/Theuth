@@ -2214,6 +2214,445 @@ async fn a_broken_peers_yaml_never_stops_a_block() {
     assert!(n1.ctx.contact_list().is_empty(), "the RPC applied");
 }
 
+/// 191 (D4): what the record replica does with `contact_holds` between two machines: every
+/// row of `from` on `to`, and the rows `from` deleted gone from `to` (the store's
+/// `a_hold_row_and_its_deletion_ride_the_record_replica` proves the replica carries them;
+/// this harness runs no replica between its engines). The harness's agents have no mesh id
+/// (every store's engine is `""`), so a row arrives owned by `from`'s endpoint id, as a
+/// mesh machine's would.
+async fn replicate_holds(from: &Engine, to: &Engine) {
+    use agent::communication::network::{ContactHoldRowsForTest, WriteContactRecords};
+    use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+    let src = from
+        .ctx
+        .agents()
+        .unwrap()
+        .ask(ContactHoldRowsForTest)
+        .await
+        .unwrap();
+    let dst = to
+        .ctx
+        .agents()
+        .unwrap()
+        .ask(ContactHoldRowsForTest)
+        .await
+        .unwrap();
+    let t = |v: &Option<String>| v.clone().map_or(Cell::Null, Cell::Text);
+    let i = |v: &Option<i64>| v.map_or(Cell::Null, Cell::Int);
+    let owner = from.eid();
+    let mut w: Vec<RecordWrite> = dst
+        .iter()
+        .filter(|d| d.owner.as_deref() == Some(owner.as_str()))
+        .filter(|d| !src.iter().any(|s| s.id == d.id))
+        .map(|d| RecordWrite::delete(RecordTable::Holds, d.id.clone()))
+        .collect();
+    for r in &src {
+        w.push(RecordWrite::new(
+            RecordTable::Holds,
+            r.id.clone(),
+            vec![
+                ("contact", t(&r.contact)),
+                ("machine", t(&r.machine)),
+                ("export", t(&r.export)),
+                ("session", t(&r.session)),
+                ("owner", Cell::Text(owner.clone())),
+                ("since_ms", i(&r.since_ms)),
+                ("waiting", i(&r.waiting)),
+                ("preview", t(&r.preview)),
+                ("until_ms", i(&r.until_ms)),
+            ],
+        ));
+    }
+    to.ctx
+        .agents()
+        .unwrap()
+        .ask(WriteContactRecords(w))
+        .await
+        .unwrap();
+}
+
+/// 191 (rig case 17, D3, D4): a hold answered on another machine. n2 holds C's first message
+/// and mirrors it; once the row reaches n1, n1's next holds tick fires `A2aChanged` and
+/// lists it (strip and Attention) with no other event. Allow once on n1 writes nothing and is
+/// refused; Always on n1 is a grant write that, replicated, makes n2's reconcile release the
+/// hold: C's task runs, n2's row goes, and n1's list clears at its next tick. n1 never holds
+/// or delivers anything.
+#[tokio::test]
+async fn a_hold_answered_on_another_machine_is_released_by_its_owner() {
+    use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+    let lan = Lan::default();
+    let n2 = engine("n2", &lan, true, cfg(600)).await;
+    let c = engine("c", &lan, true, cfg(600)).await;
+    let n1 = engine("n1", &lan, true, cfg(600)).await;
+    let (alias, _) = paired(&n2, &c).await;
+    publish(
+        &n2,
+        "research",
+        ExportTarget::Agent {
+            agent: "theuth".into(),
+        },
+        "",
+    )
+    .await;
+    n2.ctx
+        .update_contact(ContactUpdate {
+            name: alias.clone(),
+            patch: ContactPatch {
+                exports: Some(vec!["research".into()]),
+                ..ContactPatch::default()
+            },
+        })
+        .await
+        .unwrap();
+    n2.ctx
+        .first_answer(ContactFirstAnswer {
+            contact: alias.clone(),
+            export: "research".into(),
+            answer: FirstContact::Ask,
+        })
+        .await
+        .unwrap();
+    replicate(&n2, &n1).await;
+    assert!(n1.ctx.tick().await);
+    let heard = Arc::new(parking_lot::Mutex::new(0usize));
+    let rec = kameo::actor::Spawn::spawn(Changes(heard.clone()));
+    n1.ctx
+        .rt
+        .subscribe::<Changes, crate::A2aChanged>(&rec)
+        .await;
+    let _ = n1.ctx.holds_tick().await;
+    let before = *heard.lock();
+
+    let client = a2a_client::A2AClient::new(Box::new(reach::IrohTransport {
+        net: c.net.clone(),
+        eid: n2.eid(),
+        members: Vec::new(),
+        answered: Default::default(),
+        hints: reach::Hints {
+            addrs: n2.addrs(),
+            relay: None,
+        },
+        export: Some("research".into()),
+    }) as Box<dyn a2a_client::Transport>);
+    let mut m = a2a_types::Message::new(a2a_types::Role::User, vec![a2a_types::Part::text("hi")]);
+    m.message_id = "m-1".into();
+    let req = a2a_types::SendMessageRequest {
+        message: m,
+        configuration: Some(a2a_types::SendMessageConfiguration {
+            accepted_output_modes: Some(vec!["text/plain".into()]),
+            task_push_notification_config: None,
+            history_length: Some(0),
+            return_immediately: Some(true),
+        }),
+        metadata: None,
+        tenant: None,
+    };
+    let first = match client.send_message(&req).await.unwrap() {
+        a2a_types::SendMessageResponse::Task(t) => t,
+        other => panic!("expected a task, got {other:?}"),
+    };
+    assert_eq!(first.status.state, a2a_types::TaskState::AuthRequired);
+    assert!(
+        n1.ctx.first_waiting().await.is_empty(),
+        "not replicated yet"
+    );
+    // P3 review S1: the owner's own row is its memory: never listed back as another's.
+    assert!(
+        n2.ctx
+            .agents()
+            .unwrap()
+            .ask(agent::communication::network::ContactHolds)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!n2.ctx.first_waiting().await[0].elsewhere);
+
+    // The row reaches n1: its next tick refreshes every surface, with no other event.
+    replicate_holds(&n2, &n1).await;
+    assert!(n1.ctx.holds_tick().await, "the holds hash changed");
+    until("A2aChanged on n1", || {
+        (*heard.lock() > before).then_some(())
+    })
+    .await;
+    let on1 = n1.ctx.first_waiting().await;
+    assert_eq!(on1.len(), 1, "{on1:?}");
+    assert_eq!(
+        (&on1[0].contact, on1[0].export.as_str(), on1[0].waiting),
+        (&alias, "research", 1)
+    );
+    assert_eq!(on1[0].preview, "hi");
+    assert_eq!(
+        on1[0],
+        FirstWaiting {
+            elsewhere: true,
+            ..n2.ctx.first_waiting().await[0].clone()
+        },
+        "the same hold, held elsewhere"
+    );
+    let items = FirstContactItems(Arc::downgrade(&n1.ctx)).items().await;
+    assert!(
+        items
+            .iter()
+            .any(|i| i.id == format!("contact_first:{alias}:research")),
+        "{items:?}"
+    );
+
+    // Allow once is the owner's alone: refused on n1, nothing written.
+    let once = n1
+        .ctx
+        .first_answer(ContactFirstAnswer {
+            contact: alias.clone(),
+            export: "research".into(),
+            answer: FirstContact::Ask,
+        })
+        .await
+        .unwrap_err();
+    assert!(once.contains("Allow once there"), "{once}");
+
+    // Always on n1: a grant write. Its rows reach n2 as the replica would carry them.
+    n1.ctx
+        .first_answer(ContactFirstAnswer {
+            contact: alias.clone(),
+            export: "research".into(),
+            answer: FirstContact::Allow,
+        })
+        .await
+        .unwrap();
+    assert!(
+        !n2.ctx.first_waiting().await.is_empty(),
+        "n2 still waits: n1 released nothing"
+    );
+    let t = |v: &Option<String>| v.clone().map_or(Cell::Null, Cell::Text);
+    let grants: Vec<RecordWrite> = n1
+        .ctx
+        .records()
+        .await
+        .unwrap()
+        .grants
+        .iter()
+        .map(|g| {
+            RecordWrite::new(
+                RecordTable::Grants,
+                g.id.clone(),
+                vec![
+                    ("contact", t(&g.contact)),
+                    ("export", t(&g.export)),
+                    ("granted", g.granted.map_or(Cell::Null, Cell::Int)),
+                    ("first_contact", t(&g.first_contact)),
+                ],
+            )
+        })
+        .collect();
+    n2.ctx
+        .agents()
+        .unwrap()
+        .ask(agent::communication::network::WriteContactRecords(grants))
+        .await
+        .unwrap();
+    assert!(n2.ctx.tick().await, "the grant changed: a reconcile");
+    assert!(n2.ctx.first_waiting().await.is_empty(), "released by n2");
+    let now = client
+        .get_task(&a2a_types::GetTaskRequest {
+            id: first.id.clone(),
+            history_length: Some(0),
+            tenant: None,
+        })
+        .await
+        .unwrap();
+    assert_ne!(now.status.state, a2a_types::TaskState::AuthRequired);
+    assert_ne!(
+        now.status.state,
+        a2a_types::TaskState::Failed,
+        "{:?}",
+        now.status.message.as_ref().and_then(|m| m.text())
+    );
+    let rows = n2
+        .ctx
+        .agents()
+        .unwrap()
+        .ask(agent::communication::network::ContactHoldRowsForTest)
+        .await
+        .unwrap();
+    assert!(rows.is_empty(), "n2's row went: {rows:?}");
+
+    // The deletion reaches n1: the strip and the item go there too.
+    replicate_holds(&n2, &n1).await;
+    assert!(n1.ctx.holds_tick().await);
+    assert!(n1.ctx.first_waiting().await.is_empty());
+    assert!(
+        n1.ctx
+            .agents()
+            .unwrap()
+            .ask(agent::communication::network::ContactsHeld)
+            .await
+            .unwrap()
+            .is_empty(),
+        "n1 never held anything"
+    );
+}
+
+/// 191 (P3 review M2, S4): a hold fails on a block, wherever and however it is written: a
+/// stored answer this machine does not know (read as block), a per-export block, and a block
+/// of the whole contact on another machine of the mesh, replicated. The owner (n2) fails each
+/// at its next reconcile, never starting it; the other machine releases nothing itself.
+#[tokio::test]
+async fn a_hold_fails_on_a_block_wherever_it_is_written() {
+    use agent::communication::network::{ContactsHeld, WriteContactRecords};
+    use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+    let lan = Lan::default();
+    let n2 = engine("n2", &lan, true, cfg(600)).await;
+    let c = engine("c", &lan, true, cfg(600)).await;
+    let n1 = engine("n1", &lan, true, cfg(600)).await;
+    let (alias, _) = paired(&n2, &c).await;
+    publish(
+        &n2,
+        "research",
+        ExportTarget::Agent {
+            agent: "theuth".into(),
+        },
+        "",
+    )
+    .await;
+    n2.ctx
+        .update_contact(ContactUpdate {
+            name: alias.clone(),
+            patch: ContactPatch {
+                exports: Some(vec!["research".into()]),
+                ..ContactPatch::default()
+            },
+        })
+        .await
+        .unwrap();
+    let ask = async || {
+        n2.ctx
+            .write_answer(&alias, "research", FirstContact::Ask)
+            .await
+            .unwrap();
+        let _ = n2.ctx.tick().await;
+    };
+    ask().await;
+    let client = a2a_client::A2AClient::new(Box::new(reach::IrohTransport {
+        net: c.net.clone(),
+        eid: n2.eid(),
+        members: Vec::new(),
+        answered: Default::default(),
+        hints: reach::Hints {
+            addrs: n2.addrs(),
+            relay: None,
+        },
+        export: Some("research".into()),
+    }) as Box<dyn a2a_client::Transport>);
+    let send = async |id: &str| {
+        let mut m =
+            a2a_types::Message::new(a2a_types::Role::User, vec![a2a_types::Part::text("hi")]);
+        m.message_id = id.into();
+        let req = a2a_types::SendMessageRequest {
+            message: m,
+            configuration: Some(a2a_types::SendMessageConfiguration {
+                accepted_output_modes: Some(vec!["text/plain".into()]),
+                task_push_notification_config: None,
+                history_length: Some(0),
+                return_immediately: Some(true),
+            }),
+            metadata: None,
+            tenant: None,
+        };
+        let t = match client.send_message(&req).await.unwrap() {
+            a2a_types::SendMessageResponse::Task(t) => t,
+            other => panic!("expected a task, got {other:?}"),
+        };
+        assert_eq!(t.status.state, a2a_types::TaskState::AuthRequired, "{id}");
+        t.id
+    };
+    let failed = async |id: &str| {
+        let now = client
+            .get_task(&a2a_types::GetTaskRequest {
+                id: id.into(),
+                history_length: Some(0),
+                tenant: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(now.status.state, a2a_types::TaskState::Failed, "{id}");
+    };
+    let held = async || n2.ctx.agents().unwrap().ask(ContactsHeld).await.unwrap();
+
+    // An answer this machine does not know reads as block.
+    let t1 = send("m-1").await;
+    let xid = n2.ctx.shared.read().staged.export_ids["research"].clone();
+    let grant = n2
+        .ctx
+        .records()
+        .await
+        .unwrap()
+        .grants
+        .into_iter()
+        .find(|g| g.export.as_deref() == Some(xid.as_str()))
+        .unwrap();
+    n2.ctx
+        .agents()
+        .unwrap()
+        .ask(WriteContactRecords(vec![RecordWrite::new(
+            RecordTable::Grants,
+            grant.id,
+            vec![("first_contact", Cell::Text("maybe".into()))],
+        )]))
+        .await
+        .unwrap();
+    assert!(n2.ctx.tick().await, "the grant changed: a reconcile");
+    assert!(held().await.is_empty(), "failed");
+    // A blocked export answers the contact nothing: its task reads again once it is asked.
+    ask().await;
+    failed(&t1).await;
+
+    // A block of that export alone.
+    let t2 = send("m-2").await;
+    n2.ctx
+        .write_answer(&alias, "research", FirstContact::Block)
+        .await
+        .unwrap();
+    let _ = n2.ctx.tick().await;
+    assert!(held().await.is_empty(), "failed");
+    ask().await;
+    failed(&t2).await;
+
+    // A block of the whole contact on n1, which holds nothing: written there, replicated,
+    // and failed here.
+    let t3 = send("m-3").await;
+    replicate(&n2, &n1).await;
+    let _ = n1.ctx.tick().await;
+    replicate_holds(&n2, &n1).await;
+    let on1 = n1.ctx.first_waiting().await;
+    assert!(
+        on1.len() == 1 && on1[0].elsewhere && on1[0].contact == alias,
+        "{on1:?}"
+    );
+    n1.ctx
+        .first_answer(ContactFirstAnswer {
+            contact: alias.clone(),
+            export: "research".into(),
+            answer: FirstContact::Block,
+        })
+        .await
+        .unwrap();
+    assert_eq!(held().await.len(), 1, "n1 released nothing");
+    replicate(&n1, &n2).await;
+    let _ = n2.ctx.tick().await;
+    assert!(held().await.is_empty(), "failed by its owner");
+    assert!(
+        client
+            .get_task(&a2a_types::GetTaskRequest {
+                id: t3,
+                history_length: Some(0),
+                tenant: None,
+            })
+            .await
+            .is_err(),
+        "a blocked contact reads nothing"
+    );
+}
+
 mod forward;
 mod owners;
 mod rosters;

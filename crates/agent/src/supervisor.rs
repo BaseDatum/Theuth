@@ -206,7 +206,7 @@ pub struct Agents {
     /// 139 D16: sessions mid-release-drain → the drain's reason; `route`
     /// refuses their inputs (`transfer::draining_error`) until the demote
     /// lands or the hold expires (`transfer::ClearDraining`).
-    draining_sessions: HashMap<SessionId, &'static str>,
+    pub(crate) draining_sessions: HashMap<SessionId, &'static str>,
     /// 139 §6.3 (D5): sessions a system takeover left `ResumePending` →
     /// the engine taken from; the user's `resume_turn` (boot-rule cause,
     /// no `suspended` row) resumes them as `Takeover{from}` and runs the

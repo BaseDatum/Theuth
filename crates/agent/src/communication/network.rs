@@ -715,6 +715,12 @@ pub struct NetworkState {
     /// 186 (D4): a full contact's message id → its task, completed when the message is
     /// consumed.
     full_inbound: HashMap<Uuid, TaskRef>,
+    /// 191 (D4): the `contact_holds` rows last written for [`Self::held`], by id.
+    holds_mirrored: BTreeMap<String, crate::store::contacts::HoldRow>,
+    /// 191 (P3 review S1): `holds_mirrored` is what the table holds of ours. False at start
+    /// (a failed boot cleanup leaves rows) and after a failed write: the next mirror reads
+    /// this engine's rows back first, and `ContactHolds` (every 2 s) retries it.
+    holds_synced: bool,
 }
 
 /// 186 (D8): what a contact reads when the owner stopped the turn its message opened.
@@ -730,6 +736,13 @@ pub const HOLD_EXPIRED: &str = "the owner did not answer";
 /// chat or agent, other tools, another cap) while it waited.
 pub const HOLD_CHANGED: &str = "the shared chat or agent changed while this waited; send it again";
 
+/// 191 (D3): what a held task fails with when its chat left this machine (a drain, or a
+/// release finding another machine owns it): it never ran, and the resend reaches the owner.
+pub const HOLD_MOVED: &str = "the chat moved; send again";
+
+/// 191 (D3): what a held task fails with when its chat's owner could not be read.
+pub const HOLD_UNCHECKED: &str = "the chat's machine could not be checked; send again";
+
 /// 183 W-27: one task held for a first-contact answer.
 struct HeldTask {
     task: A2aTask,
@@ -739,6 +752,8 @@ struct HeldTask {
     since_ms: u64,
     /// 183 F11: the first line of its message.
     preview: String,
+    /// 191 (D4): the contact's machine, from its card (for the mirrored row).
+    machine: String,
 }
 
 /// `ask` → `Result<usize, String>` (183 W-27): the owner answered the first-contact item of
@@ -768,12 +783,17 @@ pub struct HeldContact {
     pub export: String,
     /// The session the first task would run in.
     pub session: SessionId,
+    /// 191 (D4): the oldest waiting task's id (its `contact_holds` row's id).
+    pub task: String,
     /// When the oldest waiting task arrived (ms since epoch).
     pub since_ms: u64,
     /// How many tasks wait.
     pub waiting: usize,
     /// 183 F11: the first line of the oldest waiting message.
     pub preview: String,
+    /// 191 (P3 review N3): the contact's machine that sent the oldest one, from its card
+    /// (cleaned and cut as its `contact_holds` row).
+    pub machine: String,
 }
 
 impl NetworkState {
@@ -2005,7 +2025,7 @@ impl Agents {
         // 183 review 1: a hold that ends here (a cancel, a revoke) leaves no stale strip,
         // row or Attention item.
         if status.is_terminal() && self.network.retire(task.request_scope) {
-            self.rt.publish(ContactsHeldChanged).await;
+            self.held_changed().await;
         }
         Ok(updated)
     }
@@ -3628,6 +3648,12 @@ impl Agents {
         origin: &super::ContactOrigin,
         route: CancellationToken,
     ) -> A2aTask {
+        // 191 (P3 review N3): a chat mid-release-drain or no longer ours holds nothing: the
+        // drain would fail it anyway, and a hold admitted after it would outlive its chat.
+        if let Some(why) = self.hold_moved(&task).await {
+            tracing::info!(task = %task.id, session = %task.session, "191: hold refused: the chat is leaving or not ours");
+            return self.fail_task(&task, why).await.unwrap_or(task);
+        }
         let why = format!(
             "waiting: {}",
             super::ContactRefusal::NotAllowed {
@@ -3651,8 +3677,8 @@ impl Agents {
             Ok(t) => t,
             Err(e) => {
                 tracing::error!(task = %task.id, "a2a: hold for first contact: {e:#}");
-                let why = format!("could not wait for the owner's answer: {e}");
-                return self.fail_task(&task, &why).await.unwrap_or(task);
+                let why = "could not wait for the owner's answer; send again";
+                return self.fail_task(&task, why).await.unwrap_or(task);
             }
         };
         let watch = held_watch(held.request_scope, route.clone(), HOLD_TTL);
@@ -3667,9 +3693,154 @@ impl Agents {
                 watch,
                 since_ms: Utc::now().timestamp_millis().max(0) as u64,
                 preview,
+                machine: origin.machine.clone(),
             });
-        self.rt.publish(ContactsHeldChanged).await;
+        self.held_changed().await;
         held
+    }
+
+    /// 191 (D4): mirror [`NetworkState::held`] into `contact_holds` (one row per (contact,
+    /// export), keyed by its oldest task), then tell the surfaces (`ContactsHeldChanged`).
+    /// Only changed rows are written; a failed write is retried at the next change or the
+    /// next `ContactHolds` read, whichever comes first, from the rows this engine really has
+    /// in the table. The holds themselves stay memory: a missing row only hides one from
+    /// other machines.
+    async fn held_changed(&mut self) {
+        use crate::store::contacts::{Cell, HoldRow, RecordTable, RecordWrite};
+        let owner = self.store.engine().to_owned();
+        if !self.network.holds_synced {
+            match self.store.contact_holds().await {
+                Ok(rows) => {
+                    self.network.holds_mirrored = rows
+                        .into_iter()
+                        .filter(|r| r.owner.as_deref() == Some(owner.as_str()))
+                        .map(|r| (r.id.clone(), HoldRow { inbox: None, ..r }))
+                        .collect();
+                }
+                Err(e) => {
+                    tracing::warn!("191: read back first-contact hold rows: {e:#}");
+                    self.rt.publish(ContactsHeldChanged).await;
+                    return;
+                }
+            }
+        }
+        let ttl = HOLD_TTL.as_millis() as u64;
+        let want: BTreeMap<String, HoldRow> = self
+            .network
+            .held
+            .iter()
+            .filter_map(|((contact, export), tasks)| {
+                let first = tasks.first()?;
+                let newest = tasks.iter().map(|h| h.since_ms).max()?;
+                let row = HoldRow {
+                    id: first.task.id.clone(),
+                    contact: Some(contact.clone()),
+                    machine: Some(
+                        first
+                            .machine
+                            .chars()
+                            .filter(|c| !c.is_control())
+                            .take(64)
+                            .collect(),
+                    ),
+                    export: Some(export.clone()),
+                    session: Some(first.task.session.to_string()),
+                    owner: Some(owner.clone()),
+                    since_ms: Some(first.since_ms as i64),
+                    waiting: Some(tasks.len() as i64),
+                    preview: Some(first.preview.chars().filter(|c| !c.is_control()).collect()),
+                    until_ms: Some(newest.saturating_add(ttl) as i64),
+                    inbox: None,
+                };
+                Some((row.id.clone(), row))
+            })
+            .collect();
+        let mut writes: Vec<RecordWrite> = self
+            .network
+            .holds_mirrored
+            .keys()
+            .filter(|id| !want.contains_key(*id))
+            .map(|id| RecordWrite::delete(RecordTable::Holds, id.clone()))
+            .collect();
+        let text = |v: &Option<String>| v.clone().map_or(Cell::Null, Cell::Text);
+        let int = |v: Option<i64>| v.map_or(Cell::Null, Cell::Int);
+        for (id, r) in &want {
+            if self.network.holds_mirrored.get(id) == Some(r) {
+                continue;
+            }
+            writes.push(RecordWrite::new(
+                RecordTable::Holds,
+                id.clone(),
+                vec![
+                    ("contact", text(&r.contact)),
+                    ("machine", text(&r.machine)),
+                    ("export", text(&r.export)),
+                    ("session", text(&r.session)),
+                    ("owner", text(&r.owner)),
+                    ("since_ms", int(r.since_ms)),
+                    ("waiting", int(r.waiting)),
+                    ("preview", text(&r.preview)),
+                    ("until_ms", int(r.until_ms)),
+                ],
+            ));
+        }
+        if writes.is_empty() {
+            self.network.holds_synced = true;
+        } else {
+            match self.store.write_contact_records(&writes).await {
+                Ok(()) => {
+                    self.network.holds_mirrored = want;
+                    self.network.holds_synced = true;
+                }
+                Err(e) => {
+                    tracing::warn!("191: mirror first-contact holds: {e:#}");
+                    self.network.holds_synced = false;
+                }
+            }
+        }
+        self.rt.publish(ContactsHeldChanged).await;
+    }
+
+    /// 191 (D3): `session` was drained for a release (another machine takes it). Its held
+    /// first messages fail [`HOLD_MOVED`]: never started and never carried anywhere (the Allow
+    /// they wait for was never given; the contact's resend reaches the new owner, which holds
+    /// it afresh). Its full contact messages, already in the queue that moves, complete as
+    /// receipts.
+    pub(crate) async fn network_session_drained(&mut self, session: SessionId) {
+        let mut gone = Vec::new();
+        for tasks in self.network.held.values_mut() {
+            let (moved, keep): (Vec<HeldTask>, Vec<HeldTask>) = std::mem::take(tasks)
+                .into_iter()
+                .partition(|h| h.task.session == session);
+            *tasks = keep;
+            gone.extend(moved);
+        }
+        self.network.held.retain(|_, v| !v.is_empty());
+        for h in &gone {
+            h.watch.abort();
+            tracing::info!(task = %h.task.id, %session, "191: drained: a held first message fails");
+            if let Err(e) = self.fail_task(&h.task, HOLD_MOVED).await {
+                tracing::warn!(task = %h.task.id, "a2a: fail held task: {e:#}");
+            }
+        }
+        let inbound: Vec<(Uuid, TaskRef)> = self
+            .network
+            .full_inbound
+            .iter()
+            .map(|(x, r)| (*x, r.clone()))
+            .collect();
+        for (exchange, r) in inbound {
+            match r.load(&self.store).await {
+                Ok(t) if t.session == session => {
+                    self.full_consumed(exchange).await;
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(%exchange, "a2a: drained: full task: {}", e.message),
+            }
+        }
+        if !gone.is_empty() {
+            self.held_changed().await;
+        }
     }
 
     /// [`RebindHeld`].
@@ -3708,7 +3879,7 @@ impl Agents {
             }
         }
         if !changed.is_empty() {
-            self.rt.publish(ContactsHeldChanged).await;
+            self.held_changed().await;
         }
     }
 
@@ -3740,14 +3911,40 @@ impl Agents {
             }
         }
         if n > 0 {
-            self.rt.publish(ContactsHeldChanged).await;
+            self.held_changed().await;
         }
         n
     }
 
+    /// 191 (D3, P3 review N3): why a held task cannot run or wait here, if it cannot: its
+    /// chat is mid-release-drain or another machine owns it ([`HOLD_MOVED`]), or its row does
+    /// not read ([`HOLD_UNCHECKED`]; the store's error is logged, never shown the contact).
+    async fn hold_moved(&self, task: &A2aTask) -> Option<&'static str> {
+        if self.draining_sessions.contains_key(&task.session) {
+            return Some(HOLD_MOVED);
+        }
+        match self.store.owner_strict(task.session).await {
+            Ok(crate::store::contacts::Owner::Here) => None,
+            Ok(_) => Some(HOLD_MOVED),
+            Err(e) => {
+                tracing::warn!(task = %task.id, "a2a: held task: session row unreadable: {e:#}");
+                Some(HOLD_UNCHECKED)
+            }
+        }
+    }
+
     /// A released task starts as a fresh admission would: under today's policy and the
-    /// grant it was accepted with.
+    /// grant it was accepted with. 191 (D3): only on the chat's owner, strictly
+    /// ([`Self::hold_moved`]): it is never started here nor carried to the owner.
     async fn start_held(&mut self, h: HeldTask) {
+        let refused = self.hold_moved(&h.task).await;
+        if let Some(why) = refused {
+            tracing::info!(task = %h.task.id, session = %h.task.session, "191: release refused: not the chat's owner");
+            if let Err(e) = self.fail_task(&h.task, why).await {
+                tracing::warn!(task = %h.task.id, "a2a: fail held task: {e:#}");
+            }
+            return;
+        }
         let binding = h
             .task
             .principal
@@ -3839,14 +4036,65 @@ impl Message<ContactsHeld> for Agents {
                     contact: contact.clone(),
                     export: export.clone(),
                     session: first.task.session,
+                    task: first.task.id.clone(),
                     since_ms: first.since_ms,
                     waiting: tasks.len(),
                     preview: first.preview.clone(),
+                    machine: first
+                        .machine
+                        .chars()
+                        .filter(|c| !c.is_control())
+                        .take(64)
+                        .collect(),
                 })
             })
             .collect();
         out.sort_by(|a, b| (&a.contact, &a.export).cmp(&(&b.contact, &b.export)));
         out
+    }
+}
+
+/// `ask` → `Result<Vec<HoldRow>, String>` (191 D4): the other machines' `contact_holds`
+/// rows, as stored (the reader cleans them). This engine's own holds are its memory
+/// ([`ContactsHeld`]), so its own rows (a stale one too) are never listed. P3 review S1: a
+/// mirror that failed is retried here first.
+#[derive(Clone, Copy, Debug)]
+pub struct ContactHolds;
+
+impl Message<ContactHolds> for Agents {
+    type Reply = Result<Vec<crate::store::contacts::HoldRow>, String>;
+
+    async fn handle(&mut self, _: ContactHolds, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if !self.network.holds_synced {
+            self.held_changed().await;
+        }
+        let me = self.store.engine();
+        let mut rows = self
+            .store
+            .contact_holds()
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        rows.retain(|r| r.owner.as_deref() != Some(me));
+        Ok(rows)
+    }
+}
+
+/// Tests (`test-support`): every `contact_holds` row, this engine's own included, as the
+/// record replica would carry them.
+#[cfg(feature = "test-support")]
+#[derive(Clone, Copy, Debug)]
+pub struct ContactHoldRowsForTest;
+
+#[cfg(feature = "test-support")]
+impl Message<ContactHoldRowsForTest> for Agents {
+    type Reply = Vec<crate::store::contacts::HoldRow>;
+
+    async fn handle(
+        &mut self,
+        _: ContactHoldRowsForTest,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store.contact_holds().await.unwrap()
     }
 }
 
@@ -3884,7 +4132,7 @@ impl Agents {
         if let Err(e) = self.fail_task(&h.task, why).await {
             tracing::warn!(task = %h.task.id, "a2a: fail held task: {e:#}");
         }
-        self.rt.publish(ContactsHeldChanged).await;
+        self.held_changed().await;
     }
 }
 
@@ -5541,6 +5789,251 @@ mod tests {
             })
             .await;
         assert_eq!(n, 0, "Allow finds nothing to run");
+    }
+
+    /// 191 (D3, D4): the owner mirrors a hold as a `contact_holds` row (its machine cleaned
+    /// and cut); a drain for a release fails the hold "the chat moved; send again", never
+    /// starting it, deletes the row, and completes the chat's full contact task as a receipt.
+    #[tokio::test]
+    async fn a_drain_fails_a_hold_and_completes_full_tasks() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        a.communication.0.write().set_network(true, true);
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let principal = format!("peer:{}", binding.id);
+        let (session, _, _) = exported_task(&mut a, &principal).await;
+        a.network.peers.insert(
+            binding.id,
+            RemotePeer {
+                name: "bob".into(),
+                roots: Vec::new(),
+                sender: None,
+                generation: CancellationToken::new(),
+                contact: true,
+                full: vec!["research".into()],
+            },
+        );
+        let origin = super::super::ContactOrigin {
+            machine: format!("33\n3\u{1b}[31m{}", "x".repeat(4096)),
+            ..bob("research")
+        };
+        let p = |ask_first| A2aPrincipal {
+            binding: binding.id,
+            export: "research".into(),
+            session,
+            route: CancellationToken::new(),
+            contact: Some(origin.clone()),
+            ask_first,
+        };
+        let s = A2aScope {
+            principal: &principal,
+            export: "research",
+        };
+        let full = a
+            .admit_send(
+                &p(false),
+                &full_send("m-1", "bob-ctx", &FullWire::default()),
+            )
+            .await
+            .unwrap()
+            .task;
+        assert_eq!(full.status, A2aTaskStatus::Working, "{:?}", full.error);
+        let held = a.admit_send(&p(true), &send("m-2")).await.unwrap().task;
+        assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+        let rows = a.store.contact_holds().await.unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let r = &rows[0];
+        assert_eq!(r.id, held.id, "keyed by the oldest held task");
+        assert_eq!(
+            (r.contact.as_deref(), r.export.as_deref(), r.session.clone()),
+            (Some("bob"), Some("research"), Some(session.to_string()))
+        );
+        assert_eq!(r.owner.as_deref(), Some(a.store.engine()));
+        assert_eq!(
+            (r.waiting, r.preview.as_deref()),
+            (Some(1), Some("do research"))
+        );
+        let machine = r.machine.clone().unwrap();
+        assert!(!machine.chars().any(char::is_control), "{machine:?}");
+        assert_eq!(machine.chars().count(), 64);
+        assert_eq!(
+            r.until_ms.unwrap() - r.since_ms.unwrap(),
+            HOLD_TTL.as_millis() as i64
+        );
+
+        a.network_session_drained(session).await;
+        let now = a.store.a2a_task(s, &held.id).await.unwrap().unwrap();
+        assert_eq!(now.status, A2aTaskStatus::Failed, "never released");
+        assert_eq!(now.error.as_deref(), Some(HOLD_MOVED));
+        assert!(a.network.held.is_empty());
+        assert!(
+            a.store.contact_holds().await.unwrap().is_empty(),
+            "its row went"
+        );
+        let done = a.store.a2a_task(s, &full.id).await.unwrap().unwrap();
+        assert_eq!(done.status, A2aTaskStatus::Completed);
+        assert!(full::task_is_receipt(&snapshot(&done)), "a receipt");
+        assert!(a.network.full_inbound.is_empty());
+    }
+
+    /// 191 (D3): a release checks the owner first. A chat another machine took meanwhile (a
+    /// Write take: no drain) fails the task "the chat moved; send again", and an unreadable
+    /// row fails it too; neither is started, and the row goes.
+    #[tokio::test]
+    async fn a_release_after_the_chat_moved_fails_the_task() {
+        for unreadable in [false, true] {
+            let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+            let binding = a
+                .store
+                .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+                .await
+                .unwrap();
+            let principal = format!("peer:{}", binding.id);
+            let (session, busy, _) = exported_task(&mut a, &principal).await;
+            let p = A2aPrincipal {
+                binding: binding.id,
+                export: "research".into(),
+                session,
+                route: CancellationToken::new(),
+                contact: Some(bob("research")),
+                ask_first: true,
+            };
+            let held = a.admit_send(&p, &send("m-a")).await.unwrap().task;
+            assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+            if unreadable {
+                a.store.break_session_for_test(session).await;
+            } else {
+                a.store.owned_elsewhere(session, "another-engine").await;
+            }
+            let n = a
+                .release_held(ContactRelease {
+                    contact: "bob".into(),
+                    export: Some("research".into()),
+                    allow: true,
+                })
+                .await;
+            assert_eq!(n, 1);
+            let s = A2aScope {
+                principal: &principal,
+                export: "research",
+            };
+            let now = a.store.a2a_task(s, &held.id).await.unwrap().unwrap();
+            assert_eq!(now.status, A2aTaskStatus::Failed, "never started here");
+            let why = now.error.unwrap_or_default();
+            if unreadable {
+                assert_eq!(why, HOLD_UNCHECKED, "a fixed sentence, never the store's");
+            } else {
+                assert_eq!(why, HOLD_MOVED);
+            }
+            let busy = a.store.a2a_task(s, &busy.id).await.unwrap().unwrap();
+            assert_eq!(busy.status, A2aTaskStatus::Working, "nothing else moved");
+            assert!(a.network.held.is_empty());
+            assert!(a.store.contact_holds().await.unwrap().is_empty());
+        }
+    }
+
+    /// A contact `bob` granted `research` in full, its exported chat, and the principal of
+    /// a first message to it (`ask_first`).
+    async fn held_chat(a: &mut Agents) -> (SessionId, String, A2aPrincipal) {
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let principal = format!("peer:{}", binding.id);
+        let (session, _, _) = exported_task(a, &principal).await;
+        let p = A2aPrincipal {
+            binding: binding.id,
+            export: "research".into(),
+            session,
+            route: CancellationToken::new(),
+            contact: Some(bob("research")),
+            ask_first: true,
+        };
+        (session, principal, p)
+    }
+
+    /// 191 (D3, P3 review S4): only a release drain moves the chat. A desk pause drains it
+    /// too and keeps its holds and their rows; a release drain fails them "the chat moved".
+    #[tokio::test]
+    async fn only_a_release_drain_fails_holds() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let (session, principal, p) = held_chat(&mut a).await;
+        let held = a.admit_send(&p, &send("m-a")).await.unwrap().task;
+        assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+        a.session_drained(session, false).await;
+        assert_eq!(a.network.held.len(), 1, "a pause keeps its holds");
+        assert_eq!(a.store.contact_holds().await.unwrap().len(), 1);
+        a.session_drained(session, true).await;
+        let s = A2aScope {
+            principal: &principal,
+            export: "research",
+        };
+        let now = a.store.a2a_task(s, &held.id).await.unwrap().unwrap();
+        assert_eq!(now.status, A2aTaskStatus::Failed);
+        assert_eq!(now.error.as_deref(), Some(HOLD_MOVED));
+        assert!(a.network.held.is_empty());
+        assert!(a.store.contact_holds().await.unwrap().is_empty());
+    }
+
+    /// 191 (P3 review N3): a first message admitted while its chat is mid-release-drain is
+    /// not held (the drain is past: the hold and its row would outlive the chat here): it
+    /// fails "the chat moved; send again" at once.
+    #[tokio::test]
+    async fn a_first_message_into_a_draining_chat_is_not_held() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let (session, _, p) = held_chat(&mut a).await;
+        a.draining_sessions
+            .insert(session, crate::supervisor::transfer::RELEASE);
+        let t = a.admit_send(&p, &send("m-a")).await.unwrap().task;
+        assert_eq!(t.status, A2aTaskStatus::Failed);
+        assert_eq!(t.error.as_deref(), Some(HOLD_MOVED));
+        assert!(a.network.held.is_empty());
+        assert!(a.store.contact_holds().await.unwrap().is_empty());
+    }
+
+    /// 191 (P3 review S1): after a failed write (or a failed boot cleanup) the mirror reads
+    /// this engine's rows back: a stale own row goes at the next mirror, another machine's
+    /// stays, and the hold this engine has is written.
+    #[tokio::test]
+    async fn a_stale_own_hold_row_goes_at_the_next_mirror() {
+        use crate::store::contacts::{Cell, RecordTable, RecordWrite};
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let (_, _, p) = held_chat(&mut a).await;
+        let held = a.admit_send(&p, &send("m-a")).await.unwrap().task;
+        let row = |id: &str, owner: &str| {
+            RecordWrite::new(
+                RecordTable::Holds,
+                id,
+                vec![("owner", Cell::Text(owner.into()))],
+            )
+        };
+        let me = a.store.engine().to_owned();
+        a.store
+            .write_contact_records(&[
+                row("stale", &me),
+                row("theirs", "other-engine"),
+                RecordWrite::delete(RecordTable::Holds, held.id.clone()),
+            ])
+            .await
+            .unwrap();
+        a.network.holds_synced = false;
+        a.held_changed().await;
+        assert!(a.network.holds_synced);
+        let ids: Vec<String> = a
+            .store
+            .contact_holds()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        let mut want = vec![held.id.clone(), "theirs".to_owned()];
+        want.sort();
+        assert_eq!(ids, want);
     }
 
     /// 183 review 1: the held line takes the holder's machine text cut to 64 characters

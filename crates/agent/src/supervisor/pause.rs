@@ -227,6 +227,12 @@ pub(super) async fn boot_accounting(store: &Store, data_dir: &Path) -> Vec<(Stri
         Ok(_) => {}
         Err(e) => tracing::error!("communication restart accounting: {e:#}"),
     }
+    // 191 (D4): the holds lived in memory and the restart failed them; their mirrored rows go.
+    match store.clear_own_contact_holds().await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("191: {n} first-contact hold row(s) of the last run removed"),
+        Err(e) => tracing::error!("191: remove the last run's hold rows: {e:#}"),
+    }
     paused
 }
 

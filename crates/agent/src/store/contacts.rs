@@ -1,10 +1,10 @@
 //! 191 (D2): the mesh-wide contact records — `contacts`, `contact_endpoints`, `contact_grants`
-//! and `a2a_exports` (plus, from P2, `contact_rosters` and `contact_roster_heads`, and
-//! `contact_threads`) — ride the record replica beside `projects`. Only the a2a plugin
-//! interprets them (its reconcile stages them row by row and quarantines a bad one); this
-//! module reads them whole and writes single columns, so a write never rolls back a column
-//! another machine changed since the read. `contact_addrs` and `contact_roster_local` are
-//! local. `sessions.contact_inbox` (D4) is a session-log column.
+//! and `a2a_exports` (plus, from P2, `contact_rosters` and `contact_roster_heads`, from P3
+//! `contact_holds`, and `contact_threads`) — ride the record replica beside `projects`. Only
+//! the a2a plugin interprets them (its reconcile stages them row by row and quarantines a bad
+//! one); this module reads them whole and writes single columns, so a write never rolls back
+//! a column another machine changed since the read. `contact_addrs` and
+//! `contact_roster_local` are local. `sessions.contact_inbox` (D4) is a session-log column.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
@@ -15,7 +15,7 @@ use sqlx::FromRow;
 use super::Store;
 
 /// The replicated 191 tables, attached by [`Store::replicate_records`].
-pub const RECORD_TABLES: [&str; 7] = [
+pub const RECORD_TABLES: [&str; 8] = [
     "contacts",
     "contact_endpoints",
     "contact_grants",
@@ -23,6 +23,7 @@ pub const RECORD_TABLES: [&str; 7] = [
     "contact_threads",
     "contact_rosters",
     "contact_roster_heads",
+    "contact_holds",
 ];
 
 /// 191 (D3): whose a session is, as the contact paths read it ([`Store::owner_strict`]).
@@ -167,6 +168,33 @@ pub struct LocalRow {
     pub history: String,
 }
 
+/// 191 (D4, P3): one `contact_holds` row: `id` = the oldest held task's id of one (contact,
+/// export) on `owner`. Another machine's row is data: every column may be NULL or hostile,
+/// and the reader cleans and cuts it.
+#[allow(missing_docs)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, FromRow)]
+pub struct HoldRow {
+    pub id: String,
+    /// The contact's alias.
+    pub contact: Option<String>,
+    /// The contact's machine, from its card.
+    pub machine: Option<String>,
+    /// The export's name.
+    pub export: Option<String>,
+    pub session: Option<String>,
+    /// The engine id that holds the tasks.
+    pub owner: Option<String>,
+    pub since_ms: Option<i64>,
+    pub waiting: Option<i64>,
+    pub preview: Option<String>,
+    /// When the newest held task expires (ms since epoch).
+    pub until_ms: Option<i64>,
+    /// Read only, never written: `session`'s row here, by its `contact_inbox` marker
+    /// (`<principal>|<export id>`): `None` when no such row is here, `""` for a session that
+    /// is no inbox. The reader checks an agent export's row names that export's inbox.
+    pub inbox: Option<String>,
+}
+
 /// Everything the a2a reconcile stages, read in one snapshot. Its content (never a row's
 /// `hlc`, which is a max over columns and misses a remote column write older than the
 /// row's newest) is what [`Records::content_hash`] covers.
@@ -236,6 +264,8 @@ pub enum RecordTable {
     Heads,
     /// `contact_roster_local` (P2, local): keyed by `record`.
     Local,
+    /// `contact_holds` (P3): the owner's own rows only.
+    Holds,
 }
 
 impl RecordTable {
@@ -248,6 +278,7 @@ impl RecordTable {
             Self::Rosters => "contact_rosters",
             Self::Heads => "contact_roster_heads",
             Self::Local => "contact_roster_local",
+            Self::Holds => "contact_holds",
         }
     }
 
@@ -288,6 +319,10 @@ impl RecordTable {
                 "at_ms",
             ],
             Self::Local => &["chain", "version", "hash", "roster", "history"],
+            Self::Holds => &[
+                "contact", "machine", "export", "session", "owner", "since_ms", "waiting",
+                "preview", "until_ms",
+            ],
         }
     }
 }
@@ -529,6 +564,46 @@ impl Store {
         .bind(session.to_string())
         .fetch_one(&self.read)
         .await?)
+    }
+
+    /// 191 (D4, P3): every `contact_holds` row (every machine's), by id, with its session's
+    /// `contact_inbox` here. Replicated cells keep whatever type another machine wrote, so
+    /// the cells are typed in SQL: a cell of another type reads NULL (the reader drops the
+    /// row), never failing the read of every other row; text is cut to 256 characters, a
+    /// row whose id is not text of at most 256 is skipped, and at most 512 rows are read
+    /// (one per held (contact, export) on each machine).
+    pub async fn contact_holds(&self) -> anyhow::Result<Vec<HoldRow>> {
+        Ok(sqlx::query_as(
+            "SELECT h.id, \
+             CASE WHEN typeof(h.contact) = 'text' THEN substr(h.contact, 1, 256) END AS contact, \
+             CASE WHEN typeof(h.machine) = 'text' THEN substr(h.machine, 1, 256) END AS machine, \
+             CASE WHEN typeof(h.export) = 'text' THEN substr(h.export, 1, 256) END AS export, \
+             CASE WHEN typeof(h.session) = 'text' THEN substr(h.session, 1, 256) END AS session, \
+             CASE WHEN typeof(h.owner) = 'text' THEN substr(h.owner, 1, 256) END AS owner, \
+             CASE WHEN typeof(h.since_ms) = 'integer' THEN h.since_ms END AS since_ms, \
+             CASE WHEN typeof(h.waiting) = 'integer' THEN h.waiting END AS waiting, \
+             CASE WHEN typeof(h.preview) = 'text' THEN substr(h.preview, 1, 256) END AS preview, \
+             CASE WHEN typeof(h.until_ms) = 'integer' THEN h.until_ms END AS until_ms, \
+             CASE WHEN s.id IS NULL THEN NULL WHEN typeof(s.contact_inbox) = 'text' \
+             THEN substr(s.contact_inbox, 1, 256) ELSE '' END AS inbox \
+             FROM contact_holds h LEFT JOIN sessions s ON s.id = h.session \
+             WHERE typeof(h.id) = 'text' AND length(h.id) <= 256 ORDER BY h.id LIMIT 512",
+        )
+        .fetch_all(&self.read)
+        .await?)
+    }
+
+    /// 191 (D4, P3): at boot, this engine's own `contact_holds` rows go: its holds lived in
+    /// memory and were failed by the restart. Returns how many.
+    pub async fn clear_own_contact_holds(&self) -> anyhow::Result<u64> {
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query("DELETE FROM contact_holds WHERE owner = ?")
+            .bind(&*self.me)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        tx.commit().await?;
+        Ok(n)
     }
 
     /// Tests: `session` is owned by `owner`, as the session log applies another machine's
@@ -897,6 +972,139 @@ mod tests {
             store.backfill_contact_inboxes(&ids).await.unwrap(),
             0,
             "marked once"
+        );
+    }
+
+    /// `contact_holds` row `id` with every column `owner` mirrors.
+    fn hold(id: &str, owner: &str) -> RecordWrite {
+        RecordWrite::new(
+            RecordTable::Holds,
+            id,
+            vec![
+                ("contact", Cell::Text("bob".into())),
+                ("export", Cell::Text("research".into())),
+                ("owner", Cell::Text(owner.into())),
+                ("since_ms", Cell::Int(1)),
+                ("waiting", Cell::Int(1)),
+                ("until_ms", Cell::Int(2)),
+            ],
+        )
+    }
+
+    /// 191 (P3 review M1): replicated cells keep the type another machine wrote. A row with
+    /// text in an integer column or a blob in a text column reads those cells NULL (the
+    /// reader then drops it) and never fails the read of the good rows; a row whose id is
+    /// not text is skipped; long text is cut to 256 characters; at most 512 rows are read.
+    #[tokio::test]
+    async fn a_bad_typed_hold_row_never_hides_the_others() {
+        let (store, _, _dir) = fresh().await;
+        store
+            .write_contact_records(&[hold("good", "n2")])
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO contact_holds (id, contact, owner, since_ms, waiting, until_ms, preview) \
+             VALUES ('bad', x'00ff', 'n2', 'soon', 'many', 'never', ?)",
+        )
+        .bind("p".repeat(100_000))
+        .execute(&store.write)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO contact_holds (id, contact) VALUES (x'07', 'bob')")
+            .execute(&store.write)
+            .await
+            .unwrap();
+        let rows = store.contact_holds().await.unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["bad", "good"],
+            "the blob id is skipped"
+        );
+        let bad = &rows[0];
+        assert_eq!(
+            (
+                bad.contact.as_deref(),
+                bad.since_ms,
+                bad.waiting,
+                bad.until_ms
+            ),
+            (None, None, None, None)
+        );
+        assert_eq!(bad.owner.as_deref(), Some("n2"));
+        assert_eq!(bad.preview.as_deref().map(str::len), Some(256));
+        assert_eq!(rows[1].until_ms, Some(2));
+        let many: Vec<RecordWrite> = (0..600).map(|i| hold(&format!("h{i:03}"), "n2")).collect();
+        store.write_contact_records(&many).await.unwrap();
+        assert_eq!(store.contact_holds().await.unwrap().len(), 512);
+    }
+
+    /// 191 (P3 review M2): at boot only this engine's own hold rows go; another machine's
+    /// stay (it still holds them).
+    #[tokio::test]
+    async fn boot_clears_only_this_engines_hold_rows() {
+        let scratch = crate::TestDir::new("contacts");
+        let store = Store::open(
+            &scratch.0.join("sessions.sqlite"),
+            Some(mesh::EngineId("me-engine".into())),
+        )
+        .await
+        .unwrap();
+        store
+            .write_contact_records(&[
+                hold("a", "me-engine"),
+                hold("b", "other-engine"),
+                hold("c", "me-engine"),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(store.clear_own_contact_holds().await.unwrap(), 2);
+        let left: Vec<String> = store
+            .contact_holds()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(left, ["b"]);
+    }
+
+    /// 191 (P3 review S4): `contact_holds` rides the real record replica: a row written on
+    /// one machine is captured and applied on another, and its deletion follows.
+    #[tokio::test]
+    async fn a_hold_row_and_its_deletion_ride_the_record_replica() {
+        let open = |name: &'static str| async move {
+            let dir = crate::TestDir::new(name);
+            let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+                .await
+                .unwrap();
+            let engine = replica::Engine::open(&dir.0.join("replica.sqlite"))
+                .await
+                .unwrap();
+            let handle = engine.attach(&store.write, &RECORD_TABLES).await.unwrap();
+            (store, engine, handle, dir)
+        };
+        let (a, ea, ha, _da) = open("holds-rep-a").await;
+        let (b, eb, _hb, _db) = open("holds-rep-b").await;
+        let mut feed = ea.subscribe();
+        a.write_contact_records(&[hold("t-1", "n2")]).await.unwrap();
+        ha.flush().await.unwrap();
+        while let Ok(batch) = feed.try_recv() {
+            eb.apply(&batch).await.unwrap();
+        }
+        let on_b = b.contact_holds().await.unwrap();
+        assert_eq!(on_b, a.contact_holds().await.unwrap());
+        assert_eq!(on_b.len(), 1);
+        assert_eq!(on_b[0].owner.as_deref(), Some("n2"));
+        a.write_contact_records(&[RecordWrite::delete(RecordTable::Holds, "t-1")])
+            .await
+            .unwrap();
+        ha.flush().await.unwrap();
+        while let Ok(batch) = feed.try_recv() {
+            eb.apply(&batch).await.unwrap();
+        }
+        assert!(
+            b.contact_holds().await.unwrap().is_empty(),
+            "deleted there too"
         );
     }
 }

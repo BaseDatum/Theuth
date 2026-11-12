@@ -243,6 +243,9 @@ struct State {
     retry_at: Option<std::time::Instant>,
     /// 191 (D1): the `peers_gen` the last reconcile saw (a mesh membership change signs).
     peers_gen: Option<u64>,
+    /// 191 (D4): the content hash of `contact_holds` last seen (a change refreshes every
+    /// surface, whoever wrote the rows).
+    holds_hash: Option<u64>,
     /// 191 (D1): the contacts (record ids) this process pushed our chains to since the last
     /// signing: one newly admitted (at boot, after a bootstrap) gets them once too.
     pushed_to: std::collections::BTreeSet<String>,
@@ -890,6 +893,9 @@ impl Ctx {
                 tracing::warn!("a2a: held first messages across a grant change: {e}");
             }
         }
+        // 191 (D2 step 5): a held first message whose answer is now a grant (Always, or a
+        // block for its export), wherever it was written, is released or failed by its owner.
+        self.release_answered(&agents).await;
         let to = agents.clone();
         tokio::spawn(async move {
             for m in limits {
@@ -1017,6 +1023,8 @@ impl Ctx {
             self.remember_addrs().await;
             let was = self.ready.load(std::sync::atomic::Ordering::SeqCst);
             self.tick().await;
+            // 191 (D4): another machine's hold row arrived, changed or went.
+            self.holds_tick().await;
             // 183 F1: what each contact shares with us is memory; fetch it once admitted (191:
             // from every machine of it that is admitted).
             if !was && self.ready.load(std::sync::atomic::Ordering::SeqCst) {
