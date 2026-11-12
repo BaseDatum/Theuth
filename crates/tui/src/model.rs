@@ -22,8 +22,8 @@ use agent::{
     SessionSummary, SkillBody, SkillMeta, Usage, VisionNote, VisionStage, VisionStatus,
 };
 use agent::{
-    BroadcastReceipt, BroadcastRequest, BroadcastTargets, CleanupStatus, CloseResult, CostBucket,
-    CostScope, Coverage, CreateSessionOptions, MemoryMode, Money, Retention, SessionCost,
+    BroadcastReceipt, BroadcastRequest, BroadcastTargets, CleanupStatus, CloseResult,
+    CreateSessionOptions, MemoryMode, Retention,
     SessionOpen,
 };
 use double::{DoubleAnswered, DoublePredicted};
@@ -302,14 +302,6 @@ pub struct Model {
     /// Search requests a reply produced where no sender was at hand (the
     /// refresh reply's re-ask); flushed by the next tick or key.
     search_outbox: Vec<search::Request>,
-    /// `/cost` was typed; the next `UiEvent::Cost` opens the menu (same rule as `awaiting_mcp`).
-    awaiting_cost: bool,
-    /// Latest `session_cost` of the shown session (the header tag, `/cost`,
-    /// the `/agents` child totals; 51 §8.3). `None` until fetched; never summed here.
-    pub cost: Option<SessionCost>,
-    /// The ledger of the shown session (or an ancestor) changed: the event
-    /// loop re-asks `session_cost`.
-    pub refresh_cost: bool,
     /// The shown session's advisor (125 §7.5): the status segment, the
     /// header tag, the picker's `●`. `state: Off` until a reply or event says otherwise.
     pub advisor: AdvisorStatus,
@@ -373,7 +365,6 @@ mod boards;
 mod broadcasts;
 mod catalog;
 mod concepts;
-mod costs;
 mod credentials;
 mod components;
 mod events;
@@ -412,7 +403,6 @@ pub use catalog::{PickTarget, ModelRow, rank_models, providers, provider_models,
 use catalog::{search_terms};
 pub use concepts::{meta_line, HISTORY_PAGE, revision_rows};
 use concepts::{DIFF_STEP};
-pub use costs::{money_units, cost_lines, cost_short};
 pub use credentials::{LoginRow, SecretRequest};
 use credentials::{bad_secret_name};
 pub use events::{UiEvent, Command};

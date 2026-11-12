@@ -1,4 +1,5 @@
 use super::*;
+use crate::components::costs::cost_short;
 
 /// Unix ms now.
 pub(crate) fn now_ms() -> u64 {
@@ -303,7 +304,7 @@ impl Model {
         let mut text = String::new();
         for slot in HeaderSlot::ALL {
             match slot {
-                HeaderSlot::Costs => text.push_str(&self.cost_tag()),
+                HeaderSlot::Costs => {}
                 HeaderSlot::Advisor => text.push_str(&self.advisor_tag()),
                 HeaderSlot::Approvals => text.push_str(self.approvals_tag()),
                 HeaderSlot::Communication => text.push_str(&self.communication_tag()),

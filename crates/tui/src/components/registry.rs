@@ -19,6 +19,7 @@ pub fn builtin() -> Registry {
     registry.register(roster::Roster).expect("built-in component registration");
     registry.register(routines::Routines).expect("built-in component registration");
     registry.register(autoresearch::Autoresearch).expect("built-in component registration");
+    registry.register(costs::Costs::default()).expect("built-in component registration");
 
     // Step-11 group t3 (jobs, terminals, speech and search): register below, in this block only.
 

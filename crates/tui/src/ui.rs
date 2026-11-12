@@ -292,12 +292,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     let _ = commands.send(Command::ListPeers(*session));
                     let _ = commands.send(Command::ListPeerRequests(*session));
                 }
-                // The ledger moved (51 §6.2): the owner summary, never a local sum.
-                if std::mem::take(&mut m.refresh_cost)
-                    && let Some(session) = m.session
-                {
-                    let _ = commands.send(Command::SessionCost(session));
-                }
                 // 125 §3: the link survives a restart; re-read it with every load.
                 if std::mem::take(&mut m.refresh_advisor)
                     && let Some(session) = m.session
@@ -1479,15 +1473,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             *cursor,
         ),
         Menu::KnowledgeHistory { .. } => m.knowledge_history_menu(),
-        Menu::Cost { cost, cursor } => (
-            format!(
-                "cost · {} · rev {}   esc close   (owner summary; nothing is summed here)",
-                short(cost.session),
-                cost.revision
-            ),
-            m.cost_rows(),
-            *cursor,
-        ),
         Menu::Terminals { items, cursor } => (
             "terminals  ⏎ observe (read-only)  r refresh  esc close".to_owned(),
             items.iter().map(terminal_row).collect(),
@@ -1496,14 +1481,14 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
         // Drawn by `terminal_box`, never here.
         Menu::Terminal(_) => return None,
     };
-    // A diff or the cost breakdown gets the screen minus the frame around the box; lists stay short.
+    // Diffs get the screen minus the frame around the box; lists stay short.
     let tall = matches!(
         m.menu,
         Some(
             Menu::KnowledgeHistory {
                 revision: Some(_),
                 ..
-            } | Menu::Cost { .. }
+            }
         )
     );
     Some(menu_view(title, rows, cursor, width, height, tall))

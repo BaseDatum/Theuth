@@ -97,8 +97,6 @@ impl Model {
             .resume
             .filter(|r| !r.here)
             .map(|r| r.owner.unwrap_or_default());
-        // The header's cost tag is the owner's summary, re-read on every load (51 §6.2).
-        self.refresh_cost = true;
         // The link survives a restart (125 §3): re-read it with the transcript.
         self.refresh_advisor = true;
         if let Some(n) = loaded.context_estimate {
