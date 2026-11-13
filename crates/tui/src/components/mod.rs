@@ -44,6 +44,7 @@ pub mod talk;
 pub mod models;
 pub mod aws;
 pub mod vision_settings;
+pub mod advisor;
 pub use registry::{Registry, builtin, builtin_with, configured};
 
 #[cfg(test)]

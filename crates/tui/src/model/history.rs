@@ -241,11 +241,6 @@ pub(crate) fn from_history(h: HistoryEntry, opts: &markdown::Options, registry: 
             Entry::Divider("interrupted — resuming".to_owned()),
             Entry::Info(text),
         ],
-        // 125 §7.4: one card per Advisory row, three notes until Ctrl+O.
-        HistoryEntry::Advisory { advisory, .. } => vec![Entry::Advisory {
-            advisory,
-            expanded: false,
-        }],
         // 183 §5.3: one collapsed card; the model-facing text on Ctrl+O.
         HistoryEntry::Moved { moved, .. } => {
             vec![card(
@@ -254,6 +249,7 @@ pub(crate) fn from_history(h: HistoryEntry, opts: &markdown::Options, registry: 
                 &moved.model_text(),
             )]
         }
+        _ => Vec::new(),
     }
 }
 

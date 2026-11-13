@@ -1,6 +1,83 @@
     use super::*;
     use crate::components::models::{Models, Msg as ModelsMsg, Request as ModelsRequest, Picker, Selection,
         ModelRow, rank_models, providers, provider_models, search_terms, harness_options_lines};
+    use crate::components::advisor::{Advisor, Msg as AdvisorMsg, Request as AdvisorRequest, Card as AdvisoryCard,
+        advisory_title, advisory_lines, advisory_severity, severity_name, severity_color};
+    use agent::{AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AdvisoryKind};
+    use std::collections::BTreeSet;
+
+    fn advisor(m: &Model) -> &Advisor { m.components.get::<Advisor>().unwrap() }
+    fn advisor_mut(m: &mut Model) -> &mut Advisor { m.components.get_mut::<Advisor>().unwrap() }
+    fn advisory_card(m: &mut Model, advisory: Advisory) -> Entry {
+        crate::components::Component::history_entry(advisor_mut(m),
+            HistoryEntry::Advisory { advisory, context: None }, &markdown::Options::default()).unwrap().remove(0)
+    }
+
+    #[test]
+    fn linked_advisor_spawn_does_not_enter_roster_or_split_the_adopted_live_tail() {
+        let session = SessionId::new();
+        let linked = SessionId::new();
+        let turn = TurnId::new();
+        let mut m = Model::new("m".into(), false);
+        m.awaiting_session = true;
+        m.apply(wire_event("agent.events", AgentEvent::TurnStarted {
+            session, turn, turn_seq: 1, text: "question".into(), model: "m".into(), channel: None,
+        }));
+        m.apply(wire_event("agent.events", AgentEvent::TextDelta { session, turn, text: "before ".into() }));
+        let mut status = advisor_status(session, AdvisorState::Idle, "openai/o3-pro");
+        status.advisor = Some(linked);
+        m.apply(wire_event("agent.events", AgentEvent::AdvisorChanged { session, status }));
+        m.apply(wire_event("agent.events", AgentEvent::SubagentSpawned {
+            parent: session, child: linked, name: "advisor".into(), cap: None,
+        }));
+        m.apply(wire_event("agent.events", AgentEvent::AdvisoryAdded {
+            session, seq: 7, advisory: advisory(linked, vec![note(AdvisorSeverity::Concern, "check")]),
+        }));
+        m.apply(wire_event("agent.events", AgentEvent::TextDelta { session, turn, text: "after".into() }));
+        assert_eq!(m.session, Some(session));
+        assert!(m.agents.is_empty() && m.board().is_empty());
+        assert!(!info_lines(&m).iter().any(|line| line.starts_with("↳ spawned")));
+        let tails: Vec<_> = m.entries.iter().filter_map(|entry| match entry { Entry::Assistant(tail) => Some(tail), _ => None }).collect();
+        assert_eq!(tails.len(), 1);
+        assert_eq!(tails[0].raw(), "before after");
+        assert!(!tails[0].is_done());
+        assert_eq!(m.entries.iter().filter(|entry| advisor(&m).card(entry).is_some()).count(), 1);
+    }
+
+    #[test]
+    fn advisor_history_keys_repeat_without_losing_search_card_disclosure() {
+        let (tx, mut rx) = unbounded_channel();
+        let session = SessionId::new();
+        let mut m = Model::new("m".into(), false);
+        m.session = Some(session);
+        let receipt = advisory(SessionId::new(), (0..5).map(|i| note(AdvisorSeverity::Nit, &format!("note {i}"))).collect());
+        let mut frames = Vec::new();
+        for _ in 0..2 {
+            m.submit("/search advisor", &tx);
+            let request = component_request::<search::Request>(&mut rx).unwrap();
+            m.apply(search_answer(&m, request, vec![search_session_hit(session, Some(7))]));
+            search_key(&mut m, KeyCode::Enter);
+            let request = component_request::<search::Request>(&mut rx).unwrap();
+            m.apply(search_reply(&m, request.generation, search::Reply::Page {
+                session, seq: 7, result: Ok(Loaded {
+                    history: vec![
+                        HistoryEntry::Advisory { advisory: receipt.clone(), context: None },
+                        HistoryEntry::Advisory { advisory: receipt.clone(), context: None },
+                    ],
+                    ..Loaded::default()
+                }),
+            }));
+            let cards: Vec<_> = m.entries.iter().filter(|entry| advisor(&m).card(entry).is_some()).collect();
+            assert_eq!(cards.len(), 2);
+            assert_eq!(m.entry_height(cards[0], 80), 8);
+            assert_eq!(m.entry_height(cards[1], 80), 8);
+            frames.push(cards.iter().map(|entry| entry.key().unwrap().to_owned()).collect::<Vec<_>>());
+            m.toggle_card();
+            assert!(advisor(&m).card(m.entries.last().unwrap()).unwrap().expanded);
+        }
+        assert_eq!(frames[0], frames[1]);
+        assert_ne!(frames[0][0], frames[0][1]);
+    }
 
     pub(crate) fn models(m: &Model) -> &Models { m.components.get::<Models>().unwrap() }
     pub(crate) fn models_mut(m: &mut Model) -> &mut Models { m.components.get_mut::<Models>().unwrap() }
@@ -8307,7 +8384,7 @@
             model_id: "openai/o3-pro".into(),
             ..Model::new(String::new(), false)
         };
-        m.advisor = advisor_status(s, AdvisorState::Idle, "openai/gpt-5.4");
+        advisor_mut(&mut m).status = advisor_status(s, AdvisorState::Idle, "openai/gpt-5.4");
         m.submit("/advisor", &tx);
         rx.try_recv().unwrap();
         models_reply(&mut m, chips_catalog());
@@ -8325,12 +8402,12 @@
         models_key(&mut m, KeyCode::Left, &tx);
         models_key(&mut m, KeyCode::Enter, &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetAdvisor { session, model: Some(model), effort: Some(e) })
+            component_request::<AdvisorRequest>(&mut rx),
+            Ok(AdvisorRequest::SetAdvisor { session, model: Some(model), effort: Some(e) })
                 if session == s && model == "openai/gpt-5.4" && e == "medium"
         ));
         assert!(models(&m).menu.is_none());
-        m.advisor = advisor_status(s, AdvisorState::Idle, "openai/gpt-5.4-mini");
+        advisor_mut(&mut m).status = advisor_status(s, AdvisorState::Idle, "openai/gpt-5.4-mini");
         m.submit("/advisor", &tx);
         rx.try_recv().unwrap();
         models_reply(&mut m, chips_catalog());
@@ -8343,8 +8420,8 @@
         );
         models_key(&mut m, KeyCode::Enter, &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetAdvisor { model: Some(model), effort: Some(e), .. })
+            component_request::<AdvisorRequest>(&mut rx),
+            Ok(AdvisorRequest::SetAdvisor { model: Some(model), effort: Some(e), .. })
                 if model == "openai/gpt-5.4" && e == "high"
         ));
     }
@@ -8409,13 +8486,13 @@
         models_key(&mut m, KeyCode::Up, &tx);
         models_key(&mut m, KeyCode::Enter, &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetAdvisor { session, model: None, effort: None }) if session == s
+            component_request::<AdvisorRequest>(&mut rx),
+            Ok(AdvisorRequest::SetAdvisor { session, model: None, effort: None }) if session == s
         ));
         assert!(models(&m).menu.is_none());
         // With an advisor set: `Off` unmarked, the advisor's model is the Current row,
         // ⏎ on a model goes to `set_advisor`, and `/model` has no Off row at all.
-        m.advisor = advisor_status(s, AdvisorState::Idle, "anthropic/claude-opus-4-1");
+        advisor_mut(&mut m).status = advisor_status(s, AdvisorState::Idle, "anthropic/claude-opus-4-1");
         m.submit("/advisor", &tx);
         rx.try_recv().unwrap();
         models_reply(&mut m, model_catalog());
@@ -8434,8 +8511,8 @@
         models_key(&mut m, KeyCode::Down, &tx);
         models_key(&mut m, KeyCode::Enter, &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetAdvisor { session, model: Some(model), effort: None })
+            component_request::<AdvisorRequest>(&mut rx),
+            Ok(AdvisorRequest::SetAdvisor { session, model: Some(model), effort: None })
                 if session == s && model == "anthropic/claude-sonnet-4-5"
         ));
         m.submit("/model", &tx);
@@ -8452,17 +8529,17 @@
         let s = SessionId::new();
         let mut m = Model {
             session: Some(s),
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
         m.submit("/advisor off", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetAdvisor { session, model: None, effort: None }) if session == s
+            component_request::<AdvisorRequest>(&mut rx),
+            Ok(AdvisorRequest::SetAdvisor { session, model: None, effort: None }) if session == s
         ));
         m.submit("/advisor openai/o3-pro", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetAdvisor { model: Some(model), effort: None, .. }) if model == "openai/o3-pro"
+            component_request::<AdvisorRequest>(&mut rx),
+            Ok(AdvisorRequest::SetAdvisor { model: Some(model), effort: None, .. }) if model == "openai/o3-pro"
         ));
         m.agent = Some("omp".into());
         m.submit("/advisor off", &tx);
@@ -8481,7 +8558,7 @@
         let s = SessionId::new();
         let mut m = Model {
             session: Some(s),
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
         m.submit("/advisor on", &tx);
         assert!(rx.try_recv().is_err());
@@ -8489,25 +8566,25 @@
             m.entries.last(),
             Some(Entry::Error(t)) if t == "/advisor on: no remembered advisor model — pick one with /advisor"
         ));
-        m.advisor_default.model = Some("anthropic/claude-opus-4-1".into());
-        m.advisor_default.effort = Some("high".into());
+        advisor_mut(&mut m).defaults.model = Some("anthropic/claude-opus-4-1".into());
+        advisor_mut(&mut m).defaults.effort = Some("high".into());
         m.submit("/advisor on", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetAdvisor { session, model: Some(model), effort: Some(effort) })
+            component_request::<AdvisorRequest>(&mut rx),
+            Ok(AdvisorRequest::SetAdvisor { session, model: Some(model), effort: Some(effort) })
                 if session == s && model == "anthropic/claude-opus-4-1" && effort == "high"
         ));
         // A status naming a model becomes the remembered pick; going off keeps it.
-        m.apply(UiEvent::AdvisorStatus(advisor_status(
+        component_reply(&mut m, "advisor", AdvisorMsg::Status(advisor_status(
             s,
             AdvisorState::Idle,
             "openai/o3-pro",
         )));
-        m.apply(UiEvent::AdvisorStatus(AdvisorStatus {
+        component_reply(&mut m, "advisor", AdvisorMsg::Status(AdvisorStatus {
             session: s,
             ..AdvisorStatus::default()
         }));
-        assert_eq!(m.advisor_default.model.as_deref(), Some("openai/o3-pro"));
+        assert_eq!(advisor(&m).defaults.model.as_deref(), Some("openai/o3-pro"));
         assert_eq!(info_lines(&m), ["advisor → openai/o3-pro", "advisor → off"]);
     }
 
@@ -8518,11 +8595,11 @@
         let s = SessionId::new();
         let mut m = Model {
             session: Some(s),
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
         m.submit("/advisor status", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::AdvisorStatus(id)) if id == s));
-        m.apply(UiEvent::AdvisorStatus(AdvisorStatus {
+        assert!(matches!(component_request::<AdvisorRequest>(&mut rx), Ok(AdvisorRequest::AdvisorStatus(id)) if id == s));
+        component_reply(&mut m, "advisor", AdvisorMsg::Status(AdvisorStatus {
             session: s,
             ..AdvisorStatus::default()
         }));
@@ -8560,7 +8637,7 @@
             total: 7,
             cap: 6,
         };
-        m.apply(UiEvent::AdvisorStatus(status));
+        component_reply(&mut m, "advisor", AdvisorMsg::Status(status));
         assert_eq!(
             info_lines(&m),
             [
@@ -8568,7 +8645,7 @@
                 "advisor: reviewing  ·  anthropic/claude-opus-4-1  ·  high",
                 "notes: 2 nit · 1 concern · 0 blocker  ·  step 14  ·  backlog 0",
                 // `k()` drops the decimal from 100k up (`120k`, not the design's illustrative `120.4k`).
-                "context: 38.2k / 200k (19%)  ·  in 120k · out 3.1k  ·  cost $0.412",
+                "context: 38.2k / 200k (19%)  ·  in 120k · out 3.1k  ·  cost .412",
                 "last: [concern] cite the loop_.rs line before claiming drain_steer runs after every batch",
                 "consults: 2 this turn · 7 total · cap 6",
             ]
@@ -8580,16 +8657,16 @@
     #[test]
     fn advisor_cmd_consults_sets_cap_and_rejects_out_of_range() {
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         m.submit("/advisor consults 12", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetAdvisorMaxConsults(12))
+            component_request::<AdvisorRequest>(&mut rx),
+            Ok(AdvisorRequest::SetAdvisorMaxConsults(12))
         ));
         m.submit("/advisor consults 0", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetAdvisorMaxConsults(0))
+            component_request::<AdvisorRequest>(&mut rx),
+            Ok(AdvisorRequest::SetAdvisorMaxConsults(0))
         ));
         for bad in [
             "/advisor consults 33",
@@ -8644,31 +8721,23 @@
     /// R1.2: the answer's lines collapse to `ADVISORY_COLLAPSED`; Ctrl+O expands.
     #[test]
     fn consultation_card_collapses_answer_lines() {
-        let mut m = Model::default();
-        m.entries.push(Entry::Advisory {
-            advisory: consultation("q", "1\n2\n3\n4\n5"),
-            expanded: false,
-        });
-        assert_eq!(m.entries[0].height(80), 4 + 3 + 1);
+        let mut m = Model::new(String::new(), false);
+        let card = advisory_card(&mut m, consultation("q", "1\n2\n3\n4\n5"));
+        m.entries.push(card);
+        assert_eq!(m.entry_height(&m.entries[0], 80), 4 + 3 + 1);
         m.toggle_card();
-        assert!(matches!(
-            &m.entries[0],
-            Entry::Advisory { expanded: true, .. }
+        assert!(matches!(advisor(&m).card(&m.entries[0]), Some(AdvisoryCard { expanded: true, .. })
         ));
-        assert_eq!(m.entries[0].height(80), 4 + 5);
-        m.entries.push(Entry::Advisory {
-            advisory: consultation("q", "1\n2"),
-            expanded: false,
-        });
-        assert_eq!(m.entries[1].height(80), 4 + 2);
+        assert_eq!(m.entry_height(&m.entries[0], 80), 4 + 5);
+        let card = advisory_card(&mut m, consultation("q", "1\n2"));
+        m.entries.push(card);
+        assert_eq!(m.entry_height(&m.entries[1], 80), 4 + 2);
         m.toggle_card();
         assert!(
-            matches!(
-                &m.entries[1],
-                Entry::Advisory {
+            matches!(advisor(&m).card(&m.entries[1]), Some(AdvisoryCard {
                     expanded: false,
                     ..
-                }
+                })
             ),
             "nothing to expand"
         );
@@ -8679,7 +8748,7 @@
     fn advice_severity_is_sand_and_never_promotes() {
         assert_eq!(severity_name(AdvisorSeverity::Advice), "advice");
         assert_eq!(
-            crate::ui::severity_color(AdvisorSeverity::Advice),
+            severity_color(AdvisorSeverity::Advice),
             crate::ui::SAND
         );
         let only = consultation("q", "a");
@@ -8702,21 +8771,21 @@
         let s = SessionId::new();
         let mut m = Model {
             session: Some(s),
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
         let mut status = advisor_status(s, AdvisorState::Idle, "openai/gpt-5.4-mini");
         status.warning = Some("advisor model prices below the session model (crude signal)".into());
-        m.apply_agent(AgentEvent::AdvisorChanged {
+        m.apply(wire_event("agent.events", AgentEvent::AdvisorChanged {
             session: s,
             status: status.clone(),
-        });
+        }));
         // The RPC reply carrying the same status prints nothing more.
-        m.apply(UiEvent::AdvisorStatus(status.clone()));
+        component_reply(&mut m, "advisor", AdvisorMsg::Status(status.clone()));
         status.step = 3;
-        m.apply_agent(AgentEvent::AdvisorChanged {
+        m.apply(wire_event("agent.events", AgentEvent::AdvisorChanged {
             session: s,
             status: status.clone(),
-        });
+        }));
         assert_eq!(
             info_lines(&m),
             [
@@ -8727,11 +8796,11 @@
         // Re-pick to a model with a sane pairing: no warning; back again: once more.
         let mut fine = advisor_status(s, AdvisorState::Idle, "anthropic/claude-opus-4-1");
         fine.step = 3;
-        m.apply_agent(AgentEvent::AdvisorChanged {
+        m.apply(wire_event("agent.events", AgentEvent::AdvisorChanged {
             session: s,
             status: fine,
-        });
-        m.apply_agent(AgentEvent::AdvisorChanged { session: s, status });
+        }));
+        m.apply(wire_event("agent.events", AgentEvent::AdvisorChanged { session: s, status }));
         assert_eq!(info_lines(&m).len(), 5);
         assert_eq!(
             info_lines(&m)[4],
@@ -8746,14 +8815,14 @@
         let s = SessionId::new();
         let mut m = Model {
             session: Some(s),
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
         let turn = TurnId::new();
-        m.apply_agent(AgentEvent::TextDelta {
+        m.apply(wire_event("agent.events", AgentEvent::TextDelta {
             session: s,
             turn,
             text: "first ".into(),
-        });
+        }));
         let added = AgentEvent::AdvisoryAdded {
             session: s,
             seq: 7,
@@ -8762,28 +8831,28 @@
                 vec![note(AdvisorSeverity::Concern, "check the lock order")],
             ),
         };
-        m.apply_agent(added.clone());
-        m.apply_agent(added);
-        m.apply_agent(AgentEvent::TextDelta {
+        m.apply(wire_event("agent.events", added.clone()));
+        m.apply(wire_event("agent.events", added));
+        m.apply(wire_event("agent.events", AgentEvent::TextDelta {
             session: s,
             turn,
             text: "second".into(),
-        });
+        }));
         assert_eq!(m.entries.len(), 2, "one card, one assistant entry");
         assert!(
-            matches!(&m.entries[0], Entry::Advisory { advisory, expanded: false } if advisory.notes.len() == 1)
+            matches!(advisor(&m).card(&m.entries[0]), Some(AdvisoryCard { advisory, expanded: false }) if advisory.notes.len() == 1)
         );
         assert!(matches!(&m.entries[1], Entry::Assistant(t) if !t.is_done()));
         // The blocker that opened a turn: its row is the card already.
-        m.apply_agent(AgentEvent::TurnStarted {
+        m.apply(wire_event("agent.events", AgentEvent::TurnStarted {
             session: s,
             turn: TurnId::new(),
             turn_seq: 7,
             text: "<advisory severity=\"blocker\" guidance=\"weigh\">stop</advisory>".into(),
             model: "m".into(),
             channel: None,
-        });
-        m.apply_agent(AgentEvent::TurnStarted {
+        }));
+        m.apply(wire_event("agent.events", AgentEvent::TurnStarted {
             session: s,
             turn: TurnId::new(),
             turn_seq: 9,
@@ -8791,7 +8860,7 @@
                 .into(),
             model: "m".into(),
             channel: None,
-        });
+        }));
         assert!(!m.entries.iter().any(|e| matches!(e, Entry::User { .. })));
     }
 
@@ -8799,47 +8868,37 @@
     /// newest expandable card and skips one with nothing hidden.
     #[test]
     fn advisory_card_collapses_to_three_notes() {
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         let five = (0..5)
             .map(|i| note(AdvisorSeverity::Nit, &format!("note {i}")))
             .collect();
-        m.entries.push(Entry::Advisory {
-            advisory: advisory(SessionId::new(), five),
-            expanded: false,
-        });
-        assert_eq!(m.entries[0].height(80), 4 + 3 + 1);
+        let card = advisory_card(&mut m, advisory(SessionId::new(), five));
+        m.entries.push(card);
+        assert_eq!(m.entry_height(&m.entries[0], 80), 4 + 3 + 1);
         m.toggle_card();
-        assert!(matches!(
-            &m.entries[0],
-            Entry::Advisory { expanded: true, .. }
+        assert!(matches!(advisor(&m).card(&m.entries[0]), Some(AdvisoryCard { expanded: true, .. })
         ));
-        assert_eq!(m.entries[0].height(80), 4 + 5);
+        assert_eq!(m.entry_height(&m.entries[0], 80), 4 + 5);
         m.toggle_card();
-        assert!(matches!(
-            &m.entries[0],
-            Entry::Advisory {
+        assert!(matches!(advisor(&m).card(&m.entries[0]), Some(AdvisoryCard {
                 expanded: false,
                 ..
-            }
+            })
         ));
-        m.entries.push(Entry::Advisory {
-            advisory: advisory(SessionId::new(), vec![note(AdvisorSeverity::Blocker, "x")]),
-            expanded: false,
-        });
-        assert_eq!(m.entries[1].height(80), 4 + 1);
+        let card = advisory_card(&mut m, advisory(SessionId::new(), vec![note(AdvisorSeverity::Blocker, "x")]));
+        m.entries.push(card);
+        assert_eq!(m.entry_height(&m.entries[1], 80), 4 + 1);
         m.toggle_card();
         assert!(
-            matches!(
-                &m.entries[1],
-                Entry::Advisory {
+            matches!(advisor(&m).card(&m.entries[1]), Some(AdvisoryCard {
                     expanded: false,
                     ..
-                }
+                })
             ),
             "nothing to expand"
         );
         assert!(
-            matches!(&m.entries[0], Entry::Advisory { expanded: true, .. }),
+            matches!(advisor(&m).card(&m.entries[0]), Some(AdvisoryCard { expanded: true, .. })),
             "the newest card with hidden notes toggles"
         );
     }
@@ -8849,7 +8908,8 @@
     #[test]
     fn history_advisory_row_renders_card_not_user_bubble() {
         let opts = markdown::Options::default();
-        let entries = from_history(
+        let mut m = Model::new(String::new(), false);
+        let entries = history::from_history(
             HistoryEntry::Advisory {
                 advisory: advisory(
                     SessionId::new(),
@@ -8860,13 +8920,13 @@
                 ),
                 context: None,
             },
-            &opts,
+            &opts, &mut m.components,
         );
         assert_eq!(entries.len(), 1);
-        let Entry::Advisory {
+        let Some(AdvisoryCard {
             advisory,
             expanded: false,
-        } = &entries[0]
+        }) = advisor(&m).card(&entries[0])
         else {
             panic!("not a card: {entries:?}");
         };
@@ -8888,14 +8948,14 @@
         let s = SessionId::new();
         let mut m = Model {
             session: Some(s),
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
         let catalog = Catalog::load(
             std::env::temp_dir()
                 .join("theuth-tui-no-user-file")
                 .as_path(),
         );
-        assert!(m.advisor_segment().is_none() && !m.animating());
+        assert!(advisor(&m).segment(m.frame).is_none() && !m.animating());
         let mut status = advisor_status(s, AdvisorState::Reviewing, "anthropic/claude-opus-4-1");
         status.cost = Some(CostBucket {
             returned: vec![Money {
@@ -8904,41 +8964,41 @@
             }],
             ..CostBucket::default()
         });
-        m.apply_agent(AgentEvent::AdvisorChanged {
+        m.apply(wire_event("agent.events", AgentEvent::AdvisorChanged {
             session: s,
             status: status.clone(),
-        });
-        assert!(m.header(&catalog).0.contains("  ·  advisor $0.012"));
-        let (segment, state) = m.advisor_segment().unwrap();
+        }));
+        assert!(m.header(&catalog).0.contains("  ·  advisor .012"));
+        let (segment, state) = advisor(&m).segment(m.frame).unwrap();
         assert!(segment.starts_with("  ·  ◎ advisor: ") && segment.ends_with(" reviewing…"));
         assert_eq!(state, AdvisorState::Reviewing);
         assert!(m.animating());
         // Counters move without a new line; idle stops the spinner.
         status.state = AdvisorState::Idle;
         status.step = 3;
-        m.apply_agent(AgentEvent::AdvisorChanged {
+        m.apply(wire_event("agent.events", AgentEvent::AdvisorChanged {
             session: s,
             status: status.clone(),
-        });
+        }));
         assert_eq!(
-            m.advisor_segment().map(|(t, _)| t).as_deref(),
+            advisor(&m).segment(m.frame).map(|(t, _)| t).as_deref(),
             Some("  ·  ◎ advisor: idle")
         );
         assert!(!m.animating());
         // Another session's advisor is not ours.
-        m.apply_agent(AgentEvent::AdvisorChanged {
+        m.apply(wire_event("agent.events", AgentEvent::AdvisorChanged {
             session: SessionId::new(),
             status: advisor_status(SessionId::new(), AdvisorState::Halted, "x/y"),
-        });
-        assert_eq!(m.advisor.state, AdvisorState::Idle);
-        m.apply_agent(AgentEvent::AdvisorChanged {
+        }));
+        assert_eq!(advisor(&m).status.state, AdvisorState::Idle);
+        m.apply(wire_event("agent.events", AgentEvent::AdvisorChanged {
             session: s,
             status: AdvisorStatus {
                 session: s,
                 ..AdvisorStatus::default()
             },
-        });
-        assert!(m.advisor_segment().is_none());
+        }));
+        assert!(advisor(&m).segment(m.frame).is_none());
         assert!(!m.header(&catalog).0.contains("advisor"));
         assert_eq!(
             info_lines(&m),
@@ -8953,18 +9013,18 @@
         let s = SessionId::new();
         let mut m = Model {
             session: Some(s),
-            ..Model::default()
+            ..Model::new(String::new(), false)
         };
         let advisor = SessionId::new();
         let mut status = advisor_status(s, AdvisorState::Idle, "openai/o3-pro");
         status.advisor = Some(advisor);
-        m.apply_agent(AgentEvent::AdvisorChanged { session: s, status });
-        m.apply_agent(AgentEvent::SubagentSpawned {
+        m.apply(wire_event("agent.events", AgentEvent::AdvisorChanged { session: s, status }));
+        m.apply(wire_event("agent.events", AgentEvent::SubagentSpawned {
             parent: s,
             child: advisor,
             name: "advisor".into(),
             cap: None,
-        });
+        }));
         assert!(m.agents.is_empty() && m.board().is_empty());
         assert!(!info_lines(&m).iter().any(|l| l.starts_with("↳ spawned")));
         let info = |id: SessionId, kind: SessionKind| AgentInfo {

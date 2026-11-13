@@ -104,22 +104,12 @@ impl runtime::Plugin for TuiPlugin {
         let components = components::configured(info.as_ref(), rt, interactive);
         tokio::spawn(run_commands(api, commands_rx, events_tx));
 
-        let (default_model, default_effort, advisor) = info.map_or_else(
+        let (default_model, default_effort) = info.map_or_else(
             || {
                 let cfg = rt.section::<AgentConfig>("agent").unwrap_or_default();
-                (
-                    cfg.model,
-                    cfg.effort,
-                    Default::default(),
-                )
+                (cfg.model, cfg.effort)
             },
-            |i| {
-                (
-                    i.default_model,
-                    i.default_effort,
-                    i.advisor,
-                )
-            },
+            |i| (i.default_model, i.default_effort),
         );
         let approvals = rt
             .section::<tools::ToolsConfig>("tools")
@@ -136,7 +126,6 @@ impl runtime::Plugin for TuiPlugin {
                     commands: commands_tx,
                     default_model,
                     default_effort,
-                    advisor,
                     approvals,
                     components: Some(components),
                     catalog,
@@ -526,20 +515,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 UiEvent::History(session, loaded)
             }
         }
-        // 125 §7.1: `None` model = off; both replies carry the same status.
-        Command::SetAdvisor {
-            session,
-            model,
-            effort,
-        } => UiEvent::AdvisorStatus(msg(api.set_advisor(session, model, effort).await)?),
-        Command::AdvisorStatus(session) => {
-            UiEvent::AdvisorStatus(msg(api.advisor_status(session).await)?)
-        }
-        // R1.2: `advisor consults → n`; the live status follows on `AdvisorChanged`.
-        Command::SetAdvisorMaxConsults(n) => {
-            let d = msg(api.set_advisor_max_consults(n).await)?;
-            UiEvent::Info(format!("advisor consults → {}", d.max_consults))
-        }
         Command::ResumeChild(session) => {
             // 146 D8: a child that died mid-prompt continues its task.
             let text = match msg(api.resume_child(session).await)? {
@@ -910,15 +885,9 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded, registry: &compon
         agent::HistoryEntry::Interrupted { text, .. } => {
             writeln!(out, "── interrupted — resuming ──\n{text}")
         }
-        // 125 §7.4: one line per note, the card's title first.
-        agent::HistoryEntry::Advisory { advisory, .. } => {
-            writeln!(out, "{}", model::advisory_title(advisory))?;
-            model::advisory_lines(advisory)
-                .iter()
-                .try_for_each(|l| writeln!(out, "{l}"))
-        }
         // 183 §5.3: one line.
         agent::HistoryEntry::Moved { moved, .. } => writeln!(out, "{}", model::moved_title(moved)),
+        _ => Ok(()),
         }
     })
 }
@@ -987,16 +956,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             )
         }
         UiEvent::Agent(AgentEvent::ModelChanged { model, .. }) => writeln!(out, "model → {model}"),
-        UiEvent::Agent(AgentEvent::AdvisoryAdded { advisory, .. }) => {
-            writeln!(out, "{}", model::advisory_title(advisory)).and_then(|()| {
-                model::advisory_lines(advisory)
-                    .iter()
-                    .try_for_each(|l| writeln!(out, "{l}"))
-            })
-        }
-        UiEvent::Agent(AgentEvent::AdvisorChanged { status, .. }) => {
-            writeln!(out, "{}", model::advisor_changed_line(status))
-        }
         UiEvent::Agent(AgentEvent::DefaultModelChanged { model }) => {
             writeln!(out, "default model → {model}")
         }
@@ -1054,9 +1013,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             model::vision_line(*stage, model, sources.len())
         ),
         UiEvent::Agent(_) => Ok(()),
-        UiEvent::AdvisorStatus(s) => model::advisor_status_lines(s)
-            .iter()
-            .try_for_each(|l| writeln!(out, "{l}")),
         UiEvent::PathComplete(..) => {
             writeln!(out, "menus need a TTY")
         }

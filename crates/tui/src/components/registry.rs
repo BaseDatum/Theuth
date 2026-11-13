@@ -8,13 +8,13 @@ pub fn builtin() -> Registry { builtin_with(false, true) }
 /// The sole built-in composition list. Add a panel here only after deleting its
 /// residual enum/reducer/executor/render/print hooks.
 pub fn builtin_with(app_enabled: bool, interactive: bool) -> Registry {
-    compose(app_enabled, interactive, models::Models::default())
+    compose(app_enabled, interactive, models::Models::default(), advisor::Advisor::default())
 }
 /// Configure owner defaults from the single startup info read.
 pub fn configured(info: Option<&rpc_compose::api::Info>, runtime: &runtime::Runtime, interactive: bool) -> Registry {
-    compose(info.is_some_and(|i| i.app_enabled), interactive, models::Models::configured(info, runtime))
+    compose(info.is_some_and(|i| i.app_enabled), interactive, models::Models::configured(info, runtime), advisor::Advisor::configured(info, interactive))
 }
-fn compose(app_enabled: bool, interactive: bool, models: models::Models) -> Registry {
+fn compose(app_enabled: bool, interactive: bool, models: models::Models, advisor: advisor::Advisor) -> Registry {
     let mut registry = Registry::empty();
     registry.set_interactive(interactive);
     registry.register(update::Update::default()).expect("built-in component registration");
@@ -54,6 +54,7 @@ fn compose(app_enabled: bool, interactive: bool, models: models::Models) -> Regi
     registry.register(models).expect("built-in component registration");
     registry.register(aws::Aws::default()).expect("built-in component registration");
     registry.register(vision_settings::VisionSettings::default()).expect("built-in component registration");
+    registry.register(advisor).expect("built-in component registration");
     registry
 }
 

@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent::{AdvisorSeverity, AdvisorState, AdvisoryKind, CompactStyle};
+use agent::CompactStyle;
 use iocraft::prelude::*;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tools::{Decision, Risk};
@@ -12,8 +12,7 @@ use tools::{Decision, Risk};
 use crate::clip;
 use crate::components::{FocusClass, Lifecycle, Surface};
 use crate::model::{
-    ADVISORY_COLLAPSED, Grouped, advisory_rows,
-    advisory_severity, advisory_title, session_row, severity_name,
+    Grouped, session_row,
 };
 use crate::model::{
     AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt,
@@ -33,8 +32,6 @@ pub struct Links {
     pub default_model: String,
     /// `Info.default_effort` (config as fallback, 83 §3): the draft header's effort.
     pub default_effort: Option<String>,
-    /// `Info.advisor` (125 §6.5): the remembered advisor pick `/advisor on` re-uses.
-    pub advisor: agent::AdvisorDefaults,
     /// `tools.approvals` from config.
     pub approvals: bool,
     /// Boot-configured owners, taken by the first state initializer.
@@ -112,7 +109,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let mut links = hooks.use_context_mut::<Links>();
     let default_model = links.default_model.clone();
     let default_effort = links.default_effort.clone();
-    let advisor = links.advisor.clone();
     let approvals = links.approvals;
     let catalog = links.catalog.clone();
     let component_commands = links.commands.clone();
@@ -123,7 +119,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             let mut m = Model::with_components(default_model, approvals, components.expect("first render owns the registry"));
             m.effort = default_effort.clone();
             m.default_effort = default_effort;
-            m.advisor_default = advisor;
             m.catalog = Some(catalog);
             m.mount_components(&component_commands);
             m.entries.push(Entry::Info(
@@ -246,12 +241,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         settled_only: false,
                     });
                     let _ = commands.send(Command::ListAgents(session));
-                }
-                // 125 §3: the link survives a restart; re-read it with every load.
-                if std::mem::take(&mut m.refresh_advisor)
-                    && let Some(session) = m.session
-                {
-                    let _ = commands.send(Command::AdvisorStatus(session));
                 }
                 // Root metadata moved while a grouped picker is open (51 §3): re-list it.
                 if std::mem::take(&mut m.refresh_grouping) {
@@ -675,7 +664,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 View() {
                     Text(content: m.status(), color: SAND)
                     #(component_slot(&m, Surface::Status(crate::components::StatusSlot::AfterCore), width, 1, None).elements)
-                    #(m.advisor_segment().map(|(text, state)| element!(Text(content: text, color: advisor_color(state)))))
                 }
                 Text(content: m.component_text(Surface::Status(crate::components::StatusSlot::Right)), color: SAND)
             }
@@ -1246,50 +1234,6 @@ fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<cr
             }
             .into_any()
         }
-        // 125 §7.4 / R1.2: the Round card in its worst severity's colour; one
-        // row per note (badge coloured, text plain) or per answer line of a
-        // consultation; three rows until Ctrl+O.
-        Entry::Advisory { advisory, expanded } => {
-            let color = severity_color(advisory_severity(advisory));
-            let all = advisory_rows(advisory);
-            let n = all.len();
-            let shown = if *expanded { n } else { n.min(ADVISORY_COLLAPSED) };
-            let title = advisory_title(advisory);
-            let header = if n <= ADVISORY_COLLAPSED {
-                title
-            } else if *expanded {
-                format!("{title}   ctrl+o collapses")
-            } else {
-                format!("{title}   ctrl+o expands")
-            };
-            let rows: Vec<AnyElement<'static>> = all
-                .iter()
-                .take(shown)
-                .map(|(sev, text)| match sev {
-                    Some(sev) => element!(MixedText(contents: vec![
-                        MixedTextContent::new(format!("[{}]", severity_name(*sev))).color(severity_color(*sev)),
-                        MixedTextContent::new(format!(" {text}")),
-                    ], wrap: TextWrap::Wrap))
-                    .into_any(),
-                    None => element!(Text(content: (*text).to_owned(), wrap: TextWrap::Wrap)).into_any(),
-                })
-                .collect();
-            let more = (n > shown).then(|| {
-                let noun = match advisory.kind {
-                    AdvisoryKind::Consultation { .. } => "lines",
-                    AdvisoryKind::Review => "notes",
-                };
-                format!("… +{} more {noun}", n - shown)
-            });
-            element! {
-                View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: color, padding_left: 1, padding_right: 1, margin_top: 1) {
-                    Text(content: header, color, weight: Weight::Bold)
-                    #(rows)
-                    #(more.map(|m| element!(Text(content: m, color: SAND))))
-                }
-            }
-            .into_any()
-        }
         Entry::Divider(label) => element! {
             View(border_style: BorderStyle::Round, border_color: PROMPT, padding_left: 1, padding_right: 1, margin_top: 1) {
                 Text(content: format!("── {label} ──"), color: PROMPT, weight: Weight::Bold)
@@ -1301,26 +1245,6 @@ fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<cr
     }
 }
 
-/// The advisor palette (125 §7.4): advice and nit SAND (muted), concern
-/// OCHRE (warning), blocker CARNELIAN (danger).
-pub(crate) fn severity_color(s: AdvisorSeverity) -> Color {
-    match s {
-        AdvisorSeverity::Advice | AdvisorSeverity::Nit => SAND,
-        AdvisorSeverity::Concern => OCHRE,
-        AdvisorSeverity::Blocker => CARNELIAN,
-    }
-}
-
-/// The status segment's colour by advisor state (125 §7.5): idle SAND,
-/// reviewing FAIENCE, paused OCHRE, halted CARNELIAN.
-fn advisor_color(s: AdvisorState) -> Color {
-    match s {
-        AdvisorState::Off | AdvisorState::Idle => SAND,
-        AdvisorState::Reviewing => FAIENCE,
-        AdvisorState::Paused => OCHRE,
-        AdvisorState::Halted => CARNELIAN,
-    }
-}
 
 /// Plain text as one `MixedText`; `paint` styles every run, and any bare
 /// `http(s)://` URL is also underlined and an OSC 8 link (clickable in
@@ -1696,7 +1620,8 @@ mod tests {
     /// the terminal (`Entry::height` counts the same rows; `model.rs` tests it).
     #[test]
     fn advisory_card_is_tight_at_any_width() {
-        use agent::{Advisory, AdvisoryNote};
+        use agent::{Advisory, AdvisoryNote, AdvisorSeverity};
+        use crate::components::advisor::{Card as AdvisoryCard, render_card};
         let notes = |n: usize| -> Vec<AdvisoryNote> {
             (0..n)
                 .map(|i| AdvisoryNote {
@@ -1709,7 +1634,7 @@ mod tests {
                 })
                 .collect()
         };
-        let card = |n: usize, expanded: bool| Entry::Advisory {
+        let card = |n: usize, expanded: bool| AdvisoryCard {
             advisory: Advisory {
                 advisor: runtime::SessionId::new(),
                 step: 1,
@@ -1728,7 +1653,7 @@ mod tests {
             ] {
                 let frame = element! {
                     View(flex_direction: FlexDirection::Column, width, height: 20u16) {
-                        #(Some(entry(&e, "⠋", 0, width, Vec::new(), None)))
+                        #(Some(render_card(&e.advisory, e.expanded)))
                     }
                 }
                 .to_string();
@@ -1756,12 +1681,13 @@ mod tests {
     /// SAND, and never exceeds the terminal width.
     #[test]
     fn consultation_card_is_tight_at_any_width() {
-        use agent::{Advisory, AdvisoryNote};
+        use agent::{Advisory, AdvisoryNote, AdvisorSeverity, AdvisoryKind};
+        use crate::components::advisor::{Card as AdvisoryCard, render_card, severity_color};
         let answer = (0..5)
             .map(|i| format!("answer line {i} stays short"))
             .collect::<Vec<_>>()
             .join("\n");
-        let card = |expanded: bool| Entry::Advisory {
+        let card = |expanded: bool| AdvisoryCard {
             advisory: Advisory {
                 advisor: runtime::SessionId::new(),
                 step: 1,
@@ -1785,7 +1711,7 @@ mod tests {
             ] {
                 let frame = element! {
                     View(flex_direction: FlexDirection::Column, width, height: 20u16) {
-                        #(Some(entry(&e, "⠋", 0, width, Vec::new(), None)))
+                        #(Some(render_card(&e.advisory, e.expanded)))
                     }
                 }
                 .to_string();
