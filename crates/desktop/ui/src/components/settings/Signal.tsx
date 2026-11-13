@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Copy } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
@@ -40,9 +41,10 @@ function signalState(s: SignalStatus): string {
 
 /** 188: Channels › Signal: the linked account, linking this device, the owner and allowed numbers. */
 export function Signal() {
+  const canQuery1 = useQuerySupport(["signal_status"])
   const api = useApi()
-  useChannelEvents(queryKeys.signal)
-  const status = useQuery({ queryKey: queryKeys.signal, queryFn: () => api.signal_status() })
+  useChannelEvents('signal.events@1', queryKeys.signal)
+  const status = useQuery({ enabled: canQuery1, queryKey: queryKeys.signal, queryFn: () => api.signal_status() })
   const keys = [queryKeys.signal]
   const link = useAction((_: void) => api.signal_link())
   const unlink = useAction((_: void) => api.signal_unlink(), { keys, onSuccess: () => link.reset() })

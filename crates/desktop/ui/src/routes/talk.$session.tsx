@@ -1,3 +1,5 @@
+import { withCapability } from '@/rpc/capabilities'
+import { requirements } from '@/components/talk/requirements'
 // 76 §0.12 / §5.2: the talk view. Centre: the orb (the state) and two subtitle lines. Left: the session's
 // transcript, collapsed by default, remembered per session. Right: every panel a session has, from `Header`
 // exactly as in `/c/$session`. Phones: the transcript is a sheet. Leaving the view does not stop the talk.
@@ -25,7 +27,7 @@ import { cn } from '@/lib/utils'
 import { useSessionLoad } from '@/routes/c.$session'
 import { useSessionField } from '@/store/sessions'
 
-export const Route = createFileRoute('/talk/$session')({ component: TalkRoute })
+export const Route = createFileRoute('/talk/$session')({ component: withCapability(TalkRoute, requirements) })
 
 const PREF = 'talk-transcript'
 

@@ -9,6 +9,7 @@ import type * as Rpc from '@/lib/rpc'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
 import { dispatch } from '@/store/sessions'
 import { useConnection } from '@/store/connection'
+import { disconnected } from '@/rpc/discovery'
 import type { EngineStats } from "@/rpc/bindings/method.nodes.output"
 import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
 import type { NearbyEngine } from "@/rpc/bindings/method.nodes.output"
@@ -129,6 +130,7 @@ const api = {
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))
 
 beforeEach(() => {
+  useConnection.getState().setDiscovery({ ...disconnected(), phase: 'legacy' })
   vi.clearAllMocks()
   api.mesh_pair_nearby.mockImplementation(async () => CEREMONY)
   for (const k of Object.keys(handlers)) delete handlers[k]

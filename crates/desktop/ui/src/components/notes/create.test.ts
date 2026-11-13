@@ -39,9 +39,9 @@ beforeEach(() => {
 test('the bus event opens the note before the body import replies, and lists it at once', async () => {
   const p = createNote(api, qc, qc.getQueryData(queryKeys.notes)!).then(open)
   expect(api.doc_create).toHaveBeenCalledWith('Untitled', null)
-  dispatch([changed('old', { title: 'Old' })]) // an export of a listed note is not ours
-  dispatch([changed('agent', { title: 'Plan' })]) // nor a note the agent titled
-  dispatch([changed('fresh')])
+  dispatch([{key: 'document.changed@1', event: changed('old', { title: 'Old' })}]) // an export of a listed note is not ours
+  dispatch([{key: 'document.changed@1', event: changed('agent', { title: 'Plan' })}]) // nor a note the agent titled
+  dispatch([{key: 'document.changed@1', event: changed('fresh')}])
   await p
   expect(navigate).toHaveBeenCalledWith({ to: '/notes/$id', params: { id: 'fresh' }, search: { new: true } })
   expect(qc.getQueryData<DocSummary[]>(queryKeys.notes)!.map((n) => n.id)).toEqual(['fresh', 'old'])
@@ -60,7 +60,7 @@ test('the reply alone opens the note when no event arrived', async () => {
   expect(navigate).toHaveBeenCalledWith({ to: '/notes/$id', params: { id: 'fresh' }, search: { new: true } })
   expect(qc.getQueryData<DocSummary[]>(queryKeys.notes)!.map((n) => n.id)).toEqual(['fresh', 'old'])
   // A later event for the same note does not add a second row or re-open it.
-  dispatch([changed('fresh')])
+  dispatch([{key: 'document.changed@1', event: changed('fresh')}])
   expect(qc.getQueryData<DocSummary[]>(queryKeys.notes)).toHaveLength(2)
   expect(navigate).toHaveBeenCalledTimes(1)
 })

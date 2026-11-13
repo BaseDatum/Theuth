@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, X } from 'lucide-react'
 import { useState } from 'react'
@@ -299,9 +300,10 @@ export function RotationProgress({
 
 /** `vault_rotation()` (kept current by `SecretsRotation`) and `vault_rotate()` for Retry / Rotate vault key. */
 export function useRotation() {
+  const canQuery1 = useQuerySupport(["vault_rotation"])
   const api = useApi()
   const qc = useQueryClient()
-  const state = useQuery({ queryKey: queryKeys.vaultRotation, queryFn: () => api.vault_rotation() })
+  const state = useQuery({ enabled: canQuery1, queryKey: queryKeys.vaultRotation, queryFn: () => api.vault_rotation() })
   const rotate = useMutation({ mutationFn: () => api.vault_rotate(), onSuccess: (s) => qc.setQueryData(queryKeys.vaultRotation, s) })
   return { state, rotate }
 }
@@ -325,10 +327,11 @@ export function RotationBanner({ nameOf }: { nameOf: NameOf }) {
  * turns into the rotation's progress. A refusal (resetting devices is not built yet, say) stays on the confirm step.
  */
 export function UnpairDialog({ id, name, nameOf, onClose }: { id: string; name: string; nameOf: NameOf; onClose: () => void }) {
+  const canQuery2 = useQuerySupport(["mesh_unpair_preview"])
   const api = useApi()
   const qc = useQueryClient()
   // Not under `mesh`: the unpair invalidates that, and the removed machine's preview must not refetch.
-  const preview = useQuery({ queryKey: ['unpair-preview', id], queryFn: () => api.mesh_unpair_preview(id), gcTime: 0, refetchOnMount: 'always' })
+  const preview = useQuery({ enabled: canQuery2, queryKey: ['unpair-preview', id], queryFn: () => api.mesh_unpair_preview(id), gcTime: 0, refetchOnMount: 'always' })
   const [reset, setReset] = useState(false)
   const remove = useMutation({
     mutationFn: () => api.mesh_remove(id, reset),

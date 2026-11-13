@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { type DocStatus, type EngineProvider, acquire, release } from '@/lib/doc/provider'
@@ -23,6 +24,7 @@ export type LiveDocument = {
 export type DocTarget = Binding | { doc: DocId }
 
 export function useDocument(target: DocTarget): LiveDocument {
+  const canQuery1 = useQuerySupport(["doc_resolve"])
   const api = useApi()
   const client = useConnection((s) => s.client)
   const engine = useScope().id
@@ -31,7 +33,7 @@ export function useDocument(target: DocTarget): LiveDocument {
     queryKey: ['doc', target],
     queryFn: () => api.doc_resolve(target as Binding),
     staleTime: Number.POSITIVE_INFINITY,
-    enabled: known === null,
+    enabled: canQuery1 && (known === null),
   })
   const id = known ?? resolved.data ?? null
   const [provider, setProvider] = useState<EngineProvider | null>(null)

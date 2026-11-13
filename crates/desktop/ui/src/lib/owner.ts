@@ -107,7 +107,7 @@ export function parkIfOffline(session: string, e: unknown, retry: () => Promise<
  * owner change follows. `retry` runs once, on the next `SessionOwnerChanged` for `session`; `giveUp` if none comes in `ms`.
  */
 export function retryAfterOwnerChange(session: string, retry: () => void, giveUp: () => void, ms = 10_000): void {
-  const off = on('SessionOwnerChanged', (e) => {
+  const off = on("agent.events@1", 'SessionOwnerChanged', (e) => {
     if (e.session !== session) return
     off()
     clearTimeout(timer)

@@ -11,7 +11,7 @@ vi.mock('@tanstack/react-router', () => ({
   getRouteApi: () => ({ useParams: () => ({ session: 's1' }) }),
   useNavigate: () => vi.fn(),
 }))
-vi.mock('@/store/connection', () => ({ useConnection: () => ({ call: vi.fn() }) }))
+vi.mock('@/store/connection', () => ({ useConnection: (pick: (s: unknown) => unknown) => pick({ client: { call: vi.fn() }, discovery: { phase: 'legacy' } }) }))
 vi.mock('@/store/sessions', () => ({ on: () => () => {}, useSessions: Object.assign(() => false, { getState: () => ({}) }) }))
 vi.mock('@/components/chat/Transcript', () => ({ Transcript: () => null }))
 vi.mock('@/components/chat/Composer', () => ({ Composer: () => null }))

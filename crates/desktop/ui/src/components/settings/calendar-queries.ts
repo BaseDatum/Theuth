@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // Settings › Calendar: what its tabs share. Calendars and Briefs edit one `CalendarConfig` (each switch writes it
 // whole); Calendars and Upcoming share the next-24 h window, so a refreshed or deleted subscription re-reads Upcoming.
 
@@ -9,8 +10,9 @@ import type { CalendarConfig } from "@/rpc/bindings/method.meeting.output"
 
 /** The config (`settings.data` as `config`) and its whole-config `save`; `busy` while it loads, failed or a write runs. */
 export function useCalendarConfig() {
+  const canQuery1 = useQuerySupport(["calendar_settings_get"])
   const api = useApi()
-  const settings = useQuery({ queryKey: calendarKeys.settings, queryFn: () => api.calendar_settings_get() })
+  const settings = useQuery({ enabled: canQuery1, queryKey: calendarKeys.settings, queryFn: () => api.calendar_settings_get() })
   const save = useAction((config: CalendarConfig) => api.calendar_settings_set(config), { keys: [calendarKeys.settings, calendarKeys.sources] })
   return { settings, config: settings.data, save, busy: settings.isLoading || settings.isError || save.isPending }
 }

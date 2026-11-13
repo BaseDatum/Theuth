@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
@@ -12,8 +13,9 @@ import { cn } from 'cn'
 
 /** Every concept's frontmatter, once; `KnowledgeChanged` and sync invalidate it. */
 export function useKnowledgeList() {
+  const canQuery1 = useQuerySupport(["knowledge_list"])
   const api = useApi()
-  return useQuery({
+  return useQuery({ enabled: canQuery1,
     queryKey: queryKeys.knowledgeList,
     queryFn: () => api.knowledge_list(null, null, null, 100000),
   })

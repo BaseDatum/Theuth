@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ArtifactView } from '@/components/artifacts/Viewer'
@@ -21,9 +22,10 @@ const SEEN_AFTER_MS = 2_000
  * keeps this screen up until the user moves.
  */
 export function ShowScreen({ item }: { item: AttentionItem }) {
+  const canQuery1 = useQuerySupport(["get_artifact"])
   const api = useApi()
   const callId = item.id.replace(/^show:/, '')
-  const record = useQuery({ queryKey: queryKeys.artifact(callId), queryFn: () => (simFlag() ? (ARTIFACT_SIM[callId] ?? Promise.reject(new Error('no such artifact in the sim'))) : api.get_artifact(callId)) })
+  const record = useQuery({ enabled: canQuery1, queryKey: queryKeys.artifact(callId), queryFn: () => (simFlag() ? (ARTIFACT_SIM[callId] ?? Promise.reject(new Error('no such artifact in the sim'))) : api.get_artifact(callId)) })
   const act = useAttentionActions()
   const onResolved = useResolved(item)
   useMarkShown(callId, SEEN_AFTER_MS)

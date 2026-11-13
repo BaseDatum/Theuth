@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 /**
  * 73 §6 + 147 §11 — the CodeMap panel body: status header · tabs `Map | Here | Fit | Change` (Map default, pinned; 147
  * O9) · one body (the Map tab or a lens) · activity trail · detail line. Lenses are agent-driven with a user pin (73
@@ -91,6 +92,7 @@ const hhmm = (at: number) => new Date(at).toLocaleTimeString([], { hour: '2-digi
 export type PanelRoute = { tab: Tab; nav: MapNav; onRoute(tab: Tab, nav: MapNav, push: boolean): void }
 
 export function CodeMapPanel({ session, root, onClose, popped = false, route }: { session: string; root: string; onClose?(): void; popped?: boolean; route?: PanelRoute }) {
+  const canQuery1 = useQuerySupport(["codeindex_stats"])
   const api = useCodemapApi()
   const map = useMapApi()
   const qc = useQueryClient()
@@ -107,7 +109,7 @@ export function CodeMapPanel({ session, root, onClose, popped = false, route }: 
   const stats = useQuery({
     queryKey: ['codemap-stats', root],
     queryFn: () => engine!.codeindex_stats(root === '?' ? null : root),
-    enabled: engine !== null,
+    enabled: canQuery1 && (engine !== null),
     staleTime: Infinity,
   })
   const realRoot = root === '?' ? (stats.data?.root ?? null) : root
@@ -205,7 +207,7 @@ export function CodeMapPanel({ session, root, onClose, popped = false, route }: 
   }, [lens.lens, data])
   useEffect(
     () =>
-      on('CodeReconciled', (e) => {
+      on("codeindex.events@1", 'CodeReconciled', (e) => {
         if (e.root !== realRoot) return
         void qc.invalidateQueries({ queryKey: ['codemap-stats', root] })
         const hit = e.reparsed.some((p) => visiblePaths.has(p)) || e.removed.some((p) => visiblePaths.has(p))

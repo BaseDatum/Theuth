@@ -368,12 +368,12 @@ export function installMeetingListeners(): () => void {
         'Capture',
       ] as const
     ).map((t) =>
-      on(t, apply),
+      on("meeting.events@1", t, apply),
     ),
-    on('TurnStarted', (e) => activity(e.session, 'thinking…')),
-    on('ToolCallStarted', (e) => activity(e.session, `${e.name}…`)),
-    on('ToolCallFinished', (e) => activity(e.session, 'thinking…')),
-    on('TurnFinished', (e) => activity(e.session, null)),
+    on("agent.events@1", 'TurnStarted', (e) => activity(e.session, 'thinking…')),
+    on("agent.events@1", 'ToolCallStarted', (e) => activity(e.session, `${e.name}…`)),
+    on("agent.events@1", 'ToolCallFinished', (e) => activity(e.session, 'thinking…')),
+    on("agent.events@1", 'TurnFinished', (e) => activity(e.session, null)),
   ]
   return () => {
     for (const off of offs) off()

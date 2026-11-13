@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Camera, Download, FolderOpen, MoreHorizontal, Monitor, Pause, Play, RotateCcw, Scaling, Square, Terminal, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
@@ -195,10 +196,11 @@ const BADGE: Record<SandboxInfo['state']['state'], string> = {
  * folders, Snapshots, Pause/Resume, Destroy.
  */
 export function SandboxRow({ vm: s, preflight }: { vm: SandboxInfo; preflight: Preflight | undefined }) {
+  const canQuery1 = useQuerySupport(["list_sessions"])
   const api = useApi()
   const act = useSandboxActions()
   const mesh = useMesh()
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const sessions = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const handoffs = useHandoffs(!!s.engine)
   const log = useSandboxLog(s.name)
   const [sheet, setSheet] = useState<'resize' | 'shares' | 'snapshots' | 'destroy' | null>(null)

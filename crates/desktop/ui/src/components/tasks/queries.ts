@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { useProjects } from '@/components/chat/ProjectPicker'
@@ -33,49 +34,56 @@ const matches = (t: Task, f: TaskFilter) =>
   (f.project == null || t.project === f.project)
 
 export function useTasks(filter: TaskFilter = EMPTY_FILTER) {
+  const canQuery1 = useQuerySupport(["tasks_list"])
   const api = useApi()
-  return useQuery({
+  return useQuery({ enabled: canQuery1,
     queryKey: keys.tasksList(filter),
     queryFn: () => (mockOn() ? TASKS.filter((t) => matches(t, filter)) : api.tasks_list(filter)),
   })
 }
 
 export function useTask(id: string, enabled = true) {
+  const canQuery2 = useQuerySupport(["task_get"])
   const api = useApi()
   return useQuery({
     queryKey: keys.task(id),
     queryFn: () => (mockOn() ? TASKS.find((t) => t.id === id) ?? Promise.reject(new Error('no such task')) : api.task_get(id)),
-    enabled,
+    enabled: canQuery2 && enabled,
   })
 }
 
 export function useTaskEvents(id: string) {
+  const canQuery3 = useQuerySupport(["task_events"])
   const api = useApi()
-  return useQuery({ queryKey: keys.taskEvents(id), queryFn: (): Promise<TaskEvent[]> | TaskEvent[] => (mockOn() ? EVENTS : api.task_events(id)) })
+  return useQuery({ enabled: canQuery3, queryKey: keys.taskEvents(id), queryFn: (): Promise<TaskEvent[]> | TaskEvent[] => (mockOn() ? EVENTS : api.task_events(id)) })
 }
 
 export function useAgents() {
+  const canQuery4 = useQuerySupport(["agents_list"])
   const api = useApi()
-  return useQuery({ queryKey: keys.agents, queryFn: (): Promise<AgentSummary[]> | AgentSummary[] => (mockOn() ? AGENTS : api.agents_list()) })
+  return useQuery({ enabled: canQuery4, queryKey: keys.agents, queryFn: (): Promise<AgentSummary[]> | AgentSummary[] => (mockOn() ? AGENTS : api.agents_list()) })
 }
 
 /** 182: every engine's replicated roster (`engine_agents_list`); the mock has no peers. */
 export function useEngineAgents() {
+  const canQuery5 = useQuerySupport(["engine_agents_list"])
   const api = useApi()
-  return useQuery({ queryKey: keys.engineAgents, queryFn: (): Promise<EngineAgent[]> | EngineAgent[] => (mockOn() ? [] : api.engine_agents_list()) })
+  return useQuery({ enabled: canQuery5, queryKey: keys.engineAgents, queryFn: (): Promise<EngineAgent[]> | EngineAgent[] => (mockOn() ? [] : api.engine_agents_list()) })
 }
 
 /** Session ids that never move with a task: agent desks and harness (`agent`) sessions. */
 export function useFixedSessions(): string[] {
+  const canQuery6 = useQuerySupport(["list_sessions"])
   const api = useApi()
   const agents = useAgents()
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const sessions = useQuery({ enabled: canQuery6, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   return [...(agents.data ?? []).flatMap((a) => (a.desk ? [a.desk] : [])), ...(sessions.data ?? []).flatMap((s) => (s.agent || s.desk ? [s.id] : []))]
 }
 
 export function useMesh() {
+  const canQuery7 = useQuerySupport(["mesh_status"])
   const api = useApi()
-  return useQuery({ queryKey: keys.mesh, queryFn: (): Promise<MeshStatus> | MeshStatus => (mockOn() ? MESH : api.mesh_status()) })
+  return useQuery({ enabled: canQuery7, queryKey: keys.mesh, queryFn: (): Promise<MeshStatus> | MeshStatus => (mockOn() ? MESH : api.mesh_status()) })
 }
 
 /**

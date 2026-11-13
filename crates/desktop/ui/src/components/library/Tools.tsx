@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useSearch } from '@tanstack/react-router'
 import { ChevronRight, Plus, RefreshCw, Trash2 } from 'lucide-react'
@@ -153,13 +154,15 @@ export function McpServersTab() {
 }
 
 export function Tools({ session }: { session: string | null }) {
+  const canQuery1 = useQuerySupport(["list_mcp"])
+  const canQuery1_2 = useQuerySupport(["mcp_status"])
   const api = useApi()
-  const servers = useQuery({
+  const servers = useQuery({ enabled: canQuery1,
     queryKey: queryKeys.mcp(session),
     queryFn: () => api.list_mcp(session),
   })
   // Under the `mcp` prefix: every `McpProgress` event refreshes it with the list.
-  const status = useQuery({ queryKey: ['mcp', 'status'], queryFn: () => api.mcp_status() })
+  const status = useQuery({ enabled: canQuery1_2, queryKey: ['mcp', 'status'], queryFn: () => api.mcp_status() })
   const mesh = useMesh()
   // Until the mesh answers, no home chip and no home actions: "on this machine" would flicker to the real name.
   const machines = mesh.isPending ? null : engines(mesh.data)

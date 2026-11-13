@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // Settings › Network › Sandbox VMs: the queries the section reads, the mutations its rows call (every one through
 // `useAction`), and the `?sim=sandbox-blocked` / `?sim=sandbox-ok` fixtures that let the preflight card be reviewed
 // without a runtime (the repo's `?sim=` idiom, `lib/talk-sim.ts`; the general `?mock=1` switch is 67's).
@@ -539,9 +540,10 @@ Self-hosted: run \`theuth migrate\` first.`,
 
 /** `sandboxes_list`, patched live by `SandboxEvent` (`store/sandboxes.ts`); the poll is the fallback. */
 export function useSandboxes() {
+  const canQuery1 = useQuerySupport(["sandboxes_list"])
   const api = useApi()
   const sim = simFlag()
-  return useQuery({
+  return useQuery({ enabled: canQuery1,
     queryKey: SANDBOXES_KEY,
     queryFn: () => (sim ? SANDBOXES_SIM : api.sandboxes_list()),
     refetchInterval: 60_000,
@@ -550,9 +552,10 @@ export function useSandboxes() {
 
 /** `sandbox_preflight` on mount and on every window focus (79 §5.1: "runs on the Mesh page's first paint"). */
 export function usePreflight() {
+  const canQuery2 = useQuerySupport(["sandbox_preflight"])
   const api = useApi()
   const sim = simFlag()
-  return useQuery({
+  return useQuery({ enabled: canQuery2,
     queryKey: PREFLIGHT_KEY,
     queryFn: () => (sim === 'sandbox-blocked' ? PREFLIGHT_BLOCKED : sim === 'sandbox-ok' ? PREFLIGHT_OK : api.sandbox_preflight()),
     staleTime: 0,
@@ -569,9 +572,10 @@ export function useSandboxLog(name: string): ProgressLine[] {
 
 /** `handoffs_list`, unresolved rows are what the pop-out's banner and the HUD show. */
 export function useHandoffs(enabled = true) {
+  const canQuery3 = useQuerySupport(["handoffs_list"])
   const api = useApi()
   const sim = simFlag()
-  return useQuery({ queryKey: HANDOFFS_KEY, queryFn: () => (sim ? HANDOFFS_SIM : api.handoffs_list()), enabled, refetchInterval: 15_000 })
+  return useQuery({ queryKey: HANDOFFS_KEY, queryFn: () => (sim ? HANDOFFS_SIM : api.handoffs_list()), enabled: canQuery3 && (enabled), refetchInterval: 15_000 })
 }
 
 export const unresolved = (rows: readonly Handoff[] | undefined, engine: string | null | undefined): Handoff | undefined =>

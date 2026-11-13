@@ -17,7 +17,7 @@ vi.mock('@/lib/popout', async (original) => ({
   canPopout: () => env.canPopout,
   openPopout: env.openPopout,
 }))
-vi.mock('@/store/connection', () => ({ useConnection: () => ({ call: vi.fn() }) }))
+vi.mock('@/store/connection', () => ({ useConnection: (pick: (s: unknown) => unknown) => pick({ client: { call: vi.fn() }, discovery: { phase: 'legacy' } }) }))
 vi.mock('@/store/sessions', () => ({ on: () => () => {} }))
 vi.mock('@/components/notebooks/AskDialog', () => ({ AskDialog: ({ open }: { open: boolean }) => (open ? createElement('div', { 'data-ask': true }) : null) }))
 

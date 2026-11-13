@@ -156,12 +156,12 @@ let listening = false
 function listen() {
   if (listening) return
   listening = true
-  on('run_queued', (e) => schedule(e.scope))
-  on('run_started', (e) => schedule(e.scope))
-  on('run_finished', (e) => schedule(e.scope))
-  on('cells_changed', (e) => schedule(e.scope))
-  on('kernel_changed', (e) => schedule(e.kernel.scope))
-  on('CellLatestChanged', (e) => void readLatest(`doc:${e.doc}`))
+  on("cells.events@1", 'run_queued', (e) => schedule(e.scope))
+  on("cells.events@1", 'run_started', (e) => schedule(e.scope))
+  on("cells.events@1", 'run_finished', (e) => schedule(e.scope))
+  on("cells.events@1", 'cells_changed', (e) => schedule(e.scope))
+  on("cells.events@1", 'kernel_changed', (e) => schedule(e.kernel.scope))
+  on("document.cell-latest@1", 'CellLatestChanged', (e) => void readLatest(`doc:${e.doc}`))
 }
 
 /**

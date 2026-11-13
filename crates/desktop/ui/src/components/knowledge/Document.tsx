@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { code } from '@streamdown/code'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
@@ -73,6 +74,7 @@ function Doc({
   change: string | undefined
   snapshot: string | undefined
 }) {
+  const canQuery1 = useQuerySupport(["knowledge_get"])
   const api = useApi()
   const navigate = route.useNavigate()
   const [editing, setEditing] = useState(false)
@@ -87,7 +89,7 @@ function Doc({
   const doc = useQuery({
     queryKey: queryKeys.knowledgeDoc(id),
     queryFn: () => api.knowledge_get(id),
-    enabled: draft === undefined && !historical,
+    enabled: canQuery1 && (draft === undefined && !historical),
   })
   const unavailable = useUnavailable(live, doc.data !== undefined && stripFrontmatter(doc.data.text).body.trim() !== '')
   const rootNavigate = useNavigate()
@@ -510,16 +512,18 @@ export function UndoAgentAction({ provider }: { provider: EngineProvider | null 
  * commit whose diff the text belongs to: After when it is the snapshot, Before when the snapshot is its parent.
  */
 function Historical({ id, change, snapshot }: { id: string; change: string; snapshot: string }) {
+  const canQuery2 = useQuerySupport(["knowledge_read_revision"])
+  const canQuery2_2 = useQuerySupport(["knowledge_revision"])
   const api = useApi()
   const origin = useSearchOrigin()
   const view = useSearchState((s) => s.view)
   const side = snapshot === change ? 'After' : 'Before'
-  const text = useQuery({
+  const text = useQuery({ enabled: canQuery2,
     queryKey: queryKeys.knowledgeReadRevision(id, snapshot),
     queryFn: () => api.knowledge_read_revision(id, snapshot),
     staleTime: Number.POSITIVE_INFINITY,
   })
-  const meta = useQuery({
+  const meta = useQuery({ enabled: canQuery2_2,
     queryKey: queryKeys.knowledgeRevision(change, id),
     queryFn: () => api.knowledge_revision(change, id),
     staleTime: Number.POSITIVE_INFINITY,

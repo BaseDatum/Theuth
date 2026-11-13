@@ -18,7 +18,7 @@ export async function createNote(api: Pick<Api, 'doc_create'>, qc: QueryClient, 
   const known = new Set(existing.map((n) => n.id))
   const { promise: created, resolve } = Promise.withResolvers<DocSummary>()
   let seen: DocSummary | null = null
-  const off = on('DocumentChanged', (e) => {
+  const off = on("document.changed@1", 'DocumentChanged', (e) => {
     if (seen || e.kind !== 'note' || e.deleted || e.title !== TITLE || known.has(e.doc)) return
     seen = { id: e.doc, kind: 'note', title: e.title, binding: 'note', created_ms: e.updated_ms, updated_ms: e.updated_ms, bytes: 0 }
     resolve(seen)

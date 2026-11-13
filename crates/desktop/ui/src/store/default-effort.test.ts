@@ -11,14 +11,14 @@ test('DefaultEffortChanged updates the publishing engine Info only', () => {
   const info = { default_model: 'anthropic/claude-sonnet-4-5', default_effort: 'medium' } as Info
   a.connection.getState().setInfo(info)
   b.connection.getState().setInfo(info)
-  dispatch([{ type: 'DefaultEffortChanged', effort: 'high' }], a)
+  dispatch([{key: 'agent.events@1', event: { type: 'DefaultEffortChanged', effort: 'high' }}], a)
   expect(a.connection.getState().info?.default_effort).toBe('high')
   expect(b.connection.getState().info?.default_effort).toBe('medium')
   // A clear is `null`, not a missing field.
-  dispatch([{ type: 'DefaultEffortChanged', effort: null }], a)
+  dispatch([{key: 'agent.events@1', event: { type: 'DefaultEffortChanged', effort: null }}], a)
   expect(a.connection.getState().info?.default_effort).toBeNull()
   // Before `info()` answered there is nothing to patch; the reply itself carries the live value.
   b.connection.getState().setInfo(null)
-  dispatch([{ type: 'DefaultEffortChanged', effort: 'high' }], b)
+  dispatch([{key: 'agent.events@1', event: { type: 'DefaultEffortChanged', effort: 'high' }}], b)
   expect(b.connection.getState().info).toBeNull()
 })

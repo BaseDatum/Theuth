@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import RFB from '@novnc/novnc'
 import { useQuery } from '@tanstack/react-query'
 import { Keyboard, Maximize2, Minimize2, Play, RotateCcw } from 'lucide-react'
@@ -39,6 +40,8 @@ const RETRY_MS = [1000, 2000, 4000, 8000, 15000]
  * engine is a banner with Done · Cancel and arms Take over.
  */
 export function VmDesktop({ name }: { name: string }) {
+  const canQuery1 = useQuerySupport(["sandbox_desktop_access"])
+  const canQuery1_2 = useQuerySupport(["list_sessions"])
   const api = useApi()
   const list = useSandboxes()
   const act = useSandboxActions()
@@ -47,11 +50,11 @@ export function VmDesktop({ name }: { name: string }) {
   const access = useQuery({
     queryKey: ['sandboxes', 'desktop', name],
     queryFn: () => api.sandbox_desktop_access(name),
-    enabled: running,
+    enabled: canQuery1 && (running),
     retry: false,
     staleTime: Infinity,
   })
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), refetchInterval: 5000, enabled: !!vm?.engine })
+  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), refetchInterval: 5000, enabled: canQuery1_2 && (!!vm?.engine) })
   const agentBusy = !!vm?.engine && (sessions.data ?? []).some((r) => r.owner === vm.engine && r.running)
   const handoffs = useHandoffs(!!vm?.engine)
   const handoff = unresolved(handoffs.data, vm?.engine)
@@ -122,7 +125,7 @@ export function VmDesktop({ name }: { name: string }) {
     if (rfb.current) rfb.current.resizeSession = fit
   }, [fit])
   // Another window (or the `sandbox_takeover` tool) flipped it.
-  useEffect(() => on('Takeover', (e) => e.name === name && setTaken(e.on)), [name])
+  useEffect(() => on("sandbox.events@1", 'Takeover', (e) => e.name === name && setTaken(e.on)), [name])
   // A hand-off arms Take over (79 §6.6) once per row.
   const armed = useRef<string | null>(null)
   useEffect(() => {

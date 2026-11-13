@@ -136,10 +136,10 @@ function start(e: PagePreviewRequested, finished: () => void): () => void {
 export function installPagePreview(): () => void {
   const running = new Map<string, () => void>()
   const offs = [
-    on('PagePreviewRequested', (e) => {
+    on("artifact.page-preview-requested@1", 'PagePreviewRequested', (e) => {
       if (!running.has(e.id)) running.set(e.id, start(e, () => running.delete(e.id)))
     }),
-    on('PagePreviewResolved', (e) => {
+    on("artifact.page-preview-resolved@1", 'PagePreviewResolved', (e) => {
       running.get(e.id)?.()
       running.delete(e.id)
     }),

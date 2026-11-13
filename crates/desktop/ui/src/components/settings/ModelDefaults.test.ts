@@ -14,7 +14,7 @@ import { ModelDefaults } from './ModelDefaults'
 let info: Partial<Info> = {}
 vi.mock('@/store/connection', async (original) => ({
   ...(await original<typeof Conn>()),
-  useConnection: (pick: (s: unknown) => unknown) => pick({ info, api: null }),
+  useConnection: (pick: (s: unknown) => unknown) => pick({ info, api: null , discovery: { phase: 'legacy' } }),
 }))
 
 const sonnet = { id: 'anthropic/claude-sonnet-4-5', name: 'Claude Sonnet 4.5', provider: 'anthropic', efforts: ['low', 'high'] } as ModelInfo

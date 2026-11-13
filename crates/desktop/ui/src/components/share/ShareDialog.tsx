@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy, Share2 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
@@ -60,11 +61,12 @@ export function ShareAction({ provider }: { provider: EngineProvider }) {
  * live through the subscription's `Members` events.
  */
 export function ShareDialog({ provider, open, onOpenChange }: { provider: EngineProvider; open: boolean; onOpenChange: (o: boolean) => void }) {
+  const canQuery1 = useQuerySupport(["doc_members"])
   const api = useApi()
   const qc = useQueryClient()
   const doc = provider.id
   const key = ['doc', 'members', doc]
-  const members = useQuery({ queryKey: key, queryFn: () => api.doc_members(doc), enabled: open })
+  const members = useQuery({ queryKey: key, queryFn: () => api.doc_members(doc), enabled: canQuery1 && (open) })
   useEffect(
     () =>
       provider.onEvent((e) => {

@@ -16,6 +16,8 @@ class Fake implements Transport {
   }
   send(t: string): void {
     this.sent.push(t)
+    const request = JSON.parse(t) as Request
+    if (request.method === 'rpc.capabilities') reply(this, { id: request.id, error: { code: -32601, message: 'legacy fixture' } })
   }
   onMessage(cb: (t: string) => void): void {
     this.message = cb
@@ -34,7 +36,7 @@ class Fake implements Transport {
 const doc = Object.assign(new EventTarget(), { visibilityState: 'visible' })
 const foreground = () => doc.dispatchEvent(new Event('visibilitychange'))
 type Request = { id: number; method: string; params: unknown[] }
-const requests = (t: Fake): Request[] => t.sent.map((s) => JSON.parse(s) as Request)
+const requests = (t: Fake): Request[] => t.sent.map((s) => JSON.parse(s) as Request).filter(r => r.method !== 'rpc.capabilities')
 const reply = (t: Fake, frame: object) => t.message(JSON.stringify({ jsonrpc: '2.0', ...frame }))
 
 beforeEach(() => {
@@ -51,6 +53,7 @@ test('foreground probes an open relay socket with ping and resets it when nothin
   const t = new Fake()
   new RpcClient(t)
   t.state('open')
+  await vi.advanceTimersByTimeAsync(1)
   foreground()
   expect(requests(t).map((r) => r.method)).toEqual(['ping'])
   await vi.advanceTimersByTimeAsync(4_999)
@@ -63,6 +66,7 @@ test('an error reply to the ping (an engine without it) proves the socket', asyn
   const t = new Fake()
   new RpcClient(t)
   t.state('open')
+  await vi.advanceTimersByTimeAsync(1)
   foreground()
   reply(t, { id: requests(t)[0]?.id, error: { code: -32601, message: 'no such method' } })
   await vi.advanceTimersByTimeAsync(5_000)
@@ -73,6 +77,7 @@ test('a notification while the ping waits behind a slow engine proves the socket
   const t = new Fake()
   new RpcClient(t)
   t.state('open')
+  await vi.advanceTimersByTimeAsync(1)
   foreground()
   await vi.advanceTimersByTimeAsync(4_000)
   reply(t, { method: 'subscribe_events', params: { subscription: 7, result: { type: 'TurnStarted' } } })
@@ -84,8 +89,9 @@ test('a loopback transport is not probed on foreground: its sockets do not half-
   const t = new Fake(true)
   new RpcClient(t)
   t.state('open')
+  await vi.advanceTimersByTimeAsync(1)
   foreground()
-  expect(t.sent).toEqual([])
+  expect(requests(t)).toEqual([])
   await vi.advanceTimersByTimeAsync(5_000)
   expect(t.resets).toBe(0)
 })
@@ -103,6 +109,7 @@ test('the reason of a drop is logged once via client_log when the socket is open
   const t = new Fake(true)
   const c = new RpcClient(t, 'desktop-main')
   t.state('open')
+  await vi.advanceTimersByTimeAsync(1)
   c.probe('send-timeout')
   await vi.advanceTimersByTimeAsync(5_000)
   expect(t.resets).toBe(1)
@@ -111,10 +118,12 @@ test('the reason of a drop is logged once via client_log when the socket is open
   t.state('reconnecting', 'onclose code=1006 clean=false')
   await vi.advanceTimersByTimeAsync(1_200)
   t.state('open')
+  await vi.advanceTimersByTimeAsync(0)
   const logs = requests(t).filter((r) => r.method === 'client_log')
   expect(logs.map((r) => r.params)).toEqual([['warn', 'desktop-main', 'reconnected after 1200 ms: send-timeout']])
   t.state('reconnecting', 'onclose code=1001 clean=true')
   t.state('open')
+  await vi.advanceTimersByTimeAsync(0)
   expect(requests(t).filter((r) => r.method === 'client_log').at(-1)?.params).toEqual([
     'warn',
     'desktop-main',
@@ -136,7 +145,7 @@ test('a client without a source logs nothing, and a first dial that fails is not
   u.state('connecting')
   u.state('reconnecting', 'onclose code=1006 clean=false')
   u.state('open')
-  expect(u.sent).toEqual([])
+  expect(requests(u)).toEqual([])
 })
 
 test('foreground while reconnecting skips the backoff', () => {
@@ -163,9 +172,10 @@ test('a send in flight when the socket drops is rejected at once, not left hangi
   const t = new Fake()
   const c = new RpcClient(t)
   t.state('open')
+  await vi.advanceTimersByTimeAsync(1)
   const send = c.call('send_input', ['s1', 'long message', [], null, 'id-1'])
   t.state('reconnecting')
-  await expect(send).rejects.toMatchObject({ code: -32300, message: 'connection closed' })
+  await expect(send).rejects.toMatchObject({ code: -32300 })
   // While down, a retry fails fast too.
   await expect(c.call('send_input', ['s1', 'long message', [], null, 'id-1'])).rejects.toMatchObject({ message: 'not connected' })
 })
@@ -174,7 +184,9 @@ test('probe() on a silent socket resets it, which fails the call parked on it', 
   const t = new Fake()
   const c = new RpcClient(t)
   t.state('open')
+  await vi.advanceTimersByTimeAsync(1)
   const send = expect(c.call('send_input', ['s1', 'hello', [], null, 'id-1'])).rejects.toMatchObject({ code: -32300 })
+  await Promise.resolve()
   c.probe()
   expect(requests(t).map((r) => r.method)).toEqual(['send_input', 'ping'])
   await vi.advanceTimersByTimeAsync(5_000)

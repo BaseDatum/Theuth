@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { QueryClient, QueryClientProvider, useQueries, useQuery } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react'
@@ -53,13 +54,15 @@ export function NotebookGuest(props: Props) {
 }
 
 function Guest({ provider, client, engine, user, role }: Props) {
+  const canQuery1 = useQuerySupport(["notebook_items_list"])
+  const canQuery1_2 = useQuerySupport(["source_get"])
   const api = useMemo(() => makeApi(client), [client])
   const nb = useMemo(() => notebooksApi(client), [client])
   const id = provider.id
-  const items = useQuery({ queryKey: notebookKeys.items(id), queryFn: async () => (await nb.notebook_items_list(id)).filter((i) => i.removed_ms === null) })
+  const items = useQuery({ enabled: canQuery1, queryKey: notebookKeys.items(id), queryFn: async () => (await nb.notebook_items_list(id)).filter((i) => i.removed_ms === null) })
   const sourceItems = useMemo(() => items.data?.filter((i) => i.kind === 'source') ?? [], [items.data])
   const noteItems = useMemo(() => (items.data?.filter((i) => i.kind === 'note') ?? []).sort((a, b) => Number(b.added_ms - a.added_ms)), [items.data])
-  const sources = useQueries({ queries: sourceItems.map((i) => ({ queryKey: notebookKeys.source(i.item), queryFn: () => nb.source_get(i.item) })) })
+  const sources = useQueries({ queries: sourceItems.map((i) => ({ enabled: canQuery1_2, queryKey: notebookKeys.source(i.item), queryFn: () => nb.source_get(i.item) })) })
 
   // ponytail: one doc_open per note for its title; a titled items RPC when notebooks grow.
   const notes = useRef<Record<string, EngineProvider>>({})

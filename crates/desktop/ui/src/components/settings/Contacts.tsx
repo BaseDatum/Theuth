@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Bot, CircleCheck, Copy, MessageSquare, MoreHorizontal, Plus, ShieldAlert, X } from 'lucide-react'
@@ -461,6 +462,7 @@ function windowCall<T>(call: () => Promise<T>): Promise<T> {
  * tabs with the code until it ends. "Choose what … may reach" calls `onAccess` with the new contact's endpoint id.
  */
 export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { onClose: () => void; onAccess: (peer: string | undefined) => void; tab?: 'nearby' | 'invite' }) {
+  const canQuery1 = useQuerySupport(["contact_nearby"])
   const api = useApi()
   const qc = useQueryClient()
   const [tab, setTab] = useState(initialTab)
@@ -481,8 +483,8 @@ export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { 
     const f = document.activeElement
     if (b && !(f instanceof HTMLButtonElement && b.closest('[role=dialog]')?.contains(f))) b.focus()
   }, [])
-  const ceremonies = useQuery<Record<string, PairCeremony>>({ queryKey: queryKeys.contactPair, queryFn: () => ({}), enabled: false, staleTime: Infinity }).data
-  const nearby = useQuery({ queryKey: queryKeys.contactNearby, queryFn: () => api.contact_nearby(), staleTime: 0, enabled: win !== null })
+  const ceremonies = useQuery<Record<string, PairCeremony>>({ queryKey: queryKeys.contactPair, queryFn: () => ({}), enabled: canQuery1 && (false), staleTime: Infinity }).data
+  const nearby = useQuery({ queryKey: queryKeys.contactNearby, queryFn: () => api.contact_nearby(), staleTime: 0, enabled: canQuery1 && (win !== null) })
 
   const open = useCallback(
     () =>
@@ -730,10 +732,11 @@ type Pick_ = { key: string; target: ExportTarget; title: string; group: 'Agents'
 
 /** §7.6, §12.10: what can be shared — this machine's desk roots and `theuth`, then chats (not archived) with their machine. */
 function useShareable(enabled: boolean): Pick_[] {
+  const canQuery2 = useQuerySupport(["list_sessions"])
   const api = useApi()
   const agents = useAgents()
   const mesh = useMesh()
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled })
+  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: canQuery2 && (enabled) })
   const self = mesh.data?.self_name ?? ''
   const agent = (a: string): Pick_ => ({ key: `agent|${a}`, target: { kind: 'agent', agent: a }, title: a, group: 'Agents', detail: 'agent' })
   return [

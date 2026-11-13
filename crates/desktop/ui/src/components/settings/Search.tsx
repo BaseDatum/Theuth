@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 16 §8: Settings › Search — the four external providers (a card each: enable, URL, key status with a masked
 // "Set key" field that never shows the value, Test, order), the `web` read/budget defaults, and per-engine health
 // from the last calls with a "Run a test search" field. Reads `search_settings_get`, saves with
@@ -34,9 +35,10 @@ import type { SearchTestResult } from "@/rpc/bindings/method.web.output"
 const RECENCY: readonly (Recency | 'none')[] = ['none', 'day', 'week', 'month', 'year']
 
 export function Search() {
+  const canQuery1 = useQuerySupport(["search_settings_get"])
   const api = useApi()
   const qc = useQueryClient()
-  const settings = useQuery({ queryKey: queryKeys.searchSettings, queryFn: () => api.search_settings_get() })
+  const settings = useQuery({ enabled: canQuery1, queryKey: queryKeys.searchSettings, queryFn: () => api.search_settings_get() })
   // Local edits over the daemon's answer; `undefined` = showing exactly what the daemon returned.
   const [edited, setEdited] = useState<SearchSettings | undefined>()
   const draft = edited ?? settings.data
@@ -333,8 +335,9 @@ function SecretRow({ provider: p, onPatch, onSaved }: { provider: ProviderSettin
 
 /** Per-engine health from the last calls plus one full test search. */
 function Status() {
+  const canQuery2 = useQuerySupport(["search_status"])
   const api = useApi()
-  const status = useQuery({ queryKey: queryKeys.searchStatus, queryFn: () => api.search_status(), refetchInterval: 15_000 })
+  const status = useQuery({ enabled: canQuery2, queryKey: queryKeys.searchStatus, queryFn: () => api.search_status(), refetchInterval: 15_000 })
   const [query, setQuery] = useState('')
   const [result, setResult] = useState<SearchTestResult | undefined>()
   const run = useAction((q: string) => api.search_test(q, null, null), { keys: [queryKeys.searchStatus], onSuccess: (r) => setResult(r) })

@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { Command as CommandPrimitive } from 'cmdk'
@@ -161,6 +162,10 @@ type Props = {
  * Back to results. Chips live outside cmdk's key handling; every request is identified by its query key.
  */
 export function SearchDialog({ open, onOpenChange, request }: Props) {
+  const canQuery1 = useQuerySupport(["search"])
+  const canQuery1_2 = useQuerySupport(["search"])
+  const canQuery1_3 = useQuerySupport(["search"])
+  const canQuery1_4 = useQuerySupport(["list_sessions"])
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -297,14 +302,14 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
   const base = useQuery({
     queryKey: baseKey,
     queryFn: () => queue.run(debounced, () => api.search(debounced, cats, LIMITS[0])),
-    enabled: searching,
+    enabled: canQuery1 && (searching),
   })
   const moreCats = cats.filter((c) => limits[c] > LIMITS[0])
   const more = useQueries({
     queries: moreCats.map((c) => ({
       queryKey: queryKeys.search(debounced, [c], limits[c], gen),
       queryFn: () => queue.run(debounced, () => api.search(debounced, [c], limits[c])),
-      enabled: searching,
+      enabled: canQuery1_2 && (searching),
       // A one-category page re-asks only itself while it indexes.
       refetchInterval: (q: { state: { data?: { groups: SearchGroup[] } } }) =>
         q.state.data?.groups[0]?.page.state === 'indexing' ? INDEXING_POLL_MS : false,
@@ -322,14 +327,14 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
       qc.setQueryData<SearchResponse>(baseKey, (old) => old && { groups: patch(old.groups, fresh.groups) })
       return fresh
     },
-    enabled: searching && building.length > 0,
+    enabled: canQuery1_3 && (searching && building.length > 0),
     refetchInterval: INDEXING_POLL_MS,
     refetchIntervalInBackground: false,
   })
   const recent = useQuery({
     queryKey: queryKeys.sessions,
     queryFn: () => api.list_sessions(),
-    enabled: open && debounced === '' && cats.includes('sessions'),
+    enabled: canQuery1_4 && (open && debounced === '' && cats.includes('sessions')),
   })
   // 183 §12.5: "New chat on <machine>" for each paired engine (this machine is the plain New chat).
   const machines = machineRows(useMesh().data).filter((m): m is typeof m & { id: string } => m.id !== null)

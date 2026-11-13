@@ -1,3 +1,6 @@
+import { useQuerySupport } from '@/rpc/capabilities'
+import { supports, UnsupportedCapability } from '@/rpc/discovery'
+import { privateRequirements, endlessRequirements } from './requirements'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
@@ -328,6 +331,11 @@ export function Composer({
   /** 171F B7: the kernel strip, drawn on top of the input box (below the queued chips). */
   strip?: ReactNode
 }) {
+  const client = useConnection(s => s.client)
+  const canQuery1 = useQuerySupport(["list_models"])
+  const canQuery1_2 = useQuerySupport(["vision_model"])
+  const canQuery1_3 = useQuerySupport(["list_skills"])
+  const canQuery1_4 = useQuerySupport(["list_sessions"])
   const api = useApi()
   const active = useEngines((s) => s.active)
   // Host paths (native drop / dialog) only mean something to the daemon on this machine.
@@ -348,17 +356,17 @@ export function Composer({
   const defaultModel = useConnection((s) => s.info?.default_model)
   // 148 R1: a new session starts on the draft's pick, else the engine's defaults (a draft pick never sets those).
   const defaultEffort = useConnection((s) => s.info?.default_effort)
-  const { data: models } = useQuery({
+  const { data: models } = useQuery({ enabled: canQuery1,
     queryKey: queryKeys.models,
     queryFn: () => api.list_models(),
   })
   // 52 §3.2: what happens to an image the main model cannot see; the server stays authoritative when this is stale.
-  const { data: visionModel } = useQuery({
+  const { data: visionModel } = useQuery({ enabled: canQuery1_2,
     queryKey: queryKeys.visionModel,
     queryFn: () => api.vision_model(),
   })
   // The skill index: which `/<word>` sends are skills (`isCommand`); the popup itself lists only `COMMANDS`.
-  const { data: skillIndex } = useQuery({
+  const { data: skillIndex } = useQuery({ enabled: canQuery1_3,
     queryKey: queryKeys.skills,
     queryFn: () => api.list_skills(),
   })
@@ -384,7 +392,7 @@ export function Composer({
   const ownerRetried = useRef(false)
   const { data: mesh } = useMesh()
   // 183 §12.1: a chat owned elsewhere says where it runs; `list_sessions` is the sidebar's warm cache.
-  const { data: rows } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: !!session })
+  const { data: rows } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: canQuery1_4 && (!!session) })
   const row = session ? rows?.find((r) => r.id === session) : undefined
   const runsOn = row && !row.here ? engineLabel(row.owner, mesh?.peers) : undefined
   // 183 §5.6 / §13 row 11: a chat just created on another machine holds the next send until that machine is heard
@@ -894,6 +902,8 @@ export function Composer({
         mode(id)
         await deadline(api.send_input(id, body, files, null, clientId))
       } else {
+        if (draftCreate?.private && (!client || !supports(client.discovery, privateRequirements))) throw new UnsupportedCapability('private sessions')
+        if (draftCreate?.endless && (!client || !supports(client.discovery, endlessRequirements))) throw new UnsupportedCapability('endless memory')
         if (draftCreate?.private && !usePrivate.getState().acknowledged)
           throw new Error('Acknowledge the private session notice first')
         // A switch on needs `create_session` with the pick in it; `openDraftSession` takes a bare pick there too, else `new_session()`.

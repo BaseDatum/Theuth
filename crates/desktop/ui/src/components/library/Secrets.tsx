@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Trash2 } from 'lucide-react'
 import { useRef, useState } from 'react'
@@ -23,8 +24,9 @@ function when(iso: string): string {
  * (prefilled name = a new version of that name).
  */
 export function Secrets() {
+  const canQuery1 = useQuerySupport(["list_secrets"])
   const api = useApi()
-  const list = useQuery({ queryKey: queryKeys.secrets, queryFn: () => api.list_secrets() })
+  const list = useQuery({ enabled: canQuery1, queryKey: queryKeys.secrets, queryFn: () => api.list_secrets() })
   const [form, setForm] = useState(EMPTY_FORM)
   const [history, setHistory] = useState<string | null>(null)
   const valueRef = useRef<HTMLInputElement>(null)

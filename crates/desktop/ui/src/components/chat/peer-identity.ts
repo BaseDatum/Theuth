@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useExports, useContacts } from '@/lib/contacts'
 import { engineLabel } from '@/lib/owner'
@@ -162,11 +163,13 @@ export function senderColor(key: string): string {
 
 /** The directory for chat `self`, from the caches the app already keeps. `outside`: also read the contact and A2A lists. */
 export function useDirectory(self: string, outside: boolean): Directory {
+  const canQuery1 = useQuerySupport(["list_sessions"])
+  const canQuery1_2 = useQuerySupport(["a2a_status"])
   const api = useApi()
   const children = useSessionField(self, 'children')
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() }).data
+  const sessions = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() }).data
   const mesh = useMesh().data
-  const peers = useQuery({ queryKey: queryKeys.a2a, queryFn: () => api.a2a_status(), enabled: outside }).data?.peers
+  const peers = useQuery({ queryKey: queryKeys.a2a, queryFn: () => api.a2a_status(), enabled: canQuery1_2 && (outside) }).data?.peers
   const contacts = useContacts(outside).data
   const exported = useExports(outside).data?.find((x) => x.target.kind === 'chat' && x.target.session === self)?.name
   return { self, children, sessions, peers, contacts, mesh, exported }

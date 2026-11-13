@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // Owner: U2
 import type { BlockNoteEditor } from '@blocknote/core'
 import { useEditorState } from '@blocknote/react'
@@ -192,8 +193,9 @@ function lineTop(slot: HTMLElement | null, offset: number): number {
 
 /** "Review diff" / "Review": the owner's last run's code against the member's text, or the text alone if never run. */
 function MemberReview({ run, code }: { run: string | null; code: string }) {
+  const canQuery1 = useQuerySupport(["cell_output_file"])
   const api = useApi()
-  const q = useQuery({ queryKey: ['cells', 'code', run], queryFn: async () => decode(await api.cell_output_file(run as string, 'code')), enabled: run !== null, staleTime: Infinity })
+  const q = useQuery({ queryKey: ['cells', 'code', run], queryFn: async () => decode(await api.cell_output_file(run as string, 'code')), enabled: canQuery1 && (run !== null), staleTime: Infinity })
   if (q.error) return <div className="px-3 py-1 text-xs text-danger">{errorText(q.error)}</div>
   const rows = run === null ? code.split('\n').map((line) => ({ op: '+' as const, line })) : q.data === undefined ? null : lineDiff(q.data.replace(/\n$/, ''), code)
   if (!rows) return <div className="px-3 py-1 text-xs text-fg-tertiary">loading the code of your last run…</div>
@@ -210,17 +212,19 @@ function MemberReview({ run, code }: { run: string | null; code: string }) {
 
 /** §3.5 stale: the code the latest run ran, one click away (`runs/<run>/code` through `cell_output_file`). */
 function RanCode({ run, lang }: { run: string; lang: string }) {
+  const canQuery2 = useQuerySupport(["cell_output_file"])
   const api = useApi()
-  const q = useQuery({ queryKey: ['cells', 'code', run], queryFn: async () => decode(await api.cell_output_file(run, 'code')), staleTime: Infinity })
+  const q = useQuery({ enabled: canQuery2, queryKey: ['cells', 'code', run], queryFn: async () => decode(await api.cell_output_file(run, 'code')), staleTime: Infinity })
   if (q.error) return <div className="px-3 py-1 text-xs text-danger">{errorText(q.error)}</div>
   return <pre className="mx-3 mb-2 max-h-64 overflow-auto rounded-md border border-border-subtle px-2 py-1 font-mono text-xs text-fg-secondary">{q.data === undefined ? 'loading…' : <CodeTokens code={q.data} lang={lang} />}</pre>
 }
 
 /** §6.3: the python chip as a menu of `cell_interpreters(cwd)`; a pick rewrites the `#| python:` header. */
 function PythonChip({ text, cwd, at, onPick }: { text: string; cwd: string; at: string; onPick(value: string): void }) {
+  const canQuery3 = useQuerySupport(["cell_interpreters"])
   const api = useApi()
   const [open, setOpen] = useDisclosure(disclosureKey(at, 'python'))
-  const q = useQuery({ queryKey: ['cells', 'interpreters', cwd], queryFn: () => api.cell_interpreters(cwd, null), enabled: open, staleTime: 60_000 })
+  const q = useQuery({ queryKey: ['cells', 'interpreters', cwd], queryFn: () => api.cell_interpreters(cwd, null), enabled: canQuery3 && (open), staleTime: 60_000 })
   const picks = (q.data ?? []).filter((i) => i.kind === 'python' || i.kind === 'monty')
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>

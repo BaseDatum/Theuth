@@ -324,13 +324,13 @@ function handle(e: VoiceEvent): void {
 /** Wire the `Dictation*` events to the store; once per app boot. Returns the unsubscribe. */
 export function installDictationListeners(): () => void {
   const offs = [
-    on('DictationModel', handle),
-    on('DictationStarted', handle),
-    on('DictationLevel', handle),
-    on('DictationText', handle),
-    on('DictationDevice', handle),
-    on('DictionarySuggestion', handle),
-    on('DictationFinished', handle),
+    on("voice.events@1", 'DictationModel', handle),
+    on("voice.events@1", 'DictationStarted', handle),
+    on("voice.events@1", 'DictationLevel', handle),
+    on("voice.events@1", 'DictationText', handle),
+    on("voice.events@1", 'DictationDevice', handle),
+    on("voice.events@1", 'DictionarySuggestion', handle),
+    on("voice.events@1", 'DictationFinished', handle),
   ]
   return () => {
     for (const off of offs) off()

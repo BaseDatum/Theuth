@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import NumberFlow from '@number-flow/react'
 import { useQuery } from '@tanstack/react-query'
 import { Coins, Eye } from 'lucide-react'
@@ -142,8 +143,9 @@ export function Breakdown({ cost, observed }: { cost: SessionCost; observed?: Ob
 }
 
 const useCost = (session: string) => {
+  const canQuery1 = useQuerySupport(["session_cost"])
   const api = useApi()
-  return useQuery({ queryKey: queryKeys.sessionCost(session), queryFn: () => api.session_cost(session) }).data
+  return useQuery({ enabled: canQuery1, queryKey: queryKeys.sessionCost(session), queryFn: () => api.session_cost(session) }).data
 }
 
 /** Three fixed decimals, no grouping: `formatMoney`'s digits. */

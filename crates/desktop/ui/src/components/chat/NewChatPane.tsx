@@ -1,3 +1,5 @@
+import { Capability, Unavailable, useSupported, useQuerySupport } from '@/rpc/capabilities'
+import { privateRequirements, endlessRequirements } from './requirements'
 import { useQuery } from '@tanstack/react-query'
 import { type UseNavigateResult, useNavigate } from '@tanstack/react-router'
 import { Check, ChevronDown, ChevronRight, Folder } from 'lucide-react'
@@ -74,6 +76,7 @@ export function pickMachine(engine: string | null): void {
 
 /** "Browse <machine>…": the folder typed with that machine's own path completion (`path_complete(…, engine)`). */
 function BrowseDialog({ machine, open, onOpenChange, onPick }: { machine: MachineRow; open: boolean; onOpenChange(o: boolean): void; onPick(cwd: string): void }) {
+  const canQuery1 = useQuerySupport(["path_complete"])
   const api = useApi()
   const [path, setPath] = useState('~/')
   // 183 R1: every keystroke is a forwarded call to the other machine; ask once typing pauses.
@@ -82,7 +85,7 @@ function BrowseDialog({ machine, open, onOpenChange, onPick }: { machine: Machin
     const t = setTimeout(() => setAsked(path), COMPLETE_DEBOUNCE_MS)
     return () => clearTimeout(t)
   }, [path])
-  const { data } = useQuery({ queryKey: ['path-complete', machine.id, asked], queryFn: () => api.path_complete(null, asked, asked.length, machine.id), enabled: open })
+  const { data } = useQuery({ queryKey: ['path-complete', machine.id, asked], queryFn: () => api.path_complete(null, asked, asked.length, machine.id), enabled: canQuery1 && (open) })
   const shown = asked === path ? data : undefined
   const accept = () => {
     if (!path.trim()) return
@@ -229,15 +232,17 @@ export function NewChat({
   /** 183 §5.6: a chat just created on another machine did not take its first message: back to this draft. */
   onUncreated?(session: string): void
 }) {
+  const canQuery2 = useSupported(endlessRequirements)
+  const privateSupported = useSupported(privateRequirements)
   const [priv, setPriv] = useState(false)
   const [project, setProject] = useState<string | null>(preset ?? null)
   // `/` stays mounted across `/` → `/?project=x`, so the preset must follow the URL, not just seed the state.
   useEffect(() => setProject(preset ?? null), [preset])
   // 137 §11.3: the ∞ switch starts at `agent.endless.default_chat` and is remembered per draft only.
   const api = useApi()
-  const endlessSettings = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
+  const endlessSettings = useQuery({ enabled: canQuery2, queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
   const [endless, setEndless] = useState<boolean | null>(null)
-  const endlessOn = endless ?? endlessSettings.data?.default_chat ?? false
+  const endlessOn = endless ?? (canQuery2 && (endlessSettings.data?.default_chat ?? false))
   const draft: DraftCreate = { private: priv, project: project?.trim() || null, endless: endlessOn }
   return (
     <>
@@ -246,7 +251,7 @@ export function NewChat({
       <MachineBar priv={priv} />
       <div className="flex min-h-0 flex-1 flex-col justify-center pb-24">
         <h1 className="mb-6 text-center text-[28px] leading-9 font-semibold">Where should we begin?</h1>
-        <Composer session={null} pane={pane} draftCreate={draft} onCreated={onCreated} onUncreated={onUncreated} />
+        {(priv && !privateSupported) || (endlessOn && !canQuery2) ? <Unavailable /> : <Composer session={null} pane={pane} draftCreate={draft} onCreated={onCreated} onUncreated={onUncreated} />}
         <CreateOptions
           priv={priv}
           onPriv={(v) => {
@@ -361,15 +366,16 @@ export function CreateOptions({
   const acknowledge = usePrivate((s) => s.acknowledge)
   // Two draft panes may be open at once; label ids must not collide.
   const pid = useId()
-  const compactor = useCompactorLabel(settings?.model)
+  const supported = useSupported(endlessRequirements)
+  const compactor = useCompactorLabel(settings?.model, endless && supported)
   return (
     <div className="mx-auto mt-1 w-full max-w-[768px] px-4 text-sm">
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-        <label className="flex items-center gap-2">
+        <Capability required={privateRequirements} hide><label className="flex items-center gap-2">
           <Switch checked={priv} onCheckedChange={onPriv} aria-label="Private session" />
           <span>Private</span>
-        </label>
-        <Tooltip>
+        </label></Capability>
+        <Capability required={endlessRequirements} hide><Tooltip>
           <TooltipTrigger asChild>
             <label className="flex items-center gap-2">
               <Switch checked={endless} onCheckedChange={onEndless} aria-label="Endless memory" />
@@ -380,7 +386,7 @@ export function CreateOptions({
             </label>
           </TooltipTrigger>
           <TooltipContent side="bottom">Endless memory</TooltipContent>
-        </Tooltip>
+        </Tooltip></Capability>
         <div className="flex items-center gap-2">
           <Label htmlFor={pid} className="text-fg-secondary">
             Project

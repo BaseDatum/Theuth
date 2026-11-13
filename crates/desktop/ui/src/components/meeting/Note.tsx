@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import type { CSSProperties } from 'react'
 import { NoteView } from '@/components/notes/NotePage'
@@ -22,8 +23,9 @@ export function MeetingNote({ doc, meeting, className, style }: { doc: string; m
 
 /** `/meetings/$id?pane=note` popped: the full note page in its own window (the popped `Frame` draws the drag header, `NoteView` sets the window title), the meeting's chat in its panel. */
 export function PoppedMeetingNote({ id }: { id: string }) {
+  const canQuery1 = useQuerySupport(["meeting_get"])
   const api = useApi()
-  const manifest = useQuery({ queryKey: queryKeys.meeting(id), queryFn: () => api.meeting_get(id) })
+  const manifest = useQuery({ enabled: canQuery1, queryKey: queryKeys.meeting(id), queryFn: () => api.meeting_get(id) })
   if (manifest.isError) return <Empty>{errorText(manifest.error)}</Empty>
   if (manifest.data && manifest.data.note === null) return <Empty>This meeting has no note.</Empty>
   if (!manifest.data?.note) return null

@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 158 §12.6 (W5): Settings › MCP server — the on/off switch (`mcp_server_set`), status line, port (default 7788),
 // Token with Rotate (`mcp_server_rotate_token`), "Copy MCP config" per client (`lib/mcp-config`), the last 20 audit
 // lines (`mcp_server_audit`) and the lawful "What is shared" sentence. 188 (D2): the servers theuth uses, with their home
@@ -23,13 +24,15 @@ export const ready = true
 const KEYS = { status: ['mcp-server'] as const, audit: ['mcp-server', 'audit'] as const }
 
 export function Mcp() {
+  const canQuery1 = useQuerySupport(["mcp_server_get"])
+  const canQuery1_2 = useQuerySupport(["mcp_server_audit"])
   const api = useApi()
   const dataDir = useConnection((s) => s.info?.data_dir ?? '<data_dir>')
-  const status = useQuery({ queryKey: KEYS.status, queryFn: () => api.mcp_server_get() })
-  const audit = useQuery({ queryKey: KEYS.audit, queryFn: () => api.mcp_server_audit(20) })
+  const status = useQuery({ enabled: canQuery1, queryKey: KEYS.status, queryFn: () => api.mcp_server_get() })
+  const audit = useQuery({ enabled: canQuery1_2, queryKey: KEYS.audit, queryFn: () => api.mcp_server_audit(20) })
   // This engine's RPC port is known only for the app's own engine, from the shell's cached connection.
   const local = useEngines((st) => st.active) === LOCAL
-  const rpcPort = useQuery({ queryKey: ['shell-connection'], queryFn: connection, enabled: local, staleTime: Number.POSITIVE_INFINITY, select: (c) => new URL(c.url).port }).data
+  const rpcPort = useQuery({ queryKey: ['shell-connection'], queryFn: connection, enabled: canQuery1 && (local), staleTime: Number.POSITIVE_INFINITY, select: (c) => new URL(c.url).port }).data
   const [client, setClient] = useState<McpClient>('claude')
   const acts = mcpActions(api)
   const setEnabled = useAction((on: boolean) => acts.setEnabled(status.data!, on), { keys: [KEYS.status] })

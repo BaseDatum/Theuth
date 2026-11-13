@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQueries, useQuery } from '@tanstack/react-query'
 import { Command as CommandPrimitive } from 'cmdk'
 import { Check, type LucideIcon, Search } from 'lucide-react'
@@ -104,6 +105,13 @@ export function AttachPicker({
   /** Quiet mode: the query matched nothing anywhere, the composer leaves the text as typed. */
   onEmpty?(): void
 }) {
+  const canQuery1 = useQuerySupport(["knowledge_list"])
+  const canQuery1_2 = useQuerySupport(["list_artifacts"])
+  const canQuery1_3 = useQuerySupport(["list_artifacts"])
+  const canQuery1_4 = useQuerySupport(["list_sessions"])
+  const canQuery1_5 = useQuerySupport(["meeting_list"])
+  const canQuery1_6 = useQuerySupport(["search"])
+  const canQuery1_7 = useQuerySupport(["search"])
   const api = useApi()
   const engine = useEngines((s) => s.active)
   const isMobile = useIsMobile()
@@ -162,23 +170,23 @@ export function AttachPicker({
   const knowledge = useQuery({
     queryKey: [...queryKeys.knowledgeList, 'attach'],
     queryFn: () => api.knowledge_list(null, null, null, 30),
-    enabled: open && (tab === 'all' || tab === 'knowledge') && browsing,
+    enabled: canQuery1 && (open && (tab === 'all' || tab === 'knowledge') && browsing),
   })
   const artifacts = useQuery({
     queryKey: [...queryKeys.artifacts, 'all'],
     queryFn: () => api.list_artifacts(null, true),
-    enabled: open && (tab === 'all' || tab === 'artifact') && browsing,
+    enabled: canQuery1_2 && (open && (tab === 'all' || tab === 'artifact') && browsing),
   })
   const mine = useQuery({
     queryKey: [...queryKeys.artifacts, 'session', session],
     queryFn: () => api.list_artifacts(session, false),
-    enabled: open && session !== null && tab === 'all' && browsing,
+    enabled: canQuery1_3 && (open && session !== null && tab === 'all' && browsing),
   })
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: open })
+  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: canQuery1_4 && (open) })
   const meetings = useQuery({
     queryKey: queryKeys.meetings,
     queryFn: () => api.meeting_list(30),
-    enabled: open && (tab === 'all' || tab === 'meeting') && browsing,
+    enabled: canQuery1_5 && (open && (tab === 'all' || tab === 'meeting') && browsing),
   })
   const entries = useEntries(session ?? '')
   const recents = useMemo(() => (open ? loadRecents(engine) : []), [open, engine])
@@ -189,7 +197,7 @@ export function AttachPicker({
   const base = useQuery({
     queryKey: queryKeys.search(debounced, cats, LIMITS[0], -1),
     queryFn: () => queue.run(debounced, () => api.search(debounced, cats, LIMITS[0])),
-    enabled: searching,
+    enabled: canQuery1_6 && (searching),
     refetchInterval: (q) => (q.state.data?.groups.some((g) => g.page.state === 'indexing') ? INDEXING_POLL_MS : false),
   })
   const moreCats = cats.filter((c) => (limits[c] ?? LIMITS[0]) > LIMITS[0])
@@ -197,7 +205,7 @@ export function AttachPicker({
     queries: moreCats.map((c) => ({
       queryKey: queryKeys.search(debounced, [c], limits[c] ?? LIMITS[0], -1),
       queryFn: () => queue.run(debounced, () => api.search(debounced, [c], limits[c] ?? LIMITS[0])),
-      enabled: searching,
+      enabled: canQuery1_7 && (searching),
     })),
   })
   const sessionTitle = (id: string) => sessions.data?.find((s) => s.id === id)?.title

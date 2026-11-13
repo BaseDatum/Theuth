@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { AppWindow, MoreHorizontal, Plus, X } from 'lucide-react'
@@ -130,8 +131,9 @@ function Paper() {
 }
 
 function Row({ id, notebook, summary, context, onRemove, onOpen }: { id: string; notebook: string; summary: DocSummary | undefined; context: EstimateItem | undefined; onRemove: () => void; onOpen?: () => void }) {
+  const canQuery1 = useQuerySupport(["doc_markdown"])
   const api = useApi()
-  const md = useQuery({ queryKey: ['doc', 'markdown', id], queryFn: () => api.doc_markdown(id) })
+  const md = useQuery({ enabled: canQuery1, queryKey: ['doc', 'markdown', id], queryFn: () => api.doc_markdown(id) })
   const title = summary?.title || firstLine(md.data) || 'Untitled'
   const saved = md.data ? provenanceOf(md.data) : null
   const kind = summary?.kind

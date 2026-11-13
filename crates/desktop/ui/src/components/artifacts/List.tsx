@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
@@ -18,8 +19,9 @@ import type { Artifact, Kind } from "@/rpc/bindings/method.artifact.output"
 
 /** Every session's artifacts, newest first, once; `ArtifactShown` and the refresh button invalidate it. */
 export function useArtifactList() {
+  const canQuery1 = useQuerySupport(["list_artifacts"])
   const api = useApi()
-  return useQuery({ queryKey: queryKeys.artifacts, queryFn: () => api.list_artifacts(null, null) })
+  return useQuery({ enabled: canQuery1, queryKey: queryKeys.artifacts, queryFn: () => api.list_artifacts(null, null) })
 }
 
 /** 72 §2: the nil session note exports are recorded under — no chat owns them. */
@@ -103,9 +105,10 @@ export function sections(groups: Group[], sessions: SessionSummary[] | undefined
 
 /** The rail body: sessions, each its artifacts newest first. ponytail: not virtualized; virtualize past ~2000 rows. */
 export function List({ filter, active }: { filter: Filter; active: string | undefined }) {
+  const canQuery2 = useQuerySupport(["list_sessions"])
   const api = useApi()
   const list = useArtifactList()
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const sessions = useQuery({ enabled: canQuery2, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const groups = useMemo(() => group(list.data ?? [], filter), [list.data, filter])
   const split = useMemo(() => sections(groups, sessions.data), [groups, sessions.data])
 

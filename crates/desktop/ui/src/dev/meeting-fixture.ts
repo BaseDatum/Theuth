@@ -77,17 +77,17 @@ const SCRIPT: [number, MeetingEvent][] = [
 
 /** Start the replay (plus `Level` at 10 Hz until `Done`); returns a stop. */
 export function play(): () => void {
-  const timers = SCRIPT.map(([at, e]) => window.setTimeout(() => dispatch([e]), at))
+  const timers = SCRIPT.map(([at, e]) => window.setTimeout(() => dispatch([{key: 'meeting.events@1', event: e}]), at))
   let t = 0
   const level = window.setInterval(() => {
     t += 0.1
     dispatch([
-      {
+      {key: 'meeting.events@1', event: {
         type: 'Level',
         meeting: M,
         mic_rms: 0.03 + 0.03 * Math.abs(Math.sin(t * 2.3)),
         system_rms: 0.02 + 0.04 * Math.abs(Math.sin(t * 1.1 + 1)),
-      },
+      }},
     ])
   }, 100)
   const end = window.setTimeout(() => clearInterval(level), 30000)

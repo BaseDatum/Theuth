@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Search } from 'lucide-react'
@@ -12,6 +13,7 @@ const MIN = 3
 
 /** The rail's first row (97b: 44 px, the search input with `actions` beside it) above the tree; while the query has 3+ characters the hits replace `children` (the tree). */
 export function SearchBox({ initial, actions, children }: { initial: string; actions?: ReactNode; children: ReactNode }) {
+  const canQuery1 = useQuerySupport(["knowledge_search"])
   const api = useApi()
   const navigate = useNavigate()
   const [q, setQ] = useState(initial)
@@ -28,7 +30,7 @@ export function SearchBox({ initial, actions, children }: { initial: string; act
   const hits = useQuery({
     queryKey: queryKeys.knowledgeSearch(debounced),
     queryFn: () => api.knowledge_search(debounced, 50),
-    enabled: searching,
+    enabled: canQuery1 && (searching),
     placeholderData: (prev) => prev,
   })
 

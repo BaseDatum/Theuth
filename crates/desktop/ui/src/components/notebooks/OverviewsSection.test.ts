@@ -13,7 +13,7 @@ vi.mock('@tanstack/react-router', () => ({
   Link: ({ children, to, params }: { children?: unknown; to: string; params?: Record<string, string> }) =>
     createElement('a', { href: Object.entries(params ?? {}).reduce((p, [k, v]) => p.replace(`$${k}`, v), to) }, children as never),
 }))
-vi.mock('@/store/connection', () => ({ useConnection: () => ({ call: vi.fn() }) }))
+vi.mock('@/store/connection', () => ({ useConnection: (pick: (s: unknown) => unknown) => pick({ client: { call: vi.fn() }, discovery: { phase: 'legacy' } }) }))
 vi.mock('@/store/sessions', () => ({ on: () => () => {} }))
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
 vi.mock('@/components/chat/Attachments', () => ({ useFileUrl: (path: string) => `blob:${path}` }))

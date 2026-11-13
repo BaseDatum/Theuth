@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { CircleHelp, Hourglass, X } from 'lucide-react'
 import { useQueries } from '@tanstack/react-query'
 import { Fragment, useMemo } from 'react'
@@ -117,6 +118,7 @@ function Answer({ label, text, outside, part, at, onJump }: { label: string; tex
  * live transcript of it is there to scroll.
  */
 export function SendCard({ tool, session, at, readOnly }: { tool: Tool; session: string; at?: number; readOnly?: boolean }) {
+  const canQuery1 = useQuerySupport(["peer_message"])
   const api = useApi()
   const args = (tool.args ?? {}) as { to?: unknown; message?: unknown }
   const message = typeof args.message === 'string' ? args.message : ''
@@ -139,7 +141,7 @@ export function SendCard({ tool, session, at, readOnly }: { tool: Tool; session:
       return {
         queryKey: queryKeys.peerMessage(session, id),
         queryFn: () => api.peer_message(session, id),
-        enabled: !isTerminal(r.state) || (!single && r.state === 'replied'),
+        enabled: canQuery1 && (!isTerminal(r.state) || (!single && r.state === 'replied')),
       }
     }),
   })

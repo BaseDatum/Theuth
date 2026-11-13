@@ -5,6 +5,8 @@
  * Availability = `codemap.roots` non-empty, exactly like `browser` / `terminal` (§0.2).
  */
 import { MapIcon } from 'lucide-react'
+import { useSupported } from '@/rpc/capabilities'
+import { requirements } from './requirements'
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 'react'
 import { MenuRow } from '@/components/chat/HeaderMenu'
 import { Button } from '@/components/ui/button'
@@ -49,6 +51,7 @@ export function CodeMapButton({ session, row }: { session: string; row?: boolean
 /** Docked host: `children` = the chat column; the panel sits to its right when `codemapPanel` names a root (desktop only). */
 export function CodeMapPane({ session, children }: { session: string; children: ReactNode }) {
   const root = useSessionField(session, 'codemapPanel') ?? null
+  const available = useSupported(requirements)
   const mobile = useIsMobile()
   const [width, setWidth] = useState(() => {
     const saved = Number(globalThis.localStorage?.getItem(WIDTH_KEY))
@@ -57,7 +60,7 @@ export function CodeMapPane({ session, children }: { session: string; children: 
   useEffect(() => localStorage.setItem(WIDTH_KEY, String(width)), [width])
   const paneRef = useRef<HTMLDivElement>(null)
   const right = useRef(0)
-  if (root === null || mobile) return <>{children}</>
+  if (root === null || mobile || !available) return <>{children}</>
   return (
     <div ref={paneRef} className="flex min-h-0 min-w-0 flex-1 flex-row">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>

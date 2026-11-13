@@ -50,11 +50,12 @@ export class LocalTransport implements Transport {
     const ws = new WebSocket(this.#url)
     this.#ws = ws
     ws.onopen = () => {
+      if (this.#ws !== ws) return
       this.#pending = null
       this.#state('open')
       resolve()
     }
-    ws.onmessage = (m) => this.#message(m.data as string)
+    ws.onmessage = (m) => { if (this.#ws === ws) this.#message(m.data as string) }
     ws.onclose = (e) => this.#lost(ws, reject, `onclose code=${e.code} clean=${e.wasClean}`)
     this.#pending = promise
     return promise

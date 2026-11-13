@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { RefreshCw } from 'lucide-react'
@@ -58,10 +59,11 @@ export function MessagingSheet({ session }: { session: string }) {
 
 /** The authoritative `get_communication` snapshot for this chat; every control is one RPC whose reply replaces it. */
 function Messaging({ session, peer }: { session: string; peer: string | null }) {
+  const canQuery1 = useQuerySupport(["get_communication"])
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
-  const state = useQuery({
+  const state = useQuery({ enabled: canQuery1,
     queryKey: queryKeys.communication(session),
     queryFn: () => api.get_communication(session),
   })

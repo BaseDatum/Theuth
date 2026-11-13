@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 144 §6.3–§6.4: `theuth://` links render as numbered chips (ordinal of first appearance in the message), a dashed
 // References footer lists them with their resolved title and drift status. One batched `cite_resolve` per message.
 // Wave 2 (U1): drift on the chip itself — a `missing`/unavailable target opens the dangling-ref card instead of a
@@ -28,13 +29,14 @@ export const citationCount = (text: string): number => collectCitations(text).le
 
 /** Collects the message's citations and resolves them once; chips and the footer read the result. */
 export function CitationsProvider({ text, children }: { text: string; children: ReactNode }) {
+  const canQuery1 = useQuerySupport(["cite_resolve"])
   const hrefs = useMemo(() => collectCitations(text), [text])
   // The connection's client, not `useNotebooksApi()`: a guest page has none and must not throw.
   const client = useConnection((s) => s.client)
   const { data } = useQuery({
     queryKey: notebookKeys.cite(hrefs),
     queryFn: () => notebooksApi(client as NonNullable<typeof client>).cite_resolve(hrefs),
-    enabled: client !== null && hrefs.length > 0,
+    enabled: canQuery1 && (client !== null && hrefs.length > 0),
     staleTime: 60_000,
   })
   const value = useMemo<Resolved>(() => ({ hrefs, byHref: new Map((data ?? []).map((c) => [c.href, c])) }), [hrefs, data])

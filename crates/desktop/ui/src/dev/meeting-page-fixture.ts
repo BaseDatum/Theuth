@@ -231,7 +231,7 @@ function wrap(api: Api, s: Seed, onSummarize: () => void): Api {
 export function install(connection: ConnectionApi, mode: Mode): () => void {
   const s = seed(mode)
   const timers: number[] = []
-  const state = (e: MeetingEvent) => dispatch([e])
+  const state = (e: MeetingEvent) => dispatch([{key: 'meeting.events@1', event: e}])
   const summarize = () => {
     s.manifest = { ...s.manifest, state: 'Summarizing' }
     state({ type: 'State', meeting: FIXTURE_ID, state: 'Summarizing', degraded: [] })

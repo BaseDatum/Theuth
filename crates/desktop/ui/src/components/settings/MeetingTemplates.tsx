@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 158 §11.1 (W4): Settings › Meetings › Templates — every `<data_dir>/meetings/templates/<slug>.md` as the engine
 // parsed it (`meeting_templates`), Edit opens the file itself (`body`, saved verbatim), New starts from one Summary
 // section, Save → `meeting_template_put(slug, body)`, Delete → `meeting_template_delete` (disabled for built-ins),
@@ -24,8 +25,9 @@ export interface Draft {
 
 /** Meetings › Templates (188: a whole tab; it takes no `focus`). `initial` opens the editor at mount (tests; a "New template…" link could pass one). */
 export function MeetingTemplates({ initial = null }: Partial<TabProps> & { initial?: Draft | null }) {
+  const canQuery1 = useQuerySupport(["meeting_templates"])
   const api = useApi()
-  const templates = useQuery({ queryKey: queryKeys.meetingTemplates, queryFn: () => api.meeting_templates() })
+  const templates = useQuery({ enabled: canQuery1, queryKey: queryKeys.meetingTemplates, queryFn: () => api.meeting_templates() })
   const [draft, setDraft] = useState<Draft | null>(initial)
   const put = useAction((d: Draft) => api.meeting_template_put(d.isNew ? slugify(d.slug) : d.slug, d.body), {
     keys: [queryKeys.meetingTemplates],

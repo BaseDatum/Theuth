@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Copy, ShieldAlert, SquareTerminal, Timer } from 'lucide-react'
@@ -92,18 +93,20 @@ export function Clock({ at }: { at?: number }) {
 
 /** One participant's durable record of exchange `id`; nothing is fetched while `enabled` is false. */
 function useRecord(session: string, id: string | null | undefined, enabled = true) {
+  const canQuery1 = useQuerySupport(["peer_message"])
   const api = useApi()
   return useQuery({
     queryKey: queryKeys.peerMessage(session, id ?? ''),
     queryFn: () => api.peer_message(session, id ?? ''),
-    enabled: enabled && !!id,
+    enabled: canQuery1 && (enabled && !!id),
   })
 }
 
 /** The exchange ids this session still owes an answer to (`list_peer_messages(pending_only)`); one fetch per session. */
 export function useAwaitingAnswer(session: string) {
+  const canQuery2 = useQuerySupport(["list_peer_messages"])
   const api = useApi()
-  return useQuery({
+  return useQuery({ enabled: canQuery2,
     queryKey: queryKeys.peerMessages(session, true, 'page'),
     queryFn: () => api.list_peer_messages(session, null, null, true),
     select: (page) => page.awaiting_answer,

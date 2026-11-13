@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import { dreamingFixture } from '@/dev/dreaming-fixture'
@@ -15,29 +16,33 @@ export const NIGHTS_LIMIT = 10
 
 /** `dreaming.status`, refetched when a night starts, finishes or is undone. Reads `state.json` — cheap. */
 export function useDreamStatus() {
+  const canQuery1 = useQuerySupport(["dreaming.status"])
   const api = useDreamingApi()
   const qc = useQueryClient()
   useEffect(() => {
     const invalidate = () => void qc.invalidateQueries({ queryKey: KEY })
-    const offs = [on('DreamNightStarted', invalidate), on('DreamNightFinished', invalidate), on('DreamUndone', invalidate)]
+    const offs = [on("dreaming.started@1", 'DreamNightStarted', invalidate), on("dreaming.finished@1", 'DreamNightFinished', invalidate), on("dreaming.undone@1", 'DreamUndone', invalidate)]
     return () => {
       for (const off of offs) off()
     }
   }, [qc])
-  return useQuery({ queryKey: [...KEY, 'status'], queryFn: () => api['dreaming.status']() })
+  return useQuery({ enabled: canQuery1, queryKey: [...KEY, 'status'], queryFn: () => api['dreaming.status']() })
 }
 
 export function useDreamSettings() {
+  const canQuery2 = useQuerySupport(["dreaming.settings"])
   const api = useDreamingApi()
-  return useQuery({ queryKey: [...KEY, 'settings'], queryFn: () => api['dreaming.settings']() })
+  return useQuery({ enabled: canQuery2, queryKey: [...KEY, 'settings'], queryFn: () => api['dreaming.settings']() })
 }
 
 export function useDreamNights() {
+  const canQuery3 = useQuerySupport(["dreaming.nights"])
   const api = useDreamingApi()
-  return useQuery({ queryKey: [...KEY, 'nights'], queryFn: () => api['dreaming.nights'](NIGHTS_LIMIT) })
+  return useQuery({ enabled: canQuery3, queryKey: [...KEY, 'nights'], queryFn: () => api['dreaming.nights'](NIGHTS_LIMIT) })
 }
 
 export function useDreamProposals() {
+  const canQuery4 = useQuerySupport(["dreaming.proposals"])
   const api = useDreamingApi()
-  return useQuery({ queryKey: [...KEY, 'proposals'], queryFn: () => api['dreaming.proposals']() })
+  return useQuery({ enabled: canQuery4, queryKey: [...KEY, 'proposals'], queryFn: () => api['dreaming.proposals']() })
 }

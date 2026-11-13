@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 126 §10: Settings › Double — the owner's double in one pane: status header, the Improvement chart (design 123's
 // `LineChart` kernel), KPI tiles, the classes table with its row actions, training controls, consent, export / delete,
 // and the training log. Every number comes from `double_status` / `double_classes` / `double_class`; every control is
@@ -107,14 +108,17 @@ export const setOptIn = (api: Pick<Api, 'double_set_cap'>, c: DoubleClass, on: b
 export const forgetClass = (api: Pick<Api, 'double_forget'>, key: string) => api.double_forget({ target: 'class', key })
 
 export function Double() {
+  const canQuery1 = useQuerySupport(["double_status"])
+  const canQuery1_2 = useQuerySupport(["double_classes"])
+  const canQuery1_3 = useQuerySupport(["double_settings_get"])
   const api = useApi()
   const qc = useQueryClient()
   const flag = useConfigFlag('double.enabled')
   // Off, the engine has no double actors to answer, so nothing below the switch is asked for (188 F1).
   const runs = flagRuns(flag)
-  const status = useQuery({ queryKey: queryKeys.doubleStatus, queryFn: () => api.double_status(), refetchInterval: 30_000, enabled: runs === true })
-  const classes = useQuery({ queryKey: queryKeys.doubleClasses, queryFn: () => api.double_classes(), enabled: runs === true })
-  const loaded = useQuery({ queryKey: queryKeys.doubleSettings, queryFn: () => api.double_settings_get(), enabled: runs === true })
+  const status = useQuery({ queryKey: queryKeys.doubleStatus, queryFn: () => api.double_status(), refetchInterval: 30_000, enabled: canQuery1 && (runs === true) })
+  const classes = useQuery({ queryKey: queryKeys.doubleClasses, queryFn: () => api.double_classes(), enabled: canQuery1_2 && (runs === true) })
+  const loaded = useQuery({ queryKey: queryKeys.doubleSettings, queryFn: () => api.double_settings_get(), enabled: canQuery1_3 && (runs === true) })
   // `double_settings_set` persists the whole section: carry the saved Enabled, not the running copy's, so a training
   // save never undoes the switch.
   const settings = loaded.data && flag.data ? { ...loaded.data, enabled: flag.data.enabled } : loaded.data
@@ -123,11 +127,11 @@ export function Double() {
   useEffect(() => {
     const invalidate = () => void qc.invalidateQueries({ queryKey: queryKeys.doubleAll })
     const offs = [
-      on('DoubleTrainingState', (e) => {
+      on("double.training@1", 'DoubleTrainingState', (e) => {
         setLive((l) => [e, ...l.filter((x) => x.run_id !== e.run_id)].slice(0, 20))
         invalidate()
       }),
-      on('DoubleVersionActivated', (e) => {
+      on("double.version@1", 'DoubleVersionActivated', (e) => {
         toast.message(`double: version ${e.version} is active${e.previous ? ` (was ${e.previous})` : ''}`)
         invalidate()
       }),
@@ -196,9 +200,10 @@ function Status({ s }: { s: DoubleStatus | undefined }) {
 }
 
 function Improvement({ classes }: { classes: DoubleClass[] }) {
+  const canQuery2 = useQuerySupport(["double_class"])
   const api = useApi()
   // ponytail: one `double_class` per class to build the overall curve (no overall-curve RPC in the contract); fine for tens of classes.
-  const details = useQueries({ queries: classes.map((c) => ({ queryKey: queryKeys.doubleClass(c.key), queryFn: () => api.double_class(c.key), staleTime: 60_000 })) })
+  const details = useQueries({ queries: classes.map((c) => ({ enabled: canQuery2, queryKey: queryKeys.doubleClass(c.key), queryFn: () => api.double_class(c.key), staleTime: 60_000 })) })
   const points = mergeCurves(details.flatMap((d) => (d.data ? [d.data] : [])))
   if (points.length === 0) return <Empty>No labelled weeks yet — the chart draws once the double has predicted and you have answered.</Empty>
   return (
@@ -323,8 +328,9 @@ function Classes({ classes, loading, error }: { classes: DoubleClass[]; loading:
 }
 
 function Examples({ k }: { k: string }) {
+  const canQuery3 = useQuerySupport(["double_class"])
   const api = useApi()
-  const d = useQuery({ queryKey: queryKeys.doubleClass(k), queryFn: () => api.double_class(k) })
+  const d = useQuery({ enabled: canQuery3, queryKey: queryKeys.doubleClass(k), queryFn: () => api.double_class(k) })
   const forget = useAction((id: string) => api.double_forget({ target: 'examples', ids: [id] }), { keys: [queryKeys.doubleClass(k), queryKeys.doubleClasses] })
   if (d.isError) return <Empty>{errorText(d.error)}</Empty>
   if (!d.data) return <Empty>loading…</Empty>

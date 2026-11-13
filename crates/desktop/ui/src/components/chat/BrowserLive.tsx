@@ -1,14 +1,16 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { useApi } from '@/lib/rpc'
 
 /** Live view of a session's headless browser: polls `browser_screenshot` twice a second while open (23 §3.2; the obscura guide's `captureScreenshot` loop, in-process). */
 export function BrowserLive({ session, open, onOpenChange }: { session: string; open: boolean; onOpenChange(o: boolean): void }) {
+  const canQuery1 = useQuerySupport(["browser_screenshot"])
   const api = useApi()
   const { data, isPending } = useQuery({
     queryKey: ['browser', session],
     queryFn: () => api.browser_screenshot(session),
-    enabled: open,
+    enabled: canQuery1 && (open),
     refetchInterval: open ? 500 : false,
     refetchIntervalInBackground: false,
   })

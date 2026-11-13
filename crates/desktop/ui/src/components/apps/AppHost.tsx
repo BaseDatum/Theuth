@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 /**
  * The live app view (46 §6–§8): the patched OpenUI renderer over the app RPC bridge. One mounted host is one
  * `instance_id`; each committed record it shows is a `generation`. A draft previews with the runtime inert and
@@ -78,11 +79,12 @@ function useVisible(): boolean {
  * (reopen) refetches, and a reconnect invalidates (46 §6.4); cached data stays on screen meanwhile. `session` names
  * a private owner (`privateOwner`, 51 §4.2). */
 function useAppDoc(callId: string | undefined, enabled: boolean, session: string | undefined) {
+  const canQuery1 = useQuerySupport(["get_app"])
   const api = useApi();
   return useQuery({
     queryKey: ["app", callId],
     queryFn: () => api.get_app(callId as string, session),
-    enabled: enabled && callId !== undefined,
+    enabled: canQuery1 && (enabled && callId !== undefined),
     staleTime: 0,
     refetchOnMount: "always",
     refetchOnWindowFocus: false,
@@ -380,7 +382,7 @@ export default function AppHost({ session, artifact, draft }: AppViewProps) {
   );
   useEffect(
     () =>
-      on("AppCallChanged", (e) => {
+      on("app.calls@1", "AppCallChanged", (e) => {
         if (e.session === session && presses.has(e.request_id))
           void presses.settle();
       }),

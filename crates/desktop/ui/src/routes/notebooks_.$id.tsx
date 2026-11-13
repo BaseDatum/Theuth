@@ -1,3 +1,5 @@
+import { withCapability } from '@/rpc/capabilities'
+import { panelRequirements as requirements } from '@/components/notebooks/requirements'
 import { createFileRoute } from '@tanstack/react-router'
 import { NotebookPage } from '@/components/notebooks/NotebookPage'
 
@@ -11,5 +13,5 @@ export const Route = createFileRoute('/notebooks_/$id')({
     ...(s.ask === true || (typeof s.ask === 'string' && s.ask !== '') ? { ask: s.ask } : {}),
     ...(typeof s.note === 'string' && s.note !== '' ? { note: s.note } : {}),
   }),
-  component: NotebookPage,
+  component: withCapability(NotebookPage, requirements),
 })

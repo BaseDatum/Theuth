@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { ArrowDown, ArrowUp, Copy, Pencil, Plus } from 'lucide-react'
@@ -79,11 +80,12 @@ export function DevicesTab() {
 }
 
 function NodeSide() {
+  const canQuery1 = useQuerySupport(["link_status"])
   const api = useApi()
   const qc = useQueryClient()
   const active = useEngines((s) => s.active)
   const nodeName = useConnection((s) => s.info?.name)
-  const status = useQuery({ queryKey: KEY, queryFn: () => api.link_status(), retry: false })
+  const status = useQuery({ enabled: canQuery1, queryKey: KEY, queryFn: () => api.link_status(), retry: false })
   const keys = [KEY]
 
   const enable = useAction((v: { enabled: boolean; relay: string | null }) => api.link_enable(v.enabled, v.relay), { keys })
@@ -92,7 +94,7 @@ function NodeSide() {
 
   useEffect(() => {
     const invalidate = () => void qc.invalidateQueries({ queryKey: KEY })
-    const offs = LINK_EVENTS.map((t) => on(t, invalidate))
+    const offs = LINK_EVENTS.map((t) => on("link.events@1", t, invalidate))
     return () => {
       for (const off of offs) off()
     }
@@ -179,11 +181,12 @@ function NodeSide() {
  * rows greyed — rename, revoke, and "Pair a device": a 4-part QR any node may show; the hub accepts.
  */
 function Devices() {
+  const canQuery2 = useQuerySupport(["devices_list"])
   const api = useApi()
   const qc = useQueryClient()
   const mesh = useMesh().data
   const meshName = mesh?.mesh_name ?? mesh?.self_name
-  const devices = useQuery({ queryKey: DEVICES, queryFn: () => api.devices_list(), retry: false })
+  const devices = useQuery({ enabled: canQuery2, queryKey: DEVICES, queryFn: () => api.devices_list(), retry: false })
   const [pairing, setPairing] = useState<PairingPayload | null>(null)
   const start = useAction((_: void) => api.device_pair_start(null), { keys: [], onSuccess: setPairing })
   const rename = useAction((v: { id: string; name: string }) => api.device_rename(v.id, v.name), { keys: [DEVICES] })
@@ -191,9 +194,9 @@ function Devices() {
 
   useEffect(() => {
     const invalidate = () => void qc.invalidateQueries({ queryKey: DEVICES })
-    const offs = DEVICE_EVENTS.map((t) => on(t, invalidate))
+    const offs = DEVICE_EVENTS.map((t) => on("link.events@1", t, invalidate))
     // The device that scanned is in; the QR is spent.
-    offs.push(on('DevicePaired', () => setPairing(null)))
+    offs.push(on("link.events@1", 'DevicePaired', () => setPairing(null)))
     return () => {
       for (const off of offs) off()
     }

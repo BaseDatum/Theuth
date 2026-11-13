@@ -15,7 +15,7 @@ vi.mock('@/lib/rpc', async (original) => ({
 }))
 vi.mock('@/store/connection', async (original) => ({
   ...(await original<typeof Conn>()),
-  useConnection: (pick: (s: unknown) => unknown) => pick({ info: { data_dir: '/dd' }, api: null }),
+  useConnection: (pick: (s: unknown) => unknown) => pick({ info: { data_dir: '/dd' }, api: null , discovery: { phase: 'legacy' } }),
 }))
 
 const occurrence = (removed: boolean): ContextAttachment => ({

@@ -1,3 +1,5 @@
+import { withCapability } from '@/rpc/capabilities'
+import { panelRequirements as requirements } from '@/components/knowledge/requirements'
 import { createFileRoute } from '@tanstack/react-router'
 import { Document } from '@/components/knowledge/Document'
 
@@ -23,5 +25,5 @@ export const Route = createFileRoute('/knowledge/$')({
     }
     return out
   },
-  component: Document,
+  component: withCapability(Document, requirements),
 })

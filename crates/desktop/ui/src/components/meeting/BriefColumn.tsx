@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 156 D3: the briefs of one meeting as a full-height column — the first child of the meeting page's body row in
 // every state, live or ended — oldest first, the island's cursor ringed, a cached instance linking its row on the
 // briefs tab. The list is `meeting_briefs` alone (`queryKeys.meetingBriefs`): `lib/rpc.ts` invalidates it on
@@ -20,8 +21,9 @@ export const hhmmss = (ms: number): string => {
 
 /** The meeting's briefs, oldest first (the engine's order); shared by the column and the header's count. */
 export function useBriefs(id: string) {
+  const canQuery1 = useQuerySupport(["meeting_briefs"])
   const api = useApi()
-  return useQuery({ queryKey: queryKeys.meetingBriefs(id), queryFn: () => api.meeting_briefs(id) })
+  return useQuery({ enabled: canQuery1, queryKey: queryKeys.meetingBriefs(id), queryFn: () => api.meeting_briefs(id) })
 }
 
 /**

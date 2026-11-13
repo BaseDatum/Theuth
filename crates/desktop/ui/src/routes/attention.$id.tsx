@@ -1,3 +1,5 @@
+import { withCapability } from '@/rpc/capabilities'
+import { panelRequirements as requirements } from '@/components/attention/requirements'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useRef } from 'react'
 import { Screen } from '@/components/attention/Screen'
@@ -36,4 +38,4 @@ function Selected() {
   )
 }
 
-export const Route = createFileRoute('/attention/$id')({ component: Selected })
+export const Route = createFileRoute('/attention/$id')({ component: withCapability(Selected, requirements) })

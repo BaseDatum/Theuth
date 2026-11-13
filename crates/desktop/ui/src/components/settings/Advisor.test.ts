@@ -19,11 +19,11 @@ const opus = { id: 'anthropic/claude-opus-4-8', name: 'Claude Opus 4.8', provide
 // The engine's live `Info.advisor` (simulated server state the setters change), and a reactive connection store
 // holding the client's copy: `refreshInfo` re-reads `api.info()` into it, as in the app.
 let advisor: AdvisorDefaults = { model: null, effort: null, max_notes_per_update: 4, immune_turns: 3, sync_backlog: 'off', max_consults: 6 }
-type ConnState = { info: { advisor: AdvisorDefaults } | null; api: null; setInfo: (info: { advisor: AdvisorDefaults }) => void }
+type ConnState = { info: { advisor: AdvisorDefaults } | null; api: null; discovery: { phase: 'legacy' }; setInfo: (info: { advisor: AdvisorDefaults }) => void }
 vi.mock('@/store/connection', async (original) => {
   // A vi.mock factory is hoisted above the file's imports, so zustand is loaded here.
   const { create } = await import('zustand')
-  return { ...(await original<typeof Conn>()), useConnection: create<ConnState>()((set) => ({ info: null, api: null, setInfo: (info) => set({ info }) })) }
+  return { ...(await original<typeof Conn>()), useConnection: create<ConnState>()((set) => ({ info: null, api: null, discovery: { phase: 'legacy' }, setInfo: (info) => set({ info }) })) }
 })
 const conn = useConnection as unknown as UseBoundStore<StoreApi<ConnState>>
 

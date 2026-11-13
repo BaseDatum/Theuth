@@ -252,17 +252,17 @@ export function handle(e: SubEvent): void {
 /** Wire `TalkEvent`s (and `SpeechFinished` for the agent line) to the store; once per app boot. Returns the unsubscribe. */
 export function installTalkListeners(): () => void {
   const offs = [
-    on('TalkStarted', handle),
-    on('TalkState', handle),
-    on('Heard', handle),
-    on('TalkLevel', handle),
-    on('Saying', handle),
-    on('Submitted', handle),
-    on('Interrupted', handle),
-    on('Flush', handle),
-    on('Degraded', handle),
-    on('TalkFinished', handle),
-    on('SpeechFinished', handle),
+    on("talk.events@1", 'TalkStarted', handle),
+    on("talk.events@1", 'TalkState', handle),
+    on("talk.events@1", 'Heard', handle),
+    on("talk.events@1", 'TalkLevel', handle),
+    on("talk.events@1", 'Saying', handle),
+    on("talk.events@1", 'Submitted', handle),
+    on("talk.events@1", 'Interrupted', handle),
+    on("talk.events@1", 'Flush', handle),
+    on("talk.events@1", 'Degraded', handle),
+    on("talk.events@1", 'TalkFinished', handle),
+    on("voice.events@1", 'SpeechFinished', handle),
   ]
   return () => {
     for (const off of offs) off()

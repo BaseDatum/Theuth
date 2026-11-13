@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -404,9 +405,10 @@ const route = getRouteApi('/artifacts/$callId')
  * (59 §7.2 as built: the bound document is storage, not the view).
  */
 export function Viewer() {
+  const canQuery1 = useQuerySupport(["get_artifact"])
   const { callId } = route.useParams()
   const api = useApi()
-  const record = useQuery({ queryKey: queryKeys.artifact(callId), queryFn: () => api.get_artifact(callId) })
+  const record = useQuery({ enabled: canQuery1, queryKey: queryKeys.artifact(callId), queryFn: () => api.get_artifact(callId) })
   const list = useArtifactList()
   const navigate = useNavigate()
   const mobile = useIsMobile()
@@ -573,8 +575,9 @@ const FIELD_LABEL: Record<string, string> = {
  * the rendered HTML/PDF, and source offsets are never claimed to be rendered positions.
  */
 function Matched({ a, query }: { a: Artifact; query: string }) {
+  const canQuery2 = useQuerySupport(["artifact_search_match"])
   const api = useApi()
-  const ctx = useQuery({
+  const ctx = useQuery({ enabled: canQuery2,
     queryKey: queryKeys.artifactSearchMatch(a.call_id, query),
     queryFn: () => api.artifact_search_match(a.call_id, query),
     retry: false,
@@ -658,8 +661,9 @@ function Action({
 
 /** The details table: what the record carries, with the paths copyable. */
 function Details({ a }: { a: Artifact }) {
+  const canQuery3 = useQuerySupport(["list_sessions"])
   const api = useApi()
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const sessions = useQuery({ enabled: canQuery3, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const rows: [string, ReactNode][] = [
     ['Name', a.name],
     ['Kind', a.kind],

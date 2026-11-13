@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 144 §9/§10 (wave 2 contract §2): ask across notebooks and overviews over RPC — the query keys, the `NotebookAsk`
 // event fold and the hooks the ask view and the overviews section share.
 import { useQuery } from '@tanstack/react-query'
@@ -8,7 +9,7 @@ import type { AskBranch } from "@/rpc/bindings/event.agent_2enotebook_2dask.outp
 import type { AskEvent } from "@/rpc/bindings/event.agent_2enotebook_2dask.output"
 import type { AskHit } from "@/rpc/bindings/event.agent_2enotebook_2dask.output"
 import type { SessionId } from "@/rpc/bindings/method.agent.output"
-import type { UiEvent as WireEvent } from '@/store/ui-events'
+
 import { on } from '@/store/sessions'
 
 /** Contract §2: ask across notebooks and overviews (E2's four `Api` methods). */
@@ -24,8 +25,9 @@ export const askKeys = {
 
 /** `notebook_ask_list()` — Library › Notebooks › Ask; refetched while any row is still running. */
 export function useAskList() {
+  const canQuery1 = useQuerySupport(["notebook_ask_list"])
   const api = useAskApi()
-  return useQuery({
+  return useQuery({ enabled: canQuery1,
     queryKey: askKeys.list,
     queryFn: () => api.notebook_ask_list(null),
     refetchInterval: (q) => (q.state.data?.some((a) => !a.done) ? 5_000 : false),
@@ -34,8 +36,9 @@ export function useAskList() {
 
 /** `notebook_overviews(notebook)`: every 5 s while a row is `running`, otherwise on mount and on focus (§10). */
 export function useOverviews(notebook: string) {
+  const canQuery2 = useQuerySupport(["notebook_overviews"])
   const api = useAskApi()
-  return useQuery({
+  return useQuery({ enabled: canQuery2,
     queryKey: askKeys.overviews(notebook),
     queryFn: () => api.notebook_overviews(notebook),
     refetchInterval: (q) => (q.state.data?.some((o) => o.status === 'running') ? 5_000 : false),
@@ -86,8 +89,8 @@ export function useAskEvents(session: SessionId): AskState {
   const [state, setState] = useState(EMPTY_ASK)
   useEffect(() => {
     setState(EMPTY_ASK)
-    // The bus is typed by `WireEvent`, which predates `AskEvent`; subscribe by the tag the contract writes.
-    return on('NotebookAsk' as WireEvent['type'], (raw) => {
+
+    return on('agent.notebook-ask@1', 'NotebookAsk', (raw) => {
       const ev = askEventOf(raw, session)
       if (ev) setState((s) => applyAskEvent(s, ev))
     })

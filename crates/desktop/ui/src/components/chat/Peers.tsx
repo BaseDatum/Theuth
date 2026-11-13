@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Copy, RefreshCw } from 'lucide-react'
@@ -32,11 +33,12 @@ export function Peers({ session, focus }: { session: string; focus: string | nul
 }
 
 function Directory({ session }: { session: string }) {
+  const canQuery1 = useQuerySupport(["list_peers"])
   const api = useApi()
   const navigate = useNavigate()
   const [q, setQ] = useState('')
   const query = q.trim() || null
-  const peers = useInfiniteQuery({
+  const peers = useInfiniteQuery({ enabled: canQuery1,
     queryKey: queryKeys.peers(session, query),
     queryFn: ({ pageParam }) => api.list_peers(session, query, pageParam, null),
     initialPageParam: null as string | null,
@@ -131,9 +133,10 @@ function Directory({ session }: { session: string }) {
 type Side = 'answer' | 'resolve' | null
 
 function Requests({ session, focus }: { session: string; focus: string | null }) {
+  const canQuery2 = useQuerySupport(["list_peer_messages"])
   const api = useApi()
   const [pendingOnly, setPendingOnly] = useState(true)
-  const page = useInfiniteQuery({
+  const page = useInfiniteQuery({ enabled: canQuery2,
     queryKey: queryKeys.peerMessages(session, pendingOnly, 'infinite'),
     queryFn: ({ pageParam }) => api.list_peer_messages(session, pageParam, null, pendingOnly),
     initialPageParam: null as string | null,
@@ -203,8 +206,9 @@ function Requests({ session, focus }: { session: string; focus: string | null })
 
 /** A deep-linked id that the loaded pages do not hold: the durable record alone, without an answer box (nothing pending). */
 function Focused({ session, id }: { session: string; id: string }) {
+  const canQuery3 = useQuerySupport(["peer_message"])
   const api = useApi()
-  const record = useQuery({ queryKey: queryKeys.peerMessage(session, id), queryFn: () => api.peer_message(session, id) })
+  const record = useQuery({ enabled: canQuery3, queryKey: queryKeys.peerMessage(session, id), queryFn: () => api.peer_message(session, id) })
   if (record.isPending) return <Empty>Looking up {id}…</Empty>
   if (record.isError)
     return (
@@ -228,6 +232,7 @@ function Request({
   focused: boolean
   onToggle: () => void
 }) {
+  const canQuery4 = useQuerySupport(["peer_message"])
   const api = useApi()
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -238,7 +243,7 @@ function Request({
   const detail = useQuery({
     queryKey: queryKeys.peerMessage(session, id),
     queryFn: () => api.peer_message(session, id),
-    enabled: open,
+    enabled: canQuery4 && (open),
   })
   const [text, setText] = useState('')
   const send = useAction((t: string) => routed(session, () => api.answer_peer_request(session, id, t)), {

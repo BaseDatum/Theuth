@@ -195,7 +195,7 @@ const SESSIONS_DEBOUNCE_MS = 500
 
 /** 183 W-7: a replicated commit is how a remote session's running state reaches this engine's `list_sessions`, so it refetches the list too. */
 export function onContextChanged(search: () => void, sessions: () => void): () => void {
-  return on('ContextChanged', (e) => {
+  return on("agent.events@1", 'ContextChanged', (e) => {
     search()
     if (e.reason === 'replicated') sessions()
   })
@@ -240,97 +240,97 @@ export function useInvalidateOn(): void {
     }
     window.addEventListener('theuth:reload-session', models)
     const offs = [
-      on('TurnStarted', sessions),
-      on('TurnFinished', () => {
+      on("agent.events@1", 'TurnStarted', sessions),
+      on("agent.events@1", 'TurnFinished', () => {
         sessions()
         search()
       }),
-      on('SubagentSpawned', sessions),
-      on('ObservedChildChanged', sessions),
-      on('TitleChanged', () => {
+      on("agent.events@1", 'SubagentSpawned', sessions),
+      on("agent.events@1", 'ObservedChildChanged', sessions),
+      on("agent.events@1", 'TitleChanged', () => {
         sessions()
         search()
       }),
-      on('Compacted', search),
+      on("agent.events@1", 'Compacted', search),
       // 183 W-7: a replicated commit is how a remote session's running state reaches this engine's `list_sessions`.
       onContextChanged(search, sessions),
-      on('SessionDeleted', (e) => {
+      on("agent.events@1", 'SessionDeleted', (e) => {
         void qc.invalidateQueries({ queryKey: queryKeys.sessions })
         void qc.invalidateQueries({ queryKey: queryKeys.roster })
         search()
         window.dispatchEvent(new CustomEvent('theuth:session-closing', { detail: e }))
       }),
-      on('SessionClosing', (e) => {
+      on("agent.events@1", 'SessionClosing', (e) => {
         window.dispatchEvent(new CustomEvent('theuth:session-closing', { detail: e }))
       }),
-      on('ModelUsageChanged', (e) => void qc.invalidateQueries({ queryKey: ['session-cost', e.session] })),
-      on('SessionMetadataChanged', () => {
+      on("agent.events@1", 'ModelUsageChanged', (e) => void qc.invalidateQueries({ queryKey: ['session-cost', e.session] })),
+      on("agent.events@1", 'SessionMetadataChanged', () => {
         sessions()
         void qc.invalidateQueries({ queryKey: queryKeys.artifacts })
       }),
       // Ownership moved (68 §4.2): patch the cached rows at once so chips, header and menus follow live; the
       // debounced refetch settles the rest, and the session's orphans are re-asked.
-      on('SessionOwnerChanged', (e) => {
+      on("agent.events@1", 'SessionOwnerChanged', (e) => {
         qc.setQueryData<SessionSummary[]>(queryKeys.sessions, (rows) => withOwner(rows, e))
         void qc.invalidateQueries({ queryKey: queryKeys.sessionOrphans(e.session) })
         void qc.invalidateQueries({ queryKey: queryKeys.sessionsStatus })
         sessions()
       }),
-      on('McpProgress', () => void qc.invalidateQueries({ queryKey: ['mcp'] })),
-      on('LoginFinished', () => {
+      on("tools.mcp-progress@1", 'McpProgress', () => void qc.invalidateQueries({ queryKey: ['mcp'] })),
+      on("agent.login@1", 'LoginFinished', () => {
         void qc.invalidateQueries({ queryKey: queryKeys.logins })
         models()
       }),
-      on('KnowledgeChanged', (e) => {
+      on("knowledge.changed@1", 'KnowledgeChanged', (e) => {
         void qc.invalidateQueries({ queryKey: queryKeys.knowledgeList })
         void qc.invalidateQueries({ queryKey: queryKeys.knowledgeDoc(e.id) })
         void qc.invalidateQueries({ queryKey: queryKeys.knowledgeHistories })
         search()
       }),
-      on('ArtifactShown', () => {
+      on("artifact.shown@1", 'ArtifactShown', () => {
         void qc.invalidateQueries({ queryKey: queryKeys.artifacts })
         search()
       }),
-      on('DocumentChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.notes })),
-      on('SecretsChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.secrets })),
-      on('SecretResolved', () => void qc.invalidateQueries({ queryKey: queryKeys.secrets })),
-      on('CommunicationChanged', () => {
+      on("document.changed@1", 'DocumentChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.notes })),
+      on("secrets.events@1", 'SecretsChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.secrets })),
+      on("secrets.events@1", 'SecretResolved', () => void qc.invalidateQueries({ queryKey: queryKeys.secrets })),
+      on("agent.communication@1", 'CommunicationChanged', () => {
         void qc.invalidateQueries({ queryKey: ['communication'] })
         void qc.invalidateQueries({ queryKey: ['peers'] })
         void qc.invalidateQueries({ queryKey: queryKeys.info })
       }),
-      on('PeerMessageChanged', (e) => {
+      on("agent.peer-message@1", 'PeerMessageChanged', (e) => {
         void qc.invalidateQueries({ queryKey: ['peer-messages', e.session] })
         void qc.invalidateQueries({ queryKey: queryKeys.peerMessage(e.session, e.id) })
       }),
-      on('A2aChanged', () => {
+      on("a2a.changed@1", 'A2aChanged', () => {
         void qc.invalidateQueries({ queryKey: queryKeys.a2a })
         void qc.invalidateQueries({ queryKey: ['communication'] })
         void qc.invalidateQueries({ queryKey: ['peers'] })
       }),
       // 125 §8.1: the event carries the whole status — written into the query, no refetch.
-      on('AdvisorChanged', (e) => qc.setQueryData(queryKeys.advisorStatus(e.session), e.status)),
+      on("agent.events@1", 'AdvisorChanged', (e) => qc.setQueryData(queryKeys.advisorStatus(e.session), e.status)),
       // 53 (03 §3): the list and the current status follow the state machine; a title lands at `Summarized`.
-      on('Started', (e) => {
+      on("meeting.events@1", 'Started', (e) => {
         void qc.invalidateQueries({ queryKey: queryKeys.meetings })
         void qc.invalidateQueries({ queryKey: queryKeys.meetingStatus })
         void qc.invalidateQueries({ queryKey: queryKeys.meetingPermissions })
         void qc.invalidateQueries({ queryKey: queryKeys.meeting(e.meeting) })
       }),
-      on('State', (e) => {
+      on("meeting.events@1", 'State', (e) => {
         void qc.invalidateQueries({ queryKey: queryKeys.meetings })
         void qc.invalidateQueries({ queryKey: queryKeys.meetingStatus })
         void qc.invalidateQueries({ queryKey: queryKeys.meeting(e.meeting) })
       }),
-      on('Deleted', () => {
+      on("meeting.events@1", 'Deleted', () => {
         void qc.invalidateQueries({ queryKey: queryKeys.meetings })
         void qc.invalidateQueries({ queryKey: queryKeys.meetingStatus })
       }),
-      on('ReviewReady', (e) => {
+      on("meeting.events@1", 'ReviewReady', (e) => {
         void qc.invalidateQueries({ queryKey: queryKeys.meeting(e.meeting) })
         void qc.invalidateQueries({ queryKey: queryKeys.meetingTranscript(e.meeting) })
       }),
-      on('Summarized', (e) => {
+      on("meeting.events@1", 'Summarized', (e) => {
         void qc.invalidateQueries({ queryKey: queryKeys.meetings })
         void qc.invalidateQueries({ queryKey: queryKeys.meeting(e.meeting) })
         void qc.invalidateQueries({ queryKey: queryKeys.meetingSummary(e.meeting) })
@@ -338,43 +338,43 @@ export function useInvalidateOn(): void {
       }),
       // 156 D4: topic briefs publish only `TopicAdded` (the model's `meeting_topic`, the alias scan), so the page's brief
       // column re-reads `meeting_briefs` on every topic/brief event rather than listening for `Brief` alone.
-      on('TopicAdded', (e) => void qc.invalidateQueries({ queryKey: queryKeys.meetingBriefs(e.meeting) })),
-      on('TopicRemoved', (e) => void qc.invalidateQueries({ queryKey: queryKeys.meetingBriefs(e.meeting) })),
-      on('Brief', (e) => void qc.invalidateQueries({ queryKey: queryKeys.meetingBriefs(e.meeting) })),
-      on('BriefChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.briefs })),
+      on("meeting.events@1", 'TopicAdded', (e) => void qc.invalidateQueries({ queryKey: queryKeys.meetingBriefs(e.meeting) })),
+      on("meeting.events@1", 'TopicRemoved', (e) => void qc.invalidateQueries({ queryKey: queryKeys.meetingBriefs(e.meeting) })),
+      on("meeting.events@1", 'Brief', (e) => void qc.invalidateQueries({ queryKey: queryKeys.meetingBriefs(e.meeting) })),
+      on("meeting.briefs@1", 'BriefChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.briefs })),
       // 158 §7.6 (W2): a source was added, removed, refreshed or errored, or a push landed — Settings › Calendar's
       // rows and every Upcoming / `[▾]` list re-read.
-      on('SourcesChanged', () => {
+      on("meeting.calendar@1", 'SourcesChanged', () => {
         void qc.invalidateQueries({ queryKey: ['calendar-sources'] })
         void qc.invalidateQueries({ queryKey: ['calendar-events'] })
       }),
       // 79 §4.4: VM rows are patched in place; the bring-up log per name; `OpenDesktop` (the `sandbox_desktop` tool) pops
       // the window out of the main shell only — pop-outs receive the same stream. `Changed` is also a `ScheduleEvent`.
-      on('Changed', (e) => {
+      on("sandbox.events@1", 'Changed', (e) => {
         if ('sandbox' in e) applySandboxEvent(qc, e)
       }),
-      on('Removed', (e) => applySandboxEvent(qc, e)),
-      on('Progress', (e) => { if ('call_id' in e) applySandboxEvent(qc, e) }),
-      on('OpenDesktop', (e) => {
+      on("sandbox.events@1", 'Removed', (e) => applySandboxEvent(qc, e)),
+      on("sandbox.events@1", 'Progress', (e) => applySandboxEvent(qc, e)),
+      on("sandbox.events@1", 'OpenDesktop', (e) => {
         if (!isPopout()) void openPopout({ kind: 'vm', name: e.name })
       }),
       // 67 §4, bridged since 79: the Network page's peers and lease follow the bus instead of the poll alone.
-      on('peer', () => void qc.invalidateQueries({ queryKey: ['mesh'] })),
-      on('lease', () => void qc.invalidateQueries({ queryKey: ['mesh'] })),
+      on("mesh.events@1", 'peer', () => void qc.invalidateQueries({ queryKey: ['mesh'] })),
+      on("mesh.events@1", 'lease', () => void qc.invalidateQueries({ queryKey: ['mesh'] })),
       // 183 §6.8 / §12.9: Settings › Network's Nearby list, pair dialog and rotation banner carry the whole state.
-      on('nearby', (e) => qc.setQueryData(queryKeys.meshNearby, e.data)),
-      on('pair', (e) => {
+      on("mesh.events@1", 'nearby', (e) => qc.setQueryData(queryKeys.meshNearby, e.data)),
+      on("mesh.events@1", 'pair', (e) => {
         putPair(qc, e.data)
         if (e.data.state === 'paired') void qc.invalidateQueries({ queryKey: ['mesh'] })
       }),
-      on('SecretsRotation', ({ type: _, ...state }) => qc.setQueryData(queryKeys.vaultRotation, state)),
+      on("secrets.events@1", 'SecretsRotation', ({ type: _, ...state }) => qc.setQueryData(queryKeys.vaultRotation, state)),
       // 183 §7.4 / §7.1: Add contact's Nearby agents and the ceremony carry the whole state.
-      on('contact_nearby', (e) => qc.setQueryData(queryKeys.contactNearby, e.data)),
-      on('contact_pair', (e) => {
+      on("a2a.contacts@1", 'contact_nearby', (e) => qc.setQueryData(queryKeys.contactNearby, e.data)),
+      on("a2a.contacts@1", 'contact_pair', (e) => {
         putPair(qc, e.data, queryKeys.contactPair)
         if (e.data.state === 'paired') void qc.invalidateQueries({ queryKey: queryKeys.contacts })
       }),
-      on('EndlessProgress', (e) => applyEndlessProgress(qc, e)),
+      on("agent.endless-progress@1", 'EndlessProgress', (e) => applyEndlessProgress(qc, e)),
     ]
     return () => {
       clearTimeout(timer)

@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, Radar, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -6,13 +7,15 @@ import { Button } from '@/components/ui/button'
 import { queryKeys, useApi } from '@/lib/rpc'
 
 export function Agents() {
+  const canQuery1 = useQuerySupport(["list_acp"])
+  const canQuery1_2 = useQuerySupport(["list_acp_registry"])
   const api = useApi()
   const qc = useQueryClient()
-  const installed = useQuery({
+  const installed = useQuery({ enabled: canQuery1,
     queryKey: queryKeys.acp,
     queryFn: () => api.list_acp(false),
   })
-  const registry = useQuery({
+  const registry = useQuery({ enabled: canQuery1_2,
     queryKey: queryKeys.acpRegistry,
     queryFn: () => api.list_acp_registry(),
   })

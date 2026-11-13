@@ -1,3 +1,12 @@
+import { Capability } from '@/rpc/capabilities'
+import { supports, type Requirements } from '@/rpc/discovery'
+import { memoryRequirements, sessionCostRequirements, messagingRequirements, toolsRequirements, contextRequirements, browserRequirements, approvalsRequirements, modelRequirements, terminalRequirements, sessionMenuRequirements } from './requirements'
+import { requirements as codemapRequirements } from '@/components/codemap/requirements'
+import { requirements as artifactRequirements } from '@/components/artifacts/requirements'
+import { requirements as vmRequirements } from '@/components/vm/requirements'
+import { searchRequirements } from '@/components/sidebar/requirements'
+
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { AppWindow, Contact, CornerLeftUp, Eye, Gauge, LayoutGrid, MessageSquare, Monitor, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
@@ -43,14 +52,21 @@ import { MessagingSheet } from './MessagingSheet'
 import { ToolsSheet } from './ToolsSheet'
 import { TerminalButton, TerminalViewer, useHasTerminals } from './TerminalViewer'
 import { EyeMark } from './ObservedBar'
+const HEADER_REQUIREMENTS: Partial<Record<HeaderId, Requirements>> = {
+  search: searchRequirements, memory: memoryRequirements, model: modelRequirements,
+  desktop: vmRequirements, context: contextRequirements, cost: sessionCostRequirements,
+  terminals: terminalRequirements, browser: browserRequirements, artifacts: artifactRequirements,
+  codemap: codemapRequirements, pending: approvalsRequirements, menu: sessionMenuRequirements,
+}
 
 /** `↳ parent` breadcrumb of a subagent's transcript; `row`: the compact menu's "Parent" line. A watch-only child (141 §9.2d)
  * shows the `Watching` chip and `inside <parent> · <source>` instead. */
 function Parent({ id, mode, observed }: { id: string; mode: Mode; observed?: ObservedMeta | null }) {
+  const canQuery1 = useQuerySupport(["list_sessions"])
   const row = mode === 'row'
   const api = useApi()
   const navigate = useNavigate()
-  const { data: sessions } = useQuery({
+  const { data: sessions } = useQuery({ enabled: canQuery1,
     queryKey: queryKeys.sessions,
     queryFn: () => api.list_sessions(),
   })
@@ -186,6 +202,9 @@ export function Header({
   /** What "Open in new window" opens; the session's chat unless the host is another view of it (76: `talk`). */
   popout?: PopoutTarget
 }) {
+  const discovery = useConnection(s => s.discovery)
+  const canQuery2 = useQuerySupport(["list_sessions"])
+  const canQuery2_2 = useQuerySupport(["get_approvals"])
   const api = useApi()
   const { open, isMobile } = useSidebar()
   const info = useConnection((s) => s.info)
@@ -200,7 +219,7 @@ export function Header({
   const codemap = useCodemapAvailable(session)
   const liveTitle = useSessionField(session ?? '', 'title')
   // `list_sessions` rows: the title until `TitleChanged` lands, and the owner chip (68 §5) — patched live by `useInvalidateOn`.
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: !!session })
+  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: canQuery2 && (!!session) })
   const row = session ? sessions.data?.find((s) => s.id === session) : undefined
   // 79 §6.5: the owner engine is a sandbox VM (`SessionSummary.owner` ↔ `SandboxInfo.engine`) → its desktop is one click away.
   const sandboxes = useSandboxes()
@@ -221,7 +240,7 @@ export function Header({
   // 183 §4.5: the session's effective value on its owner (pin, else that machine's `tools.approvals`), the ⋯ menu's
   // reader (its setters invalidate the `['approvals', session]` prefix; a flip of this engine's switch re-reads);
   // this engine's own switch until it answers, or with the owner offline.
-  const effective = useQuery({ queryKey: ['approvals', session, info?.approvals.global], queryFn: () => api.get_approvals(session ?? null), enabled: !!session, retry: false })
+  const effective = useQuery({ queryKey: ['approvals', session, info?.approvals?.global], queryFn: () => api.get_approvals(session ?? null), enabled: canQuery2_2 && (!!session), retry: false })
   const approvalsOff = pillOff(effective.data, info?.approvals ?? null)
   const mac = isMacDesktop()
   const ref = useRef<HTMLElement>(null)
@@ -241,7 +260,7 @@ export function Header({
    * live browser over terminals (a job detail); the others move behind the chevron.
    */
   const panel = artifacts?.size ? 'artifacts' : codemap ? 'codemap' : browser ? 'browser' : terminals ? 'terminals' : null
-  const { bar, menu } = layout(headerOrder(panel, canPopout() && !popped, chat, !!observed), tier)
+  const { bar, menu } = layout(headerOrder(panel, canPopout() && !popped, chat, !!observed).filter(item => !HEADER_REQUIREMENTS[item.id] || supports(discovery, HEADER_REQUIREMENTS[item.id]!)), tier)
 
   const render: Record<HeaderId, (mode: Mode) => ReactNode> = {
     search: (mode) =>
@@ -382,19 +401,19 @@ export function Header({
           <Fragment key={i.id}>{render[i.id](compact ? 'bar' : 'full')}</Fragment>
         ))}
       </div>
-      <ApprovalsSheet open={sheet} onOpenChange={setSheet} />
-      {compact && <ModelDialog session={session} open={picker} onOpenChange={setPicker} />}
+      <Capability required={approvalsRequirements} hide><ApprovalsSheet open={sheet} onOpenChange={setSheet} /></Capability>
+      {compact && <Capability required={modelRequirements} hide><ModelDialog session={session} open={picker} onOpenChange={setPicker} /></Capability>}
       {session && (
         <>
-          <CostDialog session={session} open={cost} onOpenChange={setCost} />
-          <TerminalViewer session={session} open={terminal} onOpenChange={setTerminal} />
-          <BrowserLive session={session} open={!!live} onOpenChange={(o) => useSessions.getState().setBrowserLive(session, o)} />
-          <ArtifactPanel session={session} />
-          <CodeMapSheet session={session} />
-          <MemoryPanel session={session} open={memory} onOpenChange={setMemory} />
+          <Capability required={sessionCostRequirements} hide><CostDialog session={session} open={cost} onOpenChange={setCost} /></Capability>
+          <Capability required={terminalRequirements} hide><TerminalViewer session={session} open={terminal} onOpenChange={setTerminal} /></Capability>
+          <Capability required={browserRequirements} hide><BrowserLive session={session} open={!!live} onOpenChange={(o) => useSessions.getState().setBrowserLive(session, o)} /></Capability>
+          <Capability required={artifactRequirements} hide><ArtifactPanel session={session} /></Capability>
+          <Capability required={codemapRequirements} hide><CodeMapSheet session={session} /></Capability>
+          <Capability required={memoryRequirements} hide><MemoryPanel session={session} open={memory} onOpenChange={setMemory} /></Capability>
           {/* 188: here, not in the ⋯ menu, so it outlives the menu closing; `?messaging=1` opens it too. */}
-          <MessagingSheet session={session} />
-          <ToolsSheet session={session} />
+          <Capability required={messagingRequirements} hide><MessagingSheet session={session} /></Capability>
+          <Capability required={toolsRequirements} hide><ToolsSheet session={session} /></Capability>
         </>
       )}
     </header>

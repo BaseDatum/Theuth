@@ -1,3 +1,5 @@
+import { withCapability } from '@/rpc/capabilities'
+import { panelRequirements as requirements } from '@/components/routines/requirements'
 import { createFileRoute } from '@tanstack/react-router'
 import { RoutineDetail } from '@/components/routines/RoutineDetail'
 
@@ -9,7 +11,7 @@ export const chatSearch = (s: Record<string, unknown>): ChatSearch => {
   return typeof c === 'string' && c ? { chat: c } : {}
 }
 
-export const Route = createFileRoute('/routines/new')({ validateSearch: chatSearch, component: Page })
+export const Route = createFileRoute('/routines/new')({ validateSearch: chatSearch, component: withCapability(Page, requirements) })
 
 function Page() {
   const { chat } = Route.useSearch()

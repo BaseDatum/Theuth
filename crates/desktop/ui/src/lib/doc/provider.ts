@@ -7,7 +7,8 @@ import type { DocId } from "@/rpc/bindings/method.agent.output"
 import type { DocMeta } from "@/rpc/bindings/method.document.output"
 import type { Role } from "@/rpc/bindings/method.agent.output"
 import type { Who } from "@/rpc/bindings/method.document.output"
-import type { RpcClient } from '@/rpc/client'
+import { RpcError, type RpcClient } from '@/rpc/client'
+import { ready, supports, UnsupportedCapability } from '@/rpc/discovery'
 import { DocStore, type Pending } from './queue'
 
 /** Origin tag of every change the engine sent us; never echoed back. */
@@ -171,10 +172,13 @@ export class EngineProvider {
     this.#ready = this.#store ? this.#restore(this.#store) : Promise.resolve()
     this.doc.on('update', this.#local)
     this.awareness.on('update', this.#localAwareness)
-    this.#offState = client.onState((s) => {
-      this.#connected = s === 'open'
-      if (s === 'open') void this.#sync()
-      else if (this.status.kind === 'live' || this.status.kind === 'readonly') this.#set({ kind: 'offline', queued: this.#queue.length })
+    this.#offState = client.onDiscovery((discovery) => {
+      const wasConnected = this.#connected
+      const available = supports(discovery, { methods: this.viewer ? ['doc_open', 'doc_subscribe', 'doc_unsubscribe', 'doc_awareness'] : ['doc_open', 'doc_subscribe', 'doc_unsubscribe', 'doc_awareness', 'doc_update'] })
+      this.#connected = ready(discovery) && (discovery.phase === 'legacy' || available)
+      if (this.#connected && !wasConnected) void this.#sync()
+      else if (discovery.phase === 'ready' && !available) { this.#cancelRetry(); this.#set({ kind: 'closed', reason: 'Unavailable on this engine' }) }
+      else if (!this.#connected && (this.status.kind === 'live' || this.status.kind === 'readonly')) this.#set({ kind: 'offline', queued: this.#queue.length })
     })
   }
 
@@ -376,17 +380,18 @@ export class EngineProvider {
 
   /** Subscribe (once), pull the missing state (the diff against our state vector, chunked), flush the FIFO. */
   async #sync(): Promise<void> {
+    const generation = this.#client.generation
     if (this.#destroyed) return
     await this.#ready
     this.#cancelRetry()
-    if (this.#destroyed || !this.#connected) return
+    if (this.#destroyed || !this.#connected || generation !== this.#client.generation) return
     try {
       if (!this.#unsub) {
         this.#unsub = await this.#client.stream<DocEvent>('doc_subscribe', [this.id], 'doc_unsubscribe', this.#item)
       }
       const sv = b64(Y.encodeStateVector(this.doc))
       const opened = await this.#api.doc_open(this.id, sv)
-      if (this.#destroyed) return
+      if (this.#destroyed || generation !== this.#client.generation) return
       this.meta = opened.meta
       this.server = opened.server ?? null
       this.dual = opened.dual ?? null
@@ -452,10 +457,16 @@ export class EngineProvider {
         }
         if (this.#queue.length === 0) break
       }
+      if (generation !== this.#client.generation) return
       this.#retries = 0
       this.#set(this.viewer ? { kind: 'readonly' } : { kind: 'live' })
     } catch (e) {
-      if (this.#destroyed) return
+      if (this.#destroyed || generation !== this.#client.generation) return
+      if (e instanceof UnsupportedCapability || e instanceof RpcError && e.code === -32601) {
+        this.#cancelRetry()
+        this.#set({ kind: 'closed', reason: 'Unavailable on this engine' })
+        return
+      }
       this.#set({ kind: 'offline', queued: this.#queue.length })
       console.warn('doc sync failed', this.id, e)
       // Z184-R2: an engine restarted under the page answers the first sync `NotHub{hub: null}` while its lease

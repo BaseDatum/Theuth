@@ -1,3 +1,5 @@
+import { withCapability } from '@/rpc/capabilities'
+import { requirements } from '@/components/knowledge/requirements'
 import { createFileRoute } from '@tanstack/react-router'
 import { Explorer } from '@/components/knowledge/Explorer'
 
@@ -11,5 +13,5 @@ export const Route = createFileRoute('/knowledge')({
     if (s.history === true) out.history = true
     return out
   },
-  component: Explorer,
+  component: withCapability(Explorer, requirements),
 })

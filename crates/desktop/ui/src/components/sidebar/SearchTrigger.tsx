@@ -1,3 +1,5 @@
+import { Capability } from '@/rpc/capabilities'
+import { searchRequirements } from './requirements'
 import { Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -13,7 +15,7 @@ import { cn } from '@/lib/utils'
 export function SearchTrigger({ className }: { className?: string }) {
   const search = useShortcuts((s) => s.chords.search)
   return (
-    <Tooltip>
+    <Capability required={searchRequirements} hide>    <Tooltip>
       <TooltipTrigger asChild>
         <Button
           variant="ghost"
@@ -27,6 +29,6 @@ export function SearchTrigger({ className }: { className?: string }) {
         </Button>
       </TooltipTrigger>
       <TooltipContent>Search ({label(search)})</TooltipContent>
-    </Tooltip>
+    </Tooltip></Capability>
   )
 }

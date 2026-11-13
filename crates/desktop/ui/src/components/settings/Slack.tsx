@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Copy } from 'lucide-react'
 import { useState } from 'react'
@@ -30,9 +31,10 @@ function slackState(s: SlackStatus): string {
 
 /** 188: Channels › Slack: the app manifest, the bot, the owner, allowed users and channels. */
 export function Slack() {
+  const canQuery1 = useQuerySupport(["slack_status"])
   const api = useApi()
-  useChannelEvents(queryKeys.slack)
-  const status = useQuery({ queryKey: queryKeys.slack, queryFn: () => api.slack_status() })
+  useChannelEvents('slack.events@1', queryKeys.slack)
+  const status = useQuery({ enabled: canQuery1, queryKey: queryKeys.slack, queryFn: () => api.slack_status() })
   const keys = [queryKeys.slack]
   const allowUser = useAction((u: string) => api.slack_allow(u), { keys })
   const removeUser = useAction((u: string) => api.slack_remove_allowed(u), { keys })
@@ -74,8 +76,9 @@ export function Slack() {
 
 /** 170 D2: the app manifest (`slack_manifest`), first in the Slack section and independent of `slack_status` — it is needed before Slack is configured. */
 function SlackManifest() {
+  const canQuery2 = useQuerySupport(["slack_manifest"])
   const api = useApi()
-  const manifest = useQuery({ queryKey: queryKeys.slackManifest, queryFn: () => api.slack_manifest(), staleTime: Infinity })
+  const manifest = useQuery({ enabled: canQuery2, queryKey: queryKeys.slackManifest, queryFn: () => api.slack_manifest(), staleTime: Infinity })
   const [shown, setShown] = useState(false)
   const m = manifest.data
   const copy = () => {

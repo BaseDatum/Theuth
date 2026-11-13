@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Outlet, getRouteApi, useParams } from '@tanstack/react-router'
 import { RefreshCw, Search, X } from 'lucide-react'
@@ -21,6 +22,8 @@ const route = getRouteApi('/artifacts')
  * viewer outlet. Under `md` one pane at a time: the list at `/artifacts`, the viewer at `/artifacts/$callId`.
  */
 export function Explorer() {
+  const canQuery1 = useQuerySupport(["list_sessions"])
+  const canQuery1_2 = useQuerySupport(["get_artifact"])
   const api = useApi()
   const qc = useQueryClient()
   const initial = route.useSearch()
@@ -35,7 +38,7 @@ export function Explorer() {
     for (const a of list.data ?? []) seen[a.kind] = true
     return (Object.keys(GLYPH) as Kind[]).filter((k) => seen[k])
   }, [list.data])
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const sessions = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
 
   // A search hit opened `active` (49 §7): the record is exact, so any local filter hiding it is cleared,
   // once per activation (`origin` is set only then), never while the user is typing a new one.
@@ -44,7 +47,7 @@ export function Explorer() {
   const target = useQuery({
     queryKey: queryKeys.artifact(active ?? ''),
     queryFn: () => api.get_artifact(active ?? ''),
-    enabled: fromSearch,
+    enabled: canQuery1_2 && (fromSearch),
   })
   const hit = fromSearch ? target.data : undefined
   useEffect(() => {

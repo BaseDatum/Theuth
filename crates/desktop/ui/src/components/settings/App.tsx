@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getVersion } from '@tauri-apps/api/app'
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart'
@@ -19,6 +20,8 @@ const APP_VERSION = ['app-version'] as const
 
 /** 188 A2: Settings › General › App — the desktop app, the node it talks to and the link to it. */
 export function App() {
+  const canQuery1 = useQuerySupport(["update_status"])
+  const canQuery1_2 = useQuerySupport(["documents_status"])
   const api = useApi()
   const qc = useQueryClient()
   const info = useConnection((s) => s.info)
@@ -27,23 +30,23 @@ export function App() {
   const autostart = useQuery({
     queryKey: AUTOSTART,
     queryFn: isEnabled,
-    enabled: desktop,
+    enabled: canQuery1 && (desktop),
   })
   // 39 §4.2: the bundle's version and the one that installs at quit.
   const pending = useUpdate((s) => s.pending)
   const appVersion = useQuery({
     queryKey: APP_VERSION,
     queryFn: getVersion,
-    enabled: desktop && isTauri(),
+    enabled: canQuery1 && (desktop && isTauri()),
   })
   // 39 §4.3: the daemon's own updater; `theuth` on a terminal engine is not the bundled sidecar.
   const update = useQuery({
     queryKey: queryKeys.updateStatus,
     queryFn: () => api.update_status(),
-    enabled: !!info,
+    enabled: canQuery1 && (!!info),
   })
   // 59 §3.2: a missing documents helper silently disables notes, knowledge editing and meeting notes — say so here.
-  const documents = useQuery({ queryKey: ['documents-status'], queryFn: () => api.documents_status(), retry: false })
+  const documents = useQuery({ enabled: canQuery1_2, queryKey: ['documents-status'], queryFn: () => api.documents_status(), retry: false })
 
   const setAutostart = useAction((on: boolean) => (on ? enable() : disable()), {
     onSuccess: (_, on) => qc.setQueryData(AUTOSTART, on),

@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Copy, RefreshCw } from 'lucide-react'
@@ -39,9 +40,10 @@ function sourceText(s: CommunicationState): string | null {
  * replaces the snapshot. What one chat may do lives in that chat's menu.
  */
 export function MessagingTab() {
+  const canQuery1 = useQuerySupport(["get_communication"])
   const api = useApi()
   const qc = useQueryClient()
-  const state = useQuery({
+  const state = useQuery({ enabled: canQuery1,
     queryKey: queryKeys.communication(null),
     queryFn: () => api.get_communication(null),
   })
@@ -105,10 +107,11 @@ export function MessagingTab() {
  * 183 §7: a contact is listed under Network › Contacts, never here as an HTTP peer with roots.
  */
 export function A2aSection({ state }: { state: CommunicationState | undefined }) {
+  const canQuery2 = useQuerySupport(["a2a_status"])
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
-  const status = useQuery({ queryKey: queryKeys.a2a, queryFn: () => api.a2a_status() })
+  const status = useQuery({ enabled: canQuery2, queryKey: queryKeys.a2a, queryFn: () => api.a2a_status() })
   const reload = useAction(() => api.reload_a2a(), {
     keys: [['communication'], ['peers']],
     onSuccess: (next: A2aStatus) => {

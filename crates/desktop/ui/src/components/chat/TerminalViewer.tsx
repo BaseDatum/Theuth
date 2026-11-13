@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import '@xterm/xterm/css/xterm.css'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as Xterm } from '@xterm/xterm'
@@ -523,12 +524,13 @@ export function TerminalViewer({ session, open, onOpenChange }: { session: strin
  * the globe follows the first `browser_*` call.
  */
 export function useHasTerminals(session: string | null): boolean {
+  const canQuery1 = useQuerySupport(["list_terminals"])
   const api = useApi()
   const live = useSessionField(session ?? '', 'terminal')
   const { data } = useQuery({
     queryKey: queryKeys.terminals(session ?? ''),
     queryFn: () => api.list_terminals(session ?? '', true),
-    enabled: session !== null && !live,
+    enabled: canQuery1 && (session !== null && !live),
     staleTime: Infinity,
   })
   return live || (data?.length ?? 0) > 0

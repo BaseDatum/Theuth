@@ -1,3 +1,4 @@
+import { useSupported, useQuerySupport } from '@/rpc/capabilities'
 // 03 §3: `/meetings` — the recorded meetings (date, title, duration, state, process) and *Start meeting…*.
 // Every device (phones over the relay included) reads meetings, summaries and transcripts; only a desktop
 // shell talking to its own daemon records — the loopback and the mic are this machine's (58 §6.1).
@@ -67,10 +68,12 @@ export function MeetingHeader({ title, back, children }: { title: ReactNode; bac
  * when its capture backend answers (`MeetingStatus.supported`, 58 §3.3; `None` = no PipeWire / no render device).
  */
 export function useCanRecord(): boolean {
+  const available = useSupported({ methods: ['meeting_status', 'meeting_start'], topics: ['meeting.events@1'] })
+  const canQuery1 = useQuerySupport(["meeting_status"])
   const api = useApi()
   const local = useEngines((s) => s.active) === LOCAL && isDesktop()
-  const status = useQuery({ queryKey: queryKeys.meetingStatus, queryFn: () => api.meeting_status(), enabled: local })
-  return local && status.data?.supported.kind !== 'None'
+  const status = useQuery({ queryKey: queryKeys.meetingStatus, queryFn: () => api.meeting_status(), enabled: canQuery1 && (local) && available })
+  return local && available && status.data?.supported.kind !== 'None'
 }
 
 /** 05 §7: briefs are a sub-feature of meetings — a tab beside the list, not a sidebar entry. 97b: the sub-tabs sit in the row under the Library band. */

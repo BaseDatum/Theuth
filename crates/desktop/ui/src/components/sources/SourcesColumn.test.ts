@@ -45,7 +45,7 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
-vi.mock('@/store/connection', () => ({ useConnection: (sel: (s: { client: unknown }) => unknown) => sel({ client: {} }) }))
+vi.mock('@/store/connection', () => ({ useConnection: (pick: (s: unknown) => unknown) => pick({ client: {} , discovery: { phase: 'legacy' } }) }))
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
 vi.mock('@/lib/notebooks-rpc', async (original) => ({ ...(await original<typeof NbRpc>()), useNotebooksApi: () => ({}), useContextApi: () => ({}) }))
 vi.mock('@/components/notebooks/NotebookContext', () => ({ useNotebookSession: () => 'sess1', useEnsureNotebookSession: () => async () => 'sess1' }))

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import * as Y from 'yjs'
 import type { Api } from '@/rpc/bindings/client'
 import type { ConnState, RpcClient } from '@/rpc/client'
+import { disconnected, type Discovery } from '@/rpc/discovery'
 import { EngineProvider, MAX_UPDATE_B64 } from './provider'
 import { DocStore, MAX_BYTES, resetDb } from './queue'
 
@@ -56,17 +57,20 @@ class Engine {
 /** A client whose connection state the test flips. */
 class Client {
   #state: ConnState = 'open'
-  #listeners = new Set<(s: ConnState) => void>()
+  #listeners = new Set<(s: Discovery) => void>()
+  generation = 0
+  get discovery(): Discovery { return this.#state === 'open' ? { ...disconnected(), phase: 'legacy' } : disconnected() }
   subscribed = 0
   /** The provider's `doc_subscribe` item handler; a test pushes events through it. */
   item: ((e: unknown) => void) | null = null
   set(s: ConnState) {
     this.#state = s
-    for (const cb of this.#listeners) cb(s)
+    this.generation++
+    for (const cb of this.#listeners) cb(this.discovery)
   }
-  onState(cb: (s: ConnState) => void) {
+  onDiscovery(cb: (s: Discovery) => void) {
     this.#listeners.add(cb)
-    cb(this.#state)
+    cb(this.discovery)
     return () => this.#listeners.delete(cb)
   }
   async stream(_m: string, _p: unknown[], _u: string, item: (e: unknown) => void) {

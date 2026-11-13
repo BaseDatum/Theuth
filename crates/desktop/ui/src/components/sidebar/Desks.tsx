@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Megaphone } from 'lucide-react'
@@ -41,9 +42,10 @@ export function deskLabels(names: readonly string[]): string[] {
  * inactive desk's live subagents show as the count in its tile.
  */
 export function Desks({ active }: { active: string | undefined }) {
+  const canQuery1 = useQuerySupport(["list_sessions"])
   const api = useApi()
   const agents = useAgents().data ?? []
-  const { data: sessions = [] } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const { data: sessions = [] } = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const subs = useMemo(() => subtrees(sessions), [sessions])
   const desks = agents
     .filter((a) => a.status !== 'proposed' && a.status !== 'invalid')

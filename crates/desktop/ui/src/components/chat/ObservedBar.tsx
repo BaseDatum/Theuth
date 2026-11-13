@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { Link } from '@tanstack/react-router'
 import { Eye } from 'lucide-react'
 import { toast } from 'sonner'
@@ -50,8 +51,9 @@ export function EyeMark({ className }: { className?: string }) {
 /** `omp task` / `opencode` / `ACP`: which feed describes the child. */
 /** 141 R3 T8/T9: the child's money cell from its own `session_cost` under its cost rule — the same figure in every surface. */
 export function WatchCostCell({ session, observed, className }: { session: string; observed: Pick<ObservedMeta, 'cost_rule' | 'detail'>; className?: string }) {
+  const canQuery1 = useQuerySupport(["session_cost"])
   const api = useApi()
-  const { data } = useQuery({ queryKey: queryKeys.sessionCost(session), queryFn: () => api.session_cost(session) })
+  const { data } = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessionCost(session), queryFn: () => api.session_cost(session) })
   const cost = watchCost(observed, data?.total)
   return (
     <span className={cn('whitespace-nowrap tabular-nums text-fg-tertiary', cost.grey && 'opacity-60', className)} title={cost.title}>

@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { Contact } from "@/rpc/bindings/method.a2a.output"
@@ -25,21 +26,24 @@ export const UNPAIR_CONTACTS = 'Your contacts are told this machine left. A cont
 
 /** `contact_list()`: this machine's contacts, refreshed by `A2aChanged` and a finished ceremony. */
 export function useContacts(enabled = true) {
+  const canQuery1 = useQuerySupport(["contact_list"])
   const api = useApi()
-  return useQuery({ queryKey: queryKeys.contacts, queryFn: () => api.contact_list(), enabled })
+  return useQuery({ queryKey: queryKeys.contacts, queryFn: () => api.contact_list(), enabled: canQuery1 && (enabled) })
 }
 
 /** `a2a_exports()`: this machine's exports (agents and chats), with `paused`. */
 export function useExports(enabled = true) {
+  const canQuery2 = useQuerySupport(["a2a_exports"])
   const api = useApi()
-  return useQuery({ queryKey: queryKeys.exports, queryFn: () => api.a2a_exports(), enabled })
+  return useQuery({ queryKey: queryKeys.exports, queryFn: () => api.a2a_exports(), enabled: canQuery2 && (enabled) })
 }
 
 /** `contact_first_waiting()`: the (contact, export) pairs whose first message waits for the owner; live on `A2aChanged`.
  * 190: a 186 engine in the mesh also lists messages queued behind a busy chat (`queued`); no surface shows those. */
 export function useFirstWaiting(enabled = true) {
+  const canQuery3 = useQuerySupport(["contact_first_waiting"])
   const api = useApi()
-  return useQuery({ queryKey: queryKeys.waiting, queryFn: () => api.contact_first_waiting(), enabled, select: (rows) => rows.filter((w) => !w.queued) })
+  return useQuery({ queryKey: queryKeys.waiting, queryFn: () => api.contact_first_waiting(), enabled: canQuery3 && (enabled), select: (rows) => rows.filter((w) => !w.queued) })
 }
 
 /** 183 §12.10: an exported chat — its export and the contacts it is granted to (blocked ones excluded). */

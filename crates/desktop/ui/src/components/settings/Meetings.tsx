@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 53 decisions 9–10 / 03 §3, 158 §6.3: Settings › Meetings, one component per tab. Defaults, Detection and Live edit
 // the engine's `meeting` block whole (`meeting-queries.ts`, §6.2). Live adds the eye (hidden from capture, desktop-local
 // in `lib/meeting-settings.ts`), the live speaker labels switch (07 §6, `meeting.live_diarization`) and, outside macOS,
@@ -61,10 +62,12 @@ export function echoSummary(manifests: Manifest[]): string {
 
 /** Meetings › Defaults: the models, template, language and project a meeting starts with. */
 export function MeetingDefaults() {
+  const canQuery1 = useQuerySupport(["meeting_templates"])
+  const canQuery1_2 = useQuerySupport(["list_models"])
   const api = useApi()
   const { settings, block: s, save, set, busy } = useMeetingBlock()
-  const templates = useQuery({ queryKey: queryKeys.meetingTemplates, queryFn: () => api.meeting_templates() })
-  const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
+  const templates = useQuery({ enabled: canQuery1, queryKey: queryKeys.meetingTemplates, queryFn: () => api.meeting_templates() })
+  const models = useQuery({ enabled: canQuery1_2, queryKey: queryKeys.models, queryFn: () => api.list_models() })
   // 194: the summary model's effort chips (none while it follows the meeting model).
   const summary = models.data?.find((m) => m.id === s?.summary_model)
   const projects = [...new Set([...useProjects(), ...Object.keys(useProjectStyles())])].sort()
@@ -172,18 +175,20 @@ export function MeetingDetection() {
 
 /** Meetings › Live: what runs while a meeting records — echo count, live tools, hidden from capture, speaker labels. */
 export function MeetingLive() {
+  const canQuery2 = useQuerySupport(["meeting_live_diarization"])
+  const canQuery2_2 = useQuerySupport(["meeting_get","meeting_list"])
   const api = useApi()
   const { settings, block: s, set, busy } = useMeetingBlock()
   const hidden = useMeetingSettings((st) => st.hidden)
   const local = isMacDesktop()
-  const liveDiar = useQuery({ queryKey: queryKeys.meetingLiveDiarization, queryFn: () => api.meeting_live_diarization() })
+  const liveDiar = useQuery({ enabled: canQuery2, queryKey: queryKeys.meetingLiveDiarization, queryFn: () => api.meeting_live_diarization() })
   // The block carries `live_diarization` too, so the switch refreshes the block and the block refreshes the switch.
   const setLiveDiar = useAction((on: boolean) => api.set_meeting_live_diarization(on), { keys: [queryKeys.meetingLiveDiarization, SETTINGS_KEY] })
   // 158 §13: the last 10 manifests, read only where the mic has no echo cancellation (Windows/Linux).
   const echo = useQuery({
     queryKey: [...queryKeys.meetings, 'echo'],
     queryFn: async () => Promise.all((await api.meeting_list(10)).map((m) => api.meeting_get(m.id))),
-    enabled: !local,
+    enabled: canQuery2_2 && (!local),
   })
   return (
     <>
@@ -227,8 +232,9 @@ export function MeetingLive() {
 
 /** Meetings › Speakers: the voice profiles enrolled from meeting reviews. */
 export function MeetingSpeakers() {
+  const canQuery3 = useQuerySupport(["meeting_speakers"])
   const api = useApi()
-  const speakers = useQuery({ queryKey: queryKeys.meetingSpeakers, queryFn: () => api.meeting_speakers() })
+  const speakers = useQuery({ enabled: canQuery3, queryKey: queryKeys.meetingSpeakers, queryFn: () => api.meeting_speakers() })
   const del = useAction((profile: string) => api.meeting_speaker_delete(profile), { keys: [queryKeys.meetingSpeakers] })
   return (
     <Section title="Enrolled speakers">

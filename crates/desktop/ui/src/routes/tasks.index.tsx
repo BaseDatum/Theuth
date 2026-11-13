@@ -1,3 +1,5 @@
+import { withCapability } from '@/rpc/capabilities'
+import { requirements } from '@/components/tasks/requirements'
 import { createFileRoute, redirect } from '@tanstack/react-router'
 import { Board } from '@/components/tasks/Board'
 import { type BoardSearch, boardEntryRedirect, parseBoardSearch, recallBoard } from '@/components/tasks/boardMemory'
@@ -13,5 +15,5 @@ export const Route = createFileRoute('/tasks/')({
     const to = boardEntryRedirect(cause, search, recallBoard())
     if (to) throw redirect({ to: '/tasks', search: to, replace: true })
   },
-  component: Board,
+  component: withCapability(Board, requirements),
 })

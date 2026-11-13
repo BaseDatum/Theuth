@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 104 A6/A7: what every attention screen of this wave opens and closes with — where the item came from, what the agent
 // last said there, and the fixed action bar at the bottom.
 import { useQuery } from '@tanstack/react-query'
@@ -17,8 +18,9 @@ import { Chip } from './shared'
 
 /** `list_sessions` — the names behind every row's and screen's `from <session>`; one query, shared with the sidebar. */
 export function useSessionList() {
+  const canQuery1 = useQuerySupport(["list_sessions"])
   const api = useApi()
-  return useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  return useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
 }
 
 /** The header line: kind chip · **From ‹session› · ‹agent› · ‹age›** · Open session (→ `/c/$session`) · the task's title (→ `/tasks/$id`). */
@@ -62,6 +64,7 @@ export function Source({ item }: { item: AttentionItem }) {
  * `load_session` page. `null` while loading, when the RPC fails, or when the session is unknown — the caller shows nothing.
  */
 export function useContextLine(session: string | null, beforeMs: number): string | null {
+  const canQuery2 = useQuerySupport(["load_session"])
   const api = useApi()
   const q = useQuery({
     queryKey: ['attention-context', session, beforeMs],
@@ -70,7 +73,7 @@ export function useContextLine(session: string | null, beforeMs: number): string
       const text = lastAssistantBefore(page.history, beforeMs)
       return text === null ? null : clampText(text)
     },
-    enabled: session !== null,
+    enabled: canQuery2 && (session !== null),
     retry: false,
     staleTime: 5 * 60_000,
   })

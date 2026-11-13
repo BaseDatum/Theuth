@@ -1,3 +1,9 @@
+import { Capability } from '@/rpc/capabilities'
+import { requirements as routineRequirements } from '@/components/routines/requirements'
+import { requirements as studyRequirements } from '@/components/autoresearch/requirements'
+import { requirements as costsRequirements } from '@/components/costs/requirements'
+import { requirements as meetingRequirements } from '@/components/meeting/requirements'
+import { searchRequirements } from '@/components/sidebar/requirements'
 import { Outlet, createRootRoute, useNavigate, useParams } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { openNewChat } from '@/components/chat/NewChatPane'
@@ -56,20 +62,20 @@ function Root() {
   return (
     <SidebarProvider open={open} onOpenChange={setOpen} className="h-band min-h-0">
       <AppSidebar session={session} />
-      <SearchHost />
-      <RoutineDraftBridge />
-      <CostsPrefetch />
-      <StudyDraftBridge />
+      <Capability required={searchRequirements} hide><SearchHost /></Capability>
+      <Capability required={routineRequirements} hide><RoutineDraftBridge /></Capability>
+      <Capability required={costsRequirements} hide><CostsPrefetch /></Capability>
+      <Capability required={studyRequirements} hide><StudyDraftBridge /></Capability>
       <DragOverlay />
       <SidebarInset className="min-h-0 overflow-hidden pt-[var(--safe-top)] pr-[var(--safe-right)] pb-[var(--safe-bottom)] pl-[var(--safe-left)]">
         {/* 160 R2: the routed page and the resident costs page share one column; the costs page lies over it. */}
         <ResidentCtx value>
           <div className="relative flex min-h-0 flex-1 flex-col">
             <Outlet />
-            <CostsResident />
+            <Capability required={costsRequirements} hide><CostsResident /></Capability>
           </div>
         </ResidentCtx>
-        <MeetingBar />
+        <Capability required={meetingRequirements} hide><MeetingBar /></Capability>
       </SidebarInset>
     </SidebarProvider>
   )

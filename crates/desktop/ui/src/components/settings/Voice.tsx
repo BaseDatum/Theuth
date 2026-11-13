@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // Settings › Voice (153 §8.1, §4.5, §7.2, §9.2, §6.7, §8.7): the microphone, the shaping preset per surface, the
 // spoken end phrases, the polish model, the dictation history and the latency debug row. Everything reads and writes
 // the engine except the talk view's turn chime (client-only, `lib/talk-settings.ts`). 188: one component per tab —
@@ -82,9 +83,11 @@ export function phrases(raw: string): string[] {
 
 /** Voice › Microphone: the input device and the talk view's turn chime. */
 export function Microphone() {
+  const canQuery1 = useQuerySupport(["list_input_devices"])
+  const canQuery1_2 = useQuerySupport(["voice_status"])
   const api = useApi()
-  const devices = useQuery({ queryKey: keys.devices, queryFn: () => api.list_input_devices() })
-  const status = useQuery({ queryKey: keys.status, queryFn: () => api.voice_status() })
+  const devices = useQuery({ enabled: canQuery1, queryKey: keys.devices, queryFn: () => api.list_input_devices() })
+  const status = useQuery({ enabled: canQuery1_2, queryKey: keys.status, queryFn: () => api.voice_status() })
   const setDevice = useAction((name: string) => api.set_input_devices(inputDevicesFor(name)), { keys: [keys.status, keys.settings] })
   const cue = useTalkSettings((s) => s.cue)
 
@@ -128,11 +131,15 @@ export function Microphone() {
 
 /** Voice › Dictation: how dictated words are shaped, the spoken end phrases and the polish model. */
 export function Dictation() {
+  const canQuery2 = useQuerySupport(["voice_settings"])
+  const canQuery2_2 = useQuerySupport(["list_models"])
+  const canQuery2_3 = useQuerySupport(["polish_model"])
+  const canQuery2_4 = useQuerySupport(["polish_effort"])
   const api = useApi()
-  const settings = useQuery({ queryKey: keys.settings, queryFn: () => api.voice_settings() })
-  const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
-  const polishModel = useQuery({ queryKey: keys.polishModel, queryFn: () => api.polish_model() })
-  const polishEffort = useQuery({ queryKey: keys.polishEffort, queryFn: () => api.polish_effort() })
+  const settings = useQuery({ enabled: canQuery2, queryKey: keys.settings, queryFn: () => api.voice_settings() })
+  const models = useQuery({ enabled: canQuery2_2, queryKey: queryKeys.models, queryFn: () => api.list_models() })
+  const polishModel = useQuery({ enabled: canQuery2_3, queryKey: keys.polishModel, queryFn: () => api.polish_model() })
+  const polishEffort = useQuery({ enabled: canQuery2_4, queryKey: keys.polishEffort, queryFn: () => api.polish_effort() })
 
   const setShape = useAction(({ surface, preset }: { surface: Surface; preset: Preset }) => api.set_shape(surface, preset), { keys: [keys.settings] })
   const setEnd = useAction((p: EndPhrases) => api.set_end_phrases(p), { keys: [keys.settings] })
@@ -214,9 +221,11 @@ export function Dictation() {
 
 /** Voice › History: the last dictations with their audio, and the latency of the last one. */
 export function VoiceHistory() {
+  const canQuery3 = useQuerySupport(["dictation_history"])
+  const canQuery3_2 = useQuerySupport(["dictation_status"])
   const api = useApi()
-  const history = useQuery({ queryKey: keys.history, queryFn: () => api.dictation_history(HISTORY) })
-  const dictation = useQuery({ queryKey: keys.dictation, queryFn: () => api.dictation_status() })
+  const history = useQuery({ enabled: canQuery3, queryKey: keys.history, queryFn: () => api.dictation_history(HISTORY) })
+  const dictation = useQuery({ enabled: canQuery3_2, queryKey: keys.dictation, queryFn: () => api.dictation_status() })
   const forget = useAction((id: string | null) => api.dictation_history_forget(id), { keys: [keys.history] })
 
   const play = async (id: string) => {

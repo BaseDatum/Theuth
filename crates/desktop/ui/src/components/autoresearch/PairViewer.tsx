@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import { Button } from '@/components/ui/button'
@@ -70,8 +71,9 @@ function shown(r: JudgmentRow): string {
  * the judge's cost; a case's judge rows appear only once its human pair is answered. Owner: W3.
  */
 export function PairViewer({ slug, n }: { slug: string; n: number | null }) {
+  const canQuery1 = useQuerySupport(["autoresearch.judgments"])
   const api = useAutoresearchApi()
-  const q = useQuery({ queryKey: [...KEY, slug, 'judgments', n], queryFn: () => api['autoresearch.judgments'](slug, n) })
+  const q = useQuery({ enabled: canQuery1, queryKey: [...KEY, slug, 'judgments', n], queryFn: () => api['autoresearch.judgments'](slug, n) })
   const answer = useAction((v: { id: number; winner: 'a' | 'b' | 'same' }) => api['autoresearch.human_pair'](slug, Number(v.id), v.winner), { keys: [[...KEY, slug]] })
   const pairs = useMemo(() => pairsOf(q.data ?? []), [q.data])
   if (q.isPending) return <p className="text-xs text-fg-tertiary">Loading pairs…</p>

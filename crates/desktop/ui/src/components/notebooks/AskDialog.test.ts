@@ -4,7 +4,7 @@ import { scopeOrder } from './AskDialog'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }))
-vi.mock('@/store/connection', () => ({ useConnection: () => null }))
+vi.mock('@/store/connection', () => ({ useConnection: (pick: (s: unknown) => unknown) => pick({ client: null, discovery: { phase: 'legacy' } }) }))
 vi.mock('@/store/sessions', () => ({ on: () => () => {} }))
 
 const nb = (id: string): Notebook => ({ doc: { id, title: id, kind: 'notebook', binding: 'notebook', created_ms: 1, updated_ms: 1, bytes: 0 }, project: null, archived_ms: null, sources: 0, notes: 0, chats: 0 })

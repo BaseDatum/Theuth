@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type ReactNode, useEffect } from 'react'
 import { Row, errorText, useAction } from '@/components/settings/shared'
@@ -10,8 +11,9 @@ const flagQuery = (key: ConfigFlagKey) => ['config-flag', key] as const
 
 /** 188: one of the config flags that had no write path, as config.yaml has it and as the engine runs it. */
 export function useConfigFlag(key: ConfigFlagKey) {
+  const canQuery1 = useQuerySupport(["config_flag_get"])
   const api = useApi()
-  return useQuery({ queryKey: flagQuery(key), queryFn: () => api.config_flag_get(key), retry: false })
+  return useQuery({ enabled: canQuery1, queryKey: flagQuery(key), queryFn: () => api.config_flag_get(key), retry: false })
 }
 
 /**
@@ -21,10 +23,11 @@ export function useConfigFlag(key: ConfigFlagKey) {
  * is listed in Settings' restart banner under `name`, the feature's name.
  */
 export function ConfigFlagRow({ flag, name, label, description }: { flag: ConfigFlagKey | readonly ConfigFlagKey[]; name: string; label: string; description: ReactNode }) {
+  const canQuery2 = useQuerySupport(["config_flag_get"])
   const api = useApi()
   const qc = useQueryClient()
   const keys: readonly ConfigFlagKey[] = typeof flag === 'string' ? [flag] : flag
-  const states = useQueries({ queries: keys.map((key) => ({ queryKey: flagQuery(key), queryFn: () => api.config_flag_get(key), retry: false })) })
+  const states = useQueries({ queries: keys.map((key) => ({ enabled: canQuery2, queryKey: flagQuery(key), queryFn: () => api.config_flag_get(key), retry: false })) })
   // Several keys act as one: a write that fails part way puts the keys already written back.
   const save = useAction(async (on: boolean) => {
     const written: [ConfigFlagKey, boolean][] = []

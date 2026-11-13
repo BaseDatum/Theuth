@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 158 §7.6 (W2U): Settings › Calendar, one component per tab. Calendars: the macOS Calendar switch with the
 // companion-reported state line and ICS subscriptions (rows from `calendar_sources`; add / refresh / delete). Briefs: the
 // pre-meeting briefs switch. Upcoming: the next 24 h from `calendar_events`. The ICS URL is a vault secret: pasted
@@ -19,10 +20,11 @@ import type { CalSource } from "@/rpc/bindings/method.meeting.output"
 
 /** Calendar › Calendars: macOS Calendar and the ICS subscriptions. */
 export function CalendarSources() {
+  const canQuery1 = useQuerySupport(["calendar_sources"])
   const api = useApi()
   const mac = isMacDesktop()
   const { settings, config, save, busy } = useCalendarConfig()
-  const sources = useQuery({ queryKey: calendarKeys.sources, queryFn: () => api.calendar_sources() })
+  const sources = useQuery({ enabled: canQuery1, queryKey: calendarKeys.sources, queryFn: () => api.calendar_sources() })
   const day = nextDay()
   const add = useAction((v: { name: string; url: string }) => addSource(api, v.name, v.url), {
     keys: [calendarKeys.sources],
@@ -135,9 +137,10 @@ export function CalendarBriefs() {
 
 /** Calendar › Upcoming: the next 24 hours of events, cancelled ones left out. */
 export function CalendarUpcoming() {
+  const canQuery2 = useQuerySupport(["calendar_events"])
   const api = useApi()
   const day = nextDay()
-  const events = useQuery({ queryKey: calendarKeys.events(...day), queryFn: () => api.calendar_events(...day) })
+  const events = useQuery({ enabled: canQuery2, queryKey: calendarKeys.events(...day), queryFn: () => api.calendar_events(...day) })
   const upcoming = events.data?.filter((e) => !e.cancelled).sort((a, b) => a.start.localeCompare(b.start)) ?? []
   return (
     <Section title="Upcoming">

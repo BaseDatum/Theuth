@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { createContext, useContext } from 'react'
 import { create } from 'zustand'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -107,6 +108,7 @@ export function useEnsureNotebookSession(notebook: string): () => Promise<string
 
 /** 157 D3: `agent.endless` (NewChatPane's read): `default_chat` is what a new chat's ∞ switch starts at, `model` the compactor line; `undefined` until read. */
 export function useEndlessSettings(): EndlessConfig | undefined {
+  const canQuery1 = useQuerySupport(["endless_settings_get"])
   const api = useApi()
-  return useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() }).data
+  return useQuery({ enabled: canQuery1, queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() }).data
 }

@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { EndlessConfig } from "@/rpc/bindings/method.agent.output"
@@ -30,9 +31,10 @@ export const isFoldedNote = (text: string): boolean => /^\([\d,]+ (?:lines? not 
  * 137 R1-D3, the compactor chain as the UI names it: `agent.endless.model` when set, else
  * "Same as title model · <agent.title_model>" when one is set, else "Same as the session".
  */
-export function useCompactorLabel(model: string | null | undefined): string {
+export function useCompactorLabel(model: string | null | undefined, enabled = true): string {
+  const canQuery1 = useQuerySupport(["title_model"])
   const api = useApi()
-  const title = useQuery({ queryKey: queryKeys.titleModel, queryFn: () => api.title_model(), enabled: !model })
+  const title = useQuery({ queryKey: queryKeys.titleModel, queryFn: () => api.title_model(), enabled: enabled && canQuery1 && (!model) })
   if (model) return model
   return title.data ? `Same as title model · ${title.data.id}` : 'Same as the session'
 }

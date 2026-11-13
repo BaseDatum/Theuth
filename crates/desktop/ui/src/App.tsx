@@ -17,7 +17,7 @@ import { describe } from '@/lib/describe'
 import { installDictationListeners, refreshStatus, setModel } from '@/lib/dictation'
 import { companionAlive, onCompanionAlive, useCompanionAlive } from '@/lib/companion'
 import { EngineSwitch } from '@/lib/engine-switch'
-import { FocusTracker, Throttle, deriveFocus, typeCounts } from '@/lib/event-focus'
+import { FocusTracker, Throttle, deriveFocus } from '@/lib/event-focus'
 import { useMeetingHotkeys } from '@/lib/meeting-hotkeys'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { notifyIfHidden, primeNotifications } from '@/lib/notify'
@@ -57,7 +57,8 @@ import { type Api, makeApi } from '@/rpc/bindings/client'
 import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { RpcClient, RpcError } from '@/rpc/client'
-import type { UiEvent as WireEvent } from '@/store/ui-events'
+import type { TopicEvent } from '@/rpc/bindings/client'
+import { disconnected, ready, supports } from '@/rpc/discovery'
 import { routeTree } from '@/routeTree.gen'
 import { routerMounted, useConnection, watchDrops } from '@/store/connection'
 import { EngineProvider, type Stores, dropScope, scope } from '@/store/engine-scope'
@@ -119,7 +120,10 @@ async function quit(restart = false): Promise<void> {
  * A mesh row also re-reads `mesh_status` (69 §4): whichever engine is the hub now names the mesh and its members.
  */
 function loadInfo(st: Stores, api: Api): Promise<void> {
+  const client = st.connection.getState().client
+  const generation = client?.generation
   return api.info().then((info) => {
+    if (client !== st.connection.getState().client || generation !== client?.generation || !client || !ready(client.discovery)) return
     st.connection.getState().setInfo(info)
     void autoPair(st.id, api)
     if (useEngines.getState().engines.find((h) => h.id === st.id)?.kind === 'mesh') void api.mesh_status().then((s) => applyMeshStatus(st.id, s)).catch(() => undefined)
@@ -129,6 +133,8 @@ function loadInfo(st: Stores, api: Api): Promise<void> {
     void talk.refreshStatus(api).catch(() => undefined)
     // 03 §0.4: the meeting's state, topics and brief stack; disabled meetings leave it empty.
     void hydrateMeeting(api).catch(() => undefined)
+  }).catch((e: unknown) => {
+    if (client === st.connection.getState().client && generation === client?.generation) throw e
   })
 }
 
@@ -234,36 +240,40 @@ function watchLongTasks(): void {
 }
 
 /**
- * `subscribe_events(null, null)` for the active engine (25 §6.1, 31 §7.3). Events
- * are queued and drained into one `dispatch` per frame; this is the only place
- * they enter the stores. Issued on `open` when the client is not connected yet.
+ * Subscribe to topics after discovery (legacy events only for an explicit legacy engine).
+ * Events retain their topic identity while queued and drained into one `dispatch`
+ * per frame; this is the only place they enter the stores.
  */
 function attach(st: Stores): void {
   const client = st.connection.getState().client
-  if (!client || st.attached) return
-  const queue: WireEvent[] = []
+  if (!client || !ready(client.discovery) || st.attached) return
+  const queue: TopicEvent[] = []
+  let generation = client.generation
   let frame = 0
   let timer = 0
   const drain = () => {
     cancelAnimationFrame(frame)
     clearTimeout(timer)
     frame = timer = 0
+    if (generation !== client.generation) { queue.length = 0; return }
     const batch = queue.splice(0)
     const t0 = performance.now()
     dispatch(batch, st)
     const ms = performance.now() - t0
-    if (ms > SLOW_DRAIN_MS) console.warn('[events] slow drain', { ms: Math.round(ms), events: batch.length, types: typeCounts(batch) })
+    if (ms > SLOW_DRAIN_MS) console.warn('[events] slow drain', { ms: Math.round(ms), events: batch.length, topics: batch.reduce<Record<string, number>>((counts, item) => { counts[item.key] = (counts[item.key] ?? 0) + 1; return counts }, {}) })
   }
   watchLongTasks()
-  st.attached = client.subscribe(null, null, (e) => {
+  const attached = client.subscribe(null, null, (e) => {
+    if (generation !== client.generation) { queue.length = 0; generation = client.generation }
     // The stream's first item (also after a reconnect's re-issue): the subscription is up, seed the live sets.
-    if (e.type === 'PendingPrompts') seedLive(st)
+    if (e.key === 'rpc.stream@1' && e.event.type === 'PendingPrompts') seedLive(st)
     queue.push(e)
     if (frame) return
     frame = requestAnimationFrame(drain)
     timer = window.setTimeout(drain, HIDDEN_DRAIN_MS)
   })
-  st.attached.catch(() => undefined)
+  st.attached = attached
+  void attached.catch(() => { if (st.attached === attached) st.attached = null })
 }
 
 function detach(st: Stores): void {
@@ -273,16 +283,16 @@ function detach(st: Stores): void {
 }
 
 /**
- * Connect one engine: build its client, mirror its state into its connection
- * store, subscribe if it is the active one and load `info` on every `open` (a
- * link engine may be offline for a while first). `signal` aborts (StrictMode
- * remount, relaunch, engine removed) and closes the client.
+ * Connect one engine: mirror transport and discovery into its scoped store,
+ * then subscribe and load `info` once per ready generation. `signal` aborts
+ * StrictMode remounts, relaunches and removed engines and closes the client.
  */
 function boot(st: Stores, make: () => Promise<RpcClient>, signal: AbortSignal): void {
   const conn = st.connection.getState()
   conn.setError(undefined)
   conn.setClient(null, null)
   conn.setInfo(null)
+  conn.setDiscovery(disconnected())
   st.connection.setState({ outage: false })
   let client: RpcClient | undefined
   // Toasts for the engine on screen; a mesh row's hub failover (69 decision 6) shows the switcher's
@@ -317,17 +327,27 @@ function boot(st: Stores, make: () => Promise<RpcClient>, signal: AbortSignal): 
         return
       }
       const api = makeApi(client)
+      let gap: number | undefined
+      let initialized = -1
       client.onState((s) => {
+        if (signal.aborted) return
         conn.setConnState(s)
-        const gap = drops.next(s)
-        if (s !== 'open') return
-        conn.setError(undefined)
-        // A first dial that failed is a "drop" too, but it never loaded `info`.
-        if (gap !== undefined) reload(st, gap < CHEAP_GAP_MS && st.connection.getState().info !== null)
-        else loadInfo(st, api).catch(fail)
+        const elapsed = drops.next(s)
+        if (elapsed !== undefined) gap = elapsed
       })
       conn.setClient(client, api)
-      if (useEngines.getState().active === st.id) attach(st)
+      client.onDiscovery((discovery) => {
+        if (signal.aborted) return
+        conn.setDiscovery(discovery)
+        if (discovery.phase === 'failed') { fail(new Error(discovery.error)); return }
+        if (!ready(discovery) || initialized === client!.generation) return
+        initialized = client!.generation
+        conn.setError(undefined)
+        if (gap !== undefined) { reload(st, gap < CHEAP_GAP_MS && st.connection.getState().info !== null); gap = undefined }
+        else void loadInfo(st, api).catch(fail)
+        if (useEngines.getState().active === st.id) attach(st)
+      })
+
       await client.connect()
     } catch (e) {
       fail(e)
@@ -475,11 +495,11 @@ const LAGGED_TOAST_MS = 60_000
  */
 function relayGuards(st: Stores): (() => void)[] {
   return [
-    on('peer', (e) => onPeerChange(st, st.qc.getQueryData<SessionSummary[]>(queryKeys.sessions), e.data)),
-    on('SessionOwnerChanged', (e) => onOwnerChanged(st, e)),
+    on("mesh.events@1", 'peer', (e) => onPeerChange(st, st.qc.getQueryData<SessionSummary[]>(queryKeys.sessions), e.data)),
+    on("agent.events@1", 'SessionOwnerChanged', (e) => onOwnerChanged(st, e)),
     // R2: the reducer already applied it (`following`). Down: the open reply may never see its `TurnFinished`, so settle.
     // Back up after a drop: a slice still stale (the owner's turn was open at the first settle) reads again.
-    on('FollowState', (e) => {
+    on("sessionsync.follow-state@1", 'FollowState', (e) => {
       if (!e.live || st.sessions.getState().sessions[e.session]?.contextStale) settleAfterFollowLoss(e.session)
     }),
   ]
@@ -491,11 +511,11 @@ function useEventSideEffects(st: Stores): void {
   useEffect(() => {
     const resyncs = new Throttle(() => resync(st), RESYNC_MS, true)
     if (AUX) {
-      const offs = [on('Lagged', () => resyncs.call()), ...relayGuards(st)]
+      const offs = [on("rpc.stream@1", 'Lagged', () => resyncs.call()), ...relayGuards(st)]
       const session = popoutSession(POPOUT)
-      if (session !== null) offs.push(on('SessionDeleted', (e) => e.session === session && closePopout()))
+      if (session !== null) offs.push(on("agent.events@1", 'SessionDeleted', (e) => e.session === session && closePopout()))
       const meeting = popoutMeeting(POPOUT)
-      if (meeting !== null) offs.push(on('Deleted', (e) => e.meeting === meeting && closePopout()))
+      if (meeting !== null) offs.push(on("meeting.events@1", 'Deleted', (e) => e.meeting === meeting && closePopout()))
       return () => {
         resyncs.cancel()
         for (const off of offs) off()
@@ -525,19 +545,19 @@ function useEventSideEffects(st: Stores): void {
     const alerts = new AlertNotifier((title, body) => void notifyIfHidden(title, body), visible)
     const offs = [
       onCompanionAlive(setCompanion),
-      on('Lagged', () => {
+      on("rpc.stream@1", 'Lagged', () => {
         resyncs.call()
         toasts.call()
       }),
       ...relayGuards(st),
       on(
-        'ApprovalRequested',
+        "tools.approval-requested@1", 'ApprovalRequested',
         (e) => {
           if (companion) return
           alerts.legacy(`approval:${e.id}`, `Approval: ${e.tool}`, describe(e.tool, e.args).join('\n'))
         },
       ),
-      on('TurnFinished', (e) => {
+      on("agent.events@1", 'TurnFinished', (e) => {
         if (companion || visible(e.session)) return
         const slice = st.sessions.getState().sessions[e.session]
         const summary = qc
@@ -546,10 +566,10 @@ function useEventSideEffects(st: Stores): void {
         if ((slice?.parent ?? summary?.parent) != null) return
         alerts.legacy(`finished:${e.session}:`, 'Turn finished', slice?.title ?? summary?.title ?? '')
       }),
-      on('BrowserShowLive', (e) => {
+      on("browser.events@1", 'BrowserShowLive', (e) => {
         if (!visible(e.session)) router.history.push(`/c/${e.session}`)
       }),
-      on('SessionDeleted', (e) => {
+      on("agent.events@1", 'SessionDeleted', (e) => {
         const to = usePanes.getState().close(e.session)
         if (to) router.history.push(`/c/${to}`)
       }),
@@ -583,8 +603,8 @@ function useEventFocus(st: Stores): void {
     let timer = 0
     const send = () => {
       timer = 0
-      const { api, state } = st.connection.getState()
-      if (!api || state !== 'open') return
+      const { api, state, discovery } = st.connection.getState()
+      if (!api || state !== 'open' || !ready(discovery) || (discovery.phase !== 'legacy' && !supports(discovery, { methods: ['set_event_focus'] }))) return
       const { root } = usePanes.getState()
       const next = deriveFocus({
         pathname: router.state.location.pathname,
@@ -607,13 +627,13 @@ function useEventFocus(st: Stores): void {
       usePanes.subscribe((s, prev) => s.root !== prev.root && schedule()),
       voiceKey.useVoiceKey.subscribe((s, prev) => s.desk !== prev.desk && schedule()),
       st.connection.subscribe((s, prev) => {
-        if (s.state !== 'open' || prev.state === 'open') return
+        if (!ready(s.discovery) || (ready(prev.discovery) && s.client?.generation === prev.client?.generation && s.discovery.phase === prev.discovery.phase)) return
         tracker.reset()
         send()
       }),
       // 183 §5.1: the engine follows a focused session's owner; when the owner changes, say the set again so it
       // re-follows the new one (the set itself did not change, so the tracker alone would not send).
-      on('SessionOwnerChanged', () => {
+      on("agent.events@1", 'SessionOwnerChanged', () => {
         tracker.reset()
         schedule()
       }),

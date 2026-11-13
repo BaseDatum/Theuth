@@ -18,9 +18,9 @@ type Step = [number, SubEvent | (() => void)]
 /** The session's tool activity (`Working…` above the orb): a pending call the transcript shows as a sim card. */
 const tool = (session: string, on: boolean) =>
   dispatch([
-    on
+    {key: 'agent.events@1', event: on
       ? { type: 'ToolCallPending', session, turn: 'sim-turn', call_id: 'sim-tool', name: 'sim_lookup' }
-      : { type: 'ToolCallFinished', session, turn: 'sim-turn', call_id: 'sim-tool', output: 'ok', is_error: false, files: [] },
+      : { type: 'ToolCallFinished', session, turn: 'sim-turn', call_id: 'sim-tool', output: 'ok', is_error: false, files: [] }},
   ])
 
 /** The engine's speaker (`sink: device`): `Saying` is within the ring's 200 ms of playback. */

@@ -5,13 +5,13 @@ import { ModelProviders } from '@/components/settings/ModelProviders'
 import type { SettingsCategory } from '@/components/settings/types'
 
 // 188: tab ids, labels, icons and order are frozen by C0 (docs/design/188-settings-full-page.md, Contract).
-export const models: SettingsCategory = {
+export const models: SettingsCategory = { 
   id: 'models',
   label: 'Models',
   icon: Cpu,
   tabs: [
-    { id: 'models', label: 'Defaults', icon: Cpu, Component: ModelDefaults },
-    { id: 'helpers', label: 'Helpers', icon: Wand2, Component: Helpers },
-    { id: 'providers', label: 'Providers', icon: Cloud, Component: ModelProviders },
+    { required: {"methods":["list_models","set_effort","set_model","set_model_favorite","set_subagent_effort","set_subagent_model","set_theuth_agent_effort","set_theuth_agent_model","subagent_effort","subagent_model","theuth_agent_effort","theuth_agent_model"],"topics":[]}, id: 'models', label: 'Defaults', icon: Cpu, Component: ModelDefaults },
+    { required: {"methods":["escalate_effort","escalate_model","list_models","set_escalate_effort","set_escalate_model","set_model_favorite","set_title_effort","set_title_model","set_vision_effort","set_vision_model","title_effort","title_model","vision_effort","vision_model"],"topics":[]}, id: 'helpers', label: 'Helpers', icon: Wand2, Component: Helpers },
+    { required: {"methods":["add_provider","list_aws_profiles","list_logins","list_providers","local_servers_probe","login","logout","provider_models","refresh_provider_models","remove_provider","set_aws_profile","set_model_limits","set_secret"],"topics":["agent.login@1"]}, id: 'providers', label: 'Providers', icon: Cloud, Component: ModelProviders },
   ],
 }

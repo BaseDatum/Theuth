@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { receiveComponent } from '@/rpc/bindings/receive'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -11,8 +12,9 @@ import type { AgentFile } from "@/rpc/bindings/method.roster.output"
 
 /** `agent_get`; the roster synthesises `theuth` from `prompt.md`, the mock does the same. */
 export function useAgentFile(name: string) {
+  const canQuery1 = useQuerySupport(["agent_get"])
   const api = useApi()
-  return useQuery({
+  return useQuery({ enabled: canQuery1,
     queryKey: [...keys.agents, name],
     queryFn: (): Promise<AgentFile> | AgentFile => {
       if (!mockOn()) return api.agent_get(name)
@@ -50,17 +52,20 @@ export function useAgentActions() {
 }
 
 export function useModels() {
+  const canQuery2 = useQuerySupport(["list_models"])
   const api = useApi()
-  return useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
+  return useQuery({ enabled: canQuery2, queryKey: queryKeys.models, queryFn: () => api.list_models() })
 }
 
 export function useMcpServers() {
+  const canQuery3 = useQuerySupport(["list_mcp"])
   const api = useApi()
-  return useQuery({ queryKey: queryKeys.mcp(null), queryFn: () => api.list_mcp(null) })
+  return useQuery({ enabled: canQuery3, queryKey: queryKeys.mcp(null), queryFn: () => api.list_mcp(null) })
 }
 
 /** Settings › Harnesses: the ACP entries (`agents.yaml`); `native` is implicit. */
 export function useHarnesses() {
+  const canQuery4 = useQuerySupport(["list_acp"])
   const api = useApi()
-  return useQuery({ queryKey: queryKeys.acp, queryFn: () => api.list_acp(false) })
+  return useQuery({ enabled: canQuery4, queryKey: queryKeys.acp, queryFn: () => api.list_acp(false) })
 }

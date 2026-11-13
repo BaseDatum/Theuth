@@ -4,41 +4,17 @@ import { type FormEvent, useEffect, useState } from 'react'
 import { type Action, Empty, Row, errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import type { SignalEvent } from "@/rpc/bindings/method.signal.output"
-import type { SlackEvent } from "@/rpc/bindings/method.slack.output"
-import type { TelegramEvent } from "@/rpc/bindings/method.telegram.output"
-import { on } from '@/store/sessions'
+import type { TopicKey } from '@/rpc/bindings/client'
+import { onTopic } from '@/store/sessions'
 
-// 188: what Channels › Signal, Slack and Telegram share; each tab is its own component (`Signal.tsx`, `Slack.tsx`, `Telegram.tsx`).
-
-/** Every Signal, Slack and Telegram bus event; any of them means a status snapshot is stale. */
-const CHANNEL_EVENTS = [
-  'LinkUrl',
-  'Linked',
-  'Connected',
-  'Disconnected',
-  'Unlinked',
-  'DaemonOnly',
-  'RateLimited',
-  'StreamFallback',
-  'Unconfigured',
-  'Identity',
-  'Conflict',
-  'Unreachable',
-  'PairingLink',
-  'Paired',
-] as const satisfies readonly (SignalEvent | SlackEvent | TelegramEvent)['type'][]
 
 /** Refetch a channel's status on any channel bus event. */
-export function useChannelEvents(key: QueryKey) {
+export function useChannelEvents(topic: TopicKey, key: QueryKey) {
   const qc = useQueryClient()
   useEffect(() => {
     const invalidate = () => void qc.invalidateQueries({ queryKey: key })
-    const offs = CHANNEL_EVENTS.map((t) => on(t, invalidate))
-    return () => {
-      for (const off of offs) off()
-    }
-  }, [qc, key])
+    return onTopic(topic, invalidate)
+  }, [qc, key, topic])
 }
 
 /** A channel's first row while its status call loads or after it fails (with Retry); nothing once it answers. */

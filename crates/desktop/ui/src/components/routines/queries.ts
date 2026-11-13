@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import { useMesh } from '@/components/tasks/queries'
@@ -21,13 +22,14 @@ const SCHEDULE_EVENTS = ['Fired', 'Skipped', 'Changed'] as const satisfies reado
 
 /** `list_schedules`, refetched on every schedule event and on the end of a routine's turn. */
 export function useRoutines() {
+  const canQuery1 = useQuerySupport(["list_schedules"])
   const api = useRoutinesApi()
   const qc = useQueryClient()
   useEffect(() => {
     const invalidate = () => void qc.invalidateQueries({ queryKey: KEY })
-    const offs = SCHEDULE_EVENTS.map((t) => on(t, invalidate))
+    const offs = SCHEDULE_EVENTS.map((t) => on("schedule.events@1", t, invalidate))
     offs.push(
-      on('TurnFinished', (e) => {
+      on("agent.events@1", 'TurnFinished', (e) => {
         if (qc.getQueryData<ScheduleInfo[]>(KEY)?.some((s) => s.session === e.session)) invalidate()
       }),
     )
@@ -35,23 +37,26 @@ export function useRoutines() {
       for (const off of offs) off()
     }
   }, [qc])
-  return useQuery({ queryKey: KEY, queryFn: () => api.list_schedules() })
+  return useQuery({ enabled: canQuery1, queryKey: KEY, queryFn: () => api.list_schedules() })
 }
 
 export function useRoutineFile(name: string | null) {
+  const canQuery2 = useQuerySupport(["get_schedule"])
   const api = useRoutinesApi()
-  return useQuery({ queryKey: [...KEY, 'file', name], queryFn: () => api.get_schedule(name ?? ''), enabled: name !== null })
+  return useQuery({ queryKey: [...KEY, 'file', name], queryFn: () => api.get_schedule(name ?? ''), enabled: canQuery2 && (name !== null) })
 }
 
 export function useRoutineHistory(name: string) {
+  const canQuery3 = useQuerySupport(["schedule_history"])
   const api = useRoutinesApi()
-  return useQuery({ queryKey: [...KEY, 'history', name], queryFn: () => api.schedule_history(name, HISTORY_LIMIT) })
+  return useQuery({ enabled: canQuery3, queryKey: [...KEY, 'history', name], queryFn: () => api.schedule_history(name, HISTORY_LIMIT) })
 }
 
 /** `list_sensors` (108 §9.2): the form's Sensor picker and the sentence's subject; sensors change on disk, rarely. */
 export function useSensors() {
+  const canQuery4 = useQuerySupport(["list_sensors"])
   const api = useRoutinesApi()
-  return useQuery({ queryKey: ['sensors'], queryFn: () => api.list_sensors(), staleTime: 60_000 })
+  return useQuery({ enabled: canQuery4, queryKey: ['sensors'], queryFn: () => api.list_sensors(), staleTime: 60_000 })
 }
 
 /**

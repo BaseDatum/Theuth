@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 /**
  * 147 §11 — the Map tab body: tree (left, 200 px, collapsible to a 28 px rail) · canvas (centre) · detail (right 280 px
  * at ≥ 1 080 px, else a drawer under the canvas); < 600 px panel width or a phone = `MapList`. Data: `codemap_overview`
@@ -12,7 +13,7 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { buildTreeRows, chainOf, defaultOpen, localSearch, type Mark, marksFor, parentsOf, progressLine } from '@/lib/codemap/map'
 import type { MapApi } from '@/lib/codemap/map-adapter'
-import type { CodeMapChanged, CodeMapProgress, TrailRow } from '@/lib/codemap/types'
+import type { CodeMapProgress, TrailRow } from '@/lib/codemap/types'
 import type { DiagramTokens } from '@/lib/diagram-theme'
 import { cn } from '@/lib/utils'
 import type { MapHit } from "@/rpc/bindings/method.codeindex.output"
@@ -55,21 +56,23 @@ export type MapProps = {
 
 const RUNNING = (stage: string | undefined) => !!stage && !['done', 'failed', 'cancelled'].includes(stage)
 
-/** `on()` for the two map events; typed through the bindings once the contract's `CodeindexEvent` carries them. */
-const onMap = <E extends CodeMapProgress | CodeMapChanged>(type: E['type'], cb: (e: E) => void) => on(type as never, cb as never)
+
 
 export function MapTab(p: MapProps) {
+  const canQuery1 = useQuerySupport(["codemap_overview"])
+  const canQuery1_2 = useQuerySupport(["codemap_element"])
+  const canQuery1_3 = useQuerySupport(["codemap_element"])
   const { root, session, api, nav } = p
   const qc = useQueryClient()
-  const index = useQuery({ queryKey: ['codemap-map', root], queryFn: () => api.codemap_overview(root), staleTime: 30_000, retry: false })
+  const index = useQuery({ enabled: canQuery1, queryKey: ['codemap-map', root], queryFn: () => api.codemap_overview(root), staleTime: 30_000, retry: false })
   const data: MapIndex | undefined = index.data
   const parents = useMemo(() => (data ? parentsOf(data) : new Map<string, string>()), [data])
   const viewId = nav.view ?? data?.perspectives[0]?.id ?? null
   const selectedId = nav.selected ?? viewId
 
   // ── elements shown: the canvas's and, when different, the detail's ──
-  const view = useQuery({ queryKey: ['codemap-el', root, viewId], queryFn: () => api.codemap_element(root, viewId!), enabled: viewId !== null, staleTime: 30_000, retry: false })
-  const sel = useQuery({ queryKey: ['codemap-el', root, selectedId], queryFn: () => api.codemap_element(root, selectedId!), enabled: selectedId !== null && selectedId !== viewId, staleTime: 30_000, retry: false })
+  const view = useQuery({ queryKey: ['codemap-el', root, viewId], queryFn: () => api.codemap_element(root, viewId!), enabled: canQuery1_2 && (viewId !== null), staleTime: 30_000, retry: false })
+  const sel = useQuery({ queryKey: ['codemap-el', root, selectedId], queryFn: () => api.codemap_element(root, selectedId!), enabled: canQuery1_3 && (selectedId !== null && selectedId !== viewId), staleTime: 30_000, retry: false })
   const detailEl = selectedId === viewId ? (view.data ?? null) : (sel.data ?? null)
   const detailErr = selectedId === viewId ? view.error : sel.error
 
@@ -106,7 +109,7 @@ export function MapTab(p: MapProps) {
   const pending = useRef(new Set<string>())
   const flush = useRef(0)
   useEffect(() => {
-    const offP = onMap<CodeMapProgress>('CodeMapProgress', (e) => {
+    const offP = on('codeindex.events@1', 'CodeMapProgress', (e) => {
       if (e.root !== root) return
       setProgress(e)
       if (!RUNNING(e.stage)) {
@@ -114,7 +117,7 @@ export function MapTab(p: MapProps) {
         void qc.invalidateQueries({ queryKey: ['codemap-map', root] })
       }
     })
-    const offC = onMap<CodeMapChanged>('CodeMapChanged', (e) => {
+    const offC = on('codeindex.events@1', 'CodeMapChanged', (e) => {
       if (e.root !== root) return
       for (const id of [...e.elements, ...e.stale]) pending.current.add(id)
       if ((e.more ?? 0) > 0) pending.current.add('*')

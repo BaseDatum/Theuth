@@ -1,6 +1,7 @@
 import { type StoreApi, createStore } from 'zustand'
 import type { Api } from '@/rpc/bindings/client'
 import type { ConnState, RpcClient } from '@/rpc/client'
+import { disconnected, type Discovery } from '@/rpc/discovery'
 import type { Info } from "@/rpc/bindings/method.rpc_2dcompose.output"
 import { scoped } from './engine-scope'
 
@@ -8,6 +9,7 @@ type ConnectionStore = {
   state: ConnState
   client: RpcClient | null
   api: Api | null
+  discovery: Discovery
   /** `info()` reply; `null` until the first connection. */
   info: Info | null
   /** Last launch or socket failure shown by the startup screen. */
@@ -16,6 +18,7 @@ type ConnectionStore = {
   outage: boolean
   setConnState(state: ConnState): void
   setClient(client: RpcClient | null, api: Api | null): void
+  setDiscovery(discovery: Discovery): void
   setInfo(info: Info | null): void
   setError(error?: string): void
 }
@@ -28,10 +31,12 @@ export const createConnection = (): ConnectionApi =>
     state: 'connecting',
     client: null,
     api: null,
+    discovery: disconnected(),
     info: null,
     outage: false,
     setConnState: (state) => set({ state }),
     setClient: (client, api) => set({ client, api }),
+    setDiscovery: (discovery) => set({ discovery }),
     setInfo: (info) => set({ info }),
     setError: (error) => set({ error }),
   }))
@@ -46,7 +51,7 @@ export const ROUTER_GRACE_MS = 10_000
  * reconnect unless `refused` (iOS kills the socket on every background, 31 §7.3); the local one for `ROUTER_GRACE_MS`.
  */
 export const routerMounted = (s: ConnectionStore, local: boolean, refused: boolean): boolean =>
-  s.info !== null && (s.state === 'open' || (local ? !s.outage : !refused))
+  s.discovery.phase !== 'failed' && s.info !== null && (s.state === 'open' || (local ? !s.outage : !refused))
 
 export type Drops = {
   /** Feed every client state; an `open` that ends a drop returns its gap in ms. */

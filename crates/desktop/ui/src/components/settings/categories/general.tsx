@@ -11,7 +11,7 @@ export const general: SettingsCategory = {
   icon: Settings2,
   tabs: [
     { id: 'appearance', label: 'Appearance', icon: Palette, Component: Appearance },
-    { id: 'app', label: 'App', icon: AppWindow, Component: App },
+    { required: {"methods":["documents_status","update_status"],"topics":[]}, id: 'app', label: 'App', icon: AppWindow, Component: App },
     { id: 'shortcuts', label: 'Shortcuts', icon: Keyboard, Component: Shortcuts },
   ],
 }

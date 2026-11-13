@@ -1,3 +1,5 @@
+import { withCapability } from '@/rpc/capabilities'
+import { panelRequirements as requirements } from '@/components/meeting/requirements'
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { ControlCenter } from '@/components/meeting/ControlCenter'
@@ -6,7 +8,7 @@ import { POPOUT } from '@/lib/popout'
 import { useScope } from '@/store/engine-scope'
 
 /** 53 §4.3: the control center while recording; the manifest after. Popped with `?pane=note`: the meeting's note alone. */
-export const Route = createFileRoute('/meetings/$id')({ component: Page })
+export const Route = createFileRoute('/meetings/$id')({ component: withCapability(Page, requirements) })
 
 function Page() {
   const { id } = Route.useParams()

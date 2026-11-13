@@ -26,8 +26,8 @@ export const doubleStore = createStore<DoubleStore>()((set) => ({
   takeOver: (id) => set((s) => ({ takenOver: { ...s.takenOver, [id]: true } })),
 }))
 
-on('DoublePredicted', (e) => doubleStore.getState().predict(e))
-on('DoubleAnswered', (e) => doubleStore.getState().answer(e))
+on("double.predicted@1", 'DoublePredicted', (e) => doubleStore.getState().predict(e))
+on("double.answered@1", 'DoubleAnswered', (e) => doubleStore.getState().answer(e))
 
 /** One slice of the store; the same snapshot on the server render, so a static render sees the live state (tests). */
 export function useDouble<T>(selector: (s: DoubleStore) => T): T {

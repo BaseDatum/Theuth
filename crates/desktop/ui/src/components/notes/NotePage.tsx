@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { AppWindow, BookOpen, History as HistoryIcon, MessageSquare, MessageSquarePlus, Pencil, PenLine, Trash2 } from 'lucide-react'
@@ -47,7 +48,7 @@ function useTitle(provider: EngineProvider | null): [string, (t: string) => void
     if (!provider) return
     setTitle(provider.meta?.title ?? '')
     const offStatus = provider.onStatus(() => setTitle(provider.meta?.title ?? ''))
-    const offChanged = on('DocumentChanged', (e) => {
+    const offChanged = on("document.changed@1", 'DocumentChanged', (e) => {
       const t = titleAfter(provider, e)
       if (t !== null) setTitle(t)
     })
@@ -103,6 +104,7 @@ export function useNoteBody(live: LiveDocument, editing: boolean): { deleted: bo
  * `LiveSession` composer beside the note and focuses it; popped, the chat panel is pinned to that session.
  */
 export function NoteView({ id, isNew = false, nb, embedded = false, meeting }: { id: string; isNew?: boolean; nb?: string; embedded?: boolean; meeting?: string }) {
+  const canQuery1 = useQuerySupport(["meeting_get"])
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -118,7 +120,7 @@ export function NoteView({ id, isNew = false, nb, embedded = false, meeting }: {
   const summary = useNotes().data?.find((n) => n.id === id)
   const doc: AttachRef = { kind: 'note', id, title: title || 'Untitled', meta: summary ? subtitle({ kind: 'note', doc: summary }) : '' }
   // 156 D2: the meeting's session, from the cache the meeting page already holds (no fetch of its own while embedded).
-  const manifest = useQuery({ queryKey: queryKeys.meeting(meeting ?? ''), queryFn: () => api.meeting_get(meeting ?? ''), enabled: meeting !== undefined })
+  const manifest = useQuery({ queryKey: queryKeys.meeting(meeting ?? ''), queryFn: () => api.meeting_get(meeting ?? ''), enabled: canQuery1 && (meeting !== undefined) })
   const meetingSession = meeting !== undefined ? (manifest.data?.session ?? null) : null
   useEffect(() => {
     if (!embedded) document.title = title
@@ -266,8 +268,9 @@ export function TitleInput({
 
 /** `doc_snapshots` with a Restore per row (59 §4.6: a restore imports the snapshot's text as one diff, history kept). Notes and markdown artifacts share it. */
 export function Snapshots({ id, open, onOpenChange }: { id: string; open: boolean; onOpenChange: (o: boolean) => void }) {
+  const canQuery2 = useQuerySupport(["doc_snapshots"])
   const api = useApi()
-  const list = useQuery({ queryKey: ['doc', 'snapshots', id], queryFn: () => api.doc_snapshots(id), enabled: open })
+  const list = useQuery({ queryKey: ['doc', 'snapshots', id], queryFn: () => api.doc_snapshots(id), enabled: canQuery2 && (open) })
   const restore = useMutation({
     mutationFn: (name: string) => api.doc_restore(id, name),
     onSuccess: () => {

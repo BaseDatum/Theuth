@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Share2 } from 'lucide-react'
@@ -17,15 +18,17 @@ const NONE: A2aExportStatus[] = []
  * contact talks like a mesh peer, not under this banner's design 50 rules.
  */
 export function useCommunication(session: string | null) {
+  const canQuery1 = useQuerySupport(["get_communication"])
+  const canQuery1_2 = useQuerySupport(["a2a_status"])
   const api = useApi()
-  const { data: state } = useQuery({
+  const { data: state } = useQuery({ enabled: canQuery1,
     queryKey: queryKeys.communication(session),
     queryFn: () => api.get_communication(session),
   })
   const { data: a2a } = useQuery({
     queryKey: queryKeys.a2a,
     queryFn: () => api.a2a_status(),
-    enabled: session !== null,
+    enabled: canQuery1_2 && (session !== null),
   })
   const contacts = useContacts(session !== null).data
   const exports = session

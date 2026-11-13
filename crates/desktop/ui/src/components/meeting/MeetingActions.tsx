@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 156 D5: the meeting page's controls, in the 44 px row under the Library tabs (97b: controls go below the tabs) —
 // not after the last transcript segment, not at the top of the transcript scroll. By state: Review has *Done
 // reviewing* (a muted "Reviewed HH:MM" once `reviewed_at` is set) and *Summarize* (disabled until reviewed); Done
@@ -68,11 +69,12 @@ const RERUN_CONFIRM = 'Re-run the post pipeline? Review edits are replaced; the 
 
 /** `children` sit between the actions and the ⋯ menu (the Briefs toggle, the Session link). */
 export function MeetingActions({ id, state, cycle, compact, children }: { id: string; state: MeetingState | undefined; cycle: Lifecycle | null; compact: boolean; children?: ReactNode }) {
+  const canQuery1 = useQuerySupport(["meeting_transcript"])
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
   // The transcript the review pane holds (same key, so one fetch); only Review reads `reviewed_at`.
-  const transcript = useQuery({ queryKey: queryKeys.meetingTranscript(id), queryFn: () => api.meeting_transcript(id), enabled: state === 'Review' })
+  const transcript = useQuery({ queryKey: queryKeys.meetingTranscript(id), queryFn: () => api.meeting_transcript(id), enabled: canQuery1 && (state === 'Review') })
   const reviewed = useAction(() => api.meeting_edit(id, [{ op: 'Reviewed' }]), { onSuccess: (t) => qc.setQueryData(queryKeys.meetingTranscript(id), t) })
   const summarize = useAction(() => api.meeting_summarize(id), { keys: [queryKeys.meeting(id)] })
   const rerun = useAction(() => api.meeting_post_retry(id), { keys: [queryKeys.meeting(id)] })

@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 // 43 §7: read a reply aloud. The engine synthesizes and streams one Opus packet per
 // `SpeechAudio` event; this module decodes (libopus as wasm) and schedules each packet
 // back-to-back on one `AudioContext`, gapless as long as packets arrive before `next`.
@@ -11,6 +12,7 @@ import { toast } from 'sonner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { Api } from '@/rpc/bindings/client'
 import { RpcError } from '@/rpc/client'
+import { UnsupportedCapability } from '@/rpc/discovery'
 import type { FinishReason } from "@/rpc/bindings/event.voice_2eevents.output"
 import type { ModelState } from "@/rpc/bindings/method.talk.output"
 import { useConnection } from '@/store/connection'
@@ -471,24 +473,24 @@ function onFinished(speech: string, reason: FinishReason): void {
 /** Wire `VoiceEvent`s to the player and the toasts, and block boundaries to the speaking queue; once per app boot. Returns the unsubscribe. */
 export function installSpeechListeners(): () => void {
   const offs = [
-    on('VoiceModel', (e) => onModel(e.state)),
-    on('SpeechStarted', (e) => {
+    on("voice.events@1", 'VoiceModel', (e) => onModel(e.state)),
+    on("voice.events@1", 'SpeechStarted', (e) => {
       if (mine.has(e.id)) start(e.id, e.sample_rate)
       else if (talkSession !== null && e.session === talkSession && e.sink === 'client') {
         mine.add(e.id)
         startQueued(e.id, e.sample_rate)
       } else if (inflight > 0) held = { id: e.id, sampleRate: e.sample_rate, packets: [] }
     }),
-    on('SpeechAudio', (e) => {
+    on("voice.events@1", 'SpeechAudio', (e) => {
       if (mine.has(e.id)) push(e.id, e.opus, e.seq)
       else if (held?.id === e.id) held.packets.push(e.opus)
     }),
-    on('SpeechFinished', (e) => {
+    on("voice.events@1", 'SpeechFinished', (e) => {
       if (held?.id === e.id) held = null
       if (mine.has(e.id) || speaking?.id === e.id) onFinished(e.id, e.reason)
     }),
-    on('ToolCallPending', (e) => speakBlock(e.session)),
-    on('TurnFinished', (e) => speakBlock(e.session)),
+    on("agent.events@1", 'ToolCallPending', (e) => speakBlock(e.session)),
+    on("agent.events@1", 'TurnFinished', (e) => speakBlock(e.session)),
   ]
   // Belt and braces: backgrounded with nothing held, make sure the session is idle (a missed release would
   // otherwise keep the island up until the next tap).
@@ -504,11 +506,12 @@ export function installSpeechListeners(): () => void {
 
 /** Whether this engine reads aloud: `voice_status` answered. `-32001` (plugin disabled) is final; other failures retry. */
 export function useVoice(): boolean {
+  const canQuery1 = useQuerySupport(["voice_status"])
   const api = useApi()
-  return useQuery({
+  return useQuery({ enabled: canQuery1,
     queryKey: queryKeys.voice,
     queryFn: () => api.voice_status(),
     staleTime: Number.POSITIVE_INFINITY,
-    retry: (n, e) => n < 3 && !(e instanceof RpcError && e.code === -32001),
+    retry: (n, e) => n < 3 && !(e instanceof UnsupportedCapability || e instanceof RpcError && (e.code === -32001 || e.code === -32601)),
   }).isSuccess
 }

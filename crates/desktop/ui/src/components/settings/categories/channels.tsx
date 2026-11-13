@@ -10,8 +10,8 @@ export const channels: SettingsCategory = {
   label: 'Channels',
   icon: MessageSquare,
   tabs: [
-    { id: 'signal', label: 'Signal', icon: MessageCircle, Component: Signal },
-    { id: 'slack', label: 'Slack', icon: Hash, Component: Slack },
-    { id: 'telegram', label: 'Telegram', icon: Send, Component: Telegram },
+    { required: {"methods":["signal_allow","signal_link","signal_remove_allowed","signal_status","signal_unlink"],"topics":["signal.events@1"]}, id: 'signal', label: 'Signal', icon: MessageCircle, Component: Signal },
+    { required: {"methods":["slack_allow","slack_allow_channel","slack_manifest","slack_remove_allowed","slack_remove_channel","slack_status"],"topics":["slack.events@1"]}, id: 'slack', label: 'Slack', icon: Hash, Component: Slack },
+    { required: {"methods":["set_secret","telegram_allow","telegram_allow_group","telegram_link","telegram_remove_allowed","telegram_remove_group","telegram_status"],"topics":["telegram.events@1","telegram.events@1"]}, id: 'telegram', label: 'Telegram', icon: Send, Component: Telegram },
   ],
 }

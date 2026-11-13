@@ -1,3 +1,4 @@
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { type ReactNode, useEffect, useState } from 'react'
 import { toast } from 'sonner'
@@ -94,9 +95,11 @@ function Form({
   onDone(): void
   Footer: (p: { children: ReactNode; className?: string }) => ReactNode
 }) {
+  const canQuery1 = useQuerySupport(["list_activity"])
+  const canQuery1_2 = useQuerySupport(["list_sessions"])
   const api = useApi()
-  const { data: rows, error: loadError } = useQuery({ queryKey: ['activity'], queryFn: () => api.list_activity() })
-  const { data: sessions } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const { data: rows, error: loadError } = useQuery({ enabled: canQuery1, queryKey: ['activity'], queryFn: () => api.list_activity() })
+  const { data: sessions } = useQuery({ enabled: canQuery1_2, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const [picked, setPicked] = useState<Set<string> | null>(null)
   const [text, setText] = useState(req.text ?? '')
   const [delivery, setDelivery] = useState<Delivery>('steer')
