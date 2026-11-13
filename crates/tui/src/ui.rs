@@ -1443,6 +1443,7 @@ mod tests {
                 explain: Default::default(),
             })),
         }));
+        let chip = model.components.get::<Double>().unwrap().chip().unwrap();
         let frame = |badge: Option<AnyElement<'static>>, height| element! {
             View(width: 100u16, height, flex_direction: FlexDirection::Column) {
                 #(ask_box(&model))
@@ -1453,7 +1454,7 @@ mod tests {
         for height in [8u16, 10, 12] {
             let expected = frame(None, height);
             assert_eq!(expected.lines().count(), usize::from(height));
-            assert_eq!(expected.matches("double: Wait 90 % · L1").count(), 1, "{expected}");
+            assert_eq!(expected.matches(chip.as_str()).count(), 1, "{expected}");
             let actual = frame(component_slot(&model, Surface::PromptBadge, 100, height, None).element(), height);
             assert_eq!(actual, expected, "terminal height {height}");
         }
