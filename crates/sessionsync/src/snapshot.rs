@@ -65,7 +65,7 @@ pub async fn build_counted(store: &Store, origin: &PeerId) -> anyhow::Result<(Ms
         let (max,): (Option<i64>,) = sqlx::query_as("SELECT MAX(seq) FROM session_log")
             .fetch_one(&mut *tx)
             .await?;
-        u64::try_from(max.unwrap_or(0).max(store.log_head()))?
+        u64::try_from(max.unwrap_or(0))?
     } else {
         store
             .cursors()

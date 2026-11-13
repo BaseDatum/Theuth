@@ -1247,13 +1247,15 @@ async fn ship_log(
                 // (prune keeps the lowest cursor's row) means nothing past it
                 // was pruned: the hole is a burned or orphaned seq. The frame
                 // starts with row `after` as an anchor, which the peer drops
-                // as a duplicate and then steps over the hole.
-                Some(_) => match anchor(node, after).await? {
-                    Some(a) => {
+                // as a duplicate and then steps over the hole. An anchor that
+                // cannot share a frame with the row after the hole would go
+                // alone and leave the hole at a frame start: a snapshot instead.
+                Some(first) => match anchor(node, after).await? {
+                    Some(a) if a.changeset.len() + first.changeset.len() <= ROW_MAX => {
                         size = a.changeset.len();
                         batch.push(a);
                     }
-                    None => return Ok(false),
+                    _ => return Ok(false),
                 },
             }
         }
@@ -3111,5 +3113,52 @@ mod tests {
         let (_z, _run, held, _) = raw_on(node.clone(), ours, vec![(c.clone(), 4)]).await;
         assert_eq!(c_at(&held), None);
         assert!(node.resnap.lock().is_empty());
+    }
+
+    /// An anchor that cannot share a frame with the row after the hole (the
+    /// two over `ROW_MAX`) would leave the hole at a frame start, where the
+    /// peer waits, resyncs and is sent the same frames again: a snapshot
+    /// instead, and the peer converges.
+    #[tokio::test]
+    async fn an_anchor_too_big_to_share_a_frame_falls_back_to_a_snapshot() {
+        let switch = Arc::new(Switch::default());
+        let a = node("A", &switch).await;
+        let b = node("B", &switch).await;
+        link(&switch, &a, &b, true);
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store.append(id, &user(&big(34 << 20, 0))).await.unwrap();
+        let cursor = a.store.log_head();
+        until("B acked A", || async {
+            acked(&a.store, "A", "B").await == Some(cursor)
+        })
+        .await;
+        link(&switch, &a, &b, false);
+        until("the stream is down", || async {
+            !sync_of(&a, "B").up && !sync_of(&b, "A").up
+        })
+        .await;
+        a.store.append(id, &user("hole")).await.unwrap();
+        a.store.append(id, &user(&big(34 << 20, 1))).await.unwrap();
+        let head = a.store.log_head();
+        let mut tx = a.store.begin_apply().await.unwrap();
+        sqlx::query("DELETE FROM session_log WHERE seq = ?")
+            .bind(cursor + 1)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        link(&switch, &a, &b, true);
+        until("B applied A to its head", || async {
+            acked(&b.store, "A", "").await == Some(head)
+        })
+        .await;
+        // Only a snapshot carries the hole row's message.
+        assert_eq!(texts(&b.store, id).await, texts(&a.store, id).await);
+        assert_eq!(texts(&b.store, id).await.len(), 3);
     }
 }
