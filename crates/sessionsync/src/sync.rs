@@ -62,6 +62,8 @@ const GAP_WAIT: Duration = Duration::from_secs(10);
 const HARNESS_RETRY: Duration = Duration::from_secs(60);
 /// A frame the peer does not take for this long ends the stream.
 const SEND_STALL: Duration = Duration::from_secs(300);
+/// While a frame waits on the peer, a WARN this often (peer, phase, bytes, seconds).
+const SEND_WARN: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 30 });
 /// Repeats of one failure (peer, phase, kind) log at most this often.
 const REPORT_EVERY: Duration = Duration::from_secs(10 * 60);
 
@@ -501,8 +503,12 @@ struct InFlight {
 /// The writing half of a stream, and the replies (acks) the reading half
 /// queued for it; replies go out ahead of every frame the writer sends.
 struct Out {
+    node: Arc<Node>,
+    remote: PeerId,
     sink: SplitSink<Stream, Bytes>,
     replies: mpsc::UnboundedReceiver<Msg>,
+    /// Bytes sent on this stream so far, for the stall report.
+    sent: u64,
 }
 
 impl Out {
@@ -515,24 +521,57 @@ impl Out {
     }
 
     /// One frame. Over [`MAX_FRAME`] is refused before it reaches the codec
-    /// (an error of what was being shipped, not of the stream); a failed or
-    /// stalled send is [`Broken`].
+    /// (an error of what was being shipped, not of the stream). A send that
+    /// makes no progress is reported every [`SEND_WARN`]; a failed one, or
+    /// one still waiting after [`SEND_STALL`], is [`Broken`].
     async fn put(&mut self, msg: &Msg) -> anyhow::Result<()> {
         let frame = msg.encode()?;
+        let len = frame.len();
         anyhow::ensure!(
-            frame.len() <= MAX_FRAME,
-            "a frame of {} bytes (tag {}) is over the {MAX_FRAME}-byte limit",
-            frame.len(),
+            len <= MAX_FRAME,
+            "a frame of {len} bytes (tag {}) is over the {MAX_FRAME}-byte limit",
             msg.tag()
         );
-        match tokio::time::timeout(SEND_STALL, self.sink.send(frame)).await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(e)) => Err(Broken(e.to_string()).into()),
-            Err(_) => Err(Broken(format!(
-                "the peer took no frame for {} s",
-                SEND_STALL.as_secs()
-            ))
-            .into()),
+        let phase = match msg {
+            Msg::Log { .. } => Phase::Ship,
+            Msg::Snapshot { .. } => Phase::Snapshot,
+            Msg::Harness { .. } => Phase::Harness,
+            Msg::Ack { .. } | Msg::HarnessAck { .. } => Phase::Receive,
+            _ => Phase::Stream,
+        };
+        let started = Instant::now();
+        let send = self.sink.send(frame);
+        tokio::pin!(send);
+        loop {
+            match tokio::time::timeout(SEND_WARN, &mut send).await {
+                Ok(Ok(())) => {
+                    self.sent += len as u64;
+                    return Ok(());
+                }
+                Ok(Err(e)) => return Err(Broken(e.to_string()).into()),
+                Err(_) if started.elapsed() >= SEND_STALL => {
+                    return Err(Broken(format!(
+                        "the peer took no frame for {} s",
+                        SEND_STALL.as_secs()
+                    ))
+                    .into());
+                }
+                Err(_) => self.node.report(
+                    &self.remote,
+                    phase,
+                    &anyhow::anyhow!(
+                        "a {len}-byte frame (tag {}) has waited {} s for the peer to read; \
+                         {} bytes sent on this stream before it",
+                        msg.tag(),
+                        started.elapsed().as_secs(),
+                        self.sent
+                    ),
+                    &format!(
+                        "still waiting; the stream ends at {} s",
+                        SEND_STALL.as_secs()
+                    ),
+                ),
+            }
         }
     }
 }
@@ -691,8 +730,11 @@ async fn stream(
     let (sink, inbound) = framed.split();
     let (replies, queued) = mpsc::unbounded_channel();
     let mut out = Out {
+        node: node.clone(),
+        remote: remote.clone(),
         sink,
         replies: queued,
+        sent: 0,
     };
     let reader = read(node, remote, inbound, replies);
     let writer = async {
@@ -2605,6 +2647,35 @@ mod tests {
             z_at(&held),
             None,
             "Z's cursor is left out: Z answers with a snapshot"
+        );
+    }
+
+    /// A peer that stops reading (the 2026-11 wedge, seen from one side):
+    /// the waiting send is reported with peer, phase, bytes and seconds
+    /// while the stream is still up, instead of hanging in silence.
+    #[tokio::test]
+    async fn a_send_the_peer_does_not_take_is_reported_while_it_waits() {
+        let (store, _dir, id) = engine_a().await;
+        for n in 0..24 {
+            store.append(id, &user(&big(64 * 1024, n))).await.unwrap();
+        }
+        let node = super::Node::new(store.clone(), None, Duration::from_secs(60));
+        let ours = Some(agent::store::SESSIONS_WIRE_SCHEMA);
+        // Z holds A through 1 and never reads: the 1.5 MB tail outgrows the 1 MiB duplex.
+        let (_z, run, _, _) = raw_on(node.clone(), ours, vec![(PeerId("A".into()), 1)]).await;
+        until("the stalled send is reported", || async {
+            node.sync_status(&[]).iter().any(|s| {
+                s.peer == "Z"
+                    && s.up
+                    && s.last_error.as_deref().is_some_and(|e| {
+                        e.starts_with("ship: ") && e.contains("s for the peer to read")
+                    })
+            })
+        })
+        .await;
+        assert!(
+            !run.is_finished(),
+            "the stream waits; it ends only after SEND_STALL"
         );
     }
 }
