@@ -107495,10 +107495,13 @@
         "description": "`sessions_sync` entry: this engine's `theuth/sessions/1` session-log\nreplication with one peer, from memory (no store read). Seqs are log\npositions: ours of our own log, the peer's of its own.",
         "properties": {
           "acked": {
-            "description": "How far of our log the peer has acked.",
+            "description": "How far of our log the peer has acked (`None` before its first `Hello`).",
             "format": "uint64",
             "minimum": 0,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "applied": {
             "description": "How far of the peer's log we have applied (`None`: nothing of it yet).",
@@ -107519,10 +107522,13 @@
             ]
           },
           "behind_out": {
-            "description": "Rows of ours the peer has not acked (`head - acked`).",
+            "description": "Rows of ours the peer has not acked (`head - acked`), once `acked` is known.",
             "format": "uint64",
             "minimum": 0,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "head": {
             "description": "Our log head.",
@@ -107780,10 +107786,13 @@
         "description": "`sessions_sync` entry: this engine's `theuth/sessions/1` session-log\nreplication with one peer, from memory (no store read). Seqs are log\npositions: ours of our own log, the peer's of its own.",
         "properties": {
           "acked": {
-            "description": "How far of our log the peer has acked.",
+            "description": "How far of our log the peer has acked (`None` before its first `Hello`).",
             "format": "uint64",
             "minimum": 0,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "applied": {
             "description": "How far of the peer's log we have applied (`None`: nothing of it yet).",
@@ -107804,10 +107813,13 @@
             ]
           },
           "behind_out": {
-            "description": "Rows of ours the peer has not acked (`head - acked`).",
+            "description": "Rows of ours the peer has not acked (`head - acked`), once `acked` is known.",
             "format": "uint64",
             "minimum": 0,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "head": {
             "description": "Our log head.",
@@ -107882,8 +107894,6 @@
           "peer",
           "up",
           "head",
-          "acked",
-          "behind_out",
           "held",
           "held_by_peer"
         ],
