@@ -309,18 +309,22 @@ impl Model {
         (!text.is_empty()).then_some(text)
     }
     pub(crate) fn component_views(&self, surface: Surface<'_>, width: usize, height: usize) -> Vec<View> {
+        let session_badge = |id| self.component_text(Surface::SessionBadge(id));
         let cx = ViewCx {
             core: core_view!(self, None),
             width, height, frame: self.frame,
             commands: self.component_commands.as_ref(), endpoint: None,
+            session_badge: Some(&session_badge),
         };
         self.components.views(surface, &cx).collect()
     }
     pub(crate) fn component_text(&self, surface: Surface<'_>) -> String {
+        let session_badge = |id| self.component_text(Surface::SessionBadge(id));
         let cx = ViewCx {
             core: core_view!(self, None),
             width: self.width, height: 0, frame: self.frame,
             commands: self.component_commands.as_ref(), endpoint: None,
+            session_badge: Some(&session_badge),
         };
         let mut text = String::new();
         for view in self.components.views(surface, &cx) {

@@ -544,10 +544,16 @@ pub struct ViewCx<'a> {
     pub(crate) commands: Option<&'a tokio::sync::mpsc::UnboundedSender<crate::model::Command>>,
     /// Registry-supplied owner and engine fence for this view only.
     pub(crate) endpoint: Option<(ComponentToken, u64)>,
+    /// Read-only projection of existing session badge text, without peer state.
+    pub(crate) session_badge: Option<&'a dyn Fn(SessionId) -> String>,
 }
 impl ViewCx<'_> {
     /// Current spinner glyph, on the shared core animation clock.
     pub fn spinner(&self) -> &'static str { spinner(self.frame) }
+    /// Compose the existing session badge suffix at its measured row boundary.
+    pub fn session_badge(&self, session: SessionId) -> String {
+        self.session_badge.map_or_else(String::new, |project| project(session))
+    }
     /// Typed widget callback; neither editor handles nor mutable core state escape.
     pub fn callback<M: Send + 'static>(&self, make: impl Fn(String) -> M + Send + Sync + 'static) -> Option<impl Fn(String) + 'static> {
         let commands = self.commands?.clone();
