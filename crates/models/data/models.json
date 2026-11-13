@@ -14842,6 +14842,37 @@
         "protocol": "anthropic",
         "canonical": "anthropic/claude-fable-5-1"
       },
+      "claude-fable-5.2": {
+        "id": "claude-fable-5.2",
+        "name": "Claude Fable 5.2",
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 8.0,
+          "output": 40.0,
+          "cache_read": 0.2,
+          "cache_write": 10.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "anthropic",
+        "canonical": "anthropic/claude-fable-5-2"
+      },
       "claude-haiku-4.5": {
         "id": "claude-haiku-4.5",
         "name": "Claude Haiku 4.5 (latest)",
@@ -15271,6 +15302,34 @@
         ],
         "protocol": "openai_chat",
         "canonical": "google/gemini-4-argon"
+      },
+      "gemini-4-carbon": {
+        "id": "gemini-4-carbon",
+        "name": "Gemini 4 Carbon",
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 2.0,
+          "output": 10.0,
+          "cache_read": 0.1
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "google/gemini-4-carbon"
       },
       "gpt-5-mini": {
         "id": "gpt-5-mini",
@@ -16542,6 +16601,35 @@
         "protocol": "gemini",
         "canonical": "google/gemini-4-carbon"
       },
+      "gemini-4-hydrogen": {
+        "id": "gemini-4-hydrogen",
+        "name": "Gemini 4 Hydrogen",
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 1.5,
+          "output": 7.5,
+          "cache_read": 0.075
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          }
+        ],
+        "protocol": "gemini",
+        "canonical": "google/gemini-4-hydrogen"
+      },
       "gemini-embedding-001": {
         "id": "gemini-embedding-001",
         "name": "Gemini Embedding 001",
@@ -16632,24 +16720,6 @@
         ],
         "protocol": "gemini"
       },
-      "gemini-omni-flash-preview": {
-        "id": "gemini-omni-flash-preview",
-        "name": "Gemini Omni Flash Preview",
-        "limit": {
-          "context": 131072,
-          "output": 65536
-        },
-        "cost": {
-          "input": 1.5,
-          "output": 17.5
-        },
-        "reasoning": true,
-        "tool_call": false,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "gemini",
-        "canonical": "google/gemini-omni-flash-preview"
-      },
       "gemini-pro-latest": {
         "id": "gemini-pro-latest",
         "name": "Gemini Pro Latest",
@@ -16685,6 +16755,10 @@
           "context": 262144,
           "output": 32768
         },
+        "cost": {
+          "input": 0.0,
+          "output": 0.0
+        },
         "reasoning": true,
         "tool_call": true,
         "image": true,
@@ -16701,6 +16775,10 @@
         "limit": {
           "context": 262144,
           "output": 32768
+        },
+        "cost": {
+          "input": 0.0,
+          "output": 0.0
         },
         "reasoning": true,
         "tool_call": true,
@@ -17882,6 +17960,35 @@
         ],
         "protocol": "openai_chat",
         "canonical": "google/gemini-4-carbon"
+      },
+      "gemini-4-hydrogen": {
+        "id": "gemini-4-hydrogen",
+        "name": "Gemini 4 Hydrogen",
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 1.5,
+          "output": 7.5,
+          "cache_read": 0.075
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "google/gemini-4-hydrogen"
       },
       "gemini-embedding-001": {
         "id": "gemini-embedding-001",
@@ -19656,29 +19763,6 @@
         "protocol": "openai_chat",
         "canonical": "alibaba/qwen3-embedding-8b"
       },
-      "Qwen/Qwen3.5-397B-A17B": {
-        "id": "Qwen/Qwen3.5-397B-A17B",
-        "name": "Qwen3.5-397B-A17B",
-        "limit": {
-          "context": 262144,
-          "output": 8192
-        },
-        "cost": {
-          "input": 0.6,
-          "output": 3.6,
-          "cache_read": 0.12
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "alibaba/qwen3.5-397b-a17b"
-      },
       "Qwen/Qwen3.8-27B": {
         "id": "Qwen/Qwen3.8-27B",
         "name": "Qwen3.8 27B",
@@ -19708,64 +19792,6 @@
         "protocol": "openai_chat",
         "canonical": "alibaba/qwen3.8-27b"
       },
-      "deepseek-ai/DeepSeek-V4-Flash-0731": {
-        "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
-        "name": "DeepSeek V4 Flash 0731",
-        "limit": {
-          "context": 1024000,
-          "output": 1024000
-        },
-        "cost": {
-          "input": 0.14,
-          "output": 0.28,
-          "cache_read": 0.01
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "none",
-              "low",
-              "high",
-              "max"
-            ]
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "deepseek/deepseek-v4-flash-0731"
-      },
-      "deepseek-ai/DeepSeek-V4-Pro": {
-        "id": "deepseek-ai/DeepSeek-V4-Pro",
-        "name": "DeepSeek V4 Pro",
-        "limit": {
-          "context": 1048576,
-          "output": 1048576
-        },
-        "cost": {
-          "input": 1.75,
-          "output": 3.5,
-          "cache_read": 1.75
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "none",
-              "low",
-              "high",
-              "max"
-            ]
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "deepseek/deepseek-v4-pro"
-      },
       "deepseek-ai/DeepSeek-V4-Pro-0813": {
         "id": "deepseek-ai/DeepSeek-V4-Pro-0813",
         "name": "DeepSeek V4 Pro 0813",
@@ -19794,35 +19820,6 @@
         ],
         "protocol": "openai_chat",
         "canonical": "deepseek/deepseek-v4-pro-0813"
-      },
-      "deepseek-ai/DeepSeek-V4.1-Flash": {
-        "id": "deepseek-ai/DeepSeek-V4.1-Flash",
-        "name": "DeepSeek V4.1 Flash",
-        "limit": {
-          "context": 1048000,
-          "output": 1048000
-        },
-        "cost": {
-          "input": 0.3,
-          "output": 1.2,
-          "cache_read": 0.01
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "none",
-              "low",
-              "high",
-              "max"
-            ]
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "deepseek/deepseek-v4.1-flash"
       },
       "deepseek-ai/DeepSeek-V4.1-Flash-1017": {
         "id": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
@@ -19900,25 +19897,6 @@
         ],
         "protocol": "openai_chat",
         "canonical": "meta/muse-spark-open"
-      },
-      "moonshotai/Kimi-K2.7-Code": {
-        "id": "moonshotai/Kimi-K2.7-Code",
-        "name": "Kimi K2.7 Code",
-        "limit": {
-          "context": 262144,
-          "output": 8000
-        },
-        "cost": {
-          "input": 0.95,
-          "output": 4.0,
-          "cache_read": 0.15
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat",
-        "canonical": "moonshotai/kimi-k2.7-code"
       },
       "moonshotai/Kimi-K3": {
         "id": "moonshotai/Kimi-K3",
@@ -20913,6 +20891,11 @@
           "context": 0,
           "output": 0
         },
+        "cost": {
+          "input": 5.0,
+          "output": 10.0,
+          "cache_read": 1.25
+        },
         "reasoning": false,
         "tool_call": false,
         "image": true,
@@ -21901,6 +21884,11 @@
         "limit": {
           "context": 0,
           "output": 0
+        },
+        "cost": {
+          "input": 5.0,
+          "output": 10.0,
+          "cache_read": 1.25
         },
         "reasoning": false,
         "tool_call": false,
@@ -23364,6 +23352,35 @@
         ],
         "protocol": "gemini",
         "canonical": "google/gemini-4-carbon"
+      },
+      "gemini-4-hydrogen": {
+        "id": "gemini-4-hydrogen",
+        "name": "Gemini 4 Hydrogen",
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 1.5,
+          "output": 7.5,
+          "cache_read": 0.075
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          }
+        ],
+        "protocol": "gemini",
+        "canonical": "google/gemini-4-hydrogen"
       },
       "glm-4.6": {
         "id": "glm-4.6",
@@ -27676,17 +27693,16 @@
         "protocol": "openai_chat",
         "canonical": "anthropic/claude-sonnet-5-5"
       },
-      "baidu/ernie-5.5-flash-preview": {
-        "id": "baidu/ernie-5.5-flash-preview",
-        "name": "ERNIE-5.5-Flash-Preview",
+      "baidu/ernie-5.5-flash-preview:free": {
+        "id": "baidu/ernie-5.5-flash-preview:free",
+        "name": "ERNIE-5.5-Flash-Preview (free)",
         "limit": {
           "context": 1024000,
           "output": 921600
         },
         "cost": {
-          "input": 0.28,
-          "output": 1.13,
-          "cache_read": 0.028
+          "input": 0.0,
+          "output": 0.0
         },
         "reasoning": true,
         "tool_call": true,
@@ -27729,50 +27745,6 @@
         ],
         "protocol": "openai_chat"
       },
-      "bytedance-seed/seed-1.6": {
-        "id": "bytedance-seed/seed-1.6",
-        "name": "Seed 1.6",
-        "limit": {
-          "context": 262144,
-          "output": 32768
-        },
-        "cost": {
-          "input": 0.25,
-          "output": 2.0
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "bytedance-seed/seed-1-6"
-      },
-      "bytedance-seed/seed-1.6-flash": {
-        "id": "bytedance-seed/seed-1.6-flash",
-        "name": "Seed 1.6 Flash",
-        "limit": {
-          "context": 262144,
-          "output": 32768
-        },
-        "cost": {
-          "input": 0.075,
-          "output": 0.3
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "bytedance-seed/seed-1-6-flash"
-      },
       "bytedance-seed/seed-2-1-turbo": {
         "id": "bytedance-seed/seed-2-1-turbo",
         "name": "Seed 2.1 Turbo",
@@ -27794,34 +27766,6 @@
         ],
         "protocol": "openai_chat",
         "canonical": "bytedance-seed/seed-2.1-turbo"
-      },
-      "bytedance-seed/seed-2.0-code": {
-        "id": "bytedance-seed/seed-2.0-code",
-        "name": "Seed 2.0 Code",
-        "limit": {
-          "context": 262144,
-          "output": 131072
-        },
-        "cost": {
-          "input": 0.5,
-          "output": 3.0
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "none",
-              "low",
-              "medium",
-              "high"
-            ]
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "bytedance-seed/seed-2.0-code"
       },
       "bytedance-seed/seed-2.0-lite": {
         "id": "bytedance-seed/seed-2.0-lite",
@@ -28183,12 +28127,12 @@
         "name": "DeepSeek V4 Flash",
         "limit": {
           "context": 1048576,
-          "output": 943717
+          "output": 393216
         },
         "cost": {
-          "input": 0.091,
-          "output": 0.182,
-          "cache_read": 0.0182
+          "input": 0.09,
+          "output": 0.18,
+          "cache_read": 0.018
         },
         "reasoning": true,
         "tool_call": true,
@@ -28269,12 +28213,12 @@
         "name": "DeepSeek V4 Pro",
         "limit": {
           "context": 1048576,
-          "output": 384000
+          "output": 393216
         },
         "cost": {
-          "input": 0.95526,
-          "output": 1.91052,
-          "cache_read": 0.079605
+          "input": 0.9,
+          "output": 1.5,
+          "cache_read": 0.25
         },
         "reasoning": true,
         "tool_call": true,
@@ -28358,9 +28302,9 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.006,
+          "input": 0.038,
           "output": 0.5,
-          "cache_read": 0.005
+          "cache_read": 0.01
         },
         "reasoning": true,
         "tool_call": true,
@@ -29049,6 +28993,36 @@
         "protocol": "openai_chat",
         "canonical": "google/gemini-4-carbon"
       },
+      "google/gemini-4-hydrogen": {
+        "id": "google/gemini-4-hydrogen",
+        "name": "Gemini 4 Hydrogen",
+        "limit": {
+          "context": 1048576,
+          "output": 943718
+        },
+        "cost": {
+          "input": 1.5,
+          "output": 7.5,
+          "cache_read": 0.075,
+          "cache_write": 0.083333
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "google/gemini-4-hydrogen"
+      },
       "google/gemini-nano-banana-2.1": {
         "id": "google/gemini-nano-banana-2.1",
         "name": "Nano Banana 2.1",
@@ -29173,7 +29147,7 @@
         },
         "cost": {
           "input": 0.08,
-          "output": 0.45,
+          "output": 0.35,
           "cache_read": 0.04
         },
         "reasoning": false,
@@ -29206,12 +29180,12 @@
         "name": "Gemma 4 26B A4B IT",
         "limit": {
           "context": 262144,
-          "output": 128000
+          "output": 235929
         },
         "cost": {
-          "input": 0.08,
-          "output": 0.1,
-          "cache_read": 0.046
+          "input": 0.09,
+          "output": 0.3,
+          "cache_read": 0.05
         },
         "reasoning": true,
         "tool_call": true,
@@ -29501,6 +29475,28 @@
         "protocol": "openai_chat",
         "canonical": "inference-net/schematron-v2-turbo"
       },
+      "kt/midm-k-3.0-pro": {
+        "id": "kt/midm-k-3.0-pro",
+        "name": "Mi:dm K 3.0 Pro",
+        "limit": {
+          "context": 261795,
+          "output": 235615
+        },
+        "cost": {
+          "input": 0.2,
+          "output": 0.8,
+          "cache_read": 0.04
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          }
+        ],
+        "protocol": "openai_chat"
+      },
       "liquid/lfm-2.5-2.6b": {
         "id": "liquid/lfm-2.5-2.6b",
         "name": "LFM2.5-2.6B",
@@ -29597,9 +29593,9 @@
           "output": 6000
         },
         "cost": {
-          "input": 0.4,
-          "output": 0.75,
-          "cache_read": 0.4
+          "input": 0.3,
+          "output": 0.5,
+          "cache_read": 0.3
         },
         "reasoning": false,
         "tool_call": false,
@@ -29647,7 +29643,7 @@
           "output": 0.72
         },
         "reasoning": false,
-        "tool_call": false,
+        "tool_call": true,
         "image": false,
         "reasoning_options": [],
         "protocol": "openai_chat",
@@ -29996,7 +29992,7 @@
         "name": "Muse Spark Open",
         "limit": {
           "context": 1048576,
-          "output": 262144
+          "output": 943718
         },
         "cost": {
           "input": 1.25,
@@ -30071,13 +30067,13 @@
         "id": "minimax/minimax-m2.5",
         "name": "MiniMax-M2.5",
         "limit": {
-          "context": 200000,
-          "output": 58982
+          "context": 198000,
+          "output": 32768
         },
         "cost": {
-          "input": 0.3,
-          "output": 1.2,
-          "cache_read": 0.06
+          "input": 0.27,
+          "output": 0.95,
+          "cache_read": 0.03
         },
         "reasoning": true,
         "tool_call": true,
@@ -30136,9 +30132,9 @@
           "output": 524288
         },
         "cost": {
-          "input": 0.075,
-          "output": 0.3,
-          "cache_read": 0.0075
+          "input": 0.15,
+          "output": 0.6,
+          "cache_read": 0.015
         },
         "reasoning": true,
         "tool_call": true,
@@ -30661,12 +30657,12 @@
         "name": "Kimi K2.5",
         "limit": {
           "context": 262144,
-          "output": 65536
+          "output": 235929
         },
         "cost": {
-          "input": 0.532,
-          "output": 3.325,
-          "cache_read": 0.209
+          "input": 0.5,
+          "output": 2.5,
+          "cache_read": 0.15
         },
         "reasoning": true,
         "tool_call": true,
@@ -30814,6 +30810,28 @@
         "reasoning_options": [],
         "protocol": "openai_chat",
         "canonical": "morph/morph-v3-large"
+      },
+      "motif-technologies/motif-3": {
+        "id": "motif-technologies/motif-3",
+        "name": "Motif 3",
+        "limit": {
+          "context": 262144,
+          "output": 235929
+        },
+        "cost": {
+          "input": 0.3,
+          "output": 1.2,
+          "cache_read": 0.06
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          }
+        ],
+        "protocol": "openai_chat"
       },
       "nex-agi/nex-n2.5-mini": {
         "id": "nex-agi/nex-n2.5-mini",
@@ -30971,7 +30989,7 @@
         "id": "nvidia/nemotron-3-super-120b-a12b",
         "name": "Nemotron 3 Super 120B A12B",
         "limit": {
-          "context": 1048576,
+          "context": 262144,
           "output": 16384
         },
         "cost": {
@@ -32764,6 +32782,36 @@
         ],
         "protocol": "openai_chat"
       },
+      "particle-ai/particle-1:free": {
+        "id": "particle-ai/particle-1:free",
+        "name": "Particle-1 (free)",
+        "limit": {
+          "context": 1048576,
+          "output": 131072
+        },
+        "cost": {
+          "input": 0.0,
+          "output": 0.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat"
+      },
       "perceptron/perceptron-mk1": {
         "id": "perceptron/perceptron-mk1",
         "name": "Perceptron Mk1",
@@ -32973,23 +33021,6 @@
         "reasoning_options": [],
         "protocol": "openai_chat"
       },
-      "qwen/qwen-2.5-7b-instruct": {
-        "id": "qwen/qwen-2.5-7b-instruct",
-        "name": "Qwen2.5 7B Instruct",
-        "limit": {
-          "context": 32768,
-          "output": 29491
-        },
-        "cost": {
-          "input": 0.1,
-          "output": 0.2
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
       "qwen/qwen-2.5-coder-32b-instruct": {
         "id": "qwen/qwen-2.5-coder-32b-instruct",
         "name": "Qwen2.5-Coder-32B-Instruct",
@@ -33052,11 +33083,11 @@
         "name": "Qwen3 14B",
         "limit": {
           "context": 40960,
-          "output": 36864
+          "output": 16384
         },
         "cost": {
-          "input": 0.1,
-          "output": 0.22
+          "input": 0.12,
+          "output": 0.24
         },
         "reasoning": true,
         "tool_call": true,
@@ -33429,11 +33460,12 @@
         "name": "Qwen3.5 9B",
         "limit": {
           "context": 262144,
-          "output": 235929
+          "output": 40960
         },
         "cost": {
-          "input": 0.17,
-          "output": 0.25
+          "input": 0.024,
+          "output": 0.035,
+          "cache_read": 0.022
         },
         "reasoning": true,
         "tool_call": true,
@@ -33975,9 +34007,9 @@
           "output": 131072
         },
         "cost": {
-          "input": 0.2,
-          "output": 0.6,
-          "cache_read": 0.05
+          "input": 0.1,
+          "output": 0.3,
+          "cache_read": 0.025
         },
         "reasoning": true,
         "tool_call": true,
@@ -34327,9 +34359,9 @@
           "output": 128000
         },
         "cost": {
-          "input": 0.0825,
-          "output": 0.33,
-          "cache_read": 0.020625
+          "input": 0.132,
+          "output": 0.528,
+          "cache_read": 0.033
         },
         "reasoning": true,
         "tool_call": true,
@@ -34411,9 +34443,9 @@
           "output": 64000
         },
         "cost": {
-          "input": 0.7506,
-          "output": 2.2509,
-          "cache_read": 0.0378
+          "input": 0.834,
+          "output": 2.501,
+          "cache_read": 0.042
         },
         "reasoning": true,
         "tool_call": true,
@@ -34518,6 +34550,36 @@
         "protocol": "openai_chat",
         "canonical": "thinkingmachines/inkling"
       },
+      "thinkingmachines/inkling-2-small": {
+        "id": "thinkingmachines/inkling-2-small",
+        "name": "Inkling 2 Small",
+        "limit": {
+          "context": 1048576,
+          "output": 943718
+        },
+        "cost": {
+          "input": 0.3,
+          "output": 1.0,
+          "cache_read": 0.03
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "thinkingmachines/inkling-2-small"
+      },
       "thinkingmachines/inkling-2-small:free": {
         "id": "thinkingmachines/inkling-2-small:free",
         "name": "Inkling 2 Small (free)",
@@ -34596,6 +34658,24 @@
         "reasoning_options": [],
         "protocol": "openai_chat"
       },
+      "unbiased/pareto-26.10-preview": {
+        "id": "unbiased/pareto-26.10-preview",
+        "name": "Pareto 26.10 Preview",
+        "limit": {
+          "context": 1048576,
+          "output": 131072
+        },
+        "cost": {
+          "input": 0.8,
+          "output": 3.2,
+          "cache_read": 0.03
+        },
+        "reasoning": false,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [],
+        "protocol": "openai_chat"
+      },
       "unbiased/pareto-26.9": {
         "id": "unbiased/pareto-26.9",
         "name": "Pareto 26.9",
@@ -34622,9 +34702,9 @@
           "output": 5529
         },
         "cost": {
-          "input": 0.35,
-          "output": 0.65,
-          "cache_read": 0.35
+          "input": 0.3,
+          "output": 0.5,
+          "cache_read": 0.2
         },
         "reasoning": false,
         "tool_call": false,
@@ -34927,12 +35007,12 @@
         "name": "MiMo-V2.5-Pro",
         "limit": {
           "context": 1024000,
-          "output": 235929
+          "output": 131072
         },
         "cost": {
-          "input": 0.48,
-          "output": 1.8,
-          "cache_read": 0.096
+          "input": 0.435,
+          "output": 0.87,
+          "cache_read": 0.0036
         },
         "reasoning": true,
         "tool_call": true,
@@ -35013,27 +35093,6 @@
         ],
         "protocol": "openai_chat",
         "canonical": "xiaomi/mimo-v2.6-pro-ultraspeed"
-      },
-      "xingchen-agi/xing4.0-29b-a4b:free": {
-        "id": "xingchen-agi/xing4.0-29b-a4b:free",
-        "name": "Xing4.0 29B A4B (free)",
-        "limit": {
-          "context": 262144,
-          "output": 235929
-        },
-        "cost": {
-          "input": 0.0,
-          "output": 0.0
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          }
-        ],
-        "protocol": "openai_chat"
       },
       "z-ai/glm-4.5": {
         "id": "z-ai/glm-4.5",
@@ -35300,9 +35359,9 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.0699,
-          "output": 1.4,
-          "cache_read": 0.0689
+          "input": 0.084,
+          "output": 3.6,
+          "cache_read": 0.079
         },
         "reasoning": true,
         "tool_call": true,
@@ -35581,9 +35640,9 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.006,
+          "input": 0.038,
           "output": 0.5,
-          "cache_read": 0.005
+          "cache_read": 0.01
         },
         "reasoning": true,
         "tool_call": true,
@@ -35662,13 +35721,13 @@
         "name": "Gemini Flash Latest",
         "limit": {
           "context": 1048576,
-          "output": 65536
+          "output": 943718
         },
         "cost": {
-          "input": 0.75,
-          "output": 3.75,
+          "input": 1.5,
+          "output": 7.5,
           "cache_read": 0.075,
-          "cache_write": 0.041667
+          "cache_write": 0.083333
         },
         "reasoning": true,
         "tool_call": true,
@@ -35679,7 +35738,8 @@
             "values": [
               "low",
               "medium",
-              "high"
+              "high",
+              "xhigh"
             ]
           }
         ],
@@ -35722,7 +35782,7 @@
         },
         "cost": {
           "input": 0.1824,
-          "output": 9.3388,
+          "output": 11.0055,
           "cache_read": 0.18
         },
         "reasoning": true,
