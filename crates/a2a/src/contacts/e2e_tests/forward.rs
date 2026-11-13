@@ -123,7 +123,7 @@ async fn a_call_for_a_session_owned_elsewhere_is_carried_to_its_owner() {
         .update_contact(ContactUpdate {
             name: alias.clone(),
             patch: ContactPatch {
-                exports: Some(vec!["xchat".into()]),
+                grant: Some(vec!["xchat".into()]),
                 ..ContactPatch::default()
             },
         })

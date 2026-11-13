@@ -324,6 +324,8 @@ pub struct Quarantined {
     /// A quarantine of replication lag or of a convergence in flight (a merge, a rename):
     /// the binding to keep live (unrouted, its inboxes capped) so it is not revoked for good.
     pub hold: Option<uuid::Uuid>,
+    /// A record of its group is blocked (refused on every machine, whatever else).
+    pub blocked: bool,
 }
 
 /// 191 (D8): what `contact_list` shows of a record beyond its facts, this machine's own view.
@@ -335,6 +337,10 @@ pub struct Shown {
     /// records (current members first, then those only an accepted history lists), the
     /// pins of a record no roster is based on here.
     pub machines: Vec<(String, bool)>,
+    /// 191: the exports its group holds a grant for, mesh-wide (the records, never this
+    /// machine's routes): one whose chat is on another machine too. A grant naming an export
+    /// row not here yet, or one §6.3 gives an older contact, is left out.
+    pub exports: Vec<String>,
 }
 
 /// 183 §7.6: a validated agent export (contacts only): each (contact, export) gets its own

@@ -21,7 +21,7 @@ use futures::stream::BoxStream;
 use http_body_util::BodyExt as _;
 use hyper_util::rt::TokioIo;
 use replica::ByteStream;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tower::ServiceExt as _;
 
 use crate::Ctx;
@@ -156,7 +156,7 @@ pub(crate) async fn serve(
         return super::ceremony::serve(c, remote, line, stream).await;
     }
     if !matches!(c.gate(&remote), IrohGate::Contact { .. }) {
-        anyhow::bail!("a stranger sent a request outside a ceremony");
+        return refuse(&remote, stream).await;
     }
     let shared = c.shared.clone();
     serve_http(
@@ -166,6 +166,47 @@ pub(crate) async fn serve(
         Some(c),
     )
     .await
+}
+
+/// What a caller that is no contact here reads (a stranger inside an open Add contact window,
+/// or one refused since its stream opened): nothing about this machine's contacts or exports
+/// beyond what the admitted stream already said.
+pub const NOT_A_CONTACT: &str = "not a contact of this machine";
+
+/// [`serve`]: an HTTP request from a caller the gate admits only for a ceremony is answered
+/// `401` with [`NOT_A_CONTACT`], not dropped (the caller read a bare "connection error"),
+/// and logged once per caller (the set forgets everyone past 1024). The rest of its head is
+/// read first (at most 64 lines, within [`READ_TIMEOUT`]), so the answer follows its request.
+async fn refuse(remote: &str, mut stream: Box<dyn ByteStream>) -> anyhow::Result<()> {
+    let head = async {
+        for _ in 0..64 {
+            if matches!(&read_line(&mut stream).await?[..], b"\r\n" | b"\n") {
+                break;
+            }
+        }
+        std::io::Result::Ok(())
+    };
+    tokio::time::timeout(READ_TIMEOUT, head).await??;
+    static SEEN: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashSet<String>>> =
+        std::sync::LazyLock::new(Default::default);
+    let first = {
+        let mut seen = SEEN.lock();
+        if seen.len() >= 1024 {
+            seen.clear();
+        }
+        seen.insert(remote.to_owned())
+    };
+    if first {
+        tracing::info!(%remote, "theuth/a2a/1: refused a request: {NOT_A_CONTACT}");
+    }
+    let resp = format!(
+        "HTTP/1.1 401 Unauthorized\r\ncontent-type: text/plain\r\ncontent-length: {}\r\n\
+         connection: close\r\n\r\n{NOT_A_CONTACT}",
+        NOT_A_CONTACT.len()
+    );
+    stream.write_all(resp.as_bytes()).await?;
+    stream.shutdown().await?;
+    Ok(())
 }
 
 /// One HTTP/1.1 request on `stream` into the router, as `remote`. 183 F1: with the engine's
@@ -647,5 +688,29 @@ impl Transport for IrohTransport {
 
     async fn destroy(&self) -> Result<(), A2AError> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A caller that is no contact here reads a real `401` and why, not a dropped stream.
+    #[tokio::test]
+    async fn a_non_contact_reads_401_and_why_not_a_dropped_stream() {
+        let (client, server) = tokio::io::duplex(4096);
+        tokio::spawn(refuse("stranger", Box::new(server)));
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(client))
+            .await
+            .unwrap();
+        tokio::spawn(conn);
+        let req = hyper::Request::get(super::super::offers::CARD_PATH)
+            .header(hyper::header::HOST, "theuth")
+            .body(http_body_util::Empty::<bytes::Bytes>::new())
+            .unwrap();
+        let resp = sender.send_request(req).await.unwrap();
+        assert_eq!(resp.status(), hyper::StatusCode::UNAUTHORIZED);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], NOT_A_CONTACT.as_bytes());
     }
 }

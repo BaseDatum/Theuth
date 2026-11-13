@@ -31,7 +31,7 @@ export function useContacts(enabled = true) {
   return useQuery({ queryKey: queryKeys.contacts, queryFn: () => api.contact_list(), enabled: canQuery1 && (enabled) })
 }
 
-/** `a2a_exports()`: this machine's exports (agents and chats), with `paused`. */
+/** `a2a_exports()`: every export of the mesh (agents and chats), with `paused` (191: a chat this machine cannot publish says why). */
 export function useExports(enabled = true) {
   const canQuery2 = useQuerySupport(["a2a_exports"])
   const api = useApi()

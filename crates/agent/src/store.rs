@@ -85,6 +85,9 @@ pub struct Store {
     tables: Arc<Vec<capture::TableMeta>>,
     /// Last `session_log.seq` this engine wrote (`MAX(seq)` at open).
     seq: Arc<AtomicI64>,
+    /// A commit future was dropped midway (it may or may not have
+    /// committed): the next write transaction re-reads `seq` from the log.
+    reseed: Arc<std::sync::atomic::AtomicBool>,
     /// Stamps log rows; origin = `me`.
     clock: Arc<replica::Clock>,
     /// Last logged `seq`, for shippers waiting on new rows (68 §6; `log_watch`).
@@ -189,7 +192,49 @@ impl WriteTx<'_> {
     /// and append one `session_log` row per session inside the same
     /// transaction (`session_log` is not attached, so the row is not
     /// recaptured).
-    pub(crate) async fn commit(mut self) -> anyhow::Result<()> {
+    pub(crate) async fn commit(self) -> anyhow::Result<()> {
+        // Seqs taken by a transaction that does not commit must leave no gap
+        // (peers' cursors stop at it; each costs them a full snapshot). A
+        // failure before COMMIT gives them back inside `log_and_commit`,
+        // while the transaction still holds the single write connection. A
+        // failed COMMIT, or a future dropped midway, cannot tell whether
+        // COMMIT ran: the guard has the next `begin_write` re-read the head.
+        struct Midway<'s>(Option<&'s Store>);
+        impl Drop for Midway<'_> {
+            fn drop(&mut self) {
+                if let Some(store) = self.0 {
+                    store.reseed.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+        let mut midway = Midway(Some(self.store));
+        let done = self.log_and_commit().await;
+        if done.is_ok() {
+            midway.0 = None;
+        }
+        done
+    }
+
+    async fn log_and_commit(mut self) -> anyhow::Result<()> {
+        let store = self.store;
+        let start = store.seq.load(Ordering::SeqCst);
+        if let Err(e) = self.log().await {
+            store.seq.store(start, Ordering::SeqCst);
+            return Err(e);
+        }
+        // The head this transaction wrote, read while it still holds the one
+        // write connection: after COMMIT another writer may already have
+        // taken (and may yet give back) the next seq.
+        let head = store.seq.load(Ordering::SeqCst);
+        self.tx.commit().await?;
+        store
+            .log_tx
+            .send_if_modified(|s| std::mem::replace(s, head) != *s);
+        Ok(())
+    }
+
+    /// The capture session's changes as `session_log` rows, inside the transaction.
+    async fn log(&mut self) -> anyhow::Result<()> {
         let store = self.store;
         let changeset = {
             // Lock the handle out from the worker thread first; the session
@@ -277,10 +322,6 @@ impl WriteTx<'_> {
                 .await?;
             }
         }
-        self.tx.commit().await?;
-        store
-            .log_tx
-            .send_if_modified(|s| std::mem::replace(s, store.seq.load(Ordering::SeqCst)) != *s);
         Ok(())
     }
 }
@@ -779,6 +820,7 @@ impl Store {
             me,
             tables: Arc::new(tables),
             seq: Arc::new(AtomicI64::new(last_seq.unwrap_or(0))),
+            reseed: Arc::default(),
             log_tx: Arc::new(tokio::sync::watch::Sender::new(last_seq.unwrap_or(0))),
             harness_tx: Arc::new(tokio::sync::watch::Sender::new(0)),
             write,
@@ -817,6 +859,7 @@ impl Store {
             me: Arc::from(""),
             tables: Arc::new(Vec::new()),
             seq: Arc::new(AtomicI64::new(0)),
+            reseed: Arc::default(),
             log_tx: Arc::new(tokio::sync::watch::Sender::new(0)),
             harness_tx: Arc::new(tokio::sync::watch::Sender::new(0)),
             clock: Arc::new(replica::Clock::new(hlc_origin(""), (0, 0))),
@@ -870,10 +913,29 @@ impl Store {
     /// children runs inside one of these; a write anywhere else escapes
     /// capture.
     pub(crate) async fn begin_write(&self) -> anyhow::Result<WriteTx<'_>> {
-        Ok(WriteTx {
-            tx: self.write.begin_with("BEGIN IMMEDIATE").await?,
-            store: self,
-        })
+        let mut tx = self.write.begin_with("BEGIN IMMEDIATE").await?;
+        if self.reseed.swap(false, Ordering::SeqCst) {
+            let max: anyhow::Result<(Option<i64>,)> =
+                sqlx::query_as("SELECT MAX(seq) FROM session_log")
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(Into::into);
+            match max {
+                // The head row always stays (prune), and the watch never steps
+                // back; a cancelled COMMIT that landed wakes the shippers here.
+                Ok((max,)) => {
+                    let head = max.unwrap_or(0).max(*self.log_tx.borrow());
+                    self.seq.store(head, Ordering::SeqCst);
+                    self.log_tx
+                        .send_if_modified(|s| std::mem::replace(s, head) != *s);
+                }
+                Err(e) => {
+                    self.reseed.store(true, Ordering::SeqCst);
+                    return Err(e);
+                }
+            }
+        }
+        Ok(WriteTx { tx, store: self })
     }
 
     /// Begin a transaction with capture disabled, for applying a remote
@@ -929,6 +991,18 @@ impl Store {
              WHERE seq > ? AND orphaned = 0 ORDER BY seq",
         )
         .bind(seq)
+        .fetch_all(&self.read)
+        .await?)
+    }
+
+    /// [`Store::log_after`], at most `limit` rows: one page of a long catch-up.
+    pub async fn log_page(&self, seq: i64, limit: i64) -> anyhow::Result<Vec<LogRow>> {
+        Ok(sqlx::query_as(
+            "SELECT seq, session_id, epoch, changeset, hlc, orphaned FROM session_log \
+             WHERE seq > ? AND orphaned = 0 ORDER BY seq LIMIT ?",
+        )
+        .bind(seq)
+        .bind(limit)
         .fetch_all(&self.read)
         .await?)
     }
@@ -1027,9 +1101,15 @@ impl Store {
         Ok(n)
     }
 
-    /// `MAX(seq)` of this engine's log; `0` when empty.
+    /// The next `session_log.seq` minus one: may count a transaction still
+    /// in flight. What peers can be shipped is [`Store::log_head`].
     pub fn log_seq(&self) -> i64 {
         self.seq.load(Ordering::SeqCst)
+    }
+
+    /// The last committed log seq (the [`Store::log_watch`] value).
+    pub fn log_head(&self) -> i64 {
+        *self.log_tx.borrow()
     }
 
     /// Wakes with the new [`Store::log_seq`] after every commit that logged a row.
@@ -8014,6 +8094,76 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
             store.log_after(before).await.unwrap().last().unwrap().epoch,
             3
         );
+        store.close().await;
+    }
+
+    /// A transaction that took a log seq for one session and is then refused
+    /// for another (`NotOwner`) gives the seq back: the next logged row is
+    /// `head + 1`, so the log stays contiguous and no peer stalls on a gap.
+    /// Both creation orders, so the refused session is captured after ours once.
+    #[tokio::test]
+    async fn a_refused_commit_burns_no_log_seq() {
+        let scratch = crate::TestDir::new("burned-seq");
+        let store = Store::open(
+            &scratch.0.join("sessions.sqlite"),
+            Some(mesh::EngineId("a".into())),
+        )
+        .await
+        .unwrap();
+        for ours_first in [true, false] {
+            let (mine, theirs) = (SessionId::new(), SessionId::new());
+            let order = if ours_first {
+                [mine, theirs]
+            } else {
+                [theirs, mine]
+            };
+            for id in order {
+                store
+                    .create_session(id, "m", None, None, None)
+                    .await
+                    .unwrap();
+            }
+            // `theirs` now belongs to `b` (a replicated take: capture off).
+            let mut tx = store.begin_apply().await.unwrap();
+            sqlx::query("UPDATE sessions SET owner = 'b', epoch = 2 WHERE id = ?")
+                .bind(theirs.to_string())
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+
+            let head = store.log_seq();
+            let mut tx = store.begin_write().await.unwrap();
+            for id in order {
+                sqlx::query("UPDATE sessions SET title = 'both' WHERE id = ?")
+                    .bind(id.to_string())
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+            }
+            let err = tx.commit().await.unwrap_err();
+            assert!(
+                matches!(
+                    err.downcast_ref::<StoreError>(),
+                    Some(StoreError::NotOwner { .. })
+                ),
+                "{err:#}"
+            );
+            assert_eq!(
+                store.log_seq(),
+                head,
+                "ours_first={ours_first}: seq given back"
+            );
+            store.set_title(mine, "mine").await.unwrap();
+            let seqs: Vec<i64> = store
+                .log_after(head)
+                .await
+                .unwrap()
+                .iter()
+                .map(|r| r.seq)
+                .collect();
+            assert_eq!(seqs, vec![head + 1], "ours_first={ours_first}: no gap");
+        }
         store.close().await;
     }
 

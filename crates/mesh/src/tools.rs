@@ -1,7 +1,7 @@
 //! The `mesh_peers` tool (67 §4, §8), registered by `MeshPlugin::start` once
 //! the tool registry is up.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use kameo::actor::ActorRef;
 use schemars::JsonSchema;
@@ -11,6 +11,17 @@ use tools::{RegisterTool, Risk, Tool, ToolCx, ToolOutput, ToolRegistry};
 /// Register the mesh tools on `reg`.
 pub async fn register(reg: &ActorRef<ToolRegistry>) {
     let _ = reg.ask(RegisterTool(Arc::new(MeshPeersTool))).await;
+}
+
+/// Text another plugin appends to a peer's `mesh_peers` line, by engine id
+/// (sessionsync: the session-log replication with that engine).
+pub type PeerNote = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+static PEER_NOTE: OnceLock<PeerNote> = OnceLock::new();
+
+/// Install the [`PeerNote`]; once per process, later calls are ignored.
+pub fn set_peer_note(note: PeerNote) {
+    let _ = PEER_NOTE.set(note);
 }
 
 /// Arguments for [`MeshPeersTool`].
@@ -35,9 +46,10 @@ impl Tool for MeshPeersTool {
         "List the engines in this harness's mesh: one line per engine with its name, id, whether it is \
          reachable now, its class (server / desktop / laptop / container / vm), which harnesses it has installed \
          (native, omp, opencode, claude), the repo paths it can open, whether it has a display and a GPU, and \
-         which one holds the hub lease. Use it before creating or assigning a task to choose `where` (an \
-         engine name) and `harness` from what the task needs; pass `reachable: true` to see only engines that \
-         can start work right now."
+         which one holds the hub lease; for each other engine, when known, the state of session \
+         replication with it (`sessions=up|down`, rows behind each way, held, last error). Use it before \
+         creating or assigning a task to choose `where` (an engine name) and `harness` from what the task \
+         needs; pass `reachable: true` to see only engines that can start work right now."
             .into()
     }
 
@@ -69,11 +81,14 @@ impl Tool for MeshPeersTool {
             if args.reachable && !p.reachable {
                 continue;
             }
-            lines.push(peer_line(
-                p,
-                stats.iter().find(|s| s.id == p.id),
-                hub.as_ref(),
-            ));
+            let mut line = peer_line(p, stats.iter().find(|s| s.id == p.id), hub.as_ref());
+            if p.id != status.self_id
+                && let Some(note) = PEER_NOTE.get().and_then(|f| f(&p.id.0))
+            {
+                line.push(' ');
+                line.push_str(&note);
+            }
+            lines.push(line);
         }
         if lines.is_empty() {
             lines.push("no engines match".into());

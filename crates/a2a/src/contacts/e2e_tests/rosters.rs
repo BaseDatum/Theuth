@@ -490,7 +490,6 @@ async fn a_same_version_fork_converges_without_a_conflict() {
     let (n5, n6) = (fake_eid(), fake_eid());
     mesh_add(&n1, &n5).await;
     mesh_add(&n2, &n6).await;
-    assert!(n1.ctx.tick().await && n2.ctx.tick().await);
     let copies = |e: &Engine| {
         let e = e.ctx.clone();
         async move {
@@ -498,16 +497,20 @@ async fn a_same_version_fork_converges_without_a_conflict() {
             records::chain_copies(&r, &r.contacts[0].id)
         }
     };
-    let a = copies(&n1)
-        .await
-        .into_iter()
-        .find(|c| c.version == 2)
-        .unwrap();
-    let b = copies(&n2)
-        .await
-        .into_iter()
-        .find(|c| c.version == 2)
-        .unwrap();
+    let v2 = |e: &Engine| {
+        let copies = copies(e);
+        async move { copies.await.into_iter().find(|c| c.version == 2) }
+    };
+    // Another reconcile (a pairing retry, a notice's refresh, a members push) may take the
+    // membership change first, or a failed one pause the next: tick() proves nothing here;
+    // each machine holding its version-2 copy does.
+    until_true!("both sign version 2", {
+        let _ = n1.ctx.tick().await;
+        let _ = n2.ctx.tick().await;
+        v2(&n1).await.is_some() && v2(&n2).await.is_some()
+    });
+    let a = v2(&n1).await.unwrap();
+    let b = v2(&n2).await.unwrap();
     assert_ne!(a.hash(), b.hash(), "a fork at version 2");
     let (low, high) = if a.hash() < b.hash() { (a, b) } else { (b, a) };
     until_true!(
