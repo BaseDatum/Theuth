@@ -339,6 +339,28 @@ fn ref_to_inline_and_single_allof_layout_are_nonbreaking() {
 }
 
 #[test]
+fn identical_allof_with_refs_and_siblings_is_equal() {
+    let mut doc = document(json!({"allOf":[{"$ref":"#/components/schemas/Item"}],"default":null}));
+    doc["components"]["schemas"]["Item"] = object();
+    assert_eq!(classify(&doc, &doc), Report::default());
+}
+
+#[test]
+fn allof_changes_fail_closed_and_unchanged_refs_follow_targets() {
+    let mut old = document(json!({"allOf":[{"$ref":"#/components/schemas/Item"}],"default":null}));
+    old["components"]["schemas"]["Item"] = object();
+    let mut new = old.clone();
+    new["components"]["schemas"]["Item"]["properties"]["id"]["type"] = json!("integer");
+    has(&old, &new, ChangeClass::Breaking, "/allOf/0/properties/id/type");
+    new = old.clone();
+    new["methods"][0]["result"]["schema"]["allOf"].as_array_mut().unwrap().push(json!({"minProperties":2}));
+    has(&old, &new, ChangeClass::ReviewRequired, "/allOf");
+    new = old.clone();
+    new["methods"][0]["result"]["schema"]["allOf"][0] = json!({"type":"integer"});
+    has(&old, &new, ChangeClass::ReviewRequired, "/allOf");
+}
+
+#[test]
 fn unknown_keyword_and_default_changes_fail_closed() {
     for key in ["x-validation", "default", "not", "if"] {
         let (old, new) = output(object(), |s| s[key] = json!({"type":"string"}));
