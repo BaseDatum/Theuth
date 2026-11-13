@@ -12,7 +12,7 @@ use agent::{
     AgentEvent, AgentInfo, AgentState,
     CompactStyle, ContextAttachment, ContextEntry, ContextRemoval,
     ContextTarget, HistoryEntry, Loaded, ObservedMeta, ObservedSource,
-    ObservedState, ProviderInfo, QueuedInput, SessionKind,
+    ObservedState, QueuedInput, SessionKind,
     SessionSummary, Usage, VisionNote, VisionStage, VisionStatus,
 };
 use agent::{
@@ -49,8 +49,6 @@ pub struct Model {
     /// `/agents` was typed; the next `UiEvent::Agents` opens the picker
     /// (seeding replies on open only fill the map).
     agents_picker_pending: bool,
-    /// Multi-step `/provider add`; `None` when the input is a normal line.
-    pub prompt: Option<Prompt>,
     /// A `Send { session: None }` is in flight; adopt the next `TurnStarted`.
     awaiting_session: bool,
     /// FIFO owner continuations waiting for the one in-flight session creation.
@@ -228,7 +226,6 @@ mod agents;
 mod approvals;
 mod boards;
 mod catalog;
-mod credentials;
 mod components;
 mod events;
 mod history;
@@ -237,7 +234,6 @@ pub(crate) use lifecycle::markdown_options;
 mod menus;
 mod navigation;
 mod paste;
-mod prompts;
 mod sessions;
 mod slash;
 mod status;
@@ -248,7 +244,6 @@ mod updates;
 pub use agents::{AgentRow, sort_agents, agent_row, WATCH_GLYPH, source_tag, observed_word};
 use agents::{rank, harness_word};
 pub use approvals::Ask;
-pub use credentials::LoginRow;
 pub use events::{UiEvent, Command};
 pub(crate) use components::Output;
 pub(crate) use events::{send};
@@ -258,7 +253,6 @@ pub(crate) use history::from_history;
 use history::{parent_view};
 pub use menus::{window, Menu, Grouped, grouped_step, grouped_first, MenuKey};
 pub use paste::{Paste, paste_token};
-pub use prompts::{Prompt};
 pub use sessions::{Private, session_rows, TurnAction, ESC_TAPS_WINDOW, engine_chip, session_row, owner_offline_line, owner_turn_suffix, owner_unreachable, short, PRIVATE_WARNING};
 pub(crate) use sessions::{project_heading, project_order};
 pub use lifecycle::removal_line;

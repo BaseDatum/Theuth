@@ -26,10 +26,6 @@ impl Model {
         }
         // Anything you send is what you want to see land.
         self.anchor = None;
-        if self.prompt.is_some() {
-            self.prompt_submit(line, tx);
-            return;
-        }
         if self.component_submit(line) { return; }
         // `/edit` in progress: a plain line replaces the turn being edited
         // (slash commands still run and leave the edit pending).
@@ -88,12 +84,6 @@ impl Model {
             }
             "/approvals" => self.approvals_cmd(arg, tx),
 
-            "/login" if arg.is_empty() => send(tx, Command::ListLogins),
-            "/login" => send(tx, Command::Login(arg.to_owned())),
-            "/logout" if arg.is_empty() => self
-                .entries
-                .push(Entry::Error("usage: /logout <name>".into())),
-            "/logout" => send(tx, Command::Logout(arg.to_owned())),
             "/agents" => match self.session {
                 Some(session) => {
                     self.agents_picker_pending = true;
@@ -147,7 +137,6 @@ impl Model {
             "/edit" => self.turn_cmd(TurnAction::Edit, cmd, arg, tx),
             "/regen" => self.turn_cmd(TurnAction::Regen, cmd, arg, tx),
             "/fork" => self.turn_cmd(TurnAction::Fork, cmd, arg, tx),
-            "/provider" => self.provider_cmd(arg, tx),
             // `/<skill> [args]` hands the skill to the model (04 §2.4); any other `/word` — a path, a typo —
             // is message text and takes the arm below.
             // A watch-only child takes neither (141 §10.1): the hint instead.

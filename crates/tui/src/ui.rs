@@ -15,7 +15,7 @@ use crate::model::{
     Grouped, session_row,
 };
 use crate::model::{
-    CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt,
+    CardKind, Command, Entry, Level, Menu, MenuKey, Model,
     TurnAction, UiEvent, describe,
     now_ms, result_line, window,
 };
@@ -441,7 +441,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             // Owners open the newest available entry at the existing empty-editor shortcut.
             if code == KeyCode::Char('o')
                 && modifiers.is_empty()
-                && m.prompt.is_none()
+                && m.components.editor().is_none()
                 && input.read().is_empty()
             {
                 if m.component_open_latest_entry() { return; }
@@ -469,7 +469,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         m.submit(&line, &commands);
                     }
                 }
-                KeyCode::Esc if m.prompt.is_some() => m.cancel_prompt(),
                 // Cleared here, not via `recall`: the event loop only drains
                 // that when events arrive or the model animates, and a stale
                 // `recall` would later wipe whatever gets typed next.
@@ -536,9 +535,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         });
     // A secret's value (or a provider's key) shows as dots.
     let component_editor = m.components.editor();
-    let mask = (m.prompt.as_ref().is_some_and(Prompt::masked)
-        || component_editor.as_ref().is_some_and(|(_, editor)| editor.masked))
-        .then_some('•');
+    let mask = component_editor.as_ref().is_some_and(|(_, editor)| editor.masked).then_some('•');
     let has_focus = m.input_focused();
     let (header, level) = m.header(&catalog);
     let header_color = match level {
@@ -611,11 +608,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             #(pinned.element())
             #(modal)
             #(badge.element())
-            #(m.prompt.as_ref().map(|p| {
-                element!(View(height: 1, padding_left: 1) {
-                    Text(content: p.hint(), color: OCHRE)
-                })
-            }))
             #(component_editor.as_ref().filter(|(_, editor)| !editor.hint.is_empty()).map(|(_, editor)| element!(
                 View(height: 1, padding_left: 1) {
                     Text(content: editor.hint.clone(), color: OCHRE)
@@ -850,21 +842,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 .collect(),
             *cursor,
         ),
-        Menu::Logins { items, cursor } => (
-            "login  ⏎ log in  esc close".to_owned(),
-            items
-                .iter()
-                .map(|r| {
-                    format!(
-                        "{:<8} {:<20} {}",
-                        if r.mcp { "mcp" } else { "provider" },
-                        r.name,
-                        r.status
-                    )
-                })
-                .collect(),
-            *cursor,
-        ),
     };
     Some(menu_view(title, rows, cursor, width, height, false))
 }
@@ -957,7 +934,6 @@ fn view_rows(m: &Model, height: u16, input: &str, todo: usize) -> usize {
     usize::from(height)
         .saturating_sub(
             2 + editor
-                + usize::from(m.prompt.is_some())
                 + activity
                 + queued
                 + board

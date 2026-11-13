@@ -17,7 +17,7 @@ use rpc::engine::{Host, Running};
 use runtime::{Runtime, SessionId};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tools::{Decision, McpAuth};
+use tools::Decision;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod attach;
@@ -28,7 +28,7 @@ pub mod model;
 pub mod pathac;
 mod ui;
 
-use model::{Command, LoginRow, Model, UiEvent};
+use model::{Command, Model, UiEvent};
 
 /// The plugin.
 pub struct TuiPlugin {
@@ -530,93 +530,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::SetApprovals { session, enabled } => {
             UiEvent::Approvals(msg(api.set_approvals(session, enabled, None).await)?)
         }
-        Command::ListLogins => {
-            let mut rows: Vec<LoginRow> = msg(api.list_logins().await)?
-                .into_iter()
-                .map(|l| LoginRow {
-                    name: l.name,
-                    mcp: false,
-                    status: match (l.logged_in, l.account) {
-                        (false, _) => "not logged in".to_owned(),
-                        (true, Some(a)) => format!("logged in ({a})"),
-                        (true, None) => "logged in".to_owned(),
-                    },
-                })
-                .collect();
-            rows.extend(
-                msg(api.list_mcp(None).await)?
-                    .into_iter()
-                    .filter(|s| s.auth != McpAuth::None)
-                    .map(|s| LoginRow {
-                        name: s.name,
-                        mcp: true,
-                        status: match s.auth {
-                            McpAuth::LoggedIn => "logged in".to_owned(),
-                            _ => "login required".to_owned(),
-                        },
-                    }),
-            );
-            UiEvent::Logins(rows)
-        }
-        // A provider name first, else an MCP server.
-        Command::Login(name) => {
-            let url = if oauth::provider(&name).is_some() {
-                msg(api.login(name).await)?
-            } else {
-                msg(api.mcp_login(name).await)?
-            };
-            UiEvent::Info(format!("login: open {url}"))
-        }
-        Command::Logout(name) => {
-            if oauth::provider(&name).is_some() {
-                msg(api.logout(name.clone()).await)?;
-            } else {
-                msg(api.mcp_logout(name.clone()).await)?;
-            }
-            UiEvent::Info(format!("logged out of {name}"))
-        }
-        Command::ListProviders => UiEvent::Providers(msg(api.list_providers().await)?),
-        Command::AddProvider {
-            name,
-            base_url,
-            key,
-        } => UiEvent::ProviderAdded(msg(api
-            .add_provider(name, base_url, (!key.is_empty()).then_some(key), None)
-            .await)?),
-        Command::RemoveProvider(name) => {
-            msg(api.remove_provider(name.clone()).await)?;
-            UiEvent::Info(format!("removed provider {name}"))
-        }
-        Command::RefreshProvider(name) => {
-            UiEvent::Info(msg(api.refresh_provider_models(name).await)?.line())
-        }
-        Command::FindLocalServers => UiEvent::Info(
-            msg(api.local_servers_probe().await)?
-                .iter()
-                .map(agent::LocalServer::line)
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ),
-        Command::SetModelLimits {
-            provider,
-            model,
-            context,
-            output,
-        } => {
-            // R2-8: no output given keeps the stored one (as the desktop does); 0 clears.
-            let output = match output {
-                Some(o) => (o > 0).then_some(o),
-                None => msg(api.provider_models(provider.clone()).await)?
-                    .into_iter()
-                    .find(|m| m.id == model)
-                    .map(|m| m.output)
-                    .filter(|&o| o > 0),
-            };
-            let m = msg(api
-                .set_model_limits(provider.clone(), model, context, output)
-                .await)?;
-            UiEvent::Info(format!("{provider}/{}", m.line()))
-        }
     };
     let _ = tx.send(reply);
     Ok(())
@@ -977,13 +890,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::PathComplete(..) => {
             writeln!(out, "menus need a TTY")
         }
-        UiEvent::Logins(rows) => rows
-            .iter()
-            .try_for_each(|r| writeln!(out, "{}  {}", r.name, r.status)),
-        UiEvent::LoginFinished(f) => match &f.error {
-            None => writeln!(out, "login: {} ok", f.provider),
-            Some(e) => writeln!(out, "login: {} failed: {e}", f.provider),
-        },
         UiEvent::Info(text) => writeln!(out, "{text}"),
         UiEvent::Withdrawn { text, .. } => writeln!(out, "withdrawn: {text}"),
         // The `Error` line that follows names the failure; there is no editor to refill.
@@ -1062,14 +968,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Refreshed(_, loaded) => print_history(out, loaded, &model.components),
         UiEvent::ContextRemoved(_, r) => writeln!(out, "{}", model::removal_line(r)),
         UiEvent::SessionCreated(id) => writeln!(out, "session {id}"),
-        UiEvent::Providers(list) => list
-            .iter()
-            .try_for_each(|p| writeln!(out, "{}  {}  {} models", p.name, p.base_url, p.models)),
-        UiEvent::ProviderAdded(p) => writeln!(
-            out,
-            "provider {}  {}  {} models — /model {}/<id>",
-            p.name, p.base_url, p.models, p.name
-        ),
         UiEvent::SessionOpened(o) => writeln!(
             out,
             "session {}{}",

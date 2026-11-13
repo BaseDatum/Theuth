@@ -47,6 +47,7 @@ pub mod vision_settings;
 pub mod advisor;
 pub mod skills_prompt;
 pub mod acp;
+pub mod providers_login;
 pub use registry::{Registry, builtin, builtin_with, configured};
 
 #[cfg(test)]

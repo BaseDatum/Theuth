@@ -115,7 +115,6 @@ impl Model {
             FocusClass::Modal | FocusClass::Secret | FocusClass::Search))
         {
             self.menu = None;
-            self.prompt = None;
         }
         for effect in out.effects {
             if let Some(commands) = &self.component_commands {
@@ -223,7 +222,7 @@ impl Model {
     /// Residual modal acquisition displaces, rather than hides, a component surface.
     pub(super) fn component_reconcile_core_focus(&mut self) {
         if self.components.focused()
-            && (self.prompt.is_some() || self.menu.as_ref().is_some_and(|menu| !matches!(menu, Menu::Slash { .. })))
+            && self.menu.as_ref().is_some_and(|menu| !matches!(menu, Menu::Slash { .. }))
         {
             let core = core_view!(self, None);
             let out = self.components.release_focus(&core);
@@ -463,10 +462,12 @@ fn modal_replacement_closes_displaced_surface_without_losing_cache() {
     for id in ["first", "second"] {
         model.components.register(Modal { id, open: false, cached: 0 }).unwrap();
     }
+    model.components.register(crate::components::providers_login::ProvidersLogin::default()).unwrap();
     model.menu = Some(Menu::Sessions { items: Vec::new(), cursor: 0 });
-    model.prompt = Some(Prompt::ProviderName);
+    model.components.get_mut::<crate::components::providers_login::ProvidersLogin>().unwrap().prompt = Some(crate::components::providers_login::Prompt::ProviderName);
+    model.components.focus_fixture("providers-login", FocusClass::Modal);
     model.component_slash("/first", "");
-    assert!(model.menu.is_none() && model.prompt.is_none());
+    assert!(model.menu.is_none() && model.components.get::<crate::components::providers_login::ProvidersLogin>().unwrap().prompt.is_none());
     model.component_slash("/second", "");
     assert!(!model.components.get::<Modal>().unwrap().open);
     assert_eq!(model.components.get::<Modal>().unwrap().cached, 1);

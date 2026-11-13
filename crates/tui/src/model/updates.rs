@@ -149,18 +149,6 @@ impl Model {
                     on_off(s.global)
                 )));
             }
-            UiEvent::Logins(items) => {
-                if items.is_empty() {
-                    self.entries
-                        .push(Entry::Info("nothing to log in to".into()));
-                } else {
-                    self.menu = Some(Menu::Logins { items, cursor: 0 });
-                }
-            }
-            UiEvent::LoginFinished(f) => self.entries.push(match f.error {
-                None => Entry::Info(format!("login: {} ok", f.provider)),
-                Some(e) => Entry::Error(format!("login: {} failed: {e}", f.provider)),
-            }),
             UiEvent::Info(t) => self.entries.push(Entry::Info(t)),
             // The note rides the reload (like undo's), so it lands after the
             // transcript the new engine serves — a pushed entry would go with
@@ -182,34 +170,6 @@ impl Model {
 
             UiEvent::CompactStyle(s) => self.entries.push(Entry::Info(format!(
                 "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
-            ))),
-            UiEvent::Providers(list) => {
-                // 85 §0.9: the built-ins come first; there may be no custom provider.
-                for p in &list {
-                    self.entries.push(Entry::Info(if p.builtin {
-                        format!(
-                            "{}  built-in  {} models  {}",
-                            p.name,
-                            p.models,
-                            if p.configured {
-                                "key set".to_owned()
-                            } else {
-                                format!("no key — /secrets add {}", p.name)
-                            }
-                        )
-                    } else {
-                        format!("{}  {}  {} models", p.name, p.base_url, p.models)
-                    }));
-                }
-                if list.iter().all(|p| p.builtin) {
-                    self.entries.push(Entry::Info(
-                        "no custom providers; /provider add to create one".into(),
-                    ));
-                }
-            }
-            UiEvent::ProviderAdded(p) => self.entries.push(Entry::Info(format!(
-                "provider {}  {}  {} models — /model {}/<id>",
-                p.name, p.base_url, p.models, p.name
             ))),
             UiEvent::Withdrawn { id, text } => {
                 self.queued.retain(|q| q.id != id);
