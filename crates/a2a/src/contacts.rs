@@ -2218,8 +2218,12 @@ impl crate::Ctx {
         let mut gone = Vec::new();
         for e in live.staged.exports.values().chain(&left_out) {
             let id = live.staged.export_ids.get(&e.name).cloned();
+            // Left out of this machine's routes: its chat is not here (or not native), which
+            // is never a reason to tombstone it (a share of a chat on another machine made
+            // here has its home here too).
+            let left = left_out.iter().any(|x| x.name == e.name);
             let not_native = match &agents {
-                Some(a) if left_out.iter().any(|x| x.name == e.name) => matches!(
+                Some(a) if left => matches!(
                     self.ask(a, ValidateExport { session: e.session }).await,
                     Err(err) if !err.starts_with(UNKNOWN_SESSION)
                 ),
@@ -2235,7 +2239,7 @@ impl crate::Ctx {
                             .iter()
                             .find(|x| Some(&x.id) == id.as_ref())
                             .and_then(|x| x.home.clone());
-                        if home.as_deref() == Some(r.me.as_str()) {
+                        if !left && home.as_deref() == Some(r.me.as_str()) {
                             gone.extend(id.clone());
                             continue;
                         }
