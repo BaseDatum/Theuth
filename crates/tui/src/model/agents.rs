@@ -59,11 +59,7 @@ impl Model {
                 name,
                 cap,
             } => {
-                let depth = if self.session == Some(*parent) {
-                    Some(1)
-                } else {
-                    self.agents.get(parent).map(|p| p.info.depth + 1)
-                };
+                let depth = self.descendant_depth(&ev);
                 if let Some(depth) = depth {
                     self.agents.insert(
                         *child,
@@ -122,11 +118,7 @@ impl Model {
                     }
                     return;
                 }
-                let depth = if self.session == Some(*parent) {
-                    Some(1)
-                } else {
-                    self.agents.get(parent).map(|p| p.info.depth + 1)
-                };
+                let depth = self.descendant_depth(&ev);
                 let Some(depth) = depth else { return };
                 let state = observed_state(observed);
                 let row = self.agents.entry(*child).or_insert_with(|| {
@@ -668,6 +660,22 @@ impl Model {
         }
     }
 
+    fn child_depth(&self, parent: SessionId) -> Option<u8> {
+        if self.session == Some(parent) { Some(1) }
+        else { self.agents.get(&parent).map(|row| row.info.depth + 1) }
+    }
+
+    /// Shared canonical descendant admission, before owner observation.
+    pub(super) fn descendant_depth(&self, event: &AgentEvent) -> Option<u8> {
+        match event {
+            AgentEvent::SubagentSpawned { child, .. } if self.components.session_hidden(*child) => None,
+            AgentEvent::SubagentSpawned { parent, .. } => self.child_depth(*parent),
+            AgentEvent::ObservedChildChanged { child, .. } if self.session == Some(*child) => None,
+            AgentEvent::ObservedChildChanged { parent, .. } => self.child_depth(*parent),
+            _ => event.session().and_then(|session| self.agents.get(&session)).map(|row| row.info.depth),
+        }
+    }
+
     /// Adopt authoritative membership independently of any board presentation.
     pub(super) fn adopt_descendants(&mut self, list: Vec<AgentInfo>) {
         // Reseeding keeps what events taught about rows still there.
@@ -701,6 +709,7 @@ impl Model {
     /// A direct child's error or cancel also interjects one line here: they
     /// must not be silent, and the board has everything else.
     fn track(&mut self, ev: &AgentEvent) {
+        if self.descendant_depth(ev).is_none() { return; }
         let Some(row) = ev.session().and_then(|s| self.agents.get_mut(&s)) else {
             return;
         };

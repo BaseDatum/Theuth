@@ -17,6 +17,7 @@ macro_rules! core_view {
             streaming: $model.streaming,
             reasoning: matches!($model.entries.last(), Some(Entry::Reasoning { done: false, .. })),
             agent: $agent,
+            descendant_event: $agent.is_some_and(|event: &AgentEvent| $model.descendant_depth(event).is_some()),
             entries: &$model.entries,
             interactive: $model.components.interactive(),
             session_name: $model.session_name.as_deref(),
@@ -498,7 +499,7 @@ impl crate::components::SessionMembers for HashMap<SessionId, AgentRow> {
     fn agent_info(&self, id: SessionId) -> Option<&AgentInfo> {
         self.get(&id).map(|row| &row.info)
     }
-    fn visit(&self, visitor: &mut dyn FnMut(&AgentInfo)) {
+    fn visit<'a>(&'a self, visitor: &mut dyn FnMut(&'a AgentInfo)) {
         for row in self.values() { visitor(&row.info); }
     }
 }
