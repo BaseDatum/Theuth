@@ -102,8 +102,6 @@ impl Model {
                     "usage: /acp [add <registry-id> | remove <name>]".into(),
                 )),
             },
-            "/skills" => self.skills_cmd(arg, tx),
-            "/prompt" => send(tx, Command::ShowPrompt(self.session)),
             "/login" if arg.is_empty() => send(tx, Command::ListLogins),
             "/login" => send(tx, Command::Login(arg.to_owned())),
             "/logout" if arg.is_empty() => self
@@ -169,9 +167,6 @@ impl Model {
             // A watch-only child takes neither (141 §10.1): the hint instead.
             _ if self.observed.is_some() => self.watch_swallow(),
             c if c.starts_with('/') && self.component_slash_fallback(c, arg) => {}
-            c if c.starts_with('/') && self.skill_word(&c[1..]) => {
-                self.use_skill(c[1..].to_owned(), arg.to_owned(), tx);
-            }
             _ => self.send_text(line, interject, tx),
         }
         self.component_reconcile_core_focus();

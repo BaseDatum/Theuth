@@ -31,13 +31,6 @@ pub enum Menu {
         /// Highlighted row.
         cursor: usize,
     },
-    /// `/skills` picker.
-    Skills {
-        /// Every skill, as indexed.
-        items: Vec<SkillMeta>,
-        /// Highlighted row.
-        cursor: usize,
-    },
     /// `/login` picker.
     Logins {
         /// Providers then OAuth MCP servers.
@@ -131,7 +124,6 @@ impl Model {
             Some(Menu::Sessions { .. }) => self.sessions_key(code, tx),
             Some(Menu::Agents { .. }) => self.agents_key(code, tx),
             Some(Menu::Acp { .. }) => self.acp_key(code, tx),
-            Some(Menu::Skills { .. }) => self.skills_key(code, tx),
             Some(Menu::Logins { .. }) => self.logins_key(code, tx),
             Some(Menu::Turns { .. }) => self.turns_key(code, tx),
 

@@ -24,7 +24,6 @@ impl Model {
             effort: self.default_effort.clone(),
             default_effort: self.default_effort.take(),
             catalog: self.catalog.take(),
-            skills: std::mem::take(&mut self.skills),
             width: self.width,
             terminal_height: self.terminal_height,
             viewport: self.viewport,
@@ -106,7 +105,6 @@ impl Model {
         self.streaming = loaded.running;
         self.session_name = loaded.name;
         self.session_parent = loaded.parent;
-        self.loaded_skills = loaded.skills;
         self.context_revision = loaded.context_revision;
         self.context_editable = loaded.context_editable;
         self.context_reason = loaded.context_reason;

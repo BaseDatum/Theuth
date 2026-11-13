@@ -172,23 +172,6 @@ impl Model {
                     on_off(s.global)
                 )));
             }
-            // Verbatim: the point is to see exactly what the model sees.
-            UiEvent::Prompt(text) => self.entries.push(card(
-                CardKind::Prompt,
-                "prompt".into(),
-                &format!("```\n{text}\n```"),
-            )),
-            UiEvent::Skills(items) => {
-                self.skills = items.clone();
-                if !std::mem::take(&mut self.skills_picker_pending) {
-                    return;
-                }
-                if items.is_empty() {
-                    self.entries.push(Entry::Info("no skills".into()));
-                } else {
-                    self.menu = Some(Menu::Skills { items, cursor: 0 });
-                }
-            }
             UiEvent::Logins(items) => {
                 if items.is_empty() {
                     self.entries
@@ -201,36 +184,6 @@ impl Model {
                 None => Entry::Info(format!("login: {} ok", f.provider)),
                 Some(e) => Entry::Error(format!("login: {} failed: {e}", f.provider)),
             }),
-            UiEvent::Skill(s) => {
-                let text = if s.files.is_empty() {
-                    s.body
-                } else {
-                    format!("{}\n\n---\nfiles: {}", s.body, s.files.join(", "))
-                };
-                self.entries.push(card(CardKind::Skill, s.name, &text));
-            }
-            UiEvent::SkillsAdded(items) => self.entries.push(Entry::Info(if items.is_empty() {
-                "cloned; no skills found".into()
-            } else {
-                format!(
-                    "added {} skills: {}",
-                    items.len(),
-                    items
-                        .iter()
-                        .map(|s| s.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            })),
-            UiEvent::Synced(results) => {
-                if results.is_empty() {
-                    self.entries.push(Entry::Info("no repos".into()));
-                }
-                for r in results {
-                    self.entries
-                        .push(Entry::Info(format!("{}  {}", r.name, r.status)));
-                }
-            }
             UiEvent::Info(t) => self.entries.push(Entry::Info(t)),
             // The note rides the reload (like undo's), so it lands after the
             // transcript the new engine serves — a pushed entry would go with

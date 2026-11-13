@@ -45,6 +45,7 @@ pub mod models;
 pub mod aws;
 pub mod vision_settings;
 pub mod advisor;
+pub mod skills_prompt;
 pub use registry::{Registry, builtin, builtin_with, configured};
 
 #[cfg(test)]
@@ -691,13 +692,6 @@ pub enum CoreAction {
     Reject(String),
     /// Existing generic error semantics, including print-mode completion.
     Error(String),
-    /// Invoke the existing named skill path, including draft-session adoption.
-    UseSkill {
-        /// Catalog skill name.
-        name: String,
-        /// User-supplied arguments.
-        args: String,
-    },
     /// Append an owner-formatted card; this becomes the group's current card.
     AppendCard(TranscriptCard),
     /// Replace only the still-current card, leaving superseded cards frozen.

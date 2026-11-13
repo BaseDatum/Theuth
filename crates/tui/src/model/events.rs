@@ -41,16 +41,6 @@ pub enum UiEvent {
     PathComplete(u64, Option<agent::pathac::PathCompletion>),
     /// Reply to [`Command::SetApprovals`].
     Approvals(ApprovalsState),
-    /// Reply to [`Command::ShowPrompt`].
-    Prompt(String),
-    /// Reply to [`Command::ListSkills`].
-    Skills(Vec<SkillMeta>),
-    /// Reply to [`Command::LoadSkill`].
-    Skill(SkillBody),
-    /// Reply to [`Command::AddSkillRepo`]: the skills the clone holds.
-    SkillsAdded(Vec<SkillMeta>),
-    /// Reply to [`Command::SyncSkills`].
-    Synced(Vec<SyncResult>),
     /// Reply to [`Command::ListAcp`] (also sent after [`Command::RemoveAcp`]).
     Acp(Vec<EntryInfo>),
     /// Reply to [`Command::ListAcpRegistry`].
@@ -259,29 +249,6 @@ pub enum Command {
         session: Option<SessionId>,
         /// On or off.
         enabled: bool,
-    },
-    /// `get_prompt`.
-    ShowPrompt(Option<SessionId>),
-    /// `list_skills`.
-    ListSkills,
-    /// `load_skill`.
-    LoadSkill(String),
-    /// `add_skill_repo`.
-    AddSkillRepo(String),
-    /// `remove_skill_repo`, falling back to `remove_skill`.
-    RemoveSkill(String),
-    /// `sync_skills`.
-    SyncSkills,
-    /// `use_skill`: hand a skill to the model (04 §2.4).
-    UseSkill {
-        /// Shown session, or `None` to start one.
-        session: Option<SessionId>,
-        /// Skill name.
-        name: String,
-        /// The user's words after the name.
-        args: String,
-        /// `session: None` only (148 R1): the draft's pending model/effort for the started session.
-        draft: Option<CreateSessionOptions>,
     },
     /// `list_logins` plus OAuth servers from `list_mcp`.
     ListLogins,

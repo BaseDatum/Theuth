@@ -8,17 +8,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "External harnesses (ACP) and the registry",
     ),
     (
-        "/skills",
-        "[add <url>|rm <name>|sync]",
-        "skills: picker (⏎ hands one to the model, s shows it); `/<skill> [words]` does the same",
-    ),
-    (
         "/login",
         "[name]",
         "log in to a provider or MCP server (picker without name)",
     ),
     ("/logout", "<name>", "forget a login"),
-    ("/prompt", "", "show the assembled system prompt"),
     (
         "/agents",
         "",
@@ -112,41 +106,6 @@ pub struct SlashRow {
     pub raw: bool,
 }
 
-impl Model {
-
-    /// Does `/name` hand over a skill: a known one; before the index has
-    /// arrived, any plain word (the agent names an unknown skill) — but not
-    /// one holding another `/` or a `.` (`/etc/hosts`, `/x.txt`), nor a bare `/`.
-    pub(super) fn skill_word(&self, name: &str) -> bool {
-        if self.skills.is_empty() {
-            !name.is_empty() && !name.contains(['/', '.'])
-        } else {
-            self.skills.iter().any(|s| s.name == name)
-        }
-    }
-}
-
-impl Model {
-
-    /// `/skills add <url>` | `rm <name>` | `sync`.
-    pub(super) fn skills_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
-        let (sub, rest) = arg
-            .split_once(' ')
-            .map_or((arg, ""), |(s, r)| (s, r.trim()));
-        match (sub, rest) {
-            ("", _) => {
-                self.skills_picker_pending = true;
-                send(tx, Command::ListSkills);
-            }
-            ("sync", _) => send(tx, Command::SyncSkills),
-            ("add", url) if !url.is_empty() => send(tx, Command::AddSkillRepo(url.to_owned())),
-            ("rm", name) if !name.is_empty() => send(tx, Command::RemoveSkill(name.to_owned())),
-            _ => self.entries.push(Entry::Error(
-                "usage: /skills [add <url> | rm <name> | sync]".into(),
-            )),
-        }
-    }
-}
 
 impl Model {
 
@@ -254,52 +213,6 @@ impl Model {
     }
 }
 
-impl Model {
-
-    /// `/skills`: Enter hands the highlighted skill to the model (04 §2.4);
-    /// `s` shows its body as a card to review first.
-    pub(super) fn skills_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
-        let Some(Menu::Skills { items, cursor }) = &mut self.menu else {
-            return MenuKey::Consumed;
-        };
-        match code {
-            KeyCode::Up => *cursor = cursor.saturating_sub(1),
-            KeyCode::Down => *cursor = (*cursor + 1).min(items.len().saturating_sub(1)),
-            KeyCode::Esc => self.menu = None,
-            KeyCode::Char('s') => {
-                if let Some(s) = items.get(*cursor) {
-                    send(tx, Command::LoadSkill(s.name.clone()));
-                }
-                self.menu = None;
-            }
-            KeyCode::Enter => {
-                let name = items.get(*cursor).map(|s| s.name.clone());
-                self.menu = None;
-                if let Some(name) = name {
-                    self.use_skill(name, String::new(), tx);
-                }
-            }
-            _ => {}
-        }
-        MenuKey::Consumed
-    }
-
-    /// Hand a skill to the model: the agent composes the input and delivers
-    /// it like typed text (turn when idle, steer when running); the cards
-    /// arrive with `TurnStarted` / `InputInjected`.
-    pub(super) fn use_skill(&mut self, name: String, args: String, tx: &UnboundedSender<Command>) {
-        self.awaiting_session = self.session.is_none();
-        send(
-            tx,
-            Command::UseSkill {
-                session: self.session,
-                name,
-                args,
-                draft: self.draft_options(),
-            },
-        );
-    }
-}
 
 // Presentation metadata only: routing and command declarations remain with owners.
 pub(crate) fn command_rank(name: &str) -> usize {

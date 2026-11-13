@@ -530,34 +530,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::SetApprovals { session, enabled } => {
             UiEvent::Approvals(msg(api.set_approvals(session, enabled, None).await)?)
         }
-        Command::ShowPrompt(session) => UiEvent::Prompt(msg(api.get_prompt(session).await)?),
-        Command::ListSkills => UiEvent::Skills(msg(api.list_skills().await)?),
-        Command::LoadSkill(name) => UiEvent::Skill(msg(api.load_skill(name).await)?),
-        Command::UseSkill {
-            session,
-            name,
-            args,
-            draft,
-        } => {
-            let session = match draft {
-                Some(d) => Some(open_draft(api, d, tx).await?),
-                None => session,
-            };
-            UiEvent::SessionCreated(msg(api.use_skill(session, name, args).await)?)
-        }
-        Command::AddSkillRepo(url) => {
-            UiEvent::SkillsAdded(msg(api.add_skill_repo(url, None).await)?)
-        }
-        // A repo dir first (only removed when it holds `.git`), else a local skill.
-        Command::RemoveSkill(name) => {
-            if api.remove_skill_repo(name.clone()).await.is_ok() {
-                UiEvent::Info(format!("removed repo {name}"))
-            } else {
-                msg(api.remove_skill(name.clone()).await)?;
-                UiEvent::Info(format!("removed skill {name}"))
-            }
-        }
-        Command::SyncSkills => UiEvent::Synced(msg(api.sync_skills().await)?),
         Command::ListAcp { probe } => UiEvent::Acp(msg(api.list_acp(probe).await)?),
         Command::AddAcp(id) => {
             let _ = tx.send(UiEvent::AcpAdded(msg(api.add_acp(id).await)?));
@@ -1023,7 +995,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             None => writeln!(out, "login: {} ok", f.provider),
             Some(e) => writeln!(out, "login: {} failed: {e}", f.provider),
         },
-        UiEvent::Prompt(text) | UiEvent::Info(text) => writeln!(out, "{text}"),
+        UiEvent::Info(text) => writeln!(out, "{text}"),
         UiEvent::Withdrawn { text, .. } => writeln!(out, "withdrawn: {text}"),
         // The `Error` line that follows names the failure; there is no editor to refill.
         UiEvent::Unsent { .. } => Ok(()),
@@ -1034,22 +1006,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             out,
             "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
         ),
-        UiEvent::Skills(list) | UiEvent::SkillsAdded(list) => list.iter().try_for_each(|s| {
-            writeln!(
-                out,
-                "{}  {}{}{}",
-                s.name,
-                s.description,
-                s.repo
-                    .as_deref()
-                    .map_or_else(String::new, |r| format!("  [{r}]")),
-                if s.always { "  always" } else { "" }
-            )
-        }),
-        UiEvent::Skill(s) => writeln!(out, "◇ {}\n{}\n{}", s.name, s.body, s.files.join("\n")),
-        UiEvent::Synced(list) => list
-            .iter()
-            .try_for_each(|r| writeln!(out, "{}  {}", r.name, r.status)),
         UiEvent::Acp(list) => list.iter().try_for_each(|e| {
             writeln!(
                 out,
