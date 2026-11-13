@@ -35,7 +35,8 @@ pub fn start(node: Arc<Node>, orphan_keep_days: u64) -> JoinHandle<()> {
 
 /// One prune pass; returns the rows deleted.
 pub async fn tick(store: &Store, me: &PeerId, orphan_keep_days: u64) -> anyhow::Result<u64> {
-    let head = store.log_seq();
+    // Committed head: a seq still in flight (or given back) is not a row.
+    let head = store.log_head();
     let acked = store
         .cursors()
         .await?

@@ -85,6 +85,9 @@ pub struct Store {
     tables: Arc<Vec<capture::TableMeta>>,
     /// Last `session_log.seq` this engine wrote (`MAX(seq)` at open).
     seq: Arc<AtomicI64>,
+    /// A commit future was dropped midway (it may or may not have
+    /// committed): the next write transaction re-reads `seq` from the log.
+    reseed: Arc<std::sync::atomic::AtomicBool>,
     /// Stamps log rows; origin = `me`.
     clock: Arc<replica::Clock>,
     /// Last logged `seq`, for shippers waiting on new rows (68 §6; `log_watch`).
@@ -194,9 +197,21 @@ impl WriteTx<'_> {
         // failed commit) gives them back: a seq never committed is a gap the
         // peers' cursors stop at, and each costs them a full snapshot. The
         // write connection is single: no other transaction took one meanwhile.
+        // A future dropped midway cannot tell whether COMMIT ran: the guard
+        // has the next `begin_write` re-read the head instead.
+        struct Midway<'s>(Option<&'s Store>);
+        impl Drop for Midway<'_> {
+            fn drop(&mut self) {
+                if let Some(store) = self.0 {
+                    store.reseed.store(true, Ordering::SeqCst);
+                }
+            }
+        }
         let store = self.store;
+        let mut midway = Midway(Some(store));
         let start = store.seq.load(Ordering::SeqCst);
         let done = self.log_and_commit().await;
+        midway.0 = None;
         if done.is_err() {
             store.seq.store(start, Ordering::SeqCst);
         }
@@ -793,6 +808,7 @@ impl Store {
             me,
             tables: Arc::new(tables),
             seq: Arc::new(AtomicI64::new(last_seq.unwrap_or(0))),
+            reseed: Arc::default(),
             log_tx: Arc::new(tokio::sync::watch::Sender::new(last_seq.unwrap_or(0))),
             harness_tx: Arc::new(tokio::sync::watch::Sender::new(0)),
             write,
@@ -831,6 +847,7 @@ impl Store {
             me: Arc::from(""),
             tables: Arc::new(Vec::new()),
             seq: Arc::new(AtomicI64::new(0)),
+            reseed: Arc::default(),
             log_tx: Arc::new(tokio::sync::watch::Sender::new(0)),
             harness_tx: Arc::new(tokio::sync::watch::Sender::new(0)),
             clock: Arc::new(replica::Clock::new(hlc_origin(""), (0, 0))),
@@ -884,10 +901,26 @@ impl Store {
     /// children runs inside one of these; a write anywhere else escapes
     /// capture.
     pub(crate) async fn begin_write(&self) -> anyhow::Result<WriteTx<'_>> {
-        Ok(WriteTx {
-            tx: self.write.begin_with("BEGIN IMMEDIATE").await?,
-            store: self,
-        })
+        let mut tx = self.write.begin_with("BEGIN IMMEDIATE").await?;
+        if self.reseed.swap(false, Ordering::SeqCst) {
+            let max: anyhow::Result<(Option<i64>,)> =
+                sqlx::query_as("SELECT MAX(seq) FROM session_log")
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(Into::into);
+            match max {
+                // The head row always stays (prune), and the watch never steps back.
+                Ok((max,)) => self.seq.store(
+                    max.unwrap_or(0).max(*self.log_tx.borrow()),
+                    Ordering::SeqCst,
+                ),
+                Err(e) => {
+                    self.reseed.store(true, Ordering::SeqCst);
+                    return Err(e);
+                }
+            }
+        }
+        Ok(WriteTx { tx, store: self })
     }
 
     /// Begin a transaction with capture disabled, for applying a remote
@@ -1053,9 +1086,15 @@ impl Store {
         Ok(n)
     }
 
-    /// `MAX(seq)` of this engine's log; `0` when empty.
+    /// The next `session_log.seq` minus one: may count a transaction still
+    /// in flight. What peers can be shipped is [`Store::log_head`].
     pub fn log_seq(&self) -> i64 {
         self.seq.load(Ordering::SeqCst)
+    }
+
+    /// The last committed log seq (the [`Store::log_watch`] value).
+    pub fn log_head(&self) -> i64 {
+        *self.log_tx.borrow()
     }
 
     /// Wakes with the new [`Store::log_seq`] after every commit that logged a row.

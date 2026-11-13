@@ -456,12 +456,12 @@ pub struct PeerSync {
     /// Our log head.
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub head: u64,
-    /// How far of our log the peer has acked.
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub acked: u64,
-    /// Rows of ours the peer has not acked (`head - acked`).
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub behind_out: u64,
+    /// How far of our log the peer has acked (`None` before its first `Hello`).
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub acked: Option<u64>,
+    /// Rows of ours the peer has not acked (`head - acked`), once `acked` is known.
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub behind_out: Option<u64>,
     /// The peer's log head as last seen (its `Hello`, then its rows).
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub peer_head: Option<u64>,
@@ -492,8 +492,8 @@ impl PeerSync {
                 .as_ref()
                 .map(|t| format!(" since {t}"))
                 .unwrap_or_default(),
-            self.behind_out,
-            self.acked,
+            num(self.behind_out),
+            num(self.acked),
             self.head,
             num(self.behind_in),
             num(self.applied),

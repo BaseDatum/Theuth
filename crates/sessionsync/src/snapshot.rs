@@ -34,8 +34,11 @@ use crate::types::{MAX_FRAME, Msg};
 
 /// Rows per changeset entry.
 const CHUNK_ROWS: i64 = 1000;
-/// Payload per wire part: half a frame leaves room for postcard framing.
-const PART_BYTES: usize = MAX_FRAME / 2;
+/// Payload per wire part: small parts keep a slow link moving; a chunk
+/// over it is halved, a single row over it still goes alone.
+const PART_BYTES: usize = 4 * 1024 * 1024;
+/// Largest single entry: one frame less room for postcard framing.
+const ENTRY_MAX: usize = MAX_FRAME - 1024 * 1024;
 
 /// One applied `sessions` record: id, owner, epoch, and the local fence
 /// `(epoch, owner)` before it — `None` when the session was unknown here.
@@ -46,6 +49,12 @@ pub type AppliedSession = (String, String, u32, Option<(u32, String)>);
 
 /// Build the snapshot of `origin`'s sessions this engine holds.
 pub async fn build(store: &Store, origin: &PeerId) -> anyhow::Result<Msg> {
+    Ok(build_counted(store, origin).await?.0)
+}
+
+/// [`build`], and how many rows were left out (each alone over [`ENTRY_MAX`]).
+pub async fn build_counted(store: &Store, origin: &PeerId) -> anyhow::Result<(Msg, u64)> {
+    let mut left_out = 0;
     // ponytail: holds the store's write lock for the whole build (seconds on
     // a 100 MB store); a read connection with its own session would free it.
     let mut tx = store.begin_apply().await?;
@@ -122,7 +131,8 @@ pub async fn build(store: &Store, origin: &PeerId) -> anyhow::Result<Msg> {
                     let mid = lo + (hi - lo) / 2;
                     ranges.push((mid, hi));
                     ranges.push((lo, mid));
-                } else if bytes.len() > PART_BYTES {
+                } else if bytes.len() > ENTRY_MAX {
+                    left_out += 1;
                     tracing::warn!(
                         "sessions: snapshot of {origin}: {table} rowid {} is {} bytes, over one \
                          {MAX_FRAME}-byte frame; it is left out and peers bootstrapping from this \
@@ -143,11 +153,12 @@ pub async fn build(store: &Store, origin: &PeerId) -> anyhow::Result<Msg> {
             .await?;
     }
     drop(tx); // rollback: nothing of `main` changed
-    Ok(Msg::Snapshot {
+    let snapshot = Msg::Snapshot {
         origin: origin.clone(),
         current_to_seq,
         tables,
-    })
+    };
+    Ok((snapshot, left_out))
 }
 
 /// Cut a snapshot into frame-sized parts, ending with an empty terminator
