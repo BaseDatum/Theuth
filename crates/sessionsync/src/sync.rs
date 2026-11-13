@@ -161,7 +161,7 @@ pub struct Node {
     /// Per remote: the sync-status surface ([`Node::sync_status`]).
     status: Mutex<HashMap<PeerId, Track>>,
     /// Failure reports: `(peer, phase, kind)` → when last logged, repeats since.
-    reports: Mutex<HashMap<(PeerId, Phase, String), (Instant, u64)>>,
+    reports: Mutex<HashMap<ReportKey, (Instant, u64)>>,
     /// `sessions.harness_outbox_ttl_secs`: an outbox row older than this is dropped (139 R2 D3).
     harness_ttl: Duration,
     /// 183 R1 (E-M3): this binary's agent schema version, sent in `Hello`.
@@ -173,6 +173,9 @@ pub struct Node {
 
 /// Rows from one origin that arrived ahead of the cursor, keyed by seq, and when the first did.
 type Ahead = (Instant, BTreeMap<u64, LogRow>);
+
+/// A failure report's rate-limit key: peer, phase, the error with its digits dropped.
+type ReportKey = (PeerId, Phase, String);
 
 /// One remote's entry of the sync-status surface; `streams` counts the
 /// live streams with it (a reconnect may overlap the old one).

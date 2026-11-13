@@ -84,7 +84,8 @@ impl SessionsyncSessionsApiServer for Server {
     }
 
     async fn sessions_sync(&self) -> RpcResult<Vec<PeerSync>> {
-        ask::<sessionsync::SessionSync, _>(sessionsync::SESSIONS_ACTOR, sessionsync::SyncStatus).await
+        ask::<sessionsync::SessionSync, _>(sessionsync::SESSIONS_ACTOR, sessionsync::SyncStatus)
+            .await
     }
 }
 
