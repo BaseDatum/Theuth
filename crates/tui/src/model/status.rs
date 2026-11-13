@@ -165,13 +165,14 @@ impl Model {
             .watch_hint()
             .map_or_else(String::new, |h| format!("  ·  {h}"));
         use crate::components::{StatusSlot, Surface};
+        let before_queue = self.component_text(Surface::Status(StatusSlot::BeforeQueue));
         let work = self.component_text(Surface::Status(StatusSlot::Work));
         let before_catalog = self.component_text(Surface::Status(StatusSlot::BeforeCatalog));
         let catalog = self.component_text(Surface::Status(StatusSlot::Catalog));
         let pinned = self.component_text(Surface::Status(StatusSlot::Pinned));
         let spoken = self.component_text(Surface::Status(StatusSlot::Spoken));
         format!(
-            "{session}  {state}{watch}{usage}{agents}{queued}{work}{before_catalog}{catalog}{editing}{scrolled}{pinned}{spoken}{attached}{resumed}"
+            "{session}  {state}{watch}{usage}{agents}{before_queue}{queued}{work}{before_catalog}{catalog}{editing}{scrolled}{pinned}{spoken}{attached}{resumed}"
         )
     }
 

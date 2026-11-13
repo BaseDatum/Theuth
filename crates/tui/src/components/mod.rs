@@ -463,6 +463,8 @@ impl HeaderSlot {
 /// Status contributions occupy fixed positions among retained core segments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatusSlot {
+    /// Contributions between usage and the queued-message count.
+    BeforeQueue,
     /// Background work, immediately after the queued-message count.
     Work,
     /// Capability badges after work and before the catalog contribution.
@@ -490,6 +492,8 @@ pub enum Surface<'a> {
     Status(StatusSlot),
     /// Transcript content replacement or append.
     Content,
+    /// Fixed rows after queued inputs and before the pinned region.
+    BeforePinned,
     /// Rows pinned below the transcript.
     Pinned,
     /// Modal slot after core prompts.
