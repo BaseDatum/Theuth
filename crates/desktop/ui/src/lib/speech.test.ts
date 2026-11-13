@@ -20,7 +20,7 @@ vi.mock('opus-decoder', () => ({
 // The `VoiceEvent` bus: `installSpeechListeners` subscribes through `on`; tests fire events with `emit`.
 const handlers = vi.hoisted(() => new Map<string, (e: unknown) => void>())
 vi.mock('@/store/sessions', () => ({
-  on: (type: string, cb: (e: unknown) => void) => {
+  on: (_topic: string, type: string, cb: (e: unknown) => void) => {
     handlers.set(type, cb)
     return () => handlers.delete(type)
   },
