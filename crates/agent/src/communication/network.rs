@@ -702,6 +702,11 @@ pub struct NetworkState {
     held: HashMap<(String, String), Vec<HeldTask>>,
     /// 183 F1: each contact's latest offers (alias → exports it grants us), from its card.
     offers: BTreeMap<String, Vec<ContactOffer>>,
+    /// 186 (D12): (alias, export) a card listed in full that a later card no longer lists:
+    /// a share seen withdrawn this run (listed again, it is forgotten). Its conversations
+    /// take no more answers; an export no card ever listed proves nothing (a contact's
+    /// machines may disagree about a grant for a while).
+    withdrawn: HashSet<(String, String)>,
     /// 183 F1: when `discover_peers` last asked for a refresh (unix ms; 0 = never).
     offers_asked_ms: std::sync::atomic::AtomicU64,
     /// 183 §7.6, W-25: inbox session → the exported agent's persona, recorded on every
@@ -932,9 +937,29 @@ impl NetworkState {
         }
     }
 
-    /// 183 F1: replace every contact's offers.
+    /// 183 F1: replace every contact's offers. 186 (D12): a full export the last ones listed
+    /// and these do not is withdrawn.
     pub(crate) fn set_offers(&mut self, offers: BTreeMap<String, Vec<ContactOffer>>) {
+        let lists = |alias: &str, e: &str| {
+            offers
+                .get(alias)
+                .is_some_and(|n| n.iter().any(|n| n.name == e))
+        };
+        for (alias, old) in &self.offers {
+            for o in old.iter().filter(|o| o.mode == super::ShareMode::Full) {
+                if !lists(alias, &o.name) {
+                    self.withdrawn.insert((alias.clone(), o.name.clone()));
+                }
+            }
+        }
+        self.withdrawn.retain(|(a, e)| !lists(a, e));
         self.offers = offers;
+    }
+
+    /// 186 (D12): the contact `alias`'s share of `export` was seen withdrawn this run.
+    pub(crate) fn withdrawn(&self, alias: &str, export: &str) -> bool {
+        self.withdrawn
+            .contains(&(alias.to_owned(), export.to_owned()))
     }
 
     /// 183 F1: `discover_peers` ran; `true` (once per [`OFFERS_TTL`]) when this engine has a
@@ -7537,6 +7562,23 @@ mod tests {
     /// as the reply to its message.
     #[tokio::test]
     async fn an_answer_reaches_the_session_whose_message_left_while_the_card_was_unknown() {
+        answer_round(None, true).await;
+    }
+
+    /// Live, 2026-11-13 17:34-17:40: mesh A's machines disagreed. The card the laptop last
+    /// verified (333's) shared nothing with it, while xeus, which owns the chat, already took
+    /// the export in full. The laptop's message left without a conversation and none was
+    /// recorded (its task bound, as before the fix); xeus's answer names that task in
+    /// `referenceTaskIds` and lands as the reply to the original message all the same.
+    #[tokio::test]
+    async fn an_answer_naming_our_task_lands_though_the_card_we_read_shared_nothing() {
+        answer_round(Some(Vec::new()), false).await;
+    }
+
+    /// One laptop → xeus → laptop round: `card` is the laptop's verified card of `sky`
+    /// (`None`: none); `recorded`: the laptop read xeus's task and recorded its conversation,
+    /// else only bound the task (the answer is adopted from `referenceTaskIds`).
+    async fn answer_round(card: Option<Vec<ContactOffer>>, recorded: bool) {
         struct Record(tokio::sync::mpsc::UnboundedSender<OutboundPeerMessage>);
         #[async_trait]
         impl PeerSender for Record {
@@ -7545,8 +7587,12 @@ mod tests {
                 Err(RemoteSendError::Unknown("recorded".into()))
             }
         }
-        // The laptop: the contact `sky`, no offers known.
+        // The laptop: the contact `sky`, and the card it last verified of it, if any.
         let (_sa, mut a) = crate::supervisor::tests::agents_with(true).await;
+        if let Some(card) = card {
+            a.network
+                .set_offers(BTreeMap::from([("sky".to_owned(), card)]));
+        }
         a.communication.0.write().set_network(true, true);
         let sky = a
             .store
@@ -7579,7 +7625,7 @@ mod tests {
             .unwrap();
         assert!(
             wire.context_id.is_none() && wire.full.is_none(),
-            "no card known: the shape every contact takes"
+            "no full share known: the shape every contact takes"
         );
 
         // xeus: the laptop is its contact `sky-moore`; the chat is shared in full.
@@ -7622,24 +7668,32 @@ mod tests {
             .task;
         assert_eq!(task.status, A2aTaskStatus::Working, "{:?}", task.error);
         let inbound = task.dedup_exchange.unwrap();
-        // Its turn takes the message in; the task completes with the receipt.
+        // Its turn takes the message in (unless one already did); the task completes with the
+        // receipt.
         let g = b.admit_principal(&p).await.unwrap();
         b.store
             .consume_exchange_direct(inbound, chat, g.revision() as i64)
             .await
-            .unwrap()
-            .expect("taken in");
+            .unwrap();
+        let st = b.store.exchange_receipt(inbound).await.unwrap().unwrap();
+        assert_eq!(st.state, PeerMessageState::Consumed, "{st:?}");
         b.full_consumed(inbound).await.unwrap();
-        // The laptop reads xeus's task: the conversation xeus minted is recorded as its own.
-        a.remote_outcome(sent.id, Ok(SendMessageResponse::Task(snapshot(&task))))
-            .await;
-        let thread = a
-            .store
-            .contact_thread(sky.id, &task.context_id)
-            .await
-            .unwrap()
-            .expect("recorded");
-        assert!(thread.outbound && thread.session == laptop && thread.export.is_empty());
+        if recorded {
+            // The laptop reads xeus's task: the conversation xeus minted is recorded as its own.
+            a.remote_outcome(sent.id, Ok(SendMessageResponse::Task(snapshot(&task))))
+                .await;
+            let thread = a
+                .store
+                .contact_thread(sky.id, &task.context_id)
+                .await
+                .unwrap()
+                .expect("recorded");
+            assert!(thread.outbound && thread.session == laptop && thread.export.is_empty());
+        } else {
+            a.store.bind_exchange_task(sent.id, &task.id).await.unwrap();
+            let none = a.store.contact_thread(sky.id, &task.context_id).await;
+            assert!(none.unwrap().is_none(), "no conversation recorded");
+        }
 
         // xeus answers; the first try meets no conversation there.
         b.network_send(chat, "sky-moore", "yes, here", None, Some(inbound), false)
@@ -7727,7 +7781,7 @@ mod tests {
     /// An answer in a conversation this engine never recorded (a message of ours that left
     /// without one, its task bound) is adopted only through `referenceTaskIds` naming the
     /// task of an open message of ours to that same contact, into that message's session as
-    /// its reply; another contact's task, an unknown one, a withdrawn share, a conversation
+    /// its reply; another contact's task, an unknown one, a card downgrading the share, a conversation
     /// the contact opened, and a message already in another conversation are refused. A
     /// recorded conversation is never redirected by the task it names (no cross-session path).
     #[tokio::test]
@@ -7811,11 +7865,19 @@ mod tests {
             not_found(a.full_return(answer("their-1", "r-2", "t-none", e1)).await),
             "a task of no message of ours"
         );
-        a.network
-            .set_offers(BTreeMap::from([("bob".into(), Vec::new())]));
+        a.network.set_offers(BTreeMap::from([(
+            "bob".into(),
+            vec![ContactOffer {
+                name: "proj".into(),
+                title: "proj".into(),
+                kind: OfferKind::Chat,
+                state: OfferState::Allowed,
+                mode: super::super::ShareMode::Cautious,
+            }],
+        )]));
         assert!(
             not_found(a.full_return(answer("their-1", "r-3", "t-bob", e1)).await),
-            "bob's card shares nothing with us any more"
+            "bob's card downgraded its first export"
         );
         a.network.set_offers(BTreeMap::new());
         a.store
@@ -7878,6 +7940,28 @@ mod tests {
         assert!(
             not_found(a.full_return(answer("their-2", "r-7", "t-s2", e3)).await),
             "its own conversation is another"
+        );
+        // A card listing nothing proves nothing (s1's recorded `proj` conversation still takes
+        // answers); a card that listed `proj` in full and a later one without it withdrew it.
+        let proj = ContactOffer {
+            name: "proj".into(),
+            title: "proj".into(),
+            kind: OfferKind::Chat,
+            state: OfferState::Allowed,
+            mode: super::super::ShareMode::Full,
+        };
+        a.network
+            .set_offers(BTreeMap::from([("bob".into(), Vec::new())]));
+        a.full_return(answer("ctx-s1", "r-9", "t-s2", e3))
+            .await
+            .unwrap();
+        a.network
+            .set_offers(BTreeMap::from([("bob".into(), vec![proj])]));
+        a.network
+            .set_offers(BTreeMap::from([("bob".into(), Vec::new())]));
+        assert!(
+            not_found(a.full_return(answer("ctx-s1", "r-10", "t-s2", e3)).await),
+            "withdrawn"
         );
         let e4 = sent(&a, s1, bob.id, "t-4").await;
         a.network.peers.clear();

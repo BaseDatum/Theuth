@@ -723,19 +723,27 @@ impl Agents {
         // 191 (D3, S4): `~return` into a session that is not strictly this engine's is
         // `NOT_OWNER`; the contact tries the next member.
         self.contact_owned(thread.session).await?;
-        // D12: the contact's card, when this engine verified one this run, must still share
-        // the conversation's export in full (any export, when its name is unknown: `""`): a
-        // downgrade or a withdrawn share ends the conversation. No card known (its refresh
-        // failing, as in the live failure of 2026-11-13) proves nothing either way: the
-        // contact itself answers, on its own pinned stream, in a conversation this engine
-        // opened, and its engine answers there only while it shares that export in full.
-        // Unpairing, blocking or re-pinning ends the route itself (checked above).
-        let full = self.network.offers.get(&alias).is_none_or(|o| {
-            o.iter().any(|o| {
-                o.mode == ShareMode::Full && (thread.export.is_empty() || o.name == thread.export)
-            })
-        });
-        if !full {
+        // D12: the conversation ends when the contact's cards show its export (for `""`, an
+        // unknown name: its first, as its gate maps a bare address) shared other than in
+        // full (a downgrade to an older, cautious card) or withdrawn: listed in full by one
+        // card this run and missing from a later one. An export no card lists, or no card at
+        // all, proves nothing: the machine whose card we read may not yet know a grant the
+        // machine owning the chat already serves in full (live 2026-11-13: 333 listed nothing
+        // while xeus took the share in full), and a refresh can fail. The contact itself
+        // answers, on its own pinned stream, in a conversation this engine opened; its engine
+        // answers only while it shares that export in full. Unpairing, blocking or re-pinning
+        // ends the route itself (checked above).
+        let listed = self
+            .network
+            .offers
+            .get(&alias)
+            .and_then(|o| match thread.export.as_str() {
+                "" => o.iter().min_by(|a, b| a.name.cmp(&b.name)),
+                e => o.iter().find(|o| o.name == e),
+            });
+        if listed.is_some_and(|o| o.mode != ShareMode::Full)
+            || self.network.withdrawn(&alias, &thread.export)
+        {
             return Err(gone());
         }
         self.store

@@ -50,8 +50,8 @@ pub(crate) struct Cached {
     pub machine: String,
     /// The last refresh, whatever its outcome (the TTL counts from it).
     pub at: Option<Instant>,
-    /// A card of it verified this run: `offers` is what it shares, not a placeholder. Only
-    /// such lists reach the agent, which reads a contact missing from them as unknown.
+    /// A card of it verified this run (a failed refresh alone leaves this unset): one that
+    /// never did is refetched whenever stale offers are asked for, whatever its age.
     pub fetched: bool,
     /// The last refresh failure logged (each distinct one once).
     pub error: Option<String>,
@@ -374,13 +374,10 @@ impl Ctx {
             match outcome {
                 Ok((offers, full, machine)) => {
                     c.error = None;
-                    let first = !std::mem::replace(&mut c.fetched, true);
+                    c.fetched = true;
                     let was = std::mem::replace(&mut c.full, full);
                     let named = std::mem::replace(&mut c.machine, machine) != c.machine;
-                    (std::mem::replace(&mut c.offers, offers) != c.offers)
-                        || was != full
-                        || named
-                        || first
+                    (std::mem::replace(&mut c.offers, offers) != c.offers) || was != full || named
                 }
                 Err(e) => {
                     let e = clip(&e);
@@ -500,9 +497,7 @@ impl Ctx {
         let map: BTreeMap<String, Vec<ContactOffer>> = {
             let all = self.offers.lock();
             from.into_iter()
-                .filter_map(|(alias, eid)| {
-                    Some((alias, all.get(&eid).filter(|c| c.fetched)?.offers.clone()))
-                })
+                .filter_map(|(alias, eid)| Some((alias, all.get(&eid)?.offers.clone())))
                 .collect()
         };
         let _ = agents.tell(ContactOffers(map)).await;
