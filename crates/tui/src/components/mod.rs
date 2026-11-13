@@ -635,6 +635,9 @@ pub struct WrapperOrigin<'a> {
     pub from: &'a str,
     /// Exact answered message, when present.
     pub reply_to: Option<uuid::Uuid>,
+    /// 186: a full share's contact (`PeerOrigin.contact_mode == full`): its
+    /// words read like a mesh peer's, not plain. An old cautious row stays plain.
+    pub full: bool,
 }
 /// One parsed injected wrapper or core user/message row.
 #[derive(Clone, Copy)]

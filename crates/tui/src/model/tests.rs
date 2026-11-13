@@ -1466,6 +1466,38 @@
         assert_eq!(e.height(80), 4 + 3);
     }
 
+    /// 186 parity with the web: a contact row whose typed provenance says
+    /// `full` (local or replicated) draws Markdown; cautious or unknown stays plain.
+    #[test]
+    fn a_full_share_contact_row_is_not_plain() {
+        let plain = |contact_mode| {
+            let out = from_history(
+                HistoryEntry::User {
+                    text: "**hi**".into(),
+                    turn: Some(1),
+                    context: None,
+                    peer: Some(PeerOrigin {
+                        id: Uuid::nil(),
+                        from: "peer:sky/ops".into(),
+                        reply_to: None,
+                        scope: None,
+                        contact_mode,
+                    }),
+                    vision: None,
+                    channel: None,
+                },
+                &markdown::Options::default(),
+            );
+            match out.as_slice() {
+                [Entry::Card { kind, .. }] => kind.plain(),
+                other => panic!("{other:?}"),
+            }
+        };
+        assert!(!plain(Some(agent::ShareMode::Full)));
+        assert!(plain(Some(agent::ShareMode::Cautious)));
+        assert!(plain(None));
+    }
+
     /// A session search hit for tests.
     fn search_session_hit(session: SessionId, seq: Option<i64>) -> agent::search::SearchHit {
         use ::search::MatchRange;
