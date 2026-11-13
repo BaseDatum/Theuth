@@ -2280,6 +2280,122 @@ async fn a_share_of_a_chat_on_another_machine_shows_here_and_survives_a_share_ma
     );
 }
 
+/// 191 (review 1, W-41): listing never reads a missing session as a deletion. An export
+/// homed here whose chat this machine lacks is listed paused elsewhere and stays, before the
+/// mesh latch (unfiltered display staging) and after it. Deleting a chat on the engine that
+/// runs it (`SessionDeleted`, through the subscribed actor) tombstones every export of it,
+/// whatever its home, so its grants stop counting.
+#[tokio::test]
+async fn only_a_deleted_chat_tombstones_its_exports_never_a_listing() {
+    use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+    use kameo::actor::Spawn as _;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let lan = Lan::default();
+    let dir = tempfile::tempdir().unwrap();
+    let net = node("n", dir.path()).await;
+    let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+    let (ready, latch) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let agents = agent::spawn_engine_agents(rt.clone(), ready.clone()).await;
+    let l = latch.clone();
+    let ctx = crate::test_ctx(
+        dir.path(),
+        net.clone(),
+        Arc::new(lan.clone()),
+        cfg(600),
+        Some(agents.clone()),
+        ready,
+        Arc::new(move || l.load(Ordering::SeqCst)),
+    )
+    .await;
+    let actor = crate::A2aActor::spawn(crate::A2aActor { ctx: ctx.clone() });
+    rt.subscribe::<crate::A2aActor, agent::AgentEvent>(&actor)
+        .await;
+    let me = net.id.0.clone();
+    let row = |id: &str, name: &str, session: &str, home: &str| {
+        RecordWrite::new(
+            RecordTable::Exports,
+            id,
+            vec![
+                ("name", Cell::Text(name.into())),
+                ("session", Cell::Text(session.into())),
+                ("agent", Cell::Null),
+                ("title", Cell::Text(name.into())),
+                ("description", Cell::Text(String::new())),
+                ("home", Cell::Text(home.into())),
+            ],
+        )
+    };
+    let removed = |id: &'static str| {
+        let ctx = ctx.clone();
+        async move {
+            ctx.records()
+                .await
+                .unwrap()
+                .exports
+                .iter()
+                .find(|x| x.id == id)
+                .and_then(|x| x.removed_ms)
+        }
+    };
+    // A chat of another machine, its export made here (Settings), its session not here.
+    let absent = runtime::SessionId::new().to_string();
+    ctx.commit_records(vec![row("x-away", "away", &absent, &me)])
+        .await
+        .unwrap();
+    for latched in [false, true] {
+        latch.store(latched, Ordering::SeqCst);
+        ctx.reload().await.unwrap();
+        let listed = ctx.exports().await;
+        assert_eq!(
+            listed
+                .iter()
+                .find(|x| x.name == "away")
+                .and_then(|x| x.paused.as_deref()),
+            Some(PAUSED_ELSEWHERE),
+            "latched: {latched}"
+        );
+        assert_eq!(removed("x-away").await, None, "latched: {latched}");
+    }
+    // A chat of this machine, exported here and (for it) by another machine.
+    let chat = agents
+        .ask(agent::CreateSession {
+            options: agent::CreateSessionOptions::default(),
+            peer: None,
+        })
+        .await
+        .unwrap()
+        .session;
+    ctx.commit_records(vec![
+        row("x-mine", "mine", &chat.to_string(), &me),
+        row("x-theirs", "theirs", &chat.to_string(), "xeus"),
+    ])
+    .await
+    .unwrap();
+    assert!(ctx.exports().await.iter().any(|x| x.name == "mine"));
+    agents
+        .ask(agent::DeleteSession { session: chat })
+        .await
+        .unwrap();
+    // The event reaches the subscribed actor, which writes off its mailbox.
+    let mut gone = false;
+    for _ in 0..100 {
+        if removed("x-mine").await.is_some() && removed("x-theirs").await.is_some() {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        gone,
+        "the deleted chat's exports are tombstoned, whatever their home"
+    );
+    let names: Vec<String> = ctx.exports().await.into_iter().map(|x| x.name).collect();
+    assert_eq!(names, ["away"], "the absent chat's export stays");
+}
+
 /// 191 (D2): a block that lands while a pass runs (after it staged its snapshot) is not in
 /// the hash the pass keeps, so the next tick reconciles it and the gate refuses the contact.
 #[tokio::test]

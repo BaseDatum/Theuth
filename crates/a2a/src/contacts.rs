@@ -2207,13 +2207,60 @@ pub const PAUSED_HOME_LEFT: &str = "its machine left the mesh";
 /// 191: a chat export whose chat runs an external harness: no machine publishes it.
 pub const PAUSED_NOT_NATIVE: &str = "its chat runs an external harness";
 
+/// The `AgentEvent` A2A reads: [`agent::AgentEvent::SessionDeleted`] (every other is a no-op).
+impl Message<agent::AgentEvent> for A2aActor {
+    type Reply = ();
+
+    async fn handle(&mut self, ev: agent::AgentEvent, _: &mut Context<Self, Self::Reply>) {
+        let agent::AgentEvent::SessionDeleted { session } = ev else {
+            return;
+        };
+        let c = self.ctx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = c.session_deleted(session).await {
+                tracing::warn!(%session, "a2a: exports of a deleted chat not dropped: {e}");
+            }
+        });
+    }
+}
+
 impl crate::Ctx {
-    /// `a2a_exports`: every export of the mesh; a chat's pause is read now (W-41), and a
-    /// chat deleted since is tombstoned when this machine made its export (opening the export
-    /// picker cleans up). An export made elsewhere whose chat this machine lacks is listed
-    /// paused ([`PAUSED_ELSEWHERE`]): its session may still be on its way. 191: so is one
-    /// this machine's routes leave out (its chat not here, or [`PAUSED_NOT_NATIVE`]), so a
-    /// contact's share of it reads by name and state wherever it is granted.
+    /// 191 (W-41): chat `session` was deleted here (`SessionDeleted` is published only by the
+    /// engine that ran the delete, never for a replicated one): every live export of it is
+    /// tombstoned, whatever its home (one another machine made for this chat too), and the
+    /// grants naming it stop counting. A second machine's tombstone of the same export would
+    /// be the same write. A missing session is never read as a deletion (it may be on
+    /// another machine, or not replicated yet).
+    pub(crate) async fn session_deleted(&self, session: SessionId) -> Result<(), String> {
+        use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+        let r = self.records().await?;
+        let s = session.to_string();
+        let now = mesh::identity::now_ms() as i64;
+        let w: Vec<_> = r
+            .exports
+            .iter()
+            .filter(|x| x.removed_ms.is_none() && x.session.as_deref() == Some(s.as_str()))
+            .map(|x| {
+                RecordWrite::new(
+                    RecordTable::Exports,
+                    x.id.clone(),
+                    vec![("removed_ms", Cell::Int(now))],
+                )
+            })
+            .collect();
+        if w.is_empty() {
+            return Ok(());
+        }
+        tracing::info!(%session, exports = w.len(), "a2a: chat deleted; its exports removed");
+        self.commit_records(w).await
+    }
+
+    /// `a2a_exports`: every export of the mesh; a chat's pause is read now (W-41). One whose
+    /// chat this machine lacks is listed paused ([`PAUSED_ELSEWHERE`]; its session may be
+    /// on another machine, or on its way), never tombstoned: only a deletion is
+    /// ([`Self::session_deleted`]). 191: so is one this machine's routes leave out (its chat
+    /// not here, or [`PAUSED_NOT_NATIVE`]), so a contact's share of it reads by name and
+    /// state wherever it is granted.
     pub(crate) async fn exports(&self) -> Vec<Export> {
         let live = self.shared.read().clone();
         let agents = self.agents().ok();
@@ -2237,12 +2284,8 @@ impl crate::Ctx {
             })
             .collect();
         let mut out = Vec::new();
-        let mut gone = Vec::new();
         for e in live.staged.exports.values().chain(&left_out) {
             let id = live.staged.export_ids.get(&e.name).cloned();
-            // Left out of this machine's routes: its chat is not here (or not native), which
-            // is never a reason to tombstone it (a share of a chat on another machine made
-            // here has its home here too).
             let left = left_out.iter().any(|x| x.name == e.name);
             // Why the routes leave it out, when its chat is here: an external harness runs
             // it, or the check failed (its error is the pause; logged).
@@ -2264,15 +2307,6 @@ impl crate::Ctx {
                 Some(a) => match self.ask(a, ChatPaused { session: e.session }).await {
                     Ok(p) => p,
                     Err(err) if err.starts_with(UNKNOWN_SESSION) => {
-                        let home = r
-                            .exports
-                            .iter()
-                            .find(|x| Some(&x.id) == id.as_ref())
-                            .and_then(|x| x.home.clone());
-                        if !left && home.as_deref() == Some(r.me.as_str()) {
-                            gone.extend(id.clone());
-                            continue;
-                        }
                         Some(PAUSED_ELSEWHERE.to_owned())
                     }
                     Err(_) => None,
@@ -2301,23 +2335,6 @@ impl crate::Ctx {
             }
         }));
         out.sort_by(|a, b| a.name.cmp(&b.name));
-        if !gone.is_empty() {
-            use agent::store::contacts::{Cell, RecordTable, RecordWrite};
-            let now = mesh::identity::now_ms() as i64;
-            let w = gone
-                .into_iter()
-                .map(|id| {
-                    RecordWrite::new(
-                        RecordTable::Exports,
-                        id,
-                        vec![("removed_ms", Cell::Int(now))],
-                    )
-                })
-                .collect();
-            if let Err(e) = self.commit_records(w).await {
-                tracing::warn!("a2a: drop deleted chat exports: {e}");
-            }
-        }
         out
     }
 }
