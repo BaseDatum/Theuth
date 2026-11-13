@@ -1083,15 +1083,18 @@ async fn a_granted_export_is_a_discover_peers_row_on_the_contacts_side_until_rev
         })
         .await
         .unwrap();
-    let grant = |exports: &[&str]| {
+    let patch = |grant: &[&str], revoke: &[&str]| {
+        let names = |l: &[&str]| Some(l.iter().map(|s| s.to_string()).collect());
         a.ctx.update_contact(ContactUpdate {
             name: a_alias.clone(),
             patch: ContactPatch {
-                exports: Some(exports.iter().map(|s| s.to_string()).collect()),
+                grant: names(grant),
+                revoke: names(revoke),
                 ..ContactPatch::default()
             },
         })
     };
+    let grant = |exports: &[&str]| patch(exports, &[]);
     let shared = grant(&["research"]).await.unwrap();
     assert_eq!(
         shared.first_contact.get("research"),
@@ -1178,7 +1181,7 @@ async fn a_granted_export_is_a_discover_peers_row_on_the_contacts_side_until_rev
     .await;
 
     // Taking it back: the notice reaches B and the row goes.
-    grant(&[]).await.unwrap();
+    patch(&[], &["research"]).await.unwrap();
     let mut gone = false;
     for _ in 0..100 {
         if !rows().await.iter().any(|p| p.address == address) {
@@ -1250,7 +1253,7 @@ async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
         a.ctx.update_contact(ContactUpdate {
             name: a_alias.clone(),
             patch: ContactPatch {
-                exports: Some(exports.iter().map(|s| s.to_string()).collect()),
+                grant: Some(exports.iter().map(|s| s.to_string()).collect()),
                 ..ContactPatch::default()
             },
         })
@@ -1510,7 +1513,7 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
         a.ctx.update_contact(ContactUpdate {
             name: a_alias.clone(),
             patch: ContactPatch {
-                exports: Some(vec!["proj".into()]),
+                grant: Some(vec!["proj".into()]),
                 ..ContactPatch::default()
             },
         })
@@ -1764,7 +1767,7 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
         .update_contact(ContactUpdate {
             name: a_alias.clone(),
             patch: ContactPatch {
-                exports: Some(Vec::new()),
+                revoke: Some(vec!["proj".into()]),
                 ..ContactPatch::default()
             },
         })
@@ -2234,19 +2237,14 @@ async fn a_share_of_a_chat_on_another_machine_shows_here_and_survives_a_share_ma
             .contains(&"own-chat".to_owned()),
         "the own chat is routed"
     );
-    // An older UI's whole list from this view, without own-chat: only own-chat goes.
-    let rest: Vec<String> = shown
-        .exports
-        .into_iter()
-        .filter(|x| x != "own-chat")
-        .collect();
-    let after = update(ContactPatch {
-        exports: Some(rest),
+    // The whole list an earlier build sent is refused and writes nothing.
+    let refused = update(ContactPatch {
+        exports: Some(vec!["own-chat".into()]),
         ..ContactPatch::default()
     })
     .await
-    .unwrap();
-    assert_eq!(after.exports, ["xeus-chat"]);
+    .unwrap_err();
+    assert_eq!(refused, EXPORTS_REPLACED);
     assert_eq!(granted().await, Some(1));
     // A revoke names its export alone.
     update(ContactPatch {
@@ -2263,6 +2261,23 @@ async fn a_share_of_a_chat_on_another_machine_shows_here_and_survives_a_share_ma
     .unwrap();
     assert_eq!(after.exports, ["xeus-chat"]);
     assert_eq!(granted().await, Some(1));
+    // Stop sharing: own-chat has no other holder and goes with it; xeus-chat stays.
+    assert!(
+        a.ctx.exports().await.iter().any(|x| x.name == "own-chat"),
+        "a revoke keeps the export"
+    );
+    let after = update(ContactPatch {
+        unshare: Some(vec!["own-chat".into()]),
+        ..ContactPatch::default()
+    })
+    .await
+    .unwrap();
+    assert_eq!(after.exports, ["xeus-chat"]);
+    let names: Vec<String> = a.ctx.exports().await.into_iter().map(|x| x.name).collect();
+    assert!(
+        !names.contains(&"own-chat".to_owned()) && names.contains(&"xeus-chat".to_owned()),
+        "{names:?}"
+    );
 }
 
 /// 191 (D2): a block that lands while a pass runs (after it staged its snapshot) is not in
@@ -2431,7 +2446,7 @@ async fn a_hold_answered_on_another_machine_is_released_by_its_owner() {
         .update_contact(ContactUpdate {
             name: alias.clone(),
             patch: ContactPatch {
-                exports: Some(vec!["research".into()]),
+                grant: Some(vec!["research".into()]),
                 ..ContactPatch::default()
             },
         })
@@ -2651,7 +2666,7 @@ async fn a_hold_fails_on_a_block_wherever_it_is_written() {
         .update_contact(ContactUpdate {
             name: alias.clone(),
             patch: ContactPatch {
-                exports: Some(vec!["research".into()]),
+                grant: Some(vec!["research".into()]),
                 ..ContactPatch::default()
             },
         })

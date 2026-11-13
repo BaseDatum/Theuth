@@ -28598,7 +28598,7 @@
         "type": "string"
       },
       "method.a2a.input.ContactPatch": {
-        "description": "`contact_update`: each `Some` field replaces the contact's value.",
+        "description": "`contact_update`: each `Some` field replaces the contact's value; `grant` and `revoke`\nchange only the exports they name.",
         "properties": {
           "blocked": {
             "default": null,
@@ -28610,7 +28610,18 @@
           },
           "exports": {
             "default": null,
-            "description": "The granted export names, whole.",
+            "description": "191: replaced by `grant` / `revoke`; a patch that sets it is refused\n([`EXPORTS_REPLACED`]), never read as a whole list (it revoked every grant its\nmachine could not see).",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "grant": {
+            "default": null,
+            "description": "Export names (or ids) to grant; every other grant stays.",
             "items": {
               "type": "string"
             },
@@ -28624,6 +28635,28 @@
             "description": "Rename (the alias).",
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "revoke": {
+            "default": null,
+            "description": "Export names (or ids) to take back; every other grant stays.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "unshare": {
+            "default": null,
+            "description": "Stop sharing: as `revoke`, and an export no grant row holds any more (of any live\ncontact, on any machine: a blocked one's and one §6.3 skips count) goes too.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
               "null"
             ]
           }
@@ -28992,7 +29025,7 @@
             "type": "string"
           },
           "exports": {
-            "description": "Export names granted to it.",
+            "description": "Export names granted to it, mesh-wide (191: from the records, a chat on another\nmachine too; a waiting or refused contact's as well).",
             "items": {
               "type": "string"
             },
@@ -29755,7 +29788,7 @@
             "type": "string"
           },
           "exports": {
-            "description": "Export names granted to it.",
+            "description": "Export names granted to it, mesh-wide (191: from the records, a chat on another\nmachine too; a waiting or refused contact's as well).",
             "items": {
               "type": "string"
             },

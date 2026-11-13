@@ -324,6 +324,8 @@ pub struct Quarantined {
     /// A quarantine of replication lag or of a convergence in flight (a merge, a rename):
     /// the binding to keep live (unrouted, its inboxes capped) so it is not revoked for good.
     pub hold: Option<uuid::Uuid>,
+    /// A record of its group is blocked (refused on every machine, whatever else).
+    pub blocked: bool,
 }
 
 /// 191 (D8): what `contact_list` shows of a record beyond its facts, this machine's own view.

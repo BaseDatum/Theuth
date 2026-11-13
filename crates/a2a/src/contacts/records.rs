@@ -105,7 +105,10 @@ impl Group<'_> {
 }
 
 /// The grant rows of `members` (one group's records), by export id.
-fn grants_of<'r>(r: &'r Records, members: &[&ContactRow]) -> BTreeMap<&'r str, Vec<&'r GrantRow>> {
+pub(crate) fn grants_of<'r>(
+    r: &'r Records,
+    members: &[&ContactRow],
+) -> BTreeMap<&'r str, Vec<&'r GrantRow>> {
     let ids: BTreeSet<&str> = members.iter().map(|m| m.id.as_str()).collect();
     let mut out: BTreeMap<&str, Vec<&GrantRow>> = BTreeMap::new();
     for g in &r.grants {
@@ -727,7 +730,7 @@ pub fn reconcile_writes(r: &Records) -> Vec<RecordWrite> {
 
 /// A group's effective grant of one export (D2 merge): only the rows present count (a
 /// record without one abstains); `granted = 0` beats `1`, and the strictest answer wins.
-fn effective(rows: &[&GrantRow]) -> (Option<bool>, Option<FirstContact>) {
+pub(crate) fn effective(rows: &[&GrantRow]) -> (Option<bool>, Option<FirstContact>) {
     let granted = rows
         .iter()
         .filter_map(|g| g.granted)
@@ -859,6 +862,7 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, expired: &BTreeSet<
                 .then(|| c.binding.as_deref().and_then(binding_id))
                 .flatten()
                 .filter(|b| !r.revoked.contains(&b.to_string())),
+            blocked: members.iter().any(|m| m.blocked.is_some_and(|b| b != 0)),
         });
     };
     for (c, why, lag) in &a.broken {
@@ -1448,10 +1452,10 @@ mod tests {
     /// 191 (the 2026-11-13 revoke): a share machine B made (`y`) survives every grant change
     /// made on machine A, whatever A sees of it: its export row there or not yet, the contact
     /// held on A, or `y` given to an older contact first (§6.3). Grant and revoke write only
-    /// the export they name; an older UI's whole list never revokes what A does not show.
+    /// the export they name; the whole list an earlier build sent is refused.
     #[test]
     fn a_grant_change_on_one_machine_never_revokes_another_machines_share() {
-        use crate::contacts::{ContactPatch, grant_patch};
+        use crate::contacts::{ContactPatch, EXPORTS_REPLACED, grant_patch};
         let (a_eid, b_eid) = (eid(40), eid(41));
         let family = BTreeSet::from([a_eid.clone(), b_eid.clone()]);
         let none = BTreeSet::new();
@@ -1474,27 +1478,24 @@ mod tests {
             grants: vec![grant("c", "y", Some(1), Some("allow"))],
             ..Records::default()
         };
-        let names = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let names = |l: &[&str]| Some(l.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         let grant_x = ContactPatch {
-            grant: Some(names(&["x-chat"])),
+            grant: names(&["x-chat"]),
             ..ContactPatch::default()
         };
         let revoke_x = ContactPatch {
-            revoke: Some(names(&["x-chat"])),
+            revoke: names(&["x-chat"]),
             ..ContactPatch::default()
         };
-        let whole = |l: &[&str]| ContactPatch {
-            exports: Some(names(l)),
-            ..ContactPatch::default()
+        let plan = |r: &Records, p: &ContactPatch| {
+            let s = stage(r);
+            let a = analyze(r);
+            let members = group_of(&a, "c").unwrap().members.clone();
+            grant_patch(r, &s, &members, p)
         };
         // `p` on A as `contact_update` runs it, the writes applied; y's grant read back.
         let run = |r: &mut Records, p: &ContactPatch| {
-            let w = {
-                let s = stage(r);
-                let a = analyze(r);
-                let members = group_of(&a, "c").unwrap().members.clone();
-                grant_patch(r, &s, &members, p).unwrap()
-            };
+            let w = plan(r, p).unwrap();
             assert!(w.iter().all(|w| w.id != "c|y"), "y is never written: {w:?}");
             apply(r, &w);
             r.grants
@@ -1511,6 +1512,17 @@ mod tests {
             ["y-chat"],
             "B's share shows on A"
         );
+        assert_eq!(
+            plan(
+                &r,
+                &ContactPatch {
+                    exports: names(&["x-chat"]),
+                    ..ContactPatch::default()
+                }
+            ),
+            Err(EXPORTS_REPLACED.to_owned()),
+            "a whole list is refused"
+        );
         assert_eq!(run(&mut r, &grant_x), Some(1));
         assert_eq!(stage(&r).shown["c"].exports, ["x-chat", "y-chat"]);
         assert_eq!(
@@ -1521,23 +1533,18 @@ mod tests {
         assert_eq!(run(&mut r, &revoke_x), Some(1));
         assert_eq!(x(&r).unwrap().granted, Some(0));
         assert_eq!(stage(&r).shown["c"].exports, ["y-chat"]);
-        assert_eq!(run(&mut r, &whole(&["y-chat", "x-chat"])), Some(1));
-        assert_eq!(x(&r).unwrap().granted, Some(1), "the whole list grants x");
 
         // y's export row has not reached A: the 17:40:43 save (x added from a view without
-        // y) grants x and leaves y; emptying the list takes back x, never y.
+        // y) grants x and leaves y.
         let mut r = base.clone();
         r.exports.retain(|e| e.id != "y");
         assert!(stage(&r).shown["c"].exports.is_empty());
-        assert_eq!(run(&mut r, &whole(&["x-chat"])), Some(1));
-        assert_eq!(x(&r).unwrap().granted, Some(1));
-        assert_eq!(run(&mut r, &whole(&[])), Some(1));
-        assert_eq!(x(&r).unwrap().granted, Some(0));
         assert_eq!(run(&mut r, &grant_x), Some(1));
+        assert_eq!(x(&r).unwrap().granted, Some(1));
         assert_eq!(run(&mut r, &revoke_x), Some(1));
 
         // The contact is held on A (its roster is based on B, unverified here): its shares
-        // show, a grant reaches its records, a whole list revokes nothing.
+        // show, and a grant or revoke reaches its records.
         let mut r = Records {
             heads: vec![head("c", &b_eid, false, Some(0))],
             ..base.clone()
@@ -1552,17 +1559,11 @@ mod tests {
         );
         assert_eq!(run(&mut r, &grant_x), Some(1));
         assert_eq!(stage(&r).shown["c"].exports, ["x-chat", "y-chat"]);
-        assert_eq!(run(&mut r, &whole(&[])), Some(1));
-        assert_eq!(
-            x(&r).unwrap().granted,
-            Some(1),
-            "nothing revoked while held"
-        );
         assert_eq!(run(&mut r, &revoke_x), Some(1));
         assert_eq!(x(&r).unwrap().granted, Some(0));
 
         // §6.3: an older contact holds y; bob's grant of y applies nowhere and is not shown,
-        // and a whole list for bob never revokes it.
+        // a change of x leaves it, and granting y to bob, by name or by id, is refused.
         let mut r = base.clone();
         r.contacts.push(contact("o", "alice", 1));
         r.endpoints.push(anchor("o", 2, 1));
@@ -1570,8 +1571,116 @@ mod tests {
         let s = stage(&r);
         assert_eq!(s.shown["o"].exports, ["y-chat"]);
         assert!(s.shown["c"].exports.is_empty(), "skipped by §6.3");
-        assert_eq!(run(&mut r, &whole(&["x-chat"])), Some(1));
-        assert_eq!(run(&mut r, &whole(&[])), Some(1));
+        assert_eq!(run(&mut r, &grant_x), Some(1));
+        assert_eq!(run(&mut r, &revoke_x), Some(1));
+        for y in ["y-chat", "y"] {
+            let err = plan(
+                &r,
+                &ContactPatch {
+                    grant: names(&[y]),
+                    ..ContactPatch::default()
+                },
+            )
+            .unwrap_err();
+            assert!(err.contains("one principal per exported session"), "{err}");
+        }
+    }
+
+    /// 191 (review 1): a grant and a revoke of one export, one by name and one by id, write it
+    /// once and the later list wins (revoke over grant, unshare over both); `unshare` drops an
+    /// export only once no live contact's row holds it (a blocked contact's grant keeps it); a
+    /// record whose merge chain is broken is named by its id and takes a grant.
+    #[test]
+    fn grant_lists_resolve_by_id_and_unshare_keeps_an_export_someone_holds() {
+        use crate::Ctx;
+        use crate::contacts::{ContactPatch, grant_patch};
+        let names = |l: &[&str]| Some(l.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let r = Records {
+            contacts: vec![
+                contact("c", "bob", 2),
+                ContactRow {
+                    blocked: Some(1),
+                    ..contact("k", "kim", 3)
+                },
+                ContactRow {
+                    merged_into: Some("not-here".into()),
+                    ..contact("l", "lag", 4)
+                },
+            ],
+            endpoints: vec![anchor("c", 1, 2), anchor("k", 2, 3), anchor("l", 3, 4)],
+            exports: ["x", "z", "w"]
+                .iter()
+                .map(|x| chat(x, &format!("{x}-chat"), runtime::SessionId::new()))
+                .collect(),
+            grants: vec![
+                grant("c", "x", Some(1), None),
+                grant("c", "z", Some(1), None),
+                grant("k", "z", Some(1), None),
+            ],
+            ..Records::default()
+        };
+        let plan = |who: &str, p: ContactPatch| {
+            let s = stage(&r);
+            let a = analyze(&r);
+            let members = Ctx::targets(&a, &r, who, true).unwrap();
+            grant_patch(&r, &s, &members, &p).unwrap()
+        };
+        let granted = |w: &RecordWrite| {
+            w.set
+                .iter()
+                .find(|(c, _)| *c == "granted")
+                .map(|(_, v)| v.clone())
+        };
+        let tombstoned = |w: &[RecordWrite], x: &str| {
+            w.iter()
+                .any(|w| w.table == RecordTable::Exports && w.id == x)
+        };
+        for p in [
+            ContactPatch {
+                grant: names(&["x-chat"]),
+                revoke: names(&["x"]),
+                ..ContactPatch::default()
+            },
+            ContactPatch {
+                grant: names(&["x"]),
+                revoke: names(&["x-chat"]),
+                ..ContactPatch::default()
+            },
+        ] {
+            let w = plan("bob", p);
+            assert_eq!(w.len(), 1, "one write for one export: {w:?}");
+            assert_eq!(granted(&w[0]), Some(Cell::Int(0)), "revoke wins");
+            assert!(!tombstoned(&w, "x"), "a revoke keeps the export");
+        }
+        // Unshare: x goes with bob's last grant; z stays, blocked kim still holds it.
+        let w = plan(
+            "bob",
+            ContactPatch {
+                grant: names(&["x-chat"]),
+                unshare: names(&["x", "z-chat"]),
+                ..ContactPatch::default()
+            },
+        );
+        assert!(tombstoned(&w, "x"));
+        assert!(!tombstoned(&w, "z"), "kim's grant (blocked) keeps z");
+        assert!(
+            w.iter()
+                .filter(|w| w.table == RecordTable::Grants)
+                .all(|w| granted(w) == Some(Cell::Int(0)))
+        );
+        // The lagging record (its merge target not here) by id: its own row is written (w:
+        // x is bob's, §6.3).
+        assert!(stage(&r).quarantined.iter().any(|q| q.id == "l"));
+        let w = plan(
+            "l",
+            ContactPatch {
+                grant: names(&["w-chat"]),
+                ..ContactPatch::default()
+            },
+        );
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].id, "l|w");
+        assert_eq!(granted(&w[0]), Some(Cell::Int(1)));
     }
 
     /// 191 (M4): two machines export a chat each under one name: two ids, the newer is

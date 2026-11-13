@@ -42,7 +42,7 @@ import type { FirstWaiting } from "@/rpc/bindings/method.a2a.output"
 import type { PairCeremony } from "@/rpc/bindings/method.a2a.output"
 import type { PeerPath } from "@/rpc/bindings/method.a2a.output"
 
-const NO_PATCH: ContactPatch = { name: null, exports: null, blocked: null }
+const NO_PATCH: ContactPatch = { name: null, blocked: null }
 const PATH: Record<PeerPath, [string, string]> = { lan: ['LAN', 'bg-success'], relay: ['Relay', 'bg-warning'], offline: ['offline', 'ring-1 ring-fg-tertiary ring-inset'] }
 const CHIP = 'inline-flex items-center gap-1 rounded-full border border-border-subtle px-2 py-0.5 text-xs text-fg-secondary'
 const FIRST: [FirstContact, string][] = [
@@ -739,17 +739,10 @@ export function useGrant() {
   )
 }
 
-/** Take `exp` back from `contact` (`contact_update(revoke)`: that export only); the export goes too (`a2a_export_remove`) once no other contact holds it. */
+/** Stop sharing `exp` with `contact` (`contact_update(unshare)`: that export only). The engine drops the export with it once no grant row holds it, on any machine (191: never decided from this list). */
 export function useUngrant() {
   const api = useApi()
-  return useAction(
-    ({ contact, exp, contacts }: { contact: Contact; exp: string; contacts: readonly Contact[] }) =>
-      (async () => {
-        await api.contact_update(who(contact), { ...NO_PATCH, revoke: [exp] })
-        if (!contacts.some((c) => who(c) !== who(contact) && c.exports.includes(exp))) await api.a2a_export_remove(exp)
-      })(),
-    { keys: [queryKeys.contacts, queryKeys.exports] },
-  )
+  return useAction(({ contact, exp }: { contact: Contact; exp: string }) => api.contact_update(who(contact), { ...NO_PATCH, unshare: [exp] }), { keys: [queryKeys.contacts, queryKeys.exports] })
 }
 
 type Pick_ = { key: string; target: ExportTarget; title: string; group: 'Agents' | 'Chats'; detail: string }
@@ -789,13 +782,13 @@ export function ContactAccess({ focus = null }: { focus?: string | null }) {
       {contacts.isError && <Empty>{errorText(contacts.error)}</Empty>}
       {contacts.data?.length === 0 && <Empty>Add a contact above to choose what it may reach.</Empty>}
       {contacts.data?.map((c) => (
-        <Access key={c.id || c.name} c={c} all={contacts.data} exports={exports.data ?? []} focused={c.name === focus && !held(c)} />
+        <Access key={c.id || c.name} c={c} exports={exports.data ?? []} focused={c.name === focus && !held(c)} />
       ))}
     </Section>
   )
 }
 
-function Access({ c, all, exports, focused }: { c: Contact; all: readonly Contact[]; exports: readonly Export[]; focused: boolean }) {
+function Access({ c, exports, focused }: { c: Contact; exports: readonly Export[]; focused: boolean }) {
   const row = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (focused) row.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
@@ -851,7 +844,7 @@ function Access({ c, all, exports, focused }: { c: Contact; all: readonly Contac
                     </SelectContent>
                   </Select>
                 )}
-                <Button variant="ghost" size="icon-sm" aria-label={`Stop sharing ${x?.description || n} with ${c.name}`} disabled={busy} onClick={() => ungrant.mutate({ contact: c, exp: n, contacts: all })}>
+                <Button variant="ghost" size="icon-sm" aria-label={`Stop sharing ${x?.description || n} with ${c.name}`} disabled={busy} onClick={() => ungrant.mutate({ contact: c, exp: n })}>
                   <X />
                 </Button>
               </div>
@@ -976,7 +969,7 @@ export function ShareDialog({ session, title, onClose }: { session: string; titl
                       )}
                     </div>
                     {on && exp ? (
-                      <Button size="sm" variant="outline" className="pointer-coarse:min-h-11" disabled={busy} aria-label={`Stop sharing with ${c.name}`} onClick={() => ungrant.mutate({ contact: c, exp: exp.name, contacts: contacts.data })}>
+                      <Button size="sm" variant="outline" className="pointer-coarse:min-h-11" disabled={busy} aria-label={`Stop sharing with ${c.name}`} onClick={() => ungrant.mutate({ contact: c, exp: exp.name })}>
                         Shared · Stop
                       </Button>
                     ) : (
