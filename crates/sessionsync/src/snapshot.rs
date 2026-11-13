@@ -59,7 +59,13 @@ pub async fn build_counted(store: &Store, origin: &PeerId) -> anyhow::Result<(Ms
     // a 100 MB store); a read connection with its own session would free it.
     let mut tx = store.begin_apply().await?;
     let current_to_seq = if origin.0 == store.engine() {
-        u64::try_from(store.log_seq())?
+        // The log's own head inside this transaction, not the seq counter: a
+        // commit dropped midway may have counted a seq it never wrote, which
+        // the next write reuses; a cursor past it would drop that row.
+        let (max,): (Option<i64>,) = sqlx::query_as("SELECT MAX(seq) FROM session_log")
+            .fetch_one(&mut *tx)
+            .await?;
+        u64::try_from(max.unwrap_or(0).max(store.log_head()))?
     } else {
         store
             .cursors()

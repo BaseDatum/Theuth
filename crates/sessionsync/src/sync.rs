@@ -348,6 +348,24 @@ impl Node {
             .unwrap_or(0)
     }
 
+    /// The snapshot requests a `Hello` to `remote` carries: of `remote`'s
+    /// own origin, or of an origin its last `Hello` said it holds. The rest
+    /// stay pending for a peer that can answer them.
+    fn take_resnap(&self, remote: &PeerId) -> HashSet<PeerId> {
+        let holds: HashSet<PeerId> = self
+            .held
+            .lock()
+            .get(remote)
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
+        let mut resnap = self.resnap.lock();
+        let (asked, rest) = std::mem::take(&mut *resnap)
+            .into_iter()
+            .partition(|o| o == remote || holds.contains(o));
+        *resnap = rest;
+        asked
+    }
+
     fn origin_lock(&self, origin: &PeerId) -> Arc<tokio::sync::Mutex<()>> {
         self.origins
             .lock()
@@ -768,8 +786,9 @@ async fn stream(
     retry.tick().await;
 
     let ours_schema = node.schema();
-    // A snapshot request goes out with one `Hello` only (see `apply_failed`).
-    let asked = std::mem::take(&mut *node.resnap.lock());
+    // A snapshot request goes out with one `Hello` that can answer it (see
+    // `apply_failed`, `take_resnap`).
+    let asked = node.take_resnap(remote);
     let ours = node.held_here(&asked).await.context(Phase::Hello)?;
     framed
         .send(
@@ -1200,11 +1219,13 @@ async fn ship_own(node: &Arc<Node>, remote: &PeerId, out: &mut Out) -> anyhow::R
 }
 
 /// Send our log rows with `seq > after` in frame-sized batches, reading
-/// the log a page at a time. `false` when the log does not start right
-/// after `after` (pruned, or an orphaned run we cannot tell apart) or a row
-/// is over [`ROW_MAX`]: the caller sends a snapshot instead. A batch never
-/// ends right before a hole in the log (a burned or orphaned seq), so the
-/// receiver sees every hole inside one frame and steps over it.
+/// the log a page at a time. `false` when the log does not reach back to
+/// `after` (pruned past it, or neither row `after + 1` nor row `after` is
+/// there) or a row is over [`ROW_MAX`]: the caller sends a snapshot
+/// instead. A batch never ends right before a hole in the log (a burned or
+/// orphaned seq), and a frame that must start past one starts with the row
+/// before it ([`anchor`]), so the receiver sees every hole inside one frame
+/// and steps over it.
 async fn ship_log(
     node: &Arc<Node>,
     remote: &PeerId,
@@ -1221,8 +1242,19 @@ async fn ship_log(
         if from == after {
             match rows.first() {
                 None => return Ok(head <= after),
-                Some(r) if u64::try_from(r.seq).unwrap_or(0) != after + 1 => return Ok(false),
-                Some(_) => {}
+                Some(r) if u64::try_from(r.seq).unwrap_or(0) == after + 1 => {}
+                // A hole right after `after`. Row `after` still in the log
+                // (prune keeps the lowest cursor's row) means nothing past it
+                // was pruned: the hole is a burned or orphaned seq. The frame
+                // starts with row `after` as an anchor, which the peer drops
+                // as a duplicate and then steps over the hole.
+                Some(_) => match anchor(node, after).await? {
+                    Some(a) => {
+                        size = a.changeset.len();
+                        batch.push(a);
+                    }
+                    None => return Ok(false),
+                },
             }
         }
         let full = rows.len() == BATCH_ROWS;
@@ -1240,12 +1272,20 @@ async fn ship_log(
                 return Ok(false);
             }
             let follows = batch.last().is_some_and(|l| l.seq + 1 == row.seq);
-            if !batch.is_empty()
-                && ((follows && (batch.len() >= BATCH_ROWS || size + len > BATCH_BYTES))
-                    || size + len > ROW_MAX)
-            {
+            let filled = batch.len() >= BATCH_ROWS || size + len > BATCH_BYTES;
+            if !batch.is_empty() && ((follows && filled) || size + len > ROW_MAX) {
+                // Forced to cut at a hole: the next frame starts with the
+                // last row again as its anchor, when the two fit one frame.
+                let again = batch
+                    .last()
+                    .filter(|l| !follows && l.changeset.len() + len <= ROW_MAX)
+                    .cloned();
                 send_batch(node, remote, out, std::mem::take(&mut batch)).await?;
                 size = 0;
+                if let Some(a) = again {
+                    size = a.changeset.len();
+                    batch.push(a);
+                }
             }
             size += len;
             from = row.seq;
@@ -1259,6 +1299,19 @@ async fn ship_log(
         send_batch(node, remote, out, batch).await?;
     }
     Ok(true)
+}
+
+/// Row `seq` of our log, when it is still there (not pruned, not orphaned).
+async fn anchor(node: &Arc<Node>, seq: u64) -> anyhow::Result<Option<LogRow>> {
+    if seq == 0 {
+        return Ok(None);
+    }
+    let rows = node.store.log_page(i64::try_from(seq - 1)?, 1).await?;
+    Ok(rows
+        .into_iter()
+        .next()
+        .map(LogRow::from)
+        .filter(|r| r.seq == seq))
 }
 
 async fn send_batch(
@@ -2045,7 +2098,8 @@ mod tests {
             .iter()
             .map(|r| r.seq)
             .collect();
-        assert_eq!(left, ((head + 4)..=(head + 10)).collect::<Vec<_>>());
+        // The row at the cursor stays (the anchor across a hole after it).
+        assert_eq!(left, ((head + 3)..=(head + 10)).collect::<Vec<_>>());
     }
 
     #[tokio::test]
@@ -2930,5 +2984,132 @@ mod tests {
             !run.is_finished(),
             "the stream waits; it ends only after SEND_STALL"
         );
+    }
+
+    /// A write dropped after its commit took a seq but before COMMIT: the
+    /// next write reuses that seq, so a snapshot built meanwhile must not
+    /// claim it — a peer whose cursor passed it would drop the reused row as
+    /// a duplicate, forever.
+    #[tokio::test]
+    async fn a_snapshot_does_not_claim_the_seq_of_a_cancelled_commit() {
+        let switch = Arc::new(Switch::default());
+        let a = node("A", &switch).await;
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store.append(id, &user("one")).await.unwrap();
+        let before = a.store.log_seq();
+        let msg = user("cancelled");
+        let mut write = Box::pin(a.store.append(id, &msg));
+        // Poll until the commit took its seq, then drop it (before COMMIT).
+        std::future::poll_fn(|cx| match write.as_mut().poll(cx) {
+            std::task::Poll::Ready(r) => panic!("finished before it could be dropped: {r:?}"),
+            std::task::Poll::Pending if a.store.log_seq() > before => std::task::Poll::Ready(()),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        })
+        .await;
+        drop(write);
+
+        // B has no cursor for A: it bootstraps from a snapshot of A.
+        let b = node("B", &switch).await;
+        link(&switch, &a, &b, true);
+        until("B bootstrapped from A", || async {
+            texts(&b.store, id).await == texts(&a.store, id).await
+        })
+        .await;
+        a.store.append(id, &asst("after")).await.unwrap();
+        until("B has the row written after the cancelled one", || async {
+            texts(&b.store, id).await == texts(&a.store, id).await
+        })
+        .await;
+        assert_eq!(
+            texts(&b.store, id).await.last().map(|t| t.2.clone()),
+            Some("after".to_owned())
+        );
+    }
+
+    /// A hole right after the peer's cursor: the frame starts with the row
+    /// at the cursor as an anchor (a duplicate there), and the peer steps
+    /// over the hole — log rows, not a full snapshot.
+    #[tokio::test]
+    async fn a_hole_right_after_the_cursor_ships_the_log_with_an_anchor() {
+        let switch = Arc::new(Switch::default());
+        let a = node("A", &switch).await;
+        let b = node("B", &switch).await;
+        link(&switch, &a, &b, true);
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store.append(id, &user("0")).await.unwrap();
+        let cursor = a.store.log_head();
+        until("B acked A", || async {
+            acked(&a.store, "A", "B").await == Some(cursor)
+        })
+        .await;
+        link(&switch, &a, &b, false);
+        until("the stream is down", || async {
+            !sync_of(&a, "B").up && !sync_of(&b, "A").up
+        })
+        .await;
+        for n in 1..=5 {
+            a.store.append(id, &user(&format!("{n}"))).await.unwrap();
+        }
+        let head = a.store.log_head();
+        // Seq cursor + 1 was never committed; prune kept the cursor's row.
+        crate::prune::tick(&a.store, &a.me(), 7).await.unwrap();
+        let mut tx = a.store.begin_apply().await.unwrap();
+        sqlx::query("DELETE FROM session_log WHERE seq = ?")
+            .bind(cursor + 1)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(
+            a.store.log_page(cursor - 1, 2).await.unwrap()[0].seq,
+            cursor,
+            "the anchor row is there"
+        );
+
+        link(&switch, &a, &b, true);
+        until("B applied A to its head", || async {
+            acked(&b.store, "A", "").await == Some(head)
+        })
+        .await;
+        // A snapshot would have carried the hole's message too.
+        assert_eq!(
+            texts(&b.store, id).await.len(),
+            5,
+            "log rows, not a snapshot"
+        );
+        assert!(sync_of(&b, "A").last_error.is_none());
+    }
+
+    /// A snapshot request waits for a `Hello` that can answer it: a stream
+    /// to a peer that never said it holds the origin leaves it pending; the
+    /// next `Hello` to one whose last `Hello` listed the origin takes it.
+    #[tokio::test]
+    async fn a_snapshot_request_waits_for_a_peer_that_holds_the_origin() {
+        let ours = Some(agent::store::SESSIONS_WIRE_SCHEMA);
+        let (store, _dir, _) = engine_a().await;
+        store.set_cursor("C", "", 4).await.unwrap();
+        let node = super::Node::new(store.clone(), None, Duration::from_secs(60));
+        let c = PeerId("C".into());
+        node.resnap.lock().insert(c.clone());
+        let c_at = |held: &[(PeerId, u64)]| held.iter().find(|(o, _)| *o == c).map(|(_, s)| *s);
+
+        // Z has said nothing about C yet: the request stays pending.
+        let (z, run, held, _) = raw_on(node.clone(), ours, vec![(c.clone(), 4)]).await;
+        assert_eq!(c_at(&held), Some(4));
+        assert!(node.resnap.lock().contains(&c));
+        drop(z);
+        let _ = run.await;
+        // Z's last `Hello` listed C: this `Hello` asks it for C's snapshot.
+        let (_z, _run, held, _) = raw_on(node.clone(), ours, vec![(c.clone(), 4)]).await;
+        assert_eq!(c_at(&held), None);
+        assert!(node.resnap.lock().is_empty());
     }
 }

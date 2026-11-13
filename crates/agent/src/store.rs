@@ -193,12 +193,12 @@ impl WriteTx<'_> {
     /// transaction (`session_log` is not attached, so the row is not
     /// recaptured).
     pub(crate) async fn commit(self) -> anyhow::Result<()> {
-        // A failure after seqs were taken (`NotOwner` for a later session, a
-        // failed commit) gives them back: a seq never committed is a gap the
-        // peers' cursors stop at, and each costs them a full snapshot. The
-        // write connection is single: no other transaction took one meanwhile.
-        // A future dropped midway cannot tell whether COMMIT ran: the guard
-        // has the next `begin_write` re-read the head instead.
+        // Seqs taken by a transaction that does not commit must leave no gap
+        // (peers' cursors stop at it; each costs them a full snapshot). A
+        // failure before COMMIT gives them back inside `log_and_commit`,
+        // while the transaction still holds the single write connection. A
+        // failed COMMIT, or a future dropped midway, cannot tell whether
+        // COMMIT ran: the guard has the next `begin_write` re-read the head.
         struct Midway<'s>(Option<&'s Store>);
         impl Drop for Midway<'_> {
             fn drop(&mut self) {
@@ -207,18 +207,30 @@ impl WriteTx<'_> {
                 }
             }
         }
-        let store = self.store;
-        let mut midway = Midway(Some(store));
-        let start = store.seq.load(Ordering::SeqCst);
+        let mut midway = Midway(Some(self.store));
         let done = self.log_and_commit().await;
-        midway.0 = None;
-        if done.is_err() {
-            store.seq.store(start, Ordering::SeqCst);
+        if done.is_ok() {
+            midway.0 = None;
         }
         done
     }
 
     async fn log_and_commit(mut self) -> anyhow::Result<()> {
+        let store = self.store;
+        let start = store.seq.load(Ordering::SeqCst);
+        if let Err(e) = self.log().await {
+            store.seq.store(start, Ordering::SeqCst);
+            return Err(e);
+        }
+        self.tx.commit().await?;
+        store
+            .log_tx
+            .send_if_modified(|s| std::mem::replace(s, store.seq.load(Ordering::SeqCst)) != *s);
+        Ok(())
+    }
+
+    /// The capture session's changes as `session_log` rows, inside the transaction.
+    async fn log(&mut self) -> anyhow::Result<()> {
         let store = self.store;
         let changeset = {
             // Lock the handle out from the worker thread first; the session
@@ -306,10 +318,6 @@ impl WriteTx<'_> {
                 .await?;
             }
         }
-        self.tx.commit().await?;
-        store
-            .log_tx
-            .send_if_modified(|s| std::mem::replace(s, store.seq.load(Ordering::SeqCst)) != *s);
         Ok(())
     }
 }
@@ -909,11 +917,14 @@ impl Store {
                     .await
                     .map_err(Into::into);
             match max {
-                // The head row always stays (prune), and the watch never steps back.
-                Ok((max,)) => self.seq.store(
-                    max.unwrap_or(0).max(*self.log_tx.borrow()),
-                    Ordering::SeqCst,
-                ),
+                // The head row always stays (prune), and the watch never steps
+                // back; a cancelled COMMIT that landed wakes the shippers here.
+                Ok((max,)) => {
+                    let head = max.unwrap_or(0).max(*self.log_tx.borrow());
+                    self.seq.store(head, Ordering::SeqCst);
+                    self.log_tx
+                        .send_if_modified(|s| std::mem::replace(s, head) != *s);
+                }
                 Err(e) => {
                     self.reseed.store(true, Ordering::SeqCst);
                     return Err(e);
