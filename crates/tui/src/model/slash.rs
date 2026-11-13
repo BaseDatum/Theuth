@@ -3,11 +3,6 @@ use super::*;
 /// Slash commands: name, argument hint (`<x>` required, `[x]` optional, `""` none), description.
 pub const COMMANDS: &[(&str, &str, &str)] = &[
     (
-        "/acp",
-        "[add <registry-id>|remove <name>]",
-        "External harnesses (ACP) and the registry",
-    ),
-    (
         "/login",
         "[name]",
         "log in to a provider or MCP server (picker without name)",

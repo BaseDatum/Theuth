@@ -530,17 +530,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::SetApprovals { session, enabled } => {
             UiEvent::Approvals(msg(api.set_approvals(session, enabled, None).await)?)
         }
-        Command::ListAcp { probe } => UiEvent::Acp(msg(api.list_acp(probe).await)?),
-        Command::AddAcp(id) => {
-            let _ = tx.send(UiEvent::AcpAdded(msg(api.add_acp(id).await)?));
-            // Re-list here, not from the UI: commands run concurrently.
-            UiEvent::Acp(msg(api.list_acp(false).await)?)
-        }
-        Command::RemoveAcp(name) => {
-            msg(api.remove_acp(name).await)?;
-            UiEvent::Acp(msg(api.list_acp(false).await)?)
-        }
-        Command::ListAcpRegistry => UiEvent::AcpRegistry(msg(api.list_acp_registry().await)?),
         Command::ListLogins => {
             let mut rows: Vec<LoginRow> = msg(api.list_logins().await)?
                 .into_iter()
@@ -1005,30 +994,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::CompactStyle(s) => writeln!(
             out,
             "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
-        ),
-        UiEvent::Acp(list) => list.iter().try_for_each(|e| {
-            writeln!(
-                out,
-                "{}  {} {}  {}",
-                e.name,
-                e.command,
-                e.args.join(" "),
-                e.status.as_deref().unwrap_or_default()
-            )
-        }),
-        UiEvent::AcpRegistry(list) => list.iter().try_for_each(|a| {
-            writeln!(
-                out,
-                "+ {}  {} {}  {}",
-                a.id, a.name, a.version, a.description
-            )
-        }),
-        UiEvent::AcpAdded(e) => writeln!(
-            out,
-            "acp: added `{}` ({} {})",
-            e.name,
-            e.command,
-            e.args.join(" ")
         ),
         UiEvent::Approvals(s) => writeln!(
             out,
