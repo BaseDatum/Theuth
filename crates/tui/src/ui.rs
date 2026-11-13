@@ -1220,6 +1220,7 @@ mod tests {
             (Entry::Tool { call_id: "crawl".into(), name: "crawl".into(), args: vec!["https://example.com".into()], result: None, expanded: None }, 7, "running…"),
         ] {
             let mut model = Model::new(String::new(), false);
+            model.streaming = true;
             model.entries.push(raw);
             let render = |model: &Model| {
                 let raw = &model.entries[0];

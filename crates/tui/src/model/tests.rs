@@ -1043,6 +1043,7 @@
     fn shake_categories_preselect_and_review_once() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(ShakePanel::default()).unwrap();
         let session = SessionId::new();
         m.session = Some(session);
         // Unknown argument: usage, no request, no chat input.
@@ -1104,6 +1105,7 @@
     fn shake_bare_and_messages_tick_nothing_and_zero_matches_write_nothing() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(ShakePanel::default()).unwrap();
         m.component_commands = Some(tx.clone());
         let session = SessionId::new();
         m.session = Some(session);
@@ -2292,6 +2294,7 @@
         use crate::components::mesh_devices::{MeshDevices, Msg, Request, mesh_device_line};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(MeshDevices::default()).unwrap();
         m.mount_components(&tx);
         m.submit("/mesh devices", &tx);
         assert!(matches!(component_request::<Request>(&mut rx), Ok(Request::MeshDevicesList)));
@@ -2352,6 +2355,7 @@
         fn panel(model: &Model) -> &Link { model.components.get::<Link>().unwrap() }
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(Link::default()).unwrap();
         m.mount_components(&tx);
         let device = link::Device {
             id: "abcd1234".into(),
@@ -2521,6 +2525,8 @@
         fn panel(model: &Model) -> &Nodes { model.components.get::<Nodes>().unwrap() }
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(Nodes::default()).unwrap();
+        m.components.register(crate::components::link::Link::default()).unwrap();
         m.mount_components(&tx);
         let node = nodes::Node {
             id: "abcd1234".into(),
@@ -2750,6 +2756,7 @@
         use crate::components::secrets::{Secrets, Prompt as SecretPrompt, Request as SecretRpc, Msg as SecretMsg};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(Secrets::default()).unwrap();
         m.mount_components(&tx);
         // `/secrets add`: name → masked value → note; the note may be empty.
         m.submit("/secrets add", &tx);
@@ -2857,6 +2864,7 @@
         use crate::components::secrets::{Secrets, Prompt as SecretPrompt, Menu as SecretMenu, Request as SecretRpc, Msg as SecretMsg};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(Secrets::default()).unwrap();
         m.mount_components(&tx);
         m.submit("/secrets", &tx);
         assert!(matches!(component_request::<SecretRpc>(&mut rx), Ok(SecretRpc::ListSecrets)));
@@ -3500,6 +3508,7 @@
         use crate::components::computer::{Msg, Request, computer_line};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(crate::components::computer::Computer).unwrap();
         m.mount_components(&tx);
         m.submit("/computer", &tx);
         let Command::Component(effect) = rx.try_recv().unwrap() else { panic!("computer effect") };
@@ -3548,7 +3557,6 @@
         use crate::components::roster::{agents_table, Request as RosterRequest, Msg as RosterMsg};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::new(String::new(), false);
-        m.mount_components(&tx);
         m.submit("/tasks", &tx);
         assert!(matches!(component_request::<TasksRequest>(&mut rx), Ok(TasksRequest::List(None))));
         m.project = Some("sre".into());
@@ -3688,7 +3696,6 @@
         use crate::components::routines::{Request as RoutineRequest, SCHEDULES_USAGE, schedules_table, schedule_history_table};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::new(String::new(), false);
-        m.mount_components(&tx);
         m.submit("/schedules pause port", &tx);
         assert!(matches!(
             component_request::<RoutineRequest>(&mut rx),
@@ -7021,6 +7028,7 @@
     fn todos_follow_versions_survive_stale_loads_and_session_switches() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(Todos::default()).unwrap();
         let (a, b) = (SessionId::new(), SessionId::new());
         m.session = Some(a);
         // Nothing loaded: no card. A load carries the plan.
@@ -7107,6 +7115,7 @@
         use tools::{AskId, AskRequested, Question};
         let (tx, _rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(Todos::default()).unwrap();
         let s = SessionId::new();
         m.session = Some(s);
         set_todos(&mut m, plan(1, 8));
@@ -7191,6 +7200,7 @@
             session: Some(SessionId::new()),
             ..Model::default()
         };
+        m.components.register(Todos::default()).unwrap();
         let item = |status, reason: Option<&str>| Todo {
             text: "t".into(),
             status,

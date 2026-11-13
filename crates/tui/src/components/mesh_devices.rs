@@ -134,6 +134,8 @@ pub fn mesh_device_line(d: &::link::DeviceInfo, now: u64) -> String {
 fn mesh_pairing_freezes_previous_node_invite() {
     use crate::model::{CardKind, Entry, Model, UiEvent};
     let mut model = Model::default();
+    model.components.register(super::nodes::Nodes::default()).unwrap();
+    model.components.register(MeshDevices::default()).unwrap();
     let now = now_ms();
     let node_token = model.components.token("nodes");
     model.apply(UiEvent::Component(LocalReply { to: node_token, engine_epoch: 0,
