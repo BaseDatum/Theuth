@@ -1369,6 +1369,7 @@ mod tests {
         width: u16,
         budget: usize,
         focus: Focus,
+        unwrapped: bool,
     }
 
     /// `search_box` over [`search_model`] with `focus`, with the hooks a
@@ -1383,7 +1384,17 @@ mod tests {
         });
         let handle = hooks.use_ref_default::<TextInputHandle>();
         let m = model.read();
-        component_slot(&m, Surface::Modal, props.width, props.budget as u16, Some(handle)).element().expect("search view")
+        if props.unwrapped {
+            let crate::components::View::Editor { editor, render, .. } = m.component_views(
+                Surface::Modal, usize::from(props.width), props.budget,
+            ).into_iter().next().expect("search view") else { panic!("query editor") };
+            render(element!(TextInput(
+                handle, has_focus: editor.focused, value: editor.value, ignore_paste: true,
+                on_change: editor.on_change,
+            )).into_any())
+        } else {
+            component_slot(&m, Surface::Modal, props.width, props.budget as u16, Some(handle)).element().expect("search view")
+        }
     }
 
     /// Wide characters count cells, chips wrap whole, and the box never
@@ -1417,6 +1428,26 @@ mod tests {
                     frame.contains(shown),
                     "width {width} budget {budget} {focus:?}: {shown} not in view\n{frame}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn search_editor_keeps_historical_short_terminal_allocation() {
+        for height in [8u16, 10, 12] {
+            for focus in [Focus::Query, Focus::Filters(6), Focus::Footer(1)] {
+                let frame = |unwrapped| element! {
+                    View(width: 100u16, height, flex_direction: FlexDirection::Column) {
+                        View(flex_grow: 1.0_f32, min_height: 0) { Text(content: "transcript") }
+                        SearchProbe(width: 100u16, budget: 6usize, focus, unwrapped)
+                        View(height: 1) { Text(content: "header") }
+                        View(height: 3, flex_shrink: 0.0) { Text(content: "composer") }
+                        View(height: 1) { Text(content: "status") }
+                    }
+                }.to_string();
+                let expected = frame(true);
+                assert_eq!(expected.lines().count(), usize::from(height));
+                assert_eq!(frame(false), expected, "terminal height {height}, focus {focus:?}");
             }
         }
     }
