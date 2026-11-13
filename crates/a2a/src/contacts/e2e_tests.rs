@@ -1083,15 +1083,18 @@ async fn a_granted_export_is_a_discover_peers_row_on_the_contacts_side_until_rev
         })
         .await
         .unwrap();
-    let grant = |exports: &[&str]| {
+    let patch = |grant: &[&str], revoke: &[&str]| {
+        let names = |l: &[&str]| Some(l.iter().map(|s| s.to_string()).collect());
         a.ctx.update_contact(ContactUpdate {
             name: a_alias.clone(),
             patch: ContactPatch {
-                exports: Some(exports.iter().map(|s| s.to_string()).collect()),
+                grant: names(grant),
+                revoke: names(revoke),
                 ..ContactPatch::default()
             },
         })
     };
+    let grant = |exports: &[&str]| patch(exports, &[]);
     let shared = grant(&["research"]).await.unwrap();
     assert_eq!(
         shared.first_contact.get("research"),
@@ -1178,7 +1181,7 @@ async fn a_granted_export_is_a_discover_peers_row_on_the_contacts_side_until_rev
     .await;
 
     // Taking it back: the notice reaches B and the row goes.
-    grant(&[]).await.unwrap();
+    patch(&[], &["research"]).await.unwrap();
     let mut gone = false;
     for _ in 0..100 {
         if !rows().await.iter().any(|p| p.address == address) {
@@ -1250,7 +1253,7 @@ async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
         a.ctx.update_contact(ContactUpdate {
             name: a_alias.clone(),
             patch: ContactPatch {
-                exports: Some(exports.iter().map(|s| s.to_string()).collect()),
+                grant: Some(exports.iter().map(|s| s.to_string()).collect()),
                 ..ContactPatch::default()
             },
         })
@@ -1510,7 +1513,7 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
         a.ctx.update_contact(ContactUpdate {
             name: a_alias.clone(),
             patch: ContactPatch {
-                exports: Some(vec!["proj".into()]),
+                grant: Some(vec!["proj".into()]),
                 ..ContactPatch::default()
             },
         })
@@ -1764,7 +1767,7 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
         .update_contact(ContactUpdate {
             name: a_alias.clone(),
             patch: ContactPatch {
-                exports: Some(Vec::new()),
+                revoke: Some(vec!["proj".into()]),
                 ..ContactPatch::default()
             },
         })
@@ -2132,6 +2135,264 @@ async fn grant_ask(e: &Engine, alias: &str, names: &[&str]) {
     e.ctx.commit_records(w).await.unwrap();
 }
 
+/// 191 (the 2026-11-13 revoke, as 333 saw it): sessions do not replicate, so a chat another
+/// machine of the mesh shared (its export and grant rows here, its session not) is left out
+/// of this machine's routes. `contact_list` still shows the share and `a2a_exports` lists the
+/// export paused elsewhere (never tombstoned). Sharing this machine's own chat from the chat
+/// menu right after `a2a_export_put` grants it (no "unknown export") and leaves the other
+/// machine's grant alone, as a delta and as an older UI's whole list read from this view.
+#[tokio::test]
+async fn a_share_of_a_chat_on_another_machine_shows_here_and_survives_a_share_made_here() {
+    use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+    let lan = Lan::default();
+    let a = engine("a", &lan, true, cfg(600)).await;
+    let b = engine("b", &lan, true, cfg(600)).await;
+    let (alias, _) = paired(&a, &b).await;
+    let id = a.ctx.contact_list()[0].id.clone();
+    // What the other machine wrote: its chat's export (the session never came here), its
+    // home there, and the grant.
+    let remote = uuid::Uuid::now_v7().to_string();
+    for home in ["xeus".to_owned(), a.eid()] {
+        a.ctx
+            .commit_records(vec![
+                RecordWrite::new(
+                    RecordTable::Exports,
+                    remote.clone(),
+                    vec![
+                        ("name", Cell::Text("xeus-chat".into())),
+                        ("session", Cell::Text(runtime::SessionId::new().to_string())),
+                        ("agent", Cell::Null),
+                        ("title", Cell::Text("xeus-chat".into())),
+                        ("description", Cell::Text("The chat on xeus".into())),
+                        ("home", Cell::Text(home)),
+                    ],
+                ),
+                RecordWrite::new(
+                    RecordTable::Grants,
+                    format!("{id}|{remote}"),
+                    vec![
+                        ("contact", Cell::Text(id.clone())),
+                        ("export", Cell::Text(remote.clone())),
+                        ("granted", Cell::Int(1)),
+                        ("first_contact", Cell::Text("allow".into())),
+                    ],
+                ),
+            ])
+            .await
+            .unwrap();
+        assert!(
+            !a.ctx.shared.read().staged.peers[&alias]
+                .exports
+                .contains(&"xeus-chat".to_owned()),
+            "not routed here: its session is not here"
+        );
+        assert_eq!(a.ctx.contact_list()[0].exports, ["xeus-chat"], "but shown");
+        // Made here (Settings shared a chat of another machine) or there: listed, paused.
+        let listed = a.ctx.exports().await;
+        let x = listed.iter().find(|x| x.name == "xeus-chat");
+        assert_eq!(x.and_then(|x| x.paused.as_deref()), Some(PAUSED_ELSEWHERE));
+    }
+    let granted = || async {
+        a.ctx
+            .records()
+            .await
+            .unwrap()
+            .grants
+            .iter()
+            .find(|g| g.export.as_deref() == Some(remote.as_str()))
+            .and_then(|g| g.granted)
+    };
+    // The chat-menu share of this machine's own chat, as the UI sends it.
+    let chat = a
+        .ctx
+        .agents()
+        .unwrap()
+        .ask(agent::CreateSession {
+            options: agent::CreateSessionOptions::default(),
+            peer: None,
+        })
+        .await
+        .unwrap()
+        .session;
+    publish(&a, "own-chat", ExportTarget::Chat { session: chat }, "Mine").await;
+    let update = |patch: ContactPatch| {
+        a.ctx.update_contact(ContactUpdate {
+            name: alias.clone(),
+            patch,
+        })
+    };
+    let shown = update(ContactPatch {
+        grant: Some(vec!["own-chat".into()]),
+        ..ContactPatch::default()
+    })
+    .await
+    .unwrap();
+    let mut both = shown.exports.clone();
+    both.sort();
+    assert_eq!(both, ["own-chat", "xeus-chat"]);
+    assert_eq!(granted().await, Some(1));
+    assert!(
+        a.ctx.shared.read().staged.peers[&alias]
+            .exports
+            .contains(&"own-chat".to_owned()),
+        "the own chat is routed"
+    );
+    // The whole list an earlier build sent is refused and writes nothing.
+    let refused = update(ContactPatch {
+        exports: Some(vec!["own-chat".into()]),
+        ..ContactPatch::default()
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(refused, EXPORTS_REPLACED);
+    assert_eq!(granted().await, Some(1));
+    // A revoke names its export alone.
+    update(ContactPatch {
+        grant: Some(vec!["own-chat".into()]),
+        ..ContactPatch::default()
+    })
+    .await
+    .unwrap();
+    let after = update(ContactPatch {
+        revoke: Some(vec!["own-chat".into()]),
+        ..ContactPatch::default()
+    })
+    .await
+    .unwrap();
+    assert_eq!(after.exports, ["xeus-chat"]);
+    assert_eq!(granted().await, Some(1));
+    // Nobody holds own-chat now: its export stays (no route), and sharing the chat again
+    // reuses it.
+    let names: Vec<String> = a.ctx.exports().await.into_iter().map(|x| x.name).collect();
+    assert_eq!(
+        names,
+        ["own-chat", "xeus-chat"],
+        "a revoke removes no export"
+    );
+    let again = update(ContactPatch {
+        grant: Some(vec!["own-chat".into()]),
+        ..ContactPatch::default()
+    })
+    .await
+    .unwrap();
+    assert!(again.exports.contains(&"own-chat".to_owned()));
+}
+
+/// 191 (review 1, W-41): listing never reads a missing session as a deletion. An export
+/// homed here whose chat this machine lacks is listed paused elsewhere and stays, before the
+/// mesh latch (unfiltered display staging) and after it. Deleting a chat on the engine that
+/// runs it (`SessionDeleted`, through the subscribed actor) tombstones every export of it,
+/// whatever its home, so its grants stop counting.
+#[tokio::test]
+async fn only_a_deleted_chat_tombstones_its_exports_never_a_listing() {
+    use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+    use kameo::actor::Spawn as _;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let lan = Lan::default();
+    let dir = tempfile::tempdir().unwrap();
+    let net = node("n", dir.path()).await;
+    let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+    let (ready, latch) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let agents = agent::spawn_engine_agents(rt.clone(), ready.clone()).await;
+    let l = latch.clone();
+    let ctx = crate::test_ctx(
+        dir.path(),
+        net.clone(),
+        Arc::new(lan.clone()),
+        cfg(600),
+        Some(agents.clone()),
+        ready,
+        Arc::new(move || l.load(Ordering::SeqCst)),
+    )
+    .await;
+    let actor = crate::A2aActor::spawn(crate::A2aActor { ctx: ctx.clone() });
+    subscribe_deletions(&rt, &actor).await;
+    let me = net.id.0.clone();
+    let row = |id: &str, name: &str, session: &str, home: &str| {
+        RecordWrite::new(
+            RecordTable::Exports,
+            id,
+            vec![
+                ("name", Cell::Text(name.into())),
+                ("session", Cell::Text(session.into())),
+                ("agent", Cell::Null),
+                ("title", Cell::Text(name.into())),
+                ("description", Cell::Text(String::new())),
+                ("home", Cell::Text(home.into())),
+            ],
+        )
+    };
+    let removed = |id: &'static str| {
+        let ctx = ctx.clone();
+        async move {
+            ctx.records()
+                .await
+                .unwrap()
+                .exports
+                .iter()
+                .find(|x| x.id == id)
+                .and_then(|x| x.removed_ms)
+        }
+    };
+    // A chat of another machine, its export made here (Settings), its session not here.
+    let absent = runtime::SessionId::new().to_string();
+    ctx.commit_records(vec![row("x-away", "away", &absent, &me)])
+        .await
+        .unwrap();
+    for latched in [false, true] {
+        latch.store(latched, Ordering::SeqCst);
+        ctx.reload().await.unwrap();
+        let listed = ctx.exports().await;
+        assert_eq!(
+            listed
+                .iter()
+                .find(|x| x.name == "away")
+                .and_then(|x| x.paused.as_deref()),
+            Some(PAUSED_ELSEWHERE),
+            "latched: {latched}"
+        );
+        assert_eq!(removed("x-away").await, None, "latched: {latched}");
+    }
+    // A chat of this machine, exported here and (for it) by another machine.
+    let chat = agents
+        .ask(agent::CreateSession {
+            options: agent::CreateSessionOptions::default(),
+            peer: None,
+        })
+        .await
+        .unwrap()
+        .session;
+    ctx.commit_records(vec![
+        row("x-mine", "mine", &chat.to_string(), &me),
+        row("x-theirs", "theirs", &chat.to_string(), "xeus"),
+    ])
+    .await
+    .unwrap();
+    assert!(ctx.exports().await.iter().any(|x| x.name == "mine"));
+    agents
+        .ask(agent::DeleteSession { session: chat })
+        .await
+        .unwrap();
+    // The event reaches the subscribed actor, which writes off its mailbox.
+    let mut gone = false;
+    for _ in 0..100 {
+        if removed("x-mine").await.is_some() && removed("x-theirs").await.is_some() {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        gone,
+        "the deleted chat's exports are tombstoned, whatever their home"
+    );
+    let names: Vec<String> = ctx.exports().await.into_iter().map(|x| x.name).collect();
+    assert_eq!(names, ["away"], "the absent chat's export stays");
+}
+
 /// 191 (D2): a block that lands while a pass runs (after it staged its snapshot) is not in
 /// the hash the pass keeps, so the next tick reconciles it and the gate refuses the contact.
 #[tokio::test]
@@ -2298,7 +2559,7 @@ async fn a_hold_answered_on_another_machine_is_released_by_its_owner() {
         .update_contact(ContactUpdate {
             name: alias.clone(),
             patch: ContactPatch {
-                exports: Some(vec!["research".into()]),
+                grant: Some(vec!["research".into()]),
                 ..ContactPatch::default()
             },
         })
@@ -2518,7 +2779,7 @@ async fn a_hold_fails_on_a_block_wherever_it_is_written() {
         .update_contact(ContactUpdate {
             name: alias.clone(),
             patch: ContactPatch {
-                exports: Some(vec!["research".into()]),
+                grant: Some(vec!["research".into()]),
                 ..ContactPatch::default()
             },
         })

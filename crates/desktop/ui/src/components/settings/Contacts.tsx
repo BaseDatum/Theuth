@@ -26,10 +26,11 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { chatName } from '@/lib/attach'
-import { PAIRED_RULE, SHARE_RULE, accessFocus, exportName, fingerprint, focusedContact, names, rogueLine, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
+import { PAIRED_RULE, SHARE_RULE, type Sharing, accessFocus, exportName, fingerprint, focusedContact, names, rogueLine, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
 import { engineLabel } from '@/lib/owner'
 import { putPair, queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
+import type { Api } from '@/rpc/bindings/client'
 import type { Contact } from "@/rpc/bindings/method.a2a.output"
 import type { ContactMachine } from "@/rpc/bindings/method.a2a.output"
 import type { ContactPatch } from '@/rpc/bindings/method.a2a.input'
@@ -42,7 +43,7 @@ import type { FirstWaiting } from "@/rpc/bindings/method.a2a.output"
 import type { PairCeremony } from "@/rpc/bindings/method.a2a.output"
 import type { PeerPath } from "@/rpc/bindings/method.a2a.output"
 
-const NO_PATCH: ContactPatch = { name: null, exports: null, blocked: null }
+const NO_PATCH: ContactPatch = { name: null, blocked: null }
 const PATH: Record<PeerPath, [string, string]> = { lan: ['LAN', 'bg-success'], relay: ['Relay', 'bg-warning'], offline: ['offline', 'ring-1 ring-fg-tertiary ring-inset'] }
 const CHIP = 'inline-flex items-center gap-1 rounded-full border border-border-subtle px-2 py-0.5 text-xs text-fg-secondary'
 const FIRST: [FirstContact, string][] = [
@@ -54,8 +55,12 @@ const FIRST: [FirstContact, string][] = [
 const toContacts = (contact?: string) => ({ to: '/settings/$tab', params: { tab: 'contacts' }, search: contact ? { focus: accessFocus(contact) } : {} }) as const
 /** 191 D8: the alert's way out may be to unpair one of ours. */
 const toMachines = { to: '/settings/$tab', params: { tab: 'machines' } } as const
-/** 191 D8: a quarantined record (refused or waiting) is not admitted: no menu, no shares, not in Access or Share…; Remove names it by record id, since a waiting rename shares its alias with a live contact. */
+/** 191 D8: a quarantined record (refused or waiting) is not admitted here: no menu; Access and Share… list it with its state and its mesh-wide shares. Contact RPCs name it by record id, since a waiting rename shares its alias with a live contact. */
 const held = (c: Contact) => c.problem_kind === 'refused' || c.problem_kind === 'waiting'
+const who = (c: Contact) => (held(c) && c.id ? c.id : c.name)
+/** 191: why a held contact reaches nothing from this machine now, and where its shares apply. */
+const heldLine = (c: Contact) =>
+  c.problem_kind === 'waiting' ? `Waiting on this machine: ${c.problem}. What you share applies once this clears.` : `Refused on this machine: ${c.problem}. What you share applies on your machines that admit ${c.name}.`
 
 /** 191 D8: `Their machines: laptop · studio`, this machine's accepted roster of the contact; one its history lists but its roster no longer does is struck through, labelled left. */
 export function TheirMachines({ machines }: { machines: readonly ContactMachine[] }) {
@@ -176,18 +181,33 @@ export function WaitingRow({ w }: { w: FirstWaiting }) {
   )
 }
 
-/** One export as a chip: an agent or a chat, and why it is paused (W-41, §12.10). */
-export function ExportChip({ name, exp }: { name: string; exp: Export | undefined }) {
+/** One export as a chip: an agent or a chat (191: `on xeus` for a chat on another machine), and why it is paused (W-41, §12.10). */
+export function ExportChip({ name, exp, on }: { name: string; exp: Export | undefined; on?: string | null }) {
   const Icon = exp?.target.kind === 'agent' ? Bot : MessageSquare
   return (
     <span className={cn(CHIP, 'max-w-full', exp?.paused && 'text-fg-tertiary')}>
       <Icon className="size-3 shrink-0" aria-hidden="true" />
       <span className="truncate">
         {exp?.description || name}
+        {on && ` · on ${on}`}
         {exp?.paused && ` · Paused (${exp.paused})`}
       </span>
     </span>
   )
+}
+
+/** 191: the machine a shared chat lives on when it is not this one (`null` here, for an agent, or unknown), from the sessions list. */
+function useChatMachine(): (exp: Export | undefined) => string | null {
+  const canQuery = useQuerySupport(['list_sessions'])
+  const api = useApi()
+  const mesh = useMesh()
+  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: canQuery })
+  return (exp) => {
+    const t = exp?.target
+    if (t?.kind !== 'chat') return null
+    const s = sessions.data?.find((x) => x.id === t.session)
+    return s && !s.here ? engineLabel(s.owner, mesh.data?.peers) : null
+  }
 }
 
 /** 188 Settings › Network › Contacts: the contacts, then what each may reach; `?focus=access:<name>` scrolls to one. */
@@ -211,6 +231,7 @@ export function Contacts({ adding: initial = false }: { adding?: boolean }) {
   const contacts = useContacts()
   const exports = useExports()
   const waiting = useFirstWaiting().data ?? []
+  const machineOf = useChatMachine()
   const [adding, setAdding] = useState(initial)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<{ c: Contact; block: boolean } | null>(null)
@@ -246,12 +267,15 @@ export function Contacts({ adding: initial = false }: { adding?: boolean }) {
             <TheirMachines machines={c.machines} />
             {c.paired_on && <p className="text-[13px] text-fg-secondary">Paired on {c.paired_on}</p>}
             <Problem c={c} onRemove={() => setConfirm({ c, block: false })} onMachines={() => void navigate(toMachines)} />
-            {!held(c) && (
+            {(!held(c) || c.exports.length > 0) && (
               <div className="mt-1.5 flex flex-wrap gap-1">
                 {c.exports.length === 0 ? (
                   <span className="text-[13px] text-fg-tertiary">Nothing shared yet</span>
                 ) : (
-                  c.exports.map((n) => <ExportChip key={n} name={n} exp={exports.data?.find((x) => x.name === n)} />)
+                  c.exports.map((n) => {
+                    const x = exports.data?.find((e) => e.name === n)
+                    return <ExportChip key={n} name={n} exp={x} on={machineOf(x)} />
+                  })
                 )}
               </div>
             )}
@@ -312,7 +336,7 @@ export function Contacts({ adding: initial = false }: { adding?: boolean }) {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                if (confirm) remove.mutate({ name: held(confirm.c) && confirm.c.id ? confirm.c.id : confirm.c.name, block: confirm.block })
+                if (confirm) remove.mutate({ name: who(confirm.c), block: confirm.block })
                 setConfirm(null)
               }}
             >
@@ -698,8 +722,19 @@ export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { 
   )
 }
 
+/** 191: what a grant change says when the engine ignored it (one older than `grant` / `revoke`). */
+export const OLD_ENGINE = 'this engine is older than this app; update it'
+
+/** `contact_update` granting (`on`) or revoking export `exp` alone; the answer must show it, so an engine that ignored the
+ * patch never reads as success (a blocked contact's answer lists nothing). */
+async function changeGrant(api: Api, contact: Contact, exp: string, on: boolean) {
+  const c = await api.contact_update(who(contact), { ...NO_PATCH, ...(on ? { grant: [exp] } : { revoke: [exp] }) })
+  if (on ? !c.blocked && !c.exports.includes(exp) : c.exports.includes(exp)) throw new Error(OLD_ENGINE)
+}
+
 /** Grant `target` to `contact`: its export when one exists, else a new one named from `title` (`a2a_export_put`), then
- * `contact_update(exports)`. Every share is full (190 D2), so the patch names no mode. */
+ * `contact_update(grant)`, which touches that export only (191: never a whole list built from this machine's view, which
+ * would take back shares it cannot see). Every share is full (190 D2), so the patch names no mode. */
 export function useGrant() {
   const api = useApi()
   return useAction(
@@ -709,23 +744,17 @@ export function useGrant() {
         const existing = all.find((x) => (x.target.kind === 'agent' ? target.kind === 'agent' && x.target.agent === target.agent : target.kind === 'chat' && x.target.session === target.session))
         const name = existing?.name ?? exportName(title, all.map((x) => x.name))
         if (!existing) await api.a2a_export_put({ name, target, description: title, paused: null })
-        if (!contact.exports.includes(name)) await api.contact_update(contact.name, { ...NO_PATCH, exports: [...contact.exports, name] })
+        if (!contact.exports.includes(name)) await changeGrant(api, contact, name, true)
       })(),
     { keys: [queryKeys.contacts, queryKeys.exports] },
   )
 }
 
-/** Take `exp` back from `contact`; the export goes too (`a2a_export_remove`) once no other contact holds it. */
+/** Stop sharing `exp` with `contact` (`contact_update(revoke)`: that export only). The export stays (no route): the next
+ * share of its chat reuses it (191: never removed from this machine's list). */
 export function useUngrant() {
   const api = useApi()
-  return useAction(
-    ({ contact, exp, contacts }: { contact: Contact; exp: string; contacts: readonly Contact[] }) =>
-      (async () => {
-        await api.contact_update(contact.name, { ...NO_PATCH, exports: contact.exports.filter((n) => n !== exp) })
-        if (!contacts.some((c) => c.name !== contact.name && c.exports.includes(exp))) await api.a2a_export_remove(exp)
-      })(),
-    { keys: [queryKeys.contacts, queryKeys.exports] },
-  )
+  return useAction(({ contact, exp }: { contact: Contact; exp: string }) => changeGrant(api, contact, exp, false), { keys: [queryKeys.contacts, queryKeys.exports] })
 }
 
 type Pick_ = { key: string; target: ExportTarget; title: string; group: 'Agents' | 'Chats'; detail: string }
@@ -751,7 +780,8 @@ function useShareable(enabled: boolean): Pick_[] {
 /**
  * 183 §7.6, §12.10 (D9): Access, under the contacts list — per contact what it may reach (agents and chats, each with its
  * first-contact answer and Paused state), and Share… to pick another agent or chat. `focus` names the contact whose row
- * scrolls into view (188).
+ * scrolls into view (188). 191: what it reaches is mesh-wide (a chat on another machine says which); a held contact is
+ * listed with its state, its shares and Share… (they apply wherever it is admitted).
  */
 export function ContactAccess({ focus = null }: { focus?: string | null }) {
   const contacts = useContacts()
@@ -763,14 +793,14 @@ export function ContactAccess({ focus = null }: { focus?: string | null }) {
       {contacts.isPending && <Empty>Loading…</Empty>}
       {contacts.isError && <Empty>{errorText(contacts.error)}</Empty>}
       {contacts.data?.length === 0 && <Empty>Add a contact above to choose what it may reach.</Empty>}
-      {contacts.data
-        ?.filter((c) => !held(c))
-        .map((c) => <Access key={c.name} c={c} all={contacts.data} exports={exports.data ?? []} focused={c.name === focus} />)}
+      {contacts.data?.map((c) => (
+        <Access key={c.id || c.name} c={c} exports={exports.data ?? []} focused={c.name === focus && !held(c)} />
+      ))}
     </Section>
   )
 }
 
-function Access({ c, all, exports, focused }: { c: Contact; all: readonly Contact[]; exports: readonly Export[]; focused: boolean }) {
+function Access({ c, exports, focused }: { c: Contact; exports: readonly Export[]; focused: boolean }) {
   const row = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (focused) row.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
@@ -781,7 +811,8 @@ function Access({ c, all, exports, focused }: { c: Contact; all: readonly Contac
   const grant = useGrant()
   const ungrant = useUngrant()
   const shareable = useShareable(picking)
-  const first = useAction((v: { exp: string; answer: FirstContact }) => api.contact_first_answer(c.name, v.exp, v.answer), { keys: [queryKeys.contacts] })
+  const machineOf = useChatMachine()
+  const first = useAction((v: { exp: string; answer: FirstContact }) => api.contact_first_answer(who(c), v.exp, v.answer), { keys: [queryKeys.contacts] })
   const granted = new Set(c.exports.flatMap((n) => exports.find((x) => x.name === n) ?? []).map((x) => `${x.target.kind}|${x.target.kind === 'agent' ? x.target.agent : x.target.session}`))
   const options = shareable.filter((p) => !granted.has(p.key) && `${p.title} ${p.detail}`.toLowerCase().includes(q.trim().toLowerCase()))
   const busy = grant.isPending || ungrant.isPending
@@ -795,28 +826,37 @@ function Access({ c, all, exports, focused }: { c: Contact; all: readonly Contac
         <div className="text-[13px] text-fg-secondary">{c.machine}</div>
       </div>
       <div className="mt-2 flex flex-col gap-1.5">
-        {c.exports.length === 0 && <p className="text-[13px] text-fg-tertiary">{c.name} reaches nothing yet.</p>}
+        {held(c) ? (
+          <p role="status" className="text-[13px] text-fg-secondary">
+            {heldLine(c)}
+          </p>
+        ) : (
+          c.exports.length === 0 && <p className="text-[13px] text-fg-tertiary">{c.name} reaches nothing yet.</p>
+        )}
         {c.exports.map((n) => {
           const x = exports.find((e) => e.name === n)
           return (
             <div key={n} className="flex flex-col gap-1.5 rounded-lg bg-layer-2 px-2.5 py-1.5">
               <div className="flex flex-wrap items-center gap-2">
                 <div className="flex min-w-0 flex-1 basis-40">
-                  <ExportChip name={n} exp={x} />
+                  <ExportChip name={n} exp={x} on={machineOf(x)} />
                 </div>
-                <Select value={c.first_contact[n] ?? 'ask'} disabled={first.isPending} onValueChange={(v) => first.mutate({ exp: n, answer: v as FirstContact })}>
-                  <SelectTrigger size="sm" className="w-36 shrink-0" aria-label={`First contact from ${c.name} to ${n}`}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {FIRST.map(([v, label]) => (
-                      <SelectItem key={v} value={v}>
-                        {label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Button variant="ghost" size="icon-sm" aria-label={`Stop sharing ${x?.description || n} with ${c.name}`} disabled={busy} onClick={() => ungrant.mutate({ contact: c, exp: n, contacts: all })}>
+                {/* A held contact's row carries no first-contact answers here: they are read once it is admitted. */}
+                {!held(c) && (
+                  <Select value={c.first_contact[n] ?? 'ask'} disabled={first.isPending} onValueChange={(v) => first.mutate({ exp: n, answer: v as FirstContact })}>
+                    <SelectTrigger size="sm" className="w-36 shrink-0" aria-label={`First contact from ${c.name} to ${n}`}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {FIRST.map(([v, label]) => (
+                        <SelectItem key={v} value={v}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+                <Button variant="ghost" size="icon-sm" aria-label={`Stop sharing ${x?.description || n} with ${c.name}`} disabled={busy} onClick={() => ungrant.mutate({ contact: c, exp: n })}>
                   <X />
                 </Button>
               </div>
@@ -874,16 +914,21 @@ function Access({ c, all, exports, focused }: { c: Contact; all: readonly Contac
 }
 
 /** 183 §12.10: the chat ⋯ menu's Share with contact… (`onShare` opens `ShareDialog` outside the menu) and, when contacts can
- * message the chat, Stop sharing with <them> (`a2a_export_remove`: the export and every grant go). */
+ * message the chat, Stop sharing with <them> (a revoke for each of them; the export stays for the next share). */
 export function SharingItems({ session, onShare }: { session: string; onShare: () => void }) {
   const api = useApi()
   const sharing = useSharing(session)
-  const stop = useAction((name: string) => api.a2a_export_remove(name), { keys: [queryKeys.contacts, queryKeys.exports] })
+  const stop = useAction(
+    async (s: Sharing) => {
+      for (const c of s.contacts) await changeGrant(api, c, s.exp.name, false)
+    },
+    { keys: [queryKeys.contacts, queryKeys.exports] },
+  )
   return (
     <>
       <DropdownMenuItem onSelect={onShare}>Share with contact…</DropdownMenuItem>
       {sharing && sharing.contacts.length > 0 && (
-        <DropdownMenuItem variant="destructive" disabled={stop.isPending} onSelect={() => stop.mutate(sharing.exp.name)}>
+        <DropdownMenuItem variant="destructive" disabled={stop.isPending} onSelect={() => stop.mutate(sharing)}>
           Stop sharing with {names(sharing.contacts)}
         </DropdownMenuItem>
       )}
@@ -924,18 +969,24 @@ export function ShareDialog({ session, title, onClose }: { session: string; titl
             {contacts.isPending && <Empty>Loading…</Empty>}
             {contacts.isError && <Empty>{errorText(contacts.error)}</Empty>}
             {contacts.data?.length === 0 && <Empty>No contacts yet.</Empty>}
+            {/* 191: a held contact is offered too, with its state: its shares apply wherever it is admitted. */}
             {contacts.data
-              ?.filter((c) => !c.blocked && !held(c))
+              ?.filter((c) => !c.blocked)
               .map((c) => {
                 const on = !!exp && c.exports.includes(exp.name)
                 return (
-                  <div key={c.name} className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border-subtle py-2.5 last:border-0">
+                  <div key={c.id || c.name} className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border-subtle py-2.5 last:border-0">
                     <div className="min-w-0 flex-1 basis-40">
                       <div className="text-sm font-medium">{c.name}</div>
                       <div className="text-[13px] text-fg-secondary">{c.machine}</div>
+                      {held(c) && (
+                        <p role="status" className="text-[13px] text-fg-secondary">
+                          {heldLine(c)}
+                        </p>
+                      )}
                     </div>
                     {on && exp ? (
-                      <Button size="sm" variant="outline" className="pointer-coarse:min-h-11" disabled={busy} aria-label={`Stop sharing with ${c.name}`} onClick={() => ungrant.mutate({ contact: c, exp: exp.name, contacts: contacts.data })}>
+                      <Button size="sm" variant="outline" className="pointer-coarse:min-h-11" disabled={busy} aria-label={`Stop sharing with ${c.name}`} onClick={() => ungrant.mutate({ contact: c, exp: exp.name })}>
                         Shared · Stop
                       </Button>
                     ) : (
