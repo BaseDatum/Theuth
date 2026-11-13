@@ -669,10 +669,17 @@ struct ComponentSlot {
     elements: Vec<AnyElement<'static>>,
     rows: usize,
     replace: bool,
+    intrinsic: bool,
 }
 impl ComponentSlot {
-    fn element(self) -> Option<AnyElement<'static>> {
+    fn element(mut self) -> Option<AnyElement<'static>> {
         if self.elements.is_empty() { return None; }
+        if self.intrinsic {
+            if self.elements.len() == 1 { return self.elements.pop(); }
+            return Some(element!(View(flex_direction: FlexDirection::Column) {
+                #(self.elements)
+            }).into_any());
+        }
         Some(element!(View(flex_direction: FlexDirection::Column, height: self.rows as u32, flex_shrink: 0.0) {
             #(self.elements)
         }).into_any())
@@ -687,14 +694,15 @@ fn prepend_editor(m: &mut Model, mut input: State<String>) {
     }
 }
 fn component_slot(m: &Model, at: Surface<'_>, width: u16, height: u16, handle: Option<Ref<TextInputHandle>>) -> ComponentSlot {
-    let mut slot = ComponentSlot { elements: Vec::new(), rows: 0, replace: false };
+    let mut slot = ComponentSlot { elements: Vec::new(), rows: 0, replace: false, intrinsic: false };
     for view in m.component_views(at, usize::from(width), usize::from(height)) {
-        let (element, rows, replace) = match view {
+        let (element, rows, replace, intrinsic) = match view {
             crate::components::View::Text(text) => {
                 let rows = text.lines().count();
-                (element!(Text(content: text, wrap: TextWrap::NoWrap)).into_any(), rows, false)
+                (element!(Text(content: text, wrap: TextWrap::NoWrap)).into_any(), rows, false, false)
             }
-            crate::components::View::Element { element, rows, replace } => (element, rows, replace),
+            crate::components::View::Element { element, rows, replace } => (element, rows, replace, false),
+            crate::components::View::IntrinsicElement { element, rows, replace } => (element, rows, replace, true),
             crate::components::View::Editor { editor, render, rows, replace } => {
                 let handle = handle.expect("separate editor must render in its shell slot");
                 let mut on_change = editor.on_change;
@@ -702,12 +710,15 @@ fn component_slot(m: &Model, at: Surface<'_>, width: u16, height: u16, handle: O
                     handle, has_focus: editor.focused, value: editor.value, ignore_paste: true,
                     on_change: move |value| on_change(value),
                 )).into_any();
-                (render(input), rows, replace)
+                (render(input), rows, replace, false)
             }
         };
-        if replace { slot.elements.clear(); slot.rows = 0; slot.replace = true; }
+        if replace { slot.elements.clear(); slot.rows = 0; slot.replace = true; slot.intrinsic = false; }
         slot.rows += rows;
-        slot.elements.push(element!(View(height: rows as u32, flex_shrink: 0.0) { #(element) }).into_any());
+        slot.intrinsic |= intrinsic;
+        slot.elements.push(if intrinsic { element } else {
+            element!(View(height: rows as u32, flex_shrink: 0.0) { #(element) }).into_any()
+        });
     }
     slot
 }
