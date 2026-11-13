@@ -52,7 +52,7 @@ pub trait TinyApi {
     #[method(name = "hidden")]
     fn hidden(&self, value: TypeThatDoesNotExist) -> RpcResult<TypeThatDoesNotExist>;
     /// An enabled cfg method must exist in dispatch and discovery.
-    #[cfg(all())]
+    #[cfg(test)]
     #[method(name = "enabled")]
     fn enabled(&self) -> RpcResult<bool>;
     /// Namespaced notifications with absolute subscribe/unsubscribe aliases.
