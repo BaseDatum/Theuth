@@ -107513,6 +107513,133 @@
         "format": "uuid",
         "type": "string"
       },
+      "method.sessionsync.output.PeerSync": {
+        "description": "`sessions_sync` entry: this engine's `theuth/sessions/1` session-log\nreplication with one peer, from memory (no store read). Seqs are log\npositions: ours of our own log, the peer's of its own.",
+        "properties": {
+          "acked": {
+            "description": "How far of our log the peer has acked (`None` before its first `Hello`).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "applied": {
+            "description": "How far of the peer's log we have applied (`None`: nothing of it yet).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "behind_in": {
+            "description": "Rows of the peer's we have not applied, when its head is known.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "behind_out": {
+            "description": "Rows of ours the peer has not acked (`head - acked`), once `acked` is known.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "head": {
+            "description": "Our log head.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "held": {
+            "description": "We hold our log from the peer (its agent schema is older).",
+            "type": "boolean"
+          },
+          "held_by_peer": {
+            "description": "The peer holds its log from us (our agent schema is older).",
+            "type": "boolean"
+          },
+          "last_error": {
+            "description": "The last failure with this peer, `\"<phase>: <error>\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_error_at": {
+            "description": "When `last_error` happened (RFC 3339).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_hello": {
+            "description": "When the peer's last `Hello` arrived (RFC 3339).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "peer": {
+            "description": "The peer (mesh `EngineId` as text).",
+            "type": "string"
+          },
+          "peer_head": {
+            "description": "The peer's log head as last seen (its `Hello`, then its rows).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "schema": {
+            "description": "The agent schema the peer's `Hello` reported (`None`: pre-183 or no `Hello` yet).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "since": {
+            "description": "When `up` last changed (RFC 3339); `None` before the first stream.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "up": {
+            "description": "A stream with the peer is up now.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "peer",
+          "up",
+          "since",
+          "last_hello",
+          "schema",
+          "head",
+          "acked",
+          "behind_out",
+          "peer_head",
+          "applied",
+          "behind_in",
+          "held",
+          "held_by_peer",
+          "last_error",
+          "last_error_at"
+        ],
+        "type": "object"
+      },
       "method.sessionsync.output.Retention": {
         "description": "What happens to a root tree's data when it closes.",
         "oneOf": [
@@ -107674,6 +107801,123 @@
           "elsewhere",
           "log_seq",
           "last_snapshot"
+        ],
+        "type": "object"
+      },
+      "method.sessionsync.receiver.PeerSync": {
+        "description": "`sessions_sync` entry: this engine's `theuth/sessions/1` session-log\nreplication with one peer, from memory (no store read). Seqs are log\npositions: ours of our own log, the peer's of its own.",
+        "properties": {
+          "acked": {
+            "description": "How far of our log the peer has acked (`None` before its first `Hello`).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "applied": {
+            "description": "How far of the peer's log we have applied (`None`: nothing of it yet).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "behind_in": {
+            "description": "Rows of the peer's we have not applied, when its head is known.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "behind_out": {
+            "description": "Rows of ours the peer has not acked (`head - acked`), once `acked` is known.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "head": {
+            "description": "Our log head.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "held": {
+            "description": "We hold our log from the peer (its agent schema is older).",
+            "type": "boolean"
+          },
+          "held_by_peer": {
+            "description": "The peer holds its log from us (our agent schema is older).",
+            "type": "boolean"
+          },
+          "last_error": {
+            "description": "The last failure with this peer, `\"<phase>: <error>\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_error_at": {
+            "description": "When `last_error` happened (RFC 3339).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_hello": {
+            "description": "When the peer's last `Hello` arrived (RFC 3339).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "peer": {
+            "description": "The peer (mesh `EngineId` as text).",
+            "type": "string"
+          },
+          "peer_head": {
+            "description": "The peer's log head as last seen (its `Hello`, then its rows).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "schema": {
+            "description": "The agent schema the peer's `Hello` reported (`None`: pre-183 or no `Hello` yet).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "since": {
+            "description": "When `up` last changed (RFC 3339); `None` before the first stream.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "up": {
+            "description": "A stream with the peer is up now.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "peer",
+          "up",
+          "head",
+          "held",
+          "held_by_peer"
         ],
         "type": "object"
       },
@@ -128470,6 +128714,29 @@
         },
         "x-theuth-receiverSchema": {
           "$ref": "#/components/schemas/method.sessionsync.receiver.SessionsStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "sessionsync"
+    },
+    {
+      "name": "sessions_sync",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.sessionsync.output.PeerSync"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.sessionsync.receiver.PeerSync"
+          },
+          "type": "array"
         }
       },
       "x-theuth-audience": "owner",

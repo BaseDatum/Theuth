@@ -34,8 +34,11 @@ use crate::types::{MAX_FRAME, Msg};
 
 /// Rows per changeset entry.
 const CHUNK_ROWS: i64 = 1000;
-/// Payload per wire part: half a frame leaves room for postcard framing.
-const PART_BYTES: usize = MAX_FRAME / 2;
+/// Payload per wire part: small parts keep a slow link moving; a chunk
+/// over it is halved, a single row over it still goes alone.
+const PART_BYTES: usize = 4 * 1024 * 1024;
+/// Largest single entry: one frame less room for postcard framing.
+const ENTRY_MAX: usize = MAX_FRAME - 1024 * 1024;
 
 /// One applied `sessions` record: id, owner, epoch, and the local fence
 /// `(epoch, owner)` before it — `None` when the session was unknown here.
@@ -46,11 +49,23 @@ pub type AppliedSession = (String, String, u32, Option<(u32, String)>);
 
 /// Build the snapshot of `origin`'s sessions this engine holds.
 pub async fn build(store: &Store, origin: &PeerId) -> anyhow::Result<Msg> {
+    Ok(build_counted(store, origin).await?.0)
+}
+
+/// [`build`], and how many rows were left out (each alone over [`ENTRY_MAX`]).
+pub async fn build_counted(store: &Store, origin: &PeerId) -> anyhow::Result<(Msg, u64)> {
+    let mut left_out = 0;
     // ponytail: holds the store's write lock for the whole build (seconds on
     // a 100 MB store); a read connection with its own session would free it.
     let mut tx = store.begin_apply().await?;
     let current_to_seq = if origin.0 == store.engine() {
-        u64::try_from(store.log_seq())?
+        // The log's own head inside this transaction, not the seq counter: a
+        // commit dropped midway may have counted a seq it never wrote, which
+        // the next write reuses; a cursor past it would drop that row.
+        let (max,): (Option<i64>,) = sqlx::query_as("SELECT MAX(seq) FROM session_log")
+            .fetch_one(&mut *tx)
+            .await?;
+        u64::try_from(max.unwrap_or(0).max(store.log_head()))?
     } else {
         store
             .cursors()
@@ -95,28 +110,46 @@ pub async fn build(store: &Store, origin: &PeerId) -> anyhow::Result<Msg> {
             .bind(&origin.0)
             .fetch_all(&mut *tx)
             .await?;
-            let (Some(&first), Some(&end)) = (ids.first(), ids.last()) else {
+            let Some(&end) = ids.last() else {
                 break;
             };
-            let scratch = tx
-                .with_raw(|db| unsafe { Scratch::create(db, table) })
-                .await??;
-            sqlx::query(sqlx::AssertSqlSafe(format!(
-                "INSERT INTO temp.\"{table}\" SELECT * FROM main.\"{table}\" WHERE rowid BETWEEN ? AND ? AND {filter}"
-            )))
-            .bind(first)
-            .bind(end)
-            .bind(&origin.0)
-            .execute(&mut *tx)
-            .await?;
-            let bytes = scratch.changeset()?;
-            drop(scratch);
-            if !bytes.is_empty() {
-                tables.push((table.to_owned(), bytes));
-            }
-            sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM temp.\"{table}\"")))
+            // A chunk over one part is halved until it fits; a single row
+            // over one part cannot travel at all and is left out, loudly.
+            let mut ranges = vec![(0, ids.len())];
+            while let Some((lo, hi)) = ranges.pop() {
+                let scratch = tx
+                    .with_raw(|db| unsafe { Scratch::create(db, table) })
+                    .await??;
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "INSERT INTO temp.\"{table}\" SELECT * FROM main.\"{table}\" WHERE rowid BETWEEN ? AND ? AND {filter}"
+                )))
+                .bind(ids[lo])
+                .bind(ids[hi - 1])
+                .bind(&origin.0)
                 .execute(&mut *tx)
                 .await?;
+                let bytes = scratch.changeset()?;
+                drop(scratch);
+                sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM temp.\"{table}\"")))
+                    .execute(&mut *tx)
+                    .await?;
+                if bytes.len() > PART_BYTES && hi - lo > 1 {
+                    let mid = lo + (hi - lo) / 2;
+                    ranges.push((mid, hi));
+                    ranges.push((lo, mid));
+                } else if bytes.len() > ENTRY_MAX {
+                    left_out += 1;
+                    tracing::warn!(
+                        "sessions: snapshot of {origin}: {table} rowid {} is {} bytes, over one \
+                         {MAX_FRAME}-byte frame; it is left out and peers bootstrapping from this \
+                         snapshot lack it",
+                        ids[lo],
+                        bytes.len()
+                    );
+                } else if !bytes.is_empty() {
+                    tables.push((table.to_owned(), bytes));
+                }
+            }
             last = end;
         }
     }
@@ -126,11 +159,12 @@ pub async fn build(store: &Store, origin: &PeerId) -> anyhow::Result<Msg> {
             .await?;
     }
     drop(tx); // rollback: nothing of `main` changed
-    Ok(Msg::Snapshot {
+    let snapshot = Msg::Snapshot {
         origin: origin.clone(),
         current_to_seq,
         tables,
-    })
+    };
+    Ok((snapshot, left_out))
 }
 
 /// Cut a snapshot into frame-sized parts, ending with an empty terminator

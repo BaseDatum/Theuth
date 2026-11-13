@@ -115,6 +115,12 @@ pub struct TakeSession {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Peers;
 
+/// `ask` → per peer, the session-log replication with it
+/// ([`sync::Node::sync_status`]): every peer a stream ran with, and every
+/// connected one.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SyncStatus;
+
 /// The [`SESSIONS_ACTOR`] actor: the durable store, the transport once the
 /// mesh is up, and the peers currently connected.
 #[derive(kameo::Actor)]
@@ -330,6 +336,15 @@ impl Message<Peers> for SessionSync {
     }
 }
 
+impl Message<SyncStatus> for SessionSync {
+    type Reply = Vec<types::PeerSync>;
+
+    async fn handle(&mut self, _: SyncStatus, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let connected: Vec<PeerId> = self.peers.keys().cloned().collect();
+        self.shipper.node().sync_status(&connected)
+    }
+}
+
 /// The plugin: reads `sessions:`, takes the agent's durable store, spawns
 /// [`SessionSync`] as [`SESSIONS_ACTOR`] and hands it the transport once
 /// the replica plugin has one. Starts after `agent` and `replica`.
@@ -391,6 +406,8 @@ impl runtime::Plugin for SessionSyncPlugin {
             tracing::warn!("sessions: remote events unavailable: {e:#}");
         }
         let shipper = ship::Shipper::new(store.clone(), Some(rt.clone()), &config);
+        let node = shipper.node().clone();
+        mesh::tools::set_peer_note(Box::new(move |peer| node.peer_note(peer)));
         tokio::spawn(owner::sweep_orphans(
             store.clone(),
             config.orphan_keep_days,

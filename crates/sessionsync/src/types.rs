@@ -436,3 +436,81 @@ pub struct SessionsStatus {
     /// records one.
     pub last_snapshot: Option<String>,
 }
+
+/// `sessions_sync` entry: this engine's `theuth/sessions/1` session-log
+/// replication with one peer, from memory (no store read). Seqs are log
+/// positions: ours of our own log, the peer's of its own.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PeerSync {
+    /// The peer (mesh `EngineId` as text).
+    pub peer: String,
+    /// A stream with the peer is up now.
+    pub up: bool,
+    /// When `up` last changed (RFC 3339); `None` before the first stream.
+    pub since: Option<String>,
+    /// When the peer's last `Hello` arrived (RFC 3339).
+    pub last_hello: Option<String>,
+    /// The agent schema the peer's `Hello` reported (`None`: pre-183 or no `Hello` yet).
+    pub schema: Option<u32>,
+    /// Our log head.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub head: u64,
+    /// How far of our log the peer has acked (`None` before its first `Hello`).
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub acked: Option<u64>,
+    /// Rows of ours the peer has not acked (`head - acked`), once `acked` is known.
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub behind_out: Option<u64>,
+    /// The peer's log head as last seen (its `Hello`, then its rows).
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub peer_head: Option<u64>,
+    /// How far of the peer's log we have applied (`None`: nothing of it yet).
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub applied: Option<u64>,
+    /// Rows of the peer's we have not applied, when its head is known.
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub behind_in: Option<u64>,
+    /// We hold our log from the peer (its agent schema is older).
+    pub held: bool,
+    /// The peer holds its log from us (our agent schema is older).
+    pub held_by_peer: bool,
+    /// The last failure with this peer, `"<phase>: <error>"`.
+    pub last_error: Option<String>,
+    /// When `last_error` happened (RFC 3339).
+    pub last_error_at: Option<String>,
+}
+
+impl PeerSync {
+    /// One line for `mesh_peers`: `sessions=up|down[ since …] out=… in=…[ held…][ error …]`.
+    pub fn line(&self) -> String {
+        let num = |v: Option<u64>| v.map_or_else(|| "?".to_owned(), |v| v.to_string());
+        let mut s = format!(
+            "sessions={}{} out={} behind (acked {}/{}) in={} behind (applied {}/{}) schema={}",
+            if self.up { "up" } else { "down" },
+            self.since
+                .as_ref()
+                .map(|t| format!(" since {t}"))
+                .unwrap_or_default(),
+            num(self.behind_out),
+            num(self.acked),
+            self.head,
+            num(self.behind_in),
+            num(self.applied),
+            num(self.peer_head),
+            self.schema
+                .map_or_else(|| "?".to_owned(), |v| v.to_string()),
+        );
+        if self.held {
+            s.push_str(" held(we hold our log: its schema is older)");
+        }
+        if self.held_by_peer {
+            s.push_str(" held_by_peer(it holds its log: our schema is older)");
+        }
+        if let (Some(e), Some(at)) = (&self.last_error, &self.last_error_at) {
+            let e: String = e.chars().take(200).collect();
+            s.push_str(&format!(" last_error={at} {e:?}"));
+        }
+        s
+    }
+}

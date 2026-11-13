@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use agent::store::Store;
 use parking_lot::Mutex;
@@ -14,7 +14,7 @@ use runtime::Runtime;
 use tokio::task::JoinHandle;
 
 use crate::SessionsConfig;
-use crate::sync::{Node, Stream, run_from, run_stream};
+use crate::sync::{Node, Phase, Stream, run_from, run_stream};
 use crate::types::Msg;
 
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
@@ -73,12 +73,17 @@ impl Shipper {
                 loop {
                     match transport.open(&p, ALPN_SESSIONS).await {
                         Ok(stream) => {
-                            backoff = BACKOFF_MIN;
-                            if let Err(e) = run_stream(&node, p.clone(), stream).await {
-                                tracing::debug!("sessions: stream to {p} ended: {e:#}");
+                            // `run_stream` reports how the stream ended. Only a
+                            // stream that lived resets the backoff: one that dies
+                            // at once (a deterministic failure) must not be
+                            // redialed every second.
+                            let began = Instant::now();
+                            let _ = run_stream(&node, p.clone(), stream).await;
+                            if began.elapsed() >= BACKOFF_MAX {
+                                backoff = BACKOFF_MIN;
                             }
                         }
-                        Err(e) => tracing::debug!("sessions: open {p}: {e:#}"),
+                        Err(e) => node.report(&p, Phase::Open, &e, "redialing"),
                     }
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(BACKOFF_MAX);
