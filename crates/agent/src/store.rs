@@ -8043,6 +8043,76 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
         store.close().await;
     }
 
+    /// A transaction that took a log seq for one session and is then refused
+    /// for another (`NotOwner`) gives the seq back: the next logged row is
+    /// `head + 1`, so the log stays contiguous and no peer stalls on a gap.
+    /// Both creation orders, so the refused session is captured after ours once.
+    #[tokio::test]
+    async fn a_refused_commit_burns_no_log_seq() {
+        let scratch = crate::TestDir::new("burned-seq");
+        let store = Store::open(
+            &scratch.0.join("sessions.sqlite"),
+            Some(mesh::EngineId("a".into())),
+        )
+        .await
+        .unwrap();
+        for ours_first in [true, false] {
+            let (mine, theirs) = (SessionId::new(), SessionId::new());
+            let order = if ours_first {
+                [mine, theirs]
+            } else {
+                [theirs, mine]
+            };
+            for id in order {
+                store
+                    .create_session(id, "m", None, None, None)
+                    .await
+                    .unwrap();
+            }
+            // `theirs` now belongs to `b` (a replicated take: capture off).
+            let mut tx = store.begin_apply().await.unwrap();
+            sqlx::query("UPDATE sessions SET owner = 'b', epoch = 2 WHERE id = ?")
+                .bind(theirs.to_string())
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+
+            let head = store.log_seq();
+            let mut tx = store.begin_write().await.unwrap();
+            for id in order {
+                sqlx::query("UPDATE sessions SET title = 'both' WHERE id = ?")
+                    .bind(id.to_string())
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+            }
+            let err = tx.commit().await.unwrap_err();
+            assert!(
+                matches!(
+                    err.downcast_ref::<StoreError>(),
+                    Some(StoreError::NotOwner { .. })
+                ),
+                "{err:#}"
+            );
+            assert_eq!(
+                store.log_seq(),
+                head,
+                "ours_first={ours_first}: seq given back"
+            );
+            store.set_title(mine, "mine").await.unwrap();
+            let seqs: Vec<i64> = store
+                .log_after(head)
+                .await
+                .unwrap()
+                .iter()
+                .map(|r| r.seq)
+                .collect();
+            assert_eq!(seqs, vec![head + 1], "ours_first={ours_first}: no gap");
+        }
+        store.close().await;
+    }
+
     /// Demote bookkeeping (68 §4.3): only rows above what the taker had
     /// applied are orphaned; a local note is not logged and never guarded;
     /// `session_log_seq` follows the session's own rows; `flush` logs nothing.
