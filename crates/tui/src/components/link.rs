@@ -17,9 +17,9 @@ pub struct Link {
 pub(crate) enum Menu { Link { cursor: usize } }
 #[derive(Debug)]
 pub(crate) enum Prompt {
-    LinkDeviceName { id: String, name: String },
-    LinkName,
-    LinkRevoke { id: String, name: String },
+    DeviceName { id: String, name: String },
+    Name,
+    Revoke { id: String, name: String },
 }
 /// Owner-local request carried into its effect.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,9 +142,9 @@ impl Link {
             KeyCode::Esc => { self.menu = None; cx.close(); }
             KeyCode::Char('p') => { self.menu = None; cx.close(); self.request(Request::Pair, cx); }
             KeyCode::Char('e') => self.request(Request::Enable(!enabled), cx),
-            KeyCode::Char('n') => { self.menu = None; self.prompt = Some(Prompt::LinkName); }
-            KeyCode::Char('r') => if let Some((id, name)) = device { self.menu = None; self.prompt = Some(Prompt::LinkDeviceName { id, name }); },
-            KeyCode::Char('x') => if let Some((id, name)) = device { self.menu = None; self.prompt = Some(Prompt::LinkRevoke { id, name }); },
+            KeyCode::Char('n') => { self.menu = None; self.prompt = Some(Prompt::Name); }
+            KeyCode::Char('r') => if let Some((id, name)) = device { self.menu = None; self.prompt = Some(Prompt::DeviceName { id, name }); },
+            KeyCode::Char('x') => if let Some((id, name)) = device { self.menu = None; self.prompt = Some(Prompt::Revoke { id, name }); },
             _ => {}
         }
     }
@@ -152,9 +152,9 @@ impl Link {
         let Some(prompt) = self.prompt.take() else { return };
         cx.consume_key(); cx.close();
         let request = match prompt {
-            Prompt::LinkDeviceName { id, .. } => Request::RenameDevice(id, line.to_owned()),
-            Prompt::LinkName => Request::Rename(line.to_owned()),
-            Prompt::LinkRevoke { id, name } => {
+            Prompt::DeviceName { id, .. } => Request::RenameDevice(id, line.to_owned()),
+            Prompt::Name => Request::Rename(line.to_owned()),
+            Prompt::Revoke { id, name } => {
                 if !line.eq_ignore_ascii_case("y") && !line.eq_ignore_ascii_case("yes") {
                     cx.core(CoreAction::Notice(format!("link: kept {name}"))); return;
                 }
@@ -232,7 +232,7 @@ impl Component for Link {
                 if cx.core.reasoning { cx.plain(Plain::Text("\x1b[0m\n".into())); }
                 self.event(event, cx);
             }
-            Input::Tick { now_ms, .. } => if let Some(card) = &mut self.pairing { if !card.tick(now_ms, cx) { self.pairing = None; } },
+            Input::Tick { now_ms, .. } => if let Some(card) = &mut self.pairing && !card.tick(now_ms, cx) { self.pairing = None; },
             Input::Lifecycle(Lifecycle::CommandFailed(_)) => self.awaiting = false,
             Input::Lifecycle(Lifecycle::FocusLost) => { self.awaiting = false; self.menu = None; self.prompt = None; }
             Input::Lifecycle(Lifecycle::SessionReset) => { self.awaiting = false; self.menu = None; self.prompt = None; self.pairing = None; }
@@ -247,9 +247,9 @@ impl Component for Link {
     }
     fn editor(&self) -> Option<Editor> {
         let hint = match self.prompt.as_ref()? {
-            Prompt::LinkDeviceName { name, .. } => format!("link  rename {name}  new name  (esc cancel)"),
-            Prompt::LinkName => "link  node name  (esc cancel)".into(),
-            Prompt::LinkRevoke { name, .. } => format!("link  revoke {name}?  y/n"),
+            Prompt::DeviceName { name, .. } => format!("link  rename {name}  new name  (esc cancel)"),
+            Prompt::Name => "link  node name  (esc cancel)".into(),
+            Prompt::Revoke { name, .. } => format!("link  revoke {name}?  y/n"),
         };
         Some(Editor { hint, masked: false, submit_empty: false })
     }

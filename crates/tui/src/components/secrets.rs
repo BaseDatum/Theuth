@@ -26,22 +26,22 @@ pub(crate) struct SecretRequest {
 pub(crate) enum Menu { Secrets { cursor: usize, history: Option<usize> } }
 // No Debug: the note step owns the value until its one RPC submission.
 pub(crate) enum Prompt {
-    SecretName,
-    SecretValue { name: String, current: Option<u32> },
-    SecretNote { name: String, value: String },
-    SecretDelete { name: String },
+    Name,
+    Value { name: String, current: Option<u32> },
+    Note { name: String, value: String },
+    Delete { name: String },
 }
 impl Prompt {
     pub(crate) fn hint(&self) -> String {
         match self {
-            Self::SecretName => "secrets add  name  (esc cancel)".into(),
-            Self::SecretValue { name, current: None } => format!("secrets add  {name}  value  (esc cancel)"),
-            Self::SecretValue { name, current: Some(v) } => format!("secrets add  {name}  value  (replaces v{v} → v{}; esc cancel)", v + 1),
-            Self::SecretNote { name, .. } => format!("secrets add  {name}  note  (⏎ none; esc cancel)"),
-            Self::SecretDelete { name } => format!("secrets  delete {name}?  type the name to confirm  (esc cancel)"),
+            Self::Name => "secrets add  name  (esc cancel)".into(),
+            Self::Value { name, current: None } => format!("secrets add  {name}  value  (esc cancel)"),
+            Self::Value { name, current: Some(v) } => format!("secrets add  {name}  value  (replaces v{v} → v{}; esc cancel)", v + 1),
+            Self::Note { name, .. } => format!("secrets add  {name}  note  (⏎ none; esc cancel)"),
+            Self::Delete { name } => format!("secrets  delete {name}?  type the name to confirm  (esc cancel)"),
         }
     }
-    pub(crate) fn masked(&self) -> bool { matches!(self, Self::SecretValue { .. }) }
+    pub(crate) fn masked(&self) -> bool { matches!(self, Self::Value { .. }) }
 }
 /// RPC input; deliberately opaque to Debug because set/answer carry raw values.
 #[derive(Clone)]
@@ -101,9 +101,9 @@ impl Secrets {
         let (sub, rest) = arg.split_once(char::is_whitespace).map_or((arg, ""), |(s, r)| (s, r.trim()));
         let request = match (sub, rest) {
             ("", _) => { self.awaiting = true; Some(Request::ListSecrets) }
-            ("add", "") => { self.prompt = Some(Prompt::SecretName); None }
+            ("add", "") => { self.prompt = Some(Prompt::Name); None }
             ("add", name) if ::secrets::vault::valid_name(name) => {
-                self.prompt = Some(Prompt::SecretValue { name: name.to_owned(), current: self.secret_current(name) }); None
+                self.prompt = Some(Prompt::Value { name: name.to_owned(), current: self.secret_current(name) }); None
             }
             ("add", name) => { cx.core(CoreAction::Reject(bad_secret_name(name))); None }
             ("rm", name) if !name.is_empty() => Some(Request::DeleteSecret(name.to_owned())),
@@ -171,9 +171,9 @@ impl Secrets {
             (KeyCode::Down, None) => *cursor = (*cursor + 1).min(list.len().saturating_sub(1)),
             (KeyCode::Esc, None) => { self.menu = None; cx.close(); }
             (KeyCode::Char('h'), None) if info.is_some() => *history = Some(0),
-            (KeyCode::Char('a'), _) => { self.menu = None; self.prompt = Some(Prompt::SecretName); }
-            (KeyCode::Char('r'), _) => if let Some(name) = name { self.menu = None; self.prompt = Some(Prompt::SecretValue { name, current }); },
-            (KeyCode::Char('d'), _) => if let Some(name) = name { self.menu = None; self.prompt = Some(Prompt::SecretDelete { name }); },
+            (KeyCode::Char('a'), _) => { self.menu = None; self.prompt = Some(Prompt::Name); }
+            (KeyCode::Char('r'), _) => if let Some(name) = name { self.menu = None; self.prompt = Some(Prompt::Value { name, current }); },
+            (KeyCode::Char('d'), _) => if let Some(name) = name { self.menu = None; self.prompt = Some(Prompt::Delete { name }); },
             _ => {}
         }
     }
@@ -182,14 +182,14 @@ impl Secrets {
         let Some(prompt) = self.prompt.take() else { return };
         cx.consume_key();
         let request = match prompt {
-            Prompt::SecretName => {
-                if ::secrets::vault::valid_name(line) { self.prompt = Some(Prompt::SecretValue { name: line.to_owned(), current: self.secret_current(line) }); }
-                else { self.prompt = Some(Prompt::SecretName); cx.core(CoreAction::Reject(bad_secret_name(line))); }
+            Prompt::Name => {
+                if ::secrets::vault::valid_name(line) { self.prompt = Some(Prompt::Value { name: line.to_owned(), current: self.secret_current(line) }); }
+                else { self.prompt = Some(Prompt::Name); cx.core(CoreAction::Reject(bad_secret_name(line))); }
                 None
             }
-            Prompt::SecretValue { name, .. } => { self.prompt = Some(Prompt::SecretNote { name, value: line.to_owned() }); None }
-            Prompt::SecretNote { name, value } => Some(Request::SetSecret { name, value, note: (!line.is_empty()).then(|| line.to_owned()) }),
-            Prompt::SecretDelete { name } => {
+            Prompt::Value { name, .. } => { self.prompt = Some(Prompt::Note { name, value: line.to_owned() }); None }
+            Prompt::Note { name, value } => Some(Request::SetSecret { name, value, note: (!line.is_empty()).then(|| line.to_owned()) }),
+            Prompt::Delete { name } => {
                 if line == name { Some(Request::DeleteSecret(name)) }
                 else { cx.core(CoreAction::Notice(format!("secrets: kept {name}"))); None }
             }
@@ -282,7 +282,7 @@ impl Component for Secrets {
     fn editor(&self) -> Option<Editor> {
         let live = !self.requests.is_empty();
         if !live && self.prompt.is_none() { return None }
-        Some(Editor { hint: self.prompt.as_ref().map(Prompt::hint).unwrap_or_default(), masked: live || self.prompt.as_ref().is_some_and(Prompt::masked), submit_empty: !live && matches!(self.prompt, Some(Prompt::SecretNote { .. })) })
+        Some(Editor { hint: self.prompt.as_ref().map(Prompt::hint).unwrap_or_default(), masked: live || self.prompt.as_ref().is_some_and(Prompt::masked), submit_empty: !live && matches!(self.prompt, Some(Prompt::Note { .. })) })
     }
     fn view(&self, at: Surface<'_>, vc: &ViewCx<'_>) -> Option<View> {
         match at {

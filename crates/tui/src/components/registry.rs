@@ -162,6 +162,7 @@ impl Registry {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()).any(|component| component.turn_hidden(seq))
     }
     /// Hand owned canonical history to the first claiming owner, without cloning it.
+    #[expect(clippy::result_large_err, reason = "Unclaimed history stays owned without allocating a box per owner.")]
     pub fn history_entry(&mut self, mut row: agent::HistoryEntry, opts: &markdown::Options) -> Result<Vec<crate::model::Entry>, agent::HistoryEntry> {
         for component in self.slots.iter_mut().filter_map(|slot| slot.component.as_mut()) {
             match component.history_entry(row, opts) {
@@ -291,7 +292,7 @@ impl Registry {
     }
     /// The last entry owner may override the core disclosure eligibility.
     pub fn entry_toggleable(&self, key: &str) -> Option<bool> {
-        self.slots.iter().filter_map(|slot| slot.component.as_ref()).filter_map(|component| component.entry_toggleable(key)).last()
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).filter_map(|component| component.entry_toggleable(key)).next_back()
     }
     /// Last replacement and following append rows, matching entry-view composition exactly.
     pub fn entry_layout(&self, key: &str, width: usize) -> (Option<usize>, usize) {
@@ -404,9 +405,7 @@ impl Registry {
         } else { &[ComposerMode::Default] };
         modes.iter().copied().flat_map(move |mode| self.slots.iter().enumerate().filter_map(move |(index, slot)| {
             let component = slot.component.as_ref()?;
-            if matches!(at, Surface::ComposerHeader) {
-                if component.composer_mode() != mode { return None; }
-            }
+            if matches!(at, Surface::ComposerHeader) && component.composer_mode() != mode { return None; }
             if matches!(at, Surface::Modal)
                 && !self.focus.is_some_and(|(token, _)| token.slot == index)
             { return None; }

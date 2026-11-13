@@ -237,13 +237,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     m.component_notify(crate::components::Lifecycle::SessionRefreshRequested);
                 }
                 // Root metadata moved while a grouped picker is open (51 §3): re-list it.
-                if std::mem::take(&mut m.refresh_grouping) {
-                    match (&m.menu, m.session) {
-                        (Some(Menu::Sessions { .. }), _) => {
-                            let _ = commands.send(Command::ListSessions);
-                        }
-                        _ => {}
-                    }
+                if std::mem::take(&mut m.refresh_grouping) && matches!(m.menu, Some(Menu::Sessions { .. })) {
+                    let _ = commands.send(Command::ListSessions);
                 }
             }
         }
@@ -439,8 +434,9 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 && modifiers.is_empty()
                 && m.components.editor().is_none()
                 && input.read().is_empty()
+                && m.component_open_latest_entry()
             {
-                if m.component_open_latest_entry() { return; }
+                return;
             }
             // Transcript scrolling. ↑/↓ are the editor's while it spans
             // lines; terminals without mouse capture send them for the wheel.
@@ -699,10 +695,9 @@ fn component_slot(m: &Model, at: Surface<'_>, width: u16, height: u16, handle: O
             crate::components::View::IntrinsicElement { element, rows, replace } => (element, rows, replace, true),
             crate::components::View::Editor { editor, render, rows, replace } => {
                 let handle = handle.expect("separate editor must render in its shell slot");
-                let mut on_change = editor.on_change;
                 let input = element!(TextInput(
                     handle, has_focus: editor.focused, value: editor.value, ignore_paste: true,
-                    on_change: move |value| on_change(value),
+                    on_change: editor.on_change,
                 )).into_any();
                 (render(input), rows, replace, false)
             }

@@ -19,9 +19,9 @@ pub struct Nodes {
 pub(crate) enum Menu { Nodes { cursor: usize } }
 #[derive(Debug)]
 pub(crate) enum Prompt {
-    NodeKey,
-    NodeName { id: String, name: String },
-    NodeRemove { id: String, name: String },
+    Key,
+    Name { id: String, name: String },
+    Remove { id: String, name: String },
 }
 /// Owner request carried into the RPC task.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -139,10 +139,10 @@ impl Nodes {
             KeyCode::Up => *cursor = cursor.saturating_sub(1),
             KeyCode::Down => *cursor = (*cursor + 1).min(list.len().saturating_sub(1)),
             KeyCode::Esc => { self.menu = None; cx.close(); }
-            KeyCode::Char('a') => { self.menu = None; self.prompt = Some(Prompt::NodeKey); }
+            KeyCode::Char('a') => { self.menu = None; self.prompt = Some(Prompt::Key); }
             KeyCode::Char('i') => if let Some((id, _)) = node { self.menu = None; cx.close(); self.request(Request::InviteNode(id), cx); },
-            KeyCode::Char('r') => if let Some((id, name)) = node { self.menu = None; self.prompt = Some(Prompt::NodeName { id, name }); },
-            KeyCode::Char('x') => if let Some((id, name)) = node { self.menu = None; self.prompt = Some(Prompt::NodeRemove { id, name }); },
+            KeyCode::Char('r') => if let Some((id, name)) = node { self.menu = None; self.prompt = Some(Prompt::Name { id, name }); },
+            KeyCode::Char('x') => if let Some((id, name)) = node { self.menu = None; self.prompt = Some(Prompt::Remove { id, name }); },
             _ => {}
         }
     }
@@ -150,9 +150,9 @@ impl Nodes {
         let Some(prompt) = self.prompt.take() else { return };
         cx.consume_key(); cx.close();
         let request = match prompt {
-            Prompt::NodeKey => Request::AddNode(line.to_owned(), None),
-            Prompt::NodeName { id, .. } => Request::RenameNode(id, line.to_owned()),
-            Prompt::NodeRemove { id, name } => {
+            Prompt::Key => Request::AddNode(line.to_owned(), None),
+            Prompt::Name { id, .. } => Request::RenameNode(id, line.to_owned()),
+            Prompt::Remove { id, name } => {
                 if !line.eq_ignore_ascii_case("y") && !line.eq_ignore_ascii_case("yes") {
                     cx.core(CoreAction::Notice(format!("nodes: kept {name}"))); return;
                 }
@@ -208,7 +208,7 @@ impl Component for Nodes {
             }
             Input::Tick { now_ms, .. } => {
                 if std::mem::take(&mut self.refresh) && cx.core.interactive { self.request(Request::ListNodes, cx); }
-                if let Some(card) = &mut self.invite { if !card.tick(now_ms, cx) { self.invite = None; } }
+                if let Some(card) = &mut self.invite && !card.tick(now_ms, cx) { self.invite = None; }
             }
             Input::Lifecycle(Lifecycle::CommandFailed(_)) => self.awaiting = false,
             Input::Lifecycle(Lifecycle::FocusLost) => { self.awaiting = false; self.menu = None; self.prompt = None; }
@@ -223,9 +223,9 @@ impl Component for Nodes {
     }
     fn editor(&self) -> Option<Editor> {
         let hint = match self.prompt.as_ref()? {
-            Prompt::NodeKey => "nodes  add  paste the node's key  (esc cancel)".into(),
-            Prompt::NodeName { name, .. } => format!("nodes  rename {name}  new name  (esc cancel)"),
-            Prompt::NodeRemove { name, .. } => format!("nodes  remove {name}?  y/n"),
+            Prompt::Key => "nodes  add  paste the node's key  (esc cancel)".into(),
+            Prompt::Name { name, .. } => format!("nodes  rename {name}  new name  (esc cancel)"),
+            Prompt::Remove { name, .. } => format!("nodes  remove {name}?  y/n"),
         };
         Some(Editor { hint, masked: false, submit_empty: false })
     }

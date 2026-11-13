@@ -112,7 +112,7 @@ impl Component for MeshDevices {
                         ::link::Pairing { key: pairing.string, expires_at_ms: pairing.expires_ms }, cx));
                 }
             },
-            Input::Tick { now_ms, .. } => if let Some(card) = &mut self.invite { if !card.tick(now_ms, cx) { self.invite = None; } },
+            Input::Tick { now_ms, .. } => if let Some(card) = &mut self.invite && !card.tick(now_ms, cx) { self.invite = None; },
             Input::Lifecycle(Lifecycle::SessionReset | Lifecycle::TranscriptReplaced) => self.invite = None,
             _ => {}
         }

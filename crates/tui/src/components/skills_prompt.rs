@@ -13,6 +13,7 @@ pub(crate) struct SkillsPrompt {
     generation: u64,
 }
 #[derive(Clone, Debug)]
+#[expect(clippy::large_enum_variant, reason = "The draft moves into an already boxed effect.")]
 pub(crate) enum Request {
     ShowPrompt(Option<SessionId>), ListSkills, LoadSkill(String),
     AddSkillRepo(String), RemoveSkill(String), SyncSkills,

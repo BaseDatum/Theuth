@@ -19,6 +19,7 @@ pub(crate) struct Talk {
     simulation: VecDeque<(u64, Msg)>,
 }
 #[derive(Clone, Debug)]
+#[expect(clippy::large_enum_variant, reason = "The draft moves into an already boxed effect.")]
 pub(crate) enum Request {
     TalkStart { session: Option<SessionId>, draft: Option<agent::CreateSessionOptions> },
     TalkStop(TalkId),
