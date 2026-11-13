@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
-import type { AdvisoryNote } from '@/rpc/bindings/AdvisoryNote'
+import type { AdvisoryNote } from "@/rpc/bindings/method.agent.output"
 import type { Entry } from '@/store/sessions'
 import { AdvisorNoteCard, collapseNotes } from './AdvisorNoteCard'
 import { DisclosureScope } from './disclosure'

@@ -1,5 +1,5 @@
 import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
-import type { Task } from '@/rpc/bindings/Task'
+import type { Task } from "@/rpc/bindings/method.roster.output"
 import { ownerLabel, shortId } from './helpers'
 import { useTasks } from './queries'
 

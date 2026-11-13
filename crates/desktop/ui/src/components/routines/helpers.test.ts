@@ -1,7 +1,8 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { expect, test, vi } from 'vitest'
-import type { Peer } from '@/rpc/bindings/Peer'
-import type { ScheduleFile } from '@/rpc/bindings/ScheduleFile'
-import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
+import type { Peer } from "@/rpc/bindings/method.nodes.output"
+import type { ScheduleFile } from "@/rpc/bindings/method.schedule.output"
+import type { ScheduleInfo } from "@/rpc/bindings/method.schedule.output"
 import { useSessions } from '@/store/sessions'
 import { NEW, draftToFile, fileText, latestDraft, startRoutineChat } from './draft'
 import { type Readable, cadence, cronWords, fromFile, fromInfo, kindOf, movedSettingsTab, parseWhen, plainError, resultKind, resultLabel, routineNotes, sentence, sortRoutines, verdictText } from './helpers'
@@ -15,10 +16,10 @@ test('routine notes: renamed on arrival, dreaming on a non-hub', () => {
     { name: 'brief-aaaaaaaa', engine: 'eng-a' },
   ]
   expect(routineNotes({ name: 'brief-aaaaaaaa', renamed_from: 'brief' }, all, mesh)).toEqual(['renamed: studio already had a routine called brief'])
-  expect(routineNotes({ name: 'brief', renamed_from: undefined }, all, mesh)).toEqual([])
-  expect(routineNotes({ name: 'dreaming' }, all, mesh)).toEqual(['runs on the hub'])
-  expect(routineNotes({ name: 'dreaming' }, all, { ...mesh, lease: { ...mesh.lease, holder: 'eng-a' } })).toEqual([])
-  expect(routineNotes({ name: 'dreaming' }, all, { ...mesh, peers: [] })).toEqual([])
+  expect(routineNotes({ name: 'brief', renamed_from: null }, all, mesh)).toEqual([])
+  expect(routineNotes({ name: 'dreaming', renamed_from: null }, all, mesh)).toEqual(['runs on the hub'])
+  expect(routineNotes({ name: 'dreaming', renamed_from: null }, all, { ...mesh, lease: { ...mesh.lease, holder: 'eng-a' } })).toEqual([])
+  expect(routineNotes({ name: 'dreaming', renamed_from: null }, all, { ...mesh, peers: [] })).toEqual([])
 })
 
 test('cadence in words', () => {
@@ -88,7 +89,7 @@ test('sentence: subject from the # arg: header, gist only when asked, partial fo
     'Every 60s checks pr_watch.py on repo=o/r pr=1 · fires on change · expires after 1d',
   )
   // (c) never the prompt in the list; the detail page asks for the gist, trimmed to 60 chars.
-  const f: ScheduleFile = { ...NEW, cron: null, every: '30m', prompt: `${'x'.repeat(70)}\nmore` }
+  const f: ScheduleFile = receiveComponent("method.schedule.output.ScheduleFile", { ...NEW, cron: null, every: '30m', prompt: `${'x'.repeat(70)}\nmore` })
   expect(sentence(fromFile(f))).toBe('Every 30m')
   expect(sentence(fromFile(f, true))).toBe(`Every 30m · ${'x'.repeat(60)}…`)
   // (d) a half-filled form is a partial sentence — the live preview.
@@ -103,7 +104,7 @@ test('sentence: subject from the # arg: header, gist only when asked, partial fo
   })
 })
 
-const info = (o: Partial<ScheduleInfo>): ScheduleInfo => ({
+const info = (o: Partial<ScheduleInfo>): ScheduleInfo => (receiveComponent("method.schedule.output.ScheduleInfo", {
   name: 'x',
   when: 'cron 0 9 * * 1-5',
   describe: '',
@@ -136,7 +137,7 @@ const info = (o: Partial<ScheduleInfo>): ScheduleInfo => ({
   created: null,
   sensor: null,
   ...o,
-})
+}))
 
 test('fromInfo renders the same sentence as the file; kindOf badge (D6)', () => {
   const w = info({ when: 'every 60s', when_sensor: 'pr_watch.py repo=o/r pr=9 token=t', fire: 'on_change', expires: '7d', agent: 'ops', sensor: 'pr_watch.py' })

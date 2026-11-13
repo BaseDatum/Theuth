@@ -6,7 +6,7 @@ import type * as Rpc from '@/lib/rpc'
 import { LAWFUL } from '@/lib/detection'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import type * as MeetingSettings from '@/lib/meeting-settings'
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
 import { StartForm, startOptions } from './StartForm'
 

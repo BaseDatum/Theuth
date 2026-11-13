@@ -1,6 +1,6 @@
 import { useId } from 'react'
-import type { ArmWindow } from '@/rpc/bindings/ArmWindow'
-import type { KindView } from '@/rpc/bindings/KindView'
+import type { ArmWindow } from "@/rpc/bindings/method.autoresearch.output"
+import type { KindView } from "@/rpc/bindings/method.autoresearch.output"
 
 type WorldView = Extract<KindView, { kind: 'world' }>
 

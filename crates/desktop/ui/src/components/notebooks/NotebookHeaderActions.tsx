@@ -19,7 +19,7 @@ import {
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useOverviews } from '@/lib/ask-rpc'
 import { canPopout, isPopout, openPopout } from '@/lib/popout'
-import type { OverviewKind } from '@/rpc/bindings/OverviewKind'
+import type { OverviewKind } from "@/rpc/bindings/method.agent.output"
 
 /** The notebook's three columns in their own window (`/notebooks/<id>?window=popout-notebook-<id>`); focus-if-open. */
 export const popOutNotebook = (notebook: string): Promise<void> => openPopout({ kind: 'notebook', notebook })

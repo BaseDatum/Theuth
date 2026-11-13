@@ -4,8 +4,8 @@ import { type ReactNode, useState } from 'react'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import type { StudyChangeset } from '@/rpc/bindings/StudyChangeset'
-import type { StudyDetail } from '@/rpc/bindings/StudyDetail'
+import type { Changeset as StudyChangeset } from "@/rpc/bindings/method.autoresearch.output"
+import type { StudyDetail } from "@/rpc/bindings/method.autoresearch.output"
 import { Panel } from './SidePanel'
 import { Delta } from './StudyList'
 import { delta, holdoutSummary, metric, reviewWord, stopReasonLabel } from './model'

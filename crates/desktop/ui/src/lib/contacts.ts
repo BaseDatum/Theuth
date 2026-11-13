@@ -1,8 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { Contact } from '@/rpc/bindings/Contact'
-import type { Export } from '@/rpc/bindings/Export'
-import type { Risk } from '@/rpc/bindings/Risk'
+import type { Contact } from "@/rpc/bindings/method.a2a.output"
+import type { Export } from "@/rpc/bindings/method.a2a.output"
+import type { Risk } from "@/rpc/bindings/method.agent.output"
 
 /** §12.7: a cap in words, for history only (190: no share is capped): old contact wrapper cards say it. */
 export const CAP: Record<Risk, string> = { read_only: 'read only', mutating: 'can change things', destructive: 'destructive' }

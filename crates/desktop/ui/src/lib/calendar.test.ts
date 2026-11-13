@@ -1,6 +1,6 @@
 import { expect, test, vi } from 'vitest'
-import type { CalEvent } from '@/rpc/bindings/CalEvent'
-import type { EventRef } from '@/rpc/bindings/EventRef'
+import type { CalEvent } from "@/rpc/bindings/method.meeting.output"
+import type { EventRef } from "@/rpc/bindings/method.meeting.output"
 import { choices, eventLine, eventkitState, setEvent } from './calendar'
 
 const NOW = Date.parse('2026-10-10T10:02:00')

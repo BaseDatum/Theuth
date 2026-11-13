@@ -9,9 +9,10 @@ import { costShort, costTitle } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cappedTree, childrenOf, live, observedLabel, withAncestors } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
-import type { CostBucket } from '@/rpc/bindings/CostBucket'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { AgentInfo, AgentState } from '@/rpc/extra'
+import type { CostBucket } from "@/rpc/bindings/method.agent.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { AgentInfo } from '@/store/ui-events'
+import type { AgentState } from "@/rpc/bindings/method.agent.output"
 import { useSessionField, useSessions } from '@/store/sessions'
 
 export const GLYPH: Record<AgentState['state'], ReactNode> = {

@@ -14,7 +14,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { queryKeys, useApi } from '@/lib/rpc'
 import { live, subtrees } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { useSessionField, useSessions } from '@/store/sessions'
 import { AgentTree } from './AgentTree'
 import { runningSubagents } from './SessionItem'

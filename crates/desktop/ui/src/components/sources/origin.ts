@@ -1,7 +1,7 @@
 // 144 §12.1–§12.2: the words and glyphs a source card and page draw from `NotebookSource` / `SourceOrigin`. Pure.
-import type { ContextLevel } from '@/rpc/bindings/ContextLevel'
-import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
-import type { SourceOrigin } from '@/rpc/bindings/SourceOrigin'
+import type { ContextLevel } from "@/rpc/bindings/method.agent.output"
+import type { Source as NotebookSource } from "@/rpc/bindings/method.document.output"
+import type { SourceOrigin } from "@/rpc/bindings/method.agent.output"
 
 export const LEVELS: readonly ContextLevel[] = ['off', 'mention', 'summary', 'full']
 

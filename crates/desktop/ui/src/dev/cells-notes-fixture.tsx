@@ -15,13 +15,13 @@ import { NoteKernelPill } from '@/components/cells/NoteKernelPill'
 import { Editor } from '@/components/editor/Editor'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { EngineProvider } from '@/lib/doc/provider'
-import type { Api } from '@/rpc/api'
-import type { CellLatest } from '@/rpc/bindings/CellLatest'
-import type { CellRef } from '@/rpc/bindings/CellRef'
-import type { CellRun } from '@/rpc/bindings/CellRun'
-import type { CellScope } from '@/rpc/bindings/CellScope'
-import type { CellState } from '@/rpc/bindings/CellState'
-import type { KernelState } from '@/rpc/bindings/KernelState'
+import type { Api } from '@/rpc/bindings/client'
+import type { CellLatest } from "@/rpc/bindings/method.cells.output"
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
+import type { CellRun } from "@/rpc/bindings/method.cells.output"
+import type { Scope as CellScope } from "@/rpc/bindings/method.cells.output"
+import type { CellState } from "@/rpc/bindings/method.cells.output"
+import type { KernelState } from "@/rpc/bindings/method.cells.output"
 import { MESH } from '@/components/tasks/mock'
 import { active } from '@/store/engine-scope'
 import { PLAIN, PWSH, PYTHON, SAMPLE } from './cells-sample'
@@ -150,7 +150,7 @@ const api = new Proxy({} as Api, {
             ? { ...MESH, self_id: 'mac00000000000000000000000000000000000000000000000000000000mac1', self_name: "Sky's MacBook", peers: [{ ...MESH.peers[0], id: XEUS, name: 'xeus', reachable: true }] }
             : { ...MESH, peers: [] }
         case 'cell_latest':
-          return MESHED && args[0] === DOC ? [latestRow('sum-check', '972.70\n', { id: `${DOC}:sum-check`, doc: DOC, ended_ms: BigInt(now - 4 * MIN), engine: XEUS })] : []
+          return MESHED && args[0] === DOC ? [latestRow('sum-check', '972.70\n', { id: `${DOC}:sum-check`, doc: DOC, ended_ms: now - 4 * MIN, engine: XEUS })] : []
         case 'cell_runs':
           return []
         default:
@@ -171,7 +171,7 @@ const latestRow = (cell: string, text: string, over: Partial<CellLatest> = {}): 
   expect: null,
   summary: null,
   code_sha: 'x',
-  ended_ms: BigInt(now - 20 * MIN),
+  ended_ms: now - 20 * MIN,
   text,
   engine: '',
   ...over,

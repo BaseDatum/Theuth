@@ -12,7 +12,7 @@ import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useRestartPending } from '@/lib/restart-pending'
 import { RpcError } from '@/rpc/client'
-import type { AutoresearchConfig } from '@/rpc/bindings/AutoresearchConfig'
+import type { AutoresearchConfig } from "@/rpc/bindings/method.autoresearch.output"
 
 type Role = 'executor' | 'review' | 'advisor'
 const ROLES: Role[] = ['executor', 'review', 'advisor']

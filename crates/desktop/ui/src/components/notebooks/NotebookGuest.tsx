@@ -8,10 +8,11 @@ import { Button } from '@/components/ui/button'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { EngineProvider, type GuestUser } from '@/lib/doc/provider'
 import { notebookKeys, notebooksApi } from '@/lib/notebooks-rpc'
-import type { NotebookItem } from '@/rpc/bindings/NotebookItem'
+import type { NotebookItem } from "@/rpc/bindings/method.agent.output"
 import { cn } from '@/lib/utils'
-import { type Api, makeApi } from '@/rpc/api'
-import type { Role } from '@/rpc/bindings/Role'
+import type { Api } from '@/rpc/bindings/client'
+import { makeApi } from '@/rpc/bindings/client'
+import type { Role } from "@/rpc/bindings/method.agent.output"
 import type { RpcClient } from '@/rpc/client'
 
 type Open = { kind: 'note' | 'source'; id: string } | null

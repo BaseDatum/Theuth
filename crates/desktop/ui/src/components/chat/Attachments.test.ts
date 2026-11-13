@@ -4,7 +4,7 @@ import { expect, test, vi } from 'vitest'
 import { Dialog } from '@/components/ui/dialog'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type * as Rpc from '@/lib/rpc'
-import type { ContextAttachment } from '@/rpc/bindings/ContextAttachment'
+import type { ContextAttachment } from "@/rpc/bindings/method.agent.output"
 import type * as Conn from '@/store/connection'
 import { type Item, Lightbox } from './Attachments'
 

@@ -49,10 +49,10 @@ import {
 import { queryKeys, useApi } from '@/lib/rpc'
 import { LOCAL, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
-import type { LocalServer } from '@/rpc/bindings/LocalServer'
-import type { ProviderInfo } from '@/rpc/bindings/ProviderInfo'
-import type { ProviderModel } from '@/rpc/bindings/ProviderModel'
-import type { LoginInfo } from '@/rpc/extra'
+import type { LocalServer } from "@/rpc/bindings/method.agent.output"
+import type { ProviderInfo } from "@/rpc/bindings/method.agent.output"
+import type { ProviderModel } from "@/rpc/bindings/method.agent.output"
+import type { LoginInfo } from "@/rpc/bindings/method.agent.output"
 import { on } from '@/store/sessions'
 
 /** 188 A6: Settings › Models › Providers — every model provider with its key or login, then the AWS profile Bedrock signs with. */

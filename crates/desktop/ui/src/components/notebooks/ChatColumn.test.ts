@@ -2,7 +2,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
-import type { ContextEstimate } from '@/rpc/bindings/ContextEstimate'
+import type { ContextEstimate } from "@/rpc/bindings/method.agent.output"
 import { ContextLine } from './ChatColumn'
 
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }))

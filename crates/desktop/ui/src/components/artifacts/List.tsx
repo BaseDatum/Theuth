@@ -13,8 +13,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { privateOwner } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { Artifact, Kind } from '@/rpc/extra'
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { Artifact, Kind } from "@/rpc/bindings/method.artifact.output"
 
 /** Every session's artifacts, newest first, once; `ArtifactShown` and the refresh button invalidate it. */
 export function useArtifactList() {

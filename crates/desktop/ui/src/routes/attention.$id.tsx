@@ -3,7 +3,7 @@ import { useRef } from 'react'
 import { Screen } from '@/components/attention/Screen'
 import { useAttention } from '@/components/hud/queries'
 import { Skeleton } from '@/components/ui/skeleton'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 
 /**
  * `/attention/$id` (101 D6): the selected item's screen; the router decodes the `:`-bearing id. 104 A2: an item that

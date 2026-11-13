@@ -1,6 +1,6 @@
 import { THEUTH } from '@/components/tasks/helpers'
-import type { Api } from '@/rpc/api'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
+import type { Api } from '@/rpc/bindings/client'
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
 
 /** Proposed agents (67 §6.5) — the Hiring inbox's rows, oldest name first. */
 export function proposed(agents: readonly AgentSummary[] | undefined): AgentSummary[] {

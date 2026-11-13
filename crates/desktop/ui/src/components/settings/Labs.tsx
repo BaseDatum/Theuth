@@ -30,7 +30,7 @@ import {
 } from '@/lib/labs'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useEngines } from '@/link/engines'
-import type { Mode } from '@/rpc/bindings/Mode'
+import type { Mode } from "@/rpc/bindings/method.dreaming.output"
 
 /** The design doc every card links to. */
 const DESIGN_NOTES = 'https://github.com/skymoore/wth/blob/main/docs/design/57-decision.md'

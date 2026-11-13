@@ -1,5 +1,5 @@
 /** 73 §6.8 Snapshot to board — a lens as one `json-render` `Graph` fence (65 §3.1), ≤ 12 nodes, a `ref` on every node. */
-import type { GraphState } from '@/rpc/bindings/GraphState'
+import type { GraphState } from "@/rpc/bindings/method.codeindex.output"
 import { anchorOf, kindGlyph, shortLabels } from './labels'
 import type { ChangeLens, FitLens, FitNode, HereLens } from './types'
 

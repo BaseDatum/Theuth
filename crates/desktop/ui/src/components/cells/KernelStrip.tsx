@@ -9,8 +9,8 @@ import { isDesktop } from '@/lib/platform'
 import { useApi } from '@/lib/rpc'
 import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
-import type { Api } from '@/rpc/api'
-import type { KernelState } from '@/rpc/bindings/KernelState'
+import type { Api } from '@/rpc/bindings/client'
+import type { KernelState } from "@/rpc/bindings/method.cells.output"
 import { useConnection } from '@/store/connection'
 import { errorText, refresh, register, useScope } from './store'
 

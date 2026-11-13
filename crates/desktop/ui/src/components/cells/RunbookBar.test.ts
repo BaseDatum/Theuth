@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
-import type { KernelState } from '@/rpc/bindings/KernelState'
-import type { PassEnd } from '@/rpc/bindings/PassEnd'
+import type { KernelState } from "@/rpc/bindings/method.cells.output"
+import type { PassEnd } from "@/rpc/bindings/method.cells.output"
 import { digest } from './grammar'
 import { followSuperseded, kernelLabel, runAllLabel, runAllPairs, type Step } from './RunbookBar'
 import { RUNBOOK, SESSION, chatRef, run, spec, state } from './test-fixtures'

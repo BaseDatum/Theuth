@@ -10,7 +10,7 @@ import { ContactsTab } from '@/components/settings/Contacts'
 import { UnpairBody } from '@/components/settings/UnpairDialog'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import type { Api } from '@/rpc/api'
+import type { Api } from '@/rpc/bindings/client'
 import type { RpcClient } from '@/rpc/client'
 import { active } from '@/store/engine-scope'
 

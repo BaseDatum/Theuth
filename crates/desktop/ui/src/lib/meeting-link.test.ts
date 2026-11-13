@@ -1,6 +1,6 @@
 import { expect, test, vi } from 'vitest'
 import { meetingForSession, openMeeting } from './meeting-link'
-import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
+import type { MeetingSummary } from "@/rpc/bindings/method.meeting.output"
 
 const row = (id: string, session: string): MeetingSummary =>
   ({ id, session, started_at: '', ended_at: null, title: null, process_name: 'Zoom', duration_ms: null, state: 'Done' }) as MeetingSummary

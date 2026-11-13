@@ -11,9 +11,9 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import type { EngineProvider } from '@/lib/doc/provider'
 import { useApi } from '@/lib/rpc'
-import type { Api } from '@/rpc/api'
+import type { Api } from '@/rpc/bindings/client'
 import { cn } from '@/lib/utils'
-import type { DocKind } from '@/rpc/bindings/DocKind'
+import type { DocKind } from "@/rpc/bindings/method.agent.output"
 
 /** 184 §12.4: no item for other kinds (a task thread moves with its task), the reason an item is disabled, or null = it may move. */
 export function moveRefusal(kind: DocKind | undefined, homesOn: boolean): 'hide' | string | null {

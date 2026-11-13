@@ -1,6 +1,6 @@
 // 136 §8 Library › Knowledge: the status badge from the seven dreaming keys on `Meta`, and the "changed by dreaming" filter.
 
-import type { Meta } from '@/rpc/bindings/Meta'
+import type { Meta } from "@/rpc/bindings/method.knowledge.output"
 
 /**
  * The one badge a concept earns beside its type, or `null` for a plain tidy entry: `superseded` (a `superseded_by`

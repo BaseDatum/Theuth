@@ -1,7 +1,7 @@
 import { type StoreApi, createStore } from 'zustand'
-import type { Api } from '@/rpc/api'
+import type { Api } from '@/rpc/bindings/client'
 import type { ConnState, RpcClient } from '@/rpc/client'
-import type { Info } from '@/rpc/extra'
+import type { Info } from "@/rpc/bindings/method.rpc_2dcompose.output"
 import { scoped } from './engine-scope'
 
 type ConnectionStore = {

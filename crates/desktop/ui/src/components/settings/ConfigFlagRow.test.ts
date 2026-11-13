@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import { useRestartPending } from '@/lib/restart-pending'
-import type { ConfigFlagKey } from '@/rpc/api'
+import type { ConfigFlagKey } from '@/rpc/bindings/method.rpc_2dcompose.input'
 import { ConfigFlagRow } from './ConfigFlagRow'
 import { RestartBanner } from './page/RestartBanner'
 

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
+import type { EndlessConfig } from "@/rpc/bindings/method.agent.output"
 
 /** The engine's defaults of `EndlessConfig`'s optional keys (137F/137G) and `jobs`: an engine before a key omits it, so these are the placeholders and the values used while it is absent. */
 export const ENDLESS_DEFAULTS: Required<Pick<EndlessConfig, 'attempt_secs' | 'local_attempt_secs' | 'local_ctx_bytes' | 'local_jobs' | 'raw_bytes' | 'compactor_ctx_bytes' | 'batch_units' | 'max_usd_per_call' | 'max_usd_per_session_day' | 'jobs'>> = {

@@ -6,7 +6,7 @@ import type * as NbRpc from '@/lib/notebooks-rpc'
 import type * as Rpc from '@/lib/rpc'
 import { askKeys } from '@/lib/ask-rpc'
 import { notebookKeys } from '@/lib/notebooks-rpc'
-import type { AskSummary } from '@/rpc/bindings/AskSummary'
+import type { AskSummary } from "@/rpc/bindings/method.agent.output"
 import { NotebooksList } from './NotebooksList'
 
 const env = vi.hoisted(() => ({ search: {} as Record<string, unknown> }))
@@ -27,7 +27,7 @@ vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), u
 vi.mock('@/lib/notebooks-rpc', async (original) => ({ ...(await original<typeof NbRpc>()), useNotebooksApi: () => ({}) }))
 vi.mock('@/components/notebooks/AskDialog', () => ({ AskDialog: ({ open }: { open: boolean }) => (open ? createElement('div', { 'data-ask': true }) : null) }))
 
-const ask = (session: string, question: string, scope: string[], done: boolean): AskSummary => ({ session, question, scope, created_ms: BigInt(Date.now() - 120_000), done })
+const ask = (session: string, question: string, scope: string[], done: boolean): AskSummary => ({ session, question, scope, created_ms: Date.now() - 120_000, done })
 
 const render = () => {
   const qc = new QueryClient()

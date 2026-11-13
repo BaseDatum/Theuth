@@ -12,7 +12,7 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { PeerRecord } from '@/rpc/bindings/PeerRecord'
+import type { PeerRecord } from "@/rpc/bindings/method.agent.output"
 
 const TOUCH = 'pointer-coarse:min-h-11'
 

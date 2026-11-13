@@ -1,12 +1,13 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { expect, test } from 'vitest'
-import type { BroadcastReceipt } from '@/rpc/bindings/BroadcastReceipt'
-import type { BroadcastRow } from '@/rpc/bindings/BroadcastRow'
-import type { SessionActivity } from '@/rpc/bindings/SessionActivity'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { AgentInfo } from '@/rpc/extra'
+import type { BroadcastReceipt } from "@/rpc/bindings/method.agent.output"
+import type { BroadcastRow } from "@/rpc/bindings/method.agent.output"
+import type { SessionActivity } from "@/rpc/bindings/method.agent.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { AgentInfo } from '@/store/ui-events'
 import { allRoots, deskRoots, groupRows, outcomeLines, runningRoots, sectionState, splitGroups, summarize, title } from './broadcast'
 
-const activity = (p: Partial<SessionActivity> = {}): SessionActivity => ({
+const activity = (p: Partial<SessionActivity> = {}): SessionActivity => (receiveComponent("method.agent.output.SessionActivity", {
   state: { state: 'idle' },
   last_active: null,
   turn_started_at: null,
@@ -16,9 +17,9 @@ const activity = (p: Partial<SessionActivity> = {}): SessionActivity => ({
   asks: null,
   live: true,
   ...p,
-})
+}))
 
-const row = (id: string, parent: string, depth: number, a: Partial<SessionActivity> = {}): AgentInfo => ({
+const row = (id: string, parent: string, depth: number, a: Partial<SessionActivity> = {}): AgentInfo => (receiveComponent("method.agent.output.AgentInfo", {
   id,
   name: id,
   parent,
@@ -30,7 +31,7 @@ const row = (id: string, parent: string, depth: number, a: Partial<SessionActivi
   finished_at: null,
   last: '',
   activity: activity(a),
-})
+}))
 
 // Roots: A runs, B idle with a PTY, C idle and jobless, D awaiting. Children: a1 under A (running), a11 under a1, b1 under B.
 const rows = [
@@ -82,7 +83,7 @@ test('dry-run label counts busy by state only: a PTY-owning idle root starts now
   expect(summarize(receipt([r.rows[0]!]))).toBe('1 session · 1 busy → queued, 0 idle → start now')
 })
 
-const summary = (id: string, over: Partial<SessionSummary> = {}): SessionSummary => ({
+const summary = (id: string, over: Partial<SessionSummary> = {}): SessionSummary => (receiveComponent("method.agent.output.SessionSummary", {
   id,
   created_at: new Date(2026, 8, 18, 14, 5).toISOString(),
   updated_at: new Date(2026, 8, 19).toISOString(),
@@ -105,7 +106,7 @@ const summary = (id: string, over: Partial<SessionSummary> = {}): SessionSummary
   memory: 'epochs',
   here: true,
   ...over,
-})
+}))
 
 const ID = '0192a4c1-7e3b-7c0e-9c1f-2b6d1e8f4a10'
 

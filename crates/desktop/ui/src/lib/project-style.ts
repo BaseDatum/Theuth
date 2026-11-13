@@ -27,7 +27,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { ProjectStyle } from '@/rpc/bindings/ProjectStyle'
+import type { ProjectStyle } from "@/rpc/bindings/method.agent.output"
 
 /**
  * Project icon and colour (51 §3 as-built). The server stores keys from these two lists and nothing else;

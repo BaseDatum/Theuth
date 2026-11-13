@@ -23,8 +23,8 @@ import {
   setHiddenFromCapture,
 } from '@/lib/tauri'
 import { cn } from '@/lib/utils'
-import type { MeetingState } from '@/rpc/bindings/MeetingState'
-import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
+import type { MeetingState } from "@/rpc/bindings/method.meeting.output"
+import type { OracleDecision } from "@/rpc/bindings/event.meeting_2eevents.output"
 import { captureBadge, captureWarning, current, elapsed, live, liveBadges, mmss, oracleSummary, useMeeting } from '@/store/meeting'
 import { on } from '@/store/sessions'
 

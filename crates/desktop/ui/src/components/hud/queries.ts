@@ -5,15 +5,15 @@ import { ATTENTION_CROWDED, ATTENTION_SIM, SECRET_REQUESTS_SIM, crowdedFlag, sim
 import { useAction } from '@/components/settings/shared'
 import { keys as taskKeys } from '@/components/tasks/queries'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { ContextBreakdown } from '@/rpc/bindings/ContextBreakdown'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
-import type { Answer } from '@/rpc/bindings/Answer'
-import type { ApprovalId } from '@/rpc/bindings/ApprovalId'
-import type { AskId } from '@/rpc/bindings/AskId'
-import type { Priority } from '@/rpc/bindings/Priority'
-import type { FirstContact } from '@/rpc/bindings/FirstContact'
-import type { WireEvent } from '@/rpc/events'
+import type { ContextBreakdown } from "@/rpc/bindings/method.agent.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { ActivityEntry } from "@/rpc/bindings/method.roster.output"
+import type { Answer } from '@/rpc/bindings/method.tasks.input'
+import type { ApprovalId } from "@/rpc/bindings/method.roster.output"
+import type { AskId } from "@/rpc/bindings/method.roster.output"
+import type { Priority } from "@/rpc/bindings/method.roster.output"
+import type { FirstContact } from "@/rpc/bindings/method.a2a.output"
+import type { UiEvent as WireEvent } from '@/store/ui-events'
 import { on } from '@/store/sessions'
 import { HANDOFFS_KEY } from '@/store/sandboxes'
 import { toast } from 'sonner'

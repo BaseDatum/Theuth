@@ -3,12 +3,12 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { useApi } from '@/lib/rpc'
-import type { Api } from '@/rpc/api'
-import type { AskBranch } from '@/rpc/bindings/AskBranch'
-import type { AskEvent } from '@/rpc/bindings/AskEvent'
-import type { AskHit } from '@/rpc/bindings/AskHit'
-import type { SessionId } from '@/rpc/bindings/SessionId'
-import type { WireEvent } from '@/rpc/events'
+import type { Api } from '@/rpc/bindings/client'
+import type { AskBranch } from "@/rpc/bindings/event.agent_2enotebook_2dask.output"
+import type { AskEvent } from "@/rpc/bindings/event.agent_2enotebook_2dask.output"
+import type { AskHit } from "@/rpc/bindings/event.agent_2enotebook_2dask.output"
+import type { SessionId } from "@/rpc/bindings/method.agent.output"
+import type { UiEvent as WireEvent } from '@/store/ui-events'
 import { on } from '@/store/sessions'
 
 /** Contract §2: ask across notebooks and overviews (E2's four `Api` methods). */

@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { COLORS, ICONS, LEGACY_COLORS, colorFor, iconFor, useProjectStyles } from '@/lib/project-style'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { ProjectStyle } from '@/rpc/bindings/ProjectStyle'
+import type { ProjectStyle } from "@/rpc/bindings/method.agent.output"
 
 /**
  * A project's glyph in its colour (51 §3 as-built); a neutral `Folder` in `text-fg-tertiary` while unstyled, so the

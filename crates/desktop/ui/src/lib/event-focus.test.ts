@@ -1,5 +1,6 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { afterEach, expect, test, vi } from 'vitest'
-import type { LoadedPage } from '@/rpc/extra'
+import type { Loaded as LoadedPage } from "@/rpc/bindings/method.agent.output"
 import { newDraft } from '@/lib/panes'
 import { useSessions } from '@/store/sessions'
 import { FocusTracker, Throttle, deriveFocus, typeCounts } from './event-focus'
@@ -59,7 +60,7 @@ test('Throttle: a trailing resync coalesces a burst into one run per window; a n
   expect(toast).toHaveBeenCalledTimes(2)
 })
 
-const page: LoadedPage = {
+const page: LoadedPage = receiveComponent("method.agent.output.Loaded", {
   running: false,
   model: 'm',
   effort: null,
@@ -79,10 +80,10 @@ const page: LoadedPage = {
   communication: null,
   project: null,
   retention: 'durable',
-  history: [{ role: 'user', text: 'hi', turn: 1 }],
+  history: [{ context: null, peer: null, role: 'user', text: 'hi', turn: 1 }],
   first_seq: 1,
   more: false,
-}
+})
 
 test('markStale: Lagged / a session leaving focus keep `loaded` and the transcript, set both stale flags, bump the generation', () => {
   const st = useSessions.getState()
@@ -118,7 +119,7 @@ test('settled page after a gap: a `running` left true by a lost TurnFinished is 
   st.markStale(id)
   const s = useSessions.getState().sessions[id]!
   expect(s).toMatchObject({ running: true, contextStale: true })
-  const after = { ...page, context_revision: '2', history: [...page.history, { role: 'user' as const, text: 'go', turn: 2 }, { role: 'assistant' as const, text: 'partial done', turn: 2 }] }
+  const after = receiveComponent('method.agent.output.Loaded', { ...page, context_revision: '2', history: [...page.history, { role: 'user', text: 'go', turn: 2 }, { role: 'assistant', text: 'partial done', turn: 2 }] })
   expect(st.loadHistory(id, after, 'settled', { gen: s.historyGeneration, live: s.live })).toBe(true)
   expect(useSessions.getState().sessions[id]).toMatchObject({ running: false, contextStale: false, loaded: true })
   expect(useSessions.getState().sessions[id]!.entries.map((e) => ('text' in e ? e.text : e.kind))).toEqual(['hi', 'go', 'partial done'])

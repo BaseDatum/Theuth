@@ -1,5 +1,5 @@
 import { withGaps } from '@/lib/time'
-import type { AgentInfo } from '@/rpc/extra'
+import type { AgentInfo } from '@/store/ui-events'
 import type { Prompt } from '@/store/approvals'
 import type { Entry } from '@/store/sessions'
 import { foldRuns, type Run } from './ToolRunCard'

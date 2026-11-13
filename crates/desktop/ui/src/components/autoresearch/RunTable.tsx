@@ -1,7 +1,7 @@
 import { type ReactNode, useMemo, useState } from 'react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
-import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
+import type { ExperimentRow } from "@/rpc/bindings/method.autoresearch.output"
 import { Delta } from './StudyList'
 import { CALL_OUTCOME, OUTCOME_CLASS, type RunFilter, duration, filterRuns, metric, objectiveColumns, outcome, outcomeLabel, rowDuration, shortSha, sigmas, usd } from './model'
 

@@ -3,7 +3,7 @@
 // answer lives under its own key beside `meeting-settings` (that store's fields are untouched).
 
 import { toast } from 'sonner'
-import type { MeetingSettings } from '@/rpc/bindings/MeetingSettings'
+import type { MeetingSettings } from "@/rpc/bindings/method.meeting.output"
 
 /** Beside `lib/meeting-settings.ts`'s `meeting-settings`; any value = already offered. */
 export const OFFERED_KEY = 'meeting-settings-model-offered'

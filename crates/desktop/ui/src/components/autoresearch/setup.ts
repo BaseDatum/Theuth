@@ -3,12 +3,12 @@
 
 import { FRESH } from '@/components/chat/slash'
 import { PLAIN_OPTIONS } from '@/lib/drafts'
-import type { Api } from '@/rpc/api'
-import type { DraftFieldState } from '@/rpc/bindings/DraftFieldState'
-import type { DraftSummary } from '@/rpc/bindings/DraftSummary'
-import type { ProbeKind } from '@/rpc/bindings/ProbeKind'
-import type { StudyInfo } from '@/rpc/bindings/StudyInfo'
-import type { StudySpec } from '@/rpc/bindings/StudySpec'
+import type { Api } from '@/rpc/bindings/client'
+import type { FieldState as DraftFieldState } from "@/rpc/bindings/method.autoresearch.output"
+import type { DraftSummary } from "@/rpc/bindings/method.autoresearch.output"
+import type { ProbeKind } from "@/rpc/bindings/method.autoresearch.output"
+import type { StudyInfo } from "@/rpc/bindings/method.autoresearch.output"
+import type { StudySpec } from "@/rpc/bindings/method.autoresearch.output"
 import { type Entry, useSessions } from '@/store/sessions'
 
 /** §4.3: the main nine rows then the advanced five, in the panel's fixed order, with their labels. */

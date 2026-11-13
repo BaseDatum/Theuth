@@ -24,9 +24,9 @@ import { meetingsQuery, useProjectChoices } from '@/lib/meeting-project'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { LOCAL, useEngines } from '@/link/engines'
 import { type AttachRef, toRef } from '@/lib/attach'
-import type { Api } from '@/rpc/api'
-import type { MeetingState } from '@/rpc/bindings/MeetingState'
-import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
+import type { Api } from '@/rpc/bindings/client'
+import type { MeetingState } from "@/rpc/bindings/method.meeting.output"
+import type { MeetingSummary } from "@/rpc/bindings/method.meeting.output"
 
 /** `Post(Transcribing)` → `Transcribing`. */
 export const stateLabel = (s: MeetingState): string => (typeof s === 'string' ? s : s.Post)

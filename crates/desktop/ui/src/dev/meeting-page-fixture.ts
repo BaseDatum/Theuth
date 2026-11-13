@@ -9,16 +9,17 @@
 // bus's `dispatch` every ~4 s with the matching brief appended here, so D4's invalidate → refetch path is what grows
 // the column.
 
-import type { Api } from '@/rpc/api'
-import type { Brief } from '@/rpc/bindings/Brief'
-import type { Loaded } from '@/rpc/bindings/Loaded'
-import type { Manifest } from '@/rpc/bindings/Manifest'
-import type { MeetingEvent } from '@/rpc/bindings/MeetingEvent'
-import type { MeetingTranscript } from '@/rpc/bindings/MeetingTranscript'
-import type { Profile } from '@/rpc/bindings/Profile'
-import type { Segment } from '@/rpc/bindings/Segment'
-import type { Track } from '@/rpc/bindings/Track'
-import type { Utterance } from '@/rpc/bindings/Utterance'
+import { receiveComponent } from '@/rpc/bindings/receive'
+import type { Api } from '@/rpc/bindings/client'
+import type { Brief } from "@/rpc/bindings/method.meeting.output"
+import type { Loaded } from "@/rpc/bindings/method.agent.output"
+import type { Manifest } from "@/rpc/bindings/method.meeting.output"
+import type { MeetingEvent } from "@/rpc/bindings/event.meeting_2eevents.output"
+import type { Transcript as MeetingTranscript } from "@/rpc/bindings/method.meeting.output"
+import type { Profile } from "@/rpc/bindings/method.meeting.output"
+import type { Segment } from "@/rpc/bindings/method.meeting.output"
+import type { Track } from "@/rpc/bindings/method.meeting.output"
+import type { Utterance } from "@/rpc/bindings/method.meeting.output"
 import type { ConnectionApi } from '@/store/connection'
 import { dispatch } from '@/store/sessions'
 
@@ -77,10 +78,10 @@ const segments = (): Segment[] =>
       id: i + 1,
       track,
       speaker,
-      t0_ms: BigInt(t0),
-      t1_ms: BigInt(t0 + step * words.length),
+      t0_ms: t0,
+      t1_ms: t0 + step * words.length,
       text,
-      words: words.map((w, j) => ({ text: w, t0_ms: BigInt(t0 + j * step), t1_ms: BigInt(t0 + (j + 1) * step) })),
+      words: words.map((w, j) => ({ text: w, t0_ms: t0 + j * step, t1_ms: t0 + (j + 1) * step })),
     }
   })
 
@@ -90,7 +91,7 @@ const brief = (n: number, title: string, bullets: string[], at_ms: number, cache
   title,
   bullets,
   source: cached ? 'Cache' : 'Auto',
-  at_ms: BigInt(at_ms),
+  at_ms: at_ms,
   parent: null,
   cached,
 })
@@ -126,10 +127,10 @@ export function seed(mode: Mode): Seed {
     context: 'Weekly platform sync',
     started_at: started.toISOString(),
     ended_at: ended?.toISOString() ?? null,
-    duration_ms: ended ? 15n * 60_000n : null,
+    duration_ms: ended ? 15 * 60000 : null,
     process: { pid: 4242, name: 'zoom.us', bundle_id: 'us.zoom.xos', active: mode === 'live' },
     consent_at: started.toISOString(),
-    gaps: mode === 'live' ? [] : [{ at_ms: 370_000n, dur_ms: 38_000n, track: 'system', reason: 'Silent' }, { at_ms: 410_000n, dur_ms: 32_000n }],
+    gaps: mode === 'live' ? [] : [{ at_ms: 370000, dur_ms: 38000, track: 'system', reason: 'Silent' }, { at_ms: 410000, dur_ms: 32000 }],
     degraded: mode === 'live' ? ['MicNoAec'] : [],
     state: mode === 'live' ? 'Recording' : mode === 'review' ? 'Review' : 'Done',
     failure: null,
@@ -160,7 +161,7 @@ export function seed(mode: Mode): Seed {
     note: null,
   }
   const live: Utterance[] = segs.map((s) => ({ track: s.track, t0_ms: s.t0_ms, t1_ms: s.t1_ms, text: s.text, request: false, speaker: s.speaker === 'me' ? null : s.speaker }))
-  const page: Loaded = {
+  const page: Loaded = receiveComponent("method.agent.output.Loaded", {
     history: [],
     running: false,
     model: 'claude-haiku-4-5',
@@ -183,7 +184,7 @@ export function seed(mode: Mode): Seed {
     communication: null,
     project: null,
     retention: 'durable',
-  }
+  })
   return { manifest, transcript, briefs: [...INITIAL_BRIEFS], speakers: [PROFILE], live, page }
 }
 
@@ -264,9 +265,9 @@ export function install(connection: ConnectionApi, mode: Mode): () => void {
         const at = 165_000 + n * TOPIC_EVERY_MS
         const [label, title, bullets] = next
         s.briefs.push({ ...brief(id, `${title}${n > LATER.length ? ` (${Math.ceil(n / LATER.length)})` : ''}`, bullets, at), topic: `t${id}` })
-        state({ type: 'TopicAdded', meeting: FIXTURE_ID, topic: { id: `t${id}`, label, at_ms: BigInt(at), brief: `b${id}`, cached: null, source: 'Auto' } })
+        state({ type: 'TopicAdded', meeting: FIXTURE_ID, topic: { id: `t${id}`, label, at_ms: at, brief: `b${id}`, cached: null, source: 'Auto' } })
         const line = LINES[(n * 7) % LINES.length]
-        if (line) state({ type: 'Utterance', meeting: FIXTURE_ID, track: line[0], t0_ms: BigInt(at), t1_ms: BigInt(at + 3000), text: line[2], request: false, final: true, speaker: line[1] === 'me' ? null : line[1] })
+        if (line) state({ type: 'Utterance', meeting: FIXTURE_ID, track: line[0], t0_ms: at, t1_ms: at + 3000, text: line[2], request: false, final: true, speaker: line[1] === 'me' ? null : line[1] })
       }, TOPIC_EVERY_MS),
     )
   }

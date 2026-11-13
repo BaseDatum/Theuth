@@ -1,9 +1,10 @@
-import type { ObservedMeta } from '@/rpc/bindings/ObservedMeta'
-import type { ObservedState } from '@/rpc/bindings/ObservedState'
-import type { SessionKind } from '@/rpc/bindings/SessionKind'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { AgentInfo, AgentState } from '@/rpc/extra'
-import type { CostBucket } from '@/rpc/bindings/CostBucket'
+import type { ObservedMeta } from "@/rpc/bindings/method.agent.output"
+import type { ObservedState } from "@/rpc/bindings/method.agent.output"
+import type { SessionKind } from "@/rpc/bindings/method.agent.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { AgentInfo } from '@/store/ui-events'
+import type { AgentState } from "@/rpc/bindings/method.agent.output"
+import type { CostBucket } from "@/rpc/bindings/method.agent.output"
 import { costShort, usd } from './money'
 
 /** How many subagent rows any parent shows before `Show more`. */

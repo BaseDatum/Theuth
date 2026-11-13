@@ -41,18 +41,18 @@ import {
 import { SearchQueue } from '@/lib/search-queue'
 import { LOCAL, useEngines } from '@/link/engines'
 import { cn } from '@/lib/utils'
-import type { ArtifactSearchHit } from '@/rpc/bindings/ArtifactSearchHit'
-import type { ConceptSearchHit } from '@/rpc/bindings/ConceptSearchHit'
-import type { HistorySearchHit } from '@/rpc/bindings/HistorySearchHit'
-import type { MeetingSearchHit } from '@/rpc/bindings/MeetingSearchHit'
-import type { NoteSearchHit } from '@/rpc/bindings/NoteSearchHit'
-import type { BlockHit } from '@/rpc/bindings/BlockHit'
-import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
-import type { SearchGroup } from '@/rpc/bindings/SearchGroup'
-import type { MatchRange } from '@/rpc/bindings/MatchRange'
-import type { SearchHit } from '@/rpc/bindings/SearchHit'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { SearchResponse } from '@/rpc/bindings/SearchResponse'
+import type { ArtifactSearchHit } from "@/rpc/bindings/method.rpc_2dcompose.output"
+import type { ConceptSearchHit } from "@/rpc/bindings/method.rpc_2dcompose.output"
+import type { HistorySearchHit } from "@/rpc/bindings/method.rpc_2dcompose.output"
+import type { MeetingSearchHit } from "@/rpc/bindings/method.rpc_2dcompose.output"
+import type { NoteSearchHit } from "@/rpc/bindings/method.rpc_2dcompose.output"
+import type { BlockHit } from "@/rpc/bindings/method.document.output"
+import type { SearchCategory } from '@/rpc/bindings/method.rpc_2dcompose.input'
+import type { SearchGroup } from "@/rpc/bindings/method.rpc_2dcompose.output"
+import type { MatchRange } from "@/rpc/bindings/method.artifact.output"
+import type { SearchHit } from "@/rpc/bindings/method.rpc_2dcompose.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { SearchResponse } from "@/rpc/bindings/method.rpc_2dcompose.output"
 import { Archived, Notice, Notices, Section, Snippet, status } from '@/components/search/parts'
 import { ago } from './AgentTree'
 

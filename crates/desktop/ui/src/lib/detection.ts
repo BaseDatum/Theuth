@@ -2,9 +2,9 @@
 // the one lawful sentence (R3, Amendment A2), what a one-tap Start sends (§5.4), and how the banner's state
 // follows the bus (`Detected` / `DetectionCleared` / `AppReleased`, §4.5). Pure so the tests need no DOM.
 
-import type { Detection } from '@/rpc/bindings/Detection'
-import type { MeetingEvent } from '@/rpc/bindings/MeetingEvent'
-import type { StartMeeting } from '@/rpc/bindings/StartMeeting'
+import type { Detection } from "@/rpc/bindings/method.meeting.output"
+import type { MeetingEvent } from "@/rpc/bindings/event.meeting_2eevents.output"
+import type { StartMeeting } from '@/rpc/bindings/method.meeting.input'
 
 /** R3, verbatim — a sentence, never a checkbox; Start sends `consent: true`. */
 export const LAWFUL = 'By starting the recording you acknowledge the recording is lawful.'

@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { AdvisorStatus } from '@/rpc/bindings/AdvisorStatus'
+import type { AdvisorStatus } from "@/rpc/bindings/method.agent.output"
 
 /**
  * `advisor_status(session)`: read once, then kept current by `AdvisorChanged` (`useInvalidateOn` writes the event's

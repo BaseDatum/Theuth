@@ -4,30 +4,26 @@ import type { CellResultInput, ContactNote, Injected, ParentViewLine, RestartNot
 import { codeFromHistory } from '@/lib/codemap/slice';
 import type { CodemapSlice } from '@/lib/codemap/types';
 import { useRemoteStart } from '@/lib/remote-start';
-import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
-import type { CompactStyle } from "@/rpc/bindings/CompactStyle";
-import type { ChannelOrigin } from "@/rpc/bindings/ChannelOrigin";
-import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
-import type { HarnessCommand } from "@/rpc/bindings/HarnessCommand";
-import type { JobExit } from "@/rpc/bindings/JobExit";
-import type { LiveCountsRow } from "@/rpc/bindings/LiveCountsRow";
-import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
-import type { ObservedMeta } from "@/rpc/bindings/ObservedMeta";
-import type { QueuedInput } from "@/rpc/bindings/QueuedInput";
-import type { SessionKind } from "@/rpc/bindings/SessionKind";
-import type { ResumeCause } from "@/rpc/bindings/ResumeCause";
-import type { SessionSummary } from "@/rpc/bindings/SessionSummary";
-import type { TodoSnapshot } from "@/rpc/bindings/TodoSnapshot";
-import type { Usage } from "@/rpc/bindings/Usage";
-import type { WireEvent } from "@/rpc/events";
-import type {
-  AgentInfo,
-  AppCallChanged,
-  Artifact,
-  LoadedPage,
-  VisionNote,
-  VisionSource,
-} from "@/rpc/extra";
+import type { AdvisoryNote } from "@/rpc/bindings/method.agent.output"
+import type { CompactStyle } from "@/rpc/bindings/method.agent.output"
+import type { ChannelOrigin } from "@/rpc/bindings/method.agent.output"
+import type { ContextEntry } from "@/rpc/bindings/method.agent.output"
+import type { HarnessCommand } from "@/rpc/bindings/method.agent.output"
+import type { JobExit } from "@/rpc/bindings/method.agent.output"
+import type { LiveCountsRow } from "@/rpc/bindings/method.agent.output"
+import type { PeerOrigin } from "@/rpc/bindings/method.agent.output"
+import type { ObservedMeta } from "@/rpc/bindings/method.agent.output"
+import type { QueuedInput } from "@/rpc/bindings/method.agent.output"
+import type { SessionKind } from "@/rpc/bindings/method.agent.output"
+import type { ResumeCause } from "@/rpc/bindings/method.agent.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { TodoSnapshot } from "@/rpc/bindings/method.agent.output"
+import type { Usage } from "@/rpc/bindings/event.agent_2eevents.output"
+import type { UiEvent as WireEvent } from '@/store/ui-events'
+import type { AgentInfo } from '@/store/ui-events'
+import type { AppCallChanged } from "@/rpc/bindings/event.app_2ecalls.output"
+import type { Artifact } from "@/rpc/bindings/method.artifact.output"
+import type { Loaded as LoadedPage, VisionNote, VisionSource } from "@/rpc/bindings/method.agent.output"
 import {
   adopt,
   empty,

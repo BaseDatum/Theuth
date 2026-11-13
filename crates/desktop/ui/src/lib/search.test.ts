@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest'
-import type { PageState } from '@/rpc/bindings/PageState'
-import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
-import type { SearchGroup } from '@/rpc/bindings/SearchGroup'
+import type { PageState } from "@/rpc/bindings/method.rpc_2dcompose.output"
+import type { SearchCategory } from '@/rpc/bindings/method.rpc_2dcompose.input'
+import type { SearchGroup } from "@/rpc/bindings/method.rpc_2dcompose.output"
 import { DEFAULT_LIMITS, indexing, patch } from './search'
 
 const group = (category: SearchCategory, state: PageState): SearchGroup =>

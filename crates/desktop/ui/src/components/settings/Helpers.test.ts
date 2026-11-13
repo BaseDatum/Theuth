@@ -4,8 +4,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
-import type { EscalateModel } from '@/rpc/bindings/EscalateModel'
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import type { EscalateModel } from "@/rpc/bindings/method.agent.output"
+import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { Helpers } from './Helpers'
 
 // The picker itself is ModelCombobox's own suite; here only what each row hands it.

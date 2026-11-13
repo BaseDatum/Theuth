@@ -13,7 +13,7 @@ import { CAP } from '@/lib/contacts'
 import { fmtBytes } from '@/lib/files'
 import { humanSecs, type MovedNote, type RestartNote, type ResumeSection, tagAttrs } from '@/lib/injected'
 import { cn } from '@/lib/utils'
-import type { Risk } from '@/rpc/bindings/Risk'
+import type { Risk } from "@/rpc/bindings/method.agent.output"
 import type { Entry } from '@/store/sessions'
 import { markdownComponents, plugins, shikiTheme } from './MessageAssistant'
 import { Details, FenceText } from './disclosure'

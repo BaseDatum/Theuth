@@ -1,5 +1,5 @@
-import type { HarnessCommand } from '@/rpc/bindings/HarnessCommand'
-import type { SkillMeta } from '@/rpc/bindings/SkillMeta'
+import type { HarnessCommand } from "@/rpc/bindings/method.agent.output"
+import type { SkillMeta } from "@/rpc/bindings/method.agent.output"
 
 export const LOCAL = 'Local'
 

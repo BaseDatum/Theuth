@@ -7,8 +7,8 @@
 
 import { clientKind } from '@/lib/page-preview'
 import { container } from '@/lib/platform'
-import type { FenceSnapshotAnswer } from '@/rpc/bindings/FenceSnapshotAnswer'
-import type { FenceSnapshotRequested } from '@/rpc/bindings/FenceSnapshotRequested'
+import type { FenceSnapshotAnswer } from '@/rpc/bindings/method.artifact.input'
+import type { FenceSnapshotRequested } from "@/rpc/bindings/event.artifact_2efence_2dsnapshot_2drequested.output"
 import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
 

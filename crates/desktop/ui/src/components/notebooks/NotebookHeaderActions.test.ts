@@ -3,7 +3,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Popout from '@/lib/popout'
-import type { Overview } from '@/rpc/bindings/Overview'
+import type { Overview } from "@/rpc/bindings/method.agent.output"
 import { askKeys } from '@/lib/ask-rpc'
 import { NotebookHeaderActions, popOutNotebook } from './NotebookHeaderActions'
 
@@ -22,7 +22,7 @@ vi.mock('@/store/sessions', () => ({ on: () => () => {} }))
 vi.mock('@/components/notebooks/AskDialog', () => ({ AskDialog: ({ open }: { open: boolean }) => (open ? createElement('div', { 'data-ask': true }) : null) }))
 
 const NB = 'nb1'
-const overview = (kind: Overview['kind'], status: Overview['status']): Overview => ({ kind, artifact: null, name: `${kind}.md`, version: 1, created_ms: 1n, session: 's', status, note: null, error: null })
+const overview = (kind: Overview['kind'], status: Overview['status']): Overview => ({ kind, artifact: null, name: `${kind}.md`, version: 1, created_ms: 1, session: 's', status, note: null, error: null })
 const render = (ask?: string | true) => {
   const qc = new QueryClient()
   qc.setQueryData(askKeys.overviews(NB), [overview('briefing', 'running')])

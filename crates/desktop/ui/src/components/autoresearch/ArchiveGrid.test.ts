@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
 import { ArchiveGrid, binsOf, distanceFromChampion } from './ArchiveGrid'
-import type { CellRow } from '@/rpc/bindings/CellRow'
+import type { CellRow } from "@/rpc/bindings/method.autoresearch.output"
 
 const cell = (key: string, n: number, length: number, extra: Partial<CellRow> = {}): CellRow => ({
   key,

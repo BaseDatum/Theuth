@@ -1,9 +1,9 @@
 import { expect, test } from 'vitest'
-import type { Brief } from '@/rpc/bindings/Brief'
-import type { BriefSource } from '@/rpc/bindings/BriefSource'
-import type { MeetingEvent } from '@/rpc/bindings/MeetingEvent'
-import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
-import type { MeetingStatus } from '@/rpc/bindings/MeetingStatus'
+import type { Brief } from "@/rpc/bindings/method.meeting.output"
+import type { BriefSource } from "@/rpc/bindings/method.meeting.output"
+import type { MeetingEvent } from "@/rpc/bindings/event.meeting_2eevents.output"
+import type { OracleDecision } from "@/rpc/bindings/event.meeting_2eevents.output"
+import type { Status as MeetingStatus } from "@/rpc/bindings/method.meeting.output"
 import {
   type MeetingSlice,
   LINES_KEEP,
@@ -27,7 +27,7 @@ const brief = (id: string, source: BriefSource, topic: string | null = null): Br
   title: id,
   bullets: ['a', 'b'],
   source,
-  at_ms: 0n,
+  at_ms: 0,
   parent: null,
   cached: null,
 })
@@ -66,7 +66,7 @@ test('Auto briefs at the top replace the view; stepped back they queue behind th
 
 test('a brief the user asked for jumps into view and clears the badge; its topic button goes on TopicRemoved{Viewed}', () => {
   let s = fresh()
-  s = reduce(s, { type: 'TopicAdded', meeting: M, topic: { id: 't1', label: 'KEDA', at_ms: 0n, brief: null, cached: null, source: null } })
+  s = reduce(s, { type: 'TopicAdded', meeting: M, topic: { id: 't1', label: 'KEDA', at_ms: 0, brief: null, cached: null, source: null } })
   for (const id of ['a', 'b']) s = reduce(s, ev({ type: 'Brief', brief: brief(id, 'Auto') }))
   useMeeting.setState(s)
   useMeeting.getState().move(-1)
@@ -119,7 +119,7 @@ const verdict = (batch_id: string, kind: 'skip' | 'brief' | 'model', outcome: Or
   subject: null,
   tier2: null,
   top: [],
-  latency_ms: 78n,
+  latency_ms: 78,
   tier: 1,
   outcome,
 })
@@ -151,8 +151,8 @@ const said = (track: 'Mic' | 'System', text: string, t0: number, final = true, m
   type: 'Utterance',
   meeting,
   track,
-  t0_ms: BigInt(t0),
-  t1_ms: BigInt(t0 + 500),
+  t0_ms: t0,
+  t1_ms: t0 + 500,
   text,
   request: false,
   final,
@@ -237,7 +237,7 @@ test('173 R3-7: hydrate from an engine without `capture` leaves both tracks Ok; 
     state: 'Recording',
     meeting: M,
     session: 's1',
-    elapsed_ms: 0n,
+    elapsed_ms: 0,
     degraded: [],
     cursor: null,
     topics: [],
@@ -271,8 +271,8 @@ test('173 R3-6: a PermissionDenied degradation is never a strip badge; the captu
 })
 
 test('173: a live fallback is one badge; an ended one none', () => {
-  const open = { SystemAudioFallback: { reason: 'Silent', at_ms: 1n, until_ms: null } } as const
-  const ended = { SystemAudioFallback: { reason: 'Silent', at_ms: 1n, until_ms: 2n } } as const
+  const open = { SystemAudioFallback: { reason: 'Silent', at_ms: 1, until_ms: null } } as const
+  const ended = { SystemAudioFallback: { reason: 'Silent', at_ms: 1, until_ms: 2 } } as const
   expect(liveBadges([open])).toEqual(['system audio fallback'])
   const alert = captureBadge({ mic: OK, system: { state: 'Degraded', reason: 'Silent' } })
   expect(liveBadges([open], alert)).toEqual([])

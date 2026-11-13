@@ -7,15 +7,16 @@
 // 194: the new effort RPCs (`*_effort` / `set_*_effort`, `set_advisor_default_model`) answered from `efforts` below, so a
 // chip pick round-trips (the setter stores, the getter returns it); `dev/effort-fixture.html` renders every picker.
 
-import type { Api } from '@/rpc/api'
-import type { AdvisorDefaults } from '@/rpc/bindings/AdvisorDefaults'
-import type { LocalServer } from '@/rpc/bindings/LocalServer'
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
-import type { ProviderInfo } from '@/rpc/bindings/ProviderInfo'
-import type { Contact } from '@/rpc/bindings/Contact'
-import type { Export } from '@/rpc/bindings/Export'
-import type { ProviderModel } from '@/rpc/bindings/ProviderModel'
-import type { SummaryTest } from '@/rpc/bindings/SummaryTest'
+import { receiveComponent } from '@/rpc/bindings/receive'
+import type { Api } from '@/rpc/bindings/client'
+import type { AdvisorDefaults } from "@/rpc/bindings/method.agent.output"
+import type { LocalServer } from "@/rpc/bindings/method.agent.output"
+import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
+import type { ProviderInfo } from "@/rpc/bindings/method.agent.output"
+import type { Contact } from "@/rpc/bindings/method.a2a.output"
+import type { Export } from "@/rpc/bindings/method.a2a.output"
+import type { ProviderModel } from "@/rpc/bindings/method.agent.output"
+import type { SummaryTest } from "@/rpc/bindings/method.agent.output"
 
 const flag = (): string | null => (import.meta.env.DEV ? globalThis.localStorage?.getItem('local-fixture') || import.meta.env.VITE_LOCAL_FIXTURE || null : null)
 
@@ -44,7 +45,7 @@ const TEST_MODEL = 'mlx/LFM3-1.7B-MLX-bf16'
 const ok: SummaryTest = {
   ok: true,
   model: TEST_MODEL,
-  latency_ms: 2_140n,
+  latency_ms: 2140,
   tokens_in: 1_873,
   tokens_out: 41,
   reasoning_tokens: null,
@@ -58,7 +59,7 @@ const ok: SummaryTest = {
 const failed: SummaryTest = {
   ok: false,
   model: TEST_MODEL,
-  latency_ms: 21_600n,
+  latency_ms: 21600,
   tokens_in: 1_873,
   tokens_out: 2_048,
   reasoning_tokens: 2_048,
@@ -71,7 +72,7 @@ const failed: SummaryTest = {
 }
 
 const NOW = Date.now()
-const contact = (c: Partial<Contact> & Pick<Contact, 'name' | 'id'>): Contact => ({
+const contact = (c: Partial<Contact> & Pick<Contact, 'name' | 'id'>): Contact => (receiveComponent("method.a2a.output.Contact", {
   machine: 'laptop',
   endpoint: 'e7ac7242a74ef96fc15d964ef848e564f6971cf2bc08b08a94308c4a6e020825',
   fingerprint: '46WH EQVH J34W 7QK5 SZHP',
@@ -86,7 +87,7 @@ const contact = (c: Partial<Contact> & Pick<Contact, 'name' | 'id'>): Contact =>
   paired_on: 'studio',
   machines: [],
   ...c,
-})
+}))
 const machine = (eid: string, name: string, left = false) => ({ eid, name, left })
 /** One of each D8 row: sound (one of its machines left), alert, refused, waiting (a rename in flight, so two `bob`s). */
 const contacts: Contact[] = [
@@ -122,7 +123,7 @@ let removed = false
 /** 194: the stored efforts by setting, and the advisor defaults once a setter replaced the engine's `Info.advisor`. */
 const efforts: Record<'title' | 'polish' | 'vision' | 'escalate' | 'subagent' | 'theuth', string | null> = { title: null, polish: null, vision: null, escalate: null, subagent: null, theuth: null }
 let advisor: AdvisorDefaults | null = null
-const keep = <K extends keyof typeof efforts>(k: K) => (e: string | null) => Promise.resolve((efforts[k] = e))
+const keep = <K extends keyof typeof efforts>(k: K) => (e: string | null = null) => Promise.resolve((efforts[k] = e))
 
 const wrapped = new WeakMap<Api, Api>()
 
@@ -141,7 +142,7 @@ export function localFixture(api: Api): Api {
     provider_models: (provider) => (provider === 'mlx' ? Promise.resolve(limits) : api.provider_models(provider)),
     set_model_limits: (provider, id, context, output) => {
       if (provider !== 'mlx') return api.set_model_limits(provider, id, context, output)
-      const m: ProviderModel = { ...limits.find((x) => x.id === id)!, context: context ?? 0, output: output ?? 0 }
+      const m: ProviderModel = receiveComponent("method.agent.output.ProviderModel", { ...limits.find((x) => x.id === id)!, context: context ?? 0, output: output ?? 0 })
       m.source = m.context || m.output ? 'user' : 'unknown'
       m.assumed_context = m.context ? null : 16_384
       limits = limits.map((x) => (x.id === id ? m : x))
@@ -165,8 +166,8 @@ export function localFixture(api: Api): Api {
     theuth_agent_effort: () => Promise.resolve(efforts.theuth),
     set_theuth_agent_effort: keep('theuth'),
     info: () => api.info().then((i) => ({ ...i, advisor: advisor ?? i.advisor })),
-    set_advisor_default_model: (model) => advisorNow().then((a) => (advisor = { ...a, model, effort: model ? a.effort : null })),
-    set_advisor_default_effort: (effort) => advisorNow().then((a) => (advisor = { ...a, effort })),
+    set_advisor_default_model: (model = null) => advisorNow().then((a) => (advisor = { ...a, model, effort: model ? a.effort : null })),
+    set_advisor_default_effort: (effort = null) => advisorNow().then((a) => (advisor = { ...a, effort })),
   }
   wrapped.set(api, fixture)
   return fixture

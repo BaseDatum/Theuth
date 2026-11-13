@@ -1,10 +1,11 @@
-import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
-import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { SpendReport } from '@/rpc/bindings/SpendReport'
-import type { Task } from '@/rpc/bindings/Task'
+import { receiveComponent } from '@/rpc/bindings/receive'
+import type { ActivityEntry } from "@/rpc/bindings/method.roster.output"
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
+import type { ScheduleInfo } from "@/rpc/bindings/method.schedule.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { SpendReport } from "@/rpc/bindings/method.agent.output"
+import type { Task } from "@/rpc/bindings/method.roster.output"
 import { DAY_MS, HOUR_MS, localDay, rng, type SceneData, startOfDay } from './model'
 
 /**
@@ -16,13 +17,13 @@ const M = 60_000
 const pick = <T,>(arr: readonly T[], u: number): T => arr[Math.floor(u * arr.length)] as T
 const H = HOUR_MS
 
-const agent = (name: string, status: AgentSummary['status'], open_tasks: number, spent_month: number, cap: number | null, desk: string | null): AgentSummary => ({
+const agent = (name: string, status: AgentSummary['status'], open_tasks: number, spent_month: number, cap: number | null, desk: string | null): AgentSummary => (receiveComponent("method.roster.output.AgentSummary", {
   file: { name, title: name, reports_to: 'theuth', model: null, effort: null, tools: null, mcp: null, budget: cap === null ? { type: 'none' } : { type: 'monthly', amount: cap, currency: 'USD' }, capabilities: null, paused: status === 'paused', proposed_by: null, runs_in: 'any', body: '' },
   status,
   desk,
   open_tasks,
   spent_month,
-})
+}))
 
 const task = (id: string, title: string, owner: string, state: Task['state'], updated_ms: number, progress_at_ms: number | null = null, project: string | null = null): Task => ({
   id,
@@ -52,7 +53,7 @@ const task = (id: string, title: string, owner: string, state: Task['state'], up
   priority: 'medium',
 })
 
-const session = (id: string, title: string, updated: number, extra: Partial<SessionSummary> = {}): SessionSummary => ({
+const session = (id: string, title: string, updated: number, extra: Partial<SessionSummary> = {}): SessionSummary => (receiveComponent("method.agent.output.SessionSummary", {
   id,
   created_at: new Date(updated - H).toISOString(),
   updated_at: new Date(updated).toISOString(),
@@ -75,9 +76,9 @@ const session = (id: string, title: string, updated: number, extra: Partial<Sess
   memory: 'epochs',
   here: true,
   ...extra,
-})
+}))
 
-const schedule = (name: string, next: number | null, last: number | null, running: boolean, last_result: string | null): ScheduleInfo => ({
+const schedule = (name: string, next: number | null, last: number | null, running: boolean, last_result: string | null): ScheduleInfo => (receiveComponent("method.schedule.output.ScheduleInfo", {
   name,
   when: 'cron 0 9 * * *',
   describe: 'daily',
@@ -109,9 +110,9 @@ const schedule = (name: string, next: number | null, last: number | null, runnin
   run_timeout: null,
   created: null,
   last_check: null,
-})
+}))
 
-const need = (id: string, kind: AttentionItem['kind'], title: string, at_ms: number, agent: string | null, task: string | null): AttentionItem => ({
+const need = (id: string, kind: AttentionItem['kind'], title: string, at_ms: number, agent: string | null, task: string | null): AttentionItem => (receiveComponent("method.roster.output.AttentionItem", {
   id,
   kind,
   title,
@@ -126,7 +127,7 @@ const need = (id: string, kind: AttentionItem['kind'], title: string, at_ms: num
   ask: null,
   turn: null,
   rank: 5,
-})
+}))
 
 /** uuidv7-shaped task ids whose short id (last 6) reads like the mock's. */
 export const T = (n: string) => `0192a1b2-c3d4-7e5f-8a9b-00000000${n}`
@@ -149,7 +150,7 @@ export function sceneFixture(now: number): Required<SceneData> {
     need(`review:${T('1188')}`, 'review', 'research · design 126 draft ready', now - 1 * H, 'research', T('1188')),
     need('hire:analyst-2', 'hire', 'ops-desk proposes an analyst desk', now - 3 * H, 'ops-desk', null),
     need(`blocked:${T('1203')}`, 'blocked', 'windows build host unreachable', now - 26 * H, 'builder', T('1203')),
-    { ...need('secret:gh-token', 'secret', 'GITHUB_TOKEN rotation requested', now - 50 * H, null, null), session: 'chat-1' }, // Revision 4: via the root's ring
+    receiveComponent("method.roster.output.AttentionItem", { ...need('secret:gh-token', 'secret', 'GITHUB_TOKEN rotation requested', now - 50 * H, null, null), session: 'chat-1' }), // Revision 4: via the root's ring
   ]
   // Revision 6: the BOARD panel reads every task in every project — `hud` (9), `relay` (5), unfiled (6); every state present (doing 3, done 7, review 2, blocked 1, cancelled 1, backlog 4, todo 2).
   const tasks: Task[] = [

@@ -15,7 +15,7 @@ import type { Point, UnitState } from '@/lib/diagram/types'
 import { focusUnit, type UnitAttrs, type Units, useUnits } from '@/lib/diagram/units'
 import type { DiagramTokens } from '@/lib/diagram-theme'
 import { flattenElk, FONT_PX, type GraphData, ICON_W, type Layout, type LayoutEdge, LINE_PX, structuralHash, toElk, useDiagramTokens, useElkLayout, wrapLabel } from '@/lib/graph-layout'
-import type { GraphState } from '@/rpc/bindings/GraphState'
+import type { GraphState } from "@/rpc/bindings/method.codeindex.output"
 import { DiagramFrame } from '../DiagramFrame'
 
 type Node = GraphData['nodes'][number]

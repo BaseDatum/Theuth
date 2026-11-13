@@ -28,7 +28,7 @@ import {
 } from './map'
 import { mockMapApi } from './map-adapter'
 import type { CodeMapChanged, CodeMapProgress } from './types'
-import type { MapEdge } from '@/rpc/bindings/MapEdge'
+import type { MapEdge } from "@/rpc/bindings/method.codeindex.output"
 
 const ROOT = '/Users/sky/Develop/theuth'
 const STORES = 'overall-architecture/cluster:26b565b0'

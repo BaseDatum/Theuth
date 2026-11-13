@@ -5,7 +5,7 @@
 import { Circle, type LucideIcon, MousePointer2, ScanEye, Timer, Underline } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import type { Element, Gesture, Screen } from '@/lib/screen-context'
-import type { ContextAttachment } from '@/rpc/bindings/ContextAttachment'
+import type { ContextAttachment } from "@/rpc/bindings/method.agent.output"
 import { Attachments } from './Attachments'
 
 const ICON: Record<Gesture['kind'], LucideIcon> = { circled: Circle, underlined: Underline, rested: Timer, ended: MousePointer2 }

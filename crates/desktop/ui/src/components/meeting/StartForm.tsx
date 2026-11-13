@@ -22,8 +22,8 @@ import { isMacDesktop } from '@/lib/hotkeys'
 import { LAWFUL } from '@/lib/detection'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { PermissionState } from '@/rpc/bindings/PermissionState'
-import type { StartMeeting } from '@/rpc/bindings/StartMeeting'
+import type { PermissionState } from "@/rpc/bindings/method.meeting.output"
+import type { StartMeeting } from '@/rpc/bindings/method.meeting.input'
 
 /** The picker's "System audio" row; `meeting_start` gets `process: null`. */
 const SYSTEM = 0

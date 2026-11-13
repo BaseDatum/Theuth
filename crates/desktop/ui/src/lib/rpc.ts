@@ -1,11 +1,11 @@
 import { type QueryClient, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
-import type { Api } from '@/rpc/api'
-import type { PairCeremony } from '@/rpc/bindings/PairCeremony'
-import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
-import type { EndlessProgress } from '@/rpc/bindings/EndlessProgress'
+import type { Api } from '@/rpc/bindings/client'
+import type { PairCeremony } from "@/rpc/bindings/method.a2a.output"
+import type { SearchCategory } from '@/rpc/bindings/method.rpc_2dcompose.input'
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { SessionMemory } from "@/rpc/bindings/method.agent.output"
+import type { EndlessProgress } from "@/rpc/bindings/event.agent_2eendless_2dprogress.output"
 import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
 import { isPopout, openPopout } from '@/lib/popout'
@@ -354,7 +354,7 @@ export function useInvalidateOn(): void {
         if ('sandbox' in e) applySandboxEvent(qc, e)
       }),
       on('Removed', (e) => applySandboxEvent(qc, e)),
-      on('Progress', (e) => applySandboxEvent(qc, e)),
+      on('Progress', (e) => { if ('call_id' in e) applySandboxEvent(qc, e) }),
       on('OpenDesktop', (e) => {
         if (!isPopout()) void openPopout({ kind: 'vm', name: e.name })
       }),

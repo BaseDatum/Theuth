@@ -4,10 +4,10 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import { queryKeys } from '@/lib/rpc'
 import type * as Rpc from '@/lib/rpc'
-import type { LocalServer } from '@/rpc/bindings/LocalServer'
-import type { ProviderInfo } from '@/rpc/bindings/ProviderInfo'
-import type { ProviderModel } from '@/rpc/bindings/ProviderModel'
-import type { LoginInfo } from '@/rpc/extra'
+import type { LocalServer } from "@/rpc/bindings/method.agent.output"
+import type { ProviderInfo } from "@/rpc/bindings/method.agent.output"
+import type { ProviderModel } from "@/rpc/bindings/method.agent.output"
+import type { LoginInfo } from "@/rpc/bindings/method.agent.output"
 import { CustomProviderForm, LocalServerForm, ModelLimits, ModelProviders, ProbeRows } from './ModelProviders'
 import {
   BUILTIN_LABEL,

@@ -10,8 +10,8 @@ import { privateOwner } from '@/lib/private'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { useEngines } from '@/link/engines'
-import type { ArchiveEntry } from '@/rpc/bindings/ArchiveEntry'
-import type { Artifact } from '@/rpc/extra'
+import type { ArchiveEntry } from "@/rpc/bindings/method.artifact.output"
+import type { Artifact } from "@/rpc/bindings/method.artifact.output"
 
 const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e))
 

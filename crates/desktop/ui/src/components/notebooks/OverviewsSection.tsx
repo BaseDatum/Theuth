@@ -10,8 +10,8 @@ import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { askKeys, useAskApi, useOverviews } from '@/lib/ask-rpc'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { Overview } from '@/rpc/bindings/Overview'
-import type { OverviewKind } from '@/rpc/bindings/OverviewKind'
+import type { Overview } from "@/rpc/bindings/method.agent.output"
+import type { OverviewKind } from "@/rpc/bindings/method.agent.output"
 
 /** The five kinds in menu order (§10): glyph and label shared by the header's Overviews ▾ menu. */
 export const OVERVIEWS: readonly { kind: OverviewKind; label: string; Icon: LucideIcon }[] = [

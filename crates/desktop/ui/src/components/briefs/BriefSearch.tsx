@@ -15,7 +15,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { CachedBrief } from '@/rpc/bindings/CachedBrief'
+import type { CachedBrief } from "@/rpc/bindings/method.meeting.output"
 
 const MIN = 2
 

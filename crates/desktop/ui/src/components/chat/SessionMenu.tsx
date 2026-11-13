@@ -45,12 +45,12 @@ import { hasLocal } from '@/link/engines'
 import { ShareDialog, SharingItems } from '@/components/settings/Contacts'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
-import type { ApprovalsState } from '@/rpc/bindings/ApprovalsState'
-import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
-import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
+import type { ApprovalsState } from "@/rpc/bindings/method.agent.output"
+import type { CommunicationState } from "@/rpc/bindings/method.agent.output"
+import type { CompactStyle } from "@/rpc/bindings/method.agent.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { useSessionField, useSessions } from '@/store/sessions'
 import { useModels } from './ModelMenu'
 import { useMessagingSheet } from './messaging-sheet'

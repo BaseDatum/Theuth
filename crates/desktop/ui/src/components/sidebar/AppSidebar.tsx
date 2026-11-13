@@ -33,7 +33,7 @@ import { useShortcuts } from '@/lib/shortcuts'
 import * as talk from '@/lib/talk'
 import { useUpdate } from '@/lib/update'
 import { cn } from '@/lib/utils'
-import type { DocSummary } from '@/rpc/bindings/DocSummary'
+import type { DocSummary } from "@/rpc/bindings/method.agent.output"
 import { Desks } from './Desks'
 import { SearchTrigger } from './SearchTrigger'
 import { SessionList } from './SessionList'

@@ -12,9 +12,9 @@ import { useEnsureNotebookSession, useNotebookSession } from '@/components/noteb
 import { useIsMobile } from '@/hooks/use-mobile'
 import { type EstimateItem, useContextDefaults } from '@/lib/notebook-context'
 import { notebookKeys, useContextApi, useNotebooksApi } from '@/lib/notebooks-rpc'
-import type { ContextLevel } from '@/rpc/bindings/ContextLevel'
-import type { ItemKind } from '@/rpc/bindings/ItemKind'
-import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
+import type { ContextLevel } from "@/rpc/bindings/method.agent.output"
+import type { ItemKind } from "@/rpc/bindings/method.agent.output"
+import type { Source as NotebookSource } from "@/rpc/bindings/method.document.output"
 import { cn } from '@/lib/utils'
 import { LEVELS, type StatusTone, originGlyph, originLabel, originLine, sourceTitle, statusWord } from './origin'
 

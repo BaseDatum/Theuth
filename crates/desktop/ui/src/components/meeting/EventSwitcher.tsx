@@ -20,8 +20,8 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { calendarKeys, candidateWindow, choices, eventLine, setEvent } from '@/lib/calendar'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { Detection } from '@/rpc/bindings/Detection'
-import type { MeetingId } from '@/rpc/bindings/MeetingId'
+import type { Detection } from "@/rpc/bindings/method.meeting.output"
+import type { MeetingId } from "@/rpc/bindings/method.meeting.output"
 
 export const ASK = 'Which meeting is this?'
 

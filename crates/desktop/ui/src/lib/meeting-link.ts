@@ -5,7 +5,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { canPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
+import type { MeetingSummary } from "@/rpc/bindings/method.meeting.output"
 
 /** The meeting whose own chat is `session`, else `null`. */
 export const meetingForSession = (meetings: readonly MeetingSummary[] | undefined, session: string): string | null =>

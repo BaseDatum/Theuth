@@ -3,7 +3,7 @@ import { X } from 'lucide-react'
 import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import type { Task } from '@/rpc/bindings/Task'
+import type { Task } from "@/rpc/bindings/method.roster.output"
 import { TaskPicker } from './TaskPicker'
 import { shortId } from './helpers'
 

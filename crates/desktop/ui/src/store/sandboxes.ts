@@ -3,12 +3,12 @@
 // Pure functions here; `applySandboxEvent` is the one place that touches the cache (`lib/rpc.ts` calls it).
 
 import type { QueryClient } from '@tanstack/react-query'
-import type { Preflight } from '@/rpc/bindings/Preflight'
-import type { Resources } from '@/rpc/bindings/Resources'
-import type { SandboxEvent } from '@/rpc/bindings/SandboxEvent'
-import type { SandboxInfo } from '@/rpc/bindings/SandboxInfo'
-import type { SandboxState } from '@/rpc/bindings/SandboxState'
-import type { VmMetrics } from '@/rpc/bindings/VmMetrics'
+import type { Preflight } from "@/rpc/bindings/method.sandbox.output"
+import type { Resources } from "@/rpc/bindings/method.sandbox.output"
+import type { SandboxEvent } from "@/rpc/bindings/event.sandbox_2eevents.output"
+import type { SandboxInfo } from "@/rpc/bindings/method.sandbox.output"
+import type { SandboxState } from "@/rpc/bindings/method.sandbox.output"
+import type { VmMetrics } from "@/rpc/bindings/method.sandbox.output"
 
 export const SANDBOXES_KEY = ['sandboxes'] as const
 export const sandboxLogKey = (name: string) => ['sandboxes', 'log', name] as const

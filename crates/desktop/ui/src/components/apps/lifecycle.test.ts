@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vitest";
-import type { Api } from "@/rpc/api";
+import type { Api } from '@/rpc/bindings/client'
 import { RpcError } from "@/rpc/client";
-import type { AppToolResult } from "@/rpc/extra";
+import type { AppToolResult } from "@/rpc/bindings/method.app.output"
 import {
   AppCallError,
   PendingPresses,

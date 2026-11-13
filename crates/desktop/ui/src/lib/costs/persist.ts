@@ -1,7 +1,7 @@
 // 160 §6.2: the merged cube on disk for a cold start — IndexedDB db `theuth-costs`, store `cube`, key `v1:<engine>`.
 // `link/idb.ts` is bound to the `link` db and its two stores, so this is its own small wrapper.
 
-import type { CostCube } from '@/rpc/bindings/CostCube'
+import type { CostCube } from "@/rpc/bindings/method.agent.output"
 
 let db: Promise<IDBDatabase> | undefined
 

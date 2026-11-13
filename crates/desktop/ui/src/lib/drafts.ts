@@ -17,9 +17,9 @@ import type { AttachRef } from '@/lib/attach'
 import type { Paste, Pastes } from '@/lib/pastes'
 import { isNoSuchSession } from '@/lib/no-such-session'
 import { untilLive, useRemoteStart } from '@/lib/remote-start'
-import type { Api } from '@/rpc/api'
-import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
-import type { SessionOpen } from '@/rpc/bindings/SessionOpen'
+import type { Api } from '@/rpc/bindings/client'
+import type { CreateSessionOptions } from '@/rpc/bindings/method.sessionsync.input'
+import type { SessionOpen } from "@/rpc/bindings/method.agent.output"
 
 const KEY = 'composer-drafts'
 

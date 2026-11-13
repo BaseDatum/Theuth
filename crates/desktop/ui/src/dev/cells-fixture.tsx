@@ -11,13 +11,13 @@ import { QuitSheet } from '@/components/cells/QuitSheet'
 import { refKey } from '@/components/cells/store'
 import { MessageAssistant } from '@/components/chat/MessageAssistant'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import type { Api } from '@/rpc/api'
-import type { CellRef } from '@/rpc/bindings/CellRef'
-import type { CellRun } from '@/rpc/bindings/CellRun'
-import type { CellScope } from '@/rpc/bindings/CellScope'
-import type { CellState } from '@/rpc/bindings/CellState'
-import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
-import type { KernelState } from '@/rpc/bindings/KernelState'
+import type { Api } from '@/rpc/bindings/client'
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
+import type { CellRun } from "@/rpc/bindings/method.cells.output"
+import type { Scope as CellScope } from "@/rpc/bindings/method.cells.output"
+import type { CellState } from "@/rpc/bindings/method.cells.output"
+import type { ContextEntry } from "@/rpc/bindings/method.agent.output"
+import type { KernelState } from "@/rpc/bindings/method.cells.output"
 import type { RpcClient } from '@/rpc/client'
 import { active } from '@/store/engine-scope'
 import { PLAIN, PWSH, PYTHON, SAMPLE } from './cells-sample'

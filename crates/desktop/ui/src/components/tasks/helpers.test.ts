@@ -1,17 +1,18 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { expect, test } from 'vitest'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
-import type { Task } from '@/rpc/bindings/Task'
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
+import type { Task } from "@/rpc/bindings/method.roster.output"
 import { USER, actionsFor, age, agent, awaitsMyReview, canDrag, columns, defaultReviewer, needsPerson, nodesOf, ownerText, parseBlocker, parseOwner, queueSummary, stateChip } from './helpers'
 
-const task = (t: Partial<Task>): Task => ({
+const task = (t: Partial<Task>): Task => (receiveComponent("method.roster.output.Task", {
   id: 'x', title: 't', brief: '', done_when: null, attachments: [], owner: USER, state: 'todo', reviewer: null, blockers: [], blocks: [], parent: null, project: null,
   where: null, home: null, harness: null, external: [], thread: null, checkout: null, schedule: null, created_by: 'user',
   created_ms: 0, updated_ms: 0, no_progress_count: 0, next_wake_after_ms: null, priority: 'medium', ...t,
-})
-const summary = (name: string, reports_to: string): AgentSummary => ({
+}))
+const summary = (name: string, reports_to: string): AgentSummary => (receiveComponent("method.roster.output.AgentSummary", {
   file: { name, title: name, reports_to, model: null, effort: null, tools: null, mcp: null, budget: { type: 'none' }, capabilities: null, paused: false, proposed_by: null, runs_in: 'any', body: 'x' },
   status: 'idle', desk: null, open_tasks: 0, spent_month: 0,
-})
+}))
 
 test('owner text round-trips both forms', () => {
   expect(ownerText(agent('ops'))).toBe('agent:ops')

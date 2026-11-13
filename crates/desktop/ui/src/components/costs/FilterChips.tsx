@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { BASIS_COLOR, type Dim, DIMS, type FilterOption, type Filters } from '@/lib/costs/cube'
 import { int, usdShort } from '@/lib/costs/format'
-import type { CostBasis } from '@/rpc/bindings/CostBasis'
+import type { CostBasis } from "@/rpc/bindings/method.agent.output"
 import { cn } from '@/lib/utils'
 import { OwnerGlyph, Swatch } from './ui'
 

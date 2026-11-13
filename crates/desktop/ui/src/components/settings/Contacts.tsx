@@ -29,17 +29,17 @@ import { PAIRED_RULE, SHARE_RULE, accessFocus, exportName, fingerprint, focusedC
 import { engineLabel } from '@/lib/owner'
 import { putPair, queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { Contact } from '@/rpc/bindings/Contact'
-import type { ContactMachine } from '@/rpc/bindings/ContactMachine'
-import type { ContactPatch } from '@/rpc/bindings/ContactPatch'
-import type { ContactTarget } from '@/rpc/bindings/ContactTarget'
-import type { ContactWindow } from '@/rpc/bindings/ContactWindow'
-import type { Export } from '@/rpc/bindings/Export'
-import type { ExportTarget } from '@/rpc/bindings/ExportTarget'
-import type { FirstContact } from '@/rpc/bindings/FirstContact'
-import type { FirstWaiting } from '@/rpc/bindings/FirstWaiting'
-import type { PairCeremony } from '@/rpc/bindings/PairCeremony'
-import type { PeerPath } from '@/rpc/bindings/PeerPath'
+import type { Contact } from "@/rpc/bindings/method.a2a.output"
+import type { ContactMachine } from "@/rpc/bindings/method.a2a.output"
+import type { ContactPatch } from '@/rpc/bindings/method.a2a.input'
+import type { ContactTarget } from '@/rpc/bindings/method.a2a.input'
+import type { ContactWindow } from "@/rpc/bindings/method.a2a.output"
+import type { Export } from "@/rpc/bindings/method.a2a.output"
+import type { ExportTarget } from "@/rpc/bindings/method.a2a.output"
+import type { FirstContact } from "@/rpc/bindings/method.a2a.output"
+import type { FirstWaiting } from "@/rpc/bindings/method.a2a.output"
+import type { PairCeremony } from "@/rpc/bindings/method.a2a.output"
+import type { PeerPath } from "@/rpc/bindings/method.a2a.output"
 
 const NO_PATCH: ContactPatch = { name: null, exports: null, blocked: null }
 const PATH: Record<PeerPath, [string, string]> = { lan: ['LAN', 'bg-success'], relay: ['Relay', 'bg-warning'], offline: ['offline', 'ring-1 ring-fg-tertiary ring-inset'] }
@@ -704,12 +704,10 @@ export function useGrant() {
     ({ contact, target, title }: { contact: Contact; target: ExportTarget; title: string }) =>
       (async () => {
         const all = await api.a2a_exports()
-        let exp = all.find((x) => (x.target.kind === 'agent' ? target.kind === 'agent' && x.target.agent === target.agent : target.kind === 'chat' && x.target.session === target.session))
-        if (!exp) {
-          exp = { name: exportName(title, all.map((x) => x.name)), target, description: title, paused: null }
-          await api.a2a_export_put(exp)
-        }
-        if (!contact.exports.includes(exp.name)) await api.contact_update(contact.name, { ...NO_PATCH, exports: [...contact.exports, exp.name] })
+        const existing = all.find((x) => (x.target.kind === 'agent' ? target.kind === 'agent' && x.target.agent === target.agent : target.kind === 'chat' && x.target.session === target.session))
+        const name = existing?.name ?? exportName(title, all.map((x) => x.name))
+        if (!existing) await api.a2a_export_put({ name, target, description: title, paused: null })
+        if (!contact.exports.includes(name)) await api.contact_update(contact.name, { ...NO_PATCH, exports: [...contact.exports, name] })
       })(),
     { keys: [queryKeys.contacts, queryKeys.exports] },
   )

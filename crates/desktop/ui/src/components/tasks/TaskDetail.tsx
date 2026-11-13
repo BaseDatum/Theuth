@@ -27,9 +27,9 @@ import { costShort } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useConnection } from '@/store/connection'
 import { cn } from '@/lib/utils'
-import type { Task } from '@/rpc/bindings/Task'
-import type { TaskEvent } from '@/rpc/bindings/TaskEvent'
-import type { TaskPatch } from '@/rpc/bindings/TaskPatch'
+import type { Task } from "@/rpc/bindings/method.roster.output"
+import type { TaskEvent } from "@/rpc/bindings/method.roster.output"
+import type { TaskPatch } from '@/rpc/bindings/method.roster.input'
 import { AttachmentsEditor } from './Attachments'
 import { rememberOpenedTask } from './boardMemory'
 import { MoveButton, TaskMenu } from './MoveHome'

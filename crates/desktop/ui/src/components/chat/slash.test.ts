@@ -1,6 +1,6 @@
 import { expect, test, vi } from 'vitest'
 import { toast } from 'sonner'
-import type { Api } from '@/rpc/api'
+import type { Api } from '@/rpc/bindings/client'
 import { NO_PICK, useDrafts } from '@/lib/drafts'
 import { active } from '@/store/engine-scope'
 import { useSessions } from '@/store/sessions'

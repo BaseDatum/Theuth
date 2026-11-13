@@ -1,12 +1,12 @@
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from 'y-protocols/awareness'
 import * as Y from 'yjs'
 import { LOCAL } from '@/link/engines'
-import type { Api } from '@/rpc/api'
-import type { DocEvent } from '@/rpc/bindings/DocEvent'
-import type { DocId } from '@/rpc/bindings/DocId'
-import type { DocMeta } from '@/rpc/bindings/DocMeta'
-import type { Role } from '@/rpc/bindings/Role'
-import type { Who } from '@/rpc/bindings/Who'
+import type { Api } from '@/rpc/bindings/client'
+import type { DocEvent } from "@/rpc/bindings/method.document.output"
+import type { DocId } from "@/rpc/bindings/method.agent.output"
+import type { DocMeta } from "@/rpc/bindings/method.document.output"
+import type { Role } from "@/rpc/bindings/method.agent.output"
+import type { Who } from "@/rpc/bindings/method.document.output"
 import type { RpcClient } from '@/rpc/client'
 import { DocStore, type Pending } from './queue'
 

@@ -18,8 +18,8 @@ import { markers, sectionsPath } from '@/lib/diagram/path'
 import type { DiagramTokens } from '@/lib/diagram-theme'
 import { FONT_PX, flattenElk, type GraphData, layout as elkLayoutOf, structuralHash, toElk, useElkLayout } from '@/lib/graph-layout'
 import { cn } from '@/lib/utils'
-import type { GraphProps } from '@/rpc/bindings/GraphProps'
-import type { MapElement } from '@/rpc/bindings/MapElement'
+import type { GraphProps } from "@/rpc/bindings/method.codeindex.output"
+import type { MapElement } from "@/rpc/bindings/method.codeindex.output"
 import './codemap.css'
 
 export type MapCanvasProps = {

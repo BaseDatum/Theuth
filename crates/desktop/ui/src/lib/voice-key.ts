@@ -28,7 +28,7 @@ import { noteText } from '@/lib/voice-note'
 import { LOCAL, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
 import { type Activity, on, useSessions } from '@/store/sessions'
-import type { Api } from '@/rpc/api'
+import type { Api } from '@/rpc/bindings/client'
 
 // ---- settings (§5.4; localStorage + zustand, `lib/nudges.ts` pattern) ----
 

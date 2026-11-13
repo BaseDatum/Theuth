@@ -2,8 +2,8 @@ import { Link } from '@tanstack/react-router'
 import { ChevronRight, CircleAlert, Eye, UserPlus } from 'lucide-react'
 import { useState } from 'react'
 import { CollapsibleTrigger } from '@/components/ui/collapsible'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
-import type { Task } from '@/rpc/bindings/Task'
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
+import type { Task } from "@/rpc/bindings/method.roster.output"
 import { awaitsMyReview, needsPerson, ownerLabel, queueSummary } from './helpers'
 import { useAgents, useTasks } from './queries'
 

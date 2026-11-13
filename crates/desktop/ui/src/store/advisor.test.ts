@@ -1,8 +1,9 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { expect, test } from 'vitest'
-import type { Advisory } from '@/rpc/bindings/Advisory'
-import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
-import type { WireEvent } from '@/rpc/events'
-import type { AgentInfo } from '@/rpc/extra'
+import type { Advisory } from "@/rpc/bindings/method.agent.output"
+import type { ContextEntry } from "@/rpc/bindings/method.agent.output"
+import type { UiEvent as WireEvent } from '@/store/ui-events'
+import type { AgentInfo } from '@/store/ui-events'
 import { apply, empty, fromHistory, type Ctx } from './reduce'
 import { useSessions } from './sessions'
 
@@ -59,7 +60,7 @@ test('a steer injected with advisory text shows one card, stamped by the event w
 })
 
 test('a history user row still carrying the wrapper (older engine) parses to one card without a seq', () => {
-  const entries = fromHistory({ role: 'user', text: `${WRAPPED}\n<advisory severity="nit" guidance="x">prefer \`let\`</advisory>`, turn: null })
+  const entries = fromHistory({ context: null, peer: null, role: 'user', text: `${WRAPPED}\n<advisory severity="nit" guidance="x">prefer \`let\`</advisory>`, turn: null })
   expect(entries).toHaveLength(1)
   expect(entries[0]).toMatchObject({ kind: 'advisory', notes: [concern, nit] })
 })
@@ -94,7 +95,7 @@ test('AdvisorChanged prints one info line per model change, nothing for state ti
 })
 
 test('setChildren drops an advisor child: no tree row, no strip dot', () => {
-  const row = (id: string, kind?: 'chat' | 'advisor'): AgentInfo => ({
+  const row = (id: string, kind?: 'chat' | 'advisor'): AgentInfo => (receiveComponent("method.agent.output.AgentInfo", {
     id,
     name: id,
     parent: S,
@@ -106,7 +107,7 @@ test('setChildren drops an advisor child: no tree row, no strip dot', () => {
     finished_at: null,
     last: '',
     kind,
-  })
+  }))
   useSessions.getState().setChildren(S, [row('worker'), row('advisor', 'advisor')])
   expect(Object.keys(useSessions.getState().sessions[S]?.children ?? {})).toEqual(['worker'])
 })
@@ -124,7 +125,7 @@ test('R1: an AdvisoryAdded of kind consultation is one card with its question, o
 })
 
 test('R1: the masked consultation row arrives through history as an advisory card with its question', () => {
-  const removed: ContextEntry = { ...msg(12), removed: true }
+  const removed: ContextEntry = receiveComponent("method.agent.output.ContextEntry", { ...msg(12), removed: true })
   const [card, ...rest] = fromHistory({ role: 'advisory', advisory: consultation('Which approach?', 'The second.'), context: removed })
   expect(rest).toEqual([])
   expect(card).toMatchObject({ kind: 'advisory', seq: 12, question: 'Which approach?', notes: [{ severity: 'advice', note: 'The second.' }], at: 1_700_000_000_000 })

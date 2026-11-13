@@ -1,8 +1,8 @@
 import { create } from 'zustand'
 import { age } from '@/components/tasks/helpers'
 import { useMesh } from '@/components/tasks/queries'
-import type { Peer } from '@/rpc/bindings/Peer'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { Peer } from "@/rpc/bindings/method.nodes.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { notOwner } from '@/lib/front-door'
 import { RpcError } from '@/rpc/client'
 import type { Stores } from '@/store/engine-scope'

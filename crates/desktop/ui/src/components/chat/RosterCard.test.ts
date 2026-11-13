@@ -1,9 +1,10 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
-import type { CostBucket } from '@/rpc/bindings/CostBucket'
-import type { ObservedMeta } from '@/rpc/bindings/ObservedMeta'
-import type { AgentInfo } from '@/rpc/extra'
+import type { CostBucket } from "@/rpc/bindings/method.agent.output"
+import type { ObservedMeta } from "@/rpc/bindings/method.agent.output"
+import type { AgentInfo } from '@/store/ui-events'
 import { watchCost } from '@/lib/session-tree'
 import { RosterRows, rosterFooter, rosterRows } from './RosterCard'
 
@@ -11,7 +12,7 @@ vi.mock('@tanstack/react-router', () => ({
   Link: ({ children, params, ...rest }: { children: unknown; params: { session: string }; title?: string }) => createElement('a', { href: `/c/${params.session}`, title: rest.title }, children as never),
 }))
 
-const meta = (over: Partial<ObservedMeta> = {}): ObservedMeta => ({
+const meta = (over: Partial<ObservedMeta> = {}): ObservedMeta => (receiveComponent("method.agent.output.ObservedMeta", {
   source: 'omp_task',
   external: 'x',
   state: 'running',
@@ -20,8 +21,8 @@ const meta = (over: Partial<ObservedMeta> = {}): ObservedMeta => ({
   tool_call: 'toolu_1',
   detail: null,
   ...over,
-})
-const row = (id: string, observed: ObservedMeta, extra: Partial<AgentInfo> = {}): AgentInfo => ({
+}))
+const row = (id: string, observed: ObservedMeta, extra: Partial<AgentInfo> = {}): AgentInfo => (receiveComponent("method.agent.output.AgentInfo", {
   id,
   name: id,
   parent: 'harness',
@@ -35,7 +36,7 @@ const row = (id: string, observed: ObservedMeta, extra: Partial<AgentInfo> = {})
   kind: 'observed',
   observed,
   ...extra,
-})
+}))
 const money = (n: string): CostBucket => ({
   returned: [{ currency: 'USD', nanos: n }],
   estimated_for_unavailable: [],

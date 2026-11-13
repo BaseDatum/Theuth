@@ -41,15 +41,15 @@ test('173: degradationText names the track or permission', () => {
 })
 
 test('173: gapText reads track, clock, length, reason and the retarget', () => {
-  expect(gapText({ at_ms: 370_000n, dur_ms: 38_400n, track: 'system', reason: 'Silent' })).toBe('system 00:06:10 for 38 s (silent)')
-  expect(gapText({ at_ms: 370_000n, dur_ms: 38_400n, track: 'system', reason: 'Stalled', retarget: 4242 })).toBe('system 00:06:10 for 38 s (stalled, tap moved to pid 4242)')
+  expect(gapText({ at_ms: 370000, dur_ms: 38400, track: 'system', reason: 'Silent' })).toBe('system 00:06:10 for 38 s (silent)')
+  expect(gapText({ at_ms: 370000, dur_ms: 38400, track: 'system', reason: 'Stalled', retarget: 4242 })).toBe('system 00:06:10 for 38 s (stalled, tap moved to pid 4242)')
 })
 
 test('173: degradationText spans a system-audio fallback, open-ended until a return probe', () => {
-  expect(degradationText({ SystemAudioFallback: { reason: 'Silent', at_ms: 370_000n, until_ms: 450_000n } })).toBe(
+  expect(degradationText({ SystemAudioFallback: { reason: 'Silent', at_ms: 370000, until_ms: 450000 } })).toBe(
     'app audio tap silent: all system audio recorded from 00:06:10 to 00:07:30',
   )
-  expect(degradationText({ SystemAudioFallback: { reason: 'Silent', at_ms: 370_000n, until_ms: null } })).toBe(
+  expect(degradationText({ SystemAudioFallback: { reason: 'Silent', at_ms: 370000, until_ms: null } })).toBe(
     'app audio tap silent: all system audio recorded from 00:06:10',
   )
 })

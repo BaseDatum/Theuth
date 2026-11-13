@@ -24,7 +24,7 @@ import { offerMeetingDefault } from '@/lib/meeting-model-offer'
 import { useProjectStyles } from '@/lib/project-style'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { setHiddenFromCapture } from '@/lib/tauri'
-import type { Manifest } from '@/rpc/bindings/Manifest'
+import type { Manifest } from "@/rpc/bindings/method.meeting.output"
 
 /** `MeetingConfig::default().live_tools` (`crates/meeting/src/lib.rs`); "Reset to default" writes this list. */
 export const DEFAULT_LIVE_TOOLS = [

@@ -26,7 +26,7 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { SkillMeta } from '@/rpc/bindings/SkillMeta'
+import type { SkillMeta } from "@/rpc/bindings/method.agent.output"
 import { useSessionField, useSessions } from '@/store/sessions'
 
 const WHAT = 'A skill is markdown the model pulls into context on demand: the system prompt lists every skill by name and description, the model loads the body when it needs it. Skills marked always are inlined into every prompt instead.'

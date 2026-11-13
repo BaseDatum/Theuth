@@ -34,8 +34,8 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { isSearchDestination, useSearchOrigin } from '@/lib/search'
 import { cn } from '@/lib/utils'
 import { useEngines } from '@/link/engines'
-import type { MatchRange } from '@/rpc/bindings/MatchRange'
-import type { Artifact } from '@/rpc/extra'
+import type { MatchRange } from "@/rpc/bindings/method.artifact.output"
+import type { Artifact } from "@/rpc/bindings/method.artifact.output"
 import type { PDFDocumentLoadingTask, PDFPageProxy, RenderTask } from 'pdfjs-dist'
 
 /** Non-page HTML-ish bytes (unreachable for `html`, which is a live page now — 120 §3): web images only; CSP blocks scripts/fetch/fonts/frames, the sandbox blocks forms and same-origin access (35 §9). */

@@ -33,14 +33,14 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { LOCAL, useEngines } from '@/link/engines'
 import { NODES_KEY, useHasNodes, useNodes } from '@/link/nodes'
-import type { HubPref } from '@/rpc/bindings/HubPref'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
-import type { NearbyEngine } from '@/rpc/bindings/NearbyEngine'
-import type { Node } from '@/rpc/bindings/Node'
-import type { NodeEvent } from '@/rpc/bindings/NodeEvent'
-import type { Peer } from '@/rpc/bindings/Peer'
-import type { RelayState } from '@/rpc/bindings/RelayState'
-import type { RotationState } from '@/rpc/bindings/RotationState'
+import type { HubPref } from "@/rpc/bindings/method.nodes.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
+import type { NearbyEngine } from "@/rpc/bindings/method.nodes.output"
+import type { Node } from "@/rpc/bindings/method.nodes.output"
+import type { NodeEvent } from "@/rpc/bindings/event.nodes_2eevents.output"
+import type { Peer } from "@/rpc/bindings/method.nodes.output"
+import type { RelayState } from "@/rpc/bindings/method.nodes.output"
+import type { RotationState } from "@/rpc/bindings/method.nodes.output"
 import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
 
@@ -128,7 +128,7 @@ function Chip({ tone, children }: { tone: 'ok' | 'bad' | 'plain'; children: Reac
 }
 
 /** 183 §6.7: `Relay · iroh.relay.theuth.io · 38 ms ✓`, or the relay's error. */
-export function relayChip(r: RelayState | undefined): { text: string; ok: boolean } {
+export function relayChip(r: RelayState | null | undefined): { text: string; ok: boolean } {
   if (!r) return { text: 'Relay · none', ok: false }
   let host = r.url
   try {

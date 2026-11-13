@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
+import type { ExperimentRow } from "@/rpc/bindings/method.autoresearch.output"
 import { studies } from './fixtures'
 import { budgetBars, chartOutcome, clock, delta, filterRuns, fraction, holdoutSummary, keepNeedsPct, layout, matches, metric, outcome, outcomeLabel, pct, phaseChips, phaseText, reviewWord, rowDuration, sigmas, sortStudies, stateLabel, tally, ticks } from './model'
 

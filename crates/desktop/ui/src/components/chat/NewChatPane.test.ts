@@ -1,3 +1,4 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -5,10 +6,10 @@ import { expect, test, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { openDraftSession, useDraftTarget, useDrafts } from '@/lib/drafts'
 import type * as Rpc from '@/lib/rpc'
-import type { Api } from '@/rpc/api'
-import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
-import type { EngineStats } from '@/rpc/bindings/EngineStats'
-import type { Peer } from '@/rpc/bindings/Peer'
+import type { Api } from '@/rpc/bindings/client'
+import type { CreateSessionOptions } from '@/rpc/bindings/method.sessionsync.input'
+import type { EngineStats } from "@/rpc/bindings/method.nodes.output"
+import type { Peer } from "@/rpc/bindings/method.nodes.output"
 import { PLAIN_DRAFT, createOptions } from './Composer'
 import { CreateOptions, machineRows, pickMachine, vanishedTarget } from './NewChatPane'
 
@@ -55,7 +56,7 @@ test('on: the neutral notice with the three sentences and the compactor line; th
   expect(html).toContain('Compactor: Same as the session')
   const named = render({
     endless: true,
-    settings: { default_chat: true, default_desk: true, default_meeting: false, view_bytes: 128000, meeting_view_bytes: 32000, node_bytes: 512, slack: 0.125, settle_secs: 45, jobs: 8, tries: 5, retry_secs: 10, cap_chars: 30000, backfill_max_units: 2000, model: 'anthropic/claude-haiku-4-5' },
+    settings: receiveComponent('method.agent.output.EndlessConfig', { default_chat: true, default_desk: true, default_meeting: false, view_bytes: 128000, meeting_view_bytes: 32000, node_bytes: 512, slack: 0.125, settle_secs: 45, jobs: 8, tries: 5, retry_secs: 10, cap_chars: 30000, backfill_max_units: 2000, model: 'anthropic/claude-haiku-4-5' }),
   })
   expect(named).toContain('Compactor: anthropic/claude-haiku-4-5')
 })

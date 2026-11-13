@@ -6,11 +6,11 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
-import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
-import type { CitationRow } from '@/rpc/bindings/CitationRow'
-import type { StudyDetail } from '@/rpc/bindings/StudyDetail'
-import type { StudyIdea } from '@/rpc/bindings/StudyIdea'
-import type { StudySteer } from '@/rpc/bindings/StudySteer'
+import type { ExperimentRow } from "@/rpc/bindings/method.autoresearch.output"
+import type { CitationRow } from "@/rpc/bindings/method.autoresearch.output"
+import type { StudyDetail } from "@/rpc/bindings/method.autoresearch.output"
+import type { Idea as StudyIdea } from "@/rpc/bindings/method.autoresearch.output"
+import type { Steer as StudySteer } from "@/rpc/bindings/method.autoresearch.output"
 import { useControl, useIdea, useSteer } from './queries'
 import { LiteratureIdeas } from './LiteratureIdeas'
 

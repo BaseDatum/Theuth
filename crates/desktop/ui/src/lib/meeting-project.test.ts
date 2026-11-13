@@ -1,12 +1,13 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import { buildRows } from '@/components/sidebar/SessionList'
 import type * as Rpc from '@/lib/rpc'
-import type { Manifest } from '@/rpc/bindings/Manifest'
-import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { Manifest } from "@/rpc/bindings/method.meeting.output"
+import type { MeetingSummary } from "@/rpc/bindings/method.meeting.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { queryKeys } from './rpc'
 import { changeProject, meetingsQuery, newProjectName, projectChoices, useProjectChoices } from './meeting-project'
 
@@ -77,7 +78,7 @@ test('158 §9.2: the header chip calls meeting_set_project and the returned mani
   expect(qc.getQueryData(queryKeys.meeting('m1'))).toEqual(before)
 })
 
-const session = (id: string, project: string | null): SessionSummary => ({
+const session = (id: string, project: string | null): SessionSummary => (receiveComponent("method.agent.output.SessionSummary", {
   id,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
@@ -99,7 +100,7 @@ const session = (id: string, project: string | null): SessionSummary => ({
   epoch: 1,
   memory: 'epochs',
   here: true,
-})
+}))
 
 test('158 §9.2 W-c: a meeting chat the engine created with the meeting\u2019s project sits under that project in the sidebar; one without stays under `meetings`', () => {
   const rows = buildRows([session('chat', 'theuth'), session('meeting-chat', 'theuth'), session('old-meeting-chat', 'meetings')], [])

@@ -1,7 +1,9 @@
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
-import type { Task } from '@/rpc/bindings/Task'
-import type { TaskEvent } from '@/rpc/bindings/TaskEvent'
+import type { AgentFile as ReceiverAgentFile } from '@/rpc/bindings/method.roster.receiver'
+import { receiveComponent } from '@/rpc/bindings/receive'
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
+import type { Task } from "@/rpc/bindings/method.roster.output"
+import type { TaskEvent } from "@/rpc/bindings/method.roster.output"
 
 /**
  * Review fixtures for the 67 screens while the engine answers `not built`: on only with `?mock=1` in the URL or
@@ -19,7 +21,7 @@ const H = 3_600_000
 const now = Date.now()
 const id = (n: number) => `0192a000-0000-7000-8000-${String(n).padStart(12, '0')}`
 
-const task = (n: number, t: Partial<Task> & Pick<Task, 'title' | 'owner' | 'state' | 'project'>): Task => ({
+const task = (n: number, t: Partial<Task> & Pick<Task, 'title' | 'owner' | 'state' | 'project'>): Task => (receiveComponent("method.roster.output.Task", {
   id: id(n),
   done_when: null,
   attachments: [],
@@ -42,7 +44,7 @@ const task = (n: number, t: Partial<Task> & Pick<Task, 'title' | 'owner' | 'stat
   next_wake_after_ms: null,
   priority: 'medium',
   ...t,
-})
+}))
 
 export const TASKS: Task[] = [
   task(1, { title: 'Fix the flaky deploy on build-A', owner: { type: 'agent', name: 'ops' }, state: 'doing', project: 'sre', where: 'build-A', harness: 'omp',
@@ -64,18 +66,18 @@ export const EVENTS: TaskEvent[] = [
   { at_ms: now - H, actor: 'user', session: null, field: 'comment', before: null, after: 'Check the relay logs first.' },
 ]
 
-const file = (name: string, title: string, reports_to: string, extra: Partial<AgentSummary['file']> = {}): AgentSummary['file'] => ({
+const file = (name: string, title: string, reports_to: string, extra: Partial<ReceiverAgentFile> = {}): ReceiverAgentFile => ({
   name, title, reports_to, model: 'anthropic/claude-opus-5-5', effort: 'high', tools: 'mutating', mcp: null,
   budget: { type: 'none' }, capabilities: null, paused: false, proposed_by: null, runs_in: 'any',
   body: `You are ${title}. Your charter is to keep things running.`, ...extra,
 })
 
 export const AGENTS: AgentSummary[] = [
-  { file: file('ops', 'Ops', 'theuth', { mcp: ['grafana', 'argocd_prod'], budget: { type: 'monthly', amount: 40, currency: 'USD' }, capabilities: 'Production health, incidents, Grafana and ArgoCD. Not code review.' }),
-    status: 'working', desk: 'sess-ops-desk', open_tasks: 2, spent_month: 31.2 },
-  { file: file('writer', 'Writer', 'ops', { tools: 'read_only' }), status: 'blocked', desk: null, open_tasks: 3, spent_month: 0 },
-  { file: file('research', 'Research', 'theuth', { paused: true, proposed_by: 'agent:ops', budget: { type: 'monthly', amount: 20, currency: 'USD' } }),
-    status: 'proposed', desk: null, open_tasks: 0, spent_month: 0 },
+  receiveComponent("method.roster.output.AgentSummary", { file: file('ops', 'Ops', 'theuth', { mcp: ['grafana', 'argocd_prod'], budget: { type: 'monthly', amount: 40, currency: 'USD' }, capabilities: 'Production health, incidents, Grafana and ArgoCD. Not code review.' }),
+    status: 'working', desk: 'sess-ops-desk', open_tasks: 2, spent_month: 31.2 }),
+  receiveComponent("method.roster.output.AgentSummary", { file: file('writer', 'Writer', 'ops', { tools: 'read_only' }), status: 'blocked', desk: null, open_tasks: 3, spent_month: 0 }),
+  receiveComponent("method.roster.output.AgentSummary", { file: file('research', 'Research', 'theuth', { paused: true, proposed_by: 'agent:ops', budget: { type: 'monthly', amount: 20, currency: 'USD' } }),
+    status: 'proposed', desk: null, open_tasks: 0, spent_month: 0 }),
 ]
 
 export const MESH: MeshStatus = {

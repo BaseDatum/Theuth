@@ -13,8 +13,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { edgeScroll, usePressDrag } from '@/hooks/use-press-drag'
 import { cn } from '@/lib/utils'
-import type { Task } from '@/rpc/bindings/Task'
-import type { TaskState } from '@/rpc/bindings/TaskState'
+import type { Task } from "@/rpc/bindings/method.roster.output"
+import type { TaskState } from "@/rpc/bindings/method.roster.output"
 import { AttachmentCount } from './Attachments'
 import { NewTaskSheet } from './NewTaskSheet'
 import { recallBoardScroll, rememberBoard, rememberBoardScroll, takeOpenedTask } from './boardMemory'

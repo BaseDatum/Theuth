@@ -7,7 +7,7 @@ import { Empty, Row, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { SecretInfo } from '@/rpc/bindings/SecretInfo'
+import type { SecretInfo } from "@/rpc/bindings/method.secrets.output"
 
 const EMPTY_FORM = { name: '', value: '', note: '' }
 

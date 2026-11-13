@@ -7,7 +7,7 @@ import { convertFileSrc } from '@tauri-apps/api/core'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { toast } from 'sonner'
 import { LOCAL } from '@/link/engines'
-import type { Api } from '@/rpc/api'
+import type { Api } from '@/rpc/bindings/client'
 import { type RpcClient, isTransportError } from '@/rpc/client'
 import { container, isDesktop } from './platform'
 // Call-time only (`ownerOf`): `private.ts` imports `forgetPrivate` back.

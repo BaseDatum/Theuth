@@ -5,7 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useAction } from '@/components/settings/shared'
 import { calendarKeys } from '@/lib/calendar'
 import { useApi } from '@/lib/rpc'
-import type { CalendarConfig } from '@/rpc/bindings/CalendarConfig'
+import type { CalendarConfig } from "@/rpc/bindings/method.meeting.output"
 
 /** The config (`settings.data` as `config`) and its whole-config `save`; `busy` while it loads, failed or a write runs. */
 export function useCalendarConfig() {

@@ -2,7 +2,7 @@
 // only "New template" needs a body built from a shape — every scalar is JSON-quoted, which YAML reads verbatim (YAML
 // 1.2 double-quoted strings are a superset of JSON strings), so names with `:` or `#` survive.
 
-import type { MeetingTemplate } from '@/rpc/bindings/MeetingTemplate'
+import type { Template as MeetingTemplate } from "@/rpc/bindings/method.meeting.output"
 
 /** The parsed shape a body is built from. */
 export type TemplateShape = Pick<MeetingTemplate, 'name' | 'description' | 'sections'>

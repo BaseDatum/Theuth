@@ -4,7 +4,7 @@
 // engine does not decide: it is held for a grace period and dropped once the list shows the item carrying the
 // `alert` key (null or not — the engine's answer), so an old engine still notifies and a new one never twice.
 
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 
 /** How long an event-driven notification waits for the engine's decision to show up in `attention_list`. */
 export const LEGACY_GRACE_MS = 3_000

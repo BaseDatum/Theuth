@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import type { Info } from '@/rpc/extra'
+import type { Info } from "@/rpc/bindings/method.rpc_2dcompose.output"
 import { scope } from './engine-scope'
 import { dispatch } from './sessions'
 

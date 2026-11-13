@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { closePopout, isPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { MeetingState } from '@/rpc/bindings/MeetingState'
+import type { MeetingState } from "@/rpc/bindings/method.meeting.output"
 
 export type RowAction =
   | { kind: 'reviewed'; at: string }

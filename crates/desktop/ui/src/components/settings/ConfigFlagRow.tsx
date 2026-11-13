@@ -4,7 +4,7 @@ import { Row, errorText, useAction } from '@/components/settings/shared'
 import { Switch } from '@/components/ui/switch'
 import { useRestartPending } from '@/lib/restart-pending'
 import { useApi } from '@/lib/rpc'
-import type { ConfigFlagKey } from '@/rpc/api'
+import type { ConfigFlagKey } from '@/rpc/bindings/method.rpc_2dcompose.input'
 
 const flagQuery = (key: ConfigFlagKey) => ['config-flag', key] as const
 

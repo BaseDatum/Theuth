@@ -17,13 +17,13 @@ import { ENDLESS_DEFAULTS, EARLIER_HISTORY, isFoldedNote, tokenEstimate } from '
 import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { Api } from '@/rpc/api'
-import type { EndlessBacklog } from '@/rpc/bindings/EndlessBacklog'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { GuardTrips } from '@/rpc/bindings/GuardTrips'
-import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
-import type { Stalled } from '@/rpc/bindings/Stalled'
-import type { ViewLine } from '@/rpc/bindings/ViewLine'
+import type { Api } from '@/rpc/bindings/client'
+import type { Backlog as EndlessBacklog } from "@/rpc/bindings/method.agent.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { GuardTrips } from "@/rpc/bindings/method.agent.output"
+import type { SessionMemory } from "@/rpc/bindings/method.agent.output"
+import type { Stalled } from "@/rpc/bindings/method.agent.output"
+import type { ViewLine } from "@/rpc/bindings/method.agent.output"
 import { MenuRow } from './HeaderMenu'
 import { ModelCombobox } from './ModelCombobox'
 import { settings } from './slash'

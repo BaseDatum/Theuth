@@ -2,7 +2,7 @@
 // scope, the `/c/$session?messaging=1&peer=` params). The sheet itself is `MessagingSheet.tsx`.
 
 import { create } from 'zustand'
-import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
+import type { CommunicationState } from "@/rpc/bindings/method.agent.output"
 import type { SessionSlice } from '@/store/sessions'
 
 type State = {

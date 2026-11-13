@@ -31,7 +31,7 @@ import { ownedElsewhere } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { type SearchDestination, isSearchDestination, useSearchOrigin } from '@/lib/search'
 import { useScope } from '@/store/engine-scope'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { freshness, on, useSessionField, useSessions } from '@/store/sessions'
 import { ContactAllowStrip } from '@/components/chat/ContactAllowStrip'
 import { KernelStrip } from '@/components/cells/KernelStrip'

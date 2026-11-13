@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { queryKeys } from '@/lib/rpc'
-import type { Meta } from '@/rpc/bindings/Meta'
+import type { Meta } from "@/rpc/bindings/method.knowledge.output"
 
 type Props = {
   open: boolean

@@ -18,13 +18,13 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { macKeyBytes } from '@/lib/terminal-keys'
 import { swallowEngineQueries } from '@/lib/terminal-replies'
 import { cn } from '@/lib/utils'
-import type { Api } from '@/rpc/api'
-import type { JobExit } from '@/rpc/bindings/JobExit'
-import type { Key } from '@/rpc/bindings/Key'
-import type { PtyChunk } from '@/rpc/bindings/PtyChunk'
-import type { CellRunId } from '@/rpc/bindings/CellRunId'
+import type { Api } from '@/rpc/bindings/client'
+import type { JobExit } from "@/rpc/bindings/method.agent.output"
+import type { Key } from '@/rpc/bindings/method.agent.input'
+import type { PtyChunk } from "@/rpc/bindings/method.agent.output"
+import type { RunId as CellRunId } from "@/rpc/bindings/method.cells.output"
 import type { RpcClient } from '@/rpc/client'
-import type { TerminalSummary } from '@/rpc/bindings/TerminalSummary'
+import type { TerminalSummary } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
 import { useSessionField } from '@/store/sessions'
 import { MenuRow } from './HeaderMenu'

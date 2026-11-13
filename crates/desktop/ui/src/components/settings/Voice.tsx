@@ -17,11 +17,11 @@ import { Switch } from '@/components/ui/switch'
 import { ago } from '@/lib/codemap/map'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useTalkSettings } from '@/lib/talk-settings'
-import type { DictationTimings } from '@/rpc/bindings/DictationTimings'
-import type { EndPhrases } from '@/rpc/bindings/EndPhrases'
-import type { HistoryRow } from '@/rpc/bindings/HistoryRow'
-import type { Preset } from '@/rpc/bindings/Preset'
-import type { Surface } from '@/rpc/bindings/Surface'
+import type { DictationTimings } from "@/rpc/bindings/method.talk.output"
+import type { EndPhrases } from "@/rpc/bindings/method.talk.output"
+import type { HistoryRow } from "@/rpc/bindings/method.talk.output"
+import type { Preset } from "@/rpc/bindings/method.talk.output"
+import type { Surface } from "@/rpc/bindings/method.talk.output"
 
 const DEFAULT_DEVICE = '__default__'
 const PRESETS: [Preset, string][] = [

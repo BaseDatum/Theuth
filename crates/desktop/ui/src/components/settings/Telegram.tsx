@@ -8,9 +8,9 @@ import { Dot, Row, Section, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { PairingLink } from '@/rpc/bindings/PairingLink'
-import type { TelegramEvent } from '@/rpc/bindings/TelegramEvent'
-import type { TelegramStatus } from '@/rpc/bindings/TelegramStatus'
+import type { PairingLink } from "@/rpc/bindings/method.telegram.output"
+import type { TelegramEvent } from "@/rpc/bindings/method.telegram.output"
+import type { TelegramStatus } from "@/rpc/bindings/method.telegram.output"
 import { on } from '@/store/sessions'
 
 /** One phrase per `TelegramEvent` variant (98 §10.5); a bot that is not polling is idle because another engine holds the hub lease. */

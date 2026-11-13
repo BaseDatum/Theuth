@@ -21,7 +21,7 @@ import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
 import { canPopout, openPopout } from '@/lib/popout'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { DocSummary } from '@/rpc/bindings/DocSummary'
+import type { DocSummary } from "@/rpc/bindings/method.agent.output"
 
 /**
  * 144 §12.1 Notes: the notebook's notes, newest added first — paper glyph, title, `edited <ago>`, an `AI · from chat ·

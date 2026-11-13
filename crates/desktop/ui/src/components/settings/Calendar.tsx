@@ -14,8 +14,8 @@ import { calendarKeys, eventLine, eventkitState } from '@/lib/calendar'
 import { ago } from '@/lib/codemap/map'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { useApi } from '@/lib/rpc'
-import type { Api } from '@/rpc/api'
-import type { CalSource } from '@/rpc/bindings/CalSource'
+import type { Api } from '@/rpc/bindings/client'
+import type { CalSource } from "@/rpc/bindings/method.meeting.output"
 
 /** Calendar › Calendars: macOS Calendar and the ICS subscriptions. */
 export function CalendarSources() {

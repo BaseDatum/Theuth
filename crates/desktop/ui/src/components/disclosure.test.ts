@@ -1,3 +1,4 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 // 171F B13: nothing a reader expands in the transcript may close by itself while output streams. (a) a ratchet keeps
 // local disclosure state out of the transcript components; (b) every converted component shows its expanded view on
 // the first render from a preset store, so no remount can close it; (c) the settled reload keeps every live entry's id
@@ -12,7 +13,7 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import { classify, type Injected } from '@/lib/injected'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import type * as Rpc from '@/lib/rpc'
-import type { WireEvent } from '@/rpc/events'
+import type { UiEvent as WireEvent } from '@/store/ui-events'
 import { adopt, apply, empty, fromHistory } from '@/store/reduce'
 import type { Entry } from '@/store/sessions'
 import { AttachChip } from './chat/AttachChip'
@@ -204,7 +205,7 @@ test('the settled reload keeps the id of every live entry: job results, subagent
     { role: 'user' as const, text: '<job_result id="j4" command="make" exit="0" secs="3" at="10:00">\nbuilt\n\n</job_result>', turn: null },
     { role: 'user' as const, text: '<subagent_result name="Scout" session="kid" stop="end_turn">\nSent.\n</subagent_result>', turn: null },
     { role: 'user' as const, text: '<reminder id="r3" after="600" set_at="t" late="false" at="10:00">\ncheck the build\n</reminder>', turn: null },
-  ].flatMap(fromHistory)
+  ].flatMap(h => fromHistory(receiveComponent('method.agent.output.HistoryEntry', h)))
   expect(stored.map((e) => e.kind).sort()).toEqual(live.map((e) => e.kind).sort())
   const kept = new Set(adopt(live, stored).map((e) => e.id))
   expect(live.filter((e) => !kept.has(e.id))).toEqual([])

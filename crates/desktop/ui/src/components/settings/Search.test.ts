@@ -3,8 +3,8 @@ import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
-import type { ProviderSettings } from '@/rpc/bindings/ProviderSettings'
-import type { SearchSettings } from '@/rpc/bindings/SearchSettings'
+import type { ProviderSettings } from "@/rpc/bindings/method.search_2dproviders.output"
+import type { SearchSettings } from "@/rpc/bindings/method.search_2dproviders.output"
 import { Search } from './Search'
 import { isDirty, moveProvider, providerState, strip, validate } from './search-settings'
 

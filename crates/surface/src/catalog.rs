@@ -76,6 +76,12 @@ pub fn catalog_schema() -> Value {
     schemars::schema_for!(Spec).to_value()
 }
 
+/// Frontend-only parsing vocabulary, exported separately from RPC contracts.
+pub fn client_schema() -> Value {
+    SchemaSettings::draft07().for_serialize().into_generator()
+        .into_root_schema_for::<(crate::cell::Cell, crate::cell::NoteDefaults, Spec)>().to_value()
+}
+
 fn fields(schema: &Value) -> String {
     let required: Vec<&str> = schema["required"]
         .as_array()

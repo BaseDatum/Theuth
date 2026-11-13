@@ -1,5 +1,5 @@
 import { Suspense, lazy } from "react";
-import type { Artifact } from "@/rpc/extra";
+import type { Artifact } from "@/rpc/bindings/method.artifact.output"
 import type { AppDraft } from "@/store/sessions";
 
 /** The OpenUI runtime, component library and its CSS load on the first preview/open (46 §7), not with the chat. */

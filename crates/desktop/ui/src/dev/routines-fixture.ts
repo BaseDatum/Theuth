@@ -2,12 +2,13 @@
 // against any engine — one that predates `list_sensors` / `test_schedule_file` / `RunInfo.kind` included. Dev only,
 // behind `VITE_ROUTINES_FIXTURE=1` (or `localStorage.routines-fixture = "1"`); the connection itself is still the engine's.
 
-import type { Api } from '@/rpc/api'
-import type { RunInfo } from '@/rpc/bindings/RunInfo'
-import type { ScheduleFile } from '@/rpc/bindings/ScheduleFile'
-import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
-import type { SensorInfo } from '@/rpc/bindings/SensorInfo'
-import type { Verdict } from '@/rpc/bindings/Verdict'
+import { receiveComponent } from '@/rpc/bindings/receive'
+import type { Api } from '@/rpc/bindings/client'
+import type { RunInfo } from "@/rpc/bindings/method.schedule.output"
+import type { ScheduleFile } from "@/rpc/bindings/method.schedule.output"
+import type { ScheduleInfo } from "@/rpc/bindings/method.schedule.output"
+import type { SensorInfo } from "@/rpc/bindings/method.schedule.output"
+import type { Verdict } from "@/rpc/bindings/method.schedule.output"
 
 const on = (): boolean => import.meta.env.DEV && (import.meta.env.VITE_ROUTINES_FIXTURE === '1' || globalThis.localStorage?.getItem('routines-fixture') === '1')
 
@@ -15,7 +16,7 @@ const H = 3_600_000
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString()
 const ahead = (ms: number) => new Date(Date.now() + ms).toISOString()
 
-const base: ScheduleFile = {
+const base: ScheduleFile = receiveComponent("method.schedule.output.ScheduleFile", {
   name: '',
   cron: null,
   every: null,
@@ -43,11 +44,11 @@ const base: ScheduleFile = {
   runtime: null,
   budget: null,
   prompt: '',
-}
+})
 
 const files: ScheduleFile[] = [
-  { ...base, name: 'morning-brief', cron: '0 9 * * 1-5', quiet: true, prompt: 'Summarise overnight mail, calendar for today and open PRs. Keep it to ten lines.' },
-  {
+  receiveComponent("method.schedule.output.ScheduleFile", { ...base, name: 'morning-brief', cron: '0 9 * * 1-5', quiet: true, prompt: 'Summarise overnight mail, calendar for today and open PRs. Keep it to ten lines.' }),
+  receiveComponent("method.schedule.output.ScheduleFile", {
     ...base,
     name: 'pr-482',
     every: '60s',
@@ -61,12 +62,12 @@ const files: ScheduleFile[] = [
     approvals: false,
     created: ago(2 * 24 * H),
     prompt: 'Babysit PR #482: when CI fails, read the log and push a fix; when a review lands, address it.',
-  },
-  { ...base, name: 'yt-veritasium', every: '10m', when: 'rss.py urls=https://www.youtube.com/feeds/videos.xml?channel_id=UCHnyfMqiRRG1u-2MsSQLbXA', expires: '90d', created: ago(5 * H), prompt: 'Summarise the new video in five bullets and message me.' },
-  { ...base, name: 'port-tests', every: '0s', until: './scripts/missing-tests.sh', max_runs: 200, cwd: '~/port', approvals: false, run_timeout: '45m', enabled: false, prompt: 'Pick the next module without tests from `./scripts/missing-tests.sh` and write them.' },
-  { ...base, name: 'deploy-note', at: '2026-10-07T15:00', cwd: '~/src/app', prompt: 'Write the release note for 1.4 from the merged PRs since 1.3.' },
-  { ...base, name: 'nightly-ops', cron: '0 7 * * *', missed_run: true, agent: 'alice', project: 'web', prompt: 'Check the error budget and open a task for anything over 1%.' },
-  { ...base, name: 'broken-one', cron: 'nope', prompt: 'x' },
+  }),
+  receiveComponent("method.schedule.output.ScheduleFile", { ...base, name: 'yt-veritasium', every: '10m', when: 'rss.py urls=https://www.youtube.com/feeds/videos.xml?channel_id=UCHnyfMqiRRG1u-2MsSQLbXA', expires: '90d', created: ago(5 * H), prompt: 'Summarise the new video in five bullets and message me.' }),
+  receiveComponent("method.schedule.output.ScheduleFile", { ...base, name: 'port-tests', every: '0s', until: './scripts/missing-tests.sh', max_runs: 200, cwd: '~/port', approvals: false, run_timeout: '45m', enabled: false, prompt: 'Pick the next module without tests from `./scripts/missing-tests.sh` and write them.' }),
+  receiveComponent("method.schedule.output.ScheduleFile", { ...base, name: 'deploy-note', at: '2026-10-07T15:00', cwd: '~/src/app', prompt: 'Write the release note for 1.4 from the merged PRs since 1.3.' }),
+  receiveComponent("method.schedule.output.ScheduleFile", { ...base, name: 'nightly-ops', cron: '0 7 * * *', missed_run: true, agent: 'alice', project: 'web', prompt: 'Check the error budget and open a task for anything over 1%.' }),
+  receiveComponent("method.schedule.output.ScheduleFile", { ...base, name: 'broken-one', cron: 'nope', prompt: 'x' }),
 ]
 
 const extra: Record<string, Partial<ScheduleInfo>> = {
@@ -81,7 +82,7 @@ const extra: Record<string, Partial<ScheduleInfo>> = {
 
 function infoOf(f: ScheduleFile): ScheduleInfo {
   const when = f.cron !== null ? `cron ${f.cron}` : f.every !== null ? `every ${f.every}` : `at ${f.at ?? ''}`
-  return {
+  return receiveComponent("method.schedule.output.ScheduleInfo", {
     name: f.name,
     when,
     describe: when,
@@ -114,7 +115,7 @@ function infoOf(f: ScheduleFile): ScheduleInfo {
     created: f.created,
     sensor: f.when?.split(' ')[0] ?? null,
     ...extra[f.name],
-  }
+  })
 }
 
 const sensors: SensorInfo[] = [
@@ -176,7 +177,7 @@ const sensors: SensorInfo[] = [
   { name: 'bad.py', description: null, usage: null, args: [], version: null, builtin: false, edited: false, shipped_version: null, needs_cpython: false, cpython_available: true, hosts: [], has_probe: false, error: 'sensor header: # arg: path maybe — bad requiredness' },
 ]
 
-const run = (minsAgo: number, o: Partial<RunInfo>): RunInfo => ({
+const run = (minsAgo: number, o: Partial<RunInfo>): RunInfo => (receiveComponent("method.schedule.output.RunInfo", {
   session: 'ses-pr',
   fired_at: ago(minsAgo * 60_000),
   finished_at: ago(minsAgo * 60_000 - 40_000),
@@ -185,7 +186,7 @@ const run = (minsAgo: number, o: Partial<RunInfo>): RunInfo => ({
   envelope: null,
   kind: 'run',
   ...o,
-})
+}))
 
 const history: Record<string, RunInfo[]> = {
   'pr-482': [
@@ -220,7 +221,8 @@ export function routinesFixture(api: Api): Api {
       const f = files.find((x) => x.name === name)
       return f ? wait(f) : Promise.reject(new Error('no such schedule'))
     },
-    put_schedule: (file) => {
+    put_schedule: (input) => {
+      const file = receiveComponent('method.schedule.output.ScheduleFile', input)
       if (!/^[a-z0-9][a-z0-9-]*$/.test(file.name) || file.name.length > 40) return Promise.reject(new Error('name: [a-z0-9][a-z0-9-]*, at most 40 chars'))
       if (file.when !== null && file.until === null && file.max_runs === null && file.expires === null) return Promise.reject(new Error('when: needs a stop (until, max_runs or expires)'))
       if (!file.prompt.trim()) return Promise.reject(new Error('empty prompt'))
@@ -234,7 +236,7 @@ export function routinesFixture(api: Api): Api {
         files.findIndex((x) => x.name === name),
         1,
       )
-      return wait(undefined)
+      return wait(null)
     },
     enable_schedule: (name, enabled) => {
       const f = files.find((x) => x.name === name)

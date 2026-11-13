@@ -7,9 +7,9 @@ import { expect, test, vi } from 'vitest'
 import { MCP_SHARED_LINE, mcpActions, mcpConfig } from '@/lib/mcp-config'
 import type * as Rpc from '@/lib/rpc'
 import type * as Tauri from '@/lib/tauri'
-import type { McpAuditLine } from '@/rpc/bindings/McpAuditLine'
-import type { McpServerConfig } from '@/rpc/bindings/McpServerConfig'
-import type { McpServerStatus } from '@/rpc/bindings/McpServerStatus'
+import type { AuditLine as McpAuditLine } from "@/rpc/bindings/method.mcp_2dserver.output"
+import type { McpServerConfig } from '@/rpc/bindings/method.mcp_2dserver.input'
+import type { McpServerStatus } from "@/rpc/bindings/method.mcp_2dserver.output"
 import { Mcp, ready } from './Mcp'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
@@ -29,8 +29,8 @@ const status: McpServerStatus = {
   binary: '/Applications/theuth.app/Contents/MacOS/t',
 }
 const audit: McpAuditLine[] = [
-  { at: '2026-10-10T12:00:00Z', transport: 'http', client: 'claude-code', tool: 'meeting_list', args_sha256: 'ab'.repeat(32), ok: true, ms: 12n },
-  { at: '2026-10-10T11:59:00Z', transport: 'stdio', client: 'codex', tool: 'knowledge_get', args_sha256: 'cd'.repeat(32), ok: false, ms: 3n },
+  { at: '2026-10-10T12:00:00Z', transport: 'http', client: 'claude-code', tool: 'meeting_list', args_sha256: 'ab'.repeat(32), ok: true, ms: 12 },
+  { at: '2026-10-10T11:59:00Z', transport: 'stdio', client: 'codex', tool: 'knowledge_get', args_sha256: 'cd'.repeat(32), ok: false, ms: 3 },
 ]
 
 const calls: [string, unknown][] = []

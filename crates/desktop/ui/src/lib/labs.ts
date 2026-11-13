@@ -1,11 +1,11 @@
 // 57 §7.1: Settings › Learning › Decision models (was Labs) — the text and reducers behind the three cards, kept pure so `bun run test` covers them.
 
 import { fmtBytes } from '@/lib/files'
-import type { FamilyStats } from '@/rpc/bindings/FamilyStats'
-import type { LoadedInfo } from '@/rpc/bindings/LoadedInfo'
-import type { Mode } from '@/rpc/bindings/Mode'
-import type { ModeInfo } from '@/rpc/bindings/ModeInfo'
-import type { TrainingInfo } from '@/rpc/bindings/TrainingInfo'
+import type { FamilyStats } from "@/rpc/bindings/method.dreaming.output"
+import type { LoadedInfo } from "@/rpc/bindings/method.dreaming.output"
+import type { Mode } from "@/rpc/bindings/method.dreaming.output"
+import type { ModeInfo } from "@/rpc/bindings/method.dreaming.output"
+import type { TrainingInfo } from "@/rpc/bindings/method.dreaming.output"
 
 /** The decision-family prefixes Labs manages; also the `decisions/training/<prefix>/` directory names. */
 export type Prefix = 'meeting' | 'browser'
@@ -52,8 +52,7 @@ export function blockedReason(info: ModeInfo | undefined, prefix: Prefix, error?
   return info.reason ?? `running as ${info.effective}`
 }
 
-// ts-rs types u64 as `bigint`; JSON delivers numbers. `Number()` accepts both.
-const sum = (xs: FamilyStats[], f: (s: FamilyStats) => bigint): number => xs.reduce((n, s) => n + Number(f(s)), 0)
+const sum = (xs: FamilyStats[], f: (s: FamilyStats) => number): number => xs.reduce((n, s) => n + f(s), 0)
 
 /** Live counters for one card, folded from `decision_stats` (57 §7.1: batches · skipped · briefs · tier-2 calls · agreed %). */
 export function countersLine(stats: FamilyStats[] | undefined, prefix: Prefix): string {

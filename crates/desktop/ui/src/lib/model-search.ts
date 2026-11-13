@@ -2,7 +2,7 @@
 // No fuzzy matching: a term scores by where it sits (whole name / id tail, name start, word boundary,
 // provider, plain substring), per-term plain substrings are gated out when any model matches at a boundary.
 
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 
 /** `query` lowercased and split on whitespace; empty → browse mode (§3), no scoring. */
 export function searchTerms(query: string): string[] {

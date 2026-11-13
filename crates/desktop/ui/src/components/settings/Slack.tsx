@@ -7,7 +7,7 @@ import { Dot, Row, Section, errorText, useAction } from '@/components/settings/s
 import { Button } from '@/components/ui/button'
 import { openExternal } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { SlackStatus } from '@/rpc/bindings/SlackStatus'
+import type { SlackStatus } from "@/rpc/bindings/method.slack.output"
 
 function slackState(s: SlackStatus): string {
   const e = s.state

@@ -1,8 +1,9 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
-import type { ObservedMeta } from '@/rpc/bindings/ObservedMeta'
-import type { AgentInfo } from '@/rpc/extra'
+import type { ObservedMeta } from "@/rpc/bindings/method.agent.output"
+import type { AgentInfo } from '@/store/ui-events'
 import { StripDot } from './OrgChart'
 
 vi.mock('@tanstack/react-router', () => ({
@@ -10,7 +11,7 @@ vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => () => undefined,
 }))
 
-const row = (over: Partial<AgentInfo> = {}): AgentInfo => ({
+const row = (over: Partial<AgentInfo> = {}): AgentInfo => (receiveComponent("method.agent.output.AgentInfo", {
   id: 's1',
   name: 'NapA',
   parent: 'harness',
@@ -23,8 +24,8 @@ const row = (over: Partial<AgentInfo> = {}): AgentInfo => ({
   last: '',
   kind: 'chat',
   ...over,
-})
-const observed = (state: ObservedMeta['state']): ObservedMeta => ({
+}))
+const observed = (state: ObservedMeta['state']): ObservedMeta => (receiveComponent("method.agent.output.ObservedMeta", {
   source: 'omp_task',
   external: 'x',
   state,
@@ -32,7 +33,7 @@ const observed = (state: ObservedMeta['state']): ObservedMeta => ({
   cost_rule: 'counted',
   tool_call: 'toolu_1',
   detail: null,
-})
+}))
 const dot = (r: AgentInfo) => renderToStaticMarkup(createElement(StripDot, { row: r, leaving: false }))
 
 test('a native strip dot is the green/amber circle titled by its state', () => {

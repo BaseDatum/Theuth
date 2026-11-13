@@ -26,10 +26,10 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { useApi } from '@/lib/rpc'
 import { type Engine, LOCAL, LOCAL_NAME, type Presence, hasLocal, useEngines } from '@/link/engines'
-import type { Device } from '@/rpc/bindings/Device'
-import type { DeviceInfo } from '@/rpc/bindings/DeviceInfo'
-import type { LinkEvent } from '@/rpc/bindings/LinkEvent'
-import type { PairingPayload } from '@/rpc/bindings/PairingPayload'
+import type { Device } from "@/rpc/bindings/method.nodes.output"
+import type { DeviceInfo } from "@/rpc/bindings/method.nodes.output"
+import type { LinkEvent } from "@/rpc/bindings/event.link_2eevents.output"
+import type { PairingPayload } from "@/rpc/bindings/method.nodes.output"
 import { RpcError } from '@/rpc/client'
 import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'

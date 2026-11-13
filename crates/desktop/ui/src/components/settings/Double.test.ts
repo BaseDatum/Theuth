@@ -3,10 +3,10 @@ import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
-import type { DoubleClass } from '@/rpc/bindings/DoubleClass'
-import type { DoubleClassDetail } from '@/rpc/bindings/DoubleClassDetail'
-import type { DoubleStatus } from '@/rpc/bindings/DoubleStatus'
-import type { Kpis } from '@/rpc/bindings/Kpis'
+import type { DoubleClass } from "@/rpc/bindings/method.dreaming.output"
+import type { DoubleClassDetail } from "@/rpc/bindings/method.dreaming.output"
+import type { DoubleStatus } from "@/rpc/bindings/method.dreaming.output"
+import type { Kpis } from "@/rpc/bindings/method.dreaming.output"
 import { Double, chartProps, forgetClass, mergeCurves, runLine, setCap, setOptIn } from './Double'
 
 const zero: Kpis = { n: 0, accuracy: 0, brier: 0, ece: 0, coverage_2pct: 0, asks_avoided: 0, minutes_saved: 0, overrides_per_100: 0, undo_rate_per_100: 0 }

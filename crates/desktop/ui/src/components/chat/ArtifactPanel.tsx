@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/sheet";
 import { fmtBytes } from "@/lib/files";
 import { clamp, PX_STEP } from "@/lib/resize-drag";
-import type { Artifact } from "@/rpc/extra";
+import type { Artifact } from "@/rpc/bindings/method.artifact.output"
 import {
   type AppDraft,
   on,

@@ -1,7 +1,8 @@
 // 144 §13.3: the notebook RPCs are `Api` methods (`rpc/api.ts`, names checked against `bindings/methods.json`).
 // This module keeps the query keys and the one hook notebook components share; a guest page without the app's
 // connection binds a client of its own with `notebooksApi`.
-import { type Api, makeApi } from '@/rpc/api'
+import type { Api } from '@/rpc/bindings/client'
+import { makeApi } from '@/rpc/bindings/client'
 import type { RpcClient } from '@/rpc/client'
 import { useApi } from '@/lib/rpc'
 

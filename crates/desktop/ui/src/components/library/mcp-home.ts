@@ -2,8 +2,8 @@
 // Pure: the mesh (for current machine names) comes in, nothing is fetched here.
 
 import { type Engine, UNNAMED_MACHINE } from '@/components/tasks/home'
-import type { McpHomeAction } from '@/rpc/bindings/McpHomeAction'
-import type { McpServer } from '@/rpc/bindings/McpServer'
+import type { McpHomeAction } from '@/rpc/bindings/method.mcp_2dserver.input'
+import type { McpServer } from "@/rpc/bindings/method.mcp_2dserver.output"
 
 type Server = Pick<McpServer, 'home' | 'home_name' | 'home_here' | 'everywhere' | 'state' | 'reason'>
 

@@ -2,7 +2,7 @@ import { BlockNoteEditor } from '@blocknote/core'
 import { schema } from '@theuth/documents/schema'
 import { expect, test } from 'vitest'
 import { diagramOf } from '@/components/editor/codeLanguages'
-import type { CellSpec } from '@/rpc/bindings/CellSpec'
+import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
 import { cellOf } from './grammar'
 import { CELL_STARTER, firstDefaults, headerFolded, lineDiff, makeCell, makePlain, memberName, modeOf, noteRef, routeOf, slugOf, withPython, withoutHeader } from './note-edit'
 

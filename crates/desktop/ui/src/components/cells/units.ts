@@ -3,8 +3,8 @@
 // compound statement (shells); open brackets and a `:` block with its indented body (python); a backtick
 // continuation or open brace (pwsh). When unsure it keeps the bigger unit. Soft wrap needs nothing here: a wrapped
 // row is still its logical line.
-import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
-import type { Lang } from '@/rpc/bindings/Lang'
+import type { RunMode as CellRunMode } from "@/rpc/bindings/method.cells.output"
+import type { Lang } from '@/rpc/bindings/auxiliary.surface.output'
 
 /** 1-based inclusive code line range. */
 export type Unit = [number, number]

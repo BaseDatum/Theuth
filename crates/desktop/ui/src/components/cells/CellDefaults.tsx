@@ -1,7 +1,7 @@
 // Owner: U2
 import { useQuery } from '@tanstack/react-query'
-import type { Interpreter } from '@/rpc/bindings/Interpreter'
-import type { NoteDefaults } from '@/rpc/bindings/NoteDefaults'
+import type { Interpreter } from "@/rpc/bindings/method.cells.output"
+import type { NoteDefaults } from '@/rpc/bindings/auxiliary.surface.output'
 import { useConnection } from '@/store/connection'
 import { parseDefaults } from './grammar'
 import './note-cells.css'

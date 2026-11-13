@@ -1,6 +1,6 @@
 import { useId } from 'react'
-import type { KindView } from '@/rpc/bindings/KindView'
-import type { SuiteRow } from '@/rpc/bindings/SuiteRow'
+import type { KindView } from "@/rpc/bindings/method.autoresearch.output"
+import type { SuiteRow } from "@/rpc/bindings/method.autoresearch.output"
 
 const H = 220
 const TOP = 16

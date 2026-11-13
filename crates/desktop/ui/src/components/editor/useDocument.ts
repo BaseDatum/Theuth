@@ -2,8 +2,8 @@ import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { type DocStatus, type EngineProvider, acquire, release } from '@/lib/doc/provider'
 import { useApi } from '@/lib/rpc'
-import type { Binding } from '@/rpc/bindings/Binding'
-import type { DocId } from '@/rpc/bindings/DocId'
+import type { Binding } from "@/rpc/bindings/method.agent.output"
+import type { DocId } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
 import { useScope } from '@/store/engine-scope'
 

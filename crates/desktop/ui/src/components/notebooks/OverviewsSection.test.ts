@@ -5,7 +5,7 @@ import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import { askKeys } from '@/lib/ask-rpc'
 import { queryKeys } from '@/lib/rpc'
-import type { Overview } from '@/rpc/bindings/Overview'
+import type { Overview } from "@/rpc/bindings/method.agent.output"
 import { OverviewsSection, versionsOf } from './OverviewsSection'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
@@ -22,7 +22,7 @@ const NB = 'nb1'
 const row = (p: Partial<Overview> & Pick<Overview, 'kind' | 'version' | 'status'>): Overview => ({
   artifact: `call-${p.kind}-${p.version}`,
   name: `${p.kind}.md`,
-  created_ms: BigInt(Date.now() - 3_600_000 * p.version),
+  created_ms: Date.now() - 3_600_000 * p.version,
   session: 's',
   note: null,
   error: null,

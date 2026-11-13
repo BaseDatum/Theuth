@@ -3,8 +3,8 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import { SETTINGS } from '@/components/autoresearch/fixtures'
-import type { AutoresearchConfig } from '@/rpc/bindings/AutoresearchConfig'
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import type { AutoresearchConfig } from "@/rpc/bindings/method.autoresearch.output"
+import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { RpcError } from '@/rpc/client'
 import { Autoresearch, awaitsRestart } from './Autoresearch'
 

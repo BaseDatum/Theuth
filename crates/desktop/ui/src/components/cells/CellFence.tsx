@@ -6,8 +6,8 @@ import { CodeBlock, CodeBlockCopyButton, CodeBlockDownloadButton, type CustomRen
 import { FenceContext } from '@/components/chat/surface/JsonRenderFence'
 import { useApi } from '@/lib/rpc'
 import { disclosureKey } from '@/lib/tool-runs'
-import type { CellRef } from '@/rpc/bindings/CellRef'
-import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
+import type { RunMode as CellRunMode } from "@/rpc/bindings/method.cells.output"
 import { Cell, CellExtras } from './Cell'
 import { CellEditor } from './CellEditor'
 import { setEdit, useEdit } from './edits'

@@ -11,8 +11,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { A2aStatus } from '@/rpc/bindings/A2aStatus'
-import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
+import type { A2AStatus as A2aStatus } from "@/rpc/bindings/method.a2a.output"
+import type { CommunicationState } from "@/rpc/bindings/method.agent.output"
 
 /** Touch target for a text button beside a row (44px under a coarse pointer). */
 const TOUCH = 'pointer-coarse:min-h-11'
@@ -50,7 +50,7 @@ export function MessagingTab() {
   const install = (next: CommunicationState) => {
     if (next.session !== null) return
     const cur = qc.getQueryData<CommunicationState>(queryKeys.communication(null))
-    if (cur && BigInt(next.revision) < BigInt(cur.revision)) return
+    if (cur && next.revision < cur.revision) return
     qc.setQueryData(queryKeys.communication(null), next)
   }
   const setGlobal = useAction(

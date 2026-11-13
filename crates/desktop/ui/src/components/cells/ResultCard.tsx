@@ -1,6 +1,6 @@
 // Owner: U1
 import { Eye } from 'lucide-react'
-import type { CellRunId } from '@/rpc/bindings/CellRunId'
+import type { RunId as CellRunId } from "@/rpc/bindings/method.cells.output"
 
 export type ResultCardProps = {
   /** The `<cell_result run=…>` input tag's run. */

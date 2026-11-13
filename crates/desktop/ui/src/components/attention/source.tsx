@@ -11,7 +11,7 @@ import { itemHome } from '@/components/tasks/home'
 import { useMesh, useTask, useTasks } from '@/components/tasks/queries'
 import { Button } from '@/components/ui/button'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import { clampText, lastAssistantBefore } from './model'
 import { Chip } from './shared'
 

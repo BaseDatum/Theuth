@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { CachedBrief } from '@/rpc/bindings/CachedBrief'
+import type { CachedBrief } from "@/rpc/bindings/method.meeting.output"
 
 type Props = {
   /** `null` = closed; `'new'` = a fresh brief; a row = edit it. */

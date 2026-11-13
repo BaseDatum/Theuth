@@ -12,8 +12,8 @@ import { isDesktop, touch } from '@/lib/platform'
 import { useApi } from '@/lib/rpc'
 import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
-import type { CellRef } from '@/rpc/bindings/CellRef'
-import type { CellRun } from '@/rpc/bindings/CellRun'
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
+import type { CellRun } from "@/rpc/bindings/method.cells.output"
 import { useConnection } from '@/store/connection'
 import { CodeTokens } from './CodeTokens'
 import { setPicked, setStoppedAt, usePicked, useStoppedAt } from './edits'

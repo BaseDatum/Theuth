@@ -1,7 +1,7 @@
 import { createElement as h } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
-import type { CellRef } from '@/rpc/bindings/CellRef'
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
 import { digest } from './grammar'
 import { confirmText, LineConfirm } from './LineConfirm'
 import { type Ask, askSkipped, askStep, lineGuard } from './line-run'

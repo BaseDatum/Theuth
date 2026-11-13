@@ -1,13 +1,13 @@
 // 182 TASK-HOME: a task belongs to one engine (its `home`). Pure rules for the board chip, muting, the machine filter,
 // Move to ▸, the offline-home callout and the Agents page's per-engine rows. No React, no fetches.
 
-import type { EngineAgent } from '@/rpc/bindings/EngineAgent'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
-import type { Task } from '@/rpc/bindings/Task'
+import type { EngineAgent } from "@/rpc/bindings/method.roster.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
+import type { Task } from "@/rpc/bindings/method.roster.output"
 import { THEUTH, age, ownerText } from './helpers'
 
 /** Routine editor's Machine select: this machine, each paired peer; `current` (a stamped engine nobody knows) stays selectable as `machine unknown`. */
-export function routineMachines(mesh: Mesh, current?: string): { value: string; label: string }[] {
+export function routineMachines(mesh: Mesh, current?: string | null): { value: string; label: string }[] {
   const rows = engines(mesh).map((e) => ({ value: e.id, label: e.here ? `${e.name} (this machine)` : e.name }))
   return current && mesh && !rows.some((r) => r.value === current) ? [...rows, { value: current, label: 'machine unknown' }] : rows
 }

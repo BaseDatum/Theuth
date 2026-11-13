@@ -6,8 +6,8 @@ import { Empty, Row, Section, useAction } from '@/components/settings/shared'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import type { Api } from '@/rpc/api'
-import type { MechanismInfo } from '@/rpc/bindings/MechanismInfo'
+import type { Api } from '@/rpc/bindings/client'
+import type { MechanismInfo } from "@/rpc/bindings/method.autoresearch.output"
 
 /** `autoresearch.mechanism {op: adopt, version}`; `0` reverts to the compiled defaults. The press adopts, never the model (159 §15). */
 export const adoptMechanism = (api: Pick<Api, 'autoresearch.mechanism'>, version: number): Promise<MechanismInfo> => api['autoresearch.mechanism']({ op: 'adopt', version })

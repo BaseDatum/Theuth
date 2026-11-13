@@ -1,4 +1,4 @@
-import type { WireEvent } from '@/rpc/events'
+import type { UiEvent as WireEvent } from '@/store/ui-events'
 import { type ConnState, type DropReason, LocalTransport, type Transport } from '@/rpc/transport'
 
 export type { ConnState } from '@/rpc/transport'

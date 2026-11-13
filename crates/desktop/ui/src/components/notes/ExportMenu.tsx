@@ -11,7 +11,7 @@ import { exportAssets, mountedDiagrams } from '@/lib/doc-export'
 import { isLocal } from '@/lib/files'
 import { useApi } from '@/lib/rpc'
 import { useEngines } from '@/link/engines'
-import type { ExportFormat } from '@/rpc/bindings/ExportFormat'
+import type { ExportFormat } from '@/rpc/bindings/method.artifact.input'
 
 const EXT: Record<ExportFormat, { ext: string; name: string }> = { markdown: { ext: 'md', name: 'Markdown' }, pdf: { ext: 'pdf', name: 'PDF' } }
 

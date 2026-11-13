@@ -7,10 +7,10 @@ import { type QueryClient, useQuery } from '@tanstack/react-query'
 import { useProjects } from '@/components/chat/ProjectPicker'
 import { useProjectStyles } from '@/lib/project-style'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { Api } from '@/rpc/api'
-import type { Manifest } from '@/rpc/bindings/Manifest'
-import type { MeetingId } from '@/rpc/bindings/MeetingId'
-import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
+import type { Api } from '@/rpc/bindings/client'
+import type { Manifest } from "@/rpc/bindings/method.meeting.output"
+import type { MeetingId } from "@/rpc/bindings/method.meeting.output"
+import type { MeetingSummary } from "@/rpc/bindings/method.meeting.output"
 
 /** Distinct, trimmed, non-empty labels from every source, sorted. */
 export function projectChoices(...sources: readonly (readonly (string | null | undefined)[])[]): string[] {

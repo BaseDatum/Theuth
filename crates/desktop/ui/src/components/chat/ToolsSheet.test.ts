@@ -4,7 +4,7 @@ import { act, createElement as h, Fragment } from 'react'
 import { createRoot } from 'react-dom/client'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
-import type { McpServer } from '@/rpc/bindings/McpServer'
+import type { McpServer } from "@/rpc/bindings/method.mcp_2dserver.output"
 import { SessionMenu } from './SessionMenu'
 import { ToolsSheet } from './ToolsSheet'
 import { useToolsSheet } from './tools-sheet'

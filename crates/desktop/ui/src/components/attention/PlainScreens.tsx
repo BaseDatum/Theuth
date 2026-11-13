@@ -8,7 +8,7 @@ import { useHandoffs, useSandboxes } from '@/components/settings/sandbox-queries
 import { age } from '@/components/tasks/helpers'
 import { useAgents, useMesh, useTask } from '@/components/tasks/queries'
 import { cn } from '@/lib/utils'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import { FIRST_ANSWERS, contactFirstOf } from '@/lib/contacts'
 import { useSecretRequests } from '@/store/approvals'
 import { useAnswered } from '@/store/double'

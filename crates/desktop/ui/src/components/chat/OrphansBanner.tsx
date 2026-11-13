@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { SessionOrphan } from '@/rpc/bindings/SessionOrphan'
+import type { SessionOrphan } from "@/rpc/bindings/method.sessionsync.output"
 import { useConnection } from '@/store/connection'
 
 /** Log rows in one orphaned range; `bigint` on the wire type, a plain count here. */

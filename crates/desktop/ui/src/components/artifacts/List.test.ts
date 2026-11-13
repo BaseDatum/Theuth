@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import type { Artifact } from '@/rpc/extra'
+import type { Artifact } from "@/rpc/bindings/method.artifact.output"
 import { group, nameMatch } from './List'
 
 const art = (over: Partial<Artifact>): Artifact => ({

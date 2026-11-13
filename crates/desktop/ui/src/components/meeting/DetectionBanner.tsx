@@ -20,7 +20,7 @@ import { eventLine } from '@/lib/calendar'
 import { isDesktop } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { LOCAL, useEngines } from '@/link/engines'
-import type { Detection } from '@/rpc/bindings/Detection'
+import type { Detection } from "@/rpc/bindings/method.meeting.output"
 import { on } from '@/store/sessions'
 
 export const DETECTION_KEY = ['meeting-detection'] as const

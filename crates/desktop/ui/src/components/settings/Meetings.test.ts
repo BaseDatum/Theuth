@@ -1,10 +1,11 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { type ComponentType, createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
-import type { MeetingSettings } from '@/rpc/bindings/MeetingSettings'
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import type { MeetingSettings } from "@/rpc/bindings/method.meeting.output"
+import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { DEFAULT_LIVE_TOOLS, MeetingDefaults, MeetingDetection, MeetingLive, added, echoSummary } from './Meetings'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
@@ -38,7 +39,7 @@ vi.mock('@/components/ui/button', () => ({
 }))
 
 const haiku = { id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5', efforts: [] as string[] } as ModelInfo
-const block: MeetingSettings = {
+const block: MeetingSettings = receiveComponent("method.meeting.output.MeetingSettings", {
   model: null,
   effort: null,
   summary_model: null,
@@ -49,7 +50,7 @@ const block: MeetingSettings = {
   project: null,
   detect: { enabled: true, ignore: ['com.apple.FaceTime', 'obs64.exe'], poll_secs: 2 },
   calendar: { eventkit: false, prebrief: true, poll_secs: 900 },
-}
+})
 const api = {
   meeting_settings_get: vi.fn(async () => block),
   meeting_settings_set: vi.fn(async (s: MeetingSettings) => s),

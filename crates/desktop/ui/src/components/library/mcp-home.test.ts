@@ -1,14 +1,14 @@
 import { expect, test } from 'vitest'
 import { engines } from '@/components/tasks/home'
-import type { McpServer } from '@/rpc/bindings/McpServer'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
+import type { McpServer } from "@/rpc/bindings/method.mcp_2dserver.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
 import { homeActions, homeChip, stateText } from './mcp-home'
 
 // 187: this is xeus; mikrotik was added on 333.
 const mesh = {
   self_id: 'id-xeus',
   self_name: 'xeus',
-  peers: [{ id: 'id-333', name: '333', reachable: true, last_seen_ms: 0n }],
+  peers: [{ id: 'id-333', name: '333', reachable: true, last_seen_ms: 0 }],
 } as unknown as MeshStatus
 const MACHINES = engines(mesh)
 const server = (over: Partial<McpServer> = {}): McpServer => ({

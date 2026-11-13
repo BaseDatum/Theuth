@@ -8,9 +8,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { deviceName } from '@/lib/platform'
 import { useApi } from '@/lib/rpc'
-import type { Api } from '@/rpc/api'
-import type { Node } from '@/rpc/bindings/Node'
-import type { NodeEvent } from '@/rpc/bindings/NodeEvent'
+import type { Api } from '@/rpc/bindings/client'
+import type { Node } from "@/rpc/bindings/method.nodes.output"
+import type { NodeEvent } from "@/rpc/bindings/event.nodes_2eevents.output"
 import { RpcError } from '@/rpc/client'
 import { useConnection } from '@/store/connection'
 import { scope } from '@/store/engine-scope'

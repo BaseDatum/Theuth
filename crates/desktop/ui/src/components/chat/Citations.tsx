@@ -11,8 +11,8 @@ import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { type Cite, collectCitations, locatorLabel, parseTheuthHref, routeOf } from '@/lib/citations'
 import { notebookKeys, notebooksApi } from '@/lib/notebooks-rpc'
-import type { Citation } from '@/rpc/bindings/Citation'
-import type { CiteKind } from '@/rpc/bindings/CiteKind'
+import type { Citation } from "@/rpc/bindings/method.agent.output"
+import type { CiteKind } from "@/rpc/bindings/method.agent.output"
 import { cn } from '@/lib/utils'
 import { useConnection } from '@/store/connection'
 import { useScopedDisclosure } from './disclosure'

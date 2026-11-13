@@ -34,8 +34,8 @@ import { LIMITS } from '@/lib/search'
 import { SearchQueue } from '@/lib/search-queue'
 import { cn } from '@/lib/utils'
 import { useEngines } from '@/link/engines'
-import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
-import type { SearchGroup } from '@/rpc/bindings/SearchGroup'
+import type { SearchCategory } from '@/rpc/bindings/method.rpc_2dcompose.input'
+import type { SearchGroup } from "@/rpc/bindings/method.rpc_2dcompose.output"
 import { useEntries } from '@/store/sessions'
 
 const INDEXING_POLL_MS = 500

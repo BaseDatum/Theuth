@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { withOwner } from '@/lib/rpc'
 import { RpcError } from '@/rpc/client'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { scope } from '@/store/engine-scope'
 import { notOwner, runsElsewhere } from './front-door'
 import { engineLabel, lastSeenText, onOwnerChanged, onPeerChange, ownerMidTurnText, ownerOfflineText, ownedElsewhere, ownerUnreachable, remoteAmong, sessionDraining, useOwnerOffline, withdrawRelayed } from './owner'

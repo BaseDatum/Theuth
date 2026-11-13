@@ -1,5 +1,5 @@
 import type { AttachRef } from '@/lib/attach'
-import type { Binding } from '@/rpc/bindings/Binding'
+import type { Binding } from "@/rpc/bindings/method.agent.output"
 
 /** The charter of agent `name` as a document binding — `DocId::for_binding` on the engine makes the id deterministic. */
 export const charterBinding = (name: string): Binding => ({ agent_charter: name })

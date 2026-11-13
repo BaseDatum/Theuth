@@ -9,7 +9,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { extOf } from '@/lib/files'
 import { openExternal } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { Pointer } from '@/rpc/bindings/Pointer'
+import type { Pointer } from "@/rpc/bindings/method.roster.output"
 import { parseCodeRef, pointerRoute, urlHost } from './model'
 import { UnifiedDiff } from './UnifiedDiff'
 

@@ -1,15 +1,16 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { Fragment, createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
 import { Branch } from '@/components/sidebar/AgentTree'
 import { groupRows } from '@/components/chat/broadcast'
 import { buildRows } from '@/components/sidebar/SessionList'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { SessionActivity } from '@/rpc/bindings/SessionActivity'
-import type { AgentInfo } from '@/rpc/extra'
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { SessionActivity } from "@/rpc/bindings/method.agent.output"
+import type { AgentInfo } from '@/store/ui-events'
 import { STRIP_CAP, TREE_CAP, cappedTree, childrenOf, detailOf, harnessName, live, observedState, rankSummary, sourceTag, stripRows, withAncestors, rootOf, subtrees } from './session-tree'
 
-const s = (id: string, parent: string | null = null, desk?: string): SessionSummary => ({
+const s = (id: string, parent: string | null = null, desk?: string): SessionSummary => (receiveComponent("method.agent.output.SessionSummary", {
   id,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
@@ -32,7 +33,7 @@ const s = (id: string, parent: string | null = null, desk?: string): SessionSumm
   memory: 'epochs',
   here: true,
   ...(desk === undefined ? {} : { desk }),
-})
+}))
 
 test('subtrees roll every depth up to the top-level row; a root without subagents has no entry', () => {
   const sessions = [s('a'), s('b'), s('a1', 'a'), s('a11', 'a1')]
@@ -57,7 +58,7 @@ test('live subagent rows are the ones still working or waiting on someone; finis
   expect((['idle', 'cancelled', 'error'] as const).map(live)).toEqual([false, false, false])
 })
 
-const row = (id: string, state: AgentInfo['state']['state'], parent = 'root', extra: Partial<AgentInfo> = {}): AgentInfo => ({
+const row = (id: string, state: AgentInfo['state']['state'], parent = 'root', extra: Partial<AgentInfo> = {}): AgentInfo => (receiveComponent("method.agent.output.AgentInfo", {
   id,
   name: id,
   parent,
@@ -69,7 +70,7 @@ const row = (id: string, state: AgentInfo['state']['state'], parent = 'root', ex
   finished_at: null,
   last: '',
   ...extra,
-})
+}))
 const day = (n: number) => `2026-01-${String(n).padStart(2, '0')}T00:00:00Z`
 const at = (id: string, updated: number, created = 1) => ({ ...s(id, 'root'), updated_at: day(updated), created_at: day(created) })
 
@@ -81,7 +82,7 @@ test('rank: live rows (running, awaiting, approval) beat a newer idle one; idle 
 
 test('rank: activity is the newest of activity.last_active, the list updated_at and the live started_at/finished_at', () => {
   const sessions = [at('a', 2), at('b', 3), at('c', 1)]
-  const activity: SessionActivity = { state: { state: 'idle' }, last_active: day(8), turn_started_at: null, jobs: 0, ptys: 0, children: 0, asks: null, live: false }
+  const activity: SessionActivity = receiveComponent("method.agent.output.SessionActivity", { state: { state: 'idle' }, last_active: day(8), turn_started_at: null, jobs: 0, ptys: 0, children: 0, asks: null, live: false })
   const rows = [row('a', 'idle', 'root', { activity }), row('b', 'idle'), row('c', 'idle', 'root', { finished_at: day(5) }), row('d', 'idle', 'root', { started_at: day(4) })]
   // a: last_active 8 beats updated_at 2; c: finished_at 5 beats updated_at 1; d is unknown to the list, ranks by started_at.
   expect(cappedTree(rows, sessions, true).shown.map((r) => r.id)).toEqual(['a', 'c', 'd', 'b'])
@@ -177,7 +178,7 @@ test('observed rows: state mapping, strip membership, source tags, defensive det
   expect(observedState('failed')).toEqual({ state: 'error' })
   expect(observedState('cancelled')).toEqual({ state: 'cancelled' })
   expect((['pending', 'idle', 'completed', 'unknown'] as const).map((s) => observedState(s).state)).toEqual(['idle', 'idle', 'idle', 'idle'])
-  const meta = (state: 'running' | 'idle' | 'requires_action') => ({ source: 'omp_task' as const, external: state, state, can_cancel: false, cost_rule: 'counted' as const, detail: null })
+  const meta = (state: 'running' | 'idle' | 'requires_action') => receiveComponent('method.agent.output.ObservedMeta', { source: 'omp_task', external: state, state, can_cancel: false, cost_rule: 'counted', detail: null })
   const run = row('run', 'running', 'harness', { kind: 'observed', observed: meta('running'), started_at: '2026-01-01T00:00:01Z' })
   const ask = row('ask', 'approval', 'harness', { kind: 'observed', observed: meta('requires_action'), started_at: '2026-01-01T00:00:02Z' })
   const idle = row('idle', 'idle', 'harness', { kind: 'observed', observed: meta('idle') })

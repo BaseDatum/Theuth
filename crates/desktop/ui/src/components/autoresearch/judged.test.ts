@@ -3,7 +3,7 @@ import { type ReactElement, createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
-import type { JudgmentRow } from '@/rpc/bindings/JudgmentRow'
+import type { JudgmentRow } from "@/rpc/bindings/method.autoresearch.output"
 import { PairList, PairViewer, pairsOf } from './PairViewer'
 import { RatingLadder } from './RatingLadder'
 
@@ -18,7 +18,7 @@ function paint(el: ReactElement): string {
 }
 
 const row = (id: number, n: number, caseId: string, over: Partial<JudgmentRow> = {}): JudgmentRow => ({
-  id: BigInt(id),
+  id: id,
   slug: 'tj',
   n,
   case_id: caseId,

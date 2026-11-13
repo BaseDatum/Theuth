@@ -25,8 +25,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useSearchFocus } from '@/hooks/use-search-focus'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { isSearchDestination, useSearchOrigin } from '@/lib/search'
-import type { Change } from '@/rpc/bindings/Change'
-import type { Revision } from '@/rpc/bindings/Revision'
+import type { Change } from "@/rpc/bindings/method.knowledge.output"
+import type { Revision } from "@/rpc/bindings/method.knowledge.output"
 import { cn } from 'cn'
 
 type ChangedFile = Revision['files'][number]

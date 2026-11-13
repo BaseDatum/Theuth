@@ -18,12 +18,12 @@ import { ShareAction, ShareDialog } from '@/components/share/ShareDialog'
 import { MESH } from '@/components/tasks/mock'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { EngineProvider } from '@/lib/doc/provider'
-import type { Api } from '@/rpc/api'
-import type { CellRef } from '@/rpc/bindings/CellRef'
-import type { CellRun } from '@/rpc/bindings/CellRun'
-import type { CellState } from '@/rpc/bindings/CellState'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
-import type { Peer } from '@/rpc/bindings/Peer'
+import type { Api } from '@/rpc/bindings/client'
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
+import type { CellRun } from "@/rpc/bindings/method.cells.output"
+import type { CellState } from "@/rpc/bindings/method.cells.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
+import type { Peer } from "@/rpc/bindings/method.nodes.output"
 import { active } from '@/store/engine-scope'
 
 const VIEW = new URLSearchParams(location.search).get('view') ?? 'p1'
@@ -91,7 +91,7 @@ const latest = {
   expect: null,
   summary: null,
   code_sha: 'x',
-  ended_ms: BigInt(now - foreignAge),
+  ended_ms: now - foreignAge,
   text: '3 nodes Ready\n',
   engine: VIEW === 'single' ? '' : XEUS,
 }
@@ -125,7 +125,7 @@ const api = new Proxy({} as Api, {
           if (VIEW === 'p4un') throw new Error('mesh_link_unavailable')
           const via = VIEW === 'p4mesh' ? 'mesh' : 'home'
           const frag = via === 'mesh' ? `1.bWVzaC05MWMy.${DOC}.${SECRET}` : `2.eGV1cy03ZjNh.bWVzaC05MWMy.${DOC}.${SECRET}`
-          return { url: `https://relay.theuth.io/d#${frag}`, link: { id: 'l1', role: args[1], name: null, created_ms: BigInt(now), expires_ms: null, revoked_ms: null }, via }
+          return { url: `https://relay.theuth.io/d#${frag}`, link: { id: 'l1', role: args[1], name: null, created_ms: now, expires_ms: null, revoked_ms: null }, via }
         }
         case 'doc_move_home': {
           // Never answers: the menu stays in its `Moving…` state for the screenshot.

@@ -2,20 +2,20 @@ import { QueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { queryKeys } from '@/lib/rpc'
-import type { DocSummary } from '@/rpc/bindings/DocSummary'
-import type { DocumentChanged } from '@/rpc/bindings/DocumentChanged'
+import type { DocSummary } from "@/rpc/bindings/method.agent.output"
+import type { DocumentChanged } from "@/rpc/bindings/event.document_2echanged.output"
 import { dispatch } from '@/store/sessions'
 import { createNote } from './create'
 
 vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
 
-const row = (id: string, title = 'Old'): DocSummary => ({ id, kind: 'note', title, binding: 'note', created_ms: 1n, updated_ms: 1n, bytes: 0n })
+const row = (id: string, title = 'Old'): DocSummary => ({ id, kind: 'note', title, binding: 'note', created_ms: 1, updated_ms: 1, bytes: 0 })
 const changed = (doc: string, over: Partial<DocumentChanged> = {}): DocumentChanged => ({
   type: 'DocumentChanged',
   doc,
   kind: 'note',
   title: 'Untitled',
-  updated_ms: 5n,
+  updated_ms: 5,
   deleted: false,
   ...over,
 })

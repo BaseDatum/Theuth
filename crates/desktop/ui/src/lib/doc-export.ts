@@ -4,7 +4,7 @@
 
 import { standalone } from '@/lib/diagram-export'
 import type { DiagramTokens } from '@/lib/diagram-theme'
-import type { ExportAsset } from '@/rpc/bindings/ExportAsset'
+import type { ExportAsset } from '@/rpc/bindings/method.artifact.input'
 
 /** A rendered diagram fence: its block id and the svg markup as mounted. */
 export interface MountedDiagram {

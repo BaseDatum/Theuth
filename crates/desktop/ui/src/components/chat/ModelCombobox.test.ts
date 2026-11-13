@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { ModelCombobox, pickerSurface, triggerLabel } from './ModelCombobox'
 
 vi.mock('@/lib/rpc', async (original) => ({

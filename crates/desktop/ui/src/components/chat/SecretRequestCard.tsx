@@ -3,7 +3,7 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useApi } from '@/lib/rpc'
-import type { SecretRequestField } from '@/rpc/bindings/SecretRequestField'
+import type { SecretRequestField } from "@/rpc/bindings/method.secrets.output"
 import { useSecretRequests } from '@/store/approvals'
 
 /**

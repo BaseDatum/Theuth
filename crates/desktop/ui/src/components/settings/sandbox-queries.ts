@@ -2,22 +2,23 @@
 // `useAction`), and the `?sim=sandbox-blocked` / `?sim=sandbox-ok` fixtures that let the preflight card be reviewed
 // without a runtime (the repo's `?sim=` idiom, `lib/talk-sim.ts`; the general `?mock=1` switch is 67's).
 
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAction } from '@/components/settings/shared'
 import { keys as taskKeys } from '@/components/tasks/queries'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
-import type { Handoff } from '@/rpc/bindings/Handoff'
-import type { Mount } from '@/rpc/bindings/Mount'
-import type { Item } from '@/rpc/bindings/Item'
-import type { Packet } from '@/rpc/bindings/Packet'
-import type { Preflight } from '@/rpc/bindings/Preflight'
-import type { Priority } from '@/rpc/bindings/Priority'
-import type { ResourceChange } from '@/rpc/bindings/ResourceChange'
-import type { SandboxCreate } from '@/rpc/bindings/SandboxCreate'
-import type { SandboxInfo } from '@/rpc/bindings/SandboxInfo'
-import type { SecretRequest } from '@/rpc/bindings/SecretRequest'
-import type { Artifact } from '@/rpc/extra'
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
+import type { Handoff } from "@/rpc/bindings/method.roster.output"
+import type { Mount } from "@/rpc/bindings/method.sandbox.output"
+import type { Item } from "@/rpc/bindings/method.roster.output"
+import type { Packet } from "@/rpc/bindings/method.roster.output"
+import type { Preflight } from "@/rpc/bindings/method.sandbox.output"
+import type { Priority } from "@/rpc/bindings/method.roster.output"
+import type { ResourceChange } from "@/rpc/bindings/method.sandbox.output"
+import type { SandboxCreate } from '@/rpc/bindings/method.sandbox.input'
+import type { SandboxInfo } from "@/rpc/bindings/method.sandbox.output"
+import type { SecretRequest } from "@/rpc/bindings/method.secrets.output"
+import type { Artifact } from "@/rpc/bindings/method.artifact.output"
 import { HANDOFFS_KEY, PREFLIGHT_KEY, type ProgressLine, SANDBOXES_KEY, sandboxLogKey } from '@/store/sandboxes'
 
 export type Sim = 'sandbox-blocked' | 'sandbox-ok' | null
@@ -41,7 +42,7 @@ export const PREFLIGHT_OK: Preflight = {
   checked_at_ms: Date.now(),
 }
 
-export const PREFLIGHT_BLOCKED: Preflight = {
+export const PREFLIGHT_BLOCKED: Preflight = receiveComponent("method.sandbox.output.Preflight", {
   ...PREFLIGHT_OK,
   runtime: { state: 'embedded', version: '0.7.4', extracted: false, home: '/root/.microsandbox' },
   virt: { state: 'unsupported', why: '/dev/kvm missing' },
@@ -57,7 +58,7 @@ export const PREFLIGHT_BLOCKED: Preflight = {
     { code: 'disk_low', message: '6 GiB free; a VM needs its root disk plus the image plus 2 GiB (about 25 GiB).', fix: null, installable: false },
   ],
   warnings: [{ code: 'memory_low', message: 'The default memory (8 GiB) is more than half of this host.', fix: null, installable: false }],
-}
+})
 
 const NOW = Date.now()
 export const SANDBOXES_SIM: SandboxInfo[] = [
@@ -189,8 +190,8 @@ const SIM_SHOW_CALL = 'toolu_015AZQL17aTdoAMD49A3uZkD'
 
 /** The inbox as `attention_list` derives it from the fixtures (roster `attention.rs`: titles, `detail` = engine name or id; 101: the first line of the packet; 104: `ask`, `show`, `session` on every row). */
 export const ATTENTION_SIM: AttentionItem[] = [
-  { id: `decision:${SIM_TASK_DECISION}:decision:dns-9c21`, kind: 'decision', title: 'Portal DNS cut-over', detail: 'Approve the ten portal DNS changes for tonight?', at_ms: NOW - 8_000, task: SIM_TASK_DECISION, agent: 'manager', session: SIM_SESSION_OPS, approval: null, decision: 'decision:dns-9c21', packet: 'decision:dns-9c21', ask: null, turn: null, priority: 'high', rank: 7 },
-  {
+  receiveComponent("method.roster.output.AttentionItem", { id: `decision:${SIM_TASK_DECISION}:decision:dns-9c21`, kind: 'decision', title: 'Portal DNS cut-over', detail: 'Approve the ten portal DNS changes for tonight?', at_ms: NOW - 8_000, task: SIM_TASK_DECISION, agent: 'manager', session: SIM_SESSION_OPS, approval: null, decision: 'decision:dns-9c21', packet: 'decision:dns-9c21', ask: null, turn: null, priority: 'high', rank: 7 }),
+  receiveComponent("method.roster.output.AttentionItem", {
     id: 'ask:ask-sim-01',
     kind: 'ask',
     title: 'theuth asks: Which release notes format?',
@@ -223,14 +224,14 @@ export const ATTENTION_SIM: AttentionItem[] = [
     turn: 14,
     priority: null,
     rank: 5,
-  },
-  { id: `approval:apr-sim-01`, kind: 'approval', title: `${SIM_SESSION_DESK} wants to run shell`, detail: 'git push origin feat/release-notes --force-with-lease', at_ms: NOW - 12_000, task: null, agent: 'theuth', session: SIM_SESSION_DESK, approval: 'apr-sim-01', decision: null, packet: null, ask: null, turn: 14, priority: null, rank: 5 },
-  { id: `show:${SIM_SHOW_CALL}`, kind: 'show', title: 'Proposed DR task division (not assigned)', detail: 'DIVISION.md · markdown · 4.4 KB', at_ms: NOW - 15_000, task: null, agent: 'theuth', session: SIM_SESSION_DESK, approval: null, decision: null, packet: null, ask: null, turn: 13, priority: null, rank: 5 },
-  { id: `decision:${SIM_TASK_DECISION}:decision:apr-7f3a`, kind: 'decision', title: 'Rotate the Grafana API token', detail: 'Which rotation path for the Grafana token?', at_ms: NOW - 20_000, task: SIM_TASK_DECISION, agent: 'ops', session: SIM_SESSION_OPS, approval: null, decision: 'decision:apr-7f3a', packet: 'decision:apr-7f3a', ask: null, turn: null, priority: 'medium', rank: 5 },
-  { id: 'secret:0199aaaa-0000-7000-8000-00000000sim2', kind: 'secret', title: '77aa11bb asks for a secret: Postgres login', detail: 'engine-host-0000', at_ms: NOW - 30_000, task: null, agent: null, session: 'sess-host-77aa11bb', approval: null, decision: null, packet: null, ask: null, turn: null, priority: null, rank: 5 },
-  { id: `review:${SIM_TASK_REVIEW}`, kind: 'review', title: 'Write the Q4 release notes', detail: 'Release notes for 2.4: three sections, one diagram, a diff of the changelog.', at_ms: NOW - 45_000, task: SIM_TASK_REVIEW, agent: 'writer', session: SIM_SESSION_OPS, approval: null, decision: null, packet: `review:${SIM_TASK_REVIEW}`, ask: null, turn: null, priority: 'medium', rank: 5 },
-  { id: 'secret:0199aaaa-0000-7000-8000-00000000sim1', kind: 'secret', title: '01a0f02b asks for a secret: GITHUB_TOKEN', detail: 'lab', at_ms: NOW - 90_000, task: null, agent: null, session: 'sess-lab-01a0f02b', approval: null, decision: null, packet: null, ask: null, turn: null, priority: null, rank: 5 },
-  { id: 'handoff:h-sim-1', kind: 'handoff', title: 'researcher needs you: the login page wants a 2FA code', detail: 'lab', at_ms: NOW - 120_000, task: null, agent: 'researcher', session: 'sess-lab-01a0f02b', approval: null, decision: null, packet: null, ask: null, turn: null, priority: null, rank: 5 },
+  }),
+  receiveComponent("method.roster.output.AttentionItem", { id: `approval:apr-sim-01`, kind: 'approval', title: `${SIM_SESSION_DESK} wants to run shell`, detail: 'git push origin feat/release-notes --force-with-lease', at_ms: NOW - 12_000, task: null, agent: 'theuth', session: SIM_SESSION_DESK, approval: 'apr-sim-01', decision: null, packet: null, ask: null, turn: 14, priority: null, rank: 5 }),
+  receiveComponent("method.roster.output.AttentionItem", { id: `show:${SIM_SHOW_CALL}`, kind: 'show', title: 'Proposed DR task division (not assigned)', detail: 'DIVISION.md · markdown · 4.4 KB', at_ms: NOW - 15_000, task: null, agent: 'theuth', session: SIM_SESSION_DESK, approval: null, decision: null, packet: null, ask: null, turn: 13, priority: null, rank: 5 }),
+  receiveComponent("method.roster.output.AttentionItem", { id: `decision:${SIM_TASK_DECISION}:decision:apr-7f3a`, kind: 'decision', title: 'Rotate the Grafana API token', detail: 'Which rotation path for the Grafana token?', at_ms: NOW - 20_000, task: SIM_TASK_DECISION, agent: 'ops', session: SIM_SESSION_OPS, approval: null, decision: 'decision:apr-7f3a', packet: 'decision:apr-7f3a', ask: null, turn: null, priority: 'medium', rank: 5 }),
+  receiveComponent("method.roster.output.AttentionItem", { id: 'secret:0199aaaa-0000-7000-8000-00000000sim2', kind: 'secret', title: '77aa11bb asks for a secret: Postgres login', detail: 'engine-host-0000', at_ms: NOW - 30_000, task: null, agent: null, session: 'sess-host-77aa11bb', approval: null, decision: null, packet: null, ask: null, turn: null, priority: null, rank: 5 }),
+  receiveComponent("method.roster.output.AttentionItem", { id: `review:${SIM_TASK_REVIEW}`, kind: 'review', title: 'Write the Q4 release notes', detail: 'Release notes for 2.4: three sections, one diagram, a diff of the changelog.', at_ms: NOW - 45_000, task: SIM_TASK_REVIEW, agent: 'writer', session: SIM_SESSION_OPS, approval: null, decision: null, packet: `review:${SIM_TASK_REVIEW}`, ask: null, turn: null, priority: 'medium', rank: 5 }),
+  receiveComponent("method.roster.output.AttentionItem", { id: 'secret:0199aaaa-0000-7000-8000-00000000sim1', kind: 'secret', title: '01a0f02b asks for a secret: GITHUB_TOKEN', detail: 'lab', at_ms: NOW - 90_000, task: null, agent: null, session: 'sess-lab-01a0f02b', approval: null, decision: null, packet: null, ask: null, turn: null, priority: null, rank: 5 }),
+  receiveComponent("method.roster.output.AttentionItem", { id: 'handoff:h-sim-1', kind: 'handoff', title: 'researcher needs you: the login page wants a 2FA code', detail: 'lab', at_ms: NOW - 120_000, task: null, agent: 'researcher', session: 'sess-lab-01a0f02b', approval: null, decision: null, packet: null, ask: null, turn: null, priority: null, rank: 5 }),
 ]
 
 /** 132 D10: `?mock=crowded` — the Attention surface with sixty rows, every kind and every priority. */
@@ -313,7 +314,7 @@ const CROWD: readonly Crowd[] = [
  * 132 D10: sixty rows in the engine's order (rank desc, then newest). Every row carries a priority — task-born kinds
  * through their task, the rest through a session that is a task checkout (`attention.rs`) — so the Urgent group spans kinds.
  */
-export const ATTENTION_CROWDED: AttentionItem[] = CROWD.map(([kind, priority, title, detail, agent], i): AttentionItem => ({
+export const ATTENTION_CROWDED: AttentionItem[] = CROWD.map(([kind, priority, title, detail, agent], i): AttentionItem => (receiveComponent("method.roster.output.AttentionItem", {
   id: `${kind}:crowded-${i}`,
   kind,
   title,
@@ -329,7 +330,7 @@ export const ATTENTION_CROWDED: AttentionItem[] = CROWD.map(([kind, priority, ti
   turn: null,
   priority,
   rank: WEIGHT[priority],
-})).sort((a, b) => b.rank - a.rank || b.at_ms - a.at_ms)
+}))).sort((a, b) => b.rank - a.rank || b.at_ms - a.at_ms)
 
 /**
  * 104: the artifact behind the sim's `show` item, served by the Show screen under `?sim=` instead of `get_artifact`. The

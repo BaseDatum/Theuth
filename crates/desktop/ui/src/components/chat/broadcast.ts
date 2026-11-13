@@ -1,9 +1,9 @@
 import { chatName } from '@/lib/attach'
 import { notAdvisor } from '@/lib/session-tree'
-import type { BroadcastReceipt } from '@/rpc/bindings/BroadcastReceipt'
-import type { SessionActivity } from '@/rpc/bindings/SessionActivity'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { AgentInfo } from '@/rpc/extra'
+import type { BroadcastReceipt } from "@/rpc/bindings/method.agent.output"
+import type { SessionActivity } from "@/rpc/bindings/method.agent.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { AgentInfo } from '@/store/ui-events'
 
 /** `list_activity` rows carry their depth from their own root: 0 is a root (62 §3.2). */
 export const isRoot = (r: AgentInfo) => r.depth === 0

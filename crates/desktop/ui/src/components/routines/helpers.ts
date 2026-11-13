@@ -1,11 +1,11 @@
 import { engineName } from '@/components/tasks/home'
-import type { LastCheck } from '@/rpc/bindings/LastCheck'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
-import type { RunKind } from '@/rpc/bindings/RunKind'
-import type { ScheduleFile } from '@/rpc/bindings/ScheduleFile'
-import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
-import type { SensorArg } from '@/rpc/bindings/SensorArg'
-import type { Verdict } from '@/rpc/bindings/Verdict'
+import type { LastCheck } from "@/rpc/bindings/method.schedule.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
+import type { RunKind } from "@/rpc/bindings/method.schedule.output"
+import type { ScheduleFile } from "@/rpc/bindings/method.schedule.output"
+import type { ScheduleInfo } from "@/rpc/bindings/method.schedule.output"
+import type { SensorArg } from "@/rpc/bindings/method.schedule.output"
+import type { Verdict } from "@/rpc/bindings/method.schedule.output"
 
 export const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const
 

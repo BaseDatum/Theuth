@@ -3,8 +3,8 @@ import { useEffect } from 'react'
 import { useMesh } from '@/components/tasks/queries'
 import { routinesFixture } from '@/dev/routines-fixture'
 import { useApi } from '@/lib/rpc'
-import type { ScheduleEvent } from '@/rpc/bindings/ScheduleEvent'
-import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
+import type { ScheduleEvent } from "@/rpc/bindings/event.schedule_2eevents.output"
+import type { ScheduleInfo } from "@/rpc/bindings/method.schedule.output"
 import { on } from '@/store/sessions'
 
 /** The connected `Api`, or in dev with `VITE_ROUTINES_FIXTURE=1` the fixture's answers for the routine methods (108 §11). */

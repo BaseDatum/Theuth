@@ -1,5 +1,5 @@
 import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
 
 /** Owner or reviewer: "you" plus every roster agent. `value` is the text form (`user` | `agent:<name>`). */
 export function OwnerSelect({

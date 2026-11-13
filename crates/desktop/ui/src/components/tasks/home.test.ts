@@ -1,8 +1,8 @@
 import { expect, onTestFinished, test, vi } from 'vitest'
-import type { AgentFile } from '@/rpc/bindings/AgentFile'
-import type { EngineAgent } from '@/rpc/bindings/EngineAgent'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
-import type { Task } from '@/rpc/bindings/Task'
+import type { AgentFile } from "@/rpc/bindings/method.roster.output"
+import type { EngineAgent } from "@/rpc/bindings/method.roster.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
+import type { Task } from "@/rpc/bindings/method.roster.output"
 import { agent as agentOwner, USER } from './helpers'
 import { agentWhere, agentsCount, askSecs, clock, engines, homeChip, homeEngine, homeLine, homeTargets, isMuted, itemHome, machineUnknown, movedToast, mutedTitle, offlineCallout, onMachine, openOn, remoteAgents, routineMachines } from './home'
 

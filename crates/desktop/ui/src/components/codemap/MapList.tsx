@@ -11,7 +11,7 @@ import { kindGlyph } from '@/lib/codemap/labels'
 import { ago, elementGraph, elementStats, type Mark } from '@/lib/codemap/map'
 import type { GraphData } from '@/lib/graph-layout'
 import { cn } from '@/lib/utils'
-import type { MapElement } from '@/rpc/bindings/MapElement'
+import type { MapElement } from "@/rpc/bindings/method.codeindex.output"
 import './codemap.css'
 
 export type MapListProps = {

@@ -10,7 +10,7 @@ import { type CSSProperties, useEffect, useRef } from 'react'
 import { Empty } from '@/components/settings/shared'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { Brief } from '@/rpc/bindings/Brief'
+import type { Brief } from "@/rpc/bindings/method.meeting.output"
 
 export const hhmmss = (ms: number): string => {
   const s = Math.floor(ms / 1000)

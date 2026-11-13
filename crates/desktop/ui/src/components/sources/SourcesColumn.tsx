@@ -6,7 +6,7 @@ import { useContextEstimate, useSources } from '@/components/notebooks/useNotebo
 import { Skeleton } from '@/components/ui/skeleton'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { type EstimateItem, fmtTokens } from '@/lib/notebook-context'
-import type { ItemKind } from '@/rpc/bindings/ItemKind'
+import type { ItemKind } from "@/rpc/bindings/method.agent.output"
 import { AddSourceMenu } from './AddSourceMenu'
 import { LEVELS } from './origin'
 import { SourceCard, useDial } from './SourceCard'

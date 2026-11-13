@@ -2,13 +2,14 @@
 // state against any engine. Dev only, behind `VITE_DREAMING_FIXTURE=<state>` (or `localStorage['dreaming-fixture']`);
 // the states are exported for the vitest over the formatting and the reducer.
 
-import type { Api } from '@/rpc/api'
-import type { DreamSettings } from '@/rpc/bindings/DreamSettings'
-import type { DreamStatus } from '@/rpc/bindings/DreamStatus'
-import type { NightCounts } from '@/rpc/bindings/NightCounts'
-import type { NightSummary } from '@/rpc/bindings/NightSummary'
-import type { Proposal } from '@/rpc/bindings/Proposal'
-import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
+import { receiveComponent } from '@/rpc/bindings/receive'
+import type { Api } from '@/rpc/bindings/client'
+import type { DreamSettings } from "@/rpc/bindings/method.dreaming.output"
+import type { DreamStatus } from "@/rpc/bindings/method.dreaming.output"
+import type { NightCounts } from "@/rpc/bindings/method.dreaming.output"
+import type { NightSummary } from "@/rpc/bindings/method.dreaming.output"
+import type { Proposal } from "@/rpc/bindings/method.dreaming.output"
+import type { ScheduleInfo } from "@/rpc/bindings/method.schedule.output"
 
 export const STATES = ['empty', 'night', 'paused', 'disabled', 'running'] as const
 export type State = (typeof STATES)[number]
@@ -25,14 +26,14 @@ const ago = (ms: number) => new Date(Date.now() - ms).toISOString()
 const ahead = (ms: number) => new Date(Date.now() + ms).toISOString()
 const day = (daysAgo: number) => new Date(Date.now() - daysAgo * D).toISOString().slice(0, 10)
 
-const zero: NightCounts = { triaged: 0n, retitled: 0n, merged: 0n, superseded: 0n, archived: 0n, verified: 0n, cases: 0n, edits_accepted: 0n, edits_rejected: 0n, proposals: 0n }
+const zero: NightCounts = { triaged: 0, retitled: 0, merged: 0, superseded: 0, archived: 0, verified: 0, cases: 0, edits_accepted: 0, edits_rejected: 0, proposals: 0 }
 
 /** The §8 example night: 14 merged, 31 archived, 1 skill edit kept, 2 rejected, $4.10. */
 export const NIGHT: NightSummary = {
   night: day(0),
   started_at: ago(5 * H),
   finished_at: ago(4 * H),
-  counts: { ...zero, triaged: 300n, retitled: 212n, merged: 14n, superseded: 3n, archived: 31n, verified: 15n, cases: 9n, edits_accepted: 1n, edits_rejected: 2n, proposals: 1n },
+  counts: { ...zero, triaged: 300, retitled: 212, merged: 14, superseded: 3, archived: 31, verified: 15, cases: 9, edits_accepted: 1, edits_rejected: 2, proposals: 1 },
   spend_usd: 4.1,
   mode: 'backlog',
   undone: false,
@@ -42,7 +43,7 @@ export const UNDONE_NIGHT: NightSummary = {
   night: day(1),
   started_at: ago(D + 5 * H),
   finished_at: ago(D + 4 * H),
-  counts: { ...zero, triaged: 120n, retitled: 80n, merged: 6n, archived: 12n, verified: 15n },
+  counts: { ...zero, triaged: 120, retitled: 80, merged: 6, archived: 12, verified: 15 },
   spend_usd: 0.93,
   mode: 'pass',
   undone: true,
@@ -50,7 +51,7 @@ export const UNDONE_NIGHT: NightSummary = {
 }
 export const QUIET_NIGHT: NightSummary = { night: day(2), started_at: ago(2 * D + 5 * H), finished_at: ago(2 * D + 5 * H + 60_000), counts: zero, spend_usd: 0, mode: 'pass', undone: false, judge_same_model: false }
 /** A night in flight: `finished_at: null`, partial counts, the routine row `running`. */
-export const RUNNING_NIGHT: NightSummary = { night: day(0), started_at: ago(12 * 60_000), finished_at: null, counts: { ...zero, triaged: 90n, retitled: 40n }, spend_usd: 0.27, mode: 'pass', undone: false, judge_same_model: false }
+export const RUNNING_NIGHT: NightSummary = { night: day(0), started_at: ago(12 * 60_000), finished_at: null, counts: { ...zero, triaged: 90, retitled: 40 }, spend_usd: 0.27, mode: 'pass', undone: false, judge_same_model: false }
 
 export const PROPOSALS: Proposal[] = [
   {
@@ -71,7 +72,7 @@ export const PROPOSALS: Proposal[] = [
   },
 ]
 
-export const SETTINGS: DreamSettings = {
+export const SETTINGS: DreamSettings = receiveComponent("method.dreaming.output.DreamSettings", {
   enabled: true,
   window: ['01:00', '06:00'],
   budget_usd: 1,
@@ -79,34 +80,34 @@ export const SETTINGS: DreamSettings = {
   preferences_auto: true,
   digest: 'Mon 08:00',
   paused_until: null,
-}
+})
 /** What the engine says the `null` tiers run on (F2's `DreamSettings.resolved`); the `night` state carries it, `empty` does not. */
 export const RESOLVED: NonNullable<DreamSettings['resolved']> = { tidy: 'anthropic/claude-haiku-4-5', propose: 'anthropic/claude-haiku-4-5', judge: 'openai/gpt-5.6-sol', target: 'openai/gpt-5.6-sol' }
 
-const status = (over: Partial<DreamStatus>): DreamStatus => ({
+const status = (over: Partial<DreamStatus>): DreamStatus => (receiveComponent("method.dreaming.output.DreamStatus", {
   enabled: true,
   last_night: null,
   next_window: ahead(9 * H),
   budget_usd: 1,
   budget_left_tonight_usd: 1,
-  backlog: { fresh: 1584n, untidied: 1250n, open_cases: 0n },
-  proposals_pending: 0n,
+  backlog: { fresh: 1584, untidied: 1250, open_cases: 0 },
+  proposals_pending: 0,
   paused_until: null,
   ...over,
-})
+}))
 
 /** Every fixture state: what `status`, `nights`, `proposals` and `settings` answer, and whether the routine row is enabled. */
 export const FIXTURES: Record<State, { status: DreamStatus; nights: NightSummary[]; proposals: Proposal[]; settings: DreamSettings; routineEnabled: boolean }> = {
   empty: { status: status({}), nights: [], proposals: [], settings: SETTINGS, routineEnabled: true },
   night: {
-    status: status({ last_night: NIGHT, budget_left_tonight_usd: 0.4, backlog: { fresh: 41n, untidied: 212n, open_cases: 9n }, proposals_pending: 2n }),
+    status: status({ last_night: NIGHT, budget_left_tonight_usd: 0.4, backlog: { fresh: 41, untidied: 212, open_cases: 9 }, proposals_pending: 2 }),
     nights: [NIGHT, UNDONE_NIGHT, QUIET_NIGHT],
     proposals: PROPOSALS,
     settings: { ...SETTINGS, budget_usd: 2.5, models: { ...SETTINGS.models, tidy: 'anthropic/claude-haiku-4-5' }, resolved: RESOLVED },
     routineEnabled: true,
   },
   paused: {
-    status: status({ last_night: UNDONE_NIGHT, next_window: null, paused_until: ahead(5 * D), backlog: { fresh: 12n, untidied: 1030n, open_cases: 2n } }),
+    status: status({ last_night: UNDONE_NIGHT, next_window: null, paused_until: ahead(5 * D), backlog: { fresh: 12, untidied: 1030, open_cases: 2 } }),
     nights: [UNDONE_NIGHT, QUIET_NIGHT],
     proposals: [],
     settings: { ...SETTINGS, paused_until: ahead(5 * D) },
@@ -120,7 +121,7 @@ export const FIXTURES: Record<State, { status: DreamStatus; nights: NightSummary
     routineEnabled: false,
   },
   running: {
-    status: status({ last_night: RUNNING_NIGHT, budget_left_tonight_usd: 0.73, backlog: { fresh: 30n, untidied: 400n, open_cases: 1n } }),
+    status: status({ last_night: RUNNING_NIGHT, budget_left_tonight_usd: 0.73, backlog: { fresh: 30, untidied: 400, open_cases: 1 } }),
     nights: [RUNNING_NIGHT, NIGHT],
     proposals: [],
     settings: { ...SETTINGS, resolved: RESOLVED },
@@ -151,7 +152,7 @@ function wrap(api: Api, f: (typeof FIXTURES)[State]): Api {
   let routineEnabled = f.routineEnabled
   const nights = f.nights.map((n) => ({ ...n }))
   let proposals = [...f.proposals]
-  const row = (): ScheduleInfo => ({
+  const row = (): ScheduleInfo => (receiveComponent("method.schedule.output.ScheduleInfo", {
     name: 'dreaming',
     when: 'every 30m',
     describe: 'every 30m while dreaming.py says go',
@@ -183,7 +184,7 @@ function wrap(api: Api, f: (typeof FIXTURES)[State]): Api {
     run_timeout: '45m',
     created: ago(30 * D),
     sensor: 'dreaming.py',
-  })
+  }))
   const gated = <T>(v: () => T): Promise<T> => (f.settings.enabled ? wait(v()) : Promise.reject(new Error('NOT_RUNNING: dreaming is disabled in config')))
   return {
     ...api,
@@ -196,10 +197,10 @@ function wrap(api: Api, f: (typeof FIXTURES)[State]): Api {
       routineEnabled = enabled
       return wait(row())
     },
-    'dreaming.status': () => wait({ ...f.status, paused_until: settings.paused_until, budget_usd: settings.budget_usd, proposals_pending: BigInt(proposals.length) }),
+    'dreaming.status': () => wait({ ...f.status, paused_until: settings.paused_until, budget_usd: settings.budget_usd, proposals_pending: proposals.length }),
     'dreaming.settings': () => wait(settings),
     'dreaming.set_settings': (next) => {
-      settings = next
+      settings = receiveComponent('method.dreaming.output.DreamSettings', next)
       return wait(settings)
     },
     'dreaming.nights': (limit) => gated(() => nights.slice(0, limit)),
@@ -208,13 +209,13 @@ function wrap(api: Api, f: (typeof FIXTURES)[State]): Api {
       proposals = proposals.filter((p) => p.id !== id)
       return gated(() => null)
     },
-    'dreaming.undo': (night, group) => {
+    'dreaming.undo': (night, group = null) => {
       const n = nights.find((x) => x.night === night)
       if (n) n.undone = true
       return gated(() => ({ night, group, knowledge_restored: ['hosts/zeus', 'facts/dns-ttl'], skills_restored: ['git-fix'], edits_undone: ['01JEDIT1'], errors: [] }))
     },
     'dreaming.run_now': () => gated(() => 'ses-dream-now'),
     'dreaming.metrics': (days) =>
-      gated(() => ({ days, hint_open_rate: 0.022, impressions_never_opened_share: 0.53, repeat_correction_rate: 0, active_concepts: 1584n, median_title_chars: 332n, skill_loads_per_100_sessions: 7.6, preference_lines: 0n, spend_usd: 4.1, undos: 1n })),
+      gated(() => ({ days, hint_open_rate: 0.022, impressions_never_opened_share: 0.53, repeat_correction_rate: 0, active_concepts: 1584, median_title_chars: 332, skill_loads_per_100_sessions: 7.6, preference_lines: 0, spend_usd: 4.1, undos: 1 })),
   }
 }

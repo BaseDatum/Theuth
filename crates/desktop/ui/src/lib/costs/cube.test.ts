@@ -1,8 +1,9 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { defaultParseSearch, defaultStringifySearch } from '@tanstack/react-router'
 import { expect, test } from 'vitest'
-import type { CostCells } from '@/rpc/bindings/CostCells'
-import type { CostCube } from '@/rpc/bindings/CostCube'
-import type { CostRootEntry } from '@/rpc/bindings/CostRootEntry'
+import type { CostCells } from "@/rpc/bindings/method.agent.output"
+import type { CostCube } from "@/rpc/bindings/method.agent.output"
+import type { CostRootEntry } from "@/rpc/bindings/method.agent.output"
 import { costsFixture } from '@/dev/costs-fixture'
 import { breakdown, emptyCube, heat, HOUR_MS, index, merge, options, previousPeriod, series, sessions, toCsv, tokenSeries, totals } from './cube'
 import { resetIn } from './format'
@@ -38,7 +39,7 @@ function cube(cells: Cell[], over: Partial<CostCube> = {}): CostCube {
     c.cache_saved_nanos.push(0)
     c.approx_nanos.push(0)
   }
-  return {
+  return receiveComponent("method.agent.output.CostCube", {
     ...emptyCube(),
     epoch: 'e1',
     rev: 1,
@@ -53,7 +54,7 @@ function cube(cells: Cell[], over: Partial<CostCube> = {}): CostCube {
     roots: ROOTS,
     cells: c,
     ...over,
-  }
+  })
 }
 
 /** One $1 call in each UTC hour of `[from, to)`. */
@@ -63,7 +64,7 @@ const range = (from: string, to: string) => ({ from: Date.parse(from), to: Date.
 test('merge: full replaces, a same-epoch delta replaces its hours and upserts roots, another epoch asks for a full fetch, a stale rev is ignored', () => {
   const held = cube([{ hour: 100, usd: 1 }, { hour: 101, usd: 2 }, { hour: 101, root: 1, usd: 3 }, { hour: 102, usd: 4 }])
   expect(merge(held, { ...cube([{ hour: 5 }]), full: true })!.cells.hour).toEqual([5])
-  const delta: CostCube = {
+  const delta: CostCube = receiveComponent("method.agent.output.CostCube", {
     ...cube([{ hour: 101, usd: 10 }, { hour: 103, root: 3, usd: 20 }]),
     rev: 2,
     full: false,
@@ -73,7 +74,7 @@ test('merge: full replaces, a same-epoch delta replaces its hours and upserts ro
       { ix: 1, root: { ...ROOTS[1]!.root, title: 'Desk renamed' } },
       { ix: 3, root: { id: 'r3', title: 'New', owner_kind: 'user', owner: 'you', project: null, deleted: false, created_at_ms: 0 } },
     ],
-  }
+  })
   const m = merge(held, delta)!
   expect(m.rev).toBe(2)
   expect(m.full).toBe(true)
@@ -217,7 +218,11 @@ test('perf bound: 100 k cells — index once, then a full page query (series, to
   const base = costsFixture(Date.parse('2026-11-02T14:00:00Z'))
   const c = base.cells
   const n = 100_000
-  const big: CostCells = Object.fromEntries(Object.entries(c).map(([k, col]) => [k, Array.from({ length: n }, (_, i) => (k === 'hour' ? (col as number[])[i % col.length]! - 24 * 56 * Math.floor(i / col.length) : (col as number[])[i % col.length]!))])) as CostCells
+  const big: CostCells = { ...c }
+  for (const k of Object.keys(big) as (keyof CostCells)[]) {
+    const col = big[k]
+    big[k] = Array.from({ length: n }, (_, i) => k === 'hour' ? col[i % col.length]! - 24 * 56 * Math.floor(i / col.length) : col[i % col.length]!)
+  }
   const ix = index({ ...base, cells: big }, 'Europe/London')
   expect(ix.n).toBe(n)
   const r = { from: (ix.minHour - 1) * HOUR_MS, to: (ix.maxHour + 1) * HOUR_MS }

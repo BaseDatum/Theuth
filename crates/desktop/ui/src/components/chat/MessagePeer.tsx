@@ -13,8 +13,8 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { formatAt, fullAt } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import type { ContactNote } from '@/lib/injected'
-import type { PeerOrigin } from '@/rpc/bindings/PeerOrigin'
-import type { PeerRecord } from '@/rpc/bindings/PeerRecord'
+import type { PeerOrigin } from "@/rpc/bindings/method.agent.output"
+import type { PeerRecord } from "@/rpc/bindings/method.agent.output"
 import { useSessionField } from '@/store/sessions'
 import { useScopedDisclosure } from './disclosure'
 import { type Sender, type Track, firstLine, initials, isAddress, isOutside, resolveSender, senderColor, useDirectory } from './peer-identity'

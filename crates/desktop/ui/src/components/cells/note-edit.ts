@@ -2,9 +2,9 @@
 // 171 §4.2, §6.3, §7.1: what a note cell computes from its block text — React-free so vitest runs it in node.
 // Every edit is ONE `updateBlock` (one ProseMirror transaction, one Y.Doc transaction through y-prosemirror's text
 // diff, one undo step); nothing here writes run state into the document.
-import type { CellRef } from '@/rpc/bindings/CellRef'
-import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
-import type { CellSpec } from '@/rpc/bindings/CellSpec'
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
+import type { RunMode as CellRunMode } from "@/rpc/bindings/method.cells.output"
+import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
 import { CELL_LANGUAGES } from './CellFence'
 import { cellOf } from './grammar'
 

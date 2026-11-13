@@ -12,10 +12,10 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from '@/components/ui/input'
 import type { EngineProvider } from '@/lib/doc/provider'
 import { useApi } from '@/lib/rpc'
-import type { LinkCreated } from '@/rpc/bindings/LinkCreated'
-import type { LinkVia } from '@/rpc/bindings/LinkVia'
-import type { Members } from '@/rpc/bindings/Members'
-import type { Role } from '@/rpc/bindings/Role'
+import type { LinkCreated } from "@/rpc/bindings/method.link.output"
+import type { LinkVia } from "@/rpc/bindings/method.link.output"
+import type { Members } from "@/rpc/bindings/method.agent.output"
+import type { Role } from "@/rpc/bindings/method.agent.output"
 
 const DAY_MS = 86_400_000
 /** Expiry choices (59 §8.2): days, or never. */

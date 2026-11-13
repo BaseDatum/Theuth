@@ -2,11 +2,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement as h, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import type { Api } from '@/rpc/api'
-import type { CellRef } from '@/rpc/bindings/CellRef'
-import type { CellRun } from '@/rpc/bindings/CellRun'
-import type { CellSpec } from '@/rpc/bindings/CellSpec'
-import type { CellState } from '@/rpc/bindings/CellState'
+import type { Api } from '@/rpc/bindings/client'
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
+import type { CellRun } from "@/rpc/bindings/method.cells.output"
+import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
+import type { CellState } from "@/rpc/bindings/method.cells.output"
 import { useConnection } from '@/store/connection'
 import { active } from '@/store/engine-scope'
 import { cellOf } from './grammar'

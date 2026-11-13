@@ -67,8 +67,6 @@ hex = { workspace = true }
 base64 = { workspace = true }
 parking_lot = { workspace = true }
 chrono = { workspace = true }
-ts-rs = { workspace = true, optional = true }
-surface = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
@@ -76,9 +74,6 @@ tracing-subscriber = { workspace = true }
 tempfile = "3"
 serde_yaml = { workspace = true }
 agent = { workspace = true, features = ["test-support"] }
-
-[features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "document/ts", "knowledge/ts", "codeindex/ts", "search/ts", "agent/ts", "signal/ts", "slack/ts", "telegram/ts", "acp/ts", "browser/ts", "computer/ts", "surface/ts", "link/ts", "nodes/ts", "a2a/ts", "schedule/ts", "mesh/ts", "sessionsync/ts", "roster/ts", "tasks/ts", "sandbox/ts", "artifact/ts", "app/ts", "secrets/ts", "web/ts", "search-providers/ts", "update/ts", "voice/ts", "talk/ts", "meeting/ts", "mcp-server/ts", "decision/ts", "double/ts", "dreaming/ts", "autoresearch/ts", "cells/ts"]
 
 [lints]
 workspace = true

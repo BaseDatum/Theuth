@@ -24,7 +24,7 @@ import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { notAdvisor, notStudy, rootOf, subtrees } from '@/lib/session-tree'
 import { nextSelection, type SelectMode } from '@/lib/selection'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { AgentTree } from './AgentTree'
 import { ProjectIcon, ProjectStyleDialog } from './ProjectStyle'
 import { SessionItem } from './SessionItem'

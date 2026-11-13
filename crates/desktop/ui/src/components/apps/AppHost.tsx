@@ -26,7 +26,8 @@ import { privateOwner } from "@/lib/private";
 import { useApi } from "@/lib/rpc";
 import { cn } from "@/lib/utils";
 import { RpcError } from "@/rpc/client";
-import type { AppBinding, AppCallChanged, AppDoc } from "@/rpc/extra";
+import type { AppBinding, AppDoc } from "@/rpc/bindings/method.app.output"
+import type { AppCallChanged } from "@/rpc/bindings/event.app_2ecalls.output"
 import { useConnection } from "@/store/connection";
 import { on, useSessions } from "@/store/sessions";
 import type { AppViewProps } from "./AppView";

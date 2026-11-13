@@ -4,9 +4,9 @@ import { type FormEvent, useEffect, useState } from 'react'
 import { type Action, Empty, Row, errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import type { SignalEvent } from '@/rpc/bindings/SignalEvent'
-import type { SlackEvent } from '@/rpc/bindings/SlackEvent'
-import type { TelegramEvent } from '@/rpc/bindings/TelegramEvent'
+import type { SignalEvent } from "@/rpc/bindings/method.signal.output"
+import type { SlackEvent } from "@/rpc/bindings/method.slack.output"
+import type { TelegramEvent } from "@/rpc/bindings/method.telegram.output"
 import { on } from '@/store/sessions'
 
 // 188: what Channels › Signal, Slack and Telegram share; each tab is its own component (`Signal.tsx`, `Slack.tsx`, `Telegram.tsx`).

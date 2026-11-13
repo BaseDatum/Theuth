@@ -2,8 +2,8 @@ import { DoubleChip, preselect, useDoubleCard } from '@/components/chat/DoubleCh
 import { useAttentionActions } from '@/components/hud/queries'
 import { Button } from '@/components/ui/button'
 import { describe } from '@/lib/describe'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
-import type { Risk } from '@/rpc/bindings/Risk'
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
+import type { Risk } from "@/rpc/bindings/method.agent.output"
 import { useApprovals } from '@/store/approvals'
 import { Body, Footer, SectionTitle, useResolved } from './shared'
 import { ActionBar, ContextLine, Source } from './source'

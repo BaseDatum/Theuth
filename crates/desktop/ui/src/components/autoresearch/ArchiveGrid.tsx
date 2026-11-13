@@ -1,5 +1,5 @@
-import type { CellRow } from '@/rpc/bindings/CellRow'
-import type { KindView } from '@/rpc/bindings/KindView'
+import type { CellRow } from "@/rpc/bindings/method.autoresearch.output"
+import type { KindView } from "@/rpc/bindings/method.autoresearch.output"
 
 type ArchiveView = Extract<KindView, { kind: 'archive' }>
 

@@ -32,7 +32,6 @@ use tools::{REGISTRY_ACTOR, RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, To
 /// One category's page, tagged with its category (49 §4.2). Groups appear in
 /// [`SearchCategory::ALL`] order, only for the selected categories.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "category", rename_all = "snake_case")]
 pub enum SearchGroup {
     /// Saved sessions (agent owner).
@@ -152,7 +151,6 @@ impl SearchGroup {
 
 /// Reply to `search`: one group per selected category, in fixed order.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SearchResponse {
     /// Selected categories only, in [`SearchCategory::ALL`] order.
     pub groups: Vec<SearchGroup>,

@@ -1,7 +1,7 @@
 import { createElement as h } from 'react'
 import { expect, test } from 'vitest'
-import type { CellLatest } from '@/rpc/bindings/CellLatest'
-import type { CellSpec } from '@/rpc/bindings/CellSpec'
+import type { CellLatest } from "@/rpc/bindings/method.cells.output"
+import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
 import { CellDefaults, defaultsLine } from './CellDefaults'
 import { cellOf, parseDefaults } from './grammar'
 import { GuestCell, latestLine } from './GuestCell'
@@ -22,7 +22,7 @@ const row: CellLatest = {
   expect: 'expect ✓',
   summary: '~3 update · 0 replace · 0 delete',
   code_sha: 'a',
-  ended_ms: BigInt(new Date(2026, 10, 3, 14, 31).getTime()),
+  ended_ms: new Date(2026, 10, 3, 14, 31).getTime(),
   text: 'Resources:\n    ~ 3 to update\n    4 unchanged\n',
   engine: '',
 }

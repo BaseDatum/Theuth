@@ -4,9 +4,9 @@ import { act, createElement, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
-import type { AdvisorDefaults } from '@/rpc/bindings/AdvisorDefaults'
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
-import type { SyncBacklog } from '@/rpc/bindings/SyncBacklog'
+import type { AdvisorDefaults } from "@/rpc/bindings/method.agent.output"
+import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
+import type { SyncBacklog } from "@/rpc/bindings/method.agent.output"
 import type * as Conn from '@/store/connection'
 import { useConnection } from '@/store/connection'
 import type { StoreApi, UseBoundStore } from 'zustand'

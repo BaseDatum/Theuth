@@ -1,14 +1,15 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
-import type { ObservedMeta } from '@/rpc/bindings/ObservedMeta'
+import type { ObservedMeta } from "@/rpc/bindings/method.agent.output"
 import { ObservedBarView, WatchDot, observedNote } from './ObservedBar'
 
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ children, params }: { children: unknown; params: { session: string } }) => createElement('a', { href: `/c/${params.session}` }, children as never),
 }))
 
-const meta = (over: Partial<ObservedMeta> = {}): ObservedMeta => ({
+const meta = (over: Partial<ObservedMeta> = {}): ObservedMeta => (receiveComponent("method.agent.output.ObservedMeta", {
   source: 'omp_task',
   external: 'ReadA',
   state: 'running',
@@ -16,7 +17,7 @@ const meta = (over: Partial<ObservedMeta> = {}): ObservedMeta => ({
   cost_rule: 'counted',
   detail: null,
   ...over,
-})
+}))
 const bar = (observed: ObservedMeta, harness = 'omp') => renderToStaticMarkup(createElement(ObservedBarView, { observed, harness, parent: 'harness-sess', onStop: () => {} }))
 
 test('Stop subagent is enabled only when the harness advertises per-child cancel; Open parent links to the parent', () => {

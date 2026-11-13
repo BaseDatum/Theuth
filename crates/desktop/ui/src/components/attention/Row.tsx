@@ -6,8 +6,8 @@ import { age } from '@/components/tasks/helpers'
 import { itemHome } from '@/components/tasks/home'
 import { useMesh, useTasks } from '@/components/tasks/queries'
 import { cn } from '@/lib/utils'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 
 /** 132 D1/D4: `urgent` and `high` show a chip after the kind chip (gold-ochre · the warning hue); medium/low show nothing. */
 export function PriorityChip({ priority }: { priority: AttentionItem['priority'] | undefined }) {

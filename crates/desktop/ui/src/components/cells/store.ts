@@ -4,16 +4,16 @@
 import { createStore, useStore } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 import { notifyIfHidden } from '@/lib/notify'
-import type { Api } from '@/rpc/api'
+import type { Api } from '@/rpc/bindings/client'
 import { RpcError } from '@/rpc/client'
-import type { CellLatest } from '@/rpc/bindings/CellLatest'
-import type { CellRef } from '@/rpc/bindings/CellRef'
-import type { CellRun } from '@/rpc/bindings/CellRun'
-import type { CellScope } from '@/rpc/bindings/CellScope'
-import type { CellSpec } from '@/rpc/bindings/CellSpec'
-import type { CellState } from '@/rpc/bindings/CellState'
-import type { KernelState } from '@/rpc/bindings/KernelState'
-import type { PassEnd } from '@/rpc/bindings/PassEnd'
+import type { CellLatest } from "@/rpc/bindings/method.cells.output"
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
+import type { CellRun } from "@/rpc/bindings/method.cells.output"
+import type { Scope as CellScope } from "@/rpc/bindings/method.cells.output"
+import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
+import type { CellState } from "@/rpc/bindings/method.cells.output"
+import type { KernelState } from "@/rpc/bindings/method.cells.output"
+import type { PassEnd } from "@/rpc/bindings/method.cells.output"
 import { on } from '@/store/sessions'
 
 /** `cells.notify_after_secs` (§7.7, §15.4): a longer run that ends unfocused posts a system notification. */

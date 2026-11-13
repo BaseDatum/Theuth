@@ -2,7 +2,7 @@
 // re-render or remount keeps it: the user's unsent edit (F4), the run picked from history, and when Stop was pressed
 // (Kill arms 5 s later). Not persisted.
 import { createStore, useStore } from 'zustand'
-import type { CellRun } from '@/rpc/bindings/CellRun'
+import type { CellRun } from "@/rpc/bindings/method.cells.output"
 
 type Memory = { edits: Record<string, string>; picked: Record<string, CellRun>; stopped: Record<string, number> }
 export const memory = createStore<Memory>(() => ({ edits: {}, picked: {}, stopped: {} }))

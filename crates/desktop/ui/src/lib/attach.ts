@@ -4,14 +4,14 @@
 // table (§8: `title`/`subtitle` over the record a picker row was built from), so the chip, the row, the history
 // chip and the line the model reads all carry the same words.
 
-import type { DocSummary } from '@/rpc/bindings/DocSummary'
-import type { BlockHit } from '@/rpc/bindings/BlockHit'
-import type { HistorySearchHit } from '@/rpc/bindings/HistorySearchHit'
-import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
-import type { Meta } from '@/rpc/bindings/Meta'
-import type { SearchHit } from '@/rpc/bindings/SearchHit'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { Artifact } from '@/rpc/extra'
+import type { DocSummary } from "@/rpc/bindings/method.agent.output"
+import type { BlockHit } from "@/rpc/bindings/method.document.output"
+import type { HistorySearchHit } from "@/rpc/bindings/method.rpc_2dcompose.output"
+import type { MeetingSummary } from "@/rpc/bindings/method.meeting.output"
+import type { Meta } from "@/rpc/bindings/method.knowledge.output"
+import type { SearchHit } from "@/rpc/bindings/method.rpc_2dcompose.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { Artifact } from "@/rpc/bindings/method.artifact.output"
 
 export type Kind = 'note' | 'knowledge' | 'artifact' | 'session' | 'meeting' | 'notebook' | 'source'
 

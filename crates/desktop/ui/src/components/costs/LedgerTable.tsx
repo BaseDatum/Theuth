@@ -8,7 +8,7 @@ import { BASES, BASIS_COLOR, BASIS_LABEL, type Filters, type Index, type Range, 
 import { compact, usd } from '@/lib/costs/format'
 import { useCostCalls } from '@/lib/costs/queries'
 import { cn } from '@/lib/utils'
-import type { CostBasis } from '@/rpc/bindings/CostBasis'
+import type { CostBasis } from "@/rpc/bindings/method.agent.output"
 import { Panel, Swatch, Tag } from './ui'
 
 const ROW = 33

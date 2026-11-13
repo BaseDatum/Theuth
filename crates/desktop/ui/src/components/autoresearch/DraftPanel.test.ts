@@ -4,9 +4,9 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Router from '@tanstack/react-router'
 import type * as Rpc from '@/lib/rpc'
-import type { DraftField } from '@/rpc/bindings/DraftField'
-import type { DraftView } from '@/rpc/bindings/DraftView'
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import type { DraftField } from "@/rpc/bindings/method.autoresearch.output"
+import type { DraftView } from "@/rpc/bindings/method.autoresearch.output"
+import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { DraftPanel, LeafModel, footerText } from './DraftPanel'
 import { studies } from './fixtures'
 import { KEY } from './queries'

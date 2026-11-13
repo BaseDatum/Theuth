@@ -12,7 +12,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
-import type { Task } from '@/rpc/bindings/Task'
+import type { Task } from "@/rpc/bindings/method.roster.output"
 import { homeTargets } from './home'
 import { useEngineAgents, useFixedSessions, useMesh, useMoveHome } from './queries'
 

@@ -3,12 +3,12 @@ import { useExports, useContacts } from '@/lib/contacts'
 import { engineLabel } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useMesh } from '@/components/tasks/queries'
-import type { A2aPeerStatus } from '@/rpc/bindings/A2aPeerStatus'
-import type { Contact } from '@/rpc/bindings/Contact'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { A2APeerStatus as A2aPeerStatus } from "@/rpc/bindings/method.a2a.output"
+import type { Contact } from "@/rpc/bindings/method.a2a.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { ContactNote } from '@/lib/injected'
-import type { AgentInfo } from '@/rpc/extra'
+import type { AgentInfo } from '@/store/ui-events'
 import { useSessionField } from '@/store/sessions'
 
 /** Who a peer card or a send names: words for the header, never a raw uuid when the UI knows better. */

@@ -3,7 +3,7 @@ import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { Count, Row, Section, refreshInfo, useAction } from '@/components/settings/shared'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useApi } from '@/lib/rpc'
-import type { SyncBacklog } from '@/rpc/bindings/SyncBacklog'
+import type { SyncBacklog } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
 
 /** `advisor.max_notes_per_update` bounds (125 §6.5). */

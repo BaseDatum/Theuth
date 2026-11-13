@@ -1,3 +1,4 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import './test-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Children, type ComponentType, type ReactNode, act, createElement, isValidElement } from 'react'
@@ -8,13 +9,14 @@ import type * as Rpc from '@/lib/rpc'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
 import { dispatch } from '@/store/sessions'
 import { useConnection } from '@/store/connection'
-import type { EngineStats } from '@/rpc/bindings/EngineStats'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
-import type { NearbyEngine } from '@/rpc/bindings/NearbyEngine'
-import type { PairCeremony } from '@/rpc/bindings/PairCeremony'
-import type { RotationState } from '@/rpc/bindings/RotationState'
-import type { UnpairPreview } from '@/rpc/bindings/UnpairPreview'
-import type { ConfigFlag, ConfigFlagKey } from '@/rpc/api'
+import type { EngineStats } from "@/rpc/bindings/method.nodes.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
+import type { NearbyEngine } from "@/rpc/bindings/method.nodes.output"
+import type { PairCeremony } from "@/rpc/bindings/method.a2a.output"
+import type { RotationState } from "@/rpc/bindings/method.nodes.output"
+import type { UnpairPreview } from "@/rpc/bindings/method.link.output"
+import type { ConfigFlag } from "@/rpc/bindings/method.rpc_2dcompose.output"
+import type { ConfigFlagKey } from '@/rpc/bindings/method.rpc_2dcompose.input'
 import { MachineTab, MachinesTab, pathChip, relayChip } from './Network'
 import { PairBody, type PairView, pairView, usePairFlow } from './PairDialog'
 import { RotationProgress, UnpairBody, UnpairDialog, useRotation } from './UnpairDialog'
@@ -402,7 +404,7 @@ test('183 R5 unpair without the list: it asks first, says the list could not be 
   api.mesh_unpair_preview.mockImplementation(async () => PREVIEW)
 })
 
-const ROT: RotationState = {
+const ROT: RotationState = receiveComponent("method.nodes.output.RotationState", {
   key: { id: 'k2', epoch: 1, initiator: 'mac', members: [], minted_ms: NOW },
   removed: ['xeus'],
   phase: 'sweeping',
@@ -419,7 +421,7 @@ const ROT: RotationState = {
   error: null,
   device_reset_pending: false,
   removed_names: [],
-}
+})
 const progress = (state: RotationState | null, error: string | null = null, onRetry = vi.fn()) =>
   renderToStaticMarkup(createElement(RotationProgress, { state, nameOf: (id: string) => ({ cloud: 'cloud-1', studio: 'studio', old: 'pi' })[id] ?? id.slice(0, 8), error, retrying: false, onRetry, now: NOW }))
 

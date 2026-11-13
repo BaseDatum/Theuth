@@ -7,7 +7,7 @@
 import { Mic, Zap } from 'lucide-react'
 import { type MeetingLine, batchStamps, oracleRow } from '@/lib/meeting-line'
 import { cn } from '@/lib/utils'
-import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
+import type { OracleDecision } from "@/rpc/bindings/event.meeting_2eevents.output"
 import { useMeeting } from '@/store/meeting'
 import { Details } from './disclosure'
 

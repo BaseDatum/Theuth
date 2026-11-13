@@ -36,12 +36,12 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { LOCAL, useEngines } from '@/link/engines'
-import type { Gate } from '@/rpc/bindings/Gate'
-import type { McpHomeAction } from '@/rpc/bindings/McpHomeAction'
-import type { McpServer } from '@/rpc/bindings/McpServer'
-import type { McpToolInfo } from '@/rpc/bindings/McpToolInfo'
-import type { Risk } from '@/rpc/bindings/Risk'
-import type { SyncResult } from '@/rpc/bindings/SyncResult'
+import type { Gate } from "@/rpc/bindings/method.mcp_2dserver.output"
+import type { McpHomeAction } from '@/rpc/bindings/method.mcp_2dserver.input'
+import type { McpServer } from "@/rpc/bindings/method.mcp_2dserver.output"
+import type { McpToolInfo } from "@/rpc/bindings/method.mcp_2dserver.output"
+import type { Risk } from "@/rpc/bindings/method.agent.output"
+import type { SyncResult } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
 
 /** `tui/model.rs::Switch`: on, hidden in this session, or `off` in `mcp/config.yaml`. */

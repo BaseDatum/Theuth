@@ -4,7 +4,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useAction } from '@/components/settings/shared'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { MeetingSettings } from '@/rpc/bindings/MeetingSettings'
+import type { MeetingSettings } from "@/rpc/bindings/method.meeting.output"
 
 export const SETTINGS_KEY = ['meeting-settings'] as const
 

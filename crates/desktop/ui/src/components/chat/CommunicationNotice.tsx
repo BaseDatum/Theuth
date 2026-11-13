@@ -3,8 +3,8 @@ import { useNavigate } from '@tanstack/react-router'
 import { Share2 } from 'lucide-react'
 import { useContacts } from '@/lib/contacts'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { A2aExportStatus } from '@/rpc/bindings/A2aExportStatus'
-import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
+import type { A2AExportStatus as A2aExportStatus } from "@/rpc/bindings/method.a2a.output"
+import type { CommunicationState } from "@/rpc/bindings/method.agent.output"
 import { useMessagingSheet } from './messaging-sheet'
 
 const NONE: A2aExportStatus[] = []

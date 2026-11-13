@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { create } from 'zustand'
 import { container, isDesktop } from '@/lib/platform'
 import type { LinkState } from '@/lib/link-status'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
 import { idbGet, idbPut } from './idb'
 
 /**

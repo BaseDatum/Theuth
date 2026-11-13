@@ -3,13 +3,13 @@ import { toast } from 'sonner'
 import { useProjects } from '@/components/chat/ProjectPicker'
 import { errorText } from '@/components/settings/shared'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { EngineAgent } from '@/rpc/bindings/EngineAgent'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
-import type { Task } from '@/rpc/bindings/Task'
-import type { TaskEvent } from '@/rpc/bindings/TaskEvent'
-import type { TaskFilter } from '@/rpc/bindings/TaskFilter'
-import type { TaskState } from '@/rpc/bindings/TaskState'
+import type { EngineAgent } from "@/rpc/bindings/method.roster.output"
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
+import type { Task } from "@/rpc/bindings/method.roster.output"
+import type { TaskEvent } from "@/rpc/bindings/method.roster.output"
+import type { TaskFilter } from '@/rpc/bindings/method.roster.input'
+import type { TaskState } from "@/rpc/bindings/method.roster.output"
 import { ownerText } from './helpers'
 import { AGENTS, EVENTS, MESH, TASKS, mockOn } from './mock'
 
@@ -27,10 +27,10 @@ export const keys = {
 export const EMPTY_FILTER: TaskFilter = { owner: null, state: null, engine: null, project: null }
 
 const matches = (t: Task, f: TaskFilter) =>
-  (f.owner === null || ownerText(t.owner) === f.owner) &&
-  (f.state === null || f.state.includes(t.state)) &&
-  (f.engine === null || t.where === f.engine) &&
-  (f.project === null || t.project === f.project)
+  (f.owner == null || ownerText(t.owner) === f.owner) &&
+  (f.state == null || f.state.includes(t.state)) &&
+  (f.engine == null || t.where === f.engine) &&
+  (f.project == null || t.project === f.project)
 
 export function useTasks(filter: TaskFilter = EMPTY_FILTER) {
   const api = useApi()

@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest'
 import { CONSOLE, SIZE_CHANGED } from '@/lib/page-bootstrap'
 import { LOAD_MS, MEASURE_MS, SETTLE_MS, answerOf, begin, dueAt, onLoad, onPost } from './page-preview'
-import type { PagePreviewAnswer } from '@/rpc/bindings/PagePreviewAnswer'
+import type { PagePreviewAnswer } from '@/rpc/bindings/method.artifact.input'
 
 const size = (height: unknown) => ({ jsonrpc: '2.0', method: SIZE_CHANGED, params: { height } })
 const line = (level: string, text: string) => ({ jsonrpc: '2.0', method: CONSOLE, params: { level, text } })

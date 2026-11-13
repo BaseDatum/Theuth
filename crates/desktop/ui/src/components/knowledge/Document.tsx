@@ -38,9 +38,9 @@ import type { EngineProvider } from '@/lib/doc/provider'
 import { classify, resolveLink } from '@/lib/resolveLink'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { isSearchDestination, useSearchOrigin, useSearchState } from '@/lib/search'
-import type { Concept } from '@/rpc/bindings/Concept'
-import type { HistorySearchHit } from '@/rpc/bindings/HistorySearchHit'
-import type { MatchRange } from '@/rpc/bindings/MatchRange'
+import type { Concept } from "@/rpc/bindings/method.knowledge.output"
+import type { HistorySearchHit } from "@/rpc/bindings/method.rpc_2dcompose.output"
+import type { MatchRange } from "@/rpc/bindings/method.artifact.output"
 import { cn } from 'cn'
 
 const route = getRouteApi('/knowledge/$')

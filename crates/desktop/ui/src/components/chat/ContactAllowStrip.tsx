@@ -3,7 +3,7 @@ import { FirstButtons, waitingCount, waitingLine } from '@/components/settings/C
 import { useFirstWaiting } from '@/lib/contacts'
 import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
-import type { FirstWaiting } from '@/rpc/bindings/FirstWaiting'
+import type { FirstWaiting } from "@/rpc/bindings/method.a2a.output"
 
 const who = (w: FirstWaiting) => `${w.contact}${w.machine ? ` (${w.machine})` : ''}`
 

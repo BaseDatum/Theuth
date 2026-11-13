@@ -1,3 +1,4 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -7,7 +8,7 @@ import type * as Router from '@tanstack/react-router'
 import type * as Hotkeys from '@/lib/hotkeys'
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type * as Sidebar from '@/components/ui/sidebar'
 import { AttentionList, Hud } from './Hud'
 
@@ -96,7 +97,7 @@ test("R6: the composer talks to theuth's desk — resolved by `desk_open` on the
   expect(rpc.desk_open).toHaveBeenCalledWith('theuth')
   // Known desk (a `desk: 'theuth'` row in the sessions list): bound without the RPC; a successful send navigates to it.
   const qc = client()
-  const row: SessionSummary = { id: 'desk-1', created_at: '2026-10-07T09:00:00Z', updated_at: '2026-10-07T12:00:00Z', title: "theuth's desk", tags: [], model: 'm', parent: null, name: null, effort: null, agent: 'theuth', cwd: null, desk: 'theuth', pinned: false, archived: false, project: null, notebook: null, retention: 'durable', running: false, owner: 'here', epoch: 1, here: true, memory: 'epochs' }
+  const row: SessionSummary = receiveComponent("method.agent.output.SessionSummary", { id: 'desk-1', created_at: '2026-10-07T09:00:00Z', updated_at: '2026-10-07T12:00:00Z', title: "theuth's desk", tags: [], model: 'm', parent: null, name: null, effort: null, agent: 'theuth', cwd: null, desk: 'theuth', pinned: false, archived: false, project: null, notebook: null, retention: 'durable', running: false, owner: 'here', epoch: 1, here: true, memory: 'epochs' })
   qc.setQueryData(queryKeys.sessions, [row])
   rpc.desk_open.mockClear()
   expect(paint(qc)).toContain('data-composer="desk-1"')

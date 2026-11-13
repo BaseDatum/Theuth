@@ -1,15 +1,15 @@
 import { age, shortId as shortTaskId } from '@/components/tasks/helpers'
-import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
-import type { ContextBreakdown } from '@/rpc/bindings/ContextBreakdown'
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
-import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { SpendOwnerKind } from '@/rpc/bindings/SpendOwnerKind'
-import type { SpendReport } from '@/rpc/bindings/SpendReport'
-import type { Task } from '@/rpc/bindings/Task'
-import type { TaskState } from '@/rpc/bindings/TaskState'
+import type { ActivityEntry } from "@/rpc/bindings/method.roster.output"
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
+import type { ContextBreakdown } from "@/rpc/bindings/method.agent.output"
+import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
+import type { ScheduleInfo } from "@/rpc/bindings/method.schedule.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { SpendOwnerKind } from "@/rpc/bindings/method.agent.output"
+import type { SpendReport } from "@/rpc/bindings/method.agent.output"
+import type { Task } from "@/rpc/bindings/method.roster.output"
+import type { TaskState } from "@/rpc/bindings/method.roster.output"
 import { type Spend, spend } from '../model'
 
 /**

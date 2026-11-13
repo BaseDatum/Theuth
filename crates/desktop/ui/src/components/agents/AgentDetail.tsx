@@ -27,8 +27,8 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { byRank, rankSummary, rootOf } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
-import type { AgentFile } from '@/rpc/bindings/AgentFile'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
+import type { AgentFile } from "@/rpc/bindings/method.roster.output"
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
 import { CharterDoc } from './CharterDoc'
 import { CharterEditor } from './CharterEditor'
 import { AccessFields, Field, RuntimeFields } from './RuntimeAccessFields'

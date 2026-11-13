@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
 import { moveBlocked, moveTargets, settingsRows } from './SessionMenu'
 
 const now = Date.UTC(2026, 10, 7, 17, 20)
@@ -26,10 +26,10 @@ test('181 D1: Move to ▸ lists every paired engine but this one; offline is dis
 test('181 fix round: a paused agent’s tree, a desk and a harness session say why they cannot move', () => {
   const rows = [
     { id: 'desk', parent: null, agent: null, desk: 'ops' },
-    { id: 'child', parent: 'desk', agent: null },
-    { id: 'grand', parent: 'child', agent: null },
-    { id: 'acp', parent: null, agent: 'omp' },
-    { id: 'chat', parent: null, agent: null },
+    { id: 'child', parent: 'desk', agent: null, desk: null },
+    { id: 'grand', parent: 'child', agent: null, desk: null },
+    { id: 'acp', parent: null, agent: 'omp', desk: null },
+    { id: 'chat', parent: null, agent: null, desk: null },
   ]
   const paused = [{ status: 'paused' as const, desk: 'desk', file: { name: 'ops' } }] as never[]
   const row = (id: string) => rows.find((r) => r.id === id)

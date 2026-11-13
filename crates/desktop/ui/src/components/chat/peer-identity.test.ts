@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { AgentInfo } from '@/rpc/extra'
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { AgentInfo } from '@/store/ui-events'
 import { type Directory, initials, parseReceipts, resolveSender, sameText, senderColor, trackOf } from './peer-identity'
 
 const KID = '01a1c28b-8e10-7757-afd9-db253e4f5e73'

@@ -6,8 +6,8 @@ import { useQuery } from '@tanstack/react-query'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { harnessName, observedLabel, sourceTag, watchCost } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
-import type { ObservedMeta } from '@/rpc/bindings/ObservedMeta'
-import type { ObservedState } from '@/rpc/bindings/ObservedState'
+import type { ObservedMeta } from "@/rpc/bindings/method.agent.output"
+import type { ObservedState } from "@/rpc/bindings/method.agent.output"
 import { useSessionField, useSessions } from '@/store/sessions'
 
 /** 141 mock: a solid dot while live, a ring while resting, a dashed ring once contact is lost; `completed` is a check. */

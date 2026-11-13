@@ -22,8 +22,8 @@ import {
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
-import type { Notebook } from '@/rpc/bindings/Notebook'
-import type { DeletePreview } from '@/rpc/bindings/DeletePreview'
+import type { Notebook } from "@/rpc/bindings/method.agent.output"
+import type { DeletePreview } from "@/rpc/bindings/method.document.output"
 import { useAskList } from '@/lib/ask-rpc'
 import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
 import { canPopout } from '@/lib/popout'

@@ -1,7 +1,7 @@
 // Switcher tree order, then auto-pair (32 §8.2) against a fake parent `Api` with
 // the pairing handshake replaced by a function that records the row `pair()` would add.
 import { beforeEach, expect, test, vi } from 'vitest'
-import type { Node } from '@/rpc/bindings/Node'
+import type { Node } from "@/rpc/bindings/method.nodes.output"
 import { RpcError } from '@/rpc/client'
 import { type Engine, engineTree, useEngines } from './engines'
 import { type NodesApi, type PairFn, adopt, autoPair, onNodeEvent } from './nodes'
@@ -26,8 +26,8 @@ const node = (id: string, online: boolean): Node => ({
   relay: 'wss://relay.test:8787',
   platform: 'linux',
   version: '0.4.1',
-  paired_at_ms: 1n,
-  last_seen_ms: 0n,
+  paired_at_ms: 1,
+  last_seen_ms: 0,
   online,
   revoked: false,
   children: 0,
@@ -35,7 +35,7 @@ const node = (id: string, online: boolean): Node => ({
 
 /** `invite_node` hands out `k:<id>`; `pairFn` turns that into the row `pair()` would add. */
 function fakeApi(nodes: Node[] | RpcError) {
-  const invite = vi.fn((id: string) => Promise.resolve({ key: `k:${id}`, expires_at_ms: 0n }))
+  const invite = vi.fn((id: string) => Promise.resolve({ key: `k:${id}`, expires_at_ms: 0 }))
   const api: NodesApi = {
     list_nodes: () => (nodes instanceof RpcError ? Promise.reject(nodes) : Promise.resolve(nodes)),
     invite_node: invite,

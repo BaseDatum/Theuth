@@ -4,10 +4,10 @@
 // CELLAFTER (§7.1, §7.6): a ► on a danger cell asks first (`LineConfirm`, unless "Don't ask again" for that cell); on a
 // non-danger cell whose `after` gate is not armed the first ► only warns by its line (`pastGate`).
 import { useEffect, useRef, useState } from 'react'
-import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
-import type { CellRef } from '@/rpc/bindings/CellRef'
-import type { CellRun } from '@/rpc/bindings/CellRun'
-import type { CellSpec } from '@/rpc/bindings/CellSpec'
+import type { RunMode as CellRunMode } from "@/rpc/bindings/method.cells.output"
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
+import type { CellRun } from "@/rpc/bindings/method.cells.output"
+import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
 import { announce } from './Cell'
 import { ended, refKey, scopeKey, scopeOf } from './store'
 

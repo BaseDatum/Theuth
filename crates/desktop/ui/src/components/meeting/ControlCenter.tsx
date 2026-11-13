@@ -35,11 +35,11 @@ import { PX_STEP, RATIO_MAX, RATIO_MIN, RATIO_STEP } from '@/lib/resize-drag'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { LiveSession } from '@/routes/c.$session'
-import type { CaptureFault } from '@/rpc/bindings/CaptureFault'
-import type { Degradation } from '@/rpc/bindings/Degradation'
-import type { Gap } from '@/rpc/bindings/Gap'
-import type { MeetingState } from '@/rpc/bindings/MeetingState'
-import type { PostStage } from '@/rpc/bindings/PostStage'
+import type { CaptureFault } from "@/rpc/bindings/method.meeting.output"
+import type { Degradation } from "@/rpc/bindings/method.meeting.output"
+import type { Gap } from "@/rpc/bindings/method.meeting.output"
+import type { MeetingState } from "@/rpc/bindings/method.meeting.output"
+import type { PostStage } from "@/rpc/bindings/method.meeting.output"
 import { type Line, captureWarning, current, live, oracleSummary, toLine, useMeeting, who } from '@/store/meeting'
 import { on } from '@/store/sessions'
 

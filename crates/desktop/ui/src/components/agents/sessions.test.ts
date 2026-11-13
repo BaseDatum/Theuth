@@ -1,8 +1,9 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { expect, test } from 'vitest'
-import type { AgentInfo } from '@/rpc/extra'
+import type { AgentInfo } from '@/store/ui-events'
 import { LINGER_MS, NO_LINGERING, linger, liveRows } from './sessions'
 
-const row = (id: string, state: AgentInfo['state']['state'], started_at: string | null = null): AgentInfo => ({
+const row = (id: string, state: AgentInfo['state']['state'], started_at: string | null = null): AgentInfo => (receiveComponent("method.agent.output.AgentInfo", {
   id,
   name: id,
   parent: 'desk',
@@ -13,7 +14,7 @@ const row = (id: string, state: AgentInfo['state']['state'], started_at: string 
   started_at,
   finished_at: null,
   last: '',
-})
+}))
 const rows = (...list: AgentInfo[]): Record<string, AgentInfo> => Object.fromEntries(list.map((r) => [r.id, r]))
 
 test('liveRows keeps running/awaiting/approval rows in spawn order: started_at ascending, unknown last, name tiebreak', () => {

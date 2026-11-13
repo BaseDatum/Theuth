@@ -26,13 +26,13 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { SegmentPlayer, playError } from '@/lib/segment-audio'
 import { enrollBlock, enrolledToast, rowBlock, secondsText, selectClick, speechMs } from '@/lib/segment-select'
 import { cn } from '@/lib/utils'
-import type { EditOp } from '@/rpc/bindings/EditOp'
-import type { EnrollTarget } from '@/rpc/bindings/EnrollTarget'
-import type { Enrolled } from '@/rpc/bindings/Enrolled'
-import type { MeetingTranscript } from '@/rpc/bindings/MeetingTranscript'
-import type { Segment } from '@/rpc/bindings/Segment'
-import type { SpeakerLabel } from '@/rpc/bindings/SpeakerLabel'
-import type { SpeakerSuggestion } from '@/rpc/bindings/SpeakerSuggestion'
+import type { EditOp } from '@/rpc/bindings/method.meeting.input'
+import type { EnrollTarget } from '@/rpc/bindings/method.meeting.input'
+import type { Enrolled } from "@/rpc/bindings/method.meeting.output"
+import type { Transcript as MeetingTranscript } from "@/rpc/bindings/method.meeting.output"
+import type { Segment } from "@/rpc/bindings/method.meeting.output"
+import type { SpeakerLabel } from "@/rpc/bindings/method.meeting.output"
+import type { Suggestion as SpeakerSuggestion } from "@/rpc/bindings/method.meeting.output"
 import { EnrollDialog } from './EnrollDialog'
 import { SegmentMenu } from './SegmentMenu'
 

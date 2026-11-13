@@ -5,10 +5,10 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { DraftSummary } from '@/rpc/bindings/DraftSummary'
-import type { StopReason } from '@/rpc/bindings/StopReason'
-import type { StudyInfo } from '@/rpc/bindings/StudyInfo'
-import type { StudyState } from '@/rpc/bindings/StudyState'
+import type { DraftSummary } from "@/rpc/bindings/method.autoresearch.output"
+import type { StopReason } from "@/rpc/bindings/method.autoresearch.output"
+import type { StudyInfo } from "@/rpc/bindings/method.autoresearch.output"
+import type { StudyState } from "@/rpc/bindings/method.autoresearch.output"
 import { STATE_CLASS, delta, experimentsText, matches, sortStudies, stateLabel } from './model'
 import { useDiscardDraft, useDrafts, useStudies } from './queries'
 import { discardMessage } from './setup'

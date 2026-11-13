@@ -1,16 +1,17 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import '../settings/test-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
-import type { FirstWaiting } from '@/rpc/bindings/FirstWaiting'
+import type { FirstWaiting } from "@/rpc/bindings/method.a2a.output"
 import { toast } from 'sonner'
 import { useToolRuns } from '@/lib/tool-runs'
 import { ContactAllowStrip } from './ContactAllowStrip'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
-const W: FirstWaiting = { contact: 'sky', machine: "Sky's Mac", export: 'ops', session: 's1', since_ms: 1, waiting: 1, preview: 'ping from sky' }
+const W: FirstWaiting = receiveComponent("method.a2a.output.FirstWaiting", { contact: 'sky', machine: "Sky's Mac", export: 'ops', session: 's1', since_ms: 1, waiting: 1, preview: 'ping from sky' })
 const api = {
   contact_first_waiting: vi.fn(async (): Promise<FirstWaiting[]> => [W]),
   contact_first_answer: vi.fn(async (_c: string, _e: string, _a: string) => null),
@@ -99,7 +100,7 @@ test('an answered hold goes once the list is refetched (the engine stops listing
   expect(document.querySelector('[role=region]')).toBeNull()
 })
 
-const Q: FirstWaiting = { ...W, contact: 'kim', preview: 'is the build green?', queued: true, position: 1 }
+const Q: FirstWaiting = receiveComponent("method.a2a.output.FirstWaiting", { ...W, contact: 'kim', preview: 'is the build green?', queued: true, position: 1 })
 
 test('190: a queued row (a 186 engine in the mesh still sends them) never shows: alone it draws no strip', async () => {
   api.contact_first_waiting.mockImplementation(async () => [Q, { ...Q, export: 'docs', waiting: 2, position: 2 }])

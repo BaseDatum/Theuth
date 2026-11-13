@@ -8,7 +8,7 @@ import { Fragment, useState } from 'react'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { cn } from '@/lib/utils'
 import { modelsOfProvider, providersOf, rankModels, searchTerms } from '@/lib/model-search'
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 
 /** The provider row that lists `extra` ids (on-file values missing from the catalog). */
 export const OTHER = 'other'

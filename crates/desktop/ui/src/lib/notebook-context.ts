@@ -5,9 +5,9 @@
 // ~12.4k tokens · 1 omitted`, plus `2 changes go with your next message` once the block is in the chat) live here too,
 // shared by the chat column and the bulk rows.
 import { create } from 'zustand'
-import type { ContextEstimate } from '@/rpc/bindings/ContextEstimate'
-import type { ContextLevel } from '@/rpc/bindings/ContextLevel'
-import type { ItemKind } from '@/rpc/bindings/ItemKind'
+import type { ContextEstimate } from "@/rpc/bindings/method.agent.output"
+import type { ContextLevel } from "@/rpc/bindings/method.agent.output"
+import type { ItemKind } from "@/rpc/bindings/method.agent.output"
 
 /** The estimate's item, named structurally: the Rust `ContextItem` is exported under a TS name the closer decides. */
 export type EstimateItem = ContextEstimate['items'][number]

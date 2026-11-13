@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import type { ArchiveEntry } from '@/rpc/bindings/ArchiveEntry'
+import type { ArchiveEntry } from "@/rpc/bindings/method.artifact.output"
 import { build } from './ArchiveView'
 
 const e = (path: string, size = 0, is_dir = false): ArchiveEntry => ({ path, size, compressed: null, mtime: null, is_dir, mode: null })

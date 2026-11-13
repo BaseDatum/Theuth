@@ -1,5 +1,5 @@
-import type { CostBucket } from '@/rpc/bindings/CostBucket'
-import type { Money } from '@/rpc/bindings/Money'
+import type { CostBucket } from "@/rpc/bindings/method.agent.output"
+import type { Money } from "@/rpc/bindings/method.agent.output"
 
 const NANOS_PER_MILLI = 1_000_000n
 

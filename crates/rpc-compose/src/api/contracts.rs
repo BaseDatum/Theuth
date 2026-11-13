@@ -10,7 +10,6 @@ use wire::EventPolicy;
 /// Reply to `info`: what a client needs before its first session (25 §7);
 /// the in-process TUI reads the same things off the [`runtime::Runtime`] directly.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Info {
     /// Harness version (`CARGO_PKG_VERSION`).
     pub version: String,
@@ -76,7 +75,6 @@ pub struct Info {
 /// `*Resolved` drops it: after this item the client's pending set is exactly
 /// what the engine reports (31 §7.3).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
 pub struct PendingPrompts {
@@ -154,7 +152,6 @@ impl wire::WireEvent for StreamControl {
 /// access" (16 §5, amended 2026-11-11). Any other string fails to
 /// deserialize, an `INVALID_PARAMS` error listing these.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ConfigFlagKey {
     /// `decision.enabled` (57 §7.1): off, the decision actor escalates every ask.
     #[serde(rename = "decision.enabled")]
@@ -225,7 +222,6 @@ impl ConfigFlagKey {
 
 /// 188: a [`ConfigFlagKey`] as config.yaml holds it and as this engine runs it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ConfigFlag {
     /// Which flag.
     pub key: ConfigFlagKey,

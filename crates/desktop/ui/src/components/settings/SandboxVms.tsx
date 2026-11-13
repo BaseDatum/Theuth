@@ -22,9 +22,9 @@ import { Switch } from '@/components/ui/switch'
 import { canPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { Preflight } from '@/rpc/bindings/Preflight'
-import type { Api } from '@/rpc/api'
-import type { SandboxInfo } from '@/rpc/bindings/SandboxInfo'
+import type { Preflight } from "@/rpc/bindings/method.sandbox.output"
+import type { Api } from '@/rpc/bindings/client'
+import type { SandboxInfo } from "@/rpc/bindings/method.sandbox.output"
 import { type ProgressLine, canStart, fmtBytes, fmtMib, stateLabel } from '@/store/sandboxes'
 
 /**

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { type Mesh, inMesh, machineName } from '@/components/notes/machine'
 import { useMesh } from '@/components/tasks/queries'
 import type { EngineProvider } from '@/lib/doc/provider'
-import type { DocKind } from '@/rpc/bindings/DocKind'
+import type { DocKind } from "@/rpc/bindings/method.agent.output"
 import { cn } from '@/lib/utils'
 
 export type ServerView = { name: string; online: boolean; title: string; banner: { bold: string; rest: string } | null }

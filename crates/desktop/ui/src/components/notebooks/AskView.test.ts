@@ -2,7 +2,7 @@ import { type ReactNode, createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import { type AskState, EMPTY_ASK, applyAskEvent } from '@/lib/ask-rpc'
-import type { Notebook } from '@/rpc/bindings/Notebook'
+import type { Notebook } from "@/rpc/bindings/method.agent.output"
 import { AskStructure, hitsMarkdown, planSteps } from './AskView'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
@@ -23,7 +23,7 @@ vi.mock('@/components/notebooks/useNotebook', () => ({ useSources: () => ({ data
 vi.mock('@/components/notebooks/useNotebooks', () => ({ useNotebooks: () => ({ data: [] }) }))
 vi.mock('@/lib/rpc', () => ({ useApi: () => ({}) }))
 
-const nb = (id: string, title: string): Notebook => ({ doc: { id, title, kind: 'notebook', binding: 'notebook', created_ms: 1n, updated_ms: 1n, bytes: 0n }, project: null, archived_ms: null, sources: 0, notes: 0, chats: 0 })
+const nb = (id: string, title: string): Notebook => ({ doc: { id, title, kind: 'notebook', binding: 'notebook', created_ms: 1, updated_ms: 1, bytes: 0 }, project: null, archived_ms: null, sources: 0, notes: 0, chats: 0 })
 const NOTEBOOKS = [nb('a', 'DR failover'), nb('b', 'Onboarding')]
 
 const render = (state: AskState, extra: Partial<Parameters<typeof AskStructure>[0]> = {}) =>

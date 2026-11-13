@@ -4,9 +4,9 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
-import type { Detection } from '@/rpc/bindings/Detection'
-import type { EventRef } from '@/rpc/bindings/EventRef'
-import type { Manifest } from '@/rpc/bindings/Manifest'
+import type { Detection } from "@/rpc/bindings/method.meeting.output"
+import type { EventRef } from "@/rpc/bindings/method.meeting.output"
+import type { Manifest } from "@/rpc/bindings/method.meeting.output"
 import { ASK, EventSwitcher, type EventSwitcherProps } from './EventSwitcher'
 
 const api = { calendar_events: vi.fn(async () => []), meeting_get: vi.fn(), meeting_detection_set_event: vi.fn(), meeting_set_event: vi.fn() }

@@ -1,5 +1,6 @@
 /** 73 §4 — pure reducer for `SessionSlice.codemap`; called from `store/reduce.ts`. */
 import type { CodeToolRan, CodemapSlice } from './types'
+import { isCodeTool } from './types'
 
 export const MAX_ROOTS = 8
 export const MAX_TRAIL = 20
@@ -23,6 +24,7 @@ export function trailTarget(e: CodeToolRan): string | null {
 const bounded = <T,>(xs: T[], max: number) => (xs.length > max ? xs.slice(xs.length - max) : xs)
 
 export function codeToolRan(c: CodemapSlice, e: CodeToolRan, at = Date.now()): CodemapSlice {
+  if (!isCodeTool(e.tool)) return c
   const known = c.roots.filter((r) => r !== '?')
   const roots = known.includes(e.root) ? known : bounded([...known, e.root], MAX_ROOTS)
   return {

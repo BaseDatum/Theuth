@@ -1,5 +1,5 @@
 import { expect, test, vi } from 'vitest'
-import type { PassEnd } from '@/rpc/bindings/PassEnd'
+import type { PassEnd } from "@/rpc/bindings/method.cells.output"
 import { RpcError } from '@/rpc/client'
 import { cells, duration, exitText, lastPass, mintId, press, refKey, register, registeredCells, scopeKey } from './store'
 import { dispatch } from '@/store/sessions'

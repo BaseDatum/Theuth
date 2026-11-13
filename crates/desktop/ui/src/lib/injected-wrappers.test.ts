@@ -104,7 +104,7 @@ test('183: every wrapper a peer exchange\'s row is written with unwraps on its p
   const peer = { id: 'm1', from: 'contact:studio:bob', reply_to: null, scope: null, contact_mode: null }
   for (const [name, text] of Object.entries({ ...PEER_ROWS, ...HISTORY_ROWS })) {
     if (text === null) continue
-    const cards = fromHistory({ role: 'user', text, turn: 1, peer })
+    const cards = fromHistory({ context: null, role: 'user', text, turn: 1, peer })
     expect(cards.map((c) => [c.kind, 'text' in c ? c.text : null]), name).toEqual([['peer', 'the words']])
   }
 })

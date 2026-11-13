@@ -1,3 +1,4 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { useAction } from '@/components/settings/shared'
@@ -6,7 +7,7 @@ import { THEUTH } from '@/components/tasks/helpers'
 import { keys } from '@/components/tasks/queries'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { hiring } from './hiring'
-import type { AgentFile } from '@/rpc/bindings/AgentFile'
+import type { AgentFile } from "@/rpc/bindings/method.roster.output"
 
 /** `agent_get`; the roster synthesises `theuth` from `prompt.md`, the mock does the same. */
 export function useAgentFile(name: string) {
@@ -18,7 +19,7 @@ export function useAgentFile(name: string) {
       const f = AGENTS.find((a) => a.file.name === name)?.file
       if (f) return f
       if (name === THEUTH)
-        return { name, title: name, reports_to: 'user', model: null, effort: null, tools: 'destructive', mcp: null, budget: { type: 'none' }, capabilities: null, paused: false, proposed_by: null, runs_in: 'any', body: 'Standing instructions (prompt.md).' }
+        return receiveComponent('method.roster.output.AgentFile', { name, title: name, reports_to: 'user', model: null, effort: null, tools: 'destructive', mcp: null, budget: { type: 'none' }, capabilities: null, paused: false, proposed_by: null, runs_in: 'any', body: 'Standing instructions (prompt.md).' })
       return Promise.reject(new Error('no such agent'))
     },
   })

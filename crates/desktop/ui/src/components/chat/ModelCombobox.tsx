@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { touch } from '@/lib/platform'
 import { cn } from '@/lib/utils'
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { dialogPlacement, useFavorites } from './ModelMenu'
 import { type Effort, LocalTag, ModelPicker } from './ModelPicker'
 

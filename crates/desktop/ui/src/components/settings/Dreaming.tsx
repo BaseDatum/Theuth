@@ -56,10 +56,10 @@ import {
   usd,
 } from '@/lib/dreaming'
 import { queryKeys } from '@/lib/rpc'
-import type { DreamSettings } from '@/rpc/bindings/DreamSettings'
-import type { NightSummary } from '@/rpc/bindings/NightSummary'
-import type { Proposal } from '@/rpc/bindings/Proposal'
-import type { RunMode } from '@/rpc/bindings/RunMode'
+import type { DreamSettings } from "@/rpc/bindings/method.dreaming.output"
+import type { NightSummary } from "@/rpc/bindings/method.dreaming.output"
+import type { Proposal } from "@/rpc/bindings/method.dreaming.output"
+import type { RunMode } from '@/rpc/bindings/method.dreaming.input'
 import { useConnection } from '@/store/connection'
 
 /** Settings › Dreaming (136 §8, §14.1): the nightly routine's status, switch, window, budget, models, digest, pause, Dream now, nights and proposals. */

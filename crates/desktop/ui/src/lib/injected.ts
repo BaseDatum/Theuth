@@ -1,5 +1,5 @@
-import type { SessionMoved } from '@/rpc/bindings/SessionMoved'
-import type { AdvisorSeverity } from '@/rpc/bindings/AdvisorSeverity'
+import type { SessionMoved } from "@/rpc/bindings/method.agent.output"
+import type { AdvisorSeverity } from "@/rpc/bindings/method.agent.output"
 
 /** Mid-turn engine notes share one transcript presentation; context summaries already have their own card. */
 export const ENGINE_NOTICES = {

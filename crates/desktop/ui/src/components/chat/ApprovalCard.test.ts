@@ -3,9 +3,9 @@ import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import { queryKeys } from '@/lib/rpc'
-import type { ApprovalRequested } from '@/rpc/bindings/ApprovalRequested'
-import type { AskRequested } from '@/rpc/bindings/AskRequested'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { ApprovalRequested } from "@/rpc/bindings/event.rpc_2estream.output"
+import type { AskRequested } from "@/rpc/bindings/method.roster.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { active } from '@/store/engine-scope'
 import { dispatch } from '@/store/sessions'
 import { ApprovalCard, relayedLine } from './ApprovalCard'

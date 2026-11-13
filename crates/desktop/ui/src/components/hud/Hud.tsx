@@ -18,7 +18,7 @@ import { isMacDesktop } from '@/lib/hotkeys'
 import { useApi } from '@/lib/rpc'
 import { canPopout, openPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import { useSecretRequests } from '@/store/approvals'
 import { FIRST_ANSWERS, contactFirstOf, useFirstWaiting } from '@/lib/contacts'
 import { snoozeUntil } from './model'

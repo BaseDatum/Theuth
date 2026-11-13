@@ -4,7 +4,7 @@ import type { ComponentType } from 'react'
 import { itemLabel } from '@/components/hud/Hud'
 import { Button } from '@/components/ui/button'
 import { isMacDesktop } from '@/lib/hotkeys'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import { ApprovalScreen } from './ApprovalScreen'
 import { AskScreen } from './AskScreen'
 import { DecisionScreen } from './DecisionScreen'

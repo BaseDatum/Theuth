@@ -21,9 +21,9 @@ import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { type AskState, askKeys, hitHref, useAskApi, useAskEvents } from '@/lib/ask-rpc'
 import { useApi } from '@/lib/rpc'
-import type { AskBranch } from '@/rpc/bindings/AskBranch'
-import type { AskHit } from '@/rpc/bindings/AskHit'
-import type { Notebook } from '@/rpc/bindings/Notebook'
+import type { AskBranch } from "@/rpc/bindings/event.agent_2enotebook_2dask.output"
+import type { AskHit } from "@/rpc/bindings/event.agent_2enotebook_2dask.output"
+import type { Notebook } from "@/rpc/bindings/method.agent.output"
 import { useSessions } from '@/store/sessions'
 
 const route = getRouteApi('/ask_/$session')

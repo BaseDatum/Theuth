@@ -21,7 +21,7 @@ import { useMesh } from '@/components/tasks/queries'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { sourceTag } from '@/lib/session-tree'
-import type { ObservedMeta } from '@/rpc/bindings/ObservedMeta'
+import type { ObservedMeta } from "@/rpc/bindings/method.agent.output"
 import { parseSpoken } from '@/lib/injected'
 import { parseNote } from '@/lib/voice-note'
 import { useApprovals } from '@/store/approvals'

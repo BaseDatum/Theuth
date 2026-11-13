@@ -15,9 +15,9 @@ import type { MapApi } from '@/lib/codemap/map-adapter'
 import type { CodeMapChanged, CodeMapProgress, TrailRow } from '@/lib/codemap/types'
 import type { DiagramTokens } from '@/lib/diagram-theme'
 import { cn } from '@/lib/utils'
-import type { MapHit } from '@/rpc/bindings/MapHit'
-import type { MapIndex } from '@/rpc/bindings/MapIndex'
-import type { MapJob } from '@/rpc/bindings/MapJob'
+import type { MapHit } from "@/rpc/bindings/method.codeindex.output"
+import type { MapIndex } from "@/rpc/bindings/method.codeindex.output"
+import type { MapJob } from "@/rpc/bindings/method.codeindex.output"
 import { on } from '@/store/sessions'
 import { MapCanvas } from './MapCanvas'
 import { MapDetail } from './MapDetail'

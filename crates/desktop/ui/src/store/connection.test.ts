@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { createConnection, routerMounted, watchDrops } from './connection'
-import type { Info } from '@/rpc/extra'
+import type { Info } from "@/rpc/bindings/method.rpc_2dcompose.output"
 
 beforeEach(() => {
   vi.useFakeTimers()

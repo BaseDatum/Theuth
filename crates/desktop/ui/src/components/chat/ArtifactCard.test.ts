@@ -1,8 +1,9 @@
+import type { Api } from '@/rpc/bindings/client'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
-import type { Artifact } from '@/rpc/extra'
+import type { Artifact } from "@/rpc/bindings/method.artifact.output"
 import { type Entry, createSessions, useSessions } from '@/store/sessions'
 import { ArtifactCard, openShow, relistArtifacts } from './ArtifactCard'
 
@@ -96,7 +97,7 @@ test('relistArtifacts installs the list; a rejected list leaves the existing map
   const store = createSessions()
   const old = { ...artifact, call_id: 'old' }
   store.getState().setArtifacts(S, [old])
-  const list_artifacts = vi.fn<(s: string | null, k: null) => Promise<Artifact[]>>()
+  const list_artifacts = vi.fn<Api['list_artifacts']>()
 
   list_artifacts.mockResolvedValueOnce([old, artifact])
   await relistArtifacts({ list_artifacts }, store, S)

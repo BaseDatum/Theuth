@@ -6,7 +6,7 @@ import type * as Platform from '@/lib/platform'
 import type * as Rpc from '@/lib/rpc'
 import { eventLine } from '@/lib/calendar'
 import { LAWFUL } from '@/lib/detection'
-import type { Detection } from '@/rpc/bindings/Detection'
+import type { Detection } from "@/rpc/bindings/method.meeting.output"
 import { DetectionBanner, ReleasePrompt } from './DetectionBanner'
 
 const navigate = vi.fn()

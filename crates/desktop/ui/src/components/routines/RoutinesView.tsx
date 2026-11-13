@@ -13,9 +13,9 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { nightLine } from '@/lib/dreaming'
 import { cn } from '@/lib/utils'
-import type { ControlOp } from '@/rpc/bindings/ControlOp'
-import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
-import type { SensorInfo } from '@/rpc/bindings/SensorInfo'
+import type { ControlOp } from '@/rpc/bindings/method.autoresearch.input'
+import type { ScheduleInfo } from "@/rpc/bindings/method.schedule.output"
+import type { SensorInfo } from "@/rpc/bindings/method.schedule.output"
 import { type Kind, type Result, fromInfo, kindOf, lastCheckText, relative, resultKind, resultLabel, routineNotes, runCount, sentence, sortRoutines, verdictText } from './helpers'
 import { machineUnknown } from '@/components/tasks/home'
 import { useMesh } from '@/components/tasks/queries'

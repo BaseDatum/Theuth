@@ -13,8 +13,8 @@ import { cn } from '@/lib/utils'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useConnection } from '@/store/connection'
 import { on, useSessionField } from '@/store/sessions'
-import type { ConfigOption } from '@/rpc/bindings/ConfigOption'
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import type { ConfigOption } from "@/rpc/bindings/method.agent.output"
+import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { useAdvisor, useSetAdvisor } from './advisor'
 import { MenuRow } from './HeaderMenu'
 import { LocalTag, ModelPicker, stubModel } from './ModelPicker'

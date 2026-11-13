@@ -14,9 +14,10 @@ import type { Engine } from '@/link/engines'
 import { idbGet, idbPut } from '@/link/idb'
 import { getIdentity } from '@/link/keys'
 import { LinkTransport } from '@/link/transport'
-import { type Api, makeApi } from '@/rpc/api'
-import type { DocEvent } from '@/rpc/bindings/DocEvent'
-import type { DocKind } from '@/rpc/bindings/DocKind'
+import type { Api } from '@/rpc/bindings/client'
+import { makeApi } from '@/rpc/bindings/client'
+import type { DocEvent } from "@/rpc/bindings/method.document.output"
+import type { DocKind } from "@/rpc/bindings/method.agent.output"
 import { RpcClient } from '@/rpc/client'
 
 /** IndexedDB row (`link`/`identity`) holding the name this browser joins with; asked once (59 §8.6). */

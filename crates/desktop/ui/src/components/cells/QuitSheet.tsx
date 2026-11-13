@@ -4,8 +4,8 @@ import { useEffect, useState } from 'react'
 import { create } from 'zustand'
 import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import type { Api } from '@/rpc/api'
-import type { CellRun } from '@/rpc/bindings/CellRun'
+import type { Api } from '@/rpc/bindings/client'
+import type { CellRun } from "@/rpc/bindings/method.cells.output"
 import { KILL_AFTER_MS } from './Cell'
 import { duration, labelFor } from './store'
 

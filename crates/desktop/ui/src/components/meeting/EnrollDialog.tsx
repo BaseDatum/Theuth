@@ -12,9 +12,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input'
 import { queryKeys } from '@/lib/rpc'
 import { alreadyEnrolled, secondsText } from '@/lib/segment-select'
-import type { EnrollTarget } from '@/rpc/bindings/EnrollTarget'
-import type { Enrolled } from '@/rpc/bindings/Enrolled'
-import type { Profile } from '@/rpc/bindings/Profile'
+import type { EnrollTarget } from '@/rpc/bindings/method.meeting.input'
+import type { Enrolled } from "@/rpc/bindings/method.meeting.output"
+import type { Profile } from "@/rpc/bindings/method.meeting.output"
 
 export interface EnrollDialogProps {
   open: boolean

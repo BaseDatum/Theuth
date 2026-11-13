@@ -1,6 +1,6 @@
 import { QueryClient } from '@tanstack/react-query'
 import { expect, test } from 'vitest'
-import type { SandboxInfo } from '@/rpc/bindings/SandboxInfo'
+import type { SandboxInfo } from "@/rpc/bindings/method.sandbox.output"
 import { LOG_CAP, type ProgressLine, SANDBOXES_KEY, appendLog, applySandboxEvent, guestPath, remove, sandboxLogKey, stateLabel, upsert } from './sandboxes'
 
 const row = (name: string, state: SandboxInfo['state'] = { state: 'ready' }): SandboxInfo => ({ name, backend: 'vm', state, engine: null, vm: null, created_ms: 1, updated_ms: 1 })

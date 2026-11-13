@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import type { CostBucket } from '@/rpc/bindings/CostBucket'
+import type { CostBucket } from "@/rpc/bindings/method.agent.output"
 import { costLines, costShort, formatMoney, moneyParts } from './money'
 
 const usd = (nanos: string) => ({ currency: 'USD', nanos })

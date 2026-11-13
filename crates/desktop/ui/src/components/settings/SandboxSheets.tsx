@@ -12,17 +12,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { isTauri } from '@/lib/tauri'
-import type { ImageRef } from '@/rpc/bindings/ImageRef'
-import type { Mount } from '@/rpc/bindings/Mount'
-import type { NetPolicy } from '@/rpc/bindings/NetPolicy'
-import type { Pending } from '@/rpc/bindings/Pending'
-import type { Preflight } from '@/rpc/bindings/Preflight'
-import type { ResizeOutcome } from '@/rpc/bindings/ResizeOutcome'
-import type { ResourceChange } from '@/rpc/bindings/ResourceChange'
-import type { Resources } from '@/rpc/bindings/Resources'
-import type { SandboxCreate } from '@/rpc/bindings/SandboxCreate'
-import type { SandboxInfo } from '@/rpc/bindings/SandboxInfo'
-import type { VmSnapshotInfo } from '@/rpc/bindings/VmSnapshotInfo'
+import type { ImageRef } from "@/rpc/bindings/method.sandbox.output"
+import type { Mount } from "@/rpc/bindings/method.sandbox.output"
+import type { NetPolicy } from "@/rpc/bindings/method.sandbox.output"
+import type { Pending } from "@/rpc/bindings/method.sandbox.output"
+import type { Preflight } from "@/rpc/bindings/method.sandbox.output"
+import type { ResizeOutcome } from "@/rpc/bindings/method.sandbox.output"
+import type { ResourceChange } from "@/rpc/bindings/method.sandbox.output"
+import type { Resources } from "@/rpc/bindings/method.sandbox.output"
+import type { SandboxCreate } from '@/rpc/bindings/method.sandbox.input'
+import type { SandboxInfo } from "@/rpc/bindings/method.sandbox.output"
+import type { VmSnapshotInfo } from "@/rpc/bindings/method.sandbox.output"
 import { fmtBytes, fmtMib, guestPath, limits, needsRestart, nextVmName, resizeGuard } from '@/store/sandboxes'
 
 type SheetProps = { open: boolean; onOpenChange: (open: boolean) => void }

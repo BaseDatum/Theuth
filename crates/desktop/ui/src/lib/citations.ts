@@ -1,5 +1,5 @@
 // 144 §6.1: the `theuth://` citation grammar, pure. `Citations.tsx` renders; `BoardReader`/`Editor` route clicks.
-import type { CiteKind } from '@/rpc/bindings/CiteKind'
+import type { CiteKind } from "@/rpc/bindings/method.agent.output"
 
 export type Cite = { href: string; kind: CiteKind; id: string; locator: string | null; sha8: string | null }
 

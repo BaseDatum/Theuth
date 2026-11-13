@@ -1,7 +1,7 @@
 // The attach picker's pure parts (66 §7.4, §7.7): tab → categories, browse merge/dedupe, recents, and the keyboard map.
 
 import { type ArtifactRecord, type AttachRef, type Kind, key, parse, toRef } from '@/lib/attach'
-import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
+import type { SearchCategory } from '@/rpc/bindings/method.rpc_2dcompose.input'
 
 export type Tab = 'all' | Kind
 export const TABS: readonly Tab[] = ['all', 'note', 'knowledge', 'artifact', 'session', 'meeting']

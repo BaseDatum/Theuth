@@ -1,11 +1,12 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { expect, test } from 'vitest'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
+import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
 import { hiring, managerNames, proposed } from './hiring'
 
-const s = (name: string, extra: Partial<AgentSummary> = {}, file: Partial<AgentSummary['file']> = {}): AgentSummary => ({
+const s = (name: string, extra: Partial<AgentSummary> = {}, file: Partial<AgentSummary['file']> = {}): AgentSummary => (receiveComponent("method.roster.output.AgentSummary", {
   file: { name, title: name, reports_to: 'theuth', model: null, effort: null, tools: null, mcp: null, budget: { type: 'none' }, capabilities: null, paused: false, proposed_by: null, runs_in: 'any', body: 'x', ...file },
   status: 'idle', desk: null, open_tasks: 0, spent_month: 0, ...extra,
-})
+}))
 
 test('the inbox lists proposed agents only (by status or proposed_by), sorted by name', () => {
   const list = [s('zed', { status: 'proposed' }), s('ops'), s('amy', {}, { proposed_by: 'agent:cto', paused: true }), s('theuth')]

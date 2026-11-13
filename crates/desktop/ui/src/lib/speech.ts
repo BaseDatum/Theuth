@@ -9,9 +9,10 @@ import { OpusDecoder, type OpusDecoderSampleRate } from 'opus-decoder'
 import { useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { Api } from '@/rpc/api'
+import type { Api } from '@/rpc/bindings/client'
 import { RpcError } from '@/rpc/client'
-import type { FinishReason, ModelState } from '@/rpc/extra'
+import type { FinishReason } from "@/rpc/bindings/event.voice_2eevents.output"
+import type { ModelState } from "@/rpc/bindings/method.talk.output"
 import { useConnection } from '@/store/connection'
 import { on, useSessions } from '@/store/sessions'
 

@@ -11,11 +11,11 @@ import {
 } from '@/components/ui/dialog'
 import { routed } from '@/lib/owner'
 import { useEngines } from '@/link/engines'
-import type { Api } from '@/rpc/api'
-import type { ContextItem } from '@/rpc/bindings/ContextItem'
-import type { ContextKind } from '@/rpc/bindings/ContextKind'
-import type { ContextSnapshot } from '@/rpc/bindings/ContextSnapshot'
-import type { ContextTarget } from '@/rpc/bindings/ContextTarget'
+import type { Api } from '@/rpc/bindings/client'
+import type { ContextItem } from "@/rpc/bindings/method.agent.output"
+import type { ContextKind } from "@/rpc/bindings/method.agent.output"
+import type { ContextSnapshot } from "@/rpc/bindings/method.agent.output"
+import type { ContextTarget } from "@/rpc/bindings/method.agent.output"
 import { RpcError } from '@/rpc/client'
 import { scope } from '@/store/engine-scope'
 

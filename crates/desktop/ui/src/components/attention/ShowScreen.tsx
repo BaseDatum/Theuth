@@ -7,7 +7,7 @@ import { ARTIFACT_SIM, simFlag } from '@/components/settings/sandbox-queries'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
+import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import { Body, useResolved } from './shared'
 import { ActionBar, ContextLine, SnoozeButton, Source } from './source'
 

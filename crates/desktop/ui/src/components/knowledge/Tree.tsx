@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Skeleton } from '@/components/ui/skeleton'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { Meta } from '@/rpc/bindings/Meta'
+import type { Meta } from "@/rpc/bindings/method.knowledge.output"
 import { cn } from 'cn'
 
 /** Every concept's frontmatter, once; `KnowledgeChanged` and sync invalidate it. */

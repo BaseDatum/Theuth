@@ -1,8 +1,8 @@
 import { QueryClient, QueryObserver } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { queryKeys } from '@/lib/rpc'
-import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
-import type { SearchResponse } from '@/rpc/bindings/SearchResponse'
+import type { SearchCategory } from '@/rpc/bindings/method.rpc_2dcompose.input'
+import type { SearchResponse } from "@/rpc/bindings/method.rpc_2dcompose.output"
 import { DEBOUNCE_MS, SUPERSEDED, SearchQueue } from './search-queue'
 
 beforeEach(() => vi.useFakeTimers())

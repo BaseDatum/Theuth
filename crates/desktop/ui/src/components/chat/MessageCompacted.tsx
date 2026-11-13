@@ -1,6 +1,6 @@
 import { memo } from 'react'
 import { Streamdown } from 'streamdown'
-import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
+import type { CompactStyle } from "@/rpc/bindings/method.agent.output"
 import { useScopedDisclosure } from './disclosure'
 
 /** Centred `── context compacted (epoch n · style) ──` divider; click shows the summary when history carries one. */

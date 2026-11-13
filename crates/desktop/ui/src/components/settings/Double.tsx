@@ -29,14 +29,14 @@ import { Switch } from '@/components/ui/switch'
 import { humanSecs } from '@/lib/injected'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { formatAt } from '@/lib/time'
-import type { Api } from '@/rpc/api'
-import type { DoubleClass } from '@/rpc/bindings/DoubleClass'
-import type { DoubleClassDetail } from '@/rpc/bindings/DoubleClassDetail'
-import type { DoubleConfig } from '@/rpc/bindings/DoubleConfig'
-import type { DoubleRun } from '@/rpc/bindings/DoubleRun'
-import type { DoubleStatus } from '@/rpc/bindings/DoubleStatus'
-import type { DoubleTrainingState } from '@/rpc/bindings/DoubleTrainingState'
-import type { Venue } from '@/rpc/bindings/Venue'
+import type { Api } from '@/rpc/bindings/client'
+import type { DoubleClass } from "@/rpc/bindings/method.dreaming.output"
+import type { DoubleClassDetail } from "@/rpc/bindings/method.dreaming.output"
+import type { DoubleConfig } from "@/rpc/bindings/method.dreaming.output"
+import type { DoubleRun } from "@/rpc/bindings/method.dreaming.output"
+import type { DoubleStatus } from "@/rpc/bindings/method.dreaming.output"
+import type { DoubleTrainingState } from "@/rpc/bindings/event.double_2etraining.output"
+import type { Venue } from '@/rpc/bindings/method.dreaming.input'
 import { on } from '@/store/sessions'
 import { rungGlyph } from '@/components/chat/DoubleChip'
 

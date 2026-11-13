@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useApi } from '@/lib/rpc'
-import type { AgentInfo } from '@/rpc/extra'
+import type { AgentInfo } from '@/store/ui-events'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { LINGER_MS, type Lingering, NO_LINGERING, linger, liveRows } from './sessions'
 

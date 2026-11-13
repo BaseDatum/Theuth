@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { expect, test, vi } from 'vitest'
-import type { Located } from '@/rpc/bindings/Located'
+import type { Located } from "@/rpc/bindings/method.codeindex.output"
 import { excerptLines } from '@/components/chat/surface/parse'
 import { type DocBlock, excerptsOf } from './blocks'
 import { chipText, collectRequests, createLiveStore, excerptKey, langOf, sha256, staleOf } from './live'

@@ -3,24 +3,25 @@
 // `VITE_AUTORESEARCH_FIXTURE=studies|empty` (or `localStorage['autoresearch-fixture']`); the data is exported for
 // the vitest over the model and the components. Mirrors `dev/dreaming-fixture.ts`.
 
-import type { Api } from '@/rpc/api'
-import type { AutoresearchConfig } from '@/rpc/bindings/AutoresearchConfig'
-import type { BenchSample } from '@/rpc/bindings/BenchSample'
-import type { ExperimentDetail } from '@/rpc/bindings/ExperimentDetail'
-import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
-import type { ExperimentState } from '@/rpc/bindings/ExperimentState'
-import type { ExperimentVerdict } from '@/rpc/bindings/ExperimentVerdict'
-import type { PauseReason } from '@/rpc/bindings/PauseReason'
-import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
-import type { StopReason } from '@/rpc/bindings/StopReason'
-import type { StudyChangeset } from '@/rpc/bindings/StudyChangeset'
-import type { StudyChartPoint } from '@/rpc/bindings/StudyChartPoint'
-import type { StudyDetail } from '@/rpc/bindings/StudyDetail'
-import type { StudyIdea } from '@/rpc/bindings/StudyIdea'
-import type { StudyInfo } from '@/rpc/bindings/StudyInfo'
-import type { StudySpec } from '@/rpc/bindings/StudySpec'
-import type { StudyState } from '@/rpc/bindings/StudyState'
-import type { StudySteer } from '@/rpc/bindings/StudySteer'
+import { receiveComponent } from '@/rpc/bindings/receive'
+import type { Api } from '@/rpc/bindings/client'
+import type { AutoresearchConfig } from "@/rpc/bindings/method.autoresearch.output"
+import type { Sample as BenchSample } from "@/rpc/bindings/method.autoresearch.output"
+import type { ExperimentDetail } from "@/rpc/bindings/method.autoresearch.output"
+import type { ExperimentRow } from "@/rpc/bindings/method.autoresearch.output"
+import type { ExperimentState } from "@/rpc/bindings/method.autoresearch.output"
+import type { Verdict as ExperimentVerdict } from "@/rpc/bindings/method.autoresearch.output"
+import type { PauseReason } from "@/rpc/bindings/method.autoresearch.output"
+import type { ScheduleInfo } from "@/rpc/bindings/method.schedule.output"
+import type { StopReason } from "@/rpc/bindings/method.autoresearch.output"
+import type { Changeset as StudyChangeset } from "@/rpc/bindings/method.autoresearch.output"
+import type { ChartPoint as StudyChartPoint } from "@/rpc/bindings/method.autoresearch.output"
+import type { StudyDetail } from "@/rpc/bindings/method.autoresearch.output"
+import type { Idea as StudyIdea } from "@/rpc/bindings/method.autoresearch.output"
+import type { StudyInfo } from "@/rpc/bindings/method.autoresearch.output"
+import type { StudySpec } from "@/rpc/bindings/method.autoresearch.output"
+import type { StudyState } from "@/rpc/bindings/method.autoresearch.output"
+import type { Steer as StudySteer } from "@/rpc/bindings/method.autoresearch.output"
 import { pct } from './model'
 
 export const STATES = ['empty', 'studies'] as const
@@ -60,7 +61,7 @@ type Plan = {
 }
 
 /** The §4.1 example study as spec; slug/goal/repo overridden per fixture. */
-const spec = (over: Partial<StudySpec> & { slug: string }): StudySpec => ({
+const spec = (over: Partial<StudySpec> & { slug: string }): StudySpec => (receiveComponent("method.autoresearch.output.StudySpec", {
   goal: 'Make parse+render of the fixture set faster without changing output.',
   repo: '/Users/Sky.Moore/Develop/liquid',
   base: 'HEAD',
@@ -79,7 +80,7 @@ const spec = (over: Partial<StudySpec> & { slug: string }): StudySpec => ({
   window: null,
   include_dirty: false,
   ...over,
-})
+}))
 
 const BASE_SHA = '4f2c9e1a8b3d5e7f9012345678901234567890ab'
 
@@ -460,7 +461,7 @@ function wrap(api: Api, s: State): Api {
     if (!st) throw new Error(`no study ${slug}`)
     return st
   }
-  const row = (st: Study): ScheduleInfo => ({
+  const row = (st: Study): ScheduleInfo => (receiveComponent("method.schedule.output.ScheduleInfo", {
     name: `autoresearch-${st.info.slug}`,
     when: 'every 0s',
     describe: `every 0s, up to ${st.info.budget.experiments + 10} runs`,
@@ -492,7 +493,7 @@ function wrap(api: Api, s: State): Api {
     run_timeout: '100m',
     created: st.info.started_at,
     sensor: null,
-  })
+  }))
   return {
     ...api,
     list_schedules: async () => {
@@ -562,7 +563,7 @@ function wrap(api: Api, s: State): Api {
     },
     'autoresearch.settings.get': () => wait(settings),
     'autoresearch.settings.set': (next) => {
-      settings = next
+      settings = receiveComponent('method.autoresearch.output.AutoresearchConfig', next)
       return wait(settings)
     },
   }

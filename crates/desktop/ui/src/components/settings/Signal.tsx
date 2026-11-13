@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { SignalStatus } from '@/rpc/bindings/SignalStatus'
+import type { SignalStatus } from "@/rpc/bindings/method.signal.output"
 
 function signalState(s: SignalStatus): string {
   const e = s.state

@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import type { AskRequested } from '@/rpc/bindings/AskRequested'
+import type { AskRequested } from "@/rpc/bindings/method.roster.output"
 import { createAsks } from './approvals'
 import { scope } from './engine-scope'
 import { dispatch } from './sessions'

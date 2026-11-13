@@ -1,13 +1,11 @@
-import type { JsonValue } from '@/rpc/bindings/serde_json/JsonValue'
-
 /** `/mcp add` argument that means "clone a repo": a `.git` URL or a known git host (`tui/model.rs::git_url`). */
 export function gitUrl(s: string): boolean {
   return s.endsWith('.git') || ['github.com/', 'gitlab.com/', 'codeberg.org/'].some((h) => s.includes(h))
 }
 
-type JsonObject = { [key in string]: JsonValue }
+type JsonObject = Record<string, unknown>
 
-function isObject(v: JsonValue | undefined): v is JsonObject {
+function isObject(v: unknown): v is JsonObject {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
@@ -16,8 +14,8 @@ function isObject(v: JsonValue | undefined): v is JsonObject {
  * object with a `name` key (stripped), `{ "<name>": {...} }`, or
  * `{ "mcpServers": { "<name>": {...} } }`. Throws with the TUI's messages.
  */
-export function mcpEntry(text: string): { name: string; entry: JsonValue } {
-  const v = JSON.parse(text) as JsonValue
+export function mcpEntry(text: string): { name: string; entry: unknown } {
+  const v: unknown = JSON.parse(text)
   if (!isObject(v)) throw new Error('expected a JSON object')
   const servers = v.mcpServers
   const obj = isObject(servers) ? servers : v

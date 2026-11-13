@@ -26,7 +26,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import type { EngineProvider } from '@/lib/doc/provider'
 import { fmtBytes } from '@/lib/files'
 import { notebookKeys, useContextApi, useNotebooksApi } from '@/lib/notebooks-rpc'
-import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
+import type { Source as NotebookSource } from "@/rpc/bindings/method.document.output"
 import { useApi } from '@/lib/rpc'
 import { formatAt } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -80,7 +80,7 @@ export function SourcePage() {
           {tab === 'content' && s && isMedia(s) && (
             <div title="wave 2" className="flex items-center gap-3 border-b border-border-subtle px-6 py-2 text-xs text-fg-tertiary">
               <input type="range" disabled className="flex-1" />
-              <span className="font-mono">0:00 / {mmss(Number(s.duration_ms ?? 0n))}</span>
+              <span className="font-mono">0:00 / {mmss(s.duration_ms ?? 0)}</span>
             </div>
           )}
         </>

@@ -9,8 +9,8 @@ import { useApi } from '@/lib/rpc'
 import { classify } from '@/lib/injected'
 import { touch } from '@/lib/platform'
 import { useShortcuts } from '@/lib/shortcuts'
-import type { Api } from '@/rpc/api'
-import type { QueuedInput } from '@/rpc/bindings/QueuedInput'
+import type { Api } from '@/rpc/bindings/client'
+import type { QueuedInput } from "@/rpc/bindings/method.agent.output"
 import { useSessionField } from '@/store/sessions'
 import { Attachments } from './Attachments'
 

@@ -3,7 +3,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, expect, test, vi } from 'vitest'
-import type { PtyChunk } from '@/rpc/bindings/PtyChunk'
+import type { PtyChunk } from "@/rpc/bindings/method.agent.output"
 import { RpcError } from '@/rpc/client'
 import { attachSource, CELL_KEYS, liveRows, Terminal } from './TerminalViewer'
 

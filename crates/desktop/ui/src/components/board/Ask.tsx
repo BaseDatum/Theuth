@@ -15,7 +15,7 @@ import { useNoteChat } from '@/lib/note-chat'
 import { canPopout, isPopout, openPopout } from '@/lib/popout'
 import { type AnchorState, type Registered, formatAnchor, intersect, useAnchorStore } from './anchors'
 import { type BoardExcerpt, type DocBlock, classifyCode } from './blocks'
-import type { Located } from '@/rpc/bindings/Located'
+import type { Located } from "@/rpc/bindings/method.codeindex.output"
 import { chipText } from './live'
 
 /** A place the reader points at: the block that owns it, where inside it, and the words quoted. */

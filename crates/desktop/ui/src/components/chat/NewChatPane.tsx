@@ -22,9 +22,9 @@ import { useCompactorLabel } from '@/lib/endless'
 import { usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
-import type { EngineClass } from '@/rpc/bindings/EngineClass'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
+import type { EndlessConfig } from "@/rpc/bindings/method.agent.output"
+import type { EngineClass } from "@/rpc/bindings/method.nodes.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
 import { tilde } from './HarnessCards'
 
 /** 183 §12.5 / mock panel 5: one machine a new chat can start on; `id` `null` is this machine (the default). `older`: a

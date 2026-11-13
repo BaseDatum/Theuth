@@ -3,8 +3,8 @@
 // pending card on (re)subscribe (§4.4), so a reload is whole again after the first frame. Nothing is persisted.
 import { useSyncExternalStore } from 'react'
 import { createStore } from 'zustand'
-import type { DoubleAnswered } from '@/rpc/bindings/DoubleAnswered'
-import type { DoublePredicted } from '@/rpc/bindings/DoublePredicted'
+import type { DoubleAnswered } from "@/rpc/bindings/event.double_2eanswered.output"
+import type { DoublePredicted } from "@/rpc/bindings/event.double_2epredicted.output"
 import { on } from './sessions'
 
 type DoubleStore = {

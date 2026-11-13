@@ -12,7 +12,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { queryKeys, useApi } from '@/lib/rpc'
 import { isSearchDestination, useSearchOrigin } from '@/lib/search'
 import { cn } from '@/lib/utils'
-import type { Kind } from '@/rpc/extra'
+import type { Kind } from "@/rpc/bindings/method.artifact.output"
 
 const route = getRouteApi('/artifacts')
 

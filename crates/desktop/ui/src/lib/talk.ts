@@ -9,11 +9,11 @@ import { closeTap, openTap, type Tap, wireTap } from '@/lib/mic-tap'
 import * as speech from '@/lib/speech'
 import { useTalkSettings } from '@/lib/talk-settings'
 import { LOCAL, useEngines } from '@/link/engines'
-import type { Api } from '@/rpc/api'
-import type { Aec } from '@/rpc/bindings/Aec'
-import type { State } from '@/rpc/bindings/State'
-import type { TalkEvent } from '@/rpc/bindings/TalkEvent'
-import type { VoiceEvent } from '@/rpc/bindings/VoiceEvent'
+import type { Api } from '@/rpc/bindings/client'
+import type { Aec } from "@/rpc/bindings/method.talk.output"
+import type { State } from "@/rpc/bindings/method.talk.output"
+import type { TalkEvent } from "@/rpc/bindings/event.talk_2eevents.output"
+import type { VoiceEvent } from "@/rpc/bindings/event.voice_2eevents.output"
 import { on } from '@/store/sessions'
 import { openDraftSession } from '@/lib/drafts'
 

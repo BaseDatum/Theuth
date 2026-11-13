@@ -11,8 +11,8 @@ import { Switch } from '@/components/ui/switch'
 import { cn } from '@/lib/utils'
 import { useApi } from '@/lib/rpc'
 import { formatAt } from '@/lib/time'
-import type { Api } from '@/rpc/api'
-import type { DoublePredicted } from '@/rpc/bindings/DoublePredicted'
+import type { Api } from '@/rpc/bindings/client'
+import type { DoublePredicted } from "@/rpc/bindings/event.double_2epredicted.output"
 import { doubleStore, useAnswered, useDouble, usePrediction } from '@/store/double'
 import { useScopedDisclosure } from './disclosure'
 

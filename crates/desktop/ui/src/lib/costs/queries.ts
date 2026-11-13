@@ -7,9 +7,9 @@ import { useRouter } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { costCallsFixture, costsFixture, limitsFixture } from '@/dev/costs-fixture'
 import { useApi } from '@/lib/rpc'
-import type { CostCallsQuery } from '@/rpc/bindings/CostCallsQuery'
-import type { CostCallsPage } from '@/rpc/bindings/CostCallsPage'
-import type { CostCube } from '@/rpc/bindings/CostCube'
+import type { CostCallsQuery } from '@/rpc/bindings/method.agent.input'
+import type { CostCallsPage } from "@/rpc/bindings/method.agent.output"
+import type { CostCube } from "@/rpc/bindings/method.agent.output"
 import { useScope } from '@/store/engine-scope'
 import { on } from '@/store/sessions'
 import { defaultTz, type Index, emptyCube, index, merge } from './cube'

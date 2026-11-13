@@ -3,8 +3,8 @@
 // Codex reads `~/.codex/config.toml`; `stdio` points a client at `t mcp` against the running engine (§12.3).
 
 import { stringify as toml } from 'smol-toml'
-import type { Api } from '@/rpc/api'
-import type { McpServerStatus } from '@/rpc/bindings/McpServerStatus'
+import type { Api } from '@/rpc/bindings/client'
+import type { McpServerStatus } from "@/rpc/bindings/method.mcp_2dserver.output"
 
 export const MCP_CLIENTS = ['claude', 'codex', 'cursor', 'stdio'] as const
 export type McpClient = (typeof MCP_CLIENTS)[number]

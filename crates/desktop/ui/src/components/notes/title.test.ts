@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { DocMeta } from '@/rpc/bindings/DocMeta'
-import type { DocumentChanged } from '@/rpc/bindings/DocumentChanged'
+import type { DocMeta } from "@/rpc/bindings/method.document.output"
+import type { DocumentChanged } from "@/rpc/bindings/event.document_2echanged.output"
 import { titleAfter } from './title'
 
 const changed = (over: Partial<DocumentChanged>): DocumentChanged => ({
@@ -8,7 +8,7 @@ const changed = (over: Partial<DocumentChanged>): DocumentChanged => ({
   doc: 'n1',
   kind: 'note',
   title: 'Renamed',
-  updated_ms: 1n,
+  updated_ms: 1,
   deleted: false,
   ...over,
 })

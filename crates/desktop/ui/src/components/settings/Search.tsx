@@ -27,9 +27,9 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { ProviderProbe } from '@/rpc/bindings/ProviderProbe'
-import type { Recency } from '@/rpc/bindings/Recency'
-import type { SearchTestResult } from '@/rpc/bindings/SearchTestResult'
+import type { ProviderProbe } from "@/rpc/bindings/method.web.output"
+import type { Recency } from "@/rpc/bindings/method.search_2dproviders.output"
+import type { SearchTestResult } from "@/rpc/bindings/method.web.output"
 
 const RECENCY: readonly (Recency | 'none')[] = ['none', 'day', 'week', 'month', 'year']
 

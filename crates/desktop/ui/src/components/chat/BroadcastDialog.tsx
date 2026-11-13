@@ -11,10 +11,10 @@ import { useIsMobile } from '@/hooks/use-mobile'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { childrenOf } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
-import type { BroadcastReceipt } from '@/rpc/bindings/BroadcastReceipt'
-import type { Delivery } from '@/rpc/bindings/Delivery'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { AgentInfo } from '@/rpc/extra'
+import type { BroadcastReceipt } from "@/rpc/bindings/method.agent.output"
+import type { Delivery } from "@/rpc/bindings/method.agent.output"
+import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import type { AgentInfo } from '@/store/ui-events'
 import {
   allRoots,
   busy,

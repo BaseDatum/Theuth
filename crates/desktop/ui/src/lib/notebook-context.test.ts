@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import type { ContextEstimate } from '@/rpc/bindings/ContextEstimate'
+import type { ContextEstimate } from "@/rpc/bindings/method.agent.output"
 import { type EstimateItem, contextLine, fmtTokens, remembered, useContextDefaults } from './notebook-context'
 
 const store: Record<string, string> = {}

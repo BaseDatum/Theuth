@@ -9,8 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { ENDLESS_DEFAULTS, tokenEstimate, useCompactorLabel } from '@/lib/endless'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
-import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
+import type { CompactStyle } from "@/rpc/bindings/method.agent.output"
+import type { EndlessConfig } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
 
 type Key = keyof typeof ENDLESS_DEFAULTS

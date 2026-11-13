@@ -12,15 +12,15 @@ import { isApple } from '@/lib/chord'
 import { useApi } from '@/lib/rpc'
 import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
-import type { Api } from '@/rpc/api'
+import type { Api } from '@/rpc/bindings/client'
 import { RpcError } from '@/rpc/client'
-import type { CellLatest } from '@/rpc/bindings/CellLatest'
-import type { CellRef } from '@/rpc/bindings/CellRef'
-import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
-import type { CellScope } from '@/rpc/bindings/CellScope'
-import type { CellSpec } from '@/rpc/bindings/CellSpec'
-import type { DocId } from '@/rpc/bindings/DocId'
-import type { NoteKey } from '@/rpc/bindings/NoteKey'
+import type { CellLatest } from "@/rpc/bindings/method.cells.output"
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
+import type { RunMode as CellRunMode } from "@/rpc/bindings/method.cells.output"
+import type { Scope as CellScope } from "@/rpc/bindings/method.cells.output"
+import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
+import type { DocId } from "@/rpc/bindings/method.agent.output"
+import type { NoteKey } from "@/rpc/bindings/method.cells.output"
 import { Cell, CellExtras, Chip, Notice } from './Cell'
 import { CodeTokens } from './CodeTokens'
 import { AnsiText } from './Outputs'
@@ -285,7 +285,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   const local = useEngines((s) => s.active === LOCAL)
   const row = useLatestRow(scope, `${doc}:${key_.value}`)
   const own = rec?.latest ?? null
-  const foreign = inMesh(mesh) && row && row.engine !== '' && row.engine !== mesh?.self_id && (!own || (own.ended_ms != null && row.ended_ms > BigInt(own.ended_ms))) ? row : null
+  const foreign = inMesh(mesh) && row && row.engine !== '' && row.engine !== mesh?.self_id && (!own || (own.ended_ms != null && row.ended_ms > own.ended_ms)) ? row : null
   const record = foreign && rec ? { ...rec, latest: null } : rec
   const latest = record?.latest ?? null
   const pub8 = record?.member_edit ?? null

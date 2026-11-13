@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button'
 import { haptics } from '@/lib/haptics'
 import { type Act, HOLD_MS, type Hold, IDLE, step } from '@/lib/hold'
 import { cn } from '@/lib/utils'
-import type { CancelScope } from '@/rpc/bindings/CancelScope'
+import type { CancelScope } from '@/rpc/bindings/method.agent.input'
 
 const RING = 44
 const STROKE = 2.5

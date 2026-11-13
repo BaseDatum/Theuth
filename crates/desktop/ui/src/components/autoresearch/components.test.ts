@@ -1,3 +1,4 @@
+import { receiveComponent } from '@/rpc/bindings/receive'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { type ReactElement, createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -13,8 +14,8 @@ import { Body as ExperimentBody } from './ExperimentDetail'
 import { Bars, Controls, Current, KindPanel } from './StudyView'
 import { studies } from './fixtures'
 import { budgetBars } from './model'
-import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
-import type { ObjectiveDelta } from '@/rpc/bindings/ObjectiveDelta'
+import type { ExperimentRow } from "@/rpc/bindings/method.autoresearch.output"
+import type { ObjectiveDelta } from "@/rpc/bindings/method.autoresearch.output"
 
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
@@ -178,8 +179,8 @@ const gate = (objectives: ObjectiveDelta[]): ExperimentRow['gate'] => ({ v: 2, r
 test('run table: a front study adds one Δ % column per objective with its direction word and call; scalar rows show — (159 W1 H2)', () => {
   const [kept, other, ...rest] = by('sort-speed').rows
   const rows: ExperimentRow[] = [
-    { ...kept!, state: 'kept', gate: gate([objective('time_ms', -12.5, 6.2, 'better'), objective('size_kb', 3.4, -1.7, 'worse')]) },
-    { ...other!, state: 'discarded', gate: gate([objective('time_ms', 0.2, -0.1, 'same'), objective('size_kb', -8.1, 4.0, 'better')]) },
+    receiveComponent("method.autoresearch.output.ExperimentRow", { ...kept!, state: 'kept', gate: gate([objective('time_ms', -12.5, 6.2, 'better'), objective('size_kb', 3.4, -1.7, 'worse')]) }),
+    receiveComponent("method.autoresearch.output.ExperimentRow", { ...other!, state: 'discarded', gate: gate([objective('time_ms', 0.2, -0.1, 'same'), objective('size_kb', -8.1, 4.0, 'better')]) }),
     rest[0]!,
   ]
   const html = paint(createElement(RunTable, { rows, metricName: 'time_ms', direction: 'lower', pending: false, active: null, onPick: () => {} }))
@@ -197,7 +198,7 @@ test('run table: a front study adds one Δ % column per objective with its direc
 
 test('run table: a waiting row shows its line across the value and Δ cells, badge from outcomeLabel (159 W6)', () => {
   const base = by('sort-speed').rows[0]!
-  const rows: ExperimentRow[] = [{ ...base, state: 'waiting', verdict: null, metric: null, delta_pct: null, line: 'waiting · window 2 of at most 14 · closes in 6h' }]
+  const rows: ExperimentRow[] = [receiveComponent("method.autoresearch.output.ExperimentRow", { ...base, state: 'waiting', verdict: null, metric: null, delta_pct: null, line: 'waiting · window 2 of at most 14 · closes in 6h' })]
   const html = paint(createElement(RunTable, { rows, metricName: 'conversion', direction: 'higher', pending: false, active: null, onPick: () => {} }))
   expect(html).toMatch(/<td colSpan="2"[^>]*>waiting · window 2 of at most 14 · closes in 6h<\/td>/)
   expect(html).toMatch(/bg-info-bg text-info">waiting for its window</)
@@ -206,7 +207,7 @@ test('run table: a waiting row shows its line across the value and Δ cells, bad
 test('side panel: a literature idea reaches LiteratureIdeas with its citation — link and quote (159 W5 hand-off 1)', () => {
   const d = by('sort-speed').detail
   const ideas = [...d.ideas, { id: 9001, slug: d.info.slug, text: '[paper] Merge natural runs like Timsort', category: 'algorithm', source: 'literature' as const, priority: 1, status: 'open' as const, tried_in: [], at: '2026-10-10T00:00:00Z' }]
-  const citations = [{ idea_id: BigInt(9001), url: 'https://example.org/timsort', title: 'Timsort', quote: 'runs that are already ordered', verified: true, fetched_at: '2026-10-10T00:00:00Z' }]
+  const citations = [{ idea_id: 9001, url: 'https://example.org/timsort', title: 'Timsort', quote: 'runs that are already ordered', verified: true, fetched_at: '2026-10-10T00:00:00Z' }]
   const html = paint(createElement(SidePanel, { detail: { ...d, ideas, citations }, rows: [], onPick: () => {} }))
   expect(html).toContain('href="https://example.org/timsort"')
   expect(html).toContain('paper · Timsort')

@@ -5,8 +5,8 @@ import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
-import type { Info } from '@/rpc/extra'
+import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
+import type { Info } from "@/rpc/bindings/method.rpc_2dcompose.output"
 import type * as Conn from '@/store/connection'
 import { ModelDefaults } from './ModelDefaults'
 

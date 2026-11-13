@@ -9,12 +9,12 @@ import { UNPAIR_CONTACTS, names, rogueLine, useContacts } from '@/lib/contacts'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { formatAt } from '@/lib/time'
-import type { Contact } from '@/rpc/bindings/Contact'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
-import type { RotationPeer } from '@/rpc/bindings/RotationPeer'
-import type { RotationPhase } from '@/rpc/bindings/RotationPhase'
-import type { RotationState } from '@/rpc/bindings/RotationState'
-import type { UnpairPreview } from '@/rpc/bindings/UnpairPreview'
+import type { Contact } from "@/rpc/bindings/method.a2a.output"
+import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
+import type { RotationPeer } from "@/rpc/bindings/method.nodes.output"
+import type { RotationPhase } from "@/rpc/bindings/method.nodes.output"
+import type { RotationState } from "@/rpc/bindings/method.nodes.output"
+import type { UnpairPreview } from "@/rpc/bindings/method.link.output"
 
 /** Engine id (or name) → display name, from `mesh_status`; unknown ones as given. */
 export type NameOf = (id: string) => string

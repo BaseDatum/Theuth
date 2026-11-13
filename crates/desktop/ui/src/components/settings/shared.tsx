@@ -3,8 +3,8 @@ import { type ReactNode, useState } from 'react'
 import { toast } from 'sonner'
 import { Input } from '@/components/ui/input'
 import { chordOf } from '@/lib/chord'
-import type { Api } from '@/rpc/api'
-import type { SyncResult } from '@/rpc/bindings/SyncResult'
+import type { Api } from '@/rpc/bindings/client'
+import type { SyncResult } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
 
 /** The one connected / logged-in / online indicator of every settings pane: green on, faint grey off. */

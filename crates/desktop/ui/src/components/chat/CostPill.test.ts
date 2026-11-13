@@ -1,9 +1,9 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
-import type { CostBucket } from '@/rpc/bindings/CostBucket'
-import type { RemoteTokens } from '@/rpc/bindings/RemoteTokens'
-import type { SessionCost } from '@/rpc/bindings/SessionCost'
+import type { CostBucket } from "@/rpc/bindings/method.agent.output"
+import type { RemoteTokens } from "@/rpc/bindings/method.agent.output"
+import type { SessionCost } from "@/rpc/bindings/method.agent.output"
 import { Breakdown, HarnessTokens, k, RollingCost } from './CostPill'
 
 const row = (harness: string, model: string | null, turns: number, input: number, output: number, lower_bound = false): RemoteTokens => ({

@@ -5,11 +5,11 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { isApple } from '@/lib/chord'
 import { useDisclosure } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
-import type { CellRef } from '@/rpc/bindings/CellRef'
-import type { CellSpec } from '@/rpc/bindings/CellSpec'
-import type { CellState } from '@/rpc/bindings/CellState'
-import type { KernelState } from '@/rpc/bindings/KernelState'
-import type { PassEnd } from '@/rpc/bindings/PassEnd'
+import type { CellRef } from "@/rpc/bindings/method.cells.output"
+import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
+import type { CellState } from "@/rpc/bindings/method.cells.output"
+import type { KernelState } from "@/rpc/bindings/method.cells.output"
+import type { PassEnd } from "@/rpc/bindings/method.cells.output"
 import { digest } from './grammar'
 import { liveKernels } from './KernelStrip'
 import { ended, refKey } from './store'
