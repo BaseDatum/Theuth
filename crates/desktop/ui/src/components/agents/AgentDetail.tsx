@@ -35,6 +35,7 @@ import { CharterEditor } from './CharterEditor'
 import { AccessFields, Field, RuntimeFields } from './RuntimeAccessFields'
 import { ActiveSwitch, ActivityChip, AgentAvatar, BudgetBar, PausedChip } from './identity'
 import { useAgentActions, useAgentFile } from './queries'
+import type { Draft } from './wizard'
 import { budgetUsed } from './tree'
 
 export const TABS = ['overview', 'charter', 'runtime', 'runs', 'tasks'] as const
@@ -403,7 +404,7 @@ function TheuthRuntime() {
 
 function Runtime({ file: f }: { file: AgentFile }) {
   const { put } = useAgentActions()
-  const [d, setD] = useState(f)
+  const [d, setD] = useState<Draft & Pick<AgentFile, 'paused' | 'proposed_by'>>(f)
   const dirty = JSON.stringify(d) !== JSON.stringify(f)
   if (f.name === THEUTH) return <TheuthRuntime />
   return (

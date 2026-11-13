@@ -34,7 +34,7 @@ export function useAgentActions() {
   const roster = [keys.agents, keys.tasks] as const
   const h = hiring(api)
   return {
-    put: useAction((f: AgentFile) => api.agent_put(f), { keys: roster, onSuccess: (_, f) => toast(`Saved ${f.name}`) }),
+    put: useAction((f: Parameters<typeof api.agent_put>[0]) => api.agent_put(f), { keys: roster, onSuccess: (_, f) => toast(`Saved ${f.name}`) }),
     pause: useAction(({ name, paused }: { name: string; paused: boolean }) => api.agent_pause(name, paused), {
       keys: roster,
       onSuccess: (_, v) => toast(v.paused ? `Paused ${v.name} — its work is suspended` : `${v.name} resumed`),

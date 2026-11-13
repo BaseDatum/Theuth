@@ -117,7 +117,7 @@ export function fromInfo(s: ScheduleInfo): Readable {
   }
 }
 
-export const fromFile = (f: ScheduleFile, gist = false): Readable => ({ ...f, prompt: gist ? f.prompt : null })
+export const fromFile = (f: Readable, gist = false): Readable => ({ ...f, prompt: gist ? f.prompt : null })
 
 export type Kind = 'Clock' | 'Once' | 'Watcher' | 'Loop'
 

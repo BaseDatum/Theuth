@@ -1,8 +1,11 @@
-import { receiveComponent } from '@/rpc/bindings/receive'
 import { FRESH } from '@/components/chat/slash'
 import type { Api } from '@/rpc/bindings/client'
 import type { ScheduleFile } from "@/rpc/bindings/method.schedule.output"
+import type { ScheduleFile as InputFile } from "@/rpc/bindings/method.schedule.input"
 import { type Entry, useSessions } from '@/store/sessions'
+
+/** Editable file: preserve omitted form fields instead of applying received-data defaults. */
+export type Form = Omit<ScheduleFile, 'effort' | 'engine' | 'cap'> & Pick<InputFile, 'effort' | 'engine' | 'cap'>
 
 /** 108 §8.1 `RoutineDraft`: the fields of `schedules/<name>.md` as `ScheduleArgs` names them; the card's `args.routines[i]`. */
 export type RoutineDraft = {
@@ -35,7 +38,7 @@ export type RoutineDraft = {
 export type RoutineDraftArgs = { routines: RoutineDraft[] }
 
 /** An empty `/routines/new` form: weekday 09:00 clock, enabled, approvals on. */
-export const NEW: ScheduleFile = receiveComponent("method.schedule.output.ScheduleFile", {
+export const NEW: Form = {
   name: '',
   cron: '0 9 * * 1-5',
   every: null,
@@ -63,11 +66,11 @@ export const NEW: ScheduleFile = receiveComponent("method.schedule.output.Schedu
   runtime: null,
   budget: null,
   prompt: '',
-})
+}
 
 /** §6.4: a card's draft as the form's state; the draft never says `enabled` / `missed` / `created`, so those keep `NEW`'s. */
-export function draftToFile(d: RoutineDraft): ScheduleFile {
-  return receiveComponent("method.schedule.output.ScheduleFile", {
+export function draftToFile(d: RoutineDraft): Form {
+  return {
     ...NEW,
     name: d.name,
     cron: d.cron ?? null,
@@ -92,7 +95,7 @@ export function draftToFile(d: RoutineDraft): ScheduleFile {
     expires: d.expires ?? null,
     timeout: d.timeout ?? null,
     prompt: d.prompt,
-  })
+  }
 }
 
 /** A card's draft and the tool call it came from (§6.4). */
@@ -110,8 +113,8 @@ export function latestDraft(entries: readonly Entry[]): Draft | null {
 }
 
 /** A `ScheduleFile` back as the markdown the engine wrote (front matter + body), for Edit by chat (§6.6). */
-export function fileText(f: ScheduleFile): string {
-  const keys: (keyof ScheduleFile)[] = ['cron', 'every', 'at', 'when', 'fire', 'for', 'cooldown', 'mode', 'memory', 'timeout', 'until', 'max_runs', 'expires', 'quiet', 'approvals', 'agent', 'project', 'model', 'effort', 'cwd', 'run_timeout', 'engine', 'enabled', 'created']
+export function fileText(f: Form): string {
+  const keys: (keyof Form)[] = ['cron', 'every', 'at', 'when', 'fire', 'for', 'cooldown', 'mode', 'memory', 'timeout', 'until', 'max_runs', 'expires', 'quiet', 'approvals', 'agent', 'project', 'model', 'effort', 'cwd', 'run_timeout', 'engine', 'enabled', 'created']
   const lines = keys.flatMap((k) => {
     const v = f[k]
     if (v === null || v === undefined || v === '' || (k === 'quiet' && v === false) || (k === 'approvals' && v === true) || (k === 'enabled' && v === true)) return []
