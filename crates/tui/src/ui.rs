@@ -701,7 +701,7 @@ fn component_slot(m: &Model, at: Surface<'_>, width: u16, height: u16, handle: O
                     handle, has_focus: editor.focused, value: editor.value, ignore_paste: true,
                     on_change: editor.on_change,
                 )).into_any();
-                (render(input), rows, replace, false)
+                (render(input), rows, replace, true)
             }
         };
         if replace { slot.elements.clear(); slot.rows = 0; slot.replace = true; slot.intrinsic = false; }

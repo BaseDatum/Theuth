@@ -607,7 +607,7 @@ pub enum View {
     Editor {
         /// Value, focus and typed edit callback, never a mutable handle.
         editor: EditorConfig,
-        /// Receives only the rendered input element.
+        /// Receives only the rendered input; the returned root owns its intrinsic layout.
         render: Box<dyn FnOnce(AnyElement<'static>) -> AnyElement<'static>>,
         /// Exact reserved rows.
         rows: usize,
