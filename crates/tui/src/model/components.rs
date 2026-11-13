@@ -190,6 +190,7 @@ impl Model {
                 }
                 CoreAction::Notice(text) => self.entries.push(Entry::Info(text)),
                 CoreAction::Interject(text) => self.interject(Entry::Info(text)),
+                CoreAction::InterjectError(text) => self.interject(Entry::Error(text)),
                 CoreAction::Error(text) => self.receive(UiEvent::Error(text), emit),
                 CoreAction::Reject(text) => self.entries.push(Entry::Error(text)),
                 CoreAction::AppendCard(card) => self.entries.push(card.into()),

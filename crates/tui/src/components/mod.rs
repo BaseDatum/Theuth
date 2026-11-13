@@ -706,6 +706,8 @@ pub enum CoreAction {
     Notice(String),
     /// Insert above a streaming tail using the existing transcript policy.
     Interject(String),
+    /// Insert an error above a streaming tail without generic failure transitions.
+    InterjectError(String),
     /// A local validation refusal, not a failed asynchronous command.
     Reject(String),
     /// Existing generic error semantics, including print-mode completion.
