@@ -5,13 +5,13 @@
 //! when its grants for us change) and, at most once per [`OFFERS_TTL`], when
 //! `discover_peers` runs; the agent turns it into `peer:<contact>/<export>` rows.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use a2a_types::AgentCard;
 use agent::communication::network::{
-    ChatPaused, ContactOffer, ContactOffers, OFFERS_TTL, OfferKind, OfferState,
+    ChatPaused, ContactOffer, ContactOffers, OFFERS_TTL, OfferKind, OfferState, SettledCards,
 };
 use http_body_util::BodyExt as _;
 use hyper_util::rt::TokioIo;
@@ -40,6 +40,10 @@ const PAIRED_RETRIES: [Duration; 3] = [
     Duration::from_secs(10),
 ];
 
+/// A card never verified this run is refetched by [`Ctx::refresh_stale_offers`] (every
+/// unknown-card send asks for one) at most this often.
+const UNVERIFIED_GAP: Duration = Duration::from_secs(30);
+
 /// One contact's last fetched offers.
 #[derive(Default)]
 pub(crate) struct Cached {
@@ -51,10 +55,12 @@ pub(crate) struct Cached {
     /// The last refresh, whatever its outcome (the TTL counts from it).
     pub at: Option<Instant>,
     /// A card of it verified this run (a failed refresh alone leaves this unset): one that
-    /// never did is refetched whenever stale offers are asked for, whatever its age.
+    /// never did is refetched whenever stale offers are asked for, [`UNVERIFIED_GAP`] apart.
     pub fetched: bool,
     /// The last refresh failure logged (each distinct one once).
     pub error: Option<String>,
+    /// [`Ctx::refresh_stale_offers`] is refetching it.
+    pub(super) inflight: bool,
     /// A noticed refresh is running; `again` is one more asked for meanwhile.
     pub(super) busy: bool,
     pub(super) again: bool,
@@ -81,6 +87,49 @@ impl Drop for Busy {
             c.again = false;
         }
     }
+}
+
+/// [`Ctx::refresh_stale_offers`]'s claim on the `inflight` flag of the machines it refetches:
+/// released however the refetch ends.
+struct Inflight<'a>(&'a Ctx, Vec<String>);
+
+impl Drop for Inflight<'_> {
+    fn drop(&mut self) {
+        let mut all = self.0.offers.lock();
+        for eid in &self.1 {
+            if let Some(c) = all.get_mut(eid) {
+                c.inflight = false;
+            }
+        }
+    }
+}
+
+/// 186 (D12): every one of `eids` (a contact's current roster) served a verified card at its
+/// last refresh: the exports any of them lists in full and when the oldest was read; `None`
+/// when one has no card, or its last refresh failed.
+pub(crate) fn settled(eids: &[String], all: &HashMap<String, Cached>) -> Option<SettledCards> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as i64;
+    let mut s = SettledCards {
+        oldest_ms: now,
+        ..SettledCards::default()
+    };
+    if eids.is_empty() {
+        return None;
+    }
+    for eid in eids {
+        let c = all.get(eid).filter(|c| c.fetched && c.error.is_none())?;
+        s.oldest_ms = s.oldest_ms.min(now - c.at?.elapsed().as_millis() as i64);
+        s.full.extend(
+            c.offers
+                .iter()
+                .filter(|o| o.mode == ShareMode::Full)
+                .map(|o| o.name.clone()),
+        );
+    }
+    Some(s)
 }
 
 /// Remote error text cut for a log line.
@@ -363,7 +412,7 @@ impl Ctx {
             self.ingest(m, eid).await;
         }
         let took = outcome.is_ok();
-        let changed = {
+        let (changed, failed) = {
             let mut all = self.offers.lock();
             let c = all.entry(eid.to_owned()).or_default();
             c.at = Some(Instant::now());
@@ -373,24 +422,33 @@ impl Ctx {
             }
             match outcome {
                 Ok((offers, full, machine)) => {
-                    c.error = None;
+                    // A card after a failure settles the contact again (D12).
+                    let recovered = c.error.take().is_some();
                     c.fetched = true;
                     let was = std::mem::replace(&mut c.full, full);
                     let named = std::mem::replace(&mut c.machine, machine) != c.machine;
-                    (std::mem::replace(&mut c.offers, offers) != c.offers) || was != full || named
+                    let changed = (std::mem::replace(&mut c.offers, offers) != c.offers)
+                        || was != full
+                        || named;
+                    (changed, recovered)
                 }
                 Err(e) => {
                     let e = clip(&e);
-                    if c.error.as_ref() != Some(&e) {
+                    let new = c.error.as_ref() != Some(&e);
+                    if new {
                         tracing::info!(%eid, "a2a: contact's shared list not refreshed (kept the last one): {e}");
                         c.error = Some(e);
                     }
-                    false
+                    (false, new)
                 }
             }
         };
-        if changed {
+        // 186 (D12): a new failure (or the card after one) changes whether the contact's
+        // machines all served a verified card: the agent hears of it, the UI need not.
+        if changed || failed {
             self.push_offers().await;
+        }
+        if changed {
             self.rt.publish(crate::A2aChanged {}).await;
         }
         took
@@ -415,25 +473,34 @@ impl Ctx {
 
     /// `discover_peers` found the offers stale, or a send found a contact's unknown: refetch,
     /// together, the card of every machine of every contact (191: every member it admits,
-    /// not one) older than [`OFFERS_TTL`] or never verified this run.
+    /// not one) older than [`OFFERS_TTL`], or never verified this run and last tried at
+    /// least [`UNVERIFIED_GAP`] ago; never one this refetches already.
     pub(crate) async fn refresh_stale_offers(&self) {
         let live = self.shared.read().clone();
-        let stale: Vec<String> = {
-            let all = self.offers.lock();
-            live.staged
+        let stale = Inflight(self, {
+            let mut all = self.offers.lock();
+            let mut stale = Vec::new();
+            for eid in live
+                .staged
                 .contacts
                 .values()
                 .filter(|f| !f.blocked)
                 .flat_map(|f| f.eids.iter())
-                .filter(|eid| {
-                    all.get(*eid).is_none_or(|c| {
-                        !c.fetched || c.at.is_none_or(|at| at.elapsed() >= OFFERS_TTL)
-                    })
-                })
-                .cloned()
-                .collect()
-        };
-        futures::future::join_all(stale.iter().map(|eid| self.refresh_offers(eid))).await;
+            {
+                let c = all.entry(eid.clone()).or_default();
+                let gap = if c.fetched {
+                    OFFERS_TTL
+                } else {
+                    UNVERIFIED_GAP
+                };
+                if !c.inflight && c.at.is_none_or(|at| at.elapsed() >= gap) {
+                    c.inflight = true;
+                    stale.push(eid.clone());
+                }
+            }
+            stale
+        });
+        futures::future::join_all(stale.1.iter().map(|eid| self.refresh_offers(eid))).await;
     }
 
     /// 191: the machine of the contact admitting `eid` whose last card counts: the most
@@ -483,24 +550,31 @@ impl Ctx {
             .unwrap_or_else(|| eid.get(..8).unwrap_or(eid).to_owned())
     }
 
-    /// Hand the agent every live contact's offers, by today's alias.
+    /// Hand the agent every live contact's offers, by today's alias, and (186 D12) which
+    /// contacts' machines all served a verified card at their last refresh.
     pub(crate) async fn push_offers(&self) {
         let Ok(agents) = self.agents() else { return };
         let live = self.shared.read().clone();
-        let from: Vec<(String, String)> = live
+        let from: Vec<(String, String, Vec<String>)> = live
             .staged
             .contacts
             .iter()
             .filter(|(_, f)| !f.blocked)
-            .map(|(alias, f)| (alias.clone(), self.offers_eid(&f.eid)))
+            .map(|(alias, f)| (alias.clone(), self.offers_eid(&f.eid), f.eids.clone()))
             .collect();
-        let map: BTreeMap<String, Vec<ContactOffer>> = {
+        let mut m = ContactOffers::default();
+        {
             let all = self.offers.lock();
-            from.into_iter()
-                .filter_map(|(alias, eid)| Some((alias, all.get(&eid)?.offers.clone())))
-                .collect()
-        };
-        let _ = agents.tell(ContactOffers(map)).await;
+            for (alias, eid, eids) in from {
+                if let Some(s) = settled(&eids, &all) {
+                    m.settled.insert(alias.clone(), s);
+                }
+                if let Some(c) = all.get(&eid) {
+                    m.offers.insert(alias, c.offers.clone());
+                }
+            }
+        }
+        let _ = agents.tell(m).await;
     }
 
     /// 183 F1: tell each contact pinned to one of `eids` that what it may reach here
@@ -537,4 +611,46 @@ pub(crate) fn changed(prev: &Staged, next: &Staged) -> Vec<String> {
         })
         .flatten()
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 186 (D12): a contact is settled only when every machine of its roster served a
+    /// verified card at its last refresh; one member's empty card proves nothing while
+    /// another's is missing or failed (live 2026-11-13: 333 listed nothing, xeus served it).
+    #[test]
+    fn a_contact_is_settled_only_by_a_verified_card_of_every_machine() {
+        let card = |offers: Vec<ContactOffer>| Cached {
+            offers,
+            fetched: true,
+            at: Some(Instant::now()),
+            ..Cached::default()
+        };
+        let proj = ContactOffer {
+            name: "proj".into(),
+            title: "proj".into(),
+            kind: OfferKind::Chat,
+            state: OfferState::Allowed,
+            mode: ShareMode::Full,
+        };
+        let eids = ["m333".to_owned(), "xeus".to_owned()];
+        let mut all = HashMap::from([("m333".to_owned(), card(Vec::new()))]);
+        assert_eq!(settled(&eids, &all), None, "xeus's card unknown");
+        all.insert(
+            "xeus".into(),
+            Cached {
+                error: Some("dial failed".into()),
+                ..card(vec![proj.clone()])
+            },
+        );
+        assert_eq!(settled(&eids, &all), None, "xeus's last refresh failed");
+        all.insert("xeus".into(), card(Vec::new()));
+        let s = settled(&eids, &all).expect("both served a card");
+        assert!(s.full.is_empty(), "none lists it");
+        all.insert("xeus".into(), card(vec![proj]));
+        let s = settled(&eids, &all).expect("both served a card");
+        assert!(s.full.contains("proj"), "one lists it in full");
+    }
 }

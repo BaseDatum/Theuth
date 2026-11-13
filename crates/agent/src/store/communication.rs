@@ -1663,9 +1663,9 @@ impl Store {
             .transpose()
     }
 
-    /// The latest open outbound message of a local session to `recipient` (a contact's
-    /// `peer:<binding>`) bound to its remote task `task_id`: what a return-route answer
-    /// naming that task in `referenceTaskIds` answers.
+    /// The outbound message of a local session to `recipient` (a contact's `peer:<binding>`)
+    /// bound to its remote task `task_id` (the latest open one first): what a return-route
+    /// answer naming that task in `referenceTaskIds` answers. The caller checks its state.
     pub async fn outbound_exchange_by_task(
         &self,
         recipient: &str,
@@ -1673,8 +1673,8 @@ impl Store {
     ) -> anyhow::Result<Option<Uuid>> {
         let row: Option<(String,)> = sqlx::query_as(
             "SELECT id FROM peer_exchanges WHERE recipient = ? AND task_id = ? \
-             AND sender_session IS NOT NULL AND state IN ('accepted', 'consumed', 'held') \
-             ORDER BY accepted_seq DESC LIMIT 1",
+             AND sender_session IS NOT NULL \
+             ORDER BY state IN ('accepted', 'consumed', 'held') DESC, accepted_seq DESC LIMIT 1",
         )
         .bind(recipient)
         .bind(task_id)
@@ -1684,21 +1684,59 @@ impl Store {
             .transpose()
     }
 
-    /// A contact never took the answer `answer` (its return route refused it): the message it
-    /// answered is open again (`consumed`: its session read it), unless something else
-    /// answered it since. That message's receipt, when it changed.
-    pub async fn unanswer_exchange(&self, answer: Uuid) -> anyhow::Result<Option<PeerReceipt>> {
+    /// Keep on the outbound message `id` the contact's export its address named (`""`: the
+    /// contact's first), sent while the contact's card was unknown.
+    pub async fn set_exchange_export(&self, id: Uuid, export: &str) -> anyhow::Result<()> {
+        if export.len() > EXTERNAL_ID_MAX {
+            anyhow::bail!(CommError::TooLarge);
+        }
+        sqlx::query("UPDATE peer_exchanges SET export = ? WHERE id = ?")
+            .bind(export)
+            .bind(id.to_string())
+            .execute(&self.write)
+            .await?;
+        Ok(())
+    }
+
+    /// The export kept on the outbound message `id` ([`Self::set_exchange_export`]).
+    pub async fn exchange_export(&self, id: Uuid) -> anyhow::Result<Option<String>> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT export FROM peer_exchanges WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.read)
+                .await?;
+        Ok(row.and_then(|(e,)| e))
+    }
+
+    /// A contact never took the answer `answer` to `orig` (its return route refused it):
+    /// `orig` is open again in `prior`, the state it had before the answer (`accepted`,
+    /// `consumed` or `held`), unless something else answered it since. Its receipt, when it
+    /// changed.
+    pub async fn unanswer_exchange(
+        &self,
+        answer: Uuid,
+        orig: Uuid,
+        prior: PeerMessageState,
+    ) -> anyhow::Result<Option<PeerReceipt>> {
+        if !matches!(
+            prior,
+            PeerMessageState::Accepted | PeerMessageState::Consumed | PeerMessageState::Held
+        ) {
+            anyhow::bail!(CommError::Invalid(format!("not an open state: {prior:?}")));
+        }
+        let orig = orig.to_string();
         let mut tx = self.begin_write().await?;
-        let Some(a) = exchange_in(&mut tx, &answer.to_string()).await? else {
-            return Ok(None);
-        };
-        let Some(orig) = a.reply_to.clone() else {
+        let Some(a) = exchange_in(&mut tx, &answer.to_string())
+            .await?
+            .filter(|a| a.reply_to.as_deref() == Some(orig.as_str()))
+        else {
             return Ok(None);
         };
         let n = sqlx::query(
-            "UPDATE peer_exchanges SET state = 'consumed', reply = NULL, answered_by = NULL, \
+            "UPDATE peer_exchanges SET state = ?, reply = NULL, answered_by = NULL, \
              updated_at = ? WHERE id = ? AND state = 'replied' AND answered_by = ? AND reply = ?",
         )
+        .bind(prior.as_str())
         .bind(now())
         .bind(&orig)
         .bind(&a.sender)
@@ -2074,6 +2112,17 @@ impl Store {
             .bind(last_ms)
             .bind(binding.to_string())
             .bind(context)
+            .execute(&self.write)
+            .await
+            .unwrap();
+    }
+
+    /// Tests: the exchange `id` was accepted at `at`.
+    #[cfg(test)]
+    pub(crate) async fn age_exchange_for_test(&self, id: Uuid, at: chrono::DateTime<Utc>) {
+        sqlx::query("UPDATE peer_exchanges SET created_at = ? WHERE id = ?")
+            .bind(at.to_rfc3339())
+            .bind(id.to_string())
             .execute(&self.write)
             .await
             .unwrap();

@@ -410,7 +410,23 @@ pub struct ContactOffer {
 
 /// `tell` (183 F1): every contact's latest offers, by alias, replacing the last set.
 #[derive(Clone, Debug, Default)]
-pub struct ContactOffers(pub BTreeMap<String, Vec<ContactOffer>>);
+pub struct ContactOffers {
+    /// The exports each contact grants us, from the card of its machine read last.
+    pub offers: BTreeMap<String, Vec<ContactOffer>>,
+    /// 186 (D12): the contacts every machine of which served a verified card at its last
+    /// refresh.
+    pub settled: BTreeMap<String, SettledCards>,
+}
+
+/// 186 (D12): every machine of a contact's current roster served a verified card at its last
+/// refresh: what any of them shares with us in full, and when the oldest was read.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SettledCards {
+    /// The exports some machine's card lists in full.
+    pub full: std::collections::BTreeSet<String>,
+    /// When the oldest of those cards was read (unix ms).
+    pub oldest_ms: i64,
+}
 
 /// Bus event (183 F1): `discover_peers` ran and the contacts' offers were last refreshed
 /// more than [`OFFERS_TTL`] ago; the a2a plugin refetches the stale cards.
@@ -663,6 +679,9 @@ struct Outbound {
     contact: bool,
     /// 186 (D5): an answer over the contact's return route: acknowledged at once.
     ret: bool,
+    /// 186: the message a return-route answer names and the state it had before; refused,
+    /// the answer gives it back.
+    answers: Option<(Uuid, PeerMessageState)>,
 }
 
 /// Derived memory only (§7): routes, started scopes, subscribers and
@@ -702,11 +721,9 @@ pub struct NetworkState {
     held: HashMap<(String, String), Vec<HeldTask>>,
     /// 183 F1: each contact's latest offers (alias → exports it grants us), from its card.
     offers: BTreeMap<String, Vec<ContactOffer>>,
-    /// 186 (D12): (alias, export) a card listed in full that a later card no longer lists:
-    /// a share seen withdrawn this run (listed again, it is forgotten). Its conversations
-    /// take no more answers; an export no card ever listed proves nothing (a contact's
-    /// machines may disagree about a grant for a while).
-    withdrawn: HashSet<(String, String)>,
+    /// 186 (D12): each contact whose machines all served a verified card at their last
+    /// refresh (see [`Self::share_closed`]).
+    settled: BTreeMap<String, SettledCards>,
     /// 183 F1: when `discover_peers` last asked for a refresh (unix ms; 0 = never).
     offers_asked_ms: std::sync::atomic::AtomicU64,
     /// 183 §7.6, W-25: inbox session → the exported agent's persona, recorded on every
@@ -937,29 +954,44 @@ impl NetworkState {
         }
     }
 
-    /// 183 F1: replace every contact's offers. 186 (D12): a full export the last ones listed
-    /// and these do not is withdrawn.
+    /// 183 F1: replace every contact's offers.
     pub(crate) fn set_offers(&mut self, offers: BTreeMap<String, Vec<ContactOffer>>) {
-        let lists = |alias: &str, e: &str| {
-            offers
-                .get(alias)
-                .is_some_and(|n| n.iter().any(|n| n.name == e))
-        };
-        for (alias, old) in &self.offers {
-            for o in old.iter().filter(|o| o.mode == super::ShareMode::Full) {
-                if !lists(alias, &o.name) {
-                    self.withdrawn.insert((alias.clone(), o.name.clone()));
-                }
-            }
-        }
-        self.withdrawn.retain(|(a, e)| !lists(a, e));
         self.offers = offers;
     }
 
-    /// 186 (D12): the contact `alias`'s share of `export` was seen withdrawn this run.
-    pub(crate) fn withdrawn(&self, alias: &str, export: &str) -> bool {
-        self.withdrawn
-            .contains(&(alias.to_owned(), export.to_owned()))
+    /// 186 (D12): replace which contacts' machines all served a verified card.
+    pub(crate) fn set_settled(&mut self, settled: BTreeMap<String, SettledCards>) {
+        self.settled = settled;
+    }
+
+    /// 183 §7.7: the offer `peer:<contact>[/<export>]` names in the contact's last card (a
+    /// bare address: the first export, as its gate maps it); `None` when unknown.
+    pub(crate) fn offer_of(&self, alias: &str) -> Option<&ContactOffer> {
+        let (name, written) = match alias.split_once('/') {
+            Some((n, e)) => (n, Some(e)),
+            None => (alias, None),
+        };
+        let offers = self.offers.get(name)?;
+        match written {
+            Some(e) => offers.iter().find(|o| o.name == e),
+            None => offers.iter().min_by(|a, b| a.name.cmp(&b.name)),
+        }
+    }
+
+    /// 186 (D12), a consistency check only (the answering engine enforces its own share):
+    /// the contact `alias` no longer shares `export` (`""`: any export) in full by the
+    /// evidence of every machine of it, each having served a verified card within
+    /// [`OFFERS_TTL`] of `now_ms`, none listing it in full. A machine's card missing, stale
+    /// or failed proves nothing (live 2026-11-13: 333's card listed nothing while xeus, which
+    /// owns the chat, served the share in full).
+    pub(crate) fn share_closed(&self, alias: &str, export: &str, now_ms: i64) -> bool {
+        self.settled.get(alias).is_some_and(|s| {
+            now_ms - s.oldest_ms <= OFFERS_TTL.as_millis() as i64
+                && match export {
+                    "" => s.full.is_empty(),
+                    e => !s.full.contains(e),
+                }
+        })
     }
 
     /// 183 F1: `discover_peers` ran; `true` (once per [`OFFERS_TTL`]) when this engine has a
@@ -4091,7 +4123,8 @@ impl Message<ContactOffers> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: ContactOffers, _: &mut Context<Self, Self::Reply>) {
-        self.network.set_offers(m.0);
+        self.network.set_offers(m.offers);
+        self.network.set_settled(m.settled);
     }
 }
 
@@ -4396,19 +4429,24 @@ impl Agents {
                 Some(sender)
             }
         };
+        // 186: an answer names its message while that one is still open; a later answer to
+        // the same message travels on the conversation alone. A return-route answer keeps the
+        // state that message had: refused, it is open again as it was.
+        let answers = match &full {
+            Some(_) => orig
+                .as_ref()
+                .filter(|o| full::answerable(o.receipt.state))
+                .map(|o| (o.receipt.id, o.receipt.state)),
+            None => None,
+        };
         let a = AcceptExchange {
             sender: &sender_key,
             recipient: &recipient_key,
             sender_session: Some(from),
             recipient_session: None,
             request_id,
-            // 186: an answer names its message while that one is still open; a later
-            // answer to the same message travels on the conversation alone.
             reply_to: match &full {
-                Some(_) => orig
-                    .as_ref()
-                    .filter(|o| full::answerable(o.receipt.state))
-                    .map(|o| o.receipt.id),
+                Some(_) => answers.map(|(id, _)| id),
                 None => reply_to,
             },
             request_scope: question_scope,
@@ -4467,6 +4505,19 @@ impl Agents {
         {
             tracing::warn!(exchange = %receipt.id, "a2a: conversation not recorded: {e:#}");
         }
+        // The contact's card unknown (`full_shape`): the export the address named (`""`: its
+        // first) is kept on the message, for the conversation the contact may mint.
+        if contact
+            && full.is_none()
+            && orig.is_none()
+            && self.network.offer_of(alias).is_none()
+            && let Err(e) = self
+                .store
+                .set_exchange_export(receipt.id, alias.split_once('/').map_or("", |(_, e)| e))
+                .await
+        {
+            tracing::warn!(exchange = %receipt.id, "a2a: addressed export not kept: {e:#}");
+        }
         let record = self
             .store
             .exchange_record(receipt.id)
@@ -4493,6 +4544,7 @@ impl Agents {
                 alias: alias.to_owned(),
                 contact,
                 ret: full.as_ref().is_some_and(|f| f.ret),
+                answers: answers.filter(|_| full.as_ref().is_some_and(|f| f.ret)),
             },
         );
         let export = match &full {
@@ -4546,7 +4598,7 @@ impl Agents {
             }
             return;
         }
-        let (ret, alias) = (o.ret, o.alias.clone());
+        let (ret, alias, answers) = (o.ret, o.alias.clone(), o.answers);
         let legacy = (o.contact && !o.ret).then_some((o.binding, o.session));
         let r = match outcome {
             Err(RemoteSendError::Refused(why)) => {
@@ -4563,10 +4615,10 @@ impl Agents {
                     _ => why,
                 };
                 let failed = self.store.fail_exchange(exchange, &why).await;
-                // An answer that never arrived answers nothing: its message is open again
-                // (a retry names it as `reply_to` once more).
-                if ret {
-                    match self.store.unanswer_exchange(exchange).await {
+                // An answer that never arrived answers nothing: its message is open again, in
+                // the state it had (a retry names it as `reply_to` once more).
+                if let Some((orig, prior)) = answers {
+                    match self.store.unanswer_exchange(exchange, orig, prior).await {
                         Ok(Some(orig)) => self.peer_changed(&orig).await,
                         Ok(None) => {}
                         Err(e) => {
@@ -4599,7 +4651,7 @@ impl Agents {
                     Err(e) => tracing::warn!(exchange = %exchange, "a2a: bind remote task: {e:#}"),
                 }
                 if let Some((binding, session)) = legacy {
-                    self.record_minted(exchange, binding, session, &alias, &t.context_id)
+                    self.record_minted(exchange, binding, session, &t.context_id)
                         .await;
                 }
                 if let Some(o) = self.network.outbound.get_mut(&exchange) {
@@ -7476,18 +7528,19 @@ mod tests {
             .open_contact_thread(binding.id, "ctx-1", session, "proj", true)
             .await
             .unwrap();
-        a.network.set_offers(BTreeMap::from([(
+        // D12: every machine of bob served a fresh card and none shares `proj` in full.
+        a.network.set_settled(BTreeMap::from([(
             "bob".into(),
-            vec![offer(super::super::ShareMode::Cautious)],
+            SettledCards {
+                full: Default::default(),
+                oldest_ms: Utc::now().timestamp_millis(),
+            },
         )]));
         assert!(
             not_found(a.full_return(answer("ctx-1", "r-3")).await),
             "downgraded"
         );
-        a.network.set_offers(BTreeMap::from([(
-            "bob".into(),
-            vec![offer(super::super::ShareMode::Full)],
-        )]));
+        a.network.set_settled(BTreeMap::new());
         // 186 review 1, 2 (D9): at most 8 of a contact's answers wait to be taken in; its
         // messages on its own conversations do not count, and a retry is its dedup.
         for (i, ctx) in (0..9).map(|i| (i, if i < 8 { "ctx-1" } else { "ctx-in" })) {
@@ -7781,9 +7834,12 @@ mod tests {
     /// An answer in a conversation this engine never recorded (a message of ours that left
     /// without one, its task bound) is adopted only through `referenceTaskIds` naming the
     /// task of an open message of ours to that same contact, into that message's session as
-    /// its reply; another contact's task, an unknown one, a card downgrading the share, a conversation
-    /// the contact opened, and a message already in another conversation are refused. A
-    /// recorded conversation is never redirected by the task it names (no cross-session path).
+    /// its reply, on the export it addressed, whatever a single machine's card lists. A task
+    /// of no message here (another contact's, an unknown one) is `NOT_OWNER` (the contact
+    /// tries its next machine); a message lapsed, closed or in another conversation, every
+    /// machine's fresh card sharing nothing, a conversation the contact opened, a blocked or
+    /// unpaired contact are refused, and the 8-answer bound holds. A recorded conversation is
+    /// never redirected by the task it names (no cross-session path).
     #[tokio::test]
     async fn an_answer_naming_our_task_is_adopted_only_for_that_contacts_open_message() {
         async fn sent(a: &Agents, s: SessionId, to: Uuid, task: &str) -> Uuid {
@@ -7857,29 +7913,31 @@ mod tests {
             r.err()
                 .is_some_and(|e| e.code == a2a_types::error_code::TASK_NOT_FOUND)
         };
+        let not_here = |r: Result<SendMessageResponse, A2AError>| {
+            r.err().is_some_and(|e| e.code == NOT_OWNER_CODE)
+        };
         assert!(
-            not_found(a.full_return(answer("their-1", "r-1", "t-carol", e1)).await),
-            "another contact's task"
+            not_here(a.full_return(answer("their-1", "r-1", "t-carol", e1)).await),
+            "another contact's task: no message of this machine"
         );
         assert!(
-            not_found(a.full_return(answer("their-1", "r-2", "t-none", e1)).await),
-            "a task of no message of ours"
+            not_here(a.full_return(answer("their-1", "r-2", "t-none", e1)).await),
+            "a task of no message here"
         );
-        a.network.set_offers(BTreeMap::from([(
-            "bob".into(),
-            vec![ContactOffer {
-                name: "proj".into(),
-                title: "proj".into(),
-                kind: OfferKind::Chat,
-                state: OfferState::Allowed,
-                mode: super::super::ShareMode::Cautious,
-            }],
-        )]));
+        let settled = |ago_ms: i64| {
+            BTreeMap::from([(
+                "bob".to_owned(),
+                SettledCards {
+                    full: Default::default(),
+                    oldest_ms: Utc::now().timestamp_millis() - ago_ms,
+                },
+            )])
+        };
+        a.network.set_settled(settled(0));
         assert!(
             not_found(a.full_return(answer("their-1", "r-3", "t-bob", e1)).await),
-            "bob's card downgraded its first export"
+            "every machine of bob served a fresh card sharing nothing"
         );
-        a.network.set_offers(BTreeMap::new());
         a.store
             .open_contact_thread(bob.id, "ctx-in", s1, "research", false)
             .await
@@ -7889,6 +7947,7 @@ mod tests {
             "a conversation the contact opened"
         );
         // A recorded conversation of s1's: the task of s2's message redirects nothing.
+        a.network.set_settled(BTreeMap::new());
         a.store
             .open_contact_thread(bob.id, "ctx-s1", s1, "proj", true)
             .await
@@ -7908,7 +7967,13 @@ mod tests {
         let other = a.store.exchange_receipt(e3).await.unwrap().unwrap();
         assert_eq!(other.state, PeerMessageState::Accepted, "s2's stays open");
 
-        // Adopted: the task of s1's open message to bob.
+        // Adopted: the task of s1's open message to bob, on the export it addressed, though
+        // the card read last lists nothing and every machine's cards are not fresh.
+        a.store.set_exchange_export(e1, "proj").await.unwrap();
+        a.network
+            .set_offers(BTreeMap::from([("bob".into(), Vec::new())]));
+        a.network
+            .set_settled(settled(2 * OFFERS_TTL.as_millis() as i64));
         match a.full_return(answer("their-1", "r-6", "t-bob", e1)).await {
             Ok(SendMessageResponse::Message(m)) => assert!(is_receipt(m.metadata.as_ref())),
             other => panic!("a receipt, got {other:?}"),
@@ -7921,7 +7986,7 @@ mod tests {
             .await
             .unwrap()
             .expect("recorded");
-        assert!(thread.outbound && thread.session == s1);
+        assert!(thread.outbound && thread.session == s1 && thread.export == "proj");
         assert!(
             a.store
                 .peer_records(s1, None, 50)
@@ -7941,32 +8006,74 @@ mod tests {
             not_found(a.full_return(answer("their-2", "r-7", "t-s2", e3)).await),
             "its own conversation is another"
         );
-        // A card listing nothing proves nothing (s1's recorded `proj` conversation still takes
-        // answers); a card that listed `proj` in full and a later one without it withdrew it.
-        let proj = ContactOffer {
-            name: "proj".into(),
-            title: "proj".into(),
-            kind: OfferKind::Chat,
-            state: OfferState::Allowed,
-            mode: super::super::ShareMode::Full,
-        };
-        a.network
-            .set_offers(BTreeMap::from([("bob".into(), Vec::new())]));
-        a.full_return(answer("ctx-s1", "r-9", "t-s2", e3))
-            .await
-            .unwrap();
-        a.network
-            .set_offers(BTreeMap::from([("bob".into(), vec![proj])]));
-        a.network
-            .set_offers(BTreeMap::from([("bob".into(), Vec::new())]));
+        // Older than THREAD_TTL; already closed.
+        let old = sent(&a, s1, bob.id, "t-old").await;
+        let lapsed = Utc::now() - chrono::Duration::from_std(THREAD_TTL).unwrap();
+        a.store
+            .age_exchange_for_test(old, lapsed - chrono::Duration::minutes(1))
+            .await;
         assert!(
-            not_found(a.full_return(answer("ctx-s1", "r-10", "t-s2", e3)).await),
-            "withdrawn"
+            not_found(a.full_return(answer("their-3", "r-8", "t-old", old)).await),
+            "lapsed"
         );
-        let e4 = sent(&a, s1, bob.id, "t-4").await;
+        let closed = sent(&a, s1, bob.id, "t-closed").await;
+        a.store.fail_exchange(closed, "refused").await.unwrap();
+        assert!(
+            not_found(
+                a.full_return(answer("their-4", "r-9", "t-closed", closed))
+                    .await
+            ),
+            "closed"
+        );
+        // 186 (D9): 8 of bob's answers wait in s1: an adopted one is busy too.
+        for i in 0..8 {
+            let r = a
+                .store
+                .accept_exchange(&AcceptExchange {
+                    sender: &format!("peer:{}", bob.id),
+                    recipient: &format!("session:{s1}"),
+                    sender_session: None,
+                    recipient_session: Some(s1),
+                    request_id: Some(&format!("w-{i}")),
+                    reply_to: None,
+                    request_scope: None,
+                    generation: 1,
+                    body: "waiting",
+                })
+                .await
+                .unwrap();
+            a.store
+                .set_exchange_contact(r.id, super::super::ShareMode::Full, Some("ctx-s1"))
+                .await
+                .unwrap();
+        }
+        let open = sent(&a, s1, bob.id, "t-busy").await;
+        let busy = a
+            .full_return(answer("their-5", "r-10", "t-busy", open))
+            .await
+            .unwrap_err();
+        assert!(busy.message.starts_with("busy:"), "{}", busy.message);
+        // Blocked (its route cancelled), then unpaired.
+        let blocked = answer("their-6", "r-11", "t-busy", open);
+        blocked.route.cancel();
+        assert!(
+            not_found(a.full_return(blocked).await),
+            "blocked: route cancelled"
+        );
+        a.network.peers.get(&bob.id).unwrap().generation.cancel();
+        assert!(
+            not_found(
+                a.full_return(answer("their-6", "r-12", "t-busy", open))
+                    .await
+            ),
+            "blocked: binding cancelled"
+        );
         a.network.peers.clear();
         assert!(
-            not_found(a.full_return(answer("their-3", "r-8", "t-4", e4)).await),
+            not_found(
+                a.full_return(answer("their-6", "r-13", "t-busy", open))
+                    .await
+            ),
             "unpaired"
         );
     }
