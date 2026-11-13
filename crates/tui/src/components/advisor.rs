@@ -268,7 +268,7 @@ impl Component for Advisor {
             },
             Surface::Status(StatusSlot::AfterCore) => {
                 use iocraft::prelude::*;
-                self.segment(cx.frame).map(|(text, state)| super::View::Element {
+                self.segment(cx.frame).map(|(text, state)| super::View::IntrinsicElement {
                     element: element!(Text(content: text, color: advisor_color(state))).into_any(), rows: 1, replace: false,
                 })
             },
