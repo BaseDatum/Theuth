@@ -163,7 +163,11 @@ impl AgentMessagingApiServer for Server {
         session: SessionId,
         id: Uuid,
     ) -> RpcResult<PeerRecord> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
+        // The owner holds the session's exchange records (a replica has none).
+        if let Some(r) = forward::route(ext, session, "peer_message", (session, id)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, GetPeerMessage { session, id }).await
     }
 
@@ -175,7 +179,17 @@ impl AgentMessagingApiServer for Server {
         limit: Option<u16>,
         pending_only: bool,
     ) -> RpcResult<PeerMessagePage> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
+        if let Some(r) = forward::route(
+            ext,
+            session,
+            "list_peer_messages",
+            (session, &cursor, limit, pending_only),
+        )
+        .await?
+        {
+            return Ok(r);
+        }
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             ListPeerMessages {

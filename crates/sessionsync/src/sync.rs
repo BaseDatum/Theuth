@@ -2407,11 +2407,13 @@ mod tests {
 
     /// A peer whose `Hello` has no schema (pre-183) or an older one is shipped
     /// nothing, neither the log tail nor a snapshot, at connect or live, and
-    /// the cursor A keeps for it stays where its `Hello` put it.
+    /// the cursor A keeps for it stays where its `Hello` put it. 64 is 2.20.1,
+    /// whose `messages` lacks 0065's `peer`: applying our rows there would skip
+    /// the table while its cursor advanced.
     #[tokio::test]
     async fn an_unknown_or_older_peer_is_held_without_moving_its_cursor() {
         let ours = agent::store::SESSIONS_WIRE_SCHEMA;
-        for schema in [None, Some(ours - 1)] {
+        for schema in [None, Some(64), Some(ours - 1)] {
             let (store, _dir, id) = engine_a().await;
             let a = PeerId("A".into());
             let (mut z, run, hello) = raw_peer(&store, schema, vec![(a, 1)]).await;

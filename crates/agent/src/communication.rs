@@ -251,6 +251,19 @@ pub struct PeerRecord {
     pub contact_mode: Option<ShareMode>,
 }
 
+impl PeerRecord {
+    /// The provenance this record carries into transcripts and events.
+    pub fn origin(&self) -> PeerOrigin {
+        PeerOrigin {
+            id: self.receipt.id,
+            from: self.from.clone(),
+            reply_to: self.receipt.reply_to,
+            scope: self.request_scope,
+            contact_mode: self.contact_mode,
+        }
+    }
+}
+
 /// Backend behind a peer address (§5.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]

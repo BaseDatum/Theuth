@@ -188,3 +188,59 @@ async fn t1_t7_replica_displays_the_owners_turn_and_acts_on_nothing() {
     a.close().await;
     b.close().await;
 }
+
+/// 0065: a contact's message consumed on A carries its typed provenance
+/// (`messages.peer`) to a replica both ways one learns rows, the log and a
+/// snapshot, though neither replica holds A's exchange record.
+#[tokio::test]
+async fn peer_provenance_rides_the_log_and_a_snapshot() {
+    use agent::ShareMode;
+    use agent::store::communication::AcceptExchange;
+    use sessionsync::apply::{apply_snapshot, build_snapshot};
+    let (a, b, c) = (engine("a").await, engine("b").await, engine("c").await);
+    let chat = session_on(&a.store).await;
+    let to = format!("session:{chat}");
+    let r = a
+        .store
+        .accept_exchange(&AcceptExchange {
+            sender: "peer:sky/ops",
+            recipient: &to,
+            sender_session: None,
+            recipient_session: Some(chat),
+            request_id: Some("r1"),
+            reply_to: None,
+            request_scope: None,
+            generation: 1,
+            body: "hi",
+        })
+        .await
+        .unwrap();
+    a.store
+        .set_exchange_contact(r.id, ShareMode::Full, None)
+        .await
+        .unwrap();
+    a.store
+        .consume_exchange(r.id, chat, 1, genai::chat::ChatMessage::user("hi"))
+        .await
+        .unwrap()
+        .unwrap();
+    let want = a.store.peer_origins(chat).await.unwrap();
+    assert_eq!(
+        want.values()
+            .map(|o| (o.id, o.contact_mode))
+            .collect::<Vec<_>>(),
+        [(r.id, Some(ShareMode::Full))]
+    );
+
+    b.pull(&a).await;
+    assert!(b.store.consumed_exchanges(chat).await.unwrap().is_empty());
+    assert_eq!(b.store.peer_origins(chat).await.unwrap(), want, "log");
+
+    let snap = build_snapshot(&a.store, &a.id()).await.unwrap();
+    apply_snapshot(&c.store, &snap).await.unwrap();
+    assert!(c.store.consumed_exchanges(chat).await.unwrap().is_empty());
+    assert_eq!(c.store.peer_origins(chat).await.unwrap(), want, "snapshot");
+    a.close().await;
+    b.close().await;
+    c.close().await;
+}

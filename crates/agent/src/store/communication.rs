@@ -16,7 +16,7 @@
 //! [`Store::fail_interrupted`] the snapshot lags until the adapter refreshes it
 //! with [`Store::update_a2a_task`] at the unchanged terminal status.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
 use anyhow::Context as _;
@@ -27,10 +27,10 @@ use sha2::{Digest as _, Sha256};
 use sqlx::{FromRow, SqliteConnection};
 use uuid::Uuid;
 
-use super::{Store, append_in};
+use super::{Store, StoreError, append_in};
 use crate::communication::{
     ALIAS_MAX, PEER_TEXT_MAX, PENDING_PER_HARNESS, PENDING_PER_RECIPIENT, PeerMessageState,
-    PeerReceipt, PeerRecord, PeerScope,
+    PeerOrigin, PeerReceipt, PeerRecord, PeerScope,
 };
 
 /// Pending intake payload budget per recipient (50 §8).
@@ -590,6 +590,27 @@ async fn exchange_in(conn: &mut SqliteConnection, id: &str) -> anyhow::Result<Op
     .bind(id)
     .fetch_optional(conn)
     .await?)
+}
+
+/// 0065: record `origin` as history row `seq`'s `messages.peer` unless the
+/// row already has one; `true` when it wrote. The caller's (captured)
+/// transaction, so the provenance ships with the row.
+async fn peer_in(
+    conn: &mut SqliteConnection,
+    sid: &str,
+    seq: i64,
+    origin: &PeerOrigin,
+) -> anyhow::Result<bool> {
+    let n = sqlx::query(
+        "UPDATE messages SET peer = ? WHERE session_id = ? AND seq = ? AND peer IS NULL",
+    )
+    .bind(serde_json::to_string(origin)?)
+    .bind(sid)
+    .bind(seq)
+    .execute(conn)
+    .await?
+    .rows_affected();
+    Ok(n == 1)
 }
 
 async fn task_in(
@@ -1295,7 +1316,8 @@ impl Store {
     }
 
     /// Consume `id` into `recipient`'s history: append `message` through the
-    /// normal append path and link its seq, atomically. `Ok(None)` when there
+    /// normal append path, record its typed provenance on the row
+    /// (`messages.peer`, replicated with it) and link its seq, atomically. `Ok(None)` when there
     /// is nothing to consume (already linked, suppressed, failed): a repeated
     /// wakeup appends nothing. `NotFound` when `id` is not addressed to
     /// `recipient`; `Revoked` when `generation` is not the admitted one.
@@ -1321,7 +1343,9 @@ impl Store {
         if row.generation != generation {
             anyhow::bail!(CommError::Revoked);
         }
+        let origin = PeerRecord::try_from(row)?.origin();
         let seq = append_in(&mut tx, &sid, &message).await?;
+        peer_in(&mut tx, &sid, seq, &origin).await?;
         let n = sqlx::query(
             "UPDATE peer_exchanges SET state = 'consumed', history_seq = ?, updated_at = ? \
              WHERE id = ? AND state = 'accepted' AND history_seq IS NULL",
@@ -2005,6 +2029,81 @@ impl Store {
                 Ok((seq, PeerRecord::try_from(r)?))
             })
             .collect()
+    }
+
+    /// Provenance of `recipient`'s peer rows by history seq (50 §9): this
+    /// engine's own consumption record where it has one (it holds the
+    /// receipt), else the replicated `messages.peer` (0065), which is all a
+    /// mesh node that did not receive the message has.
+    pub async fn peer_origins(
+        &self,
+        recipient: SessionId,
+    ) -> anyhow::Result<BTreeMap<i64, PeerOrigin>> {
+        let rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT seq, peer FROM messages WHERE session_id = ? AND peer IS NOT NULL ORDER BY seq",
+        )
+        .bind(recipient.to_string())
+        .fetch_all(&self.read)
+        .await?;
+        let mut out = rows
+            .into_iter()
+            .map(|(seq, raw)| {
+                serde_json::from_str(&raw)
+                    .with_context(|| format!("bad peer provenance on message {seq} of {recipient}"))
+                    .map(|o| (seq, o))
+            })
+            .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+        out.extend(
+            self.consumed_exchanges(recipient)
+                .await?
+                .into_iter()
+                .map(|(seq, r)| (seq, r.origin())),
+        );
+        Ok(out)
+    }
+
+    /// 0065 backfill ([`Store::open`]): the provenance of every exchange this
+    /// engine consumed before `messages.peer` existed, written once onto its
+    /// history row through the captured path so it replicates. Only rows that
+    /// exist and have none; one transaction per session, and a session owned
+    /// elsewhere now is skipped (its rows are its owner's to write). Returns
+    /// the rows written; a second run writes none.
+    pub(crate) async fn backfill_peer_origins(&self) -> anyhow::Result<u64> {
+        let rows: Vec<ExchangeRow> = sqlx::query_as(concat!(
+            "SELECT ",
+            exchange_cols!(),
+            " FROM peer_exchanges e WHERE history_seq IS NOT NULL AND EXISTS \
+             (SELECT 1 FROM messages m WHERE m.session_id = e.recipient_session \
+              AND m.seq = e.history_seq AND m.peer IS NULL)"
+        ))
+        .fetch_all(&self.read)
+        .await?;
+        let mut by: BTreeMap<String, Vec<(i64, PeerOrigin)>> = BTreeMap::new();
+        for r in rows {
+            let (Some(sid), Some(seq)) = (r.recipient_session.clone(), r.history_seq) else {
+                continue;
+            };
+            match PeerRecord::try_from(r) {
+                Ok(rec) => by.entry(sid).or_default().push((seq, rec.origin())),
+                Err(e) => tracing::warn!(session = %sid, seq, "0065: unreadable exchange: {e:#}"),
+            }
+        }
+        let mut n = 0;
+        for (sid, rows) in by {
+            let mut tx = self.begin_write().await?;
+            let mut wrote = 0;
+            for (seq, origin) in &rows {
+                wrote += u64::from(peer_in(&mut tx, &sid, *seq, origin).await?);
+            }
+            match tx.commit().await {
+                Ok(()) => n += wrote,
+                Err(e) if matches!(e.downcast_ref(), Some(StoreError::NotOwner { .. })) => {
+                    tracing::debug!(session = %sid, "0065: owned elsewhere, provenance left to its owner");
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(n)
     }
 
     /// Restart accounting (50 §7): every `accepted` exchange fails with
@@ -3375,6 +3474,74 @@ mod tests {
         }
         assert!(store.peer_binding_by_id(id).await.unwrap().is_none());
         assert!(store.peer_binding("bob").await.unwrap().is_none());
+    }
+
+    /// 0065: an exchange consumed before `messages.peer` existed gets its
+    /// provenance once, at the next start, through the captured path (one log
+    /// row ships it); a second start writes nothing.
+    #[tokio::test]
+    async fn a_pre_0065_consumed_row_is_backfilled_once_and_replicates() {
+        use crate::communication::ShareMode;
+        let (store, a, dir) = fresh().await;
+        let to = format!("session:{a}");
+        let r = store
+            .accept_exchange(&accept("peer:sky/ops", &to, None, Some(a), "hi"))
+            .await
+            .unwrap();
+        store
+            .set_exchange_contact(r.id, ShareMode::Full, None)
+            .await
+            .unwrap();
+        let (seq, _) = store
+            .consume_exchange(r.id, a, 1, ChatMessage::user("hi"))
+            .await
+            .unwrap()
+            .unwrap();
+        let want = store.peer_origins(a).await.unwrap()[&seq].clone();
+        assert_eq!(want.contact_mode, Some(ShareMode::Full));
+        let stored = |store: Store| async move {
+            let raw: Option<String> =
+                sqlx::query_scalar("SELECT peer FROM messages WHERE session_id = ? AND seq = ?")
+                    .bind(a.to_string())
+                    .bind(seq)
+                    .fetch_one(store.pool())
+                    .await
+                    .unwrap();
+            raw.map(|s| serde_json::from_str::<PeerOrigin>(&s).unwrap())
+        };
+        assert_eq!(
+            stored(store.clone()).await.as_ref(),
+            Some(&want),
+            "written on consumption"
+        );
+        // What a pre-0065 engine left: the link, no column (an uncaptured write).
+        sqlx::query("UPDATE messages SET peer = NULL")
+            .execute(store.pool())
+            .await
+            .unwrap();
+        let head = store.log_after(0).await.unwrap().last().unwrap().seq;
+        store.close().await;
+        let path = dir.0.join("sessions.sqlite");
+
+        let store = Store::open(&path, None).await.unwrap();
+        assert_eq!(stored(store.clone()).await, Some(want));
+        let rows = store.log_after(head).await.unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|r| r.session_id.as_str())
+                .collect::<Vec<_>>(),
+            [a.to_string()],
+            "the backfill is one captured write of that session"
+        );
+        store.close().await;
+
+        let store = Store::open(&path, None).await.unwrap();
+        assert!(
+            store.log_after(rows[0].seq).await.unwrap().is_empty(),
+            "a second start writes nothing"
+        );
+        assert_eq!(store.backfill_peer_origins().await.unwrap(), 0);
+        store.close().await;
     }
 
     #[tokio::test]

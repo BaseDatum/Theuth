@@ -6662,7 +6662,7 @@ impl Message<PeerConsumed> for Agents {
                 self.rt
                     .publish(PeerDelivered {
                         session: m.session,
-                        origin: origin_of(&r),
+                        origin: r.origin(),
                         text: r.text,
                         seq: m.seq,
                         turn: m.turn,
@@ -6676,17 +6676,6 @@ impl Message<PeerConsumed> for Agents {
         }
         // 186 (D4): a full contact's task completes on consumption.
         self.full_consumed(m.id).await;
-    }
-}
-
-/// The provenance a record carries into transcripts and events.
-fn origin_of(r: &PeerRecord) -> PeerOrigin {
-    PeerOrigin {
-        id: r.receipt.id,
-        from: r.from.clone(),
-        reply_to: r.receipt.reply_to,
-        scope: r.request_scope,
-        contact_mode: r.contact_mode,
     }
 }
 
@@ -8349,18 +8338,8 @@ async fn read_session(
     let moved = store.moved(session).await.unwrap_or_default();
     let mut out = render_with(&h.messages, &h.entries, &h.thinking, &advisories, &moved);
     // Peer provenance (50 §9), as `load_session` marks it.
-    if let Ok(rows) = store.consumed_exchanges(session).await {
-        let peers: HashMap<i64, PeerOrigin> = rows
-            .into_iter()
-            .map(|(seq, r)| (seq, origin_of(&r)))
-            .collect();
-        for (seq, entry) in &mut out {
-            if let HistoryEntry::User { peer, .. } = entry
-                && let Some(o) = peers.get(seq)
-            {
-                *peer = Some(o.clone());
-            }
-        }
+    if let Ok(peers) = store.peer_origins(session).await {
+        mark_peers(&mut out, &peers);
     }
     // 172: channel provenance, as `load_session` marks it.
     if let Ok(channels) = store.channels(session).await {
@@ -8542,23 +8521,11 @@ async fn load_session(
                 Ok(_) => {}
                 Err(e) => tracing::error!(session = %m.session, "errors: {e:#}"),
             }
-            // Typed provenance for replay (50 §9): the exchange rows this
-            // session consumed, keyed by the history row they became.
-            match store.consumed_exchanges(m.session).await {
-                Ok(rows) => {
-                    let peers: HashMap<i64, PeerOrigin> = rows
-                        .into_iter()
-                        .map(|(seq, r)| (seq, origin_of(&r)))
-                        .collect();
-                    for (seq, entry) in &mut out {
-                        if let HistoryEntry::User { peer, .. } = entry
-                            && let Some(o) = peers.get(seq)
-                        {
-                            *peer = Some(o.clone());
-                        }
-                    }
-                }
-                Err(e) => tracing::error!(session = %m.session, "consumed_exchanges: {e:#}"),
+            // Typed provenance for replay (50 §9): this engine's consumption
+            // records, else the replicated `messages.peer`, by history row.
+            match store.peer_origins(m.session).await {
+                Ok(peers) => mark_peers(&mut out, &peers),
+                Err(e) => tracing::error!(session = %m.session, "peer_origins: {e:#}"),
             }
             let (mut history, first_seq, more) = page(out, m.before, m.limit);
             match store.inner_calls(m.session).await {
@@ -11039,6 +11006,18 @@ pub(crate) fn mark_channels(
             && let Some(c) = channels.get(seq)
         {
             *channel = Some(c.clone());
+        }
+    }
+}
+
+/// 50 §9: put each user row's peer provenance (`Store::peer_origins`) on its
+/// [`HistoryEntry::User`] entry.
+fn mark_peers(out: &mut [(i64, HistoryEntry)], peers: &BTreeMap<i64, PeerOrigin>) {
+    for (seq, entry) in out {
+        if let HistoryEntry::User { peer, .. } = entry
+            && let Some(o) = peers.get(seq)
+        {
+            *peer = Some(o.clone());
         }
     }
 }
@@ -13955,6 +13934,110 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let rt = Runtime::new(figment::Figment::new(), dir);
         bare_agents(rt, engine, communication).await
+    }
+
+    /// 0065: a contact's message consumed on A and replicated to B. B holds no
+    /// exchange record, yet its `load_session` and `session_read` mark the row
+    /// with A's typed provenance (contact_mode full).
+    #[tokio::test]
+    async fn a_replica_marks_a_consumed_contact_row_with_the_owner_provenance() {
+        use crate::communication::ShareMode;
+        use crate::store::communication::AcceptExchange;
+        use std::ffi::{c_int, c_void};
+        unsafe extern "C" fn replace(
+            _: *mut c_void,
+            _: c_int,
+            _: *mut libsqlite3_sys::sqlite3_changeset_iter,
+        ) -> c_int {
+            libsqlite3_sys::SQLITE_CHANGESET_REPLACE
+        }
+        let scratch = crate::TestDir::new("0065");
+        let a = Store::open(
+            &scratch.0.join("a.sqlite"),
+            Some(mesh::EngineId("A".into())),
+        )
+        .await
+        .unwrap();
+        let chat = SessionId::new();
+        a.create_session(chat, "m", None, None, None).await.unwrap();
+        let to = format!("session:{chat}");
+        let receipt = a
+            .accept_exchange(&AcceptExchange {
+                sender: "peer:sky/ops",
+                recipient: &to,
+                sender_session: None,
+                recipient_session: Some(chat),
+                request_id: Some("r1"),
+                reply_to: None,
+                request_scope: None,
+                generation: 1,
+                body: "**hello**",
+            })
+            .await
+            .unwrap();
+        a.set_exchange_contact(receipt.id, ShareMode::Full, None)
+            .await
+            .unwrap();
+        a.consume_exchange(receipt.id, chat, 1, ChatMessage::user("**hello**"))
+            .await
+            .unwrap()
+            .unwrap();
+        let want = a
+            .peer_record(chat, receipt.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .origin();
+        assert_eq!(want.contact_mode, Some(ShareMode::Full));
+
+        let b = agents_on(scratch.0.join("b"), Some("B"), false).await;
+        for row in a.log_after(0).await.unwrap() {
+            let mut tx = b.store.begin_apply().await.unwrap();
+            let rc = tx
+                .with_raw(|db| unsafe {
+                    libsqlite3_sys::sqlite3changeset_apply(
+                        db.as_ptr(),
+                        c_int::try_from(row.changeset.len()).unwrap(),
+                        row.changeset.as_ptr().cast::<c_void>().cast_mut(),
+                        None,
+                        Some(replace),
+                        std::ptr::null_mut(),
+                    )
+                })
+                .await
+                .unwrap();
+            assert_eq!(rc, libsqlite3_sys::SQLITE_OK, "apply of seq {}", row.seq);
+            tx.commit().await.unwrap();
+        }
+        assert!(b.store.consumed_exchanges(chat).await.unwrap().is_empty());
+        let agents = Agents::spawn(b);
+        let peers = |h: &[HistoryEntry]| -> Vec<PeerOrigin> {
+            h.iter()
+                .filter_map(|e| match e {
+                    HistoryEntry::User { peer, .. } => peer.clone(),
+                    _ => None,
+                })
+                .collect()
+        };
+        let loaded = agents
+            .ask(LoadSession {
+                session: chat,
+                before: None,
+                limit: None,
+                settled_only: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(peers(&loaded.history), std::slice::from_ref(&want));
+        let read = agents
+            .ask(ReadSession {
+                session: chat,
+                caller: chat,
+            })
+            .await
+            .unwrap();
+        assert_eq!(peers(&read.history), [want]);
+        a.close().await;
     }
 
     /// A catalog with an image-capable `testvis/eyes`, a text-only
