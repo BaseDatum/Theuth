@@ -28648,17 +28648,6 @@
               "array",
               "null"
             ]
-          },
-          "unshare": {
-            "default": null,
-            "description": "Stop sharing: as `revoke`, and an export no grant row holds any more (of any live\ncontact, on any machine: a blocked one's and one §6.3 skips count) goes too.",
-            "items": {
-              "type": "string"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
           }
         },
         "type": "object"

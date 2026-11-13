@@ -26,10 +26,11 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { chatName } from '@/lib/attach'
-import { PAIRED_RULE, SHARE_RULE, accessFocus, exportName, fingerprint, focusedContact, names, rogueLine, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
+import { PAIRED_RULE, SHARE_RULE, type Sharing, accessFocus, exportName, fingerprint, focusedContact, names, rogueLine, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
 import { engineLabel } from '@/lib/owner'
 import { putPair, queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
+import type { Api } from '@/rpc/bindings/client'
 import type { Contact } from "@/rpc/bindings/method.a2a.output"
 import type { ContactMachine } from "@/rpc/bindings/method.a2a.output"
 import type { ContactPatch } from '@/rpc/bindings/method.a2a.input'
@@ -721,6 +722,16 @@ export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { 
   )
 }
 
+/** 191: what a grant change says when the engine ignored it (one older than `grant` / `revoke`). */
+export const OLD_ENGINE = 'this engine is older than this app; update it'
+
+/** `contact_update` granting (`on`) or revoking export `exp` alone; the answer must show it, so an engine that ignored the
+ * patch never reads as success (a blocked contact's answer lists nothing). */
+async function changeGrant(api: Api, contact: Contact, exp: string, on: boolean) {
+  const c = await api.contact_update(who(contact), { ...NO_PATCH, ...(on ? { grant: [exp] } : { revoke: [exp] }) })
+  if (on ? !c.blocked && !c.exports.includes(exp) : c.exports.includes(exp)) throw new Error(OLD_ENGINE)
+}
+
 /** Grant `target` to `contact`: its export when one exists, else a new one named from `title` (`a2a_export_put`), then
  * `contact_update(grant)`, which touches that export only (191: never a whole list built from this machine's view, which
  * would take back shares it cannot see). Every share is full (190 D2), so the patch names no mode. */
@@ -733,16 +744,17 @@ export function useGrant() {
         const existing = all.find((x) => (x.target.kind === 'agent' ? target.kind === 'agent' && x.target.agent === target.agent : target.kind === 'chat' && x.target.session === target.session))
         const name = existing?.name ?? exportName(title, all.map((x) => x.name))
         if (!existing) await api.a2a_export_put({ name, target, description: title, paused: null })
-        if (!contact.exports.includes(name)) await api.contact_update(who(contact), { ...NO_PATCH, grant: [name] })
+        if (!contact.exports.includes(name)) await changeGrant(api, contact, name, true)
       })(),
     { keys: [queryKeys.contacts, queryKeys.exports] },
   )
 }
 
-/** Stop sharing `exp` with `contact` (`contact_update(unshare)`: that export only). The engine drops the export with it once no grant row holds it, on any machine (191: never decided from this list). */
+/** Stop sharing `exp` with `contact` (`contact_update(revoke)`: that export only). The export stays (no route): the next
+ * share of its chat reuses it (191: never removed from this machine's list). */
 export function useUngrant() {
   const api = useApi()
-  return useAction(({ contact, exp }: { contact: Contact; exp: string }) => api.contact_update(who(contact), { ...NO_PATCH, unshare: [exp] }), { keys: [queryKeys.contacts, queryKeys.exports] })
+  return useAction(({ contact, exp }: { contact: Contact; exp: string }) => changeGrant(api, contact, exp, false), { keys: [queryKeys.contacts, queryKeys.exports] })
 }
 
 type Pick_ = { key: string; target: ExportTarget; title: string; group: 'Agents' | 'Chats'; detail: string }
@@ -902,16 +914,21 @@ function Access({ c, exports, focused }: { c: Contact; exports: readonly Export[
 }
 
 /** 183 §12.10: the chat ⋯ menu's Share with contact… (`onShare` opens `ShareDialog` outside the menu) and, when contacts can
- * message the chat, Stop sharing with <them> (`a2a_export_remove`: the export and every grant go). */
+ * message the chat, Stop sharing with <them> (a revoke for each of them; the export stays for the next share). */
 export function SharingItems({ session, onShare }: { session: string; onShare: () => void }) {
   const api = useApi()
   const sharing = useSharing(session)
-  const stop = useAction((name: string) => api.a2a_export_remove(name), { keys: [queryKeys.contacts, queryKeys.exports] })
+  const stop = useAction(
+    async (s: Sharing) => {
+      for (const c of s.contacts) await changeGrant(api, c, s.exp.name, false)
+    },
+    { keys: [queryKeys.contacts, queryKeys.exports] },
+  )
   return (
     <>
       <DropdownMenuItem onSelect={onShare}>Share with contact…</DropdownMenuItem>
       {sharing && sharing.contacts.length > 0 && (
-        <DropdownMenuItem variant="destructive" disabled={stop.isPending} onSelect={() => stop.mutate(sharing.exp.name)}>
+        <DropdownMenuItem variant="destructive" disabled={stop.isPending} onSelect={() => stop.mutate(sharing)}>
           Stop sharing with {names(sharing.contacts)}
         </DropdownMenuItem>
       )}

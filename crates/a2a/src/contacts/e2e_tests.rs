@@ -2261,23 +2261,21 @@ async fn a_share_of_a_chat_on_another_machine_shows_here_and_survives_a_share_ma
     .unwrap();
     assert_eq!(after.exports, ["xeus-chat"]);
     assert_eq!(granted().await, Some(1));
-    // Stop sharing: own-chat has no other holder and goes with it; xeus-chat stays.
-    assert!(
-        a.ctx.exports().await.iter().any(|x| x.name == "own-chat"),
-        "a revoke keeps the export"
+    // Nobody holds own-chat now: its export stays (no route), and sharing the chat again
+    // reuses it.
+    let names: Vec<String> = a.ctx.exports().await.into_iter().map(|x| x.name).collect();
+    assert_eq!(
+        names,
+        ["own-chat", "xeus-chat"],
+        "a revoke removes no export"
     );
-    let after = update(ContactPatch {
-        unshare: Some(vec!["own-chat".into()]),
+    let again = update(ContactPatch {
+        grant: Some(vec!["own-chat".into()]),
         ..ContactPatch::default()
     })
     .await
     .unwrap();
-    assert_eq!(after.exports, ["xeus-chat"]);
-    let names: Vec<String> = a.ctx.exports().await.into_iter().map(|x| x.name).collect();
-    assert!(
-        !names.contains(&"own-chat".to_owned()) && names.contains(&"xeus-chat".to_owned()),
-        "{names:?}"
-    );
+    assert!(again.exports.contains(&"own-chat".to_owned()));
 }
 
 /// 191 (review 1, W-41): listing never reads a missing session as a deletion. An export
@@ -2311,8 +2309,7 @@ async fn only_a_deleted_chat_tombstones_its_exports_never_a_listing() {
     )
     .await;
     let actor = crate::A2aActor::spawn(crate::A2aActor { ctx: ctx.clone() });
-    rt.subscribe::<crate::A2aActor, agent::AgentEvent>(&actor)
-        .await;
+    subscribe_deletions(&rt, &actor).await;
     let me = net.id.0.clone();
     let row = |id: &str, name: &str, session: &str, home: &str| {
         RecordWrite::new(

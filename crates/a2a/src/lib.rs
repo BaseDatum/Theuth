@@ -1434,7 +1434,7 @@ impl runtime::Plugin for A2aPlugin {
         rt.subscribe::<A2aActor, agent::communication::network::ContactsHeldChanged>(&actor)
             .await;
         // 191 (W-41): a chat deleted here takes its exports along (`session_deleted`).
-        rt.subscribe::<A2aActor, agent::AgentEvent>(&actor).await;
+        contacts::subscribe_deletions(rt, &actor).await;
         if config_error.is_none() {
             tokio::spawn(ctx.init());
         }

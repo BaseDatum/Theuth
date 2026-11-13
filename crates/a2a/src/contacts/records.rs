@@ -1584,14 +1584,26 @@ mod tests {
             .unwrap_err();
             assert!(err.contains("one principal per exported session"), "{err}");
         }
+        // Not published here (the pass drops it from the routes and its peer): refused alike,
+        // never skipped at staging in silence.
+        let mut s = stage(&r);
+        s.exports.remove("y-chat");
+        let a = analyze(&r);
+        let members = group_of(&a, "c").unwrap().members.clone();
+        let p = ContactPatch {
+            grant: names(&["y-chat"]),
+            ..ContactPatch::default()
+        };
+        let err = grant_patch(&r, &s, &members, &p).unwrap_err();
+        assert!(err.contains("granted to both alice and bob"), "{err}");
     }
 
     /// 191 (review 1): a grant and a revoke of one export, one by name and one by id, write it
-    /// once and the later list wins (revoke over grant, unshare over both); `unshare` drops an
-    /// export only once no live contact's row holds it (a blocked contact's grant keeps it); a
-    /// record whose merge chain is broken is named by its id and takes a grant.
+    /// once and the revoke wins; no grant change ever removes an export (one nobody holds has
+    /// no route and is reused by the next share); a blocked contact's grant is no principal
+    /// (§6.3); a record whose merge chain is broken is named by its id and takes a grant.
     #[test]
-    fn grant_lists_resolve_by_id_and_unshare_keeps_an_export_someone_holds() {
+    fn grant_lists_resolve_by_id_and_never_remove_an_export() {
         use crate::Ctx;
         use crate::contacts::{ContactPatch, grant_patch};
         let names = |l: &[&str]| Some(l.iter().map(|s| s.to_string()).collect::<Vec<_>>());
@@ -1652,22 +1664,18 @@ mod tests {
             assert_eq!(granted(&w[0]), Some(Cell::Int(0)), "revoke wins");
             assert!(!tombstoned(&w, "x"), "a revoke keeps the export");
         }
-        // Unshare: x goes with bob's last grant; z stays, blocked kim still holds it.
+        // Kim (blocked) holds no export: z is granted to bob alike; bob's last grant of x is
+        // taken back and the export stays.
         let w = plan(
             "bob",
             ContactPatch {
-                grant: names(&["x-chat"]),
-                unshare: names(&["x", "z-chat"]),
+                grant: names(&["z-chat"]),
+                revoke: names(&["x"]),
                 ..ContactPatch::default()
             },
         );
-        assert!(tombstoned(&w, "x"));
-        assert!(!tombstoned(&w, "z"), "kim's grant (blocked) keeps z");
-        assert!(
-            w.iter()
-                .filter(|w| w.table == RecordTable::Grants)
-                .all(|w| granted(w) == Some(Cell::Int(0)))
-        );
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(!tombstoned(&w, "x") && !tombstoned(&w, "z"));
         // The lagging record (its merge target not here) by id: its own row is written (w:
         // x is bob's, §6.3).
         assert!(stage(&r).quarantined.iter().any(|q| q.id == "l"));
