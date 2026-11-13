@@ -687,6 +687,8 @@ fn component_slot(m: &Model, at: Surface<'_>, width: u16, height: u16, handle: O
     let mut slot = ComponentSlot { elements: Vec::new(), rows: 0, replace: false, intrinsic: false };
     for view in m.component_views(at, usize::from(width), usize::from(height)) {
         let (element, rows, replace, intrinsic) = match view {
+            // Text badges are projected inside the active approval/question, not a second row.
+            crate::components::View::Text(_) if matches!(at, Surface::PromptBadge) => continue,
             crate::components::View::Text(text) => {
                 let rows = text.lines().count();
                 (element!(Text(content: text, wrap: TextWrap::NoWrap)).into_any(), rows, false, false)
@@ -1416,6 +1418,44 @@ mod tests {
                     "width {width} budget {budget} {focus:?}: {shown} not in view\n{frame}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn prediction_stays_inside_the_question_in_short_terminals() {
+        use crate::components::double::{Double, Msg};
+        let session = SessionId::new();
+        let id = tools::AskId(uuid::Uuid::new_v4());
+        let mut model = Model::with_components(String::new(), true, crate::components::Registry::empty());
+        model.session = Some(session);
+        model.components.register(Double::default()).unwrap();
+        model.apply(UiEvent::Ask(tools::AskRequested {
+            id, session, questions: vec![tools::Question {
+                id: "q".into(), question: "Which?".into(), options: vec![], recommended: None,
+            }],
+        }));
+        model.apply(UiEvent::Component(crate::components::LocalReply {
+            to: model.components.token("double"), engine_epoch: 0,
+            body: Box::new(Msg::Predicted(::double::DoublePredicted {
+                question_id: id.0.to_string(), session: Some(session), kind: ::double::CardKind::Ask,
+                class: "test".into(), choice: "Wait".into(), index: None, p: 0.9,
+                probs: vec![], rung: 1, will_act_at: None, version: "baseline".into(),
+                explain: Default::default(),
+            })),
+        }));
+        let frame = |badge: Option<AnyElement<'static>>, height| element! {
+            View(width: 100u16, height, flex_direction: FlexDirection::Column) {
+                #(ask_box(&model))
+                #(badge)
+                View(height: 3, flex_shrink: 0.0) { Text(content: "composer") }
+            }
+        }.to_string();
+        for height in [8u16, 10, 12] {
+            let expected = frame(None, height);
+            assert_eq!(expected.lines().count(), usize::from(height));
+            assert_eq!(expected.matches("double: Wait 90 % · L1").count(), 1, "{expected}");
+            let actual = frame(component_slot(&model, Surface::PromptBadge, 100, height, None).element(), height);
+            assert_eq!(actual, expected, "terminal height {height}");
         }
     }
 

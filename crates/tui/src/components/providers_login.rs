@@ -382,7 +382,7 @@ impl Component for ProvidersLogin {
     fn view(&self, at: Surface<'_>, cx: &ViewCx<'_>) -> Option<View> {
         if matches!(at, Surface::PromptBadge) {
             let prompt = self.prompt.as_ref()?;
-            return Some(View::Element {
+            return Some(View::IntrinsicElement {
                 element: element!(Layout(height: 1, padding_left: 1) {
                     Text(content: prompt.hint(), color: crate::ui::OCHRE)
                 }).into_any(),
