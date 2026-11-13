@@ -222,10 +222,14 @@ impl WriteTx<'_> {
             store.seq.store(start, Ordering::SeqCst);
             return Err(e);
         }
+        // The head this transaction wrote, read while it still holds the one
+        // write connection: after COMMIT another writer may already have
+        // taken (and may yet give back) the next seq.
+        let head = store.seq.load(Ordering::SeqCst);
         self.tx.commit().await?;
         store
             .log_tx
-            .send_if_modified(|s| std::mem::replace(s, store.seq.load(Ordering::SeqCst)) != *s);
+            .send_if_modified(|s| std::mem::replace(s, head) != *s);
         Ok(())
     }
 
