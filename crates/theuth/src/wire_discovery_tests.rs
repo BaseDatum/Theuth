@@ -22,6 +22,15 @@ fn names(document: &Value) -> std::collections::BTreeSet<&str> {
 }
 
 #[tokio::test]
+async fn node_client_methods_exist_in_production_catalog() {
+    let (_, methods) = composition().await;
+    let names: std::collections::BTreeSet<_> = methods.method_names().collect();
+    for method in nodes::client::METHODS {
+        assert!(names.contains(method), "{method} missing from production RPC catalog");
+    }
+}
+
+#[tokio::test]
 async fn real_composition_discovery_is_cached_per_authenticated_view() {
     let (rt, methods) = composition().await;
     assert_eq!(reply(&methods, "rpc.discover").await["error"]["code"], rpc_core::UNAUTHORIZED);

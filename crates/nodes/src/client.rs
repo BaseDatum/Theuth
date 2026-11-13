@@ -12,8 +12,8 @@ use tokio::sync::mpsc;
 
 use crate::conn::Channel;
 
-/// Every `Api` method this plugin calls on a node; a test checks each is in
-/// `bindings/methods.json` so a rename fails a test instead of a node.
+/// Every method this plugin calls on a node; the engine's composition test
+/// checks these against the served catalog, without generated-file inputs.
 pub const METHODS: [&str; 6] = ["info", "link_pair", "link_revoke_device", "link_status", "rpc.capabilities", "rpc.discover"];
 
 /// Per-request deadline over the relay.
@@ -121,17 +121,3 @@ impl Rpc {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn methods_exist_in_bindings() {
-        let names: Vec<String> =
-            serde_json::from_str(include_str!("../../../bindings/methods.json")).unwrap();
-        for m in super::METHODS {
-            assert!(
-                names.iter().any(|n| n == m),
-                "{m} missing from bindings/methods.json"
-            );
-        }
-    }
-}
