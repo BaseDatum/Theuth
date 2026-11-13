@@ -554,6 +554,10 @@ pub struct CommitPeerConfig {
 /// deleted exported chat, whose export the plugin then drops).
 pub const UNKNOWN_SESSION: &str = "unknown session";
 
+/// 191: what [`ValidateExport`]'s refusal of a chat run by an external harness contains (the
+/// a2a plugin pauses such an export as not native).
+pub const NOT_NATIVE: &str = "runs an external harness";
+
 /// `ask` → `Result<Option<String>, String>` (183 W-41, §13 row 55): why the exported chat
 /// `session` answers nothing right now: `chat archived`, `agent messaging off`, or `None`.
 /// `Err` starts with [`UNKNOWN_SESSION`] for a deleted chat.
@@ -3150,7 +3154,7 @@ impl Agents {
                 Ok(())
             }
             Ok(Some(_)) => Err(format!(
-                "session {session} runs an external harness; only native sessions are exportable"
+                "session {session} {NOT_NATIVE}; only native sessions are exportable"
             )),
             Ok(None) => Err(format!("{UNKNOWN_SESSION} {session}")),
             Err(e) => Err(format!("{e:#}")),

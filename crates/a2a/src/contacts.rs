@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use a2a_types::AgentCard;
-use agent::communication::network::{ChatPaused, UNKNOWN_SESSION, ValidateExport};
+use agent::communication::network::{ChatPaused, NOT_NATIVE, UNKNOWN_SESSION, ValidateExport};
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
 use runtime::SessionId;
@@ -2310,7 +2310,7 @@ impl crate::Ctx {
             // it, or the check failed (its error is the pause; logged).
             let unpublished = match &agents {
                 Some(a) if left => match self.ask(a, ValidateExport { session: e.session }).await {
-                    Err(err) if err.contains("external harness") => {
+                    Err(err) if err.contains(NOT_NATIVE) => {
                         Some(PAUSED_NOT_NATIVE.to_owned())
                     }
                     Err(err) if !err.starts_with(UNKNOWN_SESSION) => {
