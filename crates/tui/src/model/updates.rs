@@ -63,31 +63,7 @@ impl Model {
                 }
             }
             UiEvent::Agents(list) => {
-                // Reseeding keeps what events taught about rows still there.
-                let mut old = std::mem::take(&mut self.agents);
-                self.agents = list
-                    .into_iter()
-                    // 125 §7.5: the hidden advisor child is never a board row.
-                    .filter(|info| info.kind != SessionKind::Advisor)
-                    .map(|info| {
-                        let row = match old.remove(&info.id) {
-                            Some(mut row) => {
-                                row.info = info;
-                                row
-                            }
-                            None => AgentRow::new(info),
-                        };
-                        (row.info.id, row)
-                    })
-                    .collect();
-                // The owned tree's roster: navigating within it is not a leave (51 §4.3).
-                if let Some(p) = &mut self.private
-                    && self.session.is_some_and(|s| p.member(s))
-                {
-                    p.members.extend(self.agents.keys().copied());
-                }
-                self.approvals
-                    .retain(|a| Some(a.session) == self.session || self.agents.contains_key(&a.session));
+                self.adopt_descendants(list);
                 if !std::mem::take(&mut self.agents_picker_pending) {
                     return;
                 }
@@ -140,70 +116,7 @@ impl Model {
                     self.entries.push(Entry::Error(message));
                 }
             }
-            UiEvent::Models(items) => {
-                let target = std::mem::take(&mut self.pick_target);
-                let chips = std::mem::take(&mut self.pick_effort);
-                if items.is_empty() {
-                    self.entries
-                        .push(Entry::Error("no models: no provider is configured".into()));
-                } else {
-                    self.open_models(items, target, Vec::new(), chips);
-                }
-            }
             UiEvent::PathComplete(generation, reply) => self.path.reply(generation, reply),
-            // 194 D6: the effort is the chip row's, under the model in the picker; no second step.
-            UiEvent::ModelSet(info) => self.model_id = info.id,
-            UiEvent::FavoriteModels(models) => self.set_favorites(models),
-            UiEvent::EffortSet(effort) => {
-                self.awaiting_effort = false;
-                self.entries.push(Entry::Info(match &effort {
-                    Some(e) => format!("effort: {e}"),
-                    None => "effort cleared".to_owned(),
-                }));
-                self.effort = effort;
-            }
-            // The reply of `/advisor …` or a load's refresh (125 §7.1): installed
-            // silently; `status` prints its lines.
-            UiEvent::AdvisorStatus(status) => {
-                if status.session != self.session.unwrap_or(status.session) {
-                    return;
-                }
-                let why = self.advisor_reply.take();
-                self.set_advisor_status(status);
-                if why == Some(AdvisorReply::Status) {
-                    for line in advisor_status_lines(&self.advisor) {
-                        self.entries.push(Entry::Info(line));
-                    }
-                }
-            }
-            UiEvent::HarnessOptions(options) => self.open_harness(options),
-            UiEvent::HarnessOptionSet(key, value, r) => {
-                self.entries
-                    .push(Entry::Info(harness_option_set_line(&key, &value, &r)));
-            }
-            UiEvent::Acp(list) => match &mut self.menu {
-                Some(Menu::Acp { entries, .. }) => *entries = list,
-                _ if self.awaiting_acp => {
-                    self.awaiting_acp = false;
-                    self.menu = Some(Menu::Acp {
-                        entries: list,
-                        registry: Vec::new(),
-                        cursor: 0,
-                    });
-                }
-                _ => {}
-            },
-            UiEvent::AcpRegistry(list) => {
-                if let Some(Menu::Acp { registry, .. }) = &mut self.menu {
-                    *registry = list;
-                }
-            }
-            UiEvent::AcpAdded(e) => self.entries.push(Entry::Info(format!(
-                "acp: added `{}` ({} {})",
-                e.name,
-                e.command,
-                e.args.join(" ")
-            ))),
             UiEvent::Approvals(s) => {
                 self.approvals_global = s.global;
                 self.entries.push(Entry::Info(format!(
@@ -211,65 +124,6 @@ impl Model {
                     on_off(s.session && !self.approvals_off),
                     on_off(s.global)
                 )));
-            }
-            // Verbatim: the point is to see exactly what the model sees.
-            UiEvent::Prompt(text) => self.entries.push(card(
-                CardKind::Prompt,
-                "prompt".into(),
-                &format!("```\n{text}\n```"),
-            )),
-            UiEvent::Skills(items) => {
-                self.skills = items.clone();
-                if !std::mem::take(&mut self.skills_picker_pending) {
-                    return;
-                }
-                if items.is_empty() {
-                    self.entries.push(Entry::Info("no skills".into()));
-                } else {
-                    self.menu = Some(Menu::Skills { items, cursor: 0 });
-                }
-            }
-            UiEvent::Logins(items) => {
-                if items.is_empty() {
-                    self.entries
-                        .push(Entry::Info("nothing to log in to".into()));
-                } else {
-                    self.menu = Some(Menu::Logins { items, cursor: 0 });
-                }
-            }
-            UiEvent::LoginFinished(f) => self.entries.push(match f.error {
-                None => Entry::Info(format!("login: {} ok", f.provider)),
-                Some(e) => Entry::Error(format!("login: {} failed: {e}", f.provider)),
-            }),
-            UiEvent::Skill(s) => {
-                let text = if s.files.is_empty() {
-                    s.body
-                } else {
-                    format!("{}\n\n---\nfiles: {}", s.body, s.files.join(", "))
-                };
-                self.entries.push(card(CardKind::Skill, s.name, &text));
-            }
-            UiEvent::SkillsAdded(items) => self.entries.push(Entry::Info(if items.is_empty() {
-                "cloned; no skills found".into()
-            } else {
-                format!(
-                    "added {} skills: {}",
-                    items.len(),
-                    items
-                        .iter()
-                        .map(|s| s.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            })),
-            UiEvent::Synced(results) => {
-                if results.is_empty() {
-                    self.entries.push(Entry::Info("no repos".into()));
-                }
-                for r in results {
-                    self.entries
-                        .push(Entry::Info(format!("{}  {}", r.name, r.status)));
-                }
             }
             UiEvent::Info(t) => self.entries.push(Entry::Info(t)),
             // The note rides the reload (like undo's), so it lands after the
@@ -292,51 +146,6 @@ impl Model {
 
             UiEvent::CompactStyle(s) => self.entries.push(Entry::Info(format!(
                 "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
-            ))),
-            UiEvent::TitleModel(m) => self.entries.push(Entry::Info(title_model_line(m.as_ref()))),
-            // The startup fetch only primes the attach notice; `/vision` prints.
-            UiEvent::VisionModel(m) => {
-                if std::mem::take(&mut self.awaiting_vision) {
-                    self.entries
-                        .push(Entry::Info(vision_model_line(m.as_ref())));
-                }
-                self.vision_model = m;
-            }
-            // Status always; the picker when there is a choice to make or a
-            // stale selection to clear (row 0 restores the default chain).
-            UiEvent::AwsProfiles { info, pick } => {
-                self.entries.push(Entry::Info(aws_profile_line(&info)));
-                if pick && (info.profiles.len() > 1 || info.selected.is_some()) {
-                    self.menu = Some(Menu::AwsProfiles { info, cursor: 0 });
-                }
-            }
-            UiEvent::Providers(list) => {
-                // 85 §0.9: the built-ins come first; there may be no custom provider.
-                for p in &list {
-                    self.entries.push(Entry::Info(if p.builtin {
-                        format!(
-                            "{}  built-in  {} models  {}",
-                            p.name,
-                            p.models,
-                            if p.configured {
-                                "key set".to_owned()
-                            } else {
-                                format!("no key — /secrets add {}", p.name)
-                            }
-                        )
-                    } else {
-                        format!("{}  {}  {} models", p.name, p.base_url, p.models)
-                    }));
-                }
-                if list.iter().all(|p| p.builtin) {
-                    self.entries.push(Entry::Info(
-                        "no custom providers; /provider add to create one".into(),
-                    ));
-                }
-            }
-            UiEvent::ProviderAdded(p) => self.entries.push(Entry::Info(format!(
-                "provider {}  {}  {} models — /model {}/<id>",
-                p.name, p.base_url, p.models, p.name
             ))),
             UiEvent::Withdrawn { id, text } => {
                 self.queued.retain(|q| q.id != id);
@@ -367,7 +176,6 @@ impl Model {
                 // A failed `/compact` answers here, not with an agent event.
                 self.compacting = false;
                 self.awaiting_effort = false;
-                self.awaiting_vision = false;
 
                 self.notice = None;
                 if error_claimed { return; }
@@ -409,19 +217,6 @@ impl Model {
                     }
                     .into(),
                 ));
-            }
-            UiEvent::Voice(ev) => self.apply_voice(ev),
-            UiEvent::Talk(ev) => self.apply_talk(ev),
-            UiEvent::TalkStarting(id) => {
-                self.talk_pending = false;
-                // `SessionOpened` came first when `/talk` had to create the session.
-                let Some(session) = self.session else { return };
-                self.talk = Some(Talking::new(id, session));
-                self.talk_view = true;
-            }
-            UiEvent::TalkFailed(m) => {
-                self.talk_pending = false;
-                self.entries.push(Entry::Error(format!("talk: {m}")));
             }
         }
     }

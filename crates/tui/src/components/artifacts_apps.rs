@@ -179,7 +179,7 @@ impl Component for ArtifactsApps {
                     }
                 } else {
                     let text = artifact_text(&artifact, bytes.as_deref().map_err(String::as_str), &cx.core.markdown_options());
-                    cx.core(CoreAction::AppendCard(TranscriptCard { group: "artifacts-inline", key: uuid::Uuid::new_v4(), glyph: "▣", color: crate::ui::TOOL, title: artifact.name, body: text, expanded: true, plain: false }));
+                    cx.core(CoreAction::AppendCard(TranscriptCard { entry_key: None, group: "artifacts-inline", key: uuid::Uuid::new_v4(), glyph: "▣", color: crate::ui::TOOL, title: artifact.name, body: text, expanded: true, plain: false }));
                 }
             }
             Input::Message(Msg::Done(result)) => match result {

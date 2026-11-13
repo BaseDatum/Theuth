@@ -1,22 +1,19 @@
 //! Pure UI state: bus events in, commands out. Shared by the fullscreen
 //! renderer and the non-TTY line printer; no I/O here.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
-use acp::EntryInfo;
-use acp::registry::RegistryAgent;
 use agent::durability::{ResumeCause, ResumeKind};
 use agent::{
-    AdvisorDefaults, AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AdvisoryKind,
-    AgentEvent, AgentInfo, AgentState, AwsProfiles,
+    AgentEvent, AgentInfo, AgentState,
     CompactStyle, ContextAttachment, ContextEntry, ContextRemoval,
-    ContextTarget, HistoryEntry, Loaded, ModelInfo, ObservedMeta, ObservedSource,
-    ObservedState, ProviderInfo, QueuedInput, SessionKind,
-    SessionSummary, SkillBody, SkillMeta, Usage, VisionNote, VisionStage, VisionStatus,
+    ContextTarget, HistoryEntry, Loaded, ObservedMeta, ObservedSource,
+    ObservedState, QueuedInput, SessionKind,
+    SessionSummary, Usage, VisionNote, VisionStage, VisionStatus,
 };
 use agent::{
     CleanupStatus, CloseResult,
@@ -27,7 +24,6 @@ use iocraft::KeyCode;
 use models::Catalog;
 use runtime::{InputId, SessionId, TurnId};
 use tokio::sync::mpsc::UnboundedSender;
-use tools::git::SyncResult;
 use tools::{
     Answer, ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, AskId, AskRequested,
     AskResolved, Decision,
@@ -36,7 +32,6 @@ use uuid::Uuid;
 
 use crate::clip::Image;
 use crate::pathac::PathState;
-use crate::talk::Talking;
 
 
 /// UI state.
@@ -54,8 +49,6 @@ pub struct Model {
     /// `/agents` was typed; the next `UiEvent::Agents` opens the picker
     /// (seeding replies on open only fill the map).
     agents_picker_pending: bool,
-    /// Multi-step `/provider add`; `None` when the input is a normal line.
-    pub prompt: Option<Prompt>,
     /// A `Send { session: None }` is in flight; adopt the next `TurnStarted`.
     awaiting_session: bool,
     /// FIFO owner continuations waiting for the one in-flight session creation.
@@ -64,8 +57,6 @@ pub struct Model {
     /// before `SessionCreated` named the session: shown once it does, if the
     /// ids agree; another session's error is dropped.
     send_error: Option<(SessionId, String)>,
-    /// `/acp` was typed; the next reply opens the menu rather than only refreshing it.
-    awaiting_acp: bool,
     /// Transcript of the shown session.
     pub entries: Vec<Entry>,
     /// The current session has a turn in flight.
@@ -86,10 +77,6 @@ pub struct Model {
     /// session this view opens is created with these options (never the
     /// default); the header shows them meanwhile. Cleared once a session is adopted.
     pub draft: Option<CreateSessionOptions>,
-    /// The engine's starred models (`Info.favorite_models`, then
-    /// `FavoriteModelsChanged` / the `set_model_favorite` reply, 127 §3), in
-    /// starring order; `/model` lists them first.
-    pub favorite_models: Vec<String>,
     /// The LLM an ACP child's harness reports (06 §8.2); the header shows
     /// `model_id · harness_model`. `None` for native sessions.
     pub harness_model: Option<String>,
@@ -137,13 +124,6 @@ pub struct Model {
     pub approvals_global: bool,
     /// The root session opted out of prompts (`/approvals off`).
     pub approvals_off: bool,
-    /// The harness-wide vision fallback (52 §3): a text-only shown model
-    /// says at attach time whether this model will inspect the image.
-    /// Asked once at startup; `/vision` replies keep it current.
-    pub vision_model: Option<ModelInfo>,
-    /// `/vision` was typed: the next reply prints its line (the startup
-    /// fetch is silent).
-    awaiting_vision: bool,
     /// Large pastes and attached images held out of the input box; the box
     /// shows one [`paste_token`] each, expanded back on submit.
     pub pastes: Vec<Paste>,
@@ -181,14 +161,6 @@ pub struct Model {
     pub vision: Option<String>,
     /// The user asked to leave.
     pub quit: bool,
-    /// Skill index (`list_skills`), fetched at start and by `/skills`: names
-    /// resolve `/<skill> [args]`.
-    pub skills: Vec<SkillMeta>,
-    /// `/skills` was typed: the next index reply opens the picker.
-    skills_picker_pending: bool,
-    /// Skills whose body is in the shown session's frame (`SkillsChanged`,
-    /// `Loaded.skills`): the status-line badge.
-    pub loaded_skills: Vec<String>,
     /// First visible transcript row while scrolled up: `(entry, rows into
     /// it)`. `None` follows the tail. Anchored to an entry rather than to a
     /// row count from the bottom so what you are reading stays put while a
@@ -232,23 +204,6 @@ pub struct Model {
     /// session and its subtree from the new one (63 §2.3).
     pub reselect: bool,
 
-    /// The shown session's advisor (125 §7.5): the status segment, the
-    /// header tag, the picker's `●`. `state: Off` until a reply or event says otherwise.
-    pub advisor: AdvisorStatus,
-    /// `Info.advisor` (125 §6.5): the last remembered pick, served by `/advisor on`;
-    /// follows every `AdvisorChanged` with a model.
-    pub advisor_default: AdvisorDefaults,
-    /// Where the next `UiEvent::Models` picker sends its pick.
-    pick_target: PickTarget,
-    /// Bare `/effort` (194 D6): the next picker opens with the cursor on the chip row.
-    pick_effort: bool,
-    /// What the next `UiEvent::AdvisorStatus` reply is for; `None` installs it silently.
-    advisor_reply: Option<AdvisorReply>,
-    /// Seqs of the Advisory rows `AdvisoryAdded` carded: a `TurnStarted`
-    /// opened by one is not echoed as `◆ you`.
-    advisory_seqs: BTreeSet<i64>,
-    /// A transcript was loaded: the event loop re-asks `advisor_status`.
-    pub refresh_advisor: bool,
     /// Effective project of the shown session's root (`Loaded.project`).
     pub project: Option<String>,
     /// A `/sessions` menu is open and session metadata
@@ -263,60 +218,41 @@ pub struct Model {
     pub pending_input: Option<(String, usize)>,
     /// Editor text to submit exactly once through the existing input path.
     pub pending_send: Option<String>,
-    /// The talk this view started (76 §0.12); `Some` whether or not the view is open.
-    pub talk: Option<Talking>,
-    /// The `/talk` pane covers the transcript; Esc closes it, the talk keeps running.
-    pub talk_view: bool,
-    /// `/talk` sent, waiting for `talk_start`'s reply.
-    talk_pending: bool,
     /// When Esc last cancelled (133 §5): three within [`ESC_TAPS_WINDOW`] stop the subtree too.
     esc_taps: Vec<std::time::Instant>,
 }
 
-mod advisor;
 mod agents;
 mod approvals;
 mod boards;
 mod catalog;
-mod credentials;
 mod components;
 mod events;
-mod harnesses;
 mod history;
 mod lifecycle;
 pub(crate) use lifecycle::markdown_options;
 mod menus;
 mod navigation;
 mod paste;
-mod prompts;
 mod sessions;
 mod slash;
-mod speech;
 mod status;
 mod submission;
 mod transcript;
 mod updates;
 
-pub use advisor::{ADVISORY_COLLAPSED, ADVISOR_GLYPH, severity_name, advisory_severity, advisory_title, advisory_rows, advisory_row_count, advisory_lines, advisor_changed_line, advisor_state_name, advisor_status_lines};
-pub(crate) use advisor::{AdvisorReply};
 pub use agents::{AgentRow, sort_agents, agent_row, WATCH_GLYPH, source_tag, observed_word};
 use agents::{rank, harness_word};
 pub use approvals::Ask;
-pub use catalog::{PickTarget, ModelRow, EffortChips, rank_models, providers, provider_models, title_model_line, vision_model_line, aws_profile_line};
-#[cfg(test)]
-use catalog::{search_terms};
-pub use credentials::LoginRow;
 pub use events::{UiEvent, Command};
 pub(crate) use components::Output;
 pub(crate) use events::{send};
-pub use harnesses::{AcpRow, harness_options_lines, harness_option_set_line};
 use history::{revision, user_entries, cell_results, FENCE};
 pub(crate) use history::from_history;
 #[cfg(test)]
 use history::{parent_view};
 pub use menus::{window, Menu, Grouped, grouped_step, grouped_first, MenuKey};
 pub use paste::{Paste, paste_token};
-pub use prompts::{Prompt};
 pub use sessions::{Private, session_rows, TurnAction, ESC_TAPS_WINDOW, engine_chip, session_row, owner_offline_line, owner_turn_suffix, owner_unreachable, short, PRIVATE_WARNING};
 pub(crate) use sessions::{project_heading, project_order};
 pub use lifecycle::removal_line;
@@ -331,4 +267,4 @@ pub use transcript::{Entry, CardKind, moved_title, injected, describe, output_ma
 use transcript::{split_engine_restart, card, attachment_labels, first_arg, wrapper_kind};
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

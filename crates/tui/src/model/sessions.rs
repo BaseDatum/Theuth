@@ -125,6 +125,7 @@ impl Model {
             },
         );
         send(tx, Command::ListAgents(id));
+        self.component_notify(crate::components::Lifecycle::SessionRefreshRequested);
     }
 
     /// Esc: cancel the current session's in-flight turn or `/compact`, if any

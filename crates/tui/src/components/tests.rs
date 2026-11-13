@@ -59,13 +59,13 @@ impl Component for Counter {
 }
 pub(crate) fn core() -> CoreView<'static> {
     static MEMBERS: std::sync::LazyLock<std::collections::HashMap<SessionId, crate::model::AgentRow>> = std::sync::LazyLock::new(std::collections::HashMap::new);
-    CoreView { composer_read_only: false, frame: 0, modal_open: false, terminal_height: 0, editor: None, commands: &[], input_focused: true, menu_open: false, secret_editor: false, approval: false, awaiting_session: false, viewport: 0, prompts: &(), prompt: None, session_name: None, parent: None, private_root: None, project: None, inspecting: false, streaming: false, reasoning: false, agent: None, entries: &[], width: 0, private_members: None, members: &*MEMBERS, interactive: true, session: None }
+    CoreView { model_id: "", effort: None, default_effort: None, draft_options: None, harness: None, harness_model: None, harness_commands: &[], catalog: None, composer_read_only: false, frame: 0, modal_open: false, terminal_height: 0, editor: None, commands: &[], input_focused: true, menu_open: false, secret_editor: false, approval: false, awaiting_session: false, viewport: 0, prompts: &(), prompt: None, session_name: None, parent: None, private_root: None, project: None, inspecting: false, streaming: false, reasoning: false, agent: None, entries: &[], width: 0, private_members: None, members: &*MEMBERS, interactive: true, session: None }
 }
 pub(crate) fn topic(name: &str, version: u32, event: serde_json::Value) -> TopicEvent {
     TopicEvent::Remote(Arc::new(TopicNotification { topic: name.into(), version, event }))
 }
 fn shown(registry: &Registry) -> Vec<String> {
-    let cx = ViewCx { core: core(), width: 80, height: 24, frame: 0, commands: None, endpoint: None };
+    let cx = ViewCx { core: core(), width: 80, height: 24, frame: 0, commands: None, endpoint: None, session_badge: None };
     registry.views(Surface::Status(StatusSlot::Work), &cx).filter_map(|v| match v { View::Text(t) => Some(t), _ => None }).collect()
 }
 pub(crate) fn reply(to: ComponentToken, engine_epoch: u64, message: Msg) -> LocalReply {
@@ -318,10 +318,8 @@ fn replacement_group_freezes_older_cards_without_crossing_groups() {
         to: token, engine_epoch: 0, body: Box::new(action),
     }));
     for (group, key, title) in [("shared", old, "old"), ("shared", new, "new"), ("separate", separate, "separate")] {
-        apply(CoreAction::AppendCard(TranscriptCard {
-            group, key, title: title.into(), body: markdown::Text::complete(title), expanded: true, plain: false,
-            glyph: "⌁", color: iocraft::Color::Cyan,
-        }));
+        apply(CoreAction::AppendCard(TranscriptCard { entry_key: None, group, key, title: title.into(), body: markdown::Text::complete(title), expanded: true, plain: false,
+        glyph: "⌁", color: iocraft::Color::Cyan, }));
     }
     apply(CoreAction::ReplaceCard { group: "shared", key: old, body: "stale tick".into() });
     apply(CoreAction::ReplaceCard { group: "shared", key: new, body: "current tick".into() });
@@ -397,3 +395,21 @@ fn intrinsic_secret_editor_restores_underlying_wizard_without_focus_loss() {
     assert!(registry.editor().is_none());
 }
 
+
+#[test]
+fn addressed_delivery_preserves_owner_and_rejects_replaced_engine() {
+    let mut registry = Registry::empty();
+    registry.register(Counter::new("target")).unwrap();
+    let message = |epoch| AddressedMessage {
+        owner: std::any::TypeId::of::<Counter>(), engine_epoch: epoch, body: Box::new(Msg::Add(7)),
+    };
+    let reply = registry.address(message(0)).unwrap();
+    let out = registry.reply(reply, &core());
+    assert!(matches!(&out.actions[..], [CoreAction::Interject(text)] if text == "target=7"));
+    let reply = registry.address(message(0)).unwrap();
+    registry.lifecycle(Lifecycle::EngineChanged, &core());
+    assert!(registry.address(message(0)).is_none());
+    assert!(registry.reply(reply, &core()).actions.is_empty());
+    registry.unmount(registry.token("target"));
+    assert!(registry.address(message(1)).is_none());
+}

@@ -1,5 +1,4 @@
 use super::*;
-use crate::components::costs::cost_short;
 
 /// Unix ms now.
 pub(crate) fn now_ms() -> u64 {
@@ -49,11 +48,9 @@ impl Model {
             || self.streaming
             || self.compacting
             || self.vision.is_some()
-            || self.advisor.state == AdvisorState::Reviewing
             || self.agents.values().any(AgentRow::live)
             || self.components.wake().is_some()
             || self.components.animating()
-            || self.talk_view
     }
 }
 
@@ -143,17 +140,6 @@ impl Model {
             0 => String::new(),
             n => format!("  ·  {n} queued"),
         };
-        let harness_skills: Vec<&str> = self
-            .harness_commands
-            .iter()
-            .filter_map(|c| c.name.strip_prefix("skill:"))
-            .collect();
-        let skills = match (self.harness_commands.len(), self.loaded_skills.len()) {
-            (0, 0) => String::new(),
-            (0, _) => format!("  ·  skills: {}", self.loaded_skills.join(", ")),
-            (n, _) if harness_skills.is_empty() => format!("  ·  harness commands: {n}"),
-            _ => format!("  ·  harness skills: {}", harness_skills.join(", ")),
-        };
         let scrolled = if self.anchor.is_some() {
             "  ·  ↑ history · PgDn follows"
         } else {
@@ -167,13 +153,6 @@ impl Model {
                 + 1;
             format!("  ·  editing #{n} — ⏎ sends, esc cancels")
         });
-        let talk = match &self.talk {
-            Some(t) if !self.talk_view => {
-                let state = format!("{:?}", t.state).to_lowercase();
-                format!("  ·  ● talk: {state} (/talk)")
-            }
-            _ => String::new(),
-        };
         let attached = self
             .attached
             .as_deref()
@@ -186,12 +165,14 @@ impl Model {
             .watch_hint()
             .map_or_else(String::new, |h| format!("  ·  {h}"));
         use crate::components::{StatusSlot, Surface};
+        let before_queue = self.component_text(Surface::Status(StatusSlot::BeforeQueue));
         let work = self.component_text(Surface::Status(StatusSlot::Work));
+        let before_catalog = self.component_text(Surface::Status(StatusSlot::BeforeCatalog));
         let catalog = self.component_text(Surface::Status(StatusSlot::Catalog));
         let pinned = self.component_text(Surface::Status(StatusSlot::Pinned));
         let spoken = self.component_text(Surface::Status(StatusSlot::Spoken));
         format!(
-            "{session}  {state}{watch}{usage}{agents}{queued}{work}{skills}{catalog}{editing}{scrolled}{pinned}{talk}{spoken}{attached}{resumed}"
+            "{session}  {state}{watch}{usage}{agents}{before_queue}{queued}{work}{before_catalog}{catalog}{editing}{scrolled}{pinned}{spoken}{attached}{resumed}"
         )
     }
 
@@ -285,7 +266,7 @@ impl Model {
         for slot in HeaderSlot::ALL {
             match slot {
                 HeaderSlot::Costs => {}
-                HeaderSlot::Advisor => text.push_str(&self.advisor_tag()),
+                HeaderSlot::Advisor => {}
                 HeaderSlot::Approvals => text.push_str(self.approvals_tag()),
                 HeaderSlot::Communication => {}
                 HeaderSlot::Link => {}
@@ -297,27 +278,6 @@ impl Model {
         text
     }
 
-    /// `  ·  advisor $0.012` (125 §7.5): the advisor session's spend from the
-    /// last `AdvisorStatus`; empty while off or before it was priced.
-    fn advisor_tag(&self) -> String {
-        match (&self.advisor.state, &self.advisor.cost) {
-            (AdvisorState::Off, _) | (_, None) => String::new(),
-            (_, Some(c)) => format!("  ·  advisor {}", cost_short(c)),
-        }
-    }
-
-    /// The status line's advisor segment (125 §7.5): `  ·  ◎ advisor: idle` /
-    /// `⠋ reviewing…` / `paused` / `halted` with the state that colours it;
-    /// `None` while off.
-    pub fn advisor_segment(&self) -> Option<(String, AdvisorState)> {
-        let state = self.advisor.state;
-        let word = match state {
-            AdvisorState::Off => return None,
-            AdvisorState::Reviewing => format!("{} reviewing…", self.spinner()),
-            s => advisor_state_name(s).to_owned(),
-        };
-        Some((format!("  ·  {ADVISOR_GLYPH} advisor: {word}"), state))
-    }
 
     fn approvals_tag(&self) -> &'static str {
         if !self.approvals_global || self.approvals_off {

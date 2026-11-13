@@ -37,66 +37,16 @@ pub enum UiEvent {
     SessionCreated(SessionId),
     /// Draft creation failed; deliver each queued owner's typed failure.
     DraftFailed(String),
-    /// Reply to [`Command::ListModels`].
-    Models(Vec<ModelInfo>),
     /// Reply to [`Command::PathComplete`]: the generation that asked, `None` when the call failed.
     PathComplete(u64, Option<agent::pathac::PathCompletion>),
-    /// Reply to [`Command::SetModel`].
-    ModelSet(ModelInfo),
-    /// Reply to [`Command::SetEffort`]: the value now in force.
-    EffortSet(Option<String>),
-    /// Reply to [`Command::SetAdvisor`] / [`Command::AdvisorStatus`] (125 §7.1).
-    AdvisorStatus(AdvisorStatus),
-    /// Reply to [`Command::SetModelFavorite`]: the engine's favorite list now (127 §3).
-    FavoriteModels(Vec<String>),
-    /// Reply to [`Command::HarnessOptions`] (75 §8): the harness's option list.
-    HarnessOptions(Vec<acp::ConfigOption>),
-    /// Reply to [`Command::SetHarnessOption`]: the option key asked for, the value, and the result.
-    HarnessOptionSet(String, String, acp::SetOptionResult),
     /// Reply to [`Command::SetApprovals`].
     Approvals(ApprovalsState),
-    /// Reply to [`Command::ShowPrompt`].
-    Prompt(String),
-    /// Reply to [`Command::ListSkills`].
-    Skills(Vec<SkillMeta>),
-    /// Reply to [`Command::LoadSkill`].
-    Skill(SkillBody),
-    /// Reply to [`Command::AddSkillRepo`]: the skills the clone holds.
-    SkillsAdded(Vec<SkillMeta>),
-    /// Reply to [`Command::SyncSkills`].
-    Synced(Vec<SyncResult>),
-    /// Reply to [`Command::ListAcp`] (also sent after [`Command::RemoveAcp`]).
-    Acp(Vec<EntryInfo>),
-    /// Reply to [`Command::ListAcpRegistry`].
-    AcpRegistry(Vec<RegistryAgent>),
-    /// Reply to [`Command::AddAcp`].
-    AcpAdded(EntryInfo),
     /// A command succeeded with nothing to show but a notice.
     Info(String),
     /// Reply to [`Command::GetCompactStyle`].
     CompactStyle(CompactStyle),
-    /// Reply to [`Command::GetTitleModel`] / [`Command::SetTitleModel`].
-    TitleModel(Option<ModelInfo>),
-    /// Reply to [`Command::GetVisionModel`] / [`Command::SetVisionModel`]:
-    /// the harness-wide vision fallback (52 §3), `None` = off.
-    VisionModel(Option<ModelInfo>),
-    /// Reply to [`Command::ListAwsProfiles`] (`pick`) / [`Command::SetAwsProfile`].
-    AwsProfiles {
-        /// Discovered profiles and the harness-wide selection.
-        info: AwsProfiles,
-        /// Open the picker when there is a choice.
-        pick: bool,
-    },
     /// A command failed (actor missing, ask error).
     Error(String),
-    /// Reply to [`Command::ListLogins`]: providers and OAuth MCP servers.
-    Logins(Vec<LoginRow>),
-    /// A provider login started by [`Command::Login`] ended (bus event).
-    LoginFinished(agent::LoginFinished),
-    /// Reply to [`Command::ListProviders`].
-    Providers(Vec<ProviderInfo>),
-    /// Reply to [`Command::AddProvider`].
-    ProviderAdded(ProviderInfo),
     /// Reply to [`Command::Withdraw`]: the steer left the queue; its text goes back to the editor.
     Withdrawn {
         /// The withdrawn steer.
@@ -120,14 +70,6 @@ pub enum UiEvent {
     SessionOpened(SessionOpen),
     /// Reply to [`Command::LeaveSession`]: the root left and how far its cleanup got.
     SessionLeft(SessionId, CloseResult),
-    /// Voice completion still consumed by the not-yet-migrated talk owner.
-    Voice(voice::VoiceEvent),
-    /// Talk plugin bus event (76 §5.2): the `/talk` view.
-    Talk(talk::TalkEvent),
-    /// Reply to [`Command::TalkStart`]: the daemon opened a talk for us.
-    TalkStarting(talk::TalkId),
-    /// [`Command::TalkStart`] was refused (already talking, talk disabled, model missing).
-    TalkFailed(String),
 }
 
 /// Everything the UI can ask of the rest of the process. One task turns
@@ -239,18 +181,6 @@ pub enum Command {
     GetCompactStyle,
     /// `set_compact_style`.
     SetCompactStyle(CompactStyle),
-    /// `title_model`.
-    GetTitleModel,
-    /// `set_title_model`; `None` clears it.
-    SetTitleModel(Option<String>),
-    /// `vision_model`.
-    GetVisionModel,
-    /// `set_vision_model`; `None` turns the fallback off.
-    SetVisionModel(Option<String>),
-    /// `list_aws_profiles`.
-    ListAwsProfiles,
-    /// `set_aws_profile`; `None` restores the AWS default credential chain.
-    SetAwsProfile(Option<String>),
     /// `list_sessions`.
     ListSessions,
     /// `list_agents`: the subtree under a session.
@@ -286,8 +216,6 @@ pub enum Command {
         /// One per question, in order.
         answers: Option<Vec<Answer>>,
     },
-    /// `list_models`.
-    ListModels,
     /// `path_complete` (PATH-AC): the token under `cursor` in `input`, listed by `session`'s engine.
     PathComplete {
         /// The listing session (`None`: this engine, its cwd).
@@ -299,54 +227,6 @@ pub enum Command {
         /// Echoed in the reply so a superseded request is inert.
         generation: u64,
     },
-    /// `set_model`: the shown session only (148 R1); with no session yet the
-    /// pick is the draft's (`Model::draft`), no command.
-    SetModel {
-        /// Session to switch now.
-        session: SessionId,
-        /// `provider/model` id.
-        model: String,
-    },
-    /// `set_effort`: the shown session only (148 R1); with no session yet the
-    /// pick is the draft's (`Model::draft`), no command.
-    SetEffort {
-        /// Session to switch from its next turn.
-        session: SessionId,
-        /// Effort keyword or token budget; `None` clears it (provider default).
-        effort: Option<String>,
-    },
-    /// `set_advisor` (125 §7.1): `model: None` turns the advisor off.
-    SetAdvisor {
-        /// The advised session.
-        session: SessionId,
-        /// `provider/model` of the advisor; `None` = off.
-        model: Option<String>,
-        /// Its effort.
-        effort: Option<String>,
-    },
-    /// `advisor_status` (125 §7.3).
-    AdvisorStatus(SessionId),
-    /// `set_advisor_max_consults` (R1.2): the per-turn `consult` cap, 0-32.
-    SetAdvisorMaxConsults(u8),
-    /// `set_model_favorite` (127 §3): star (`true`) or unstar `model` on the engine.
-    SetModelFavorite {
-        /// `provider/model` id.
-        model: String,
-        /// `true` stars, `false` unstars.
-        favorite: bool,
-    },
-    /// `harness_options` on an ACP session (75 §8).
-    HarnessOptions(SessionId),
-    /// `set_harness_option` on an ACP session (75 §8): `config_id` is an
-    /// option id or the alias `model` / `effort`.
-    SetHarnessOption {
-        /// The ACP session.
-        session: SessionId,
-        /// Option id or alias.
-        config_id: String,
-        /// One of the option's listed values.
-        value: String,
-    },
     /// `resume_child` on the open ACP session (75 §10).
     ResumeChild(SessionId),
     /// `set_approvals`.
@@ -356,74 +236,6 @@ pub enum Command {
         /// On or off.
         enabled: bool,
     },
-    /// `get_prompt`.
-    ShowPrompt(Option<SessionId>),
-    /// `list_skills`.
-    ListSkills,
-    /// `load_skill`.
-    LoadSkill(String),
-    /// `add_skill_repo`.
-    AddSkillRepo(String),
-    /// `remove_skill_repo`, falling back to `remove_skill`.
-    RemoveSkill(String),
-    /// `sync_skills`.
-    SyncSkills,
-    /// `use_skill`: hand a skill to the model (04 §2.4).
-    UseSkill {
-        /// Shown session, or `None` to start one.
-        session: Option<SessionId>,
-        /// Skill name.
-        name: String,
-        /// The user's words after the name.
-        args: String,
-        /// `session: None` only (148 R1): the draft's pending model/effort for the started session.
-        draft: Option<CreateSessionOptions>,
-    },
-    /// `list_logins` plus OAuth servers from `list_mcp`.
-    ListLogins,
-    /// `list_acp`.
-    ListAcp {
-        /// Run an `initialize` probe per entry (slow: spawns each harness).
-        probe: bool,
-    },
-    /// `add_acp` from the registry, then re-list.
-    AddAcp(String),
-    /// `remove_acp`, then `list_acp`.
-    RemoveAcp(String),
-    /// `list_acp_registry`.
-    ListAcpRegistry,
-    /// `login` (provider name) or `mcp_login` (server name).
-    Login(String),
-    /// `logout` (provider name) or `mcp_logout` (server name).
-    Logout(String),
-    /// `add_provider`.
-    AddProvider {
-        /// Custom provider name.
-        name: String,
-        /// OpenAI-compatible base URL.
-        base_url: String,
-        /// API key.
-        key: String,
-    },
-    /// `remove_provider`.
-    RemoveProvider(String),
-    /// `refresh_provider_models` (162 D8).
-    RefreshProvider(String),
-    /// `local_servers_probe` (177 E8).
-    FindLocalServers,
-    /// `set_model_limits` (177 E6).
-    SetModelLimits {
-        /// Provider name.
-        provider: String,
-        /// Model id within the provider.
-        model: String,
-        /// Context window; `None` = unknown.
-        context: Option<u32>,
-        /// Max output; `None` = keep the stored one, `Some(0)` = unknown (R2-8).
-        output: Option<u32>,
-    },
-    /// `list_providers`.
-    ListProviders,
 
     /// `set_session_project`: label or clear the root's project (51 §3).
     SetSessionProject {
@@ -443,18 +255,6 @@ pub enum Command {
         /// Its lease secret.
         secret: String,
     },
-    /// `talk_start(session, "device", null)`: a live spoken conversation (76 §5.1);
-    /// `session: None` = no session yet: one is created first (`SessionOpened`), as the desktop's
-    /// Talk entry does, on the draft's pending model/effort when there is one (148 R1).
-    /// The reply is [`UiEvent::TalkStarting`] or [`UiEvent::TalkFailed`].
-    TalkStart {
-        /// The shown session.
-        session: Option<SessionId>,
-        /// `session: None` only: the draft's options.
-        draft: Option<CreateSessionOptions>,
-    },
-    /// `talk_stop(id)`; `TalkFinished` follows on the bus.
-    TalkStop(talk::TalkId),
     /// `cancel(session, "tree")`: the turn and every running descendant (133 §5).
     CancelTree(SessionId),
 }

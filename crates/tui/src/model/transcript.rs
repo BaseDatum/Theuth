@@ -20,6 +20,7 @@ impl Model {
     /// Expand or collapse the most recent card or finished tool call (Ctrl+O).
     pub fn toggle_card(&mut self) {
         let Some(index) = self.entries.iter().rposition(|e| {
+            if let Some(toggleable) = e.key().and_then(|key| self.components.entry_toggleable(key)) { return toggleable; }
             matches!(
                 e,
                 Entry::Card { .. }
@@ -31,16 +32,14 @@ impl Model {
                         summary: Some(_),
                         ..
                     }
-            ) || matches!(e, Entry::Advisory { advisory, .. } if advisory_row_count(advisory) > ADVISORY_COLLAPSED)
+            )
         }) else {
             return;
         };
         if self.component_entry_action(index, crate::components::EntryOperation::Toggle) { return; }
         let e = &mut self.entries[index];
         match e {
-            Entry::Card { expanded, .. }
-            | Entry::Compacted { expanded, .. }
-            | Entry::Advisory { expanded, .. } => {
+            Entry::Card { expanded, .. } | Entry::Compacted { expanded, .. } => {
                 *expanded = !*expanded;
             }
             Entry::Tool {
@@ -74,6 +73,8 @@ pub enum Entry {
     /// Collapsible card: a peer message, a skill body, or the system prompt.
     /// One line until toggled with Ctrl+O.
     Card {
+        /// Optional TUI-local entry-decoration identity; never serialized.
+        entry_key: Option<String>,
         /// Glyph and colour family.
         kind: CardKind,
         /// Peer name, skill name, or `prompt`.
@@ -125,14 +126,6 @@ pub enum Entry {
     /// 109 §10.3: a plain divider in the `Compacted` shape (`── resumed after
     /// restart ──`); nothing to expand.
     Divider(String),
-    /// 125 §7.4: one Advisory card — every note the advisor raised at one
-    /// step boundary. Three notes until Ctrl+O (`ADVISORY_COLLAPSED`).
-    Advisory {
-        /// The typed metadata of the row.
-        advisory: Advisory,
-        /// Show every note.
-        expanded: bool,
-    },
     /// Informational line (session lists, notices).
     Info(String),
     /// Error line.
@@ -142,10 +135,8 @@ pub enum Entry {
 /// What an [`Entry::Card`] holds; picks its glyph and colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CardKind {
-    /// A skill body (`/skills`) or a knowledge card (`/knowledge`).
+    /// Canonical skill input injected into the accepted conversation.
     Skill,
-    /// The assembled system prompt (`/prompt`).
-    Prompt,
     /// A `<job_result>` the harness injected when a background job ended.
     Job,
     /// A `<schedule>` fire the harness injected (34 §1.5).
@@ -187,7 +178,6 @@ impl CardKind {
     pub fn glyph(self) -> &'static str {
         match self {
             CardKind::Skill => "◇",
-            CardKind::Prompt => "§",
             CardKind::Job => "▸",
             CardKind::Schedule => "◷",
             CardKind::Removed => "⊘",
@@ -237,12 +227,10 @@ pub(super) fn split_engine_restart(output: &str) -> Option<(Entry, &str)> {
 
 /// A collapsed [`Entry::Card`] over `text`.
 pub(super) fn card(kind: CardKind, title: String, text: &str) -> Entry {
-    Entry::Card {
-        kind,
-        title,
-        text: Box::new(markdown::Text::complete(text)),
-        expanded: false,
-    }
+    Entry::Card { entry_key: None, kind,
+    title,
+    text: Box::new(markdown::Text::complete(text)),
+    expanded: false, }
 }
 
 /// Rows a string of `chars` occupies at `width` columns (at least one).
@@ -261,9 +249,13 @@ fn text_rows(text: &str, width: usize) -> usize {
 }
 
 impl Entry {
-    /// Stable raw-call identity for neutral owner decorations.
+    /// Stable TUI card or raw-call identity for neutral owner decorations.
     pub(crate) fn key(&self) -> Option<&str> {
-        match self { Self::Pending { call_id, .. } | Self::Tool { call_id, .. } => Some(call_id), _ => None }
+        match self {
+            Self::Pending { call_id, .. } | Self::Tool { call_id, .. } => Some(call_id),
+            Self::Card { entry_key, .. } => entry_key.as_deref(),
+            _ => None,
+        }
     }
     /// Rows this entry draws at `width` columns (borders, headers and
     /// wrapping included; an estimate — the terminal's wrap is the truth).
@@ -284,20 +276,12 @@ impl Entry {
                 title: _,
                 text,
                 expanded,
+                ..
             } => {
                 4 + match (*expanded, kind.plain()) {
                     (false, _) => 0,
                     (true, true) => text_rows(&clean(text.raw()), inner),
                     (true, false) => md(text, inner),
-                }
-            }
-            // 125 §7.4: border + title + margin, one row per note shown, the `… +N more` row.
-            Entry::Advisory { advisory, expanded } => {
-                let n = advisory_row_count(advisory);
-                if *expanded {
-                    4 + n
-                } else {
-                    4 + n.min(ADVISORY_COLLAPSED) + usize::from(n > ADVISORY_COLLAPSED)
                 }
             }
             Entry::Reasoning { done: true, .. } => 1,

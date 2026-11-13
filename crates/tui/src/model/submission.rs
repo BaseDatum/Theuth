@@ -26,10 +26,6 @@ impl Model {
         }
         // Anything you send is what you want to see land.
         self.anchor = None;
-        if self.prompt.is_some() {
-            self.prompt_submit(line, tx);
-            return;
-        }
         if self.component_submit(line) { return; }
         // `/edit` in progress: a plain line replaces the turn being edited
         // (slash commands still run and leave the edit pending).
@@ -86,84 +82,8 @@ impl Model {
                 self.reset();
                 self.entries.push(Entry::Info("new session".into()));
             }
-            // 75 §8: an ACP session picks from its harness's options; bare
-            // `/effort` opens the same picker on its chip row (194 D6).
-            "/model" | "/effort" if self.agent.is_some() && arg.is_empty() => {
-                if let Some(s) = self.session {
-                    self.pick_effort = cmd == "/effort";
-                    send(tx, Command::HarnessOptions(s));
-                }
-            }
-            "/model" | "/effort" if self.agent.is_some() => {
-                if let Some(s) = self.session {
-                    send(
-                        tx,
-                        Command::SetHarnessOption {
-                            session: s,
-                            config_id: cmd[1..].to_owned(),
-                            value: arg.to_owned(),
-                        },
-                    );
-                }
-            }
-            "/model" if arg.is_empty() => send(tx, Command::ListModels),
-            "/model" => self.pick_model(arg.to_owned(), tx),
-            "/title" if arg.is_empty() => send(tx, Command::GetTitleModel),
-            "/title" => send(
-                tx,
-                Command::SetTitleModel((arg != "off" && arg != "clear").then(|| arg.to_owned())),
-            ),
-            "/vision" => {
-                self.awaiting_vision = true;
-                send(
-                    tx,
-                    if arg.is_empty() {
-                        Command::GetVisionModel
-                    } else {
-                        Command::SetVisionModel(
-                            (arg != "off" && arg != "clear").then(|| arg.to_owned()),
-                        )
-                    },
-                );
-            }
-            // 194 D6: the `/model` picker with the cursor on the current model's chips.
-            "/effort" if arg.is_empty() => self.effort_picker(tx),
-            "/effort" => self.set_effort((arg != "clear").then(|| arg.to_owned()), tx),
-            "/aws" if arg.is_empty() => send(tx, Command::ListAwsProfiles),
-            "/aws" => send(
-                tx,
-                Command::SetAwsProfile((arg != "clear").then(|| arg.to_owned())),
-            ),
             "/approvals" => self.approvals_cmd(arg, tx),
-            "/advisor" => self.advisor_cmd(arg, tx),
 
-            "/acp" if arg.is_empty() => {
-                self.awaiting_acp = true;
-                send(tx, Command::ListAcp { probe: false });
-                send(tx, Command::ListAcpRegistry);
-            }
-            "/acp" => match arg.split_once(' ').map(|(s, r)| (s, r.trim())) {
-                Some(("add", id)) if !id.is_empty() => send(tx, Command::AddAcp(id.to_owned())),
-                Some(("remove", name)) if !name.is_empty() => {
-                    send(tx, Command::RemoveAcp(name.to_owned()));
-                }
-                _ => self.entries.push(Entry::Error(
-                    "usage: /acp [add <registry-id> | remove <name>]".into(),
-                )),
-            },
-            "/skills" => self.skills_cmd(arg, tx),
-            "/prompt" => send(tx, Command::ShowPrompt(self.session)),
-            "/login" if arg.is_empty() => send(tx, Command::ListLogins),
-            "/login" => send(tx, Command::Login(arg.to_owned())),
-            "/logout" if arg.is_empty() => self
-                .entries
-                .push(Entry::Error("usage: /logout <name>".into())),
-            "/logout" => send(tx, Command::Logout(arg.to_owned())),
-            "/talk" => {
-                if let Some(cmd) = self.toggle_talk(false) {
-                    send(tx, cmd);
-                }
-            }
             "/agents" => match self.session {
                 Some(session) => {
                     self.agents_picker_pending = true;
@@ -217,14 +137,11 @@ impl Model {
             "/edit" => self.turn_cmd(TurnAction::Edit, cmd, arg, tx),
             "/regen" => self.turn_cmd(TurnAction::Regen, cmd, arg, tx),
             "/fork" => self.turn_cmd(TurnAction::Fork, cmd, arg, tx),
-            "/provider" => self.provider_cmd(arg, tx),
             // `/<skill> [args]` hands the skill to the model (04 §2.4); any other `/word` — a path, a typo —
             // is message text and takes the arm below.
             // A watch-only child takes neither (141 §10.1): the hint instead.
             _ if self.observed.is_some() => self.watch_swallow(),
-            c if c.starts_with('/') && self.skill_word(&c[1..]) => {
-                self.use_skill(c[1..].to_owned(), arg.to_owned(), tx);
-            }
+            c if c.starts_with('/') && self.component_slash_fallback(c, arg) => {}
             _ => self.send_text(line, interject, tx),
         }
         self.component_reconcile_core_focus();

@@ -35,8 +35,16 @@ macro_rules! core_view {
             secret_editor: $model.components.editor().is_some_and(|(class, _)| class == FocusClass::Secret),
             approval: $model.approval().is_some(),
             awaiting_session: $model.awaiting_session,
+            model_id: &$model.model_id,
+            effort: $model.effort.as_deref(),
+            default_effort: $model.default_effort.as_deref(),
+            harness: $model.agent.as_deref(),
+            harness_model: $model.harness_model.as_deref(),
+            harness_commands: &$model.harness_commands,
+            catalog: $model.catalog.as_deref(),
             frame: $model.frame,
             composer_read_only: $model.components.composer_read_only(),
+            draft_options: Model::draft_options_ref($model.draft.as_ref(), $model.session),
         }
     };
 }
@@ -44,6 +52,12 @@ macro_rules! core_view {
 impl Model {
     /// Fold a topic, component reply or residual core event into the UI state.
     pub fn apply(&mut self, event: UiEvent) { self.receive(event, &mut |_| {}); }
+    /// Deliver typed input to one registered owner through the core action queue.
+    pub fn component_message<C: crate::components::Component>(&mut self, message: C::Msg) {
+        let core = core_view!(self, None);
+        let out = self.components.send_to::<C>(message, &core);
+        self.component_finish(out, &mut |_| {});
+    }
 
     pub(crate) fn receive(&mut self, event: UiEvent, emit: &mut impl FnMut(Output<'_>)) {
         let (residual, out) = match event {
@@ -101,7 +115,6 @@ impl Model {
             FocusClass::Modal | FocusClass::Secret | FocusClass::Search))
         {
             self.menu = None;
-            self.prompt = None;
         }
         for effect in out.effects {
             if let Some(commands) = &self.component_commands {
@@ -110,6 +123,27 @@ impl Model {
         }
         for action in out.actions {
             match action {
+                CoreAction::PickModel(model) => self.pick_model(model),
+                CoreAction::SetEffort(effort) => self.set_effort(effort),
+                CoreAction::ModelApplied(model) => self.model_id = model,
+                CoreAction::EffortApplied(effort) => {
+                    self.awaiting_effort = false;
+                    self.entries.push(Entry::Info(match &effort {
+                        Some(e) => format!("effort: {e}"),
+                        None => "effort cleared".to_owned(),
+                    }));
+                    self.effort = effort;
+                }
+                CoreAction::AwaitingEffort(pending) => self.awaiting_effort = pending,
+                CoreAction::AwaitingSession(pending) => self.awaiting_session = pending,
+                CoreAction::Descendants(list) => self.adopt_descendants(list),
+                CoreAction::PostTo(message) => {
+                    if let Some(reply) = self.components.address(message) {
+                        self.receive(UiEvent::Component(reply), emit);
+                    }
+                }
+                CoreAction::SessionCreated(session) => self.receive(UiEvent::SessionCreated(session), emit),
+                CoreAction::SessionOpened(open) => self.receive(UiEvent::SessionOpened(open), emit),
                 CoreAction::ReplaceEditor { value, caret } => self.pending_input = Some((value, caret)),
                 CoreAction::SubmitEditor(value) => self.pending_send = Some(value),
                 CoreAction::CancelSession(session) => {
@@ -131,8 +165,7 @@ impl Model {
                     }
                 }
                 CoreAction::PresentTranscript(build) => {
-                    let (presentation, reply) = build(&self.components);
-                    self.present_transcript(presentation);
+                    let reply = self.present_transcript(build);
                     self.receive(UiEvent::Component(reply), emit);
                 }
                 CoreAction::SetReadOnly(read_only) => self.historical = read_only,
@@ -157,12 +190,8 @@ impl Model {
                 }
                 CoreAction::Notice(text) => self.entries.push(Entry::Info(text)),
                 CoreAction::Interject(text) => self.interject(Entry::Info(text)),
+                CoreAction::InterjectError(text) => self.interject(Entry::Error(text)),
                 CoreAction::Error(text) => self.receive(UiEvent::Error(text), emit),
-                CoreAction::UseSkill { name, args } => {
-                    if let Some(commands) = self.component_commands.clone() {
-                        self.use_skill(name, args, &commands);
-                    }
-                }
                 CoreAction::Reject(text) => self.entries.push(Entry::Error(text)),
                 CoreAction::AppendCard(card) => self.entries.push(card.into()),
                 CoreAction::InterjectCard(card) => self.interject(card.into()),
@@ -195,7 +224,7 @@ impl Model {
     /// Residual modal acquisition displaces, rather than hides, a component surface.
     pub(super) fn component_reconcile_core_focus(&mut self) {
         if self.components.focused()
-            && (self.prompt.is_some() || self.menu.as_ref().is_some_and(|menu| !matches!(menu, Menu::Slash { .. })))
+            && self.menu.as_ref().is_some_and(|menu| !matches!(menu, Menu::Slash { .. }))
         {
             let core = core_view!(self, None);
             let out = self.components.release_focus(&core);
@@ -253,6 +282,12 @@ impl Model {
         self.component_finish(out, &mut |_| {});
         true
     }
+    pub(super) fn component_slash_fallback(&mut self, name: &str, args: &str) -> bool {
+        let core = core_view!(self, None);
+        let Some(out) = self.components.slash_fallback(name, args, &core) else { return false };
+        self.component_finish(out, &mut |_| {});
+        true
+    }
     /// Dispatch the existing entry operation with a stable identity, without copying it.
     pub(crate) fn component_entry_action(&mut self, index: usize, operation: crate::components::EntryOperation) -> bool {
         let Some(key) = self.entries.get(index).and_then(Entry::key) else { return false };
@@ -275,18 +310,22 @@ impl Model {
         (!text.is_empty()).then_some(text)
     }
     pub(crate) fn component_views(&self, surface: Surface<'_>, width: usize, height: usize) -> Vec<View> {
+        let session_badge = |id| self.component_text(Surface::SessionBadge(id));
         let cx = ViewCx {
             core: core_view!(self, None),
             width, height, frame: self.frame,
             commands: self.component_commands.as_ref(), endpoint: None,
+            session_badge: Some(&session_badge),
         };
         self.components.views(surface, &cx).collect()
     }
     pub(crate) fn component_text(&self, surface: Surface<'_>) -> String {
+        let session_badge = |id| self.component_text(Surface::SessionBadge(id));
         let cx = ViewCx {
             core: core_view!(self, None),
             width: self.width, height: 0, frame: self.frame,
             commands: self.component_commands.as_ref(), endpoint: None,
+            session_badge: Some(&session_badge),
         };
         let mut text = String::new();
         for view in self.components.views(surface, &cx) {
@@ -331,8 +370,8 @@ impl Model {
                 if !self.historical { self.refresh_context = self.session.is_some(); }
                 if let (Some(session), Some(commands)) = (self.session, &self.component_commands) {
                     let _ = commands.send(Command::ListAgents(session));
+                    self.component_notify(Lifecycle::SessionRefreshRequested);
                 }
-                self.refresh_advisor = self.session.is_some();
                 self.component_notify(Lifecycle::Resync);
             }
             _ => {}
@@ -430,10 +469,12 @@ fn modal_replacement_closes_displaced_surface_without_losing_cache() {
     for id in ["first", "second"] {
         model.components.register(Modal { id, open: false, cached: 0 }).unwrap();
     }
+    model.components.register(crate::components::providers_login::ProvidersLogin::default()).unwrap();
     model.menu = Some(Menu::Sessions { items: Vec::new(), cursor: 0 });
-    model.prompt = Some(Prompt::ProviderName);
+    model.components.get_mut::<crate::components::providers_login::ProvidersLogin>().unwrap().prompt = Some(crate::components::providers_login::Prompt::ProviderName);
+    model.components.focus_fixture("providers-login", FocusClass::Modal);
     model.component_slash("/first", "");
-    assert!(model.menu.is_none() && model.prompt.is_none());
+    assert!(model.menu.is_none() && model.components.get::<crate::components::providers_login::ProvidersLogin>().unwrap().prompt.is_none());
     model.component_slash("/second", "");
     assert!(!model.components.get::<Modal>().unwrap().open);
     assert_eq!(model.components.get::<Modal>().unwrap().cached, 1);
@@ -453,6 +494,12 @@ fn modal_replacement_closes_displaced_surface_without_losing_cache() {
 impl crate::components::SessionMembers for HashMap<SessionId, AgentRow> {
     fn member(&self, id: SessionId) -> Option<crate::components::SessionMember<'_>> {
         self.get(&id).map(|row| crate::components::SessionMember { name: &row.info.name, project: row.info.project.as_deref() })
+    }
+    fn agent_info(&self, id: SessionId) -> Option<&AgentInfo> {
+        self.get(&id).map(|row| &row.info)
+    }
+    fn visit(&self, visitor: &mut dyn FnMut(&AgentInfo)) {
+        for row in self.values() { visitor(&row.info); }
     }
 }
 
@@ -490,10 +537,8 @@ fn component_cards_interject_without_rebuilding_rendered_text_or_splitting_strea
     body.reveal_all();
     model.apply(crate::model::UiEvent::Component(LocalReply {
         to: token, engine_epoch: 0,
-        body: Box::new(CoreAction::InterjectCard(TranscriptCard {
-            group: "test", key: uuid::Uuid::new_v4(), glyph: "▣", color: iocraft::Color::Cyan,
-            title: "rendered".into(), body, expanded: true, plain: false,
-        })),
+        body: Box::new(CoreAction::InterjectCard(TranscriptCard { entry_key: None, group: "test", key: uuid::Uuid::new_v4(), glyph: "▣", color: iocraft::Color::Cyan,
+        title: "rendered".into(), body, expanded: true, plain: false, })),
     }));
     model.apply(crate::model::UiEvent::Agent(agent::AgentEvent::TextDelta { session, turn, text: "after".into() }));
     let Entry::Card { text, .. } = &model.entries[0] else { panic!("interjected card") };
@@ -501,11 +546,9 @@ fn component_cards_interject_without_rebuilding_rendered_text_or_splitting_strea
     assert_eq!(rendered, "diagram@31");
     assert!(matches!(&model.entries[1], Entry::Assistant(text) if text.raw() == "before after" && !text.is_done()));
     assert_eq!(model.entries.len(), 2);
-    let literal: Entry = TranscriptCard {
-        group: "literal", key: uuid::Uuid::new_v4(), glyph: "⟵", color: iocraft::Color::Cyan,
-        title: "remote".into(), body: markdown::Text::complete("**now**\n# head\nmore"),
-        expanded: true, plain: true,
-    }.into();
+    let literal: Entry = TranscriptCard { entry_key: None, group: "literal", key: uuid::Uuid::new_v4(), glyph: "⟵", color: iocraft::Color::Cyan,
+    title: "remote".into(), body: markdown::Text::complete("**now**\n# head\nmore"),
+    expanded: true, plain: true, }.into();
     assert_eq!(literal.height(80), 7);
 }
 
@@ -584,7 +627,7 @@ fn wrapper_projection_is_tag_owned_and_shared_by_history_and_live_rows() {
     let history = from_history(HistoryEntry::User {
         text: "history body".into(), turn: Some(1), context: None, vision: None, channel: None,
         peer: Some(agent::PeerOrigin { id: Uuid::nil(), from: "history".into(), reply_to: None, scope: None, contact_mode: None }),
-    }, &markdown::Options::default(), &model.components);
+    }, &markdown::Options::default(), &mut model.components);
     assert!(matches!(&history[0], Entry::Card { title, text, .. } if title == "owner:history" && text.raw() == "history body"));
     let session = SessionId::new();
     model.session = Some(session);

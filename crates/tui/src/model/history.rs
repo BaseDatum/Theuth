@@ -121,7 +121,8 @@ pub(super) static FENCE: LazyLock<markdown::FenceHook> = LazyLock::new(|| Arc::n
 /// from context (48 §2.2) is a collapsed `⊘` card over the original — the
 /// archive stays readable (Ctrl+O), nothing re-enters the model's frame.
 /// Attachment occurrences are listed by name, removed ones marked.
-pub(crate) fn from_history(h: HistoryEntry, opts: &markdown::Options, registry: &Registry) -> Vec<Entry> {
+pub(crate) fn from_history(h: HistoryEntry, opts: &markdown::Options, registry: &mut Registry) -> Vec<Entry> {
+    let h = match registry.history_entry(h, opts) { Ok(entries) => return entries, Err(row) => row };
     let removed = |c: &Option<ContextEntry>| c.as_ref().is_some_and(|c| c.removed);
     match h {
         // A consultation note (52 §6) is harness-authored, never `◆ you`:
@@ -240,11 +241,6 @@ pub(crate) fn from_history(h: HistoryEntry, opts: &markdown::Options, registry: 
             Entry::Divider("interrupted — resuming".to_owned()),
             Entry::Info(text),
         ],
-        // 125 §7.4: one card per Advisory row, three notes until Ctrl+O.
-        HistoryEntry::Advisory { advisory, .. } => vec![Entry::Advisory {
-            advisory,
-            expanded: false,
-        }],
         // 183 §5.3: one collapsed card; the model-facing text on Ctrl+O.
         HistoryEntry::Moved { moved, .. } => {
             vec![card(
@@ -253,6 +249,7 @@ pub(crate) fn from_history(h: HistoryEntry, opts: &markdown::Options, registry: 
                 &moved.model_text(),
             )]
         }
+        _ => Vec::new(),
     }
 }
 

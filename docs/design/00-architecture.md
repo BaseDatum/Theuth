@@ -19,9 +19,10 @@ names the alternative it beat and why.
 3. **Patch dependencies when needed, don't wait on upstream.** Patches live
    in-repo via `[patch.crates-io]` with the diff and reason recorded; drop
    them when upstream catches up.
-4. **No god-wiring.** The binary holds a `Vec<Box<dyn Plugin>>` and nothing
-   else. Plugins register themselves on the bus. (jarvis: `jarvisd` imported
-   every subsystem and threaded handles between them.)
+4. **No god-wiring.** The binary owns the plugin vector and the explicit RPC
+   module merge list, not subsystem behavior or threaded actor handles.
+   Plugins register themselves on the bus. (jarvis: `jarvisd` imported every
+   subsystem and threaded handles between them.)
 5. **No central event enum, no protocol dumping ground.** Each plugin owns its
    message types. The shared crate holds only the plugin trait and the handful
    of cross-plugin contract types listed in §4, with a hard size ceiling.
@@ -53,7 +54,7 @@ bundle already owns the record.
 Human search (26, 49) follows the same rule: each owner searches its own
 store — `agent` sessions, `artifact` records and saved bytes, `knowledge`
 current concepts and their gix history — behind owner commands, and
-`rpc::search::run` only asks the selected owners and returns their pages in
+`rpc_compose::search::run` only asks the selected owners and returns their pages in
 fixed order. The `search` RPC and the registered `search` tool are two
 adapters over that one function. Query policy, snippets and highlight
 ranges live in the pure `search` library; no search plugin, search database,
@@ -152,6 +153,8 @@ below. How to design, build and wire one: `../plugins.md`.
 // crate: runtime
 pub trait Plugin: Send {
     fn name(&self) -> &'static str;
+    /// Declare contracts without starting actors, opening stores or listeners.
+    async fn declare_wire(&mut self, rt: &Runtime) -> anyhow::Result<()> { Ok(()) }
     /// Spawn actors, register recipients on the bus, register named actors.
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()>;
 }
@@ -161,86 +164,79 @@ pub struct Runtime {
     pub config: figment::Figment,    // §9; plugins call rt.section("name")
     pub data_dir: PathBuf,
     pub shutdown: CancellationToken, // any plugin may end the process
+    // Private typed extension storage omitted; accessed through rt.extension(init).
 }
 // helpers: rt.publish(event), rt.subscribe::<A, T>(&actor), subscriber_mailbox()
 ```
 
-`theuth/main.rs` is, in full: build `Runtime`, `for p in plugins { p.start(&rt).await? }`,
-wait for shutdown. Plugin order is the vector order; a plugin needing another
-looks it up by name at first use. A plugin may wait for a named actor at
-start (`Runtime::lookup_when`, 12 §2); it must not assume vector order. A plugin
+`crates/theuth/src/main.rs` builds `Runtime` and the selected plugin vector.
+Its `declare_plugins` visits those same objects, captures their names, awaits
+each declaration hook, freezes the wire registry, composes the RPC modules
+and freezes discovery before `start_plugins` runs any start hook.
+Plugin order is the vector order; a plugin needing another looks it up by name
+at first use. A plugin may wait for a named actor at start
+(`Runtime::lookup_when`, 12 §2); it must not assume vector order. A plugin
 may consult another plugin's classifier through the registry (`decision`'s
 `Ask → Decision`, 57 §2), but a `Tool` must not hide a paid model call behind
 that — the oracle is local and its cost is latency only.
 
-Shared crate `runtime` contains exactly `Plugin`, `Runtime` (+ the three
-helpers above), `SessionId`, `TurnId`. Nothing else. The tool and approval
-contracts live in `tools`; the agent's commands and its `AgentEvent` live in
-`agent`. Plugins depend on each other's crates for those types along the
-`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, telegram, nodes, schedule, artifact, update, voice} ← rpc ← tui ← theuth`
-(`knowledge` joins the chain in 12 §9; `secrets` in 37 §0.10 — `web`,
-`search-providers`, `agent`, `slack`, `telegram`, `rpc`, `signal` depend on it;
-`search-providers` also depends on `oauth`, a library, 80 §9; `update`
-in 39: depends on `agent` only, `rpc` forwards its `UpdateReady`; the
-`search` library in 49 §4.1 sits beside `runtime` — it depends on no
-workspace crate, and `knowledge`, `agent`, `artifact`, `rpc`, `tui` depend
-on it). This keeps the shared crate under
-its 400-line ceiling and puts each contract next to the code that enforces
-it. (Earlier draft put the tool contract in `runtime`; dropped once the
-agent needed `tools` anyway for the registry actor type.)
+Shared crate `runtime` owns plugin/runtime contracts and shared identities,
+not plugin message catalogs. The tool and approval contracts live in `tools`;
+the agent's commands and `AgentEvent` live in `agent`. Its private typed
+extension storage, reached through `Runtime::extension`, lets an infrastructure
+owner share state across Runtime clones without adding its types to runtime.
+The original hard 400-line ceiling remains the shared crate's budget; wire
+contracts live outside it rather than relaxing that rule.
 
-The wire-layer extraction adds `rpc-core` below method owners: its normal
-workspace dependencies are `runtime` and plugin-neutral `wire`. It owns `Server`,
-connection identity (`RpcPeer`, `Guest`, `Client`, `ConnId`), original-actor follow
-leases, the `Arc<wire::WireFrame>` feed seam and policy-driven stream backlog,
-and actor/error helpers. It contains no plugin registration, domain RPC traits,
-sessions registry calls or artifact operations. Every domain implements its
-server trait on this one `Server`; clones share all six handles. New servers use
-the Runtime's one wire feed and process-wide insert-only private membership;
-focus, seen and follow maps remain local.
+The wire layer has separate, enforced boundaries:
 
-`rpc::new_server` installs plugin hooks before constructing the pure state.
-`agent::rpc_forward` owns forwarding; five immutable hooks read current
-session/artifact registries on each call, never a runtime captured at first
-installation. Method assembly is an explicit `rpc_core::ModuleFactory` function
-pointer, supplied by `main` and threaded through socket, Noise, mesh, ACP,
-`Local` and attached-TUI takeover paths. Transports never silently choose the
-aggregate factory; domain bodies and wire names remain unchanged.
-Kernel adapters use owner-independent imports; their isolated cells fixtures
-construct core state with explicit no-session/no-attachment forwarding hooks.
-Authorization belongs to `agent::rpc_support::RpcServerExt`, not inherent
-`Server` methods. `decision::rpc_support::RpcDecisionExt` and
-`sessionsync::rpc_support::RpcSessionMoveExt` expose the real owner operations;
-cross-domain callers use those contracts rather than generated wire traits.
-Configuration and private-session tracking/wait extensions stay domain-local.
-Agent-owned jobs, skills and turns RPC methods live in `agent::rpc_jobs`,
-`agent::rpc_skills` and `agent::rpc_turns`, assembled through `agent::rpc_module`.
-Terminal attachment and draining-error support live in `agent::rpc_support`.
-`rpc::api::clients` re-exports owner client traits for frontends.
-The `meeting` crate owns the meeting, calendar and brief wire methods and
-their actor/client helpers; main registers `meeting::rpc_module` directly.
-The `talk` crate owns speech, dictation and live-conversation RPC methods,
-the voice config extension and their actor/history helpers. Hub imports the
-shared dictation lookup from `talk::rpc_support`; main registers
-`talk::rpc_module`. Generated clients remain available through
-`rpc::api::clients` without adding consumer dependencies on the owners.
+| Crate | Owns | Workspace dependencies at the infrastructure boundary |
+|---|---|---|
+| `wire` | Owner-declared event contracts, registry and generic fanout | `runtime` only |
+| `rpc-core` | Shared server state, identity, actor/error helpers, generic stream backlog, descriptors, discovery and compatibility machinery | `runtime`, `wire`, `rpc-core-macros` |
+| `rpc-core-macros` | The owner-trait descriptor attribute | No normal workspace dependencies; `rpc-core` is dev-only |
+| `rpc` | Generic WebSocket accept/authentication, engine discovery/locking, local/remote clients, diagnostics and infrastructure methods | `rpc-core`, `runtime` only |
+| `rpc-compose` | Irreducible cross-plugin methods and application adapters | May depend on infrastructure and plugin owners; never a dependency of either `rpc` or `rpc-core` |
+| `theuth` | Selected plugin declarations and the sole production/export all-owner RPC list | Composition root |
 
-The `nodes` crate owns the network wire methods (link, nodes, mesh and vault
-rotation); main registers `nodes::rpc_module` directly. Its node lookup lives
-in `nodes::rpc_support`.
-The `schedule` crate owns routine RPC methods and exports
-`schedule::rpc_module`; its shared actor lookup stays in `schedule::rpc_support`.
-The `secrets` crate owns credentials RPC methods and exports
-`secrets::rpc_module`; vault lookups remain in `secrets::rpc_support`.
-The `roster` crate owns boards RPC methods and exports `roster::rpc_module`.
-Its `rpc_support::tasks_actor` lookup is shared with the remaining RPC hub.
+`crates/rpc/tests/dependency_limit.rs::workspace_dependencies_only_shrink`
+enforces exactly `rpc-core` + `runtime`, with no workspace dev dependencies.
+It checks normal/build/dev sections on every target, resolves package aliases
+and path dependencies, includes optional dependencies, and rejects stale
+allowances as well as new ones. Matching ratchets in `crates/rpc-core/tests/`,
+`crates/rpc-core-macros/tests/` and `crates/tui/tests/dependency_limit.rs`
+keep their own allowed sets honest; external library dependencies are not
+workspace-plugin dependencies.
 
-RPC method ownership includes kernels → `cells` (with `kernel_rpc`,
-`kernel_latest` and the guard adapter), MCP → `mcp-server`, sandboxes →
-`sandbox`, screens → `computer`, and codemap → `codeindex`. Each exports
-`rpc_module` for main's composition list; sandbox/codeindex actor lookups live
-in their owner's `rpc_support`. The `rpc::api::clients` collection imports
-their generated client traits without adding owner dependencies to the TUI.
+Every owner implements its generated server trait on `rpc_core::Server`.
+Clones share all six handles: runtime, event feed, private membership, focus,
+seen alerts and follow leases. Fresh servers use the Runtime's one
+`Arc<wire::WireFrame>` feed and process-wide insert-only private membership;
+focus, seen and follow maps are fresh per server and shared by its clones.
+Core contains no plugin registration, domain RPC traits, sessions registry
+calls or artifact operations.
+
+`rpc_compose::prepare` installs the immutable forwarding hooks and per-runtime
+insight hooks; main calls it before merging. `agent::rpc_forward` owns
+forwarding; its five hooks read current session/artifact registries on each
+call, never a runtime captured at first installation. Authorization belongs to
+`agent::rpc_support::RpcServerExt`, not inherent `Server` methods.
+`decision::rpc_support::RpcDecisionExt` and
+`sessionsync::rpc_support::RpcSessionMoveExt` expose owner operations without
+cross-domain calls through generated wire traits.
+
+RPC methods live with the lowest acyclic owner, not necessarily the event's
+owner: agent jobs/skills/turns use `agent::rpc_jobs`, `agent::rpc_skills` and
+`agent::rpc_turns`; meeting/calendar/brief methods live in `meeting`, speech
+and dictation in `talk`, network in `nodes`, routines in `schedule`,
+credentials in `secrets`, boards in `roster`, kernels in `cells`, MCP in
+`mcp-server`, sandboxes in `sandbox`, screens in `computer`, and codemap in
+`codeindex`. Previously mixed domains split across owners: document/notebook
+operations span `document` and `agent`, artifacts/apps span `artifact`, `app`
+and `agent`, and messaging spans `agent`, `a2a` and the channel owners.
+Shared helpers remain in owner `rpc_support` modules; `tasks::rpc_support`
+owns the shared tasks lookup. `rpc_compose::api::clients` collects the
+canonical generated owner client traits for consumers.
 
 Events: a plugin may publish one struct per event or one `#[serde(tag =
 "type")]` enum per event *stream* — `agent::AgentEvent` is the latter because
@@ -480,8 +476,8 @@ specifies private root trees that never enter the durable store, one exact
 nullable project label, native per-call and remote cumulative cost provenance
 with recursive child rollups, and authoritative styled read-only windows for
 agent-created PTYs. It keeps policy
-and storage with their current owners and uses the same `rpc::Api` in every
-frontend; it does not add a project/workspace service, billing service,
+and storage with their current owners and uses the same composed RPC surface
+in every frontend; it does not add a project/workspace service, billing service,
 terminal broker, generic resource registry, or delete-after-persist privacy
 path. Accepted with the evidence recorded in 51 §Status; as-built deviations
 from the design body are listed there.
@@ -597,14 +593,17 @@ Library: `jsonrpsee` 0.26, `server` + `macros` features, WebSocket on
 `127.0.0.1:<port>`, bearer token from `<data_dir>/token`.
 
 The RPC layer is generic glue, not a second protocol:
-- **Methods** = `ask` on a named actor (80 methods on `trait Api`):
-  `agent.send_input`, `agent.steer`, `agent.list_sessions`,
-  `tools.resolve_approval`, `tools.list`.
-- **Subscriptions** = bus events: `subscribe_events(session?, descendants?)`
-  yields every wire-visible event as `{ "type": "<TypeName>", ... }` via
-  `#[serde(tag = "type")]`; `descendants: true` widens the filter to the
-  session's subtree, including `SubagentSpawned` whose parent is inside it
-  (19 §2.2).
+- **Methods** live beside owner contracts and use actor lookup plus `ask`/`tell`,
+  authorization and owner-local helpers. There is no central `Api` trait.
+  `rpc::infra::InfraApi` owns `ping`, `client_log`, `rpc.capabilities` and
+  `rpc.discover`. `rpc_compose::api::CompositionApi` owns `info`, `search`,
+  `search_refresh`, `doc_resolve`, both event subscriptions, `set_event_focus`
+  and the two config-flag methods.
+- **Legacy subscriptions** = `subscribe_events(session?, descendants?)`
+  yields unchanged inner event JSON. Many streams use a `type` discriminator,
+  but some are plain structs or use adjacent tags; no universal event enum
+  or globally unique inner tag is assumed. `descendants: true` widens the
+  filter to the session's subtree, including child announcements (19 §2.2).
 - **Topic subscriptions** = `subscribe_topics(topics?, session?, descendants?)`
   yields `{topic, version, event}` over that same single owner-declared feed.
   Topics are exact strings: null selects all declared topics, [] no event data;
@@ -617,9 +616,9 @@ The RPC layer is generic glue, not a second protocol:
   Both streams remain live-only and lossy (1024 ring, 8192 non-delta backlog,
   40 ms delta flush), not durable replay or bounded producer backpressure.
   Artifact/update count external RPC stream leases, never local feed receivers.
-- Method params/results and event payloads are the plugins' own types; the
-  RPC crate defines none. TypeScript bindings for Tauri are generated with
-  `ts-rs` 12 from the same types (`#[derive(TS)]` behind a feature).
+- Params/results and event payloads remain owner types. Owner-trait descriptors
+  and registered event schemas define discovery, not a curated TypeScript list.
+  The legacy `ts-rs` export remains transitional under `rpc-compose`.
 - Communication (50 §10; implemented 2026-09-18, verification pending):
   `get_communication`/`set_communication`/`set_peer_scope`, `list_peers`,
   `list_peer_messages`/`peer_message`, `answer_peer_request`,
@@ -637,13 +636,145 @@ Rejected: raw bus envelope over the wire (couples internal type layout to the
 wire, no request semantics without reinventing JSON-RPC); `tonic` (no
 webview story without grpc-web).
 
+### Method registration and composition
+
+The outer `#[rpc_core_macros::rpc_descriptors(...)]` attribute sits before
+jsonrpsee's `#[rpc(server, client)]` on each owner trait and emits lazy
+descriptors from those same declarations. `rpc-core` re-exports the attribute
+for neutral `rpc` use. Descriptors retain wire names, ordered parameters,
+aliases, results, subscription items and subscribe/unsubscribe/notification
+names; injected connection extensions and subscription sinks are not wire
+parameters. `JsonSchema` callbacks use the consumer's generator.
+
+An owner factory returns `rpc_core::DescribedModule`, pairing its executable
+module with its descriptors. Owners with several leaves combine only their
+own modules through `rpc_core::merge_described`. Both construction and merge
+audit exact descriptor/registered-name equality, including aliases and
+unsubscribers; empty composition, duplicates, missing metadata and extra
+metadata fail rather than silently reducing the catalog.
+`crates/theuth/src/main.rs::rpc_composition` contains the one all-owner list.
+Its `rpc_module` exposes the executable module through
+`rpc_core::ModuleFactory`, threaded explicitly through socket, Noise, mesh,
+ACP, MCP, local TUI and attached takeover. Transports do not choose a hidden
+aggregate. `rpc-compose` registers only its own composition methods.
+
+**Adding a method.** Add its declaration and implementation to the acyclic
+owner's RPC trait, retaining the descriptor attribute and owner DTOs'
+`JsonSchema` derives. For example, `crates/schedule/src/rpc.rs` pairs
+`RoutinesApiServer::into_rpc(server)` with generated `rpc_descriptors()`.
+Include a new leaf in that owner's `rpc_module`; add a main merge entry only
+for a new owner. Expose its generated client through
+`rpc_compose::api::clients` when needed, then review the schema diff below.
+Do not add plugin dependencies to `rpc`.
+
+### Owner-declared event bridge
+
+`wire::WireEvent` supplies stable `TOPIC`, `VERSION` (initially 1), JSON
+serialization and `EventPolicy`. `wire::RuntimeWire` extends the Runtime
+plugins already receive: owner declaration helpers await
+`register_wire_event::<E>()`, including when the integration is disabled.
+Repeated identical declarations are idempotent; topic/type collisions and
+source/event mixing fail. `Plugin::declare_wire` runs before producers;
+existing start-time declarations remain safe repeats after freeze.
+
+One generic `WireHub` per Runtime subscribes to registered Rust types on the
+existing bus. It projects and serializes events in bus-processing order into
+a shared `Arc<wire::WireFrame>`: descriptor, inner JSON and policy.
+Subscription code uses policy for session/parent/child admission, child
+enrollment and wanted exceptions, then topic/focus filtering; the generic
+backlog coalesces by policy, not a list of plugin types. Policies preserve
+current top-level-field semantics, not nested-scope privacy or stronger delivery.
+`EventDescriptor` holds a lazy schema callback; `wire_schema()` returns the
+catalog without generating schemas per event.
+
+Owner exceptions remain owner-local: `tools` uses
+`register_wire_event_with` for stateful cell-kernel job suppression across
+typed and relayed inputs; `sessionsync` uses `register_wire_source` to turn
+its relay carrier into `WireIngress`. Known topics retain their raw fields
+except where an owner projects them; unknown old-peer payloads use
+`WireIngress::Legacy` with no fabricated schema/version. Nothing republishes
+those inner values onto the typed bus. No central typed `bridge.rs` remains.
+PTY, document and cell-attach subscriptions keep their separate item schemas
+and transport/buffering rules; they are not folded into the lossy event feed.
+
+**Adding an event.** Implement `WireEvent` beside the owner's serializable
+`JsonSchema` type, choose an owner-qualified topic such as `agent.events` or
+`schedule.events` (not its inner `type` tag), and register it in the owner's
+declaration helper before producers start.
+Use default policy unless the event needs explicit admission/coalescing flags.
+The existing plugin hook supplies the declaration; neither core nor export
+gains an event-type list. Preserve supported shapes when introducing an
+incompatible topic version, then review the snapshot.
+
+### Discovery, audiences and compatibility
+
+The connect handshake is fetched, never an unsolicited push:
+`rpc.capabilities()` with no arguments returns
+`{serverVersion, protocolVersion:{major:1,minor:0}, schemaHash, plugins:[{name}]}`.
+A client fetches no-argument `rpc.discover()` on a hash miss; it returns the
+OpenRPC 1.3.2 document directly, using JSON Schema Draft 7.
+The document includes method schemas, `components.schemas`, and `x-theuth`
+extensions for declared plugins, subscriptions, topic/version events, the
+envelope and delivery semantics. Input schemas describe accepted JSON; output
+schemas describe emitted JSON, with deserialize/receiver schemas alongside.
+Nullable positional slots before required arguments still need null
+placeholders; only a trailing omittable suffix may be omitted.
+
+`declare_plugins` freezes event installations before composing the actual
+modules; `rpc_core::freeze_discovery` stores three immutable views before any
+plugin starts. Owner and linked-device audiences share `DiscoveryView::Owner`,
+excluding mesh-only `peer_deliver`, `a2a_forward` and `link_mesh_id`.
+Authenticated mesh dispatch selects `DiscoveryView::Mesh`, the full surface.
+Guest identity takes precedence over any view marker: `DiscoveryView::Guest`
+projects through `rpc_core::GUEST_METHODS` before schema generation, removes
+the global event catalog and unreachable schema roots, and retains only
+declared plugins owning visible methods. Schema visibility grants no
+authorization, document membership or service readiness.
+
+Frozen replies share pre-serialized JSON and summary handles; requests do not
+regenerate schemas or copy the document tree. `schemaHash` is SHA-256 over
+compact canonical whole-document JSON; build version stays outside that
+document. `rpc_core::DiscoveryCache` requires a fresh summary per negotiation,
+verifies hashes, summary agreement and local references on misses, and keeps
+current/previous documents for one authenticated endpoint/view. Identity/view
+changes clear the cache. Only method-not-found on capabilities selects legacy;
+transport/auth/parse/hash failures do not. Rust WebSocket attachment and node
+control connections negotiate before ordinary calls.
+
+The reviewed baseline is
+`crates/theuth/tests/fixtures/wire/openrpc-v1.json`.
+`crates/theuth/tests/wire_schema_snapshot.rs::wire_schema_snapshot` compares
+it with ignored `bindings/openrpc.json` using
+`rpc_core::compatibility::classify`, then requires exact document equality.
+Removed/changed contracts fail; additive/documentation changes still require
+deliberate acceptance. Unsupported changed schema constructs fail closed for
+review. Resolving references avoids treating a component rename as a wire
+break; an opaque JSON schema cannot expose semantic changes.
+
+Export/review recipe (no live engine, stores or listeners):
+
+```sh
+just wire-schema
+cargo test -p theuth --test wire_schema_snapshot
+# Review the classified diff; preserve old ABI or obtain explicit major-cut approval.
+just wire-schema-accept
+```
+
+The binary export uses the production declaration pass and merge list with
+`engine_plugins(true, true)`, exporting the full mesh view. It also writes
+sorted `bindings/methods.json` and the two surface catalogs. `just ts` invokes
+that same binary export plus transitional legacy TS roots; `just ts-desktop`
+copies its outputs into the frontend. No second export-only owner list exists.
+
+### In-process and ACP consumers
+
 **Second in-process consumer.** The `link` plugin (31) dispatches each
 decrypted device request into the same `jsonrpsee::Methods` the socket
-serves, through `Methods::raw_json_request` (`rpc::methods(rt, module)` builds it;
-`crates/link/src/conn.rs`) — no loopback socket, no token, no second
-serialization. So `rpc::bridge::start` is idempotent: the one `Bridge` per
-process is registered as `"rpc.events"` and looked up before it is spawned.
-`put_attachment(bytes, ext)` / `get_attachment(path)` are `Api` methods
+serves, through `Methods::raw_json_request`
+(`rpc_compose::methods(rt, module)` builds it; `crates/link/src/conn.rs`) —
+no loopback socket or bearer token. Both consume the Runtime's one generic
+wire feed, not a second typed bridge.
+`put_attachment(bytes, ext)` / `get_attachment(path)` are owner RPC methods
 (base64; `<data_dir>/{attachments,browser,computer,artifacts}` only) because
 a phone is not on the harness host (31 §6.4). `list_artifacts(session?,
 descendants?)` (`null` session = every session, for the desktop explorer)
@@ -652,11 +783,16 @@ are the two asks on the artifact actor; the desktop's `resolveFile` fetches
 artifact blobs and previews through `get_attachment` unchanged.
 
 **ACP.** `t --acp` speaks the Agent Client Protocol on stdio
-(`rpc::AcpPlugin`, `crates/rpc/src/acp.rs`): the same actor lookups as the
+(`rpc_compose::AcpPlugin`, `crates/rpc-compose/src/acp.rs`): the same actor lookups as the
 methods above, a bus-subscribed `Relay` translating
 `AgentEvent`/`ApprovalRequested` into `session/update`/`session/request_permission`.
 Editors (Zed et al.) are frontends without a Tauri build; the jsonrpsee
 surface stays for the TUI and config menus. Design: doc 06 §4.
+
+### Generated desktop/iOS client
+
+Step 10, generating the Tauri desktop/shared iOS TypeScript client from this
+schema, is still in progress; its client-cutover section is left for follow-up.
 
 ## 8. Terminal UI plugin
 
@@ -668,15 +804,11 @@ The TUI is a control plane over the same actor commands RPC exposes. Its
 single topic intake reads shared `wire::WireFrame`s locally, or one
 `subscribe_topics(null, null, null)` stream when attached. Only method-not-found
 selects the old engine's bare `subscribe_events` ABI; no mirrored bus copy runs.
-Domain RPC traits implement their generated server contracts on
-`rpc_core::Server`; dreaming owns dreams and autoresearch owns research plus
-dreaming-backed sidecar landing. Domains not yet extracted remain in `rpc::api`.
-Handlers use actor lookup plus `ask`/`tell`. They are assembled by the explicit
-`rpc_core::ModuleFactory` supplied by `main`: its `rpc_module` function
-merges the domain factories with `rpc_core::merge`. The TUI uses the generated typed clients over
-`rpc::client::Local::new(rt, module)` or a remote WebSocket. Local dispatch
-uses jsonrpsee `Methods` in-process: no loopback socket or bearer token.
-The local `rpc::topics::LocalStream` subscribes before initialization and shares
+The TUI uses generated owner client traits from `rpc_compose::api::clients`
+over `rpc::client::Local::new(rt, module)` or a remote WebSocket. Local
+dispatch uses jsonrpsee `Methods` in-process: no loopback socket or bearer
+token; takeover retains the same injected method factory.
+The local `rpc_compose::topics::LocalStream` subscribes before initialization and shares
 the hub's JSON pending-prompt/loss producer: PendingPrompts first (including
 empty sets), Lagged then an authoritative snapshot after loss. Live local
 frames are never reserialized by the TUI, and local intake does not acquire an
@@ -684,39 +816,89 @@ external-RPC renderer/liveness lease. A gated local JobEvent-only subscriber
 preserves cell-kernel visibility; the filtered tools.jobs frame is not also
 delivered locally. TUI takeover retains the original method factory.
 
-Step 11 increment 0 introduces the TUI-local typed `components::Component`
-contract: associated `Msg`, declaration, borrowed topic decode, synchronous
-update, owned view and next wake deadline. `components/registry.rs::builtin`
-is the fixed registration list (update is the first component). The registry
-erases only component storage and local reply bodies, dispatches in registration
-order, rejects id/slash/key collisions, and fences replies by stable slot
-generation and engine epoch. Effects use one generic Command envelope, run on
-the current Engine, and share the existing concurrent/FIFO input lanes. Focus
-hooks stay at the old imperative precedence boundaries; closing a surface does
-not discard its persistent cache. Slots render the same row counts they reserve.
+### Component registry and core ports
 
-`Model` retains transcript/composer/sessions/approvals; unmigrated responsibilities
-remain behind the shrinking topic-keyed residual decoder, never bus republishing.
-The update component owns its DTO, dedupe cache, header and interjected notice;
-no update-specific Model field, UiEvent variant, reducer or print arm remains.
-The computer component owns `/computer`, its permissions RPC, display DTO and
-identical transcript/plain formatting; no computer event or command remains in core.
-The sandboxes component owns inventory and desktop URL replies; desktop passwords
-remain private inside opaque local replies, never transcript or plain output.
-The routines component owns `/schedules` parsing, sequential history/info reads,
-direct controls and unchanged text tables; it adds no schedule event subscription.
-The autoresearch component owns direct study controls and text rendering; goals
-use the existing named-skill submission path. Injected study cards remain core
-transcript content, with no new study event subscription.
-Focused components may expose an `Editor` port (hint, masking, empty-answer policy)
-on the mounted composer. Secret-class answers retain precedence over ask-user input.
-Component cards carry a stable UUID and named replacement group. Only the newest
-card in a group accepts body replacements; other groups remain independent.
-Later panel increments delete their residual cases and use typed local messages,
-borrowed owner serde contracts, neutral core actions/lifecycle and plain-output
-ports. Generic errors retain existing cross-panel pending-state effects.
-The line printer emits against pre-event state, not appended entries; `-p` still
-ends only on its selected root TurnFinished, generic Error or settled search.
+`crates/tui/src/components/mod.rs` defines the TUI-local `Component` trait:
+associated `Msg`, declaration, borrowed topic decode, synchronous update,
+owned view and next wake deadline. `Registry` erases component storage and
+local reply bodies, not owner message definitions. Interests select exact
+topic/version and optional inner variants; matching recipients receive the
+borrowed frame once in registration order. Unknown topics/versions/variants
+do not reset the connection.
+
+`crates/tui/src/components/registry.rs::builtin_with` is the fixed registration
+list, configured with app capability and interactive mode; `builtin` supplies
+the default composition. Its insertion blocks group built-in panels; they
+are composition locations, not presentation priority. Registration rejects
+duplicate ids, slash names/aliases, equal-class bindings and wrapper ownership.
+Explicit `HeaderSlot` and `StatusSlot` positions preserve chrome order;
+`model::command_rank` orders help/completion/dictation vocabulary independently
+of registration order.
+
+`Model` owns transcript, composer, sessions/private membership, approvals/asks
+and the registry shell. The extraction is not complete at this HEAD: model/
+provider/ACP/skills pickers, advisor and agent-board presentation still live
+in `crates/tui/src/model/`; the corresponding model-picker insertion block is
+empty. `crates/tui/src/topics.rs::residual` decodes the shared agent stream,
+core prompt streams and login completion; it never republishes them to the
+bus. Components own the migrated network/vault/peer, task/roster/routine,
+cost/todo/context-review, artifact/app/progress, job/terminal, knowledge/search,
+MCP and speech panels. No schema-generated Rust DTO cutover is implied:
+the aggregate `tui` crate still depends on owner crates, under its ratchet.
+
+`CoreView` borrows selected session/project, accepted membership and prompt
+identities, transcript and applied settings, including the once-decoded core
+agent event. Owners do not receive `&mut Model`. `CoreAction` defers core
+navigation, session adoption, editor and transcript mutations until registry
+borrows end. `Cx::spawn` and `Cx::spawn_request` queue generic effects against
+the current engine; owner-local request/reply enums stay in components.
+Concurrent requests and ordered PTY input use `Lane::Concurrent` and
+`Lane::OrderedInput`. Mutate/re-list transactions remain one effect.
+`LocalReply` is fenced by stable slot generation and engine epoch; unmount
+tombstones the slot and removes its interests. `Cx::send_to<C>` and
+`Model::component_message<C>` deliver typed addressed messages without mutable
+peer access; delivery resolves a mounted owner in the same engine epoch.
+
+The ports cover layout and interaction without feature DTOs in the shell:
+- `Surface::Header`, `Status`, `SessionBadge`, `PromptBadge` and `Activity`
+  place chrome among existing core segments, not in mount order.
+- `ComposerMode::{Default, ReadOnly, Hidden}` keeps App's editor mounted.
+  Intrinsic capture orders Hidden before ReadOnly before Default; replacement
+  composer headings give ReadOnly precedence over Hidden.
+  Composer-backed `Editor` supplies hints/masking; separate editor widgets
+  receive a rendered input element and typed callbacks, never its handle.
+- `Surface::EntrySummary` replaces existing running/pending text without extra
+  rows. `Surface::Entry`, `Component::entry_height` and `Registry::entry_layout`
+  share geometry with scroll/window measurement. `EntryOperation::{Open,Toggle}`
+  addresses stable call ids; unclaimed operations retain raw core fallbacks.
+- `TranscriptCard` owns rendered markdown, stable UUID, named replacement group
+  and literal/plain metadata. Only the newest card in a group accepts body
+  replacement; `CoreAction::InterjectCard` inserts above the live tail.
+  Wrapper owners project accepted history and live injected rows through the
+  same registry port, preserving source order and unowned fallback.
+
+Focus remains at the existing imperative input boundaries: terminal capture
+precedes global Ctrl-C, spoken capture preserves its existing approval/key
+predicates, and secret input precedes ask-user. Intrinsic captures need not
+displace modal focus;
+`Lifecycle::FocusLost` closes a displaced surface without discarding its cache.
+Lifecycle notifications handle session reset/read/history acceptance, prompt
+changes, engine replacement and shutdown. Generic errors intentionally retain
+cross-panel pending-state effects; an inline error claim suppresses only the
+final transcript entry, not the existing failure transitions.
+
+**Adding a panel.** Put state, local messages, typed RPC effects, topic/legacy
+decoding, slash/bindings and view/plain formatting in its component module.
+Register it once in `builtin_with`'s appropriate insertion block and declare
+only the topics it consumes. Reuse the neutral core/layout ports and explicit
+order keys; do not add feature variants to `UiEvent`/`Command` or extend the
+residual decoder. Remove the old reducer/executor/render/print hooks when
+moving an existing responsibility. Keep generation/session guards on late
+replies, keyboard precedence, shared measured rows and value-free secret output.
+
+The line printer emits `Plain` output against pre-event state, not appended
+entries; `-p` ends on its selected root TurnFinished, generic Error or
+`Plain::Finished` from settled search, not every successful feature reply.
 
 Input: `TextInput` is multiline with `newline_modifiers: SHIFT` (our iocraft
 patch, `[patch.crates-io]`): plain Enter submits, Shift+Enter inserts a
@@ -747,8 +929,8 @@ follows the tail. Two views' worth from the anchor is built and drawn from
 `top: -rows`; pinned, the tail is drawn bottom-aligned. Anchoring to an
 entry rather than to a row count from the bottom keeps what you are reading
 still while a reply streams in below. Reaching the bottom or sending
-re-pins. Heights are pre-wrap estimates (`Entry::height`); a row off moves
-the first scroll step, never the pinned bottom.
+re-pins. Raw heights use `Entry::height`; component entry replacements use
+the same owner-reported geometry in measurement and rendering.
 
 Transcript shapes, so a glance tells the kinds apart: every input and event
 is a rounded card with a glyph header in its own colour (text glyphs, never
@@ -890,7 +1072,11 @@ crates/
   telegram/           plugin: Telegram channel over Bot API long polling (added in 98)
   computer/           plugin: screenshot + pointer/keyboard tools (27)
   surface/            library: json-render spec, jsonrepair parse, located validation, terminal rendering of json-render and Mermaid (merman), flatten for text channels, prompt block + visualize skill (30)
-  rpc/                plugin: jsonrpsee server, event subscription bridge (§7); `search.rs`: four-category composition, `search`/`search_refresh` methods, the `search` tool and its registration-only `SearchToolsPlugin` (49 §4)
+  wire/               library: owner event contracts, registry, generic fanout (§7)
+  rpc-core-macros/     proc macro: descriptors from owner RPC traits (§7)
+  rpc-core/           library: shared RPC state/identity, streams, schemas/discovery (§4, §7)
+  rpc/                library: generic transport/auth, clients, engine discovery and infrastructure RPC (§7)
+  rpc-compose/        library: cross-plugin RPC, startup/ACP/topic intake, unified search + SearchToolsPlugin, transitional TS export (§7; 49 §4)
   link/               plugin: relay uplink, Noise pairing and sessions, device registry (31)
   nodes/              plugin: paired remote harnesses — control conns, dial transport for ACP children (32)
   schedule/           plugin: scheduled runs from `schedules/*.md` — tick, one session per schedule, delivery (34)
@@ -899,51 +1085,48 @@ crates/
   packages/apps/      TS: curated OpenUI library + compatibility hash, `check`, helper (`bun build --compile`), patched renderer adapter shared with desktop (46 §4, §6.2, §7)
   update/             plugin: silent self-update of the `theuth` binary — manifest GET, minisign verify, atomic rename; `--update` (added in 39)
   voice/              plugin: read replies aloud — Pocket TTS via `ptts`, `markdown::spoken`, Opus packets as `SpeechAudio` events (43); live dictation (Nemotron streaming) into the composer (54)
-  talk/               plugin: a live, interruptible spoken conversation with one session — turn policy, barge-in classifier, heard-prefix ledger over `voice`'s devices and models; `talk_*` RPC, `TalkEvent` (76; contract 2026-09-28, `voice ← talk ← rpc`)
+  talk/               plugin: a live, interruptible spoken conversation with one session — turn policy, barge-in classifier, heard-prefix ledger over `voice`'s devices and models; speech/dictation/`talk_*` RPC, `TalkEvent` (76; contract 2026-09-28)
   decision/           plugin: local typed-probability oracle (laya via ONNX Runtime) with selective gate; consumers `meeting`, `browser`, `agent` (readability) (57; step 1 skeleton 2026-09-21)
   dreaming/           plugin: the nightly own-context routine — bundled `dreaming` skill/sensor/routine, `Signals` + `Night` actors, day ledger, cases, learned-sidecar edits behind a replay gate, journal, per-night undo, `dreaming.*` RPC; `t dreaming dry-run` (136; built 2026-10-08)
   autoresearch/       plugin: measured experiment loops — study spec + draft card, noise gate, evaluator custody, git ratchet in an engine-managed worktree, brief-as-memory, reviewer, finalize into changesets, `autoresearch.*` RPC (140; built 2026-10-08)
   relay/              bin: theuth-relay, stateless encrypted-frame relay (31)
   tui/                plugin: iocraft frontend (§8)
   a2a/                plugin: A2A network boundary — official Rust SDK client/server, loopback listener gated by `a2a.enabled` and the global communication switch, `peers.yaml` bindings, `/a2a` status/reload (50 §6; implemented 2026-09-18, verification pending)
-  desktop/            app: Tauri menubar frontend, RPC client of `Api` - not a plugin (designed in 25)
+  desktop/            app: Tauri menubar frontend, client of the composed RPC surface — not a plugin (designed in 25)
   theuth/                bin: config load, plugin list from CLI flags, run (§2); service.rs: --install-service / --uninstall-service (32 §5.1)
 docs/design/          this file and per-plugin decisions
 ```
 
 v0 named six crates (`runtime`, `agent`, `oauth`, `tools`, `rpc`, `tui`) plus
 the `theuth` bin; the rest were added by the docs named beside them, each as the kind
-(plugin or library) that doc argued for. `rpc` starts with `--serve` or
-`--headless`. Budget: `runtime` ≤ 400 lines. `agent` is the loop and what
+(plugin or library) that doc argued for. `rpc_compose::RpcPlugin` starts the
+listener with `--serve`, `--headless` or implicit loopback service.
+Budget: `runtime` ≤ 400 lines. `agent` is the loop and what
 the loop must own (store, frame, compact, repl); frontends do not grow it.
 New subsystems earn a plugin. `agent/src/lib.rs` re-exports; command structs
-live next to the handler that answers them (12 §8). Dependency order:
-`runtime ← tools ← decision ← {meeting, browser}`; `runtime ← tools ← codeindex`; `runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, telegram, nodes, schedule, artifact, update, voice, a2a} ← rpc ← tui ← theuth`
-(`update` depends on `agent` and `runtime` only, `rpc` forwards
-`UpdateReady` and answers `update_status`, 39 §4.3; `voice` depends on
-`runtime` and `markdown` only, `rpc` forwards `VoiceEvent` and answers
-`speak`/`stop_speaking`/`voice_status`, 43 §6;
-`web`, `search-providers`, `agent`, `slack`, `telegram`, `rpc`, `signal` depend on
-`secrets`; `search-providers` also depends on `oauth` (a library, 80 §9);
-`agent` calls `tools::secrets::redact` from `tools`, 37 §0.10;
-`rpc` names `link`'s and `nodes`' types like every plugin's; `signal`
-imports `link::qr`; `nodes` imports `link`'s identity, initiator and record
-codec; `tui` renders `link`'s status and QR; `rpc` sends `link` its
-dispatch as a `SetDispatch` message at start, 32 §3.1 — never a handle
-threaded through `theuth`; `artifact` depends on `agent` for
-`AgentEvent::SessionDeleted` — subscribed — and asks `agent::ListSessions`
-once per search build so an orphaned record is never searchable (49 §4.3);
-it also depends on `tools`/`runtime`; nothing below `rpc` depends on it, 35
-§13; `search` depends on no workspace crate and `knowledge`, `agent`,
-`artifact`, `rpc`, `tui` depend on it, 49 §4.1; `rpc::SearchToolsPlugin` is
+live next to the handler that answers them (12 §8). The wire dependency
+direction is `runtime ← wire ← rpc-core ← owners` and
+`{runtime, rpc-core} ← rpc`, with `rpc-core-macros` beside core; composition
+depends on owners, never the reverse. The main merge list sits above both.
+Owner contracts still connect plugins where behavior requires them:
+`tools ← decision ← {meeting, browser}`, and `tools ← codeindex`;
+secrets expansion/redaction stays in `tools`, with vault state in `secrets`.
+`search-providers` also uses the `oauth` library (80 §9).
+Update/settings methods stay in `update`; speech/dictation methods stay in
+`talk`, and their events are declared at the producing owner.
+`signal` imports `link::qr`; `nodes` uses link identity/record codecs.
+`rpc-compose` supplies link dispatch during startup, not neutral `rpc`.
+`artifact` still uses agent session lifecycle/search contracts (35, 49);
+the pure `search` library keeps query policy independent of plugin state.
+`rpc_compose::SearchToolsPlugin` is
 listed in both agent-bearing plugin vectors of `theuth` independently of
 `RpcPlugin`, so the `search` tool exists in plain TUI, `--print` and `--acp`
 runs without the listener, 49 §4.4;
 `scrape → {firecrawl-native, web, browser}` and `browser → web`, so there is
-no cycle; `rpc` and `tui` depend on `scrape` only for the `ScrapeProgress`
-event type they forward and render, 38 §0.2; `a2a` depends on `agent`,
-`secrets` and `runtime` only — `agent` owns intake, exchange and task rows,
-the plugin owns the listener, clients and `peers.yaml`, 50 §4; `models` owns the
+no cycle; scrape progress is a web-owned wire topic consumed by its TUI
+component, not an extra dependency in neutral `rpc`. `a2a` keeps its listener,
+clients and `peers.yaml`; `agent` owns intake, exchanges and task rows (50 §4).
+`models` owns the
 process-wide ONNX Runtime initialiser `models::onnx::ort_lib` and `voice`,
 `meeting`, `decision` depend on it for that, 57 §6 step 1; `decision` depends on
 `runtime`, `tools`, `models` and never on `agent` — beat: a router inside `agent`
@@ -952,21 +1135,22 @@ process-wide ONNX Runtime initialiser `models::onnx::ort_lib` and `voice`,
 `document` (59, added 2026-09-21) depends on `runtime` only in step 1 (its
 tools arrive in step 2, when it gains `tools`); `knowledge` depends on
 `document` (import hooks after `put`/`write`/`restore`/`sync`, delete), so the
-chain reads `runtime ← tools ← secrets ← document ← knowledge ← …`; `rpc`
-imports its wire types and `Handle` like every plugin's.
+chain still places document contracts below knowledge consumers; owner RPC
+modules and `rpc-compose`, not neutral `rpc`, import document wire types.
 
 `platform` (58, step 1 2026-09-22) sits beside `runtime` at the bottom:
-`tools`, `secrets`, `link`, `rpc`, `oauth`, `tui`, `schedule`, `update`,
+`tools`, `secrets`, `link`, `rpc-compose`, `oauth`, `tui`, `schedule`, `update`,
 `computer`, `models`, `agent`, `relay`, `desktop` and `theuth` call it for
 what the OS provides; it depends on no workspace crate. `meeting` is a
 `[target.'cfg(target_os = "macos")']` dependency of `theuth` (58 §3.2).
 
 `app` (46, added 2026-09-18) depends on `artifact` (typed `Commit` with
 `expected_base`, invocation rows), `tools` (`AppInvoke`, `DescribeTools`,
-`ToolInspection.identity`), `link` (`RpcPeer`, the connection a view is bound
-to), `agent` (`AgentEvent::SessionDeleted`, subscribed) and `runtime`; `rpc`
-imports its four commands and `AppCallChanged`; `agent`, `artifact` and
-`tools` do not import it. `web` gained `http_request` (46 §5). Neither agent
+`ToolInspection.identity`), `rpc-core` (`RpcPeer`, the connection a view is bound
+to), `agent` (`AgentEvent::SessionDeleted`, subscribed) and `runtime`.
+Its own RPC modules expose app operations and its event declaration exposes
+`AppCallChanged`; `agent`, `artifact` and `tools` do not import it.
+`web` gained `http_request` (46 §5). Neither agent
 nor artifact carries app types: the sidecar is opaque bytes to `artifact`,
 and the only central additions are `tools::AppInvoke` and
 `Tool::CONSUMES_SECRETS` (§4). There is no app-specific Python callable
@@ -984,10 +1168,10 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | sqlx (sqlite, runtime-tokio, migrate) | 0.9 | session store |
 | jsonrpsee (server, macros) | 0.26 | RPC |
 | iocraft | 0.9 | TUI |
-| schemars | 1.2 | tool schemas |
+| schemars | 1.2 | tool schemas and owner RPC/event discovery |
 | serde / serde_json | 1 | wire |
 | figment (yaml, env) | 0.10 | config |
-| ts-rs | 12 | TS bindings (feature-gated) |
+| ts-rs | 12 | transitional legacy TS bindings (feature-gated) |
 | gray_matter | 0.3 | skill front matter (phase 2) |
 | tracing / tracing-subscriber | 0.1 / 0.3 | logs |
 | anyhow / thiserror | 1 / 2 | errors |

@@ -24,7 +24,7 @@ pub(crate) struct Menu {
 pub(crate) enum Request {
     ListMcp(Option<SessionId>), McpStatus,
     SetGate { server: String, tool: Option<String>, gate: Option<Gate>, session: Option<SessionId> },
-    SetHidden { session: Option<SessionId>, tools: Vec<String>, hidden: bool },
+    SetHidden { session: Option<SessionId>, tools: Vec<String>, hidden: bool, draft: Option<agent::CreateSessionOptions> },
     AddMcp { name: String, entry: serde_json::Value }, AddMcpRepo(String), SyncMcp,
     Login(String), Logout(String),
 }
@@ -33,20 +33,9 @@ pub(crate) enum Msg {
     Progress(Result<McpProgress, String>),
     Added(Result<McpServer, String>), Repo(Result<RepoInfo, String>),
     Synced(Result<Vec<SyncResult>, String>), Info(Result<String, String>),
+    Created(SessionId, Request), Mutate(Request),
 }
 fn send(cx: &mut Cx<'_, '_, Msg>, request: Request) {
-    if matches!(request, Request::SetHidden { .. }) {
-        cx.ensure_session_request(request, |api, adopted, request| async move {
-            let Request::SetHidden { session, tools, hidden } = request else { unreachable!() };
-            let session = session.unwrap_or(adopted);
-            let result = async {
-                api.set_mcp_hidden(session, tools, hidden).await.map_err(crate::reason)?;
-                api.list_mcp(Some(session)).await.map_err(crate::reason)
-            }.await;
-            Msg::Mcp(result)
-        }, |error| Msg::Mcp(Err(error)));
-        return;
-    }
     cx.spawn_request(Lane::Concurrent, request, |api, request| async move {
         match request {
             Request::ListMcp(session) => Msg::Mcp(api.list_mcp(session).await.map_err(crate::reason)),
@@ -66,7 +55,20 @@ fn send(cx: &mut Cx<'_, '_, Msg>, request: Request) {
                 if oauth::provider(&name).is_some() { api.logout(name.clone()).await } else { api.mcp_logout(name.clone()).await }.map_err(crate::reason)?;
                 Ok(format!("logged out of {name}"))
             }.await),
-            Request::SetHidden { .. } => unreachable!(),
+            Request::SetHidden { session: None, tools, hidden, draft } => {
+                let result = match draft {
+                    Some(draft) => api.create_session(draft).await.map(|open| open.session),
+                    None => api.new_session().await,
+                };
+                match result {
+                    Ok(session) => Msg::Created(session, Request::SetHidden { session: Some(session), tools, hidden, draft: None }),
+                    Err(error) => Msg::Mcp(Err(crate::reason(error))),
+                }
+            }
+            Request::SetHidden { session: Some(session), tools, hidden, .. } => Msg::Mcp(async {
+                api.set_mcp_hidden(session, tools, hidden).await.map_err(crate::reason)?;
+                api.list_mcp(Some(session)).await.map_err(crate::reason)
+            }.await),
         }
     });
 }
@@ -308,6 +310,7 @@ impl Mcp {
                 session,
                 tools: row.tool_names(),
                 hidden,
+                draft: tx.core.draft_options.cloned(),
             }))
         };
         // The scope prompt after ⏎ on an `on` row: the target is the row the
@@ -453,6 +456,11 @@ impl Component for Mcp {
                 cx.consume_key();
                 if self.menu.is_none() { cx.close(); }
             }
+            Input::Message(Msg::Created(session, request)) => {
+                cx.core(CoreAction::SessionCreated(session));
+                cx.post(Msg::Mutate(request));
+            }
+            Input::Message(Msg::Mutate(request)) => send(cx, request),
             Input::Message(Msg::Mcp(Ok(list))) => {
                 cx.plain(Plain::TtyRequired("menus need a TTY".into()));
                 match &mut self.menu {
@@ -570,6 +578,11 @@ async fn close_reopen_pending_hidden_mutation_relists_original_target_without_se
     }
     fn module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
         let mut module = jsonrpsee::RpcModule::new(server);
+        module.register_method("new_session", |_, server, _| {
+            let target = SessionId::new();
+            server.rt.extension::<Calls>(Default::default).lock().push(("create".into(), target));
+            Ok::<_, jsonrpsee::types::ErrorObjectOwned>(target)
+        }).unwrap();
         module.register_method("set_mcp_hidden", |params, server, _| {
             let (session, tools, hidden): (SessionId, Vec<String>, bool) = params.parse()?;
             assert_eq!(tools, ["read"]);
@@ -599,22 +612,23 @@ async fn close_reopen_pending_hidden_mutation_relists_original_target_without_se
     inject(&mut model, Msg::Mcp(Ok(vec![inventory(false)])));
     key(&mut model, KeyCode::Enter);
     key(&mut model, KeyCode::Char('s'));
-    assert!(matches!(commands.try_recv(), Ok(Command::CreateDraft(_))));
+    let Command::Component(creation) = commands.try_recv().unwrap() else { panic!("independent creation") };
+    assert!(matches!(creation.request::<Request>(), Some(Request::SetHidden { session: None, hidden: true, .. })));
     key(&mut model, KeyCode::Esc);
     assert!(model.components.get::<Mcp>().unwrap().menu.is_none());
     model.submit("/mcp", &tx);
     assert!(matches!(commands.try_recv(), Ok(Command::Component(effect)) if matches!(effect.request::<Request>(), Some(Request::ListMcp(None)))));
     assert!(commands.try_recv().is_err());
-    let target = SessionId::new();
-    model.apply(UiEvent::SessionCreated(target));
-    let Command::Component(effect) = commands.try_recv().unwrap() else { panic!("hidden mutation") };
-    assert!(matches!(effect.request::<Request>(), Some(Request::SetHidden { session: None, hidden: true, .. })));
     let rt = runtime::Runtime::new(Default::default(), std::env::temp_dir());
     let calls = rt.extension::<Calls>(Default::default);
     let engine = Arc::new(Engine::Local(rpc::client::Local::new(rt.clone(), module)));
+    model.apply(super::execute(creation, engine.clone()).await);
+    let target = model.session.unwrap();
+    let Command::Component(effect) = commands.try_recv().unwrap() else { panic!("hidden mutation") };
+    assert!(matches!(effect.request::<Request>(), Some(Request::SetHidden { session: Some(session), hidden: true, .. }) if *session == target));
     model.session = Some(SessionId::new());
     model.apply(super::execute(effect, engine).await);
-    assert_eq!(*calls.lock(), [("hide".into(), target), ("list".into(), target)]);
+    assert_eq!(*calls.lock(), [("create".into(), target), ("hide".into(), target), ("list".into(), target)]);
     assert_eq!(model.components.get::<Mcp>().unwrap().mcp_rows()[0].switch(), Switch::OffSession);
     assert!(commands.try_recv().is_err());
     rt.shutdown.cancel();

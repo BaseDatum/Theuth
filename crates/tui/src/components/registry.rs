@@ -8,6 +8,13 @@ pub fn builtin() -> Registry { builtin_with(false, true) }
 /// The sole built-in composition list. Add a panel here only after deleting its
 /// residual enum/reducer/executor/render/print hooks.
 pub fn builtin_with(app_enabled: bool, interactive: bool) -> Registry {
+    compose(app_enabled, interactive, models::Models::default(), advisor::Advisor::default())
+}
+/// Configure owner defaults from the single startup info read.
+pub fn configured(info: Option<&rpc_compose::api::Info>, runtime: &runtime::Runtime, interactive: bool) -> Registry {
+    compose(info.is_some_and(|i| i.app_enabled), interactive, models::Models::configured(info, runtime), advisor::Advisor::configured(info, interactive))
+}
+fn compose(app_enabled: bool, interactive: bool, models: models::Models, advisor: advisor::Advisor) -> Registry {
     let mut registry = Registry::empty();
     registry.set_interactive(interactive);
     registry.register(update::Update::default()).expect("built-in component registration");
@@ -41,8 +48,16 @@ pub fn builtin_with(app_enabled: bool, interactive: bool) -> Registry {
     registry.register(mcp::Mcp::default()).expect("built-in component registration");
     registry.register(search_attach::SearchAttach::default()).expect("built-in component registration");
     registry.register(dictation_voice::DictationVoice::default()).expect("built-in component registration");
+    registry.register(talk::Talk::default()).expect("built-in component registration");
 
     // Model-picker panels (after design 194): register below, in this block only.
+    registry.register(models).expect("built-in component registration");
+    registry.register(aws::Aws::default()).expect("built-in component registration");
+    registry.register(vision_settings::VisionSettings::default()).expect("built-in component registration");
+    registry.register(advisor).expect("built-in component registration");
+    registry.register(skills_prompt::SkillsPrompt::default()).expect("built-in component registration");
+    registry.register(acp::Acp::default()).expect("built-in component registration");
+    registry.register(providers_login::ProvidersLogin::default()).expect("built-in component registration");
     registry
 }
 
@@ -137,6 +152,28 @@ impl Registry {
         let token = self.by_wrapper.get(row.tag)?;
         Some(self.slots[token.slot].component.as_ref()?.wrapper(row))
     }
+    /// Admission stays in core; owners identify their otherwise hidden linked sessions.
+    pub fn session_hidden(&self, session: SessionId) -> bool {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).any(|component| component.session_hidden(session))
+    }
+    /// An owner already presented this turn's input through another transcript row.
+    pub fn turn_hidden(&self, seq: i64) -> bool {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).any(|component| component.turn_hidden(seq))
+    }
+    /// Hand owned canonical history to the first claiming owner, without cloning it.
+    pub fn history_entry(&mut self, mut row: agent::HistoryEntry, opts: &markdown::Options) -> Result<Vec<crate::model::Entry>, agent::HistoryEntry> {
+        for component in self.slots.iter_mut().filter_map(|slot| slot.component.as_mut()) {
+            match component.history_entry(row, opts) {
+                Ok(entries) => return Ok(entries),
+                Err(unclaimed) => row = unclaimed,
+            }
+        }
+        Err(row)
+    }
+    /// Keep the sole history owner's plain projection beside its graphical projection.
+    pub fn history_plain(&self, row: &agent::HistoryEntry) -> Option<Vec<String>> {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).find_map(|component| component.history_plain(row))
+    }
     fn lose_focus(&mut self, core: &CoreView<'_>, out: &mut Outbox) {
         if let Some((token, _)) = self.focus.take()
             && let Some(component) = &mut self.slots[token.slot].component
@@ -190,6 +227,23 @@ impl Registry {
         self.finish(&mut out, core);
         out
     }
+    pub(crate) fn address(&self, message: AddressedMessage) -> Option<LocalReply> {
+        if message.engine_epoch != self.epoch { return None; }
+        let (slot, mounted) = self.slots.iter().enumerate().find(|(_, slot)|
+            slot.component.as_ref().is_some_and(|component| component.as_any().type_id() == message.owner)
+        )?;
+        Some(LocalReply {
+            to: ComponentToken { slot, generation: mounted.generation },
+            engine_epoch: message.engine_epoch, body: message.body,
+        })
+    }
+    /// Address synchronous typed input with the target's current token and epoch.
+    pub fn send_to<C: Component>(&mut self, message: C::Msg, core: &CoreView<'_>) -> Outbox {
+        let message = AddressedMessage {
+            owner: std::any::TypeId::of::<C>(), engine_epoch: self.epoch, body: Box::new(message),
+        };
+        self.address(message).map_or_else(Outbox::default, |reply| self.reply(reply, core))
+    }
     /// Drop stale/removed/wrong-owner replies before the typed adapter sees them.
     pub fn reply(&mut self, reply: LocalReply, core: &CoreView<'_>) -> Outbox {
         let mut out = Outbox::default();
@@ -233,6 +287,10 @@ impl Registry {
     /// Whether an owner has a local representation of this stable entry.
     pub fn entry_openable(&self, key: &str) -> bool {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()).any(|component| component.entry_openable(key))
+    }
+    /// The last entry owner may override the core disclosure eligibility.
+    pub fn entry_toggleable(&self, key: &str) -> Option<bool> {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).filter_map(|component| component.entry_toggleable(key)).last()
     }
     /// Last replacement and following append rows, matching entry-view composition exactly.
     pub fn entry_layout(&self, key: &str, width: usize) -> (Option<usize>, usize) {
@@ -321,6 +379,17 @@ impl Registry {
         self.finish(&mut out, core);
         Some(out)
     }
+    /// Route a late slash fallback only after explicit core and owner commands.
+    pub fn slash_fallback(&mut self, name: &str, args: &str, core: &CoreView<'_>) -> Option<Outbox> {
+        let index = self.slots.iter().position(|slot| slot.component.as_ref().is_some_and(|c| c.slash_fallback(name)))?;
+        let token = ComponentToken { slot: index, generation: self.slots[index].generation };
+        let component = self.slots[index].component.as_mut()?;
+        let mut out = Outbox::default();
+        let owner_core = CoreView { commands: &self.commands, ..*core };
+        component.input(Input::Slash { name, args }, &owner_core, token, self.epoch, &mut out);
+        self.finish(&mut out, core);
+        Some(out)
+    }
     /// Registration-ordered rows shared by completion/help and dictation.
     pub fn slash_specs(&self) -> impl Iterator<Item = &'static SlashSpec> + '_ {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()).flat_map(|component| {
@@ -395,8 +464,8 @@ impl Registry {
     pub fn separate_editor(&self) -> bool {
         self.focus.is_some_and(|(token, _)| self.slots[token.slot].component.as_ref().is_some_and(|component| component.separate_editor()))
     }
-    /// Modal capture excludes composer-backed prompts, just like the core prompt.
+    /// Intrinsic modal capture blocks the composer even with a retained prompt.
     pub fn modal(&self) -> bool {
-        self.separate_editor() || (self.focus.is_some_and(|(_, class)| class == FocusClass::Modal) && self.editor().is_none())
+        self.captures(FocusClass::Modal) || self.separate_editor() || (self.focus.is_some_and(|(_, class)| class == FocusClass::Modal) && self.editor().is_none())
     }
 }

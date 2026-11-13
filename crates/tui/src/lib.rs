@@ -17,7 +17,7 @@ use rpc::engine::{Host, Running};
 use runtime::{Runtime, SessionId};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tools::{Decision, McpAuth};
+use tools::Decision;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod attach;
@@ -26,10 +26,9 @@ pub mod components;
 pub mod topics;
 pub mod model;
 pub mod pathac;
-pub mod talk;
 mod ui;
 
-use model::{Command, LoginRow, Model, UiEvent};
+use model::{Command, Model, UiEvent};
 
 /// The plugin.
 pub struct TuiPlugin {
@@ -102,27 +101,15 @@ impl runtime::Plugin for TuiPlugin {
         let engine = api.read().clone();
         let info = engine.info().await.ok();
         let interactive = self.prompt.is_none() && std::io::stdout().is_terminal();
-        let components = components::builtin_with(info.as_ref().is_some_and(|i| i.app_enabled), interactive);
+        let components = components::configured(info.as_ref(), rt, interactive);
         tokio::spawn(run_commands(api, commands_rx, events_tx));
 
-        let (default_model, default_effort, advisor, favorite_models) = info.map_or_else(
+        let (default_model, default_effort) = info.map_or_else(
             || {
                 let cfg = rt.section::<AgentConfig>("agent").unwrap_or_default();
-                (
-                    cfg.model,
-                    cfg.effort,
-                    Default::default(),
-                    cfg.favorite_models,
-                )
+                (cfg.model, cfg.effort)
             },
-            |i| {
-                (
-                    i.default_model,
-                    i.default_effort,
-                    i.advisor,
-                    i.favorite_models,
-                )
-            },
+            |i| (i.default_model, i.default_effort),
         );
         let approvals = rt
             .section::<tools::ToolsConfig>("tools")
@@ -139,8 +126,6 @@ impl runtime::Plugin for TuiPlugin {
                     commands: commands_tx,
                     default_model,
                     default_effort,
-                    advisor,
-                    favorite_models,
                     approvals,
                     components: Some(components),
                     catalog,
@@ -505,22 +490,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             msg(api.set_compact_style(style).await)?;
             UiEvent::Info(format!("compact style: {style}"))
         }
-        Command::GetTitleModel => UiEvent::TitleModel(msg(api.title_model().await)?),
-        Command::SetTitleModel(model) => {
-            UiEvent::TitleModel(msg(api.set_title_model(model).await)?)
-        }
-        Command::GetVisionModel => UiEvent::VisionModel(msg(api.vision_model().await)?),
-        Command::SetVisionModel(model) => {
-            UiEvent::VisionModel(msg(api.set_vision_model(model).await)?)
-        }
-        Command::ListAwsProfiles => UiEvent::AwsProfiles {
-            info: msg(api.list_aws_profiles().await)?,
-            pick: true,
-        },
-        Command::SetAwsProfile(profile) => UiEvent::AwsProfiles {
-            info: msg(api.set_aws_profile(profile).await)?,
-            pick: false,
-        },
         Command::ListSessions => UiEvent::Sessions(msg(api.list_sessions().await)?),
         // Failures show nothing: the list simply does not open (PATH-AC).
         Command::PathComplete {
@@ -546,45 +515,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 UiEvent::History(session, loaded)
             }
         }
-        Command::ListModels => UiEvent::Models(msg(api.list_models(None).await)?),
-        // 148 R1: this session only; the default is the Settings UI's to set.
-        Command::SetModel { session, model } => {
-            UiEvent::ModelSet(msg(api.set_model(Some(session), model, None).await)?)
-        }
-        Command::SetEffort { session, effort } => {
-            msg(api.set_effort(Some(session), effort.clone(), None).await)?;
-            UiEvent::EffortSet(effort)
-        }
-        // 125 §7.1: `None` model = off; both replies carry the same status.
-        Command::SetAdvisor {
-            session,
-            model,
-            effort,
-        } => UiEvent::AdvisorStatus(msg(api.set_advisor(session, model, effort).await)?),
-        Command::AdvisorStatus(session) => {
-            UiEvent::AdvisorStatus(msg(api.advisor_status(session).await)?)
-        }
-        // R1.2: `advisor consults → n`; the live status follows on `AdvisorChanged`.
-        Command::SetAdvisorMaxConsults(n) => {
-            let d = msg(api.set_advisor_max_consults(n).await)?;
-            UiEvent::Info(format!("advisor consults → {}", d.max_consults))
-        }
-        Command::SetModelFavorite { model, favorite } => {
-            UiEvent::FavoriteModels(msg(api.set_model_favorite(model, favorite).await)?)
-        }
-        Command::HarnessOptions(session) => {
-            UiEvent::HarnessOptions(msg(api.harness_options(session).await)?)
-        }
-        Command::SetHarnessOption {
-            session,
-            config_id,
-            value,
-        } => {
-            let r = msg(api
-                .set_harness_option(session, config_id.clone(), value.clone())
-                .await)?;
-            UiEvent::HarnessOptionSet(config_id, value, r)
-        }
         Command::ResumeChild(session) => {
             // 146 D8: a child that died mid-prompt continues its task.
             let text = match msg(api.resume_child(session).await)? {
@@ -599,141 +529,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         }
         Command::SetApprovals { session, enabled } => {
             UiEvent::Approvals(msg(api.set_approvals(session, enabled, None).await)?)
-        }
-        Command::ShowPrompt(session) => UiEvent::Prompt(msg(api.get_prompt(session).await)?),
-        Command::ListSkills => UiEvent::Skills(msg(api.list_skills().await)?),
-        Command::LoadSkill(name) => UiEvent::Skill(msg(api.load_skill(name).await)?),
-        Command::UseSkill {
-            session,
-            name,
-            args,
-            draft,
-        } => {
-            let session = match draft {
-                Some(d) => Some(open_draft(api, d, tx).await?),
-                None => session,
-            };
-            UiEvent::SessionCreated(msg(api.use_skill(session, name, args).await)?)
-        }
-        Command::AddSkillRepo(url) => {
-            UiEvent::SkillsAdded(msg(api.add_skill_repo(url, None).await)?)
-        }
-        // A repo dir first (only removed when it holds `.git`), else a local skill.
-        Command::RemoveSkill(name) => {
-            if api.remove_skill_repo(name.clone()).await.is_ok() {
-                UiEvent::Info(format!("removed repo {name}"))
-            } else {
-                msg(api.remove_skill(name.clone()).await)?;
-                UiEvent::Info(format!("removed skill {name}"))
-            }
-        }
-        Command::SyncSkills => UiEvent::Synced(msg(api.sync_skills().await)?),
-        Command::ListAcp { probe } => UiEvent::Acp(msg(api.list_acp(probe).await)?),
-        Command::AddAcp(id) => {
-            let _ = tx.send(UiEvent::AcpAdded(msg(api.add_acp(id).await)?));
-            // Re-list here, not from the UI: commands run concurrently.
-            UiEvent::Acp(msg(api.list_acp(false).await)?)
-        }
-        Command::RemoveAcp(name) => {
-            msg(api.remove_acp(name).await)?;
-            UiEvent::Acp(msg(api.list_acp(false).await)?)
-        }
-        Command::ListAcpRegistry => UiEvent::AcpRegistry(msg(api.list_acp_registry().await)?),
-        Command::ListLogins => {
-            let mut rows: Vec<LoginRow> = msg(api.list_logins().await)?
-                .into_iter()
-                .map(|l| LoginRow {
-                    name: l.name,
-                    mcp: false,
-                    status: match (l.logged_in, l.account) {
-                        (false, _) => "not logged in".to_owned(),
-                        (true, Some(a)) => format!("logged in ({a})"),
-                        (true, None) => "logged in".to_owned(),
-                    },
-                })
-                .collect();
-            rows.extend(
-                msg(api.list_mcp(None).await)?
-                    .into_iter()
-                    .filter(|s| s.auth != McpAuth::None)
-                    .map(|s| LoginRow {
-                        name: s.name,
-                        mcp: true,
-                        status: match s.auth {
-                            McpAuth::LoggedIn => "logged in".to_owned(),
-                            _ => "login required".to_owned(),
-                        },
-                    }),
-            );
-            UiEvent::Logins(rows)
-        }
-        // A provider name first, else an MCP server.
-        Command::Login(name) => {
-            let url = if oauth::provider(&name).is_some() {
-                msg(api.login(name).await)?
-            } else {
-                msg(api.mcp_login(name).await)?
-            };
-            UiEvent::Info(format!("login: open {url}"))
-        }
-        Command::Logout(name) => {
-            if oauth::provider(&name).is_some() {
-                msg(api.logout(name.clone()).await)?;
-            } else {
-                msg(api.mcp_logout(name.clone()).await)?;
-            }
-            UiEvent::Info(format!("logged out of {name}"))
-        }
-        Command::ListProviders => UiEvent::Providers(msg(api.list_providers().await)?),
-        Command::AddProvider {
-            name,
-            base_url,
-            key,
-        } => UiEvent::ProviderAdded(msg(api
-            .add_provider(name, base_url, (!key.is_empty()).then_some(key), None)
-            .await)?),
-        Command::RemoveProvider(name) => {
-            msg(api.remove_provider(name.clone()).await)?;
-            UiEvent::Info(format!("removed provider {name}"))
-        }
-        Command::RefreshProvider(name) => {
-            UiEvent::Info(msg(api.refresh_provider_models(name).await)?.line())
-        }
-        Command::FindLocalServers => UiEvent::Info(
-            msg(api.local_servers_probe().await)?
-                .iter()
-                .map(agent::LocalServer::line)
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ),
-        Command::SetModelLimits {
-            provider,
-            model,
-            context,
-            output,
-        } => {
-            // R2-8: no output given keeps the stored one (as the desktop does); 0 clears.
-            let output = match output {
-                Some(o) => (o > 0).then_some(o),
-                None => msg(api.provider_models(provider.clone()).await)?
-                    .into_iter()
-                    .find(|m| m.id == model)
-                    .map(|m| m.output)
-                    .filter(|&o| o > 0),
-            };
-            let m = msg(api
-                .set_model_limits(provider.clone(), model, context, output)
-                .await)?;
-            UiEvent::Info(format!("{provider}/{}", m.line()))
-        }
-        Command::TalkStart { session, draft } => start_talk(api, session, draft, tx).await,
-        Command::TalkStop(id) if talk_sim() => UiEvent::Talk(::talk::TalkEvent::TalkFinished {
-            id,
-            reason: ::talk::EndReason::Stopped,
-        }),
-        Command::TalkStop(id) => {
-            msg(api.talk_stop(id).await)?;
-            return Ok(());
         }
     };
     let _ = tx.send(reply);
@@ -753,53 +548,6 @@ async fn open_draft(
     Ok(s)
 }
 
-/// `/talk` (76 §5.1): with no session, create one first (on the draft's
-/// picks, 148 R1) — the model adopts it through `SessionOpened` before the
-/// talk id arrives — then `talk_start` with `sink: device`. `THEUTH_TALK_SIM`
-/// set: the scripted [`talk::sim`] stands in for the engine (the brief's
-/// development source).
-async fn start_talk(
-    api: &Engine,
-    session: Option<SessionId>,
-    draft: Option<agent::CreateSessionOptions>,
-    tx: &UnboundedSender<UiEvent>,
-) -> UiEvent {
-    let session = match session {
-        Some(s) => s,
-        None => match api.create_session(draft.unwrap_or_default()).await {
-            Ok(open) => {
-                let s = open.session;
-                let _ = tx.send(UiEvent::SessionOpened(open));
-                s
-            }
-            Err(e) => return UiEvent::TalkFailed(reason(e)),
-        },
-    };
-    if talk_sim() {
-        let id = ::talk::TalkId::new();
-        tokio::spawn(run_talk_sim(id, session, tx.clone()));
-        return UiEvent::TalkStarting(id);
-    }
-    match api.talk_start(session, ::talk::Sink::Device, None).await {
-        Ok(id) => UiEvent::TalkStarting(id),
-        Err(e) => UiEvent::TalkFailed(reason(e)),
-    }
-}
-
-/// `THEUTH_TALK_SIM` set: `/talk` plays [`talk::sim`] instead of calling the engine.
-fn talk_sim() -> bool {
-    std::env::var_os("THEUTH_TALK_SIM").is_some()
-}
-
-/// Feed the scripted talk into the UI at its own pace; stops when the UI is gone.
-async fn run_talk_sim(id: ::talk::TalkId, session: SessionId, tx: UnboundedSender<UiEvent>) {
-    for (ms, ev) in talk::sim(id, session) {
-        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
-        if tx.send(ev).is_err() {
-            return;
-        }
-    }
-}
 
 
 /// Keep only the message: the JSON-RPC code is not user-facing.
@@ -928,7 +676,7 @@ fn print_output(out: &mut impl Write, output: model::Output<'_>) -> bool {
 /// A loaded transcript as lines. A row removed from context (48 §2.2)
 /// prints as one `⊘` marker over its first line — the archive is not
 /// replayed — and attachment occurrences print by name.
-fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Result<()> {
+fn print_history(out: &mut impl Write, loaded: &agent::Loaded, registry: &components::Registry) -> std::io::Result<()> {
     let labels = |c: &Option<agent::ContextEntry>| -> String {
         c.as_ref().map_or_else(String::new, |c| {
             c.attachments
@@ -938,7 +686,9 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
         })
     };
     let removed = |c: &Option<agent::ContextEntry>| c.as_ref().is_some_and(|c| c.removed);
-    loaded.history.iter().try_for_each(|h| match h {
+    loaded.history.iter().try_for_each(|h| {
+        if let Some(lines) = registry.history_plain(h) { return lines.iter().try_for_each(|line| writeln!(out, "{line}")); }
+        match h {
         // A consultation note (52 §6) is harness-authored: one header line,
         // never echoed as the human's `>` prompt or the assistant's reply.
         agent::HistoryEntry::User {
@@ -1009,15 +759,10 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
         agent::HistoryEntry::Interrupted { text, .. } => {
             writeln!(out, "── interrupted — resuming ──\n{text}")
         }
-        // 125 §7.4: one line per note, the card's title first.
-        agent::HistoryEntry::Advisory { advisory, .. } => {
-            writeln!(out, "{}", model::advisory_title(advisory))?;
-            model::advisory_lines(advisory)
-                .iter()
-                .try_for_each(|l| writeln!(out, "{l}"))
-        }
         // 183 §5.3: one line.
         agent::HistoryEntry::Moved { moved, .. } => writeln!(out, "{}", model::moved_title(moved)),
+        _ => Ok(()),
+        }
     })
 }
 
@@ -1085,16 +830,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             )
         }
         UiEvent::Agent(AgentEvent::ModelChanged { model, .. }) => writeln!(out, "model → {model}"),
-        UiEvent::Agent(AgentEvent::AdvisoryAdded { advisory, .. }) => {
-            writeln!(out, "{}", model::advisory_title(advisory)).and_then(|()| {
-                model::advisory_lines(advisory)
-                    .iter()
-                    .try_for_each(|l| writeln!(out, "{l}"))
-            })
-        }
-        UiEvent::Agent(AgentEvent::AdvisorChanged { status, .. }) => {
-            writeln!(out, "{}", model::advisor_changed_line(status))
-        }
         UiEvent::Agent(AgentEvent::DefaultModelChanged { model }) => {
             writeln!(out, "default model → {model}")
         }
@@ -1152,30 +887,10 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             model::vision_line(*stage, model, sources.len())
         ),
         UiEvent::Agent(_) => Ok(()),
-        UiEvent::ModelSet(info) => writeln!(out, "model → {}", info.id),
-        UiEvent::EffortSet(Some(e)) => writeln!(out, "effort: {e}"),
-        UiEvent::EffortSet(None) => writeln!(out, "effort cleared"),
-        UiEvent::AdvisorStatus(s) => model::advisor_status_lines(s)
-            .iter()
-            .try_for_each(|l| writeln!(out, "{l}")),
-        UiEvent::FavoriteModels(models) => writeln!(out, "favorites → {} models", models.len()),
-        UiEvent::HarnessOptions(options) => model::harness_options_lines(options)
-            .iter()
-            .try_for_each(|l| writeln!(out, "{l}")),
-        UiEvent::HarnessOptionSet(key, value, r) => {
-            writeln!(out, "{}", model::harness_option_set_line(key, value, r))
-        }
-        UiEvent::Models(_) | UiEvent::PathComplete(..) => {
+        UiEvent::PathComplete(..) => {
             writeln!(out, "menus need a TTY")
         }
-        UiEvent::Logins(rows) => rows
-            .iter()
-            .try_for_each(|r| writeln!(out, "{}  {}", r.name, r.status)),
-        UiEvent::LoginFinished(f) => match &f.error {
-            None => writeln!(out, "login: {} ok", f.provider),
-            Some(e) => writeln!(out, "login: {} failed: {e}", f.provider),
-        },
-        UiEvent::Prompt(text) | UiEvent::Info(text) => writeln!(out, "{text}"),
+        UiEvent::Info(text) => writeln!(out, "{text}"),
         UiEvent::Withdrawn { text, .. } => writeln!(out, "withdrawn: {text}"),
         // The `Error` line that follows names the failure; there is no editor to refill.
         UiEvent::Unsent { .. } => Ok(()),
@@ -1185,49 +900,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::CompactStyle(s) => writeln!(
             out,
             "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
-        ),
-        UiEvent::TitleModel(m) => writeln!(out, "{}", model::title_model_line(m.as_ref())),
-        UiEvent::VisionModel(m) => writeln!(out, "{}", model::vision_model_line(m.as_ref())),
-        UiEvent::AwsProfiles { info, .. } => writeln!(out, "{}", model::aws_profile_line(info)),
-        UiEvent::Skills(list) | UiEvent::SkillsAdded(list) => list.iter().try_for_each(|s| {
-            writeln!(
-                out,
-                "{}  {}{}{}",
-                s.name,
-                s.description,
-                s.repo
-                    .as_deref()
-                    .map_or_else(String::new, |r| format!("  [{r}]")),
-                if s.always { "  always" } else { "" }
-            )
-        }),
-        UiEvent::Skill(s) => writeln!(out, "◇ {}\n{}\n{}", s.name, s.body, s.files.join("\n")),
-        UiEvent::Synced(list) => list
-            .iter()
-            .try_for_each(|r| writeln!(out, "{}  {}", r.name, r.status)),
-        UiEvent::Acp(list) => list.iter().try_for_each(|e| {
-            writeln!(
-                out,
-                "{}  {} {}  {}",
-                e.name,
-                e.command,
-                e.args.join(" "),
-                e.status.as_deref().unwrap_or_default()
-            )
-        }),
-        UiEvent::AcpRegistry(list) => list.iter().try_for_each(|a| {
-            writeln!(
-                out,
-                "+ {}  {} {}  {}",
-                a.id, a.name, a.version, a.description
-            )
-        }),
-        UiEvent::AcpAdded(e) => writeln!(
-            out,
-            "acp: added `{}` ({} {})",
-            e.name,
-            e.command,
-            e.args.join(" ")
         ),
         UiEvent::Approvals(s) => writeln!(
             out,
@@ -1282,7 +954,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 model::short(a.id)
             )
         }),
-        UiEvent::History(_, loaded) => print_history(out, loaded),
+        UiEvent::History(_, loaded) => print_history(out, loaded, &model.components),
         // A busy session's settled reload is refused (48 §5); the model
         // keeps what it shows and says so.
         UiEvent::Refreshed(_, loaded) if !loaded.settled => writeln!(
@@ -1293,17 +965,9 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 .as_deref()
                 .unwrap_or("session is busy")
         ),
-        UiEvent::Refreshed(_, loaded) => print_history(out, loaded),
+        UiEvent::Refreshed(_, loaded) => print_history(out, loaded, &model.components),
         UiEvent::ContextRemoved(_, r) => writeln!(out, "{}", model::removal_line(r)),
         UiEvent::SessionCreated(id) => writeln!(out, "session {id}"),
-        UiEvent::Providers(list) => list
-            .iter()
-            .try_for_each(|p| writeln!(out, "{}  {}  {} models", p.name, p.base_url, p.models)),
-        UiEvent::ProviderAdded(p) => writeln!(
-            out,
-            "provider {}  {}  {} models — /model {}/<id>",
-            p.name, p.base_url, p.models, p.name
-        ),
         UiEvent::SessionOpened(o) => writeln!(
             out,
             "session {}{}",
@@ -1323,11 +987,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 agent::CleanupStatus::Incomplete => " (cleanup incomplete)",
             }
         ),
-        // No editor in print mode: nothing to dictate into.
-        UiEvent::Voice(_)
-        | UiEvent::Talk(_)
-        | UiEvent::TalkStarting(_) => Ok(()),
-        UiEvent::TalkFailed(m) => writeln!(out, "talk: {m}"),
         // Stderr: `-p` output stays the reply alone.
         UiEvent::Engine(Some(label)) => {
             eprintln!("{label}");

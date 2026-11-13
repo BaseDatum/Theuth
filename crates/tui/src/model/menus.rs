@@ -16,30 +16,6 @@ pub enum Menu {
         /// Highlighted match.
         cursor: usize,
     },
-    /// `/model` picker (124 §3): providers level, a provider's models, or word search.
-    Models {
-        /// Everything `ListModels` returned, in catalog order (provider, id).
-        items: Vec<ModelInfo>,
-        /// Search text typed inline; non-empty means search mode over every model.
-        filter: String,
-        /// Highlighted row of `models_rows()`.
-        cursor: usize,
-        /// 194 D6: the highlighted chip while the cursor is on the chip row.
-        chip: usize,
-        /// The provider whose models are listed; `None` is the providers level.
-        provider: Option<String>,
-        /// Whose model a pick sets (125 §7.2): the session's, its advisor's or its harness's.
-        target: PickTarget,
-        /// `PickTarget::Harness`: the harness's options (75 §8); empty otherwise.
-        harness: Vec<acp::ConfigOption>,
-    },
-    /// `/aws` picker.
-    AwsProfiles {
-        /// The harness's profiles and selection; row 0 is the default chain.
-        info: AwsProfiles,
-        /// Highlighted row.
-        cursor: usize,
-    },
     /// `/sessions` picker.
     Sessions {
         /// Project headings, then roots with their children under them (51 §3).
@@ -53,29 +29,6 @@ pub enum Menu {
         /// approval, then the rest newest-finished first.
         items: Vec<AgentRow>,
         /// Highlighted row.
-        cursor: usize,
-    },
-    /// `/skills` picker.
-    Skills {
-        /// Every skill, as indexed.
-        items: Vec<SkillMeta>,
-        /// Highlighted row.
-        cursor: usize,
-    },
-    /// `/login` picker.
-    Logins {
-        /// Providers then OAuth MCP servers.
-        items: Vec<LoginRow>,
-        /// Highlighted row.
-        cursor: usize,
-    },
-    /// `/acp`: configured harnesses, then the registry.
-    Acp {
-        /// Latest `ListAcp` reply.
-        entries: Vec<EntryInfo>,
-        /// Latest `ListAcpRegistry` reply; empty until it arrives.
-        registry: Vec<RegistryAgent>,
-        /// Highlighted row: entries first, then registry rows.
         cursor: usize,
     },
     /// `/edit`, `/regen`, `/fork` picker over the transcript's turns (29 §6.2).
@@ -152,13 +105,8 @@ impl Model {
         match &self.menu {
             None => MenuKey::Consumed,
             Some(Menu::Slash { .. }) => self.slash_key(code, input, tx),
-            Some(Menu::Models { .. }) => self.models_key(code, tx),
-            Some(Menu::AwsProfiles { .. }) => self.aws_key(code, tx),
             Some(Menu::Sessions { .. }) => self.sessions_key(code, tx),
             Some(Menu::Agents { .. }) => self.agents_key(code, tx),
-            Some(Menu::Acp { .. }) => self.acp_key(code, tx),
-            Some(Menu::Skills { .. }) => self.skills_key(code, tx),
-            Some(Menu::Logins { .. }) => self.logins_key(code, tx),
             Some(Menu::Turns { .. }) => self.turns_key(code, tx),
 
         }

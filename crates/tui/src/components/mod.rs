@@ -38,9 +38,17 @@ pub mod knowledge;
 pub mod mcp;
 pub mod search_attach;
 pub mod dictation_voice;
+pub mod talk;
 
 // Model-picker panels (after design 194): add modules below, in this block only.
-pub use registry::{Registry, builtin, builtin_with};
+pub mod models;
+pub mod aws;
+pub mod vision_settings;
+pub mod advisor;
+pub mod skills_prompt;
+pub mod acp;
+pub mod providers_login;
+pub use registry::{Registry, builtin, builtin_with, configured};
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -62,6 +70,13 @@ pub struct LocalReply {
     pub engine_epoch: u64,
     /// Only Mounted<C> downcasts this to C::Msg.
     pub body: Box<dyn Any + Send>,
+}
+
+/// Opaque typed delivery to another mounted owner in the current engine epoch.
+pub struct AddressedMessage {
+    owner: std::any::TypeId,
+    engine_epoch: u64,
+    body: Box<dyn Any + Send>,
 }
 impl std::fmt::Debug for LocalReply {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -246,10 +261,27 @@ pub struct CoreView<'a> {
     pub approval: bool,
     /// Core session creation or a first send is awaiting adoption.
     pub awaiting_session: bool,
+    // Model-picker context: borrowed applied settings, never picker state.
+    /// Applied session model, or the model selected for the next draft.
+    pub model_id: &'a str,
+    /// Applied session effort.
+    pub effort: Option<&'a str>,
+    /// Engine default effort used when a draft clears its selection.
+    pub default_effort: Option<&'a str>,
+    /// External harness identity, when the selected session uses one.
+    pub harness: Option<&'a str>,
+    /// Model reported by the external harness.
+    pub harness_model: Option<&'a str>,
+    /// Applied slash-command metadata reported by the selected harness.
+    pub harness_commands: &'a [agent::HarnessCommand],
+    /// Existing read-only model capability catalog.
+    pub catalog: Option<&'a ::models::Catalog>,
     /// Current shared animation frame before this dispatch.
     pub frame: usize,
     /// A mounted owner currently requests a read-only composer region.
     pub composer_read_only: bool,
+    /// Borrowed pending core session picks, filtered by the existing draft policy.
+    pub draft_options: Option<&'a agent::CreateSessionOptions>,
 }
 /// Read-only identity metadata shared by core session membership.
 pub struct SessionMember<'a> {
@@ -262,6 +294,10 @@ pub struct SessionMember<'a> {
 pub trait SessionMembers: Sync {
     /// Find one known identity, independent of board visibility.
     fn member(&self, id: SessionId) -> Option<SessionMember<'_>>;
+    /// Borrow canonical descendant metadata without a presentation cache.
+    fn agent_info(&self, id: SessionId) -> Option<&agent::AgentInfo>;
+    /// Visit canonical descendants without allocating an inventory projection.
+    fn visit(&self, visitor: &mut dyn FnMut(&agent::AgentInfo));
 }
 /// Borrowed identity lookup for accepted core prompts, never their feature data.
 pub trait PromptIds: Sync {
@@ -302,6 +338,8 @@ pub enum Lifecycle<'a> {
     SessionReset,
     /// Core adopted a different selected session; read the updated session context.
     SessionChanged,
+    /// Core reached its existing selected-session membership refresh boundary.
+    SessionRefreshRequested,
     /// Release local resources and subscriptions.
     Shutdown,
     /// A lossy stream requires an authoritative re-read, never mutation replay.
@@ -314,6 +352,8 @@ pub enum Lifecycle<'a> {
     ComposerEdited(&'a str),
     /// Core composer accepted a submission.
     ComposerSubmitted(&'a str),
+    /// Core is holding a new image, at the existing attachment-notice boundary.
+    ImageAttached,
     /// Selected pending categories replace state, including empty arrays.
     Prompts(&'a serde_json::Value),
     /// Preserve the old cross-panel generic-error transitions.
@@ -423,8 +463,12 @@ impl HeaderSlot {
 /// Status contributions occupy fixed positions among retained core segments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatusSlot {
+    /// Contributions between usage and the queued-message count.
+    BeforeQueue,
     /// Background work, immediately after the queued-message count.
     Work,
+    /// Capability badges after work and before the catalog contribution.
+    BeforeCatalog,
     /// Loaded capabilities, before edit/history hints.
     Catalog,
     /// Focused pinned-view hints, after history.
@@ -433,6 +477,8 @@ pub enum StatusSlot {
     Spoken,
     /// Right-aligned status text, separate from the left status contributions.
     Right,
+    /// Inline colored contributions immediately after the retained core status.
+    AfterCore,
 }
 
 /// Fixed layout locations, never feature names.
@@ -446,6 +492,8 @@ pub enum Surface<'a> {
     Status(StatusSlot),
     /// Transcript content replacement or append.
     Content,
+    /// Fixed rows after queued inputs and before the pinned region.
+    BeforePinned,
     /// Rows pinned below the transcript.
     Pinned,
     /// Modal slot after core prompts.
@@ -496,10 +544,16 @@ pub struct ViewCx<'a> {
     pub(crate) commands: Option<&'a tokio::sync::mpsc::UnboundedSender<crate::model::Command>>,
     /// Registry-supplied owner and engine fence for this view only.
     pub(crate) endpoint: Option<(ComponentToken, u64)>,
+    /// Read-only projection of existing session badge text, without peer state.
+    pub(crate) session_badge: Option<&'a dyn Fn(SessionId) -> String>,
 }
 impl ViewCx<'_> {
     /// Current spinner glyph, on the shared core animation clock.
     pub fn spinner(&self) -> &'static str { spinner(self.frame) }
+    /// Compose the existing session badge suffix at its measured row boundary.
+    pub fn session_badge(&self, session: SessionId) -> String {
+        self.session_badge.map_or_else(String::new, |project| project(session))
+    }
     /// Typed widget callback; neither editor handles nor mutable core state escape.
     pub fn callback<M: Send + 'static>(&self, make: impl Fn(String) -> M + Send + Sync + 'static) -> Option<impl Fn(String) + 'static> {
         let commands = self.commands?.clone();
@@ -608,6 +662,8 @@ pub struct TranscriptCard {
     pub group: &'static str,
     /// Stable identity within the current transcript, never a Vec index.
     pub key: uuid::Uuid,
+    /// Optional TUI-only identity for entry presentation, layout and actions.
+    pub entry_key: Option<String>,
     /// Header marker.
     pub glyph: &'static str,
     /// Header color.
@@ -624,6 +680,7 @@ pub struct TranscriptCard {
 impl From<TranscriptCard> for crate::model::Entry {
     fn from(card: TranscriptCard) -> Self {
         Self::Card {
+            entry_key: card.entry_key,
             kind: crate::model::CardKind::Component { group: card.group, key: card.key,
                 glyph: card.glyph, color: card.color, plain: card.plain },
             title: card.title, text: Box::new(card.body), expanded: card.expanded,
@@ -649,17 +706,12 @@ pub enum CoreAction {
     Notice(String),
     /// Insert above a streaming tail using the existing transcript policy.
     Interject(String),
+    /// Insert an error above a streaming tail without generic failure transitions.
+    InterjectError(String),
     /// A local validation refusal, not a failed asynchronous command.
     Reject(String),
     /// Existing generic error semantics, including print-mode completion.
     Error(String),
-    /// Invoke the existing named skill path, including draft-session adoption.
-    UseSkill {
-        /// Catalog skill name.
-        name: String,
-        /// User-supplied arguments.
-        args: String,
-    },
     /// Append an owner-formatted card; this becomes the group's current card.
     AppendCard(TranscriptCard),
     /// Replace only the still-current card, leaving superseded cards frozen.
@@ -716,8 +768,8 @@ pub enum CoreAction {
         /// Measured terminal columns.
         width: usize,
     },
-    /// Build after registry mutation ends, present the frame, then deliver its typed receipt.
-    PresentTranscript(Box<dyn FnOnce(&Registry) -> (TranscriptPresentation, LocalReply) + Send>),
+    /// Reset the old frame, build with its retained registry, then deliver the typed receipt.
+    PresentTranscript(Box<dyn FnOnce(&mut Registry) -> (TranscriptPresentation, LocalReply) + Send>),
     /// Change only the core historical-frame input/admission mode.
     SetReadOnly(bool),
     /// Deliver owner input synchronously after preceding core operations.
@@ -735,6 +787,28 @@ pub enum CoreAction {
     SubmitEditor(String),
     /// Cancel the existing agent turn without changing owner state.
     CancelSession(SessionId),
+
+    // Model-picker actions: applied settings remain core session state.
+    /// Apply a draft model through the existing draft selection policy.
+    PickModel(String),
+    /// Apply a draft effort through the existing draft selection policy.
+    SetEffort(Option<String>),
+    /// Install the authoritative model returned by a session mutation.
+    ModelApplied(String),
+    /// Install and announce the authoritative effort returned by a mutation.
+    EffortApplied(Option<String>),
+    /// Suppress the existing effort-change echo while its mutation is pending.
+    AwaitingEffort(bool),
+    /// Mark an owner-issued session-creating operation for canonical adoption.
+    AwaitingSession(bool),
+    /// Deliver one opaque typed message to another mounted owner.
+    PostTo(AddressedMessage),
+    /// Adopt an independently created session through the existing draft reducer.
+    SessionCreated(SessionId),
+    /// Adopt an independently opened session through the existing session reducer.
+    SessionOpened(agent::SessionOpen),
+    /// Adopt the canonical descendant snapshot through existing membership policy.
+    Descendants(Vec<agent::AgentInfo>),
 }
 
 /// Owned effects and actions emitted during one deterministic dispatch.
@@ -815,7 +889,7 @@ impl<M: Send + 'static> Cx<'_, '_, M> {
     // Step-11 group t3 Cx helpers: add below, in this block only.
     /// Project through the same registry/history helper as ordinary core reloads.
     pub fn present_transcript<F>(&mut self, build: F)
-    where F: FnOnce(&Registry) -> (TranscriptPresentation, M) + Send + 'static,
+    where F: FnOnce(&mut Registry) -> (TranscriptPresentation, M) + Send + 'static,
     {
         let (to, engine_epoch) = (self.token, self.epoch);
         self.core(CoreAction::PresentTranscript(Box::new(move |registry| {
@@ -827,6 +901,12 @@ impl<M: Send + 'static> Cx<'_, '_, M> {
     pub fn post(&mut self, message: M) {
         self.core(CoreAction::Post(LocalReply {
             to: self.token, engine_epoch: self.epoch, body: Box::new(message),
+        }));
+    }
+    /// Send a typed message to another registered owner without exposing mutable peers.
+    pub fn send_to<C: Component>(&mut self, message: C::Msg) {
+        self.core(CoreAction::PostTo(AddressedMessage {
+            owner: std::any::TypeId::of::<C>(), engine_epoch: self.epoch, body: Box::new(message),
         }));
     }
     /// Keep an error inline after the core's existing generic failure transitions.
@@ -909,6 +989,20 @@ pub trait Component: Send + Sync + 'static {
     fn separate_editor(&self) -> bool { false }
     /// Presentation of the still-mounted shell editor.
     fn composer_mode(&self) -> ComposerMode { ComposerMode::Default }
+
+    // Model-picker panels: neutral core admission and presentation queries.
+    /// Hide an owner's linked session from ordinary child admission.
+    fn session_hidden(&self, _session: SessionId) -> bool { false }
+    /// Suppress the echoed input of an already presented turn.
+    fn turn_hidden(&self, _seq: i64) -> bool { false }
+    /// Override disclosure eligibility for an owned entry; None keeps core policy.
+    fn entry_toggleable(&self, _key: &str) -> Option<bool> { None }
+    /// Consume an owned history row, or return it unchanged for the next owner/core.
+    fn history_entry(&mut self, row: agent::HistoryEntry, _opts: &markdown::Options) -> Result<Vec<crate::model::Entry>, agent::HistoryEntry> { Err(row) }
+    /// Plain projection of a canonical row; None preserves core formatting.
+    fn history_plain(&self, _row: &agent::HistoryEntry) -> Option<Vec<String>> { None }
+    /// Claim an otherwise unhandled slash word after all explicit routes.
+    fn slash_fallback(&self, _name: &str) -> bool { false }
 }
 
 trait ErasedComponent: Send + Sync {
@@ -928,6 +1022,12 @@ trait ErasedComponent: Send + Sync {
     fn entry_height(&self, key: &str, width: usize) -> Option<usize>;
     fn entry_openable(&self, key: &str) -> bool;
     fn slash_visible(&self, name: &str) -> bool;
+    fn slash_fallback(&self, name: &str) -> bool;
+    fn session_hidden(&self, session: SessionId) -> bool;
+    fn turn_hidden(&self, seq: i64) -> bool;
+    fn entry_toggleable(&self, key: &str) -> Option<bool>;
+    fn history_entry(&mut self, row: agent::HistoryEntry, opts: &markdown::Options) -> Result<Vec<crate::model::Entry>, agent::HistoryEntry>;
+    fn history_plain(&self, row: &agent::HistoryEntry) -> Option<Vec<String>>;
     fn as_any(&self) -> &dyn Any;
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -962,6 +1062,12 @@ impl<C: Component> ErasedComponent for Mounted<C> {
     fn entry_height(&self, key: &str, width: usize) -> Option<usize> { self.0.entry_height(key, width) }
     fn entry_openable(&self, key: &str) -> bool { self.0.entry_openable(key) }
     fn slash_visible(&self, name: &str) -> bool { self.0.slash_visible(name) }
+    fn slash_fallback(&self, name: &str) -> bool { self.0.slash_fallback(name) }
+    fn session_hidden(&self, session: SessionId) -> bool { self.0.session_hidden(session) }
+    fn turn_hidden(&self, seq: i64) -> bool { self.0.turn_hidden(seq) }
+    fn entry_toggleable(&self, key: &str) -> Option<bool> { self.0.entry_toggleable(key) }
+    fn history_entry(&mut self, row: agent::HistoryEntry, opts: &markdown::Options) -> Result<Vec<crate::model::Entry>, agent::HistoryEntry> { self.0.history_entry(row, opts) }
+    fn history_plain(&self, row: &agent::HistoryEntry) -> Option<Vec<String>> { self.0.history_plain(row) }
     fn as_any(&self) -> &dyn Any { &self.0 }
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn Any { &mut self.0 }

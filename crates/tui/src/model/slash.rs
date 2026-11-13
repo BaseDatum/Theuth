@@ -2,58 +2,10 @@ use super::*;
 
 /// Slash commands: name, argument hint (`<x>` required, `[x]` optional, `""` none), description.
 pub const COMMANDS: &[(&str, &str, &str)] = &[
-    ("/model", "[id]", "switch model (picker without id)"),
-    (
-        "/title",
-        "[model|off]",
-        "model that names sessions in the history list (off = the session's model)",
-    ),
-    (
-        "/vision",
-        "[model|off]",
-        "model that inspects images when the main model cannot (off = images are omitted)",
-    ),
-    (
-        "/effort",
-        "[level|clear]",
-        "reasoning effort (picker without arg)",
-    ),
-    (
-        "/advisor",
-        "[off|on|status|consults <n>|<provider/model>]",
-        "a second model that reviews this session and answers its consults (picker without argument)",
-    ),
-    (
-        "/aws",
-        "[profile|clear]",
-        "AWS profile for Bedrock, harness-wide (picker without arg)",
-    ),
-    (
-        "/acp",
-        "[add <registry-id>|remove <name>]",
-        "External harnesses (ACP) and the registry",
-    ),
-    (
-        "/skills",
-        "[add <url>|rm <name>|sync]",
-        "skills: picker (⏎ hands one to the model, s shows it); `/<skill> [words]` does the same",
-    ),
-    (
-        "/login",
-        "[name]",
-        "log in to a provider or MCP server (picker without name)",
-    ),
-    ("/logout", "<name>", "forget a login"),
-    ("/prompt", "", "show the assembled system prompt"),
     (
         "/agents",
         "",
         "subagents of this session (picker: ⏎ opens one)",
-    ),
-    (
-        "/talk",
-        "",
-        "talk with the session aloud; Esc cancels the reply or leaves the view, Ctrl+T stops",
     ),
     (
         "/project",
@@ -120,11 +72,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "new session with the conversation through turn n (picker without n)",
     ),
     ("/quit", "", "exit"),
-    (
-        "/provider",
-        "[add [name [url [key]]] | refresh <name> | rm <name> | limits <provider> <model> <context> [output] | find]",
-        "providers: built-in opencode (Zen) / openrouter keyed via /secrets add; add prompts for a custom provider's name, url, key (no key for a local server); refresh lists a provider's models again; limits sets a model's context/output (0 = unknown); find probes local model servers",
-    ),
 
     ("/exit", "", "same as /quit"),
 ];
@@ -143,47 +90,12 @@ pub struct SlashRow {
     pub raw: bool,
 }
 
-impl Model {
-
-    /// Does `/name` hand over a skill: a known one; before the index has
-    /// arrived, any plain word (the agent names an unknown skill) — but not
-    /// one holding another `/` or a `.` (`/etc/hosts`, `/x.txt`), nor a bare `/`.
-    pub(super) fn skill_word(&self, name: &str) -> bool {
-        if self.skills.is_empty() {
-            !name.is_empty() && !name.contains(['/', '.'])
-        } else {
-            self.skills.iter().any(|s| s.name == name)
-        }
-    }
-}
-
-impl Model {
-
-    /// `/skills add <url>` | `rm <name>` | `sync`.
-    pub(super) fn skills_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
-        let (sub, rest) = arg
-            .split_once(' ')
-            .map_or((arg, ""), |(s, r)| (s, r.trim()));
-        match (sub, rest) {
-            ("", _) => {
-                self.skills_picker_pending = true;
-                send(tx, Command::ListSkills);
-            }
-            ("sync", _) => send(tx, Command::SyncSkills),
-            ("add", url) if !url.is_empty() => send(tx, Command::AddSkillRepo(url.to_owned())),
-            ("rm", name) if !name.is_empty() => send(tx, Command::RemoveSkill(name.to_owned())),
-            _ => self.entries.push(Entry::Error(
-                "usage: /skills [add <url> | rm <name> | sync]".into(),
-            )),
-        }
-    }
-}
 
 impl Model {
 
     /// Open or close the slash popup to match what the input box holds.
     pub fn sync_slash(&mut self, input: &str) {
-        if self.prompt.is_some() || self.ask().is_some() || self.components.editor().is_some() {
+        if self.ask().is_some() || self.components.editor().is_some() {
             return;
         }
         // 141 §10.1: the watch-only editor lets go once the slash command is gone.
@@ -285,52 +197,6 @@ impl Model {
     }
 }
 
-impl Model {
-
-    /// `/skills`: Enter hands the highlighted skill to the model (04 §2.4);
-    /// `s` shows its body as a card to review first.
-    pub(super) fn skills_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
-        let Some(Menu::Skills { items, cursor }) = &mut self.menu else {
-            return MenuKey::Consumed;
-        };
-        match code {
-            KeyCode::Up => *cursor = cursor.saturating_sub(1),
-            KeyCode::Down => *cursor = (*cursor + 1).min(items.len().saturating_sub(1)),
-            KeyCode::Esc => self.menu = None,
-            KeyCode::Char('s') => {
-                if let Some(s) = items.get(*cursor) {
-                    send(tx, Command::LoadSkill(s.name.clone()));
-                }
-                self.menu = None;
-            }
-            KeyCode::Enter => {
-                let name = items.get(*cursor).map(|s| s.name.clone());
-                self.menu = None;
-                if let Some(name) = name {
-                    self.use_skill(name, String::new(), tx);
-                }
-            }
-            _ => {}
-        }
-        MenuKey::Consumed
-    }
-
-    /// Hand a skill to the model: the agent composes the input and delivers
-    /// it like typed text (turn when idle, steer when running); the cards
-    /// arrive with `TurnStarted` / `InputInjected`.
-    pub(super) fn use_skill(&mut self, name: String, args: String, tx: &UnboundedSender<Command>) {
-        self.awaiting_session = self.session.is_none();
-        send(
-            tx,
-            Command::UseSkill {
-                session: self.session,
-                name,
-                args,
-                draft: self.draft_options(),
-            },
-        );
-    }
-}
 
 // Presentation metadata only: routing and command declarations remain with owners.
 pub(crate) fn command_rank(name: &str) -> usize {

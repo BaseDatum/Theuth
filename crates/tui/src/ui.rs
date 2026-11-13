@@ -4,25 +4,22 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent::{AdvisorSeverity, AdvisorState, AdvisoryKind, CompactStyle};
+use agent::CompactStyle;
 use iocraft::prelude::*;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tools::{Decision, Risk};
 
 use crate::clip;
-use crate::components::search_attach::state as search;
 use crate::components::{FocusClass, Lifecycle, Surface};
 use crate::model::{
-    ADVISORY_COLLAPSED, EffortChips, Grouped, ModelRow, PickTarget, advisory_rows,
-    advisory_severity, advisory_title, providers, session_row, severity_name,
+    Grouped, session_row,
 };
 use crate::model::{
-    AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt,
+    CardKind, Command, Entry, Level, Menu, MenuKey, Model,
     TurnAction, UiEvent, describe,
-    k, now_ms, result_line, window,
+    now_ms, result_line, window,
 };
 use crate::pathac;
-use crate::talk::{self, Look, Talking};
 
 /// Channels handed to the app through iocraft context (owned so the receiver
 /// can be taken out on first render, per design doc §11.5).
@@ -35,10 +32,6 @@ pub struct Links {
     pub default_model: String,
     /// `Info.default_effort` (config as fallback, 83 §3): the draft header's effort.
     pub default_effort: Option<String>,
-    /// `Info.advisor` (125 §6.5): the remembered advisor pick `/advisor on` re-uses.
-    pub advisor: agent::AdvisorDefaults,
-    /// `Info.favorite_models` (config as fallback, 127 §3): starred models, shown first in `/model`.
-    pub favorite_models: Vec<String>,
     /// `tools.approvals` from config.
     pub approvals: bool,
     /// Boot-configured owners, taken by the first state initializer.
@@ -89,7 +82,7 @@ const PEER: Color = FAIENCE;
 const HEADING: Color = OCHRE;
 /// Skill body cards.
 const SKILL: Color = OCHRE;
-/// System prompt cards.
+/// Core context and lifecycle cards.
 const PROMPT: Color = SAND;
 /// Finished background job cards.
 const JOB: Color = MALACHITE;
@@ -116,8 +109,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let mut links = hooks.use_context_mut::<Links>();
     let default_model = links.default_model.clone();
     let default_effort = links.default_effort.clone();
-    let advisor = links.advisor.clone();
-    let favorite_models = links.favorite_models.clone();
     let approvals = links.approvals;
     let catalog = links.catalog.clone();
     let component_commands = links.commands.clone();
@@ -128,8 +119,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             let mut m = Model::with_components(default_model, approvals, components.expect("first render owns the registry"));
             m.effort = default_effort.clone();
             m.default_effort = default_effort;
-            m.advisor_default = advisor;
-            m.favorite_models = favorite_models;
             m.catalog = Some(catalog);
             m.mount_components(&component_commands);
             m.entries.push(Entry::Info(
@@ -173,11 +162,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             if let Some(id) = resume {
                 model.write().resume(id, &commands);
             }
-            // Skill names so `/<skill> [args]` resolves before `/skills` was ever opened.
-            let _ = commands.send(Command::ListSkills);
-            // The harness-wide vision fallback, so attaching an image to a
-            // text-only model can say who will look at it (52 §3.2).
-            let _ = commands.send(Command::GetVisionModel);
             let mut frames = tokio::time::interval(std::time::Duration::from_millis(16));
             frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut pending = Vec::new();
@@ -255,12 +239,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         settled_only: false,
                     });
                     let _ = commands.send(Command::ListAgents(session));
-                }
-                // 125 §3: the link survives a restart; re-read it with every load.
-                if std::mem::take(&mut m.refresh_advisor)
-                    && let Some(session) = m.session
-                {
-                    let _ = commands.send(Command::AdvisorStatus(session));
+                    m.component_notify(crate::components::Lifecycle::SessionRefreshRequested);
                 }
                 // Root metadata moved while a grouped picker is open (51 §3): re-list it.
                 if std::mem::take(&mut m.refresh_grouping) {
@@ -317,33 +296,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             }
             if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
                 m.quit = true;
-                return;
-            }
-            // Talk (76 §0.12, §5.2): the pane owns the keys — Esc cancels the
-            // agent's turn while it thinks or speaks, else leaves the pane (the
-            // talk runs on); Ctrl+T stops it; the rest is swallowed; an
-            // approval prompt on top keeps its own keys.
-            let ctrl_t = code == KeyCode::Char('t') && modifiers.contains(KeyModifiers::CONTROL);
-            if m.talk_view && m.approval().is_none() {
-                match code {
-                    KeyCode::Esc => {
-                        if let Some(cmd) = m.talk_escape() {
-                            let _ = commands.send(cmd);
-                        }
-                    }
-                    _ if ctrl_t => {
-                        if let Some(cmd) = m.toggle_talk(true) {
-                            let _ = commands.send(cmd);
-                        }
-                    }
-                    _ => {}
-                }
-                return;
-            }
-            if ctrl_t && !m.components.captures(FocusClass::Spoken) && m.menu.is_none() && !m.components.editor().is_some_and(|(class, _)| class == FocusClass::Secret) {
-                if let Some(cmd) = m.toggle_talk(true) {
-                    let _ = commands.send(cmd);
-                }
                 return;
             }
             if m.component_key_with_editor(FocusClass::Spoken, &key, &input.read(), handle.read().cursor_offset()) { return; }
@@ -490,7 +442,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             // Owners open the newest available entry at the existing empty-editor shortcut.
             if code == KeyCode::Char('o')
                 && modifiers.is_empty()
-                && m.prompt.is_none()
+                && m.components.editor().is_none()
                 && input.read().is_empty()
             {
                 if m.component_open_latest_entry() { return; }
@@ -518,7 +470,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         m.submit(&line, &commands);
                     }
                 }
-                KeyCode::Esc if m.prompt.is_some() => m.cancel_prompt(),
                 // Cleared here, not via `recall`: the event loop only drains
                 // that when events arrive or the model animates, and a stale
                 // `recall` would later wipe whatever gets typed next.
@@ -562,6 +513,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     // Approval on top, then a secret request, then the model's questions;
     // otherwise whichever menu is open.
     let (width, height) = terminal_size;
+    let before_pinned = component_slot(&m, Surface::BeforePinned, width, height, None);
     let pinned = component_slot(&m, Surface::Pinned, width, height, None);
     let composer = component_slot(&m, Surface::Composer, width, height, None);
     let composer_header = component_slot(&m, Surface::ComposerHeader, width, height, None);
@@ -569,7 +521,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let hint = component_slot(&m, Surface::Hint, width, height, None);
     let badge = component_slot(&m, Surface::PromptBadge, width, height, None);
     // The composer body/hint replace the existing editor presentation, not its viewport budget.
-    let extra_rows = pinned.rows + badge.rows;
+    let extra_rows = before_pinned.rows + pinned.rows + badge.rows;
     *component_rows.write() = extra_rows;
     let modal = modal
         .or_else(|| component_slot(&m, Surface::Prompt(FocusClass::Secret), width, height, None).element())
@@ -585,9 +537,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         });
     // A secret's value (or a provider's key) shows as dots.
     let component_editor = m.components.editor();
-    let mask = (m.prompt.as_ref().is_some_and(Prompt::masked)
-        || component_editor.as_ref().is_some_and(|(_, editor)| editor.masked))
-        .then_some('•');
+    let mask = component_editor.as_ref().is_some_and(|(_, editor)| editor.masked).then_some('•');
     let has_focus = m.input_focused();
     let (header, level) = m.header(&catalog);
     let header_color = match level {
@@ -608,15 +558,11 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         .iter()
         .enumerate()
         .map(|(i, e)| {
-            let decorations = match e {
-                Entry::Tool { call_id, .. } | Entry::Pending { call_id, .. } => m.component_views(Surface::Entry { key: call_id, skipped: 0 }, usize::from(width), m.entry_height(e, usize::from(width))),
-                _ => Vec::new(),
-            };
+            let decorations = e.key().map(|key| m.component_views(Surface::Entry { key, skipped: 0 },
+                usize::from(width), m.entry_height(e, usize::from(width)))).unwrap_or_default();
             entry(e, m.spinner(), if i == 0 { win.skip } else { 0 }, width, decorations, m.entry_summary(e))
         });
-    let transcript = if let (true, Some(t)) = (m.talk_view, &m.talk) {
-        talk_pane(t, m.frame, width, view)
-    } else if m.anchor.is_some() {
+    let transcript = if m.anchor.is_some() {
         // Anchored: the first `top` rows of the first entry sit above the fold.
         element! {
             View(overflow: Overflow::Hidden, width: 100pct, height: 100pct) {
@@ -635,7 +581,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         }
         .into_any()
     };
-    let content = component_slot(&m, Surface::Content, width, height, None);
+    let content = component_slot(&m, Surface::Content, width, u16::try_from(view).unwrap_or(u16::MAX), None);
     let transcript = if content.replace {
         content.element().unwrap_or(transcript)
     } else if let Some(extra) = content.element() {
@@ -661,34 +607,25 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
             }))
             #(board(&m, width))
+            #(before_pinned.element())
             #(pinned.element())
             #(modal)
             #(badge.element())
-            #(m.prompt.as_ref().map(|p| {
-                element!(View(height: 1, padding_left: 1) {
-                    Text(content: p.hint(), color: OCHRE)
-                })
-            }))
             #(component_editor.as_ref().filter(|(_, editor)| !editor.hint.is_empty()).map(|(_, editor)| element!(
                 View(height: 1, padding_left: 1) {
                     Text(content: editor.hint.clone(), color: OCHRE)
                 }
             )))
             View(height: 1, padding_left: 1) {
-                #(composer_header.element().unwrap_or_else(|| if m.talk_view {
-                    element!(Text(content: "● talk  (Esc cancels / leaves · Ctrl+T stops)", color: SAND)).into_any()
-                } else { element!(Text(content: header, color: header_color)).into_any() }))
+                #(composer_header.element().unwrap_or_else(|| element!(Text(content: header, color: header_color)).into_any()))
             }
             // `flex_shrink: 0`: once the transcript fills the screen the box
             // would otherwise be squeezed back to `min_height` as it grows.
-            // While dictating the box turns cyan and shows the region (54 §6)
-            // over a hidden, still-mounted editor: unmounting it would lose
-            // its cursor state and the handle the stop restores through. The
-            // talk pane (76) drops the border and the editor the same way —
-            // never `display: None` on a bordered view: iocraft draws a border
-            // of width 0 - 2 and panics.
-            View(border_style: if m.talk_view || composer_mode == crate::components::ComposerMode::Hidden { BorderStyle::None } else { BorderStyle::Round }, border_color: if composer_mode == crate::components::ComposerMode::ReadOnly { FAIENCE } else { OCHRE }, min_height: if m.talk_view || composer_mode == crate::components::ComposerMode::Hidden { 0 } else { 3 }, flex_shrink: 0.0, flex_direction: FlexDirection::Column) {
-                View(width: 100pct, display: if m.talk_view || composer_mode != crate::components::ComposerMode::Default { Display::None } else { Display::Flex }) {
+            // Keep the editor mounted while an owner supplies a read-only or
+            // hidden region: its cursor and restore handle must survive.
+            // Never hide a bordered view itself; iocraft would draw width 0 - 2.
+            View(border_style: if composer_mode == crate::components::ComposerMode::Hidden { BorderStyle::None } else { BorderStyle::Round }, border_color: if composer_mode == crate::components::ComposerMode::ReadOnly { FAIENCE } else { OCHRE }, min_height: if composer_mode == crate::components::ComposerMode::Hidden { 0 } else { 3 }, flex_shrink: 0.0, flex_direction: FlexDirection::Column) {
+                View(width: 100pct, display: if composer_mode != crate::components::ComposerMode::Default { Display::None } else { Display::Flex }) {
                     TextInput(
                         handle,
                         has_focus,
@@ -719,7 +656,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             View(height: 1, padding_left: 1, padding_right: 1, justify_content: JustifyContent::SpaceBetween) {
                 View() {
                     Text(content: m.status(), color: SAND)
-                    #(m.advisor_segment().map(|(text, state)| element!(Text(content: text, color: advisor_color(state)))))
+                    #(component_slot(&m, Surface::Status(crate::components::StatusSlot::AfterCore), width, 1, None).elements)
                 }
                 Text(content: m.component_text(Surface::Status(crate::components::StatusSlot::Right)), color: SAND)
             }
@@ -775,44 +712,6 @@ fn component_slot(m: &Model, at: Surface<'_>, width: u16, height: u16, handle: O
     slot
 }
 
-/// The `/talk` pane (76 §0.12, §5.2) in a `width × height` content area: the
-/// orb centred, the agent line (foreground) and the user line (muted) under
-/// it, two rows each and tail-clamped, then the headphones caption. Colours
-/// are the palette's: accent while speaking, muted while idle, the
-/// terminal's own foreground while thinking.
-fn talk_pane(t: &Talking, frame: usize, width: u16, height: usize) -> AnyElement<'static> {
-    // Two subtitle blocks of two rows, one caption row, two gap rows.
-    const RESERVE: usize = 7;
-    let look = talk::look(t.state);
-    let color = match look {
-        Look::Idle => Some(SAND),
-        Look::Thinking => None,
-        Look::Speaking => Some(OCHRE),
-    };
-    let r = talk::radius(usize::from(width), height, RESERVE);
-    let rows = talk::orb(look, t.orb_frame(frame), t.level, r);
-    let agent = t.agent.as_ref().map_or("", |(_, s)| s.as_str()).to_owned();
-    let user = t.user.clone().unwrap_or_default();
-    let caption = if t.degraded { talk::DEGRADED } else { "" };
-    element! {
-        View(width: 100pct, height: 100pct, flex_direction: FlexDirection::Column, align_items: AlignItems::Center, justify_content: JustifyContent::Center) {
-            View(flex_direction: FlexDirection::Column) {
-                #(rows.into_iter().map(|row| element!(Text(content: row, color, wrap: TextWrap::NoWrap))))
-            }
-            // Bottom-aligned in a fixed two-row box: a long line clips at its head, the tail stays.
-            View(width: 100pct, height: 2, margin_top: 1, padding_left: 2, padding_right: 2, overflow: Overflow::Hidden, flex_direction: FlexDirection::Column, justify_content: JustifyContent::FlexEnd) {
-                Text(content: agent, wrap: TextWrap::Wrap, align: TextAlign::Center)
-            }
-            View(width: 100pct, height: 2, margin_top: 1, padding_left: 2, padding_right: 2, overflow: Overflow::Hidden, flex_direction: FlexDirection::Column, justify_content: JustifyContent::FlexEnd) {
-                Text(content: user, color: SAND, wrap: TextWrap::Wrap, align: TextAlign::Center)
-            }
-            View(height: 1) {
-                Text(content: caption, color: SAND, wrap: TextWrap::NoWrap)
-            }
-        }
-    }
-    .into_any()
-}
 
 
 
@@ -900,105 +799,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 *cursor,
             )
         }
-        Menu::Models {
-            items,
-            filter,
-            cursor,
-            chip,
-            provider,
-            target,
-            ..
-        } => {
-            // 125 §7.2: the same picker, titled for whose model it sets.
-            let noun = match target {
-                PickTarget::Session => "model",
-                PickTarget::Advisor => "advisor",
-                PickTarget::Harness => m.agent.as_deref().unwrap_or("harness"),
-            };
-            let rows = m.models_rows();
-            let star = (*target != PickTarget::Harness).then(|| "⇥ ★ favorite".to_owned());
-            let on_chips = matches!(rows.get(*cursor), Some(ModelRow::Efforts(_)));
-            let mut title: Vec<String> = Vec::new();
-            if on_chips {
-                title.extend([format!("{noun} › effort"), "←→ choose".into(), "⏎ set".into()]);
-            } else if !filter.is_empty() {
-                title.extend([format!("{noun}  search: {filter}▏"), "⏎ set".into()]);
-                title.extend(star);
-            } else if let Some(p) = provider {
-                let models = rows.iter().filter(|r| matches!(r, ModelRow::Model(_))).count();
-                title.extend([format!("{noun} › {p} ({models})"), "⏎ set".into()]);
-                title.extend(star);
-                if providers(items).len() > 1 {
-                    title.push("←/⌫ back".into());
-                }
-            } else {
-                title.extend([noun.to_owned(), "⏎ open provider".into()]);
-                title.extend(star);
-                title.push("type to search all models".into());
-            }
-            title.push("esc close".into());
-            let none = rows
-                .iter()
-                .all(|r| matches!(r, ModelRow::Current(_) | ModelRow::Efforts(_)));
-            if !on_chips && !filter.is_empty() && none {
-                title.push("no match".into());
-            }
-            // 194 D6: the title never wraps; hints that do not fit drop whole.
-            let title = fit_title(&title, usize::from(width).saturating_sub(5));
-            // Two-char marker column (127 §3): `●` current, `★` favorite.
-            let marks = |on: bool, fav: bool| {
-                format!(
-                    "{}{}",
-                    if on { "●" } else { " " },
-                    if fav { "★" } else { " " }
-                )
-            };
-            let model_row = |on: bool, i: &agent::ModelInfo| {
-                format!(
-                    "{} {:<44} {:<32} {}{}{}",
-                    // The harness picker stars nothing (⇥ is off there).
-                    marks(
-                        on,
-                        *target != PickTarget::Harness && m.favorite_models.contains(&i.id)
-                    ),
-                    i.id,
-                    i.name,
-                    // A harness row has no catalog facts.
-                    if i.context > 0 { k(i.context) } else { String::new() },
-                    if i.image { " · vision" } else { "" },
-                    if i.local { " · local" } else { "" }
-                )
-            };
-            let picked = m.pick_current();
-            let rows = rows
-                .iter()
-                .enumerate()
-                .map(|(n, r)| match r {
-                    ModelRow::Off { current } => {
-                        format!("{} {:<44} no advisor", marks(*current, false), "Off")
-                    }
-                    ModelRow::Current(i) => model_row(true, i),
-                    ModelRow::Favorite(i) | ModelRow::Model(i) => {
-                        model_row(Some(i.id.as_str()) == picked, i)
-                    }
-                    ModelRow::Provider { id, count, current } => {
-                        format!("{} {id:<24} {count:>4} models", marks(*current, false))
-                    }
-                    ModelRow::Efforts(c) => effort_chips_row(
-                        c,
-                        (n == *cursor).then_some(*chip),
-                        usize::from(width).saturating_sub(7),
-                    ),
-                })
-                .collect();
-            (title, rows, *cursor)
-        }
-        Menu::AwsProfiles { cursor, .. } => (
-            "aws profile  ⏎ use for every session's Bedrock calls from the next request  esc close"
-                .to_owned(),
-            m.aws_rows(),
-            *cursor,
-        ),
         Menu::Sessions { items, cursor } => (
             "sessions  ⏎ switch  esc close  (the one you leave keeps running)".to_owned(),
             items
@@ -1045,74 +845,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 .collect(),
             *cursor,
         ),
-        Menu::Acp { cursor, .. } => (
-            "acp  p probe  ⏎ add from registry  d remove".to_owned(),
-            m.acp_rows()
-                .iter()
-                .map(|r| match r {
-                    AcpRow::Entry(e) => {
-                        // ponytail: fixed 40-char command; pass the terminal width if it grates.
-                        let cmd: String = format!("{} {}", e.command, e.args.join(" "))
-                            .chars()
-                            .take(40)
-                            .collect();
-                        format!(
-                            "{:<16} {:<40} {}",
-                            e.name,
-                            cmd,
-                            e.status.as_deref().unwrap_or_default()
-                        )
-                    }
-                    AcpRow::Sep => String::new(),
-                    AcpRow::Registry(a) => {
-                        let desc: String = a.description.chars().take(50).collect();
-                        format!(
-                            "+ {:<16} {:<20} {}",
-                            a.id,
-                            format!("{} {}", a.name, a.version),
-                            desc
-                        )
-                    }
-                })
-                .collect(),
-            *cursor,
-        ),
-        Menu::Skills { items, cursor } => (
-            "skills  ⏎ use  s show  esc close   ● in context".to_owned(),
-            items
-                .iter()
-                .map(|s| {
-                    // ponytail: fixed 48-char description; pass the terminal width if it grates.
-                    let desc: String = s.description.chars().take(48).collect();
-                    format!(
-                        "{} {:<20} {:<48} {:<16} {}",
-                        if m.loaded_skills.contains(&s.name) { "●" } else { " " },
-                        s.name,
-                        desc,
-                        s.repo
-                            .as_deref()
-                            .map_or_else(String::new, |r| format!("[{r}]")),
-                        if s.always { "always" } else { "" }
-                    )
-                })
-                .collect(),
-            *cursor,
-        ),
-        Menu::Logins { items, cursor } => (
-            "login  ⏎ log in  esc close".to_owned(),
-            items
-                .iter()
-                .map(|r| {
-                    format!(
-                        "{:<8} {:<20} {}",
-                        if r.mcp { "mcp" } else { "provider" },
-                        r.name,
-                        r.status
-                    )
-                })
-                .collect(),
-            *cursor,
-        ),
     };
     Some(menu_view(title, rows, cursor, width, height, false))
 }
@@ -1155,68 +887,6 @@ pub(crate) fn menu_view(
         .into_any()
 }
 
-/// `parts` joined by two spaces within `room` cells: the first always
-/// (clipped), each later one only whole, so the title row never wraps.
-fn fit_title(parts: &[String], room: usize) -> String {
-    let mut out = String::new();
-    for p in parts {
-        if out.is_empty() {
-            out = search::fit(p, room);
-        } else if search::cells(&out) + 2 + search::cells(p) <= room {
-            out.push_str("  ");
-            out.push_str(p);
-        }
-    }
-    out
-}
-
-/// The chip row under the picked model (194 D6): `effort  Default  ●high  low`,
-/// `●` on the active chip, `[…]` around `chip` while the cursor is on the row.
-/// Within `room` cells the chips shown are a window around the focused one
-/// (`chip`, else the active one), `…` where chips are hidden.
-fn effort_chips_row(c: &EffortChips, chip: Option<usize>, room: usize) -> String {
-    let chips: Vec<String> = c
-        .levels
-        .iter()
-        .enumerate()
-        .map(|(i, level)| {
-            let on = if c.active == Some(i) { "●" } else { "" };
-            let name = level.as_deref().unwrap_or("Default");
-            if chip == Some(i) {
-                format!("[{on}{name}]")
-            } else {
-                format!(" {on}{name} ")
-            }
-        })
-        .collect();
-    let head = "   effort ";
-    let n = chips.len();
-    if n == 0 {
-        return head.to_owned();
-    }
-    let cells = |lo: usize, hi: usize| {
-        let marks = 2 * (usize::from(lo > 0) + usize::from(hi < n));
-        let body: usize = chips[lo..hi].iter().map(|s| search::cells(s) + 1).sum();
-        search::cells(head) + body - 1 + marks
-    };
-    let focus = chip.or(c.active).unwrap_or(0).min(n - 1);
-    let (mut lo, mut hi) = (focus, focus + 1);
-    loop {
-        if hi < n && cells(lo, hi + 1) <= room {
-            hi += 1;
-        } else if lo > 0 && cells(lo - 1, hi) <= room {
-            lo -= 1;
-        } else {
-            break;
-        }
-    }
-    format!(
-        "{head}{}{}{}",
-        if lo > 0 { "… " } else { "" },
-        chips[lo..hi].join(" "),
-        if hi < n { " …" } else { "" }
-    )
-}
 
 /// The path completion list under the editor (PATH-AC): a window of rows
 /// around the highlighted one, `…` when the engine cut the listing.
@@ -1267,7 +937,6 @@ fn view_rows(m: &Model, height: u16, input: &str, todo: usize) -> usize {
     usize::from(height)
         .saturating_sub(
             2 + editor
-                + usize::from(m.prompt.is_some())
                 + activity
                 + queued
                 + board
@@ -1358,10 +1027,10 @@ fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<cr
             title,
             text,
             expanded,
+            ..
         } => {
             let color = match kind {
                 CardKind::Skill => SKILL,
-                CardKind::Prompt => PROMPT,
                 CardKind::Job | CardKind::Schedule => JOB,
                 CardKind::Component { color, .. } => *color,
                 CardKind::Removed => PROMPT,
@@ -1488,50 +1157,6 @@ fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<cr
             }
             .into_any()
         }
-        // 125 §7.4 / R1.2: the Round card in its worst severity's colour; one
-        // row per note (badge coloured, text plain) or per answer line of a
-        // consultation; three rows until Ctrl+O.
-        Entry::Advisory { advisory, expanded } => {
-            let color = severity_color(advisory_severity(advisory));
-            let all = advisory_rows(advisory);
-            let n = all.len();
-            let shown = if *expanded { n } else { n.min(ADVISORY_COLLAPSED) };
-            let title = advisory_title(advisory);
-            let header = if n <= ADVISORY_COLLAPSED {
-                title
-            } else if *expanded {
-                format!("{title}   ctrl+o collapses")
-            } else {
-                format!("{title}   ctrl+o expands")
-            };
-            let rows: Vec<AnyElement<'static>> = all
-                .iter()
-                .take(shown)
-                .map(|(sev, text)| match sev {
-                    Some(sev) => element!(MixedText(contents: vec![
-                        MixedTextContent::new(format!("[{}]", severity_name(*sev))).color(severity_color(*sev)),
-                        MixedTextContent::new(format!(" {text}")),
-                    ], wrap: TextWrap::Wrap))
-                    .into_any(),
-                    None => element!(Text(content: (*text).to_owned(), wrap: TextWrap::Wrap)).into_any(),
-                })
-                .collect();
-            let more = (n > shown).then(|| {
-                let noun = match advisory.kind {
-                    AdvisoryKind::Consultation { .. } => "lines",
-                    AdvisoryKind::Review => "notes",
-                };
-                format!("… +{} more {noun}", n - shown)
-            });
-            element! {
-                View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: color, padding_left: 1, padding_right: 1, margin_top: 1) {
-                    Text(content: header, color, weight: Weight::Bold)
-                    #(rows)
-                    #(more.map(|m| element!(Text(content: m, color: SAND))))
-                }
-            }
-            .into_any()
-        }
         Entry::Divider(label) => element! {
             View(border_style: BorderStyle::Round, border_color: PROMPT, padding_left: 1, padding_right: 1, margin_top: 1) {
                 Text(content: format!("── {label} ──"), color: PROMPT, weight: Weight::Bold)
@@ -1543,26 +1168,6 @@ fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<cr
     }
 }
 
-/// The advisor palette (125 §7.4): advice and nit SAND (muted), concern
-/// OCHRE (warning), blocker CARNELIAN (danger).
-pub(crate) fn severity_color(s: AdvisorSeverity) -> Color {
-    match s {
-        AdvisorSeverity::Advice | AdvisorSeverity::Nit => SAND,
-        AdvisorSeverity::Concern => OCHRE,
-        AdvisorSeverity::Blocker => CARNELIAN,
-    }
-}
-
-/// The status segment's colour by advisor state (125 §7.5): idle SAND,
-/// reviewing FAIENCE, paused OCHRE, halted CARNELIAN.
-fn advisor_color(s: AdvisorState) -> Color {
-    match s {
-        AdvisorState::Off | AdvisorState::Idle => SAND,
-        AdvisorState::Reviewing => FAIENCE,
-        AdvisorState::Paused => OCHRE,
-        AdvisorState::Halted => CARNELIAN,
-    }
-}
 
 /// Plain text as one `MixedText`; `paint` styles every run, and any bare
 /// `http(s)://` URL is also underlined and an OSC 8 link (clickable in
@@ -1642,6 +1247,14 @@ pub(crate) fn risk_name(r: Risk) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::models::Picker;
+    use crate::model::tests::{models_mut, models_reply, models_selection, models_key, harness_reply};
+    fn models_menu(m: &Model, width: u16, height: u16) -> Option<AnyElement<'static>> {
+        m.component_views(Surface::Modal, usize::from(width), usize::from(height))
+            .into_iter().find_map(|view| match view {
+                crate::components::View::Element { element, .. } => Some(element), _ => None,
+            })
+    }
     use agent::ModelInfo;
     use runtime::SessionId;
     use crate::components::search_attach::{SearchAttach, Msg as SearchMsg, state::{self as search, Focus}};
@@ -1865,7 +1478,7 @@ mod tests {
     /// is exactly title + ten rows.
     #[test]
     fn menu_box_is_tight_at_any_width() {
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         let items: Vec<ModelInfo> = (0..10)
             .map(|i| ModelInfo {
                 id: format!("amazon-bedrock/us.anthropic.claude-sonnet-4-5-2025092{i}-v1:0"),
@@ -1881,17 +1494,18 @@ mod tests {
             })
             .collect();
         // The provider's models level lists all ten rows (124 §3.2).
-        m.menu = Some(Menu::Models {
+        let selection = models_selection(&m);
+        models_mut(&mut m).menu = Some(Picker {
             items,
             filter: String::new(),
             cursor: 0,
             provider: Some("amazon-bedrock".into()),
-            target: PickTarget::Session,
+            selection,
             chip: 0,
-            harness: Vec::new(),
         });
+        m.components.focus_fixture("models", crate::components::FocusClass::Modal);
         for width in 60..=120u16 {
-            let modal = menu(&m, "", width, 30).unwrap();
+            let modal = models_menu(&m, width, 30).unwrap();
             let frame = element! {
                 View(flex_direction: FlexDirection::Column, width, height: 30u16) {
                     View(flex_grow: 1.0_f32, min_height: 0)
@@ -1929,7 +1543,8 @@ mod tests {
     /// the terminal (`Entry::height` counts the same rows; `model.rs` tests it).
     #[test]
     fn advisory_card_is_tight_at_any_width() {
-        use agent::{Advisory, AdvisoryNote};
+        use agent::{Advisory, AdvisoryNote, AdvisorSeverity};
+        use crate::components::advisor::{Card as AdvisoryCard, render_card};
         let notes = |n: usize| -> Vec<AdvisoryNote> {
             (0..n)
                 .map(|i| AdvisoryNote {
@@ -1942,7 +1557,7 @@ mod tests {
                 })
                 .collect()
         };
-        let card = |n: usize, expanded: bool| Entry::Advisory {
+        let card = |n: usize, expanded: bool| AdvisoryCard {
             advisory: Advisory {
                 advisor: runtime::SessionId::new(),
                 step: 1,
@@ -1961,7 +1576,7 @@ mod tests {
             ] {
                 let frame = element! {
                     View(flex_direction: FlexDirection::Column, width, height: 20u16) {
-                        #(Some(entry(&e, "⠋", 0, width, Vec::new(), None)))
+                        #(Some(render_card(&e.advisory, e.expanded)))
                     }
                 }
                 .to_string();
@@ -1989,12 +1604,13 @@ mod tests {
     /// SAND, and never exceeds the terminal width.
     #[test]
     fn consultation_card_is_tight_at_any_width() {
-        use agent::{Advisory, AdvisoryNote};
+        use agent::{Advisory, AdvisoryNote, AdvisorSeverity, AdvisoryKind};
+        use crate::components::advisor::{Card as AdvisoryCard, render_card, severity_color};
         let answer = (0..5)
             .map(|i| format!("answer line {i} stays short"))
             .collect::<Vec<_>>()
             .join("\n");
-        let card = |expanded: bool| Entry::Advisory {
+        let card = |expanded: bool| AdvisoryCard {
             advisory: Advisory {
                 advisor: runtime::SessionId::new(),
                 step: 1,
@@ -2018,7 +1634,7 @@ mod tests {
             ] {
                 let frame = element! {
                     View(flex_direction: FlexDirection::Column, width, height: 20u16) {
-                        #(Some(entry(&e, "⠋", 0, width, Vec::new(), None)))
+                        #(Some(render_card(&e.advisory, e.expanded)))
                     }
                 }
                 .to_string();
@@ -2066,47 +1682,50 @@ mod tests {
             model("openai/gpt-5.4-mini", "GPT-5.4 mini", "openai"),
         ];
         let mut m = Model::new("openai/gpt-5.4".into(), false);
-        m.favorite_models = vec!["openai/gpt-5.4".into(), "google/gemini-2.5-pro".into()];
-        let render = |m: &Model| menu(m, "", 120, 30).unwrap().to_string();
+        models_mut(&mut m).favorite_models = vec!["openai/gpt-5.4".into(), "google/gemini-2.5-pro".into()];
+        let render = |m: &Model| models_menu(m, 120, 30).unwrap().to_string();
         // Providers level: favorites with their markers, the current one `●★`; the current provider `● `.
-        m.menu = Some(Menu::Models {
+        let selection = models_selection(&m);
+        models_mut(&mut m).menu = Some(Picker {
             items: items.clone(),
             filter: String::new(),
             cursor: 0,
             provider: None,
-            target: PickTarget::Session,
+            selection,
             chip: 0,
-            harness: Vec::new(),
         });
+        m.components.focus_fixture("models", crate::components::FocusClass::Modal);
         let frame = render(&m);
         assert!(frame.contains("⏎ open provider  ⇥ ★ favorite"), "{frame}");
         assert!(frame.contains("●★ openai/gpt-5.4 "), "{frame}");
         assert!(frame.contains(" ★ google/gemini-2.5-pro "), "{frame}");
         assert!(frame.contains("●  openai "), "{frame}");
         // Models level: `●★` on the current favorite, blanks on a plain model.
-        m.menu = Some(Menu::Models {
+        let selection = models_selection(&m);
+        models_mut(&mut m).menu = Some(Picker {
             items: items.clone(),
             filter: String::new(),
             cursor: 0,
             provider: Some("openai".into()),
-            target: PickTarget::Session,
+            selection,
             chip: 0,
-            harness: Vec::new(),
         });
+        m.components.focus_fixture("models", crate::components::FocusClass::Modal);
         let frame = render(&m);
         assert!(frame.contains("⏎ set  ⇥ ★ favorite  ←/⌫ back"), "{frame}");
         assert!(frame.contains("●★ openai/gpt-5.4 "), "{frame}");
         assert!(frame.contains("   openai/gpt-5.4-mini "), "{frame}");
         // Search: the Current row then a favorite hit.
-        m.menu = Some(Menu::Models {
+        let selection = models_selection(&m);
+        models_mut(&mut m).menu = Some(Picker {
             items,
             filter: "gemini".into(),
             cursor: 1,
             provider: None,
-            target: PickTarget::Session,
+            selection,
             chip: 0,
-            harness: Vec::new(),
         });
+        m.components.focus_fixture("models", crate::components::FocusClass::Modal);
         let frame = render(&m);
         assert!(frame.contains("⏎ set  ⇥ ★ favorite  esc close"), "{frame}");
         assert!(frame.contains("●★ openai/gpt-5.4 "), "{frame}");
@@ -2135,11 +1754,11 @@ mod tests {
         let mut m = Model::new("openai/gpt-5.4".into(), false);
         m.session = Some(SessionId::new());
         m.effort = Some("high".into());
-        m.apply(UiEvent::Models(vec![
+        models_reply(&mut m, vec![
             model("openai/gpt-5.4", &["low", "high"]),
             model("openai/o3-pro", &["low", "medium", "high"]),
-        ]));
-        let frame = menu(&m, "", 120, 30).unwrap().to_string();
+        ]);
+        let frame = models_menu(&m, 120, 30).unwrap().to_string();
         let lines: Vec<&str> = frame.lines().collect();
         let row = lines
             .iter()
@@ -2152,8 +1771,8 @@ mod tests {
         assert!(lines[row + 2].contains("openai/o3-pro "), "{frame}");
         assert_eq!(frame.matches("effort").count(), 1, "{frame}");
         assert!(!frame.contains("medium"), "{frame}");
-        m.menu_key(KeyCode::Down, "", &tx);
-        let frame = menu(&m, "", 120, 30).unwrap().to_string();
+        models_key(&mut m, KeyCode::Down, &tx);
+        let frame = models_menu(&m, 120, 30).unwrap().to_string();
         assert!(
             frame.contains("model › effort  ←→ choose  ⏎ set  esc close"),
             "{frame}"
@@ -2161,10 +1780,10 @@ mod tests {
         assert!(frame.contains("effort  Default   low  [●high]"), "{frame}");
         for width in 40..=120u16 {
             for at in [0, 1] {
-                if let Some(Menu::Models { cursor, .. }) = &mut m.menu {
+                if let Some(Picker { cursor, .. }) = &mut models_mut(&mut m).menu {
                     *cursor = at;
                 }
-                let modal = menu(&m, "", width, 30).unwrap();
+                let modal = models_menu(&m, width, 30).unwrap();
                 let frame = element! {
                     View(flex_direction: FlexDirection::Column, width, height: 30u16) {
                         View(flex_grow: 1.0_f32, min_height: 0)
@@ -2193,7 +1812,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut m = Model::new("openai/gpt-5.4".into(), false);
         m.session = Some(SessionId::new());
-        m.apply(UiEvent::Models(vec![ModelInfo {
+        models_reply(&mut m, vec![ModelInfo {
             id: "openai/gpt-5.4".into(),
             name: "GPT-5.4".into(),
             provider: "openai".into(),
@@ -2206,13 +1825,13 @@ mod tests {
             budget_min: None,
             budget_max: None,
             local: false,
-        }]));
-        m.menu_key(KeyCode::Down, "", &tx);
+        }]);
+        models_key(&mut m, KeyCode::Down, &tx);
         for _ in 0..5 {
-            m.menu_key(KeyCode::Right, "", &tx);
+            models_key(&mut m, KeyCode::Right, &tx);
         }
         let width = 40u16;
-        let modal = menu(&m, "", width, 30).unwrap();
+        let modal = models_menu(&m, width, 30).unwrap();
         let frame = element! {
             View(flex_direction: FlexDirection::Column, width, height: 30u16) {
                 #(Some(modal))
@@ -2243,12 +1862,12 @@ mod tests {
             local,
         };
         let mut m = Model::new("ollama/qwen3".into(), false);
-        m.favorite_models = vec!["ollama/qwen3".into(), "a/x".into()];
-        m.apply(UiEvent::Models(vec![
+        models_mut(&mut m).favorite_models = vec!["ollama/qwen3".into(), "a/x".into()];
+        models_reply(&mut m, vec![
             model("ollama/qwen3", true),
             model("ollama/cloudy", false),
-        ]));
-        let frame = menu(&m, "", 120, 30).unwrap().to_string();
+        ]);
+        let frame = models_menu(&m, 120, 30).unwrap().to_string();
         let line = |id: &str| {
             frame
                 .lines()
@@ -2260,7 +1879,7 @@ mod tests {
         assert!(line("ollama/qwen3").contains('★'), "{frame}");
         assert!(!line("ollama/cloudy").contains("local"), "{frame}");
         // The harness picker: `a/x` is a normal favorite, yet its row has no star.
-        m.menu = None;
+        models_mut(&mut m).menu = None;
         m.session = Some(SessionId::new());
         m.agent = Some("omp".into());
         let options: Vec<acp::ConfigOption> = serde_json::from_value(serde_json::json!([
@@ -2268,8 +1887,8 @@ mod tests {
              "options":[{"value":"a/x","name":"X","description":null}]}
         ]))
         .unwrap();
-        m.apply(UiEvent::HarnessOptions(options));
-        let frame = menu(&m, "", 120, 30).unwrap().to_string();
+        harness_reply(&mut m, options, false);
+        let frame = models_menu(&m, 120, 30).unwrap().to_string();
         let row = frame.lines().find(|l| l.contains("a/x ")).unwrap();
         assert!(row.contains('●') && !row.contains('★'), "{frame}");
     }
@@ -2332,6 +1951,7 @@ mod tests {
     #[test]
     fn talk_pane_is_centred_at_both_sizes() {
         use ::talk::{State, TalkEvent, TalkId};
+        use crate::components::talk::{talk_pane, state::{self as talk, Talking}};
         let mut t = Talking::new(TalkId::new(), SessionId::new());
         let id = t.id;
         t.apply(
@@ -2433,14 +2053,12 @@ mod tests {
     #[test]
     fn outside_peer_card_is_plain_text() {
         let frame = |title: &str| {
-            let e = Entry::Card {
-                kind: crate::components::peers::kind(title),
-                title: title.into(),
-                text: Box::new(markdown::Text::complete(
-                    "**now** [click](http://x/go)\u{1b}[2J",
-                )),
-                expanded: true,
-            };
+            let e = Entry::Card { entry_key: None, kind: crate::components::peers::kind(title),
+            title: title.into(),
+            text: Box::new(markdown::Text::complete(
+                "**now** [click](http://x/go)\u{1b}[2J",
+            )),
+            expanded: true, };
             element! {
                 View(flex_direction: FlexDirection::Column, width: 60u16) {
                     #(entry(&e, "", 0, 60, Vec::new(), None))

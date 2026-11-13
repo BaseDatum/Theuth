@@ -413,7 +413,7 @@ fn peer_title(origin: WrapperOrigin<'_>, facts: &str) -> String {
 
 fn peer_card(origin: WrapperOrigin<'_>, body: String, facts: &str) -> TranscriptCard {
     let title = peer_title(origin, facts);
-    TranscriptCard { group: "peer", key: origin.id, glyph: "⟵", color: crate::ui::FAIENCE,
+    TranscriptCard { entry_key: None, group: "peer", key: origin.id, glyph: "⟵", color: crate::ui::FAIENCE,
         plain: outside_card(kind(""), &title), title, body: markdown::Text::complete(&body), expanded: false }
 }
 
@@ -508,12 +508,10 @@ fn request_card(r: &PeerRecord, resolve: bool) -> TranscriptCard {
     if let Some(e) = &rc.error {
         meta.push(format!("error: {e}"));
     }
-    TranscriptCard {
-        group: "peer", key: rc.id, glyph: "⟵", color: crate::ui::FAIENCE, plain: false,
-        title: format!("request {} · {}", short_uuid(rc.id), r.from),
-        body: markdown::Text::complete(&format!("{}\n\n{}", meta.join("  \n"), r.text)),
-        expanded: true,
-    }
+    TranscriptCard { entry_key: None, group: "peer", key: rc.id, glyph: "⟵", color: crate::ui::FAIENCE, plain: false,
+    title: format!("request {} · {}", short_uuid(rc.id), r.from),
+    body: markdown::Text::complete(&format!("{}\n\n{}", meta.join("  \n"), r.text)),
+    expanded: true, }
 }
 
 /// `/communication` lines (50 §2.1): the effective state with its exact
