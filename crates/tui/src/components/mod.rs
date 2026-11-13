@@ -269,6 +269,8 @@ pub struct CoreView<'a> {
     pub harness: Option<&'a str>,
     /// Model reported by the external harness.
     pub harness_model: Option<&'a str>,
+    /// Applied slash-command metadata reported by the selected harness.
+    pub harness_commands: &'a [agent::HarnessCommand],
     /// Existing read-only model capability catalog.
     pub catalog: Option<&'a ::models::Catalog>,
     /// Current shared animation frame before this dispatch.
@@ -454,6 +456,8 @@ impl HeaderSlot {
 pub enum StatusSlot {
     /// Background work, immediately after the queued-message count.
     Work,
+    /// Capability badges after work and before the catalog contribution.
+    BeforeCatalog,
     /// Loaded capabilities, before edit/history hints.
     Catalog,
     /// Focused pinned-view hints, after history.
