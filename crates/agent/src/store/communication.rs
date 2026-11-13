@@ -1663,6 +1663,101 @@ impl Store {
             .transpose()
     }
 
+    /// The outbound message of a local session to `recipient` (a contact's `peer:<binding>`)
+    /// bound to its remote task `task_id` (the latest open one first): what a return-route
+    /// answer naming that task in `referenceTaskIds` answers. The caller checks its state.
+    pub async fn outbound_exchange_by_task(
+        &self,
+        recipient: &str,
+        task_id: &str,
+    ) -> anyhow::Result<Option<Uuid>> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT id FROM peer_exchanges WHERE recipient = ? AND task_id = ? \
+             AND sender_session IS NOT NULL \
+             ORDER BY state IN ('accepted', 'consumed', 'held') DESC, accepted_seq DESC LIMIT 1",
+        )
+        .bind(recipient)
+        .bind(task_id)
+        .fetch_optional(&self.read)
+        .await?;
+        row.map(|(id,)| id.parse().context("bad exchange id"))
+            .transpose()
+    }
+
+    /// Keep on the outbound message `id` the contact's export its address named (`""`: the
+    /// contact's first), sent while the contact's card was unknown.
+    pub async fn set_exchange_export(&self, id: Uuid, export: &str) -> anyhow::Result<()> {
+        if export.len() > EXTERNAL_ID_MAX {
+            anyhow::bail!(CommError::TooLarge);
+        }
+        sqlx::query("UPDATE peer_exchanges SET export = ? WHERE id = ?")
+            .bind(export)
+            .bind(id.to_string())
+            .execute(&self.write)
+            .await?;
+        Ok(())
+    }
+
+    /// The export kept on the outbound message `id` ([`Self::set_exchange_export`]).
+    pub async fn exchange_export(&self, id: Uuid) -> anyhow::Result<Option<String>> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT export FROM peer_exchanges WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.read)
+                .await?;
+        Ok(row.and_then(|(e,)| e))
+    }
+
+    /// A contact never took the answer `answer` to `orig` (its return route refused it):
+    /// `orig` is open again in `prior`, the state it had before the answer (`accepted`,
+    /// `consumed` or `held`), unless something else answered it since. A held message's
+    /// explanation went with the answer (183 F7): with none left it reads `consumed`. Its
+    /// receipt, when it changed.
+    pub async fn unanswer_exchange(
+        &self,
+        answer: Uuid,
+        orig: Uuid,
+        prior: PeerMessageState,
+    ) -> anyhow::Result<Option<PeerReceipt>> {
+        if !matches!(
+            prior,
+            PeerMessageState::Accepted | PeerMessageState::Consumed | PeerMessageState::Held
+        ) {
+            anyhow::bail!(CommError::Invalid(format!("not an open state: {prior:?}")));
+        }
+        let orig = orig.to_string();
+        let mut tx = self.begin_write().await?;
+        let Some(a) = exchange_in(&mut tx, &answer.to_string())
+            .await?
+            .filter(|a| a.reply_to.as_deref() == Some(orig.as_str()))
+        else {
+            return Ok(None);
+        };
+        let n = sqlx::query(
+            "UPDATE peer_exchanges SET reply = NULL, answered_by = NULL, updated_at = ?, \
+             state = CASE WHEN ? = 'held' AND error IS NULL THEN 'consumed' ELSE ? END \
+             WHERE id = ? AND state = 'replied' AND answered_by = ? AND reply = ?",
+        )
+        .bind(now())
+        .bind(prior.as_str())
+        .bind(prior.as_str())
+        .bind(&orig)
+        .bind(&a.sender)
+        .bind(&a.body)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if n == 0 {
+            return Ok(None);
+        }
+        let r = exchange_in(&mut tx, &orig)
+            .await?
+            .ok_or(CommError::NotFound)?
+            .receipt()?;
+        tx.commit().await?;
+        Ok(Some(r))
+    }
+
     /// 186 review 1: forget conversations quiet since before `stale_before_ms` (their return
     /// grant has lapsed). 191: by staleness only: `contact_threads` replicates, so a delete is
     /// mesh-wide, and a binding revoked here may be live elsewhere; a revoked binding's
@@ -2020,6 +2115,17 @@ impl Store {
             .bind(last_ms)
             .bind(binding.to_string())
             .bind(context)
+            .execute(&self.write)
+            .await
+            .unwrap();
+    }
+
+    /// Tests: the exchange `id` was accepted at `at`.
+    #[cfg(test)]
+    pub(crate) async fn age_exchange_for_test(&self, id: Uuid, at: chrono::DateTime<Utc>) {
+        sqlx::query("UPDATE peer_exchanges SET created_at = ? WHERE id = ?")
+            .bind(at.to_rfc3339())
+            .bind(id.to_string())
             .execute(&self.write)
             .await
             .unwrap();
