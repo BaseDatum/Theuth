@@ -650,11 +650,11 @@ function Listeners() {
 
 test('the nearby, pair and SecretsRotation events write the cache', async () => {
   const { qc } = await mount(createElement(Listeners))
-  await run(async () => void dispatch([{ type: 'nearby', data: [XEUS2] }] as never))
+  await run(async () => void dispatch([{ key: 'mesh.events@1', event: { type: 'nearby', data: [XEUS2] } }]))
   expect(qc.getQueryData(queryKeys.meshNearby)).toEqual([XEUS2])
-  await run(async () => void dispatch([{ type: 'pair', data: CEREMONY }, { type: 'pair', data: { ...CEREMONY, id: 'c2' } }] as never))
+  await run(async () => void dispatch([{ key: 'mesh.events@1', event: { type: 'pair', data: CEREMONY } }, { key: 'mesh.events@1', event: { type: 'pair', data: { ...CEREMONY, id: 'c2' } } }]))
   expect(Object.keys(qc.getQueryData(queryKeys.meshPair) as object)).toEqual(['c1', 'c2'])
-  await run(async () => void dispatch([{ type: 'SecretsRotation', ...ROT }] as never))
+  await run(async () => void dispatch([{ key: 'secrets.events@1', event: { type: 'SecretsRotation', ...ROT } }]))
   expect(qc.getQueryData(queryKeys.vaultRotation)).toEqual(ROT)
 })
 
