@@ -1710,8 +1710,9 @@ impl Store {
 
     /// A contact never took the answer `answer` to `orig` (its return route refused it):
     /// `orig` is open again in `prior`, the state it had before the answer (`accepted`,
-    /// `consumed` or `held`), unless something else answered it since. Its receipt, when it
-    /// changed.
+    /// `consumed` or `held`), unless something else answered it since. A held message's
+    /// explanation went with the answer (183 F7): with none left it reads `consumed`. Its
+    /// receipt, when it changed.
     pub async fn unanswer_exchange(
         &self,
         answer: Uuid,
@@ -1733,11 +1734,13 @@ impl Store {
             return Ok(None);
         };
         let n = sqlx::query(
-            "UPDATE peer_exchanges SET state = ?, reply = NULL, answered_by = NULL, \
-             updated_at = ? WHERE id = ? AND state = 'replied' AND answered_by = ? AND reply = ?",
+            "UPDATE peer_exchanges SET reply = NULL, answered_by = NULL, updated_at = ?, \
+             state = CASE WHEN ? = 'held' AND error IS NULL THEN 'consumed' ELSE ? END \
+             WHERE id = ? AND state = 'replied' AND answered_by = ? AND reply = ?",
         )
-        .bind(prior.as_str())
         .bind(now())
+        .bind(prior.as_str())
+        .bind(prior.as_str())
         .bind(&orig)
         .bind(&a.sender)
         .bind(&a.body)

@@ -29,6 +29,10 @@ pub const RETURN_ROUTE: &str = "~return";
 pub const THREAD_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
 /// 186: the A2A `metadata` key of theuth's fields (`receipt`, `re`, `chain`).
 pub const META: &str = "theuth";
+/// 186: the export kept on an outbound message sent without a conversation to a known card
+/// (a cautious share): no conversation the contact mints for it is recorded or adopted.
+/// Never an export name (those are `[a-z0-9_-]`).
+pub const KNOWN_CARD: &str = "~card";
 
 /// 186 (D5, D9): what a full contact's message carries besides its text.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -714,12 +718,12 @@ impl Agents {
         // `NOT_OWNER`; the contact tries the next member.
         self.contact_owned(thread.session).await?;
         // D12, a consistency check only (the answering engine enforces its own share): the
-        // conversation ends when every machine of the contact served a fresh verified card and
-        // none lists its export (`""`: any export) in full. One machine's card missing, stale
-        // or failed proves nothing (live 2026-11-13: 333 listed nothing while xeus, which owns
-        // the chat, took the share in full). Unpairing, blocking or re-pinning ends the route
-        // itself (checked above).
-        if self.network.share_closed(&alias, &thread.export, now) {
+        // conversation ends when the last verified card of every machine of the contact's
+        // roster lists its export (`""`: any export) not in full, or not at all. A machine
+        // never verified this run, or whose last refresh failed, admits (live 2026-11-13: 333
+        // listed nothing while xeus, which owns the chat, took the share in full). Unpairing,
+        // blocking or re-pinning ends the route itself (checked above).
+        if self.network.share_closed(&alias, &thread.export) {
             return Err(gone());
         }
         self.store
@@ -835,7 +839,8 @@ impl Agents {
     /// the message addressed (`""`: the contact's first, or a message sent before it was
     /// kept). No such message here is `NOT_OWNER`: messages are this machine's alone (not
     /// replicated), so the contact's client tries the next machine of the mesh; one that is
-    /// here but closed, lapsed or in another conversation is `TASK_NOT_FOUND`.
+    /// here but closed, lapsed, in another conversation or sent to a known card
+    /// ([`KNOWN_CARD`]) is `TASK_NOT_FOUND`.
     async fn adopted(
         &self,
         binding: Uuid,
@@ -875,12 +880,16 @@ impl Agents {
         {
             return Err(gone());
         }
+        // NULL: a message sent before its export was kept (the contact's first, `""`).
         let export = self
             .store
             .exchange_export(id)
             .await
             .map_err(internal)?
             .unwrap_or_default();
+        if export == KNOWN_CARD {
+            return Err(gone());
+        }
         tracing::info!(%binding, exchange = %id, "a2a: answer adopted on the conversation the contact minted");
         Ok((
             crate::store::communication::ContactThread {
@@ -906,7 +915,12 @@ impl Agents {
         context: &str,
     ) {
         let recorded = async {
-            let Some(export) = self.store.exchange_export(exchange).await? else {
+            let Some(export) = self
+                .store
+                .exchange_export(exchange)
+                .await?
+                .filter(|e| e != KNOWN_CARD)
+            else {
                 return anyhow::Ok(());
             };
             if context.is_empty()

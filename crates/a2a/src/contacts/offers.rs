@@ -105,23 +105,15 @@ impl Drop for Inflight<'_> {
 }
 
 /// 186 (D12): every one of `eids` (a contact's current roster) served a verified card at its
-/// last refresh: the exports any of them lists in full and when the oldest was read; `None`
-/// when one has no card, or its last refresh failed.
+/// last refresh: the exports any of them lists in full; `None` when one was never verified
+/// this run, or its last refresh failed.
 pub(crate) fn settled(eids: &[String], all: &HashMap<String, Cached>) -> Option<SettledCards> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_millis() as i64;
-    let mut s = SettledCards {
-        oldest_ms: now,
-        ..SettledCards::default()
-    };
     if eids.is_empty() {
         return None;
     }
+    let mut s = SettledCards::default();
     for eid in eids {
         let c = all.get(eid).filter(|c| c.fetched && c.error.is_none())?;
-        s.oldest_ms = s.oldest_ms.min(now - c.at?.elapsed().as_millis() as i64);
         s.full.extend(
             c.offers
                 .iter()

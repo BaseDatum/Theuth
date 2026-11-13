@@ -414,18 +414,16 @@ pub struct ContactOffers {
     /// The exports each contact grants us, from the card of its machine read last.
     pub offers: BTreeMap<String, Vec<ContactOffer>>,
     /// 186 (D12): the contacts every machine of which served a verified card at its last
-    /// refresh.
+    /// refresh (re-sent when a card changes, a refresh fails or one recovers).
     pub settled: BTreeMap<String, SettledCards>,
 }
 
 /// 186 (D12): every machine of a contact's current roster served a verified card at its last
-/// refresh: what any of them shares with us in full, and when the oldest was read.
+/// refresh: what any of them shares with us in full.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SettledCards {
-    /// The exports some machine's card lists in full.
+    /// The exports some machine's last card lists in full.
     pub full: std::collections::BTreeSet<String>,
-    /// When the oldest of those cards was read (unix ms).
-    pub oldest_ms: i64,
 }
 
 /// Bus event (183 F1): `discover_peers` ran and the contacts' offers were last refreshed
@@ -979,18 +977,15 @@ impl NetworkState {
     }
 
     /// 186 (D12), a consistency check only (the answering engine enforces its own share):
-    /// the contact `alias` no longer shares `export` (`""`: any export) in full by the
-    /// evidence of every machine of it, each having served a verified card within
-    /// [`OFFERS_TTL`] of `now_ms`, none listing it in full. A machine's card missing, stale
-    /// or failed proves nothing (live 2026-11-13: 333's card listed nothing while xeus, which
-    /// owns the chat, served the share in full).
-    pub(crate) fn share_closed(&self, alias: &str, export: &str, now_ms: i64) -> bool {
-        self.settled.get(alias).is_some_and(|s| {
-            now_ms - s.oldest_ms <= OFFERS_TTL.as_millis() as i64
-                && match export {
-                    "" => s.full.is_empty(),
-                    e => !s.full.contains(e),
-                }
+    /// the contact `alias` no longer shares `export` (`""`: any export) in full by the last
+    /// verified card of every machine of its current roster: none lists it in full (absent,
+    /// or listed cautious). A machine never verified this run, or whose last refresh failed,
+    /// leaves the contact unsettled and admits (live 2026-11-13: 333's card listed nothing
+    /// while xeus, which owns the chat and had served no card yet, shared it in full).
+    pub(crate) fn share_closed(&self, alias: &str, export: &str) -> bool {
+        self.settled.get(alias).is_some_and(|s| match export {
+            "" => s.full.is_empty(),
+            e => !s.full.contains(e),
         })
     }
 
@@ -4505,18 +4500,18 @@ impl Agents {
         {
             tracing::warn!(exchange = %receipt.id, "a2a: conversation not recorded: {e:#}");
         }
-        // The contact's card unknown (`full_shape`): the export the address named (`""`: its
-        // first) is kept on the message, for the conversation the contact may mint.
-        if contact
-            && full.is_none()
-            && orig.is_none()
-            && self.network.offer_of(alias).is_none()
-            && let Err(e) = self
-                .store
-                .set_exchange_export(receipt.id, alias.split_once('/').map_or("", |(_, e)| e))
-                .await
-        {
-            tracing::warn!(exchange = %receipt.id, "a2a: addressed export not kept: {e:#}");
+        // A fresh message sent without a conversation keeps on it the export the address
+        // named (`""`: the contact's first) when the contact's card is unknown (`full_shape`),
+        // for the conversation the contact may mint; else [`full::KNOWN_CARD`] (a cautious
+        // share: nothing to record or adopt).
+        if contact && full.is_none() && orig.is_none() {
+            let export = match self.network.offer_of(alias) {
+                None => alias.split_once('/').map_or("", |(_, e)| e),
+                Some(_) => full::KNOWN_CARD,
+            };
+            if let Err(e) = self.store.set_exchange_export(receipt.id, export).await {
+                tracing::warn!(exchange = %receipt.id, "a2a: addressed export not kept: {e:#}");
+            }
         }
         let record = self
             .store
@@ -4609,9 +4604,13 @@ impl Agents {
                     true if why.contains("grants no export") => format!(
                         "update needed: {alias}'s theuth cannot take answers in full; update it"
                     ),
-                    true if why.contains("TASK_NOT_FOUND") => format!(
-                        "not delivered: {alias}'s machine has no open conversation for this answer (quiet for 7 days, its share with you changed, or its theuth is older and recorded none); the message you answered stays open. Retry after {alias} writes again, or send a new message without reply_to (it reaches only a chat {alias} shares with you)"
-                    ),
+                    // No machine of the contact holds the conversation (`TASK_NOT_FOUND`), or
+                    // the message it answers (`not owner` from every machine of it).
+                    true if why.contains("TASK_NOT_FOUND") || why.contains(NOT_OWNER_TEXT) => {
+                        format!(
+                            "not delivered: {alias}'s machines have no open conversation for this answer (quiet for 7 days, its share with you changed, or its theuth is older and recorded none); the message you answered stays open. Retry after {alias} writes again, or send a new message without reply_to (it reaches only a chat {alias} shares with you)"
+                        )
+                    }
                     _ => why,
                 };
                 let failed = self.store.fail_exchange(exchange, &why).await;
@@ -7528,14 +7527,9 @@ mod tests {
             .open_contact_thread(binding.id, "ctx-1", session, "proj", true)
             .await
             .unwrap();
-        // D12: every machine of bob served a fresh card and none shares `proj` in full.
-        a.network.set_settled(BTreeMap::from([(
-            "bob".into(),
-            SettledCards {
-                full: Default::default(),
-                oldest_ms: Utc::now().timestamp_millis(),
-            },
-        )]));
+        // D12: the last card of every machine of bob shares `proj` not in full.
+        a.network
+            .set_settled(BTreeMap::from([("bob".into(), SettledCards::default())]));
         assert!(
             not_found(a.full_return(answer("ctx-1", "r-3")).await),
             "downgraded"
@@ -7615,7 +7609,12 @@ mod tests {
     /// as the reply to its message.
     #[tokio::test]
     async fn an_answer_reaches_the_session_whose_message_left_while_the_card_was_unknown() {
-        answer_round(None, true).await;
+        answer_round(
+            None,
+            true,
+            "peer sky-moore refused: conversation (TASK_NOT_FOUND)",
+        )
+        .await;
     }
 
     /// Live, 2026-11-13 17:34-17:40: mesh A's machines disagreed. The card the laptop last
@@ -7625,13 +7624,15 @@ mod tests {
     /// `referenceTaskIds` and lands as the reply to the original message all the same.
     #[tokio::test]
     async fn an_answer_naming_our_task_lands_though_the_card_we_read_shared_nothing() {
-        answer_round(Some(Vec::new()), false).await;
+        let every = format!("peer sky-moore refused: {NOT_OWNER_TEXT} on every machine of it");
+        answer_round(Some(Vec::new()), false, &every).await;
     }
 
     /// One laptop → xeus → laptop round: `card` is the laptop's verified card of `sky`
     /// (`None`: none); `recorded`: the laptop read xeus's task and recorded its conversation,
-    /// else only bound the task (the answer is adopted from `referenceTaskIds`).
-    async fn answer_round(card: Option<Vec<ContactOffer>>, recorded: bool) {
+    /// else only bound the task (the answer is adopted from `referenceTaskIds`); `refused`:
+    /// how xeus's client reads the refusal of its first try.
+    async fn answer_round(card: Option<Vec<ContactOffer>>, recorded: bool, refused: &str) {
         struct Record(tokio::sync::mpsc::UnboundedSender<OutboundPeerMessage>);
         #[async_trait]
         impl PeerSender for Record {
@@ -7759,9 +7760,7 @@ mod tests {
         assert_eq!(first.export.as_deref(), Some(RETURN_ROUTE));
         b.remote_outcome(
             first.record.receipt.id,
-            Err(RemoteSendError::Refused(
-                "peer sky-moore refused: conversation (TASK_NOT_FOUND)".into(),
-            )),
+            Err(RemoteSendError::Refused(refused.into())),
         )
         .await;
         let failed = b
@@ -7924,19 +7923,11 @@ mod tests {
             not_here(a.full_return(answer("their-1", "r-2", "t-none", e1)).await),
             "a task of no message here"
         );
-        let settled = |ago_ms: i64| {
-            BTreeMap::from([(
-                "bob".to_owned(),
-                SettledCards {
-                    full: Default::default(),
-                    oldest_ms: Utc::now().timestamp_millis() - ago_ms,
-                },
-            )])
-        };
-        a.network.set_settled(settled(0));
+        a.network
+            .set_settled(BTreeMap::from([("bob".into(), SettledCards::default())]));
         assert!(
             not_found(a.full_return(answer("their-1", "r-3", "t-bob", e1)).await),
-            "every machine of bob served a fresh card sharing nothing"
+            "the last card of every machine of bob shares nothing"
         );
         a.store
             .open_contact_thread(bob.id, "ctx-in", s1, "research", false)
@@ -7968,12 +7959,11 @@ mod tests {
         assert_eq!(other.state, PeerMessageState::Accepted, "s2's stays open");
 
         // Adopted: the task of s1's open message to bob, on the export it addressed, though
-        // the card read last lists nothing and every machine's cards are not fresh.
+        // the card read last lists nothing (another machine of bob never served one).
         a.store.set_exchange_export(e1, "proj").await.unwrap();
         a.network
             .set_offers(BTreeMap::from([("bob".into(), Vec::new())]));
-        a.network
-            .set_settled(settled(2 * OFFERS_TTL.as_millis() as i64));
+        a.network.set_settled(BTreeMap::new());
         match a.full_return(answer("their-1", "r-6", "t-bob", e1)).await {
             Ok(SendMessageResponse::Message(m)) => assert!(is_receipt(m.metadata.as_ref())),
             other => panic!("a receipt, got {other:?}"),
@@ -8053,25 +8043,43 @@ mod tests {
             .await
             .unwrap_err();
         assert!(busy.message.starts_with("busy:"), "{}", busy.message);
-        // Blocked (its route cancelled), then unpaired.
-        let blocked = answer("their-6", "r-11", "t-busy", open);
+        // Each next case on a fresh message of s2 (no answers wait there), adoptable but for
+        // the one thing it checks: sent to a known card; bob blocked (its route cancelled,
+        // then its binding); unpaired.
+        let known = sent(&a, s2, bob.id, "t-known").await;
+        a.store
+            .set_exchange_export(known, full::KNOWN_CARD)
+            .await
+            .unwrap();
+        assert!(
+            not_found(
+                a.full_return(answer("their-6", "r-11", "t-known", known))
+                    .await
+            ),
+            "sent to a known card: no conversation of the contact's to adopt"
+        );
+        let m = sent(&a, s2, bob.id, "t-route").await;
+        let blocked = answer("their-7", "r-12", "t-route", m);
         blocked.route.cancel();
         assert!(
             not_found(a.full_return(blocked).await),
             "blocked: route cancelled"
         );
-        a.network.peers.get(&bob.id).unwrap().generation.cancel();
+        let m = sent(&a, s2, bob.id, "t-binding").await;
+        let live = a.network.peers.get(&bob.id).unwrap().generation.clone();
+        live.cancel();
         assert!(
             not_found(
-                a.full_return(answer("their-6", "r-12", "t-busy", open))
+                a.full_return(answer("their-8", "r-13", "t-binding", m))
                     .await
             ),
             "blocked: binding cancelled"
         );
+        let m = sent(&a, s2, bob.id, "t-unpaired").await;
         a.network.peers.clear();
         assert!(
             not_found(
-                a.full_return(answer("their-6", "r-13", "t-busy", open))
+                a.full_return(answer("their-9", "r-14", "t-unpaired", m))
                     .await
             ),
             "unpaired"
