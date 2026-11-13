@@ -2154,7 +2154,7 @@
             },
         ));
         assert!(
-            board_line(&m, &m.agents[&child], 100).ends_with("  ·  .121"),
+            board_line(&m, &m.agents[&child], 100).ends_with("  ·  $0.121"),
             "{}",
             board_line(&m, &m.agents[&child], 100)
         );
@@ -2271,7 +2271,7 @@
         for width in [80u16, 140, 200] {
             let row = board_line(&m, &m.agents[&child], width);
             // Whole tag, and the row fits inside the picker frame (border, padding, cursor).
-            assert!(row.ends_with("  ·  .265"), "{width}: {row}");
+            assert!(row.ends_with("  ·  $0.265"), "{width}: {row}");
             assert!(
                 search::cells(&row) + 7 <= usize::from(width),
                 "{width}: {} cells: {row}",
@@ -8808,7 +8808,7 @@
                 "advisor: reviewing  ·  anthropic/claude-opus-4-1  ·  high",
                 "notes: 2 nit · 1 concern · 0 blocker  ·  step 14  ·  backlog 0",
                 // `k()` drops the decimal from 100k up (`120k`, not the design's illustrative `120.4k`).
-                "context: 38.2k / 200k (19%)  ·  in 120k · out 3.1k  ·  cost .412",
+                "context: 38.2k / 200k (19%)  ·  in 120k · out 3.1k  ·  cost $0.412",
                 "last: [concern] cite the loop_.rs line before claiming drain_steer runs after every batch",
                 "consults: 2 this turn · 7 total · cap 6",
             ]
@@ -9131,7 +9131,7 @@
             session: s,
             status: status.clone(),
         }));
-        assert!(m.header(&catalog).0.contains("  ·  advisor .012"));
+        assert!(m.header(&catalog).0.contains("  ·  advisor $0.012"));
         let (segment, state) = advisor(&m).segment(m.frame).unwrap();
         assert!(segment.starts_with("  ·  ◎ advisor: ") && segment.ends_with(" reviewing…"));
         assert_eq!(state, AdvisorState::Reviewing);
