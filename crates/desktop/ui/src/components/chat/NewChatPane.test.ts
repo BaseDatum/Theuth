@@ -1,3 +1,5 @@
+import { readyConnection } from '@/components/settings/test-engine'
+import type * as ConnectionModule from '@/store/connection'
 import { receiveComponent } from '@/rpc/bindings/receive'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
@@ -17,6 +19,10 @@ vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
   useApi: () => ({ list_sessions: async () => [], title_model: async () => null }),
 }))
+vi.mock('@/store/connection', async (original) => {
+  const m = await original<typeof ConnectionModule>()
+  return { ...m, useConnection: readyConnection(m.createConnection()) }
+})
 
 const render = (props: Partial<Parameters<typeof CreateOptions>[0]>) =>
   renderToStaticMarkup(

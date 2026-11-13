@@ -1,3 +1,5 @@
+import { readyConnection } from '@/components/settings/test-engine'
+import type * as ConnectionModule from '@/store/connection'
 import { receiveComponent } from '@/rpc/bindings/receive'
 import './test-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -122,6 +124,10 @@ const api = {
   config_flag_get: vi.fn(async () => ({ key: 'a2a.enabled', enabled: false, running: false, restart_required: false })),
 }
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))
+vi.mock('@/store/connection', async (original) => {
+  const m = await original<typeof ConnectionModule>()
+  return { ...m, useConnection: readyConnection(m.createConnection()) }
+})
 
 const qcNew = () => new QueryClient({ defaultOptions: { queries: { retry: false } } })
 const roots: (() => Promise<void>)[] = []

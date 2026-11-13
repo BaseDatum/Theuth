@@ -1,3 +1,6 @@
+import { readyConnection } from '@/components/settings/test-engine'
+import type * as ConnectionModule from '@/store/connection'
+import type * as QueryModule from '@tanstack/react-query'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
@@ -26,12 +29,17 @@ const m = vi.hoisted(() => ({
 }))
 const { api, ctx, invalidateQueries } = m
 
-vi.mock('@tanstack/react-query', () => ({
+vi.mock('@tanstack/react-query', async (original) => ({
+  ...(await original<typeof QueryModule>()),
   useQueryClient: () => ({ invalidateQueries: m.invalidateQueries }),
   useQuery: () => ({ data: { default_chat: m.endlessDefault } }),
 }))
 vi.mock('@/lib/rpc', () => ({ useApi: () => m.api, queryKeys: { endlessSettings: ['endless-settings'] } }))
 vi.mock('@/lib/notebooks-rpc', () => ({ useContextApi: () => m.ctx, notebookKeys: { chats: (id: string) => ['notebooks', 'chats', id] } }))
+vi.mock('@/store/connection', async (original) => {
+  const m = await original<typeof ConnectionModule>()
+  return { ...m, useConnection: readyConnection(m.createConnection()) }
+})
 vi.mock('@/components/notebooks/useNotebook', () => ({
   useNotebook: () => ({ data: { doc: { title: 'Vendor review' } } }),
   useNotebookChats: () => ({ data: m.chats }),

@@ -1,3 +1,5 @@
+import { readyConnection } from '@/components/settings/test-engine'
+import type * as ConnectionModule from '@/store/connection'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -34,6 +36,10 @@ vi.mock('@/lib/rpc', async (original) => ({
     mesh_status: async () => ({ self_id: 'me', self_name: 'me', mesh_name: null, peers: [], lease: { holder: null, reason: '', since_ms: 0 }, traffic: [], replica: null }),
   }),
 }))
+vi.mock('@/store/connection', async (original) => {
+  const m = await original<typeof ConnectionModule>()
+  return { ...m, useConnection: readyConnection(m.createConnection()) }
+})
 
 /** The tab against an engine that runs the double (`running`) or not; `config_flag_get` answers before the first paint. */
 async function render(running = true): Promise<string> {
