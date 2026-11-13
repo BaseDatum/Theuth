@@ -294,6 +294,10 @@ pub struct SessionMember<'a> {
 pub trait SessionMembers: Sync {
     /// Find one known identity, independent of board visibility.
     fn member(&self, id: SessionId) -> Option<SessionMember<'_>>;
+    /// Borrow canonical descendant metadata without a presentation cache.
+    fn agent_info(&self, id: SessionId) -> Option<&agent::AgentInfo>;
+    /// Visit canonical descendants without allocating an inventory projection.
+    fn visit(&self, visitor: &mut dyn FnMut(&agent::AgentInfo));
 }
 /// Borrowed identity lookup for accepted core prompts, never their feature data.
 pub trait PromptIds: Sync {
@@ -789,6 +793,8 @@ pub enum CoreAction {
     SessionCreated(SessionId),
     /// Adopt an independently opened session through the existing session reducer.
     SessionOpened(agent::SessionOpen),
+    /// Adopt the canonical descendant snapshot through existing membership policy.
+    Descendants(Vec<agent::AgentInfo>),
 }
 
 /// Owned effects and actions emitted during one deterministic dispatch.

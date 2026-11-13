@@ -668,6 +668,35 @@ impl Model {
         }
     }
 
+    /// Adopt authoritative membership independently of any board presentation.
+    pub(super) fn adopt_descendants(&mut self, list: Vec<AgentInfo>) {
+        // Reseeding keeps what events taught about rows still there.
+        let mut old = std::mem::take(&mut self.agents);
+        self.agents = list
+            .into_iter()
+            // 125 §7.5: the hidden advisor child is never an ordinary member.
+            .filter(|info| info.kind != SessionKind::Advisor)
+            .map(|info| {
+                let row = match old.remove(&info.id) {
+                    Some(mut row) => {
+                        row.info = info;
+                        row
+                    }
+                    None => AgentRow::new(info),
+                };
+                (row.info.id, row)
+            })
+            .collect();
+        // The owned tree's roster: navigating within it is not a leave (51 §4.3).
+        if let Some(p) = &mut self.private
+            && self.session.is_some_and(|s| p.member(s))
+        {
+            p.members.extend(self.agents.keys().copied());
+        }
+        self.approvals
+            .retain(|a| Some(a.session) == self.session || self.agents.contains_key(&a.session));
+    }
+
     /// Fold an event of a subtree session into its row (design doc 19 §3.3).
     /// A direct child's error or cancel also interjects one line here: they
     /// must not be silent, and the board has everything else.

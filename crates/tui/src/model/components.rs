@@ -136,6 +136,7 @@ impl Model {
                 }
                 CoreAction::AwaitingEffort(pending) => self.awaiting_effort = pending,
                 CoreAction::AwaitingSession(pending) => self.awaiting_session = pending,
+                CoreAction::Descendants(list) => self.adopt_descendants(list),
                 CoreAction::PostTo(message) => {
                     if let Some(reply) = self.components.address(message) {
                         self.receive(UiEvent::Component(reply), emit);
@@ -487,6 +488,12 @@ fn modal_replacement_closes_displaced_surface_without_losing_cache() {
 impl crate::components::SessionMembers for HashMap<SessionId, AgentRow> {
     fn member(&self, id: SessionId) -> Option<crate::components::SessionMember<'_>> {
         self.get(&id).map(|row| crate::components::SessionMember { name: &row.info.name, project: row.info.project.as_deref() })
+    }
+    fn agent_info(&self, id: SessionId) -> Option<&AgentInfo> {
+        self.get(&id).map(|row| &row.info)
+    }
+    fn visit(&self, visitor: &mut dyn FnMut(&AgentInfo)) {
+        for row in self.values() { visitor(&row.info); }
     }
 }
 
