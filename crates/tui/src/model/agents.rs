@@ -308,6 +308,8 @@ impl Model {
             | AgentEvent::HarnessCommandsChanged { .. } | AgentEvent::EffortChanged { .. }
             | AgentEvent::Compacting { .. } | AgentEvent::Compacted { .. } | AgentEvent::Error { .. }
             | AgentEvent::VisionProgress { .. } | AgentEvent::ResumePending { .. }
+            | AgentEvent::Harvesting { .. } | AgentEvent::Harvested { .. } | AgentEvent::SkillsChanged { .. }
+            | AgentEvent::PartialDropped { .. } | AgentEvent::InputsParked { .. }
             | AgentEvent::TurnResumed { .. } | AgentEvent::ResumeReport { .. } | AgentEvent::TurnSuspended { .. });
         if progress && !matches!(ev, AgentEvent::ReasoningDelta { .. })
             && let Some(Entry::Reasoning { done, .. }) = self.entries.last_mut()
