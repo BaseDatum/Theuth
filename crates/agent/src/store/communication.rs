@@ -1663,6 +1663,60 @@ impl Store {
             .transpose()
     }
 
+    /// The latest open outbound message of a local session to `recipient` (a contact's
+    /// `peer:<binding>`) bound to its remote task `task_id`: what a return-route answer
+    /// naming that task in `referenceTaskIds` answers.
+    pub async fn outbound_exchange_by_task(
+        &self,
+        recipient: &str,
+        task_id: &str,
+    ) -> anyhow::Result<Option<Uuid>> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT id FROM peer_exchanges WHERE recipient = ? AND task_id = ? \
+             AND sender_session IS NOT NULL AND state IN ('accepted', 'consumed', 'held') \
+             ORDER BY accepted_seq DESC LIMIT 1",
+        )
+        .bind(recipient)
+        .bind(task_id)
+        .fetch_optional(&self.read)
+        .await?;
+        row.map(|(id,)| id.parse().context("bad exchange id"))
+            .transpose()
+    }
+
+    /// A contact never took the answer `answer` (its return route refused it): the message it
+    /// answered is open again (`consumed`: its session read it), unless something else
+    /// answered it since. That message's receipt, when it changed.
+    pub async fn unanswer_exchange(&self, answer: Uuid) -> anyhow::Result<Option<PeerReceipt>> {
+        let mut tx = self.begin_write().await?;
+        let Some(a) = exchange_in(&mut tx, &answer.to_string()).await? else {
+            return Ok(None);
+        };
+        let Some(orig) = a.reply_to.clone() else {
+            return Ok(None);
+        };
+        let n = sqlx::query(
+            "UPDATE peer_exchanges SET state = 'consumed', reply = NULL, answered_by = NULL, \
+             updated_at = ? WHERE id = ? AND state = 'replied' AND answered_by = ? AND reply = ?",
+        )
+        .bind(now())
+        .bind(&orig)
+        .bind(&a.sender)
+        .bind(&a.body)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if n == 0 {
+            return Ok(None);
+        }
+        let r = exchange_in(&mut tx, &orig)
+            .await?
+            .ok_or(CommError::NotFound)?
+            .receipt()?;
+        tx.commit().await?;
+        Ok(Some(r))
+    }
+
     /// 186 review 1: forget conversations quiet since before `stale_before_ms` (their return
     /// grant has lapsed). 191: by staleness only: `contact_threads` replicates, so a delete is
     /// mesh-wide, and a binding revoked here may be live elsewhere; a revoked binding's

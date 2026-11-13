@@ -259,16 +259,29 @@ impl Agents {
             Some((n, e)) => (n, Some(e)),
             None => (alias, None),
         };
-        let Some(offers) = self.network.offers.get(name) else {
-            return Ok(None);
-        };
         // The contact's gate maps a bare `peer:<contact>` to the first export it grants us.
-        let Some(offer) = (match written {
-            Some(e) => offers.iter().find(|o| o.name == e),
-            None => offers.iter().min_by(|a, b| a.name.cmp(&b.name)),
-        }) else {
+        let offer = self
+            .network
+            .offers
+            .get(name)
+            .and_then(|offers| match written {
+                Some(e) => offers.iter().find(|o| o.name == e),
+                None => offers.iter().min_by(|a, b| a.name.cmp(&b.name)),
+            });
+        let Some(offer) = offer else {
+            // Live failure 2026-11-13: no verified card of the contact this run (its refresh
+            // failed, or has not run), or one that does not list this export yet. Its card is
+            // asked for again, without waiting: this handler is the agent's only mailbox, and
+            // a card fetch can take seconds or ask the agent itself. The message leaves in the
+            // one shape every contact takes (no `contextId`: an older or cautious one refuses
+            // an unknown conversation); if the contact shares the export in full it mints the
+            // conversation, which `remote_outcome` records from its task (and `full_return`
+            // adopts from `referenceTaskIds` when that never came back): its answer is admitted.
+            tracing::info!(contact = %name, "a2a: contact's shared list unknown; sent without a conversation, card asked for");
+            self.rt.publish(super::ContactOffersStale).await;
             return Ok(None);
         };
+        // A known older card (no mode tag: cautious) keeps the 183 shape (186 D10).
         if offer.mode != ShareMode::Full {
             return Ok(None);
         }
@@ -667,7 +680,9 @@ impl Agents {
 
     /// [`A2aReturn`]: an answer in a conversation this engine opened with the contact, into
     /// the session that opened it, as a mesh peer's message (`peer:<contact>/<export>`), or
-    /// into the awaiting `send_message`. `TASK_NOT_FOUND` when the conversation is unknown,
+    /// into the awaiting `send_message`. With no conversation of that id at all, one whose
+    /// `referenceTaskIds` names the task of an open message of ours to this contact is
+    /// adopted ([`Self::adopted`]). `TASK_NOT_FOUND` when the conversation is unknown,
     /// lapsed ([`THREAD_TTL`]) or its share is no longer full (or the contact gone).
     pub(crate) async fn full_return(
         &mut self,
@@ -687,19 +702,38 @@ impl Agents {
         let text = super::inbound_text(msg, |t| self.redact(t).into_owned())?;
         let context = msg.context_id.clone().ok_or_else(gone)?;
         let now = Utc::now().timestamp_millis();
-        let thread = self
+        let ttl = THREAD_TTL.as_millis() as i64;
+        let (thread, adopted) = match self
             .store
             .contact_thread(m.binding, &context)
             .await
             .map_err(internal)?
-            .filter(|t| t.outbound && now - t.last_ms <= THREAD_TTL.as_millis() as i64)
-            .ok_or_else(gone)?;
+        {
+            Some(t) => (
+                Some(t)
+                    .filter(|t| t.outbound && now - t.last_ms <= ttl)
+                    .ok_or_else(gone)?,
+                None,
+            ),
+            None => {
+                let (t, exchange) = self.adopted(m.binding, &context, msg, now).await?;
+                (t, Some(exchange))
+            }
+        };
         // 191 (D3, S4): `~return` into a session that is not strictly this engine's is
         // `NOT_OWNER`; the contact tries the next member.
         self.contact_owned(thread.session).await?;
-        let full = self.network.offers.get(&alias).is_some_and(|o| {
-            o.iter()
-                .any(|o| o.name == thread.export && o.mode == ShareMode::Full)
+        // D12: the contact's card, when this engine verified one this run, must still share
+        // the conversation's export in full (any export, when its name is unknown: `""`): a
+        // downgrade or a withdrawn share ends the conversation. No card known (its refresh
+        // failing, as in the live failure of 2026-11-13) proves nothing either way: the
+        // contact itself answers, on its own pinned stream, in a conversation this engine
+        // opened, and its engine answers there only while it shares that export in full.
+        // Unpairing, blocking or re-pinning ends the route itself (checked above).
+        let full = self.network.offers.get(&alias).is_none_or(|o| {
+            o.iter().any(|o| {
+                o.mode == ShareMode::Full && (thread.export.is_empty() || o.name == thread.export)
+            })
         });
         if !full {
             return Err(gone());
@@ -708,6 +742,14 @@ impl Agents {
             .open_contact_thread(m.binding, &context, thread.session, &thread.export, true)
             .await
             .map_err(internal)?;
+        if let Some(exchange) = adopted
+            && let Err(e) = self
+                .store
+                .set_exchange_contact(exchange, ShareMode::Full, Some(&context))
+                .await
+        {
+            tracing::warn!(%exchange, "a2a: adopted conversation not recorded on its message: {e:#}");
+        }
         let generation = self
             .remote_generation(thread.session, true)
             .map_err(|e| A2AError::unsupported_operation(e.to_string()))?;
@@ -734,7 +776,9 @@ impl Agents {
                 0,
             ),
             None => (
-                self.answered(wire.re.as_deref(), &session, &peer).await?,
+                self.answered(wire.re.as_deref(), &session, &peer)
+                    .await?
+                    .or(adopted),
                 self.store
                     .answers_waiting(m.binding, thread.session)
                     .await
@@ -763,7 +807,10 @@ impl Agents {
             .await
             .map_err(|e| A2AError::unsupported_operation(format!("refused: {e:#}")))?;
         if receipt.state == PeerMessageState::Accepted && self.claim_enqueued(receipt.id) {
-            let from = format!("peer:{alias}/{}", thread.export);
+            let from = match thread.export.as_str() {
+                "" => format!("peer:{alias}"),
+                e => format!("peer:{alias}/{e}"),
+            };
             let intake = async {
                 self.store
                     .set_exchange_contact(receipt.id, ShareMode::Full, Some(&context))
@@ -792,6 +839,92 @@ impl Agents {
         ack.context_id = Some(context);
         ack.metadata = Some(receipt_metadata());
         Ok(SendMessageResponse::Message(ack))
+    }
+
+    /// [`Self::full_return`] of an answer in a conversation this engine never recorded: a
+    /// message of ours that left without one (its contact's card unknown, or sent before the
+    /// conversation was recorded from its task) to a contact sharing in full, which minted
+    /// the conversation and answers on it naming our message's task (`referenceTaskIds`).
+    /// Adopted only when that task is bound to an outbound message of ours to this same
+    /// contact binding, still open and younger than [`THREAD_TTL`], whose conversation, if
+    /// it has one, is this one: into that message's session, as its answer (the export the
+    /// message reached is unknown here: `""`). Anything else is `TASK_NOT_FOUND`.
+    async fn adopted(
+        &self,
+        binding: Uuid,
+        context: &str,
+        msg: &A2aMessage,
+        now: i64,
+    ) -> Result<(crate::store::communication::ContactThread, Uuid), A2AError> {
+        let task = msg
+            .reference_task_ids
+            .as_deref()
+            .and_then(|t| t.first())
+            .ok_or_else(gone)?;
+        let peer = format!("peer:{binding}");
+        let id = self
+            .store
+            .outbound_exchange_by_task(&peer, task)
+            .await
+            .map_err(internal)?
+            .ok_or_else(gone)?;
+        let o = self
+            .store
+            .exchange_record(id)
+            .await
+            .map_err(internal)?
+            .filter(|o| {
+                o.receipt.to == peer
+                    && o.from == format!("session:{}", o.session)
+                    && answerable(o.receipt.state)
+                    && now - o.created_at.timestamp_millis() <= THREAD_TTL.as_millis() as i64
+            })
+            .ok_or_else(gone)?;
+        if let Some((c, _)) = self.store.exchange_thread(id).await.map_err(internal)?
+            && c != context
+        {
+            return Err(gone());
+        }
+        tracing::info!(%binding, exchange = %id, "a2a: answer adopted on the conversation the contact minted");
+        Ok((
+            crate::store::communication::ContactThread {
+                session: o.session,
+                export: String::new(),
+                outbound: true,
+                last_ms: now,
+            },
+            id,
+        ))
+    }
+
+    /// A message of ours to a contact left without a conversation (its card unknown, or a
+    /// cautious share) and the contact answered with its task in `context`: when no
+    /// conversation of that id exists, it is recorded as ours (outbound, for `session`, to
+    /// the export the address named, `""` for the contact's first), so a contact sharing in
+    /// full can answer on its return route. A cautious one never does; its thread lapses.
+    pub(super) async fn record_minted(
+        &self,
+        exchange: Uuid,
+        binding: Uuid,
+        session: SessionId,
+        alias: &str,
+        context: &str,
+    ) {
+        let export = alias.split_once('/').map_or("", |(_, e)| e);
+        let recorded = async {
+            if context.is_empty()
+                || self.store.exchange_thread(exchange).await?.is_some()
+                || self.store.contact_thread(binding, context).await?.is_some()
+            {
+                return anyhow::Ok(());
+            }
+            self.store
+                .open_contact_thread(binding, context, session, export, true)
+                .await
+        };
+        if let Err(e) = recorded.await {
+            tracing::warn!(%exchange, "a2a: contact's conversation not recorded: {e:#}");
+        }
     }
 }
 

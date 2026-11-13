@@ -50,6 +50,9 @@ pub(crate) struct Cached {
     pub machine: String,
     /// The last refresh, whatever its outcome (the TTL counts from it).
     pub at: Option<Instant>,
+    /// A card of it verified this run: `offers` is what it shares, not a placeholder. Only
+    /// such lists reach the agent, which reads a contact missing from them as unknown.
+    pub fetched: bool,
     /// The last refresh failure logged (each distinct one once).
     pub error: Option<String>,
     /// A noticed refresh is running; `again` is one more asked for meanwhile.
@@ -371,9 +374,13 @@ impl Ctx {
             match outcome {
                 Ok((offers, full, machine)) => {
                     c.error = None;
+                    let first = !std::mem::replace(&mut c.fetched, true);
                     let was = std::mem::replace(&mut c.full, full);
                     let named = std::mem::replace(&mut c.machine, machine) != c.machine;
-                    (std::mem::replace(&mut c.offers, offers) != c.offers) || was != full || named
+                    (std::mem::replace(&mut c.offers, offers) != c.offers)
+                        || was != full
+                        || named
+                        || first
                 }
                 Err(e) => {
                     let e = clip(&e);
@@ -409,8 +416,9 @@ impl Ctx {
         });
     }
 
-    /// `discover_peers` found the offers stale: refetch, together, the card of every machine
-    /// of every contact (191: every member it admits, not one) older than [`OFFERS_TTL`].
+    /// `discover_peers` found the offers stale, or a send found a contact's unknown: refetch,
+    /// together, the card of every machine of every contact (191: every member it admits,
+    /// not one) older than [`OFFERS_TTL`] or never verified this run.
     pub(crate) async fn refresh_stale_offers(&self) {
         let live = self.shared.read().clone();
         let stale: Vec<String> = {
@@ -421,9 +429,9 @@ impl Ctx {
                 .filter(|f| !f.blocked)
                 .flat_map(|f| f.eids.iter())
                 .filter(|eid| {
-                    all.get(*eid)
-                        .and_then(|c| c.at)
-                        .is_none_or(|at| at.elapsed() >= OFFERS_TTL)
+                    all.get(*eid).is_none_or(|c| {
+                        !c.fetched || c.at.is_none_or(|at| at.elapsed() >= OFFERS_TTL)
+                    })
                 })
                 .cloned()
                 .collect()
@@ -492,7 +500,9 @@ impl Ctx {
         let map: BTreeMap<String, Vec<ContactOffer>> = {
             let all = self.offers.lock();
             from.into_iter()
-                .filter_map(|(alias, eid)| Some((alias, all.get(&eid)?.offers.clone())))
+                .filter_map(|(alias, eid)| {
+                    Some((alias, all.get(&eid).filter(|c| c.fetched)?.offers.clone()))
+                })
                 .collect()
         };
         let _ = agents.tell(ContactOffers(map)).await;

@@ -4471,7 +4471,7 @@ impl Agents {
             },
         );
         let export = match &full {
-            Some(f) => Some(f.export.clone()),
+            Some(f) => Some(f.export.clone()).filter(|e| !e.is_empty()),
             // `peer_by_name` matched only a contact for `<name>/<export>`.
             None => alias
                 .split_once('/')
@@ -4522,6 +4522,7 @@ impl Agents {
             return;
         }
         let (ret, alias) = (o.ret, o.alias.clone());
+        let legacy = (o.contact && !o.ret).then_some((o.binding, o.session));
         let r = match outcome {
             Err(RemoteSendError::Refused(why)) => {
                 self.network.outbound.remove(&exchange);
@@ -4532,11 +4533,23 @@ impl Agents {
                         "update needed: {alias}'s theuth cannot take answers in full; update it"
                     ),
                     true if why.contains("TASK_NOT_FOUND") => format!(
-                        "the conversation with {alias} ended (no longer shared in full, or quiet for 7 days)"
+                        "not delivered: {alias}'s machine has no open conversation for this answer (quiet for 7 days, its share with you changed, or its theuth is older and recorded none); the message you answered stays open. Retry after {alias} writes again, or send a new message without reply_to (it reaches only a chat {alias} shares with you)"
                     ),
                     _ => why,
                 };
-                self.store.fail_exchange(exchange, &why).await
+                let failed = self.store.fail_exchange(exchange, &why).await;
+                // An answer that never arrived answers nothing: its message is open again
+                // (a retry names it as `reply_to` once more).
+                if ret {
+                    match self.store.unanswer_exchange(exchange).await {
+                        Ok(Some(orig)) => self.peer_changed(&orig).await,
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::warn!(%exchange, "a2a: answered message not reopened: {e:#}")
+                        }
+                    }
+                }
+                failed
             }
             Err(RemoteSendError::Unknown(why)) => {
                 self.network.outbound.remove(&exchange);
@@ -4559,6 +4572,10 @@ impl Agents {
                 match self.store.bind_exchange_task(exchange, &t.id).await {
                     Ok(r) => self.peer_changed(&r).await,
                     Err(e) => tracing::warn!(exchange = %exchange, "a2a: bind remote task: {e:#}"),
+                }
+                if let Some((binding, session)) = legacy {
+                    self.record_minted(exchange, binding, session, &alias, &t.context_id)
+                        .await;
                 }
                 if let Some(o) = self.network.outbound.get_mut(&exchange) {
                     o.task_id = Some(t.id.clone());
@@ -7506,6 +7523,366 @@ mod tests {
         a.network.peers.clear();
         assert!(
             not_found(a.full_return(answer("ctx-1", "r-4")).await),
+            "unpaired"
+        );
+    }
+
+    /// Live failure 2026-11-13, end to end in-process: the laptop (`a`) holds no verified
+    /// card of its contact `sky` (every refresh failed), so its message leaves without a
+    /// conversation, in the shape every contact takes; xeus (`b`) shares the chat in full and
+    /// takes it as a full message. Its answer on the return route first meets a laptop that
+    /// has no conversation for it: the answer fails saying what happened, and the message it
+    /// answered is open again, so the retry still names it. The laptop recorded the
+    /// conversation xeus minted from xeus's task: the retry lands in the session that wrote,
+    /// as the reply to its message.
+    #[tokio::test]
+    async fn an_answer_reaches_the_session_whose_message_left_while_the_card_was_unknown() {
+        struct Record(tokio::sync::mpsc::UnboundedSender<OutboundPeerMessage>);
+        #[async_trait]
+        impl PeerSender for Record {
+            async fn send(&self, o: OutboundPeerMessage) -> Result<RemoteReply, RemoteSendError> {
+                let _ = self.0.send(o);
+                Err(RemoteSendError::Unknown("recorded".into()))
+            }
+        }
+        // The laptop: the contact `sky`, no offers known.
+        let (_sa, mut a) = crate::supervisor::tests::agents_with(true).await;
+        a.communication.0.write().set_network(true, true);
+        let sky = a
+            .store
+            .bind_peer("sky", &contact_endpoint("xeus-endpoint"))
+            .await
+            .unwrap();
+        let (tx, mut out_a) = tokio::sync::mpsc::unbounded_channel();
+        a.network.peers.insert(
+            sky.id,
+            RemotePeer {
+                name: "sky".into(),
+                roots: Vec::new(),
+                sender: Some(Arc::new(Record(tx))),
+                generation: CancellationToken::new(),
+                contact: true,
+                full: Vec::new(),
+            },
+        );
+        let laptop = a
+            .new_root(None, super::super::PeerScope::Owner, None, None)
+            .await
+            .unwrap();
+        let sent = a
+            .network_send(laptop, "sky", "are you there?", None, None, false)
+            .await
+            .unwrap();
+        let wire = tokio::time::timeout(Duration::from_secs(10), out_a.recv())
+            .await
+            .expect("it leaves")
+            .unwrap();
+        assert!(
+            wire.context_id.is_none() && wire.full.is_none(),
+            "no card known: the shape every contact takes"
+        );
+
+        // xeus: the laptop is its contact `sky-moore`; the chat is shared in full.
+        let (_sb, mut b) = crate::supervisor::tests::agents_with(true).await;
+        b.communication.0.write().set_network(true, true);
+        let moore = b
+            .store
+            .bind_peer("sky-moore", &contact_endpoint("laptop-endpoint"))
+            .await
+            .unwrap();
+        let principal = format!("peer:{}", moore.id);
+        let (chat, _, _) = exported_task(&mut b, &principal).await;
+        let (tx, mut out_b) = tokio::sync::mpsc::unbounded_channel();
+        b.network.peers.insert(
+            moore.id,
+            RemotePeer {
+                name: "sky-moore".into(),
+                roots: Vec::new(),
+                sender: Some(Arc::new(Record(tx))),
+                generation: CancellationToken::new(),
+                contact: true,
+                full: vec!["research".into()],
+            },
+        );
+        let p = A2aPrincipal {
+            binding: moore.id,
+            export: "research".into(),
+            session: chat,
+            route: CancellationToken::new(),
+            contact: Some(super::super::ContactOrigin {
+                contact: "sky-moore".into(),
+                ..bob("research")
+            }),
+            ask_first: false,
+        };
+        let task = b
+            .admit_send(&p, &send(&wire.request_id))
+            .await
+            .unwrap()
+            .task;
+        assert_eq!(task.status, A2aTaskStatus::Working, "{:?}", task.error);
+        let inbound = task.dedup_exchange.unwrap();
+        // Its turn takes the message in; the task completes with the receipt.
+        let g = b.admit_principal(&p).await.unwrap();
+        b.store
+            .consume_exchange_direct(inbound, chat, g.revision() as i64)
+            .await
+            .unwrap()
+            .expect("taken in");
+        b.full_consumed(inbound).await.unwrap();
+        // The laptop reads xeus's task: the conversation xeus minted is recorded as its own.
+        a.remote_outcome(sent.id, Ok(SendMessageResponse::Task(snapshot(&task))))
+            .await;
+        let thread = a
+            .store
+            .contact_thread(sky.id, &task.context_id)
+            .await
+            .unwrap()
+            .expect("recorded");
+        assert!(thread.outbound && thread.session == laptop && thread.export.is_empty());
+
+        // xeus answers; the first try meets no conversation there.
+        b.network_send(chat, "sky-moore", "yes, here", None, Some(inbound), false)
+            .await
+            .unwrap();
+        let first = tokio::time::timeout(Duration::from_secs(10), out_b.recv())
+            .await
+            .expect("the answer leaves")
+            .unwrap();
+        assert_eq!(first.export.as_deref(), Some(RETURN_ROUTE));
+        b.remote_outcome(
+            first.record.receipt.id,
+            Err(RemoteSendError::Refused(
+                "peer sky-moore refused: conversation (TASK_NOT_FOUND)".into(),
+            )),
+        )
+        .await;
+        let failed = b
+            .store
+            .exchange_receipt(first.record.receipt.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.state, PeerMessageState::Failed);
+        assert_eq!(
+            failed.reply_to,
+            Some(inbound),
+            "the failed receipt names it"
+        );
+        assert!(
+            failed.error.as_deref().is_some_and(
+                |e| e.starts_with("not delivered: sky-moore") && e.contains("stays open")
+            ),
+            "{:?}",
+            failed.error
+        );
+        let orig = b.store.exchange_receipt(inbound).await.unwrap().unwrap();
+        assert_eq!(orig.state, PeerMessageState::Consumed, "open again");
+        assert_eq!(orig.answered_by, None);
+
+        let retry = b
+            .network_send(chat, "sky-moore", "yes, here", None, Some(inbound), false)
+            .await
+            .unwrap();
+        assert_eq!(retry.reply_to, Some(inbound), "the retry still names it");
+        let answer = tokio::time::timeout(Duration::from_secs(10), out_b.recv())
+            .await
+            .expect("the retry leaves")
+            .unwrap();
+        let w = answer.full.clone().unwrap();
+        assert_eq!(w.reference_task.as_deref(), Some(task.id.as_str()));
+        let mut m = user(&answer.record.text);
+        m.message_id = answer.request_id.clone();
+        m.context_id = answer.context_id.clone();
+        m.reference_task_ids = w.reference_task.clone().map(|t| vec![t]);
+        m.metadata = Some(w.metadata());
+        let ret = A2aReturn {
+            binding: sky.id,
+            route: CancellationToken::new(),
+            request: SendMessageRequest {
+                message: m,
+                configuration: None,
+                metadata: None,
+                tenant: None,
+            },
+        };
+        match a.full_return(ret).await {
+            Ok(SendMessageResponse::Message(m)) => assert!(is_receipt(m.metadata.as_ref())),
+            other => panic!("a receipt, got {other:?}"),
+        }
+        let mine = a.store.exchange_receipt(sent.id).await.unwrap().unwrap();
+        assert_eq!(mine.state, PeerMessageState::Replied);
+        assert_eq!(mine.reply.as_deref(), Some("yes, here"));
+        let row = a
+            .store
+            .peer_records(laptop, None, 50)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.receipt.reply_to == Some(sent.id))
+            .expect("the answer is a row of the session that wrote");
+        assert_eq!(row.text, "yes, here");
+    }
+
+    /// An answer in a conversation this engine never recorded (a message of ours that left
+    /// without one, its task bound) is adopted only through `referenceTaskIds` naming the
+    /// task of an open message of ours to that same contact, into that message's session as
+    /// its reply; another contact's task, an unknown one, a withdrawn share, a conversation
+    /// the contact opened, and a message already in another conversation are refused. A
+    /// recorded conversation is never redirected by the task it names (no cross-session path).
+    #[tokio::test]
+    async fn an_answer_naming_our_task_is_adopted_only_for_that_contacts_open_message() {
+        async fn sent(a: &Agents, s: SessionId, to: Uuid, task: &str) -> Uuid {
+            let r = a
+                .store
+                .accept_exchange(&AcceptExchange {
+                    sender: &format!("session:{s}"),
+                    recipient: &format!("peer:{to}"),
+                    sender_session: Some(s),
+                    recipient_session: None,
+                    request_id: None,
+                    reply_to: None,
+                    request_scope: None,
+                    generation: 1,
+                    body: "ping",
+                })
+                .await
+                .unwrap();
+            a.store.bind_exchange_task(r.id, task).await.unwrap();
+            r.id
+        }
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let bob = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let carol = a
+            .store
+            .bind_peer("carol", &contact_endpoint("carol-endpoint"))
+            .await
+            .unwrap();
+        for (id, name) in [(bob.id, "bob"), (carol.id, "carol")] {
+            a.network.peers.insert(
+                id,
+                RemotePeer {
+                    name: name.into(),
+                    roots: Vec::new(),
+                    sender: None,
+                    generation: CancellationToken::new(),
+                    contact: true,
+                    full: Vec::new(),
+                },
+            );
+        }
+        let (s1, _, _) = exported_task(&mut a, "peer:lab").await;
+        let s2 = a
+            .new_root(None, super::super::PeerScope::Owner, None, None)
+            .await
+            .unwrap();
+        let e1 = sent(&a, s1, bob.id, "t-bob").await;
+        sent(&a, s2, carol.id, "t-carol").await;
+        let e3 = sent(&a, s2, bob.id, "t-s2").await;
+        let answer = |ctx: &str, id: &str, task: &str, re: Uuid| {
+            let mut r = full_send(
+                id,
+                ctx,
+                &FullWire {
+                    re: Some(re.to_string()),
+                    ..FullWire::default()
+                },
+            );
+            r.message.reference_task_ids = Some(vec![task.into()]);
+            A2aReturn {
+                binding: bob.id,
+                route: CancellationToken::new(),
+                request: r,
+            }
+        };
+        let not_found = |r: Result<SendMessageResponse, A2AError>| {
+            r.err()
+                .is_some_and(|e| e.code == a2a_types::error_code::TASK_NOT_FOUND)
+        };
+        assert!(
+            not_found(a.full_return(answer("their-1", "r-1", "t-carol", e1)).await),
+            "another contact's task"
+        );
+        assert!(
+            not_found(a.full_return(answer("their-1", "r-2", "t-none", e1)).await),
+            "a task of no message of ours"
+        );
+        a.network
+            .set_offers(BTreeMap::from([("bob".into(), Vec::new())]));
+        assert!(
+            not_found(a.full_return(answer("their-1", "r-3", "t-bob", e1)).await),
+            "bob's card shares nothing with us any more"
+        );
+        a.network.set_offers(BTreeMap::new());
+        a.store
+            .open_contact_thread(bob.id, "ctx-in", s1, "research", false)
+            .await
+            .unwrap();
+        assert!(
+            not_found(a.full_return(answer("ctx-in", "r-4", "t-bob", e1)).await),
+            "a conversation the contact opened"
+        );
+        // A recorded conversation of s1's: the task of s2's message redirects nothing.
+        a.store
+            .open_contact_thread(bob.id, "ctx-s1", s1, "proj", true)
+            .await
+            .unwrap();
+        a.full_return(answer("ctx-s1", "r-5", "t-s2", e3))
+            .await
+            .unwrap();
+        let row = a
+            .store
+            .peer_records(s1, None, 50)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.from == format!("peer:{}", bob.id))
+            .expect("into the conversation's own session");
+        assert_eq!(row.receipt.reply_to, None, "it answers nothing of s1's");
+        let other = a.store.exchange_receipt(e3).await.unwrap().unwrap();
+        assert_eq!(other.state, PeerMessageState::Accepted, "s2's stays open");
+
+        // Adopted: the task of s1's open message to bob.
+        match a.full_return(answer("their-1", "r-6", "t-bob", e1)).await {
+            Ok(SendMessageResponse::Message(m)) => assert!(is_receipt(m.metadata.as_ref())),
+            other => panic!("a receipt, got {other:?}"),
+        }
+        let mine = a.store.exchange_receipt(e1).await.unwrap().unwrap();
+        assert_eq!(mine.state, PeerMessageState::Replied);
+        let thread = a
+            .store
+            .contact_thread(bob.id, "their-1")
+            .await
+            .unwrap()
+            .expect("recorded");
+        assert!(thread.outbound && thread.session == s1);
+        assert!(
+            a.store
+                .peer_records(s1, None, 50)
+                .await
+                .unwrap()
+                .iter()
+                .any(|r| r.receipt.reply_to == Some(e1)),
+            "the reply to s1's message"
+        );
+
+        // s2's message already belongs to another conversation.
+        a.store
+            .set_exchange_contact(e3, super::super::ShareMode::Full, Some("ctx-e3"))
+            .await
+            .unwrap();
+        assert!(
+            not_found(a.full_return(answer("their-2", "r-7", "t-s2", e3)).await),
+            "its own conversation is another"
+        );
+        let e4 = sent(&a, s1, bob.id, "t-4").await;
+        a.network.peers.clear();
+        assert!(
+            not_found(a.full_return(answer("their-3", "r-8", "t-4", e4)).await),
             "unpaired"
         );
     }
