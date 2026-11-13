@@ -100,17 +100,22 @@ impl Group<'_> {
 
     /// The group's grant rows, by export id.
     fn grants<'r>(&self, r: &'r Records) -> BTreeMap<&'r str, Vec<&'r GrantRow>> {
-        let ids: BTreeSet<&str> = self.members.iter().map(|m| m.id.as_str()).collect();
-        let mut out: BTreeMap<&str, Vec<&GrantRow>> = BTreeMap::new();
-        for g in &r.grants {
-            if let (Some(c), Some(x)) = (g.contact.as_deref(), g.export.as_deref())
-                && ids.contains(c)
-            {
-                out.entry(x).or_default().push(g);
-            }
-        }
-        out
+        grants_of(r, &self.members)
     }
+}
+
+/// The grant rows of `members` (one group's records), by export id.
+fn grants_of<'r>(r: &'r Records, members: &[&ContactRow]) -> BTreeMap<&'r str, Vec<&'r GrantRow>> {
+    let ids: BTreeSet<&str> = members.iter().map(|m| m.id.as_str()).collect();
+    let mut out: BTreeMap<&str, Vec<&GrantRow>> = BTreeMap::new();
+    for g in &r.grants {
+        if let (Some(c), Some(x)) = (g.contact.as_deref(), g.export.as_deref())
+            && ids.contains(c)
+        {
+            out.entry(x).or_default().push(g);
+        }
+    }
+    out
 }
 
 /// How the records fall apart: live groups, removed records and records whose merge chain
@@ -398,6 +403,7 @@ pub fn shown(r: &Records, members: &[&ContactRow]) -> Shown {
             .and_then(|c| c.paired_on.clone())
             .filter(|e| !e.is_empty()),
         machines: now.into_iter().map(|e| (e, false)).chain(left).collect(),
+        exports: Vec::new(),
     }
 }
 
@@ -797,6 +803,15 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, expired: &BTreeSet<
         export_names.insert(e.id.as_str(), name.to_owned());
     }
     let export_rows: BTreeSet<&str> = r.exports.iter().map(|e| e.id.as_str()).collect();
+    // 191: what a held (quarantined) group's row shows it shares: its effective grants of the
+    // exports staged here (no §6.3 claim: it is admitted nowhere here).
+    let granted = |members: &[&ContactRow]| -> Vec<String> {
+        grants_of(r, members)
+            .iter()
+            .filter(|(_, rows)| effective(rows).0 == Some(true))
+            .filter_map(|(x, _)| export_names.get(*x).cloned())
+            .collect()
+    };
 
     let a = analyze(r);
     // How a quarantine treats its endpoints and binding.
@@ -825,7 +840,9 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, expired: &BTreeSet<
         } else {
             s.deny.extend(eids.iter().cloned());
         }
-        s.shown.insert(c.id.clone(), shown(r, members));
+        let mut row = shown(r, members);
+        row.exports = granted(members);
+        s.shown.insert(c.id.clone(), row);
         s.quarantined.push(Quarantined {
             id: c.id.clone(),
             alias: c.alias.clone().unwrap_or_default(),
@@ -1056,14 +1073,16 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, expired: &BTreeSet<
                     outbound: None,
                     inbound: None,
                     sessions: Vec::new(),
-                    exports,
+                    exports: exports.clone(),
                     allow_private: false,
                     eid: Some(eid.clone()),
                     record: Some((c.id.clone(), binding)),
                 },
             );
         }
-        staged.shown.insert(c.id.clone(), shown(r, &g.members));
+        let mut row = shown(r, &g.members);
+        row.exports = exports;
+        staged.shown.insert(c.id.clone(), row);
         staged.contacts.insert(
             alias.clone(),
             ContactFacts {
@@ -1403,9 +1422,156 @@ mod tests {
                         }
                     }
                 }
+                RecordTable::Grants => {
+                    if !r.grants.iter().any(|g| g.id == w.id) {
+                        r.grants.push(GrantRow {
+                            id: w.id.clone(),
+                            ..GrantRow::default()
+                        });
+                    }
+                    let g = r.grants.iter_mut().find(|g| g.id == w.id).unwrap();
+                    for (col, v) in &w.set {
+                        match *col {
+                            "contact" => g.contact = text(v),
+                            "export" => g.export = text(v),
+                            "granted" => g.granted = int(v),
+                            "first_contact" => g.first_contact = text(v),
+                            _ => {}
+                        }
+                    }
+                }
                 _ => {}
             }
         }
+    }
+
+    /// 191 (the 2026-11-13 revoke): a share machine B made (`y`) survives every grant change
+    /// made on machine A, whatever A sees of it: its export row there or not yet, the contact
+    /// held on A, or `y` given to an older contact first (§6.3). Grant and revoke write only
+    /// the export they name; an older UI's whole list never revokes what A does not show.
+    #[test]
+    fn a_grant_change_on_one_machine_never_revokes_another_machines_share() {
+        use crate::contacts::{ContactPatch, grant_patch};
+        let (a_eid, b_eid) = (eid(40), eid(41));
+        let family = BTreeSet::from([a_eid.clone(), b_eid.clone()]);
+        let none = BTreeSet::new();
+        let stage = |r: &Records| stage_records(r, &family, &none);
+        let base = Records {
+            me: a_eid.clone(),
+            contacts: vec![contact("c", "bob", 2)],
+            endpoints: vec![anchor("c", 1, 2)],
+            exports: vec![
+                ExportRow {
+                    home: Some(a_eid.clone()),
+                    ..chat("x", "x-chat", runtime::SessionId::new())
+                },
+                ExportRow {
+                    home: Some(b_eid.clone()),
+                    ..chat("y", "y-chat", runtime::SessionId::new())
+                },
+            ],
+            // B shared its chat: its grant row, replicated here.
+            grants: vec![grant("c", "y", Some(1), Some("allow"))],
+            ..Records::default()
+        };
+        let names = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let grant_x = ContactPatch {
+            grant: Some(names(&["x-chat"])),
+            ..ContactPatch::default()
+        };
+        let revoke_x = ContactPatch {
+            revoke: Some(names(&["x-chat"])),
+            ..ContactPatch::default()
+        };
+        let whole = |l: &[&str]| ContactPatch {
+            exports: Some(names(l)),
+            ..ContactPatch::default()
+        };
+        // `p` on A as `contact_update` runs it, the writes applied; y's grant read back.
+        let run = |r: &mut Records, p: &ContactPatch| {
+            let w = {
+                let s = stage(r);
+                let a = analyze(r);
+                let members = group_of(&a, "c").unwrap().members.clone();
+                grant_patch(r, &s, &members, p).unwrap()
+            };
+            assert!(w.iter().all(|w| w.id != "c|y"), "y is never written: {w:?}");
+            apply(r, &w);
+            r.grants
+                .iter()
+                .find(|g| g.id == "c|y")
+                .and_then(|g| g.granted)
+        };
+        let x = |r: &Records| r.grants.iter().find(|g| g.id == "c|x").cloned();
+
+        // y's export row is here: A shows B's share, and grants and takes back x alone.
+        let mut r = base.clone();
+        assert_eq!(
+            stage(&r).shown["c"].exports,
+            ["y-chat"],
+            "B's share shows on A"
+        );
+        assert_eq!(run(&mut r, &grant_x), Some(1));
+        assert_eq!(stage(&r).shown["c"].exports, ["x-chat", "y-chat"]);
+        assert_eq!(
+            x(&r).unwrap().first_contact.as_deref(),
+            Some("allow"),
+            "a new share starts on Always allow"
+        );
+        assert_eq!(run(&mut r, &revoke_x), Some(1));
+        assert_eq!(x(&r).unwrap().granted, Some(0));
+        assert_eq!(stage(&r).shown["c"].exports, ["y-chat"]);
+        assert_eq!(run(&mut r, &whole(&["y-chat", "x-chat"])), Some(1));
+        assert_eq!(x(&r).unwrap().granted, Some(1), "the whole list grants x");
+
+        // y's export row has not reached A: the 17:40:43 save (x added from a view without
+        // y) grants x and leaves y; emptying the list takes back x, never y.
+        let mut r = base.clone();
+        r.exports.retain(|e| e.id != "y");
+        assert!(stage(&r).shown["c"].exports.is_empty());
+        assert_eq!(run(&mut r, &whole(&["x-chat"])), Some(1));
+        assert_eq!(x(&r).unwrap().granted, Some(1));
+        assert_eq!(run(&mut r, &whole(&[])), Some(1));
+        assert_eq!(x(&r).unwrap().granted, Some(0));
+        assert_eq!(run(&mut r, &grant_x), Some(1));
+        assert_eq!(run(&mut r, &revoke_x), Some(1));
+
+        // The contact is held on A (its roster is based on B, unverified here): its shares
+        // show, a grant reaches its records, a whole list revokes nothing.
+        let mut r = Records {
+            heads: vec![head("c", &b_eid, false, Some(0))],
+            ..base.clone()
+        };
+        let s = stage(&r);
+        assert!(s.contacts.is_empty());
+        assert_eq!(s.quarantined[0].problem, rosters::NOT_VERIFIED);
+        assert_eq!(
+            s.shown["c"].exports,
+            ["y-chat"],
+            "a held contact's shares show"
+        );
+        assert_eq!(run(&mut r, &grant_x), Some(1));
+        assert_eq!(stage(&r).shown["c"].exports, ["x-chat", "y-chat"]);
+        assert_eq!(run(&mut r, &whole(&[])), Some(1));
+        assert_eq!(
+            x(&r).unwrap().granted,
+            Some(1),
+            "nothing revoked while held"
+        );
+        assert_eq!(run(&mut r, &revoke_x), Some(1));
+        assert_eq!(x(&r).unwrap().granted, Some(0));
+
+        // §6.3: an older contact holds y; bob's grant of y applies nowhere and is not shown,
+        // and a whole list for bob never revokes it.
+        let mut r = base.clone();
+        r.contacts.push(contact("o", "alice", 1));
+        r.endpoints.push(anchor("o", 2, 1));
+        r.grants.push(grant("o", "y", Some(1), None));
+        let s = stage(&r);
+        assert_eq!(s.shown["o"].exports, ["y-chat"]);
+        assert!(s.shown["c"].exports.is_empty(), "skipped by §6.3");
+        assert_eq!(run(&mut r, &whole(&["x-chat"])), Some(1));
+        assert_eq!(run(&mut r, &whole(&[])), Some(1));
     }
 
     /// 191 (M4): two machines export a chat each under one name: two ids, the newer is
@@ -2198,7 +2364,8 @@ mod tests {
             s.shown["c"],
             Shown {
                 paired_on: Some(me.clone()),
-                machines: vec![(eid(1), false)]
+                machines: vec![(eid(1), false)],
+                exports: Vec::new(),
             },
             "pins while nothing is based"
         );

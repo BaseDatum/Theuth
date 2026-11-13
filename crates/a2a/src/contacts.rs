@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use a2a_types::AgentCard;
-use agent::communication::network::{ChatPaused, UNKNOWN_SESSION};
+use agent::communication::network::{ChatPaused, UNKNOWN_SESSION, ValidateExport};
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
 use runtime::SessionId;
@@ -87,7 +87,8 @@ pub struct Contact {
     pub fingerprint: String,
     /// How it is reached right now.
     pub path: mesh::PeerPath,
-    /// Export names granted to it.
+    /// Export names granted to it, mesh-wide (191: from the records, a chat on another
+    /// machine too; a waiting or refused contact's as well).
     pub exports: Vec<String>,
     /// Export → first-contact answer; a missing export is `ask`.
     pub first_contact: BTreeMap<String, FirstContact>,
@@ -190,17 +191,24 @@ pub struct FirstWaiting {
     pub elsewhere: bool,
 }
 
-/// `contact_update`: each `Some` field replaces the contact's value.
+/// `contact_update`: each `Some` field replaces the contact's value; `grant` and `revoke`
+/// change only the exports they name.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(default)]
 pub struct ContactPatch {
     /// Rename (the alias).
     pub name: Option<String>,
-    /// The granted export names, whole.
+    /// The granted export names, whole, as an older UI sends them: read against the list
+    /// `contact_list` shows, so only an export it shows and this list leaves out is taken
+    /// back (never a grant this machine cannot see).
     pub exports: Option<Vec<String>>,
     /// Block or unblock.
     pub blocked: Option<bool>,
+    /// Export names (or ids) to grant; every other grant stays.
+    pub grant: Option<Vec<String>>,
+    /// Export names (or ids) to take back; every other grant stays.
+    pub revoke: Option<Vec<String>>,
 }
 
 /// `contact_pair`: whom to start the ceremony with.
@@ -1730,7 +1738,6 @@ fn contact_view(
     name_of: &dyn Fn(&str) -> String,
 ) -> Option<Contact> {
     let c = staged.contacts.get(alias)?;
-    let peer = staged.peers.get(alias);
     let shown = staged.shown.get(&c.id);
     let (shared, full_capable) = shared(&c.eid);
     Some(Contact {
@@ -1739,7 +1746,7 @@ fn contact_view(
         endpoint: c.eid.clone(),
         fingerprint: fingerprint(&c.eid),
         path: reach::path(net, &c.eid),
-        exports: peer.map(|p| p.exports.clone()).unwrap_or_default(),
+        exports: shown.map(|s| s.exports.clone()).unwrap_or_default(),
         first_contact: c.first_contact.clone(),
         blocked: c.blocked,
         paired_ms: c.paired_ms,
@@ -1771,7 +1778,7 @@ fn quarantined_view(
         endpoint: q.eid.clone(),
         fingerprint: fingerprint(&q.eid),
         path: mesh::PeerPath::Offline,
-        exports: Vec::new(),
+        exports: shown.map(|s| s.exports.clone()).unwrap_or_default(),
         first_contact: BTreeMap::new(),
         blocked: false,
         paired_ms: q.paired_ms,
@@ -1870,15 +1877,16 @@ impl crate::Ctx {
         self.reconcile_now().await
     }
 
-    /// The live group a contact RPC names (its alias), or its quarantined records (alias or
-    /// record id): every record it writes. Root first.
+    /// The group a contact RPC names (its alias, or a record id: a held row's, whose alias a
+    /// live contact may share while a rename lands), or its records whose merge chain is
+    /// broken (alias or record id): every record it writes. Root first.
     fn targets<'r>(
         a: &'r records::Analysis<'r>,
         r: &'r agent::store::contacts::Records,
         name: &str,
         quarantined_too: bool,
     ) -> Result<Vec<&'r agent::store::contacts::ContactRow>, String> {
-        if let Some(g) = records::root_by_alias(a, name) {
+        if let Some(g) = records::root_by_alias(a, name).or_else(|| records::group_of(a, name)) {
             return Ok(g.members.clone());
         }
         if quarantined_too {
@@ -1961,71 +1969,99 @@ fn grant_writes(
         .collect()
 }
 
+/// 191 (D2): the grant writes of `patch` for group `members` (root first), read against
+/// `staged`, this machine's view. `grant` and `revoke` touch only the exports they name (by
+/// name or id). The whole list (`exports`, an older UI's) is read against the list
+/// `contact_list` shows for the contact ([`crate::config::Shown::exports`]; none for a held
+/// contact): only what that shows and the list leaves out is revoked, so a grant this
+/// machine cannot see (its export row not here yet, a held contact's, one §6.3 gives an
+/// older contact) stays, and one already shown is not written again.
+pub(crate) fn grant_patch(
+    r: &agent::store::contacts::Records,
+    staged: &crate::config::Staged,
+    members: &[&agent::store::contacts::ContactRow],
+    patch: &ContactPatch,
+) -> Result<Vec<agent::store::contacts::RecordWrite>, String> {
+    let root = members[0];
+    let alias = root.alias.as_deref().unwrap_or_default();
+    let shown: &[String] = match staged.contacts.get(alias) {
+        Some(f) if f.id == root.id => staged.shown.get(&root.id).map_or(&[], |s| &s.exports),
+        _ => &[],
+    };
+    // Export → granted; a later entry wins (a revoke over a grant of the same export).
+    let mut want: BTreeMap<&str, bool> = BTreeMap::new();
+    if let Some(list) = &patch.exports {
+        want.extend(
+            list.iter()
+                .filter(|x| !shown.contains(x))
+                .map(|x| (x.as_str(), true)),
+        );
+        want.extend(
+            shown
+                .iter()
+                .filter(|x| !list.contains(x))
+                .map(|x| (x.as_str(), false)),
+        );
+    }
+    want.extend(patch.grant.iter().flatten().map(|x| (x.as_str(), true)));
+    want.extend(patch.revoke.iter().flatten().map(|x| (x.as_str(), false)));
+    // What the group holds now, from its rows.
+    let held: std::collections::BTreeSet<&str> = r
+        .grants
+        .iter()
+        .filter(|g| g.granted == Some(1))
+        .filter(|g| {
+            members
+                .iter()
+                .any(|m| g.contact.as_deref() == Some(m.id.as_str()))
+        })
+        .filter_map(|g| g.export.as_deref())
+        .collect();
+    let mut w = Vec::new();
+    for (x, on) in want {
+        let xid = staged
+            .export_ids
+            .get(x)
+            .map(String::as_str)
+            .or_else(|| {
+                r.exports
+                    .iter()
+                    .find(|e| e.removed_ms.is_none() && e.id == x)
+                    .map(|e| e.id.as_str())
+            })
+            .ok_or_else(|| format!("peer {alias}: unknown export {x:?}"))?;
+        if on
+            && let Some(other) = staged.exports.get(x).and_then(|e| e.peer.as_ref())
+            && other != alias
+        {
+            return Err(format!(
+                "export {x} is granted to both {other} and {alias}; one principal per exported session"
+            ));
+        }
+        // 183 F2: sharing counts as allowing: a newly granted export starts on "Always
+        // allow"; a stored answer (Ask first included) is kept.
+        let fresh = on && !held.contains(xid);
+        w.extend(grant_writes(r, members, xid, Some(on), |old| {
+            (fresh && old.is_none()).then_some(FirstContact::Allow)
+        }));
+    }
+    Ok(w)
+}
+
 impl crate::Ctx {
     /// [`ContactUpdate`]: 191 (D2): writes the contact's records (every record of a merged
-    /// group), so every machine of the mesh sees it.
+    /// group), so every machine of the mesh sees it. A held contact (waiting or refused here)
+    /// is named by its alias or record id: its grants are records like any other, and apply
+    /// wherever it is admitted.
     pub(crate) async fn update_contact(&self, m: ContactUpdate) -> Result<Contact, String> {
         use agent::store::contacts::{Cell, RecordTable, RecordWrite};
         let ContactUpdate { name, patch } = m;
         let r = self.records().await?;
         let a = records::analyze(&r);
-        let members = Self::targets(&a, &r, &name, false)?;
+        let members = Self::targets(&a, &r, &name, true)?;
         let root = members[0];
         let live = self.shared.read().clone();
-        let mut w = Vec::new();
-        if let Some(list) = &patch.exports {
-            // What the group holds now, from its rows (never this machine's routes, which
-            // leave out an export whose chat is not here).
-            let held: std::collections::BTreeSet<&str> = r
-                .grants
-                .iter()
-                .filter(|g| g.granted == Some(1))
-                .filter(|g| {
-                    members
-                        .iter()
-                        .any(|m| g.contact.as_deref() == Some(m.id.as_str()))
-                })
-                .filter_map(|g| g.export.as_deref())
-                .collect();
-            let mut ids = BTreeMap::new();
-            for x in list {
-                let id = live
-                    .staged
-                    .export_ids
-                    .get(x)
-                    .ok_or_else(|| format!("peer {name}: unknown export {x:?}"))?;
-                if let Some(other) = live.staged.exports.get(x).and_then(|e| e.peer.as_ref())
-                    && *other != name
-                {
-                    return Err(format!(
-                        "export {x} is granted to both {other} and {name}; one principal per exported session"
-                    ));
-                }
-                ids.insert(id.clone(), x.clone());
-            }
-            // Every export the group has a grant row for, and every one asked for now.
-            let mut all: std::collections::BTreeSet<String> = r
-                .grants
-                .iter()
-                .filter(|g| g.granted.is_some())
-                .filter(|g| {
-                    members
-                        .iter()
-                        .any(|m| g.contact.as_deref() == Some(m.id.as_str()))
-                })
-                .filter_map(|g| g.export.clone())
-                .collect();
-            all.extend(ids.keys().cloned());
-            for xid in all {
-                let want = ids.contains_key(&xid);
-                // 183 F2: sharing counts as allowing: a newly granted export starts on "Always
-                // allow"; a stored answer (Ask first included) is kept.
-                let fresh = want && !held.contains(xid.as_str());
-                w.extend(grant_writes(&r, &members, &xid, Some(want), |old| {
-                    (fresh && old.is_none()).then_some(FirstContact::Allow)
-                }));
-            }
-        }
+        let mut w = grant_patch(&r, &live.staged, &members, &patch)?;
         if let Some(blocked) = patch.blocked {
             let was = members.iter().any(|m| m.blocked.is_some_and(|b| b != 0));
             for m in &members {
@@ -2070,14 +2106,10 @@ impl crate::Ctx {
                 self.contact_gone(&alias, &eid, false).await;
             }
         }
-        contact_view(
-            &live.staged,
-            &alias,
-            self.net().as_deref(),
-            |eid| (self.offers_of(eid), self.full_of(eid)),
-            &|eid| self.machine_name(eid),
-        )
-        .ok_or_else(|| format!("contact {alias} vanished"))
+        self.contact_list()
+            .into_iter()
+            .find(|c| c.id == root.id)
+            .ok_or_else(|| format!("contact {alias} vanished"))
     }
 }
 
@@ -2150,21 +2182,51 @@ impl Message<ExportsList> for A2aActor {
 pub const PAUSED_ELSEWHERE: &str = "chat not on this machine";
 /// 191 (D4): an agent export whose home machine left the mesh: it opens no new inbox.
 pub const PAUSED_HOME_LEFT: &str = "its machine left the mesh";
+/// 191: a chat export whose chat runs an external harness: no machine publishes it.
+pub const PAUSED_NOT_NATIVE: &str = "its chat runs an external harness";
 
 impl crate::Ctx {
     /// `a2a_exports`: every export of the mesh; a chat's pause is read now (W-41), and a
     /// chat deleted since is tombstoned when this machine made its export (opening the export
     /// picker cleans up). An export made elsewhere whose chat this machine lacks is listed
-    /// paused ([`PAUSED_ELSEWHERE`]): its session may still be on its way.
+    /// paused ([`PAUSED_ELSEWHERE`]): its session may still be on its way. 191: so is one
+    /// this machine's routes leave out (its chat not here, or [`PAUSED_NOT_NATIVE`]), so a
+    /// contact's share of it reads by name and state wherever it is granted.
     pub(crate) async fn exports(&self) -> Vec<Export> {
         let live = self.shared.read().clone();
         let agents = self.agents().ok();
         let r = self.records().await.unwrap_or_default();
+        let left_out: Vec<crate::config::Export> = live
+            .staged
+            .export_ids
+            .iter()
+            .filter(|(n, _)| {
+                !live.staged.exports.contains_key(*n) && !live.staged.agents.contains_key(*n)
+            })
+            .filter_map(|(n, id)| {
+                let row = r.exports.iter().find(|x| x.id == *id)?;
+                Some(crate::config::Export {
+                    name: n.clone(),
+                    session: row.session.as_deref()?.parse().ok()?,
+                    title: n.clone(),
+                    description: row.description.clone().unwrap_or_default(),
+                    peer: None,
+                })
+            })
+            .collect();
         let mut out = Vec::new();
         let mut gone = Vec::new();
-        for e in live.staged.exports.values() {
+        for e in live.staged.exports.values().chain(&left_out) {
             let id = live.staged.export_ids.get(&e.name).cloned();
+            let not_native = match &agents {
+                Some(a) if left_out.iter().any(|x| x.name == e.name) => matches!(
+                    self.ask(a, ValidateExport { session: e.session }).await,
+                    Err(err) if !err.starts_with(UNKNOWN_SESSION)
+                ),
+                _ => false,
+            };
             let paused = match &agents {
+                _ if not_native => Some(PAUSED_NOT_NATIVE.to_owned()),
                 Some(a) => match self.ask(a, ChatPaused { session: e.session }).await {
                     Ok(p) => p,
                     Err(err) if err.starts_with(UNKNOWN_SESSION) => {
