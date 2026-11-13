@@ -1228,10 +1228,11 @@ mod tests {
             };
             assert_eq!(render(&model).render(Some(80)).height(), rows);
             assert!(render(&model).to_string().contains(fallback));
+            let allocated = model.entry_height(&model.entries[0], 80);
             model.components.get_mut::<WebProgress>().unwrap().progress.insert("crawl".into(), "crawling… 2/50 · example.com".into());
             let mut frame = render(&model);
             assert_eq!(frame.render(Some(80)).height(), rows);
-            assert_eq!(model.entry_height(&model.entries[0], 80), rows);
+            assert_eq!(model.entry_height(&model.entries[0], 80), allocated);
             let text = frame.to_string();
             assert!(text.contains("· crawling… 2/50 · example.com"), "{text}");
             assert_eq!(text.matches("crawling…").count(), 1);

@@ -126,7 +126,7 @@
 
     #[test]
     fn late_login_completion_keeps_canceled_wizard_closed_and_other_editor_intact() {
-        use crate::components::{FocusClass, secrets::{Secrets, Prompt as SecretPrompt}};
+        use crate::components::secrets::{Secrets, Prompt as SecretPrompt};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::new(String::new(), false);
         m.submit("/provider add cloud https://cloud.example/v1", &tx);
@@ -135,7 +135,8 @@
         m.submit("/secrets add github", &tx);
         m.apply(wire_event("agent.login", agent::LoginFinished { provider: "openai".into(), error: None }));
         assert!(providers_login(&m).prompt.is_none());
-        assert!(m.components.editor().is_some_and(|(class, editor)| class == FocusClass::Secret && editor.masked));
+        assert!(m.components.editor().is_some_and(|(_, editor)| editor.masked));
+        assert!(m.input_focused());
         m.submit("private-value", &tx);
         assert!(matches!(&m.components.get::<Secrets>().unwrap().prompt,
             Some(SecretPrompt::SecretNote { name, value }) if name == "github" && value == "private-value"));
