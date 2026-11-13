@@ -365,6 +365,7 @@ impl Model {
                 if !self.historical { self.refresh_context = self.session.is_some(); }
                 if let (Some(session), Some(commands)) = (self.session, &self.component_commands) {
                     let _ = commands.send(Command::ListAgents(session));
+                    self.component_notify(Lifecycle::SessionRefreshRequested);
                 }
                 self.component_notify(Lifecycle::Resync);
             }

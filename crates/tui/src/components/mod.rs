@@ -338,6 +338,8 @@ pub enum Lifecycle<'a> {
     SessionReset,
     /// Core adopted a different selected session; read the updated session context.
     SessionChanged,
+    /// Core reached its existing selected-session membership refresh boundary.
+    SessionRefreshRequested,
     /// Release local resources and subscriptions.
     Shutdown,
     /// A lossy stream requires an authoritative re-read, never mutation replay.

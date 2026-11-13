@@ -239,6 +239,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         settled_only: false,
                     });
                     let _ = commands.send(Command::ListAgents(session));
+                    m.component_notify(crate::components::Lifecycle::SessionRefreshRequested);
                 }
                 // Root metadata moved while a grouped picker is open (51 §3): re-list it.
                 if std::mem::take(&mut m.refresh_grouping) {
