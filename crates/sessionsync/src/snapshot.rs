@@ -95,28 +95,45 @@ pub async fn build(store: &Store, origin: &PeerId) -> anyhow::Result<Msg> {
             .bind(&origin.0)
             .fetch_all(&mut *tx)
             .await?;
-            let (Some(&first), Some(&end)) = (ids.first(), ids.last()) else {
+            let Some(&end) = ids.last() else {
                 break;
             };
-            let scratch = tx
-                .with_raw(|db| unsafe { Scratch::create(db, table) })
-                .await??;
-            sqlx::query(sqlx::AssertSqlSafe(format!(
-                "INSERT INTO temp.\"{table}\" SELECT * FROM main.\"{table}\" WHERE rowid BETWEEN ? AND ? AND {filter}"
-            )))
-            .bind(first)
-            .bind(end)
-            .bind(&origin.0)
-            .execute(&mut *tx)
-            .await?;
-            let bytes = scratch.changeset()?;
-            drop(scratch);
-            if !bytes.is_empty() {
-                tables.push((table.to_owned(), bytes));
-            }
-            sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM temp.\"{table}\"")))
+            // A chunk over one part is halved until it fits; a single row
+            // over one part cannot travel at all and is left out, loudly.
+            let mut ranges = vec![(0, ids.len())];
+            while let Some((lo, hi)) = ranges.pop() {
+                let scratch = tx
+                    .with_raw(|db| unsafe { Scratch::create(db, table) })
+                    .await??;
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "INSERT INTO temp.\"{table}\" SELECT * FROM main.\"{table}\" WHERE rowid BETWEEN ? AND ? AND {filter}"
+                )))
+                .bind(ids[lo])
+                .bind(ids[hi - 1])
+                .bind(&origin.0)
                 .execute(&mut *tx)
                 .await?;
+                let bytes = scratch.changeset()?;
+                drop(scratch);
+                sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM temp.\"{table}\"")))
+                    .execute(&mut *tx)
+                    .await?;
+                if bytes.len() > PART_BYTES && hi - lo > 1 {
+                    let mid = lo + (hi - lo) / 2;
+                    ranges.push((mid, hi));
+                    ranges.push((lo, mid));
+                } else if bytes.len() > PART_BYTES {
+                    tracing::warn!(
+                        "sessions: snapshot of {origin}: {table} rowid {} is {} bytes, over one \
+                         {MAX_FRAME}-byte frame; it is left out and peers bootstrapping from this \
+                         snapshot lack it",
+                        ids[lo],
+                        bytes.len()
+                    );
+                } else if !bytes.is_empty() {
+                    tables.push((table.to_owned(), bytes));
+                }
+            }
             last = end;
         }
     }

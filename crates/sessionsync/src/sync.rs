@@ -8,42 +8,130 @@
 //! back for every batch. The lower id of a pair dials, so a pair normally
 //! has one stream and rows arrive in order; a relay beside the direct link
 //! or a reconnect overlap may still deliver ahead, which the per-origin
-//! reorder buffer absorbs. Errors end the stream; the dialer backs off and
-//! the `Hello` exchange resynchronizes. 183 R1 (E-M3): `Hello` carries the
-//! sender's agent schema; a peer on an older one (or none) is shipped no log
-//! row or snapshot, and its cursors do not move, until it reconnects current.
+//! reorder buffer absorbs. 183 R1 (E-M3): `Hello` carries the sender's agent
+//! schema; a peer on an older one (or none) is shipped no log row or
+//! snapshot, and its cursors do not move, until it reconnects current.
+//!
+//! After the `Hello`s the stream is two halves run side by side: a reader
+//! that applies and acks what arrives, and a writer that ships (catch-up,
+//! then live). Neither waits on the other — a catch-up one way never stops
+//! the other way's rows from being read (both sides shipping a backlog
+//! larger than the transport's window at once used to wedge the stream
+//! forever). A shipping failure of one origin is reported and retried on
+//! [`HARNESS_RETRY`]; a broken stream, a gap, or a row that fails to apply
+//! ends the stream (the row's origin is then asked for a snapshot) and the
+//! dialer resynchronizes. Every failure is logged at WARN, rate-limited per
+//! (peer, phase, kind), and kept for [`Node::sync_status`].
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use agent::AgentEvent;
 use agent::store::Store;
+use anyhow::Context as _;
+use bytes::Bytes;
+use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
 use kameo::actor::ActorRef;
 use parking_lot::Mutex;
 use replica::{ByteStream, PeerId};
 use runtime::{Runtime, SessionId};
-use tokio::sync::{Notify, OwnedMutexGuard, broadcast};
+use tokio::sync::{Notify, OwnedMutexGuard, broadcast, mpsc};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use crate::apply::{Applied, apply_log_row, build_snapshot};
 use crate::snapshot::{self, AppliedSession};
-use crate::types::{LogRow, Msg, schema_behind, schema_label};
+use crate::types::{LogRow, MAX_FRAME, Msg, PeerSync, schema_behind, schema_label};
 
-/// Rows per [`Msg::Log`] frame during catch-up.
+/// Rows per [`Msg::Log`] frame during catch-up (and per log page read).
 pub const BATCH_ROWS: usize = 5000;
 /// Changeset bytes per [`Msg::Log`] frame during catch-up.
 pub const BATCH_BYTES: usize = 32 * 1024 * 1024;
-/// Relay feed depth before a slow stream is told to resync.
+/// Largest changeset one log row may carry in a [`Msg::Log`] frame; a
+/// bigger row (a fork of a long session) is shipped as a snapshot instead.
+pub const ROW_MAX: usize = MAX_FRAME - 1024 * 1024;
+/// Relay feed depth before a slow stream re-checks the relayed origins.
 const RELAY_CAPACITY: usize = 1024;
 /// How long a gap before out-of-order rows may stay open before the stream resyncs.
 const GAP_WAIT: Duration = Duration::from_secs(10);
-/// Outbox re-check period while harness rows remain (139 R2 D3).
+/// Outbox re-check period while harness rows remain (139 R2 D3); also when
+/// an origin whose shipping failed is retried.
 const HARNESS_RETRY: Duration = Duration::from_secs(60);
+/// A frame the peer does not take for this long ends the stream.
+const SEND_STALL: Duration = Duration::from_secs(300);
+/// Repeats of one failure (peer, phase, kind) log at most this often.
+const REPORT_EVERY: Duration = Duration::from_secs(10 * 60);
 
 /// One `theuth/sessions/1` stream, framed (see [`crate::events::framed`]).
 pub type Stream = Framed<Box<dyn ByteStream>, LengthDelimitedCodec>;
+
+/// Where a sessions stream failed; the context of a stream's error and
+/// part of the rate-limit key of its report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Phase {
+    /// Opening the stream.
+    Open,
+    /// The `Hello` exchange.
+    Hello,
+    /// Shipping what the peer missed while away.
+    CatchUp,
+    /// Shipping our rows live.
+    Ship,
+    /// Building or sending a snapshot.
+    Snapshot,
+    /// The harness outbox (139 R2).
+    Harness,
+    /// Reading a frame.
+    Receive,
+    /// Applying a peer's row or snapshot.
+    Apply,
+    /// Rows missing before rows that arrived ahead.
+    Gap,
+    /// The stream as a whole.
+    Stream,
+}
+
+impl fmt::Display for Phase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Open => "open",
+            Self::Hello => "hello",
+            Self::CatchUp => "catch-up",
+            Self::Ship => "ship",
+            Self::Snapshot => "snapshot",
+            Self::Harness => "harness",
+            Self::Receive => "receive",
+            Self::Apply => "apply",
+            Self::Gap => "gap resync",
+            Self::Stream => "stream",
+        })
+    }
+}
+
+/// A send on the stream failed or stalled: the stream is gone, unlike a
+/// failure to build what one origin needs.
+#[derive(Debug)]
+struct Broken(String);
+
+impl fmt::Display for Broken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "stream broken: {}", self.0)
+    }
+}
+
+impl std::error::Error for Broken {}
+
+/// `e` with phase `p`, unless it already names one.
+fn phased(e: anyhow::Error, p: Phase) -> anyhow::Error {
+    if e.downcast_ref::<Phase>().is_some() {
+        e
+    } else {
+        e.context(p)
+    }
+}
 
 /// What every stream of this engine shares: the store, who we are, the
 /// relay feed of applied foreign rows, and what each peer is known to hold.
@@ -67,14 +155,36 @@ pub struct Node {
     origins: Mutex<HashMap<PeerId, Arc<tokio::sync::Mutex<()>>>>,
     /// Per origin: rows that arrived ahead of the cursor, and since when.
     pending: Mutex<HashMap<PeerId, Ahead>>,
+    /// Origins a row of which failed to apply here: our next `Hello` omits
+    /// their cursor, which asks the peer for a snapshot; it supersedes the row.
+    resnap: Mutex<HashSet<PeerId>>,
+    /// Per remote: the sync-status surface ([`Node::sync_status`]).
+    status: Mutex<HashMap<PeerId, Track>>,
+    /// Failure reports: `(peer, phase, kind)` → when last logged, repeats since.
+    reports: Mutex<HashMap<(PeerId, Phase, String), (Instant, u64)>>,
     /// `sessions.harness_outbox_ttl_secs`: an outbox row older than this is dropped (139 R2 D3).
     harness_ttl: Duration,
     /// 183 R1 (E-M3): this binary's agent schema version, sent in `Hello`.
-    schema: u32,
+    schema: AtomicU32,
+    /// Tests: origins whose shipping fails on purpose.
+    #[cfg(test)]
+    fail_ship: Mutex<HashSet<PeerId>>,
 }
 
 /// Rows from one origin that arrived ahead of the cursor, keyed by seq, and when the first did.
 type Ahead = (Instant, BTreeMap<u64, LogRow>);
+
+/// One remote's entry of the sync-status surface; `streams` counts the
+/// live streams with it (a reconnect may overlap the old one).
+#[derive(Default)]
+struct Track {
+    streams: u32,
+    sync: PeerSync,
+}
+
+fn now_text() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
 
 impl Node {
     /// A node over `store`; `rt` publishes `AgentEvent`s when present;
@@ -91,9 +201,24 @@ impl Node {
             stale_logged: Mutex::default(),
             origins: Mutex::default(),
             pending: Mutex::default(),
+            resnap: Mutex::default(),
+            status: Mutex::default(),
+            reports: Mutex::default(),
             harness_ttl,
-            schema: agent::store::SESSIONS_WIRE_SCHEMA,
+            schema: AtomicU32::new(agent::store::SESSIONS_WIRE_SCHEMA),
+            #[cfg(test)]
+            fail_ship: Mutex::default(),
         })
+    }
+
+    fn schema(&self) -> u32 {
+        self.schema.load(Ordering::Relaxed)
+    }
+
+    /// Tests: pretend to be a binary on agent schema `v` from the next stream on.
+    #[cfg(test)]
+    pub(crate) fn set_schema(&self, v: u32) {
+        self.schema.store(v, Ordering::Relaxed);
     }
 
     /// Wake every stream to ship whatever is unshipped.
@@ -105,15 +230,20 @@ impl Node {
     /// applied cursor. Our own origin is offered even at head 0 when we own
     /// sessions (a migrated store that has not written since: its peers
     /// bootstrap from a snapshot current to seq 0); a cursor row at 0 is
-    /// likewise "held" — the row exists only once a snapshot landed.
+    /// likewise "held" — the row exists only once a snapshot landed. An
+    /// origin in `resnap` is left out: the peer answers with a snapshot.
     async fn held_here(&self) -> anyhow::Result<Vec<(PeerId, u64)>> {
         let mut out = Vec::new();
         let head = u64::try_from(self.store.log_seq()).unwrap_or(0);
         if head > 0 || self.store.owns_sessions().await? {
             out.push((self.me.clone(), head));
         }
+        let resnap = self.resnap.lock().clone();
         for c in self.store.cursors().await? {
-            if c.peer.is_empty() && c.origin != self.me.0 {
+            if c.peer.is_empty()
+                && c.origin != self.me.0
+                && !resnap.contains(&PeerId(c.origin.clone()))
+            {
                 out.push((PeerId(c.origin), u64::try_from(c.seq).unwrap_or(0)));
             }
         }
@@ -198,6 +328,164 @@ impl Node {
         })
         .await;
     }
+
+    fn track(&self, remote: &PeerId, f: impl FnOnce(&mut PeerSync)) {
+        f(&mut self.status.lock().entry(remote.clone()).or_default().sync);
+    }
+
+    /// The sync-status surface: one entry per peer a stream ran with since
+    /// start, plus an empty one for every `connected` peer without one.
+    /// In memory only (no store read).
+    pub fn sync_status(&self, connected: &[PeerId]) -> Vec<PeerSync> {
+        let head = u64::try_from(self.store.log_seq()).unwrap_or(0);
+        let status = self.status.lock();
+        let mut out: Vec<PeerSync> = status
+            .iter()
+            .map(|(p, t)| (p, t.sync.clone()))
+            .chain(
+                connected
+                    .iter()
+                    .filter(|p| !status.contains_key(*p))
+                    .map(|p| (p, PeerSync::default())),
+            )
+            .map(|(p, mut s)| {
+                s.peer = p.0.clone();
+                s.head = head;
+                s.behind_out = head.saturating_sub(s.acked);
+                s.behind_in = s
+                    .peer_head
+                    .map(|h| h.saturating_sub(s.applied.unwrap_or(0)));
+                s
+            })
+            .collect();
+        out.sort_by(|a, b| a.peer.cmp(&b.peer));
+        out
+    }
+
+    /// The `mesh_peers` text for `peer` ([`PeerSync::line`]).
+    pub fn peer_note(&self, peer: &str) -> Option<String> {
+        self.sync_status(&[])
+            .into_iter()
+            .find(|s| s.peer == peer)
+            .map(|s| s.line())
+    }
+
+    /// Our position against `remote`'s, for a log line.
+    fn cursors_line(&self, remote: &PeerId) -> String {
+        let s = self
+            .sync_status(&[])
+            .into_iter()
+            .find(|s| s.peer == remote.0)
+            .unwrap_or_default();
+        let num = |v: Option<u64>| v.map_or_else(|| "?".to_owned(), |v| v.to_string());
+        format!(
+            "our head {}, {remote} acked {}; we applied {} of its {}",
+            s.head,
+            s.acked,
+            num(s.applied),
+            num(s.peer_head)
+        )
+    }
+
+    /// Log a sessions-stream failure with `remote` at WARN and keep it for
+    /// the status surface. The first of a (peer, phase, kind) logs at once,
+    /// repeats at most every [`REPORT_EVERY`] with how many were held back;
+    /// `then` says what happens next.
+    pub(crate) fn report(&self, remote: &PeerId, phase: Phase, err: &anyhow::Error, then: &str) {
+        let phase_name = phase.to_string();
+        let text = err
+            .chain()
+            .map(ToString::to_string)
+            .filter(|c| *c != phase_name)
+            .collect::<Vec<_>>()
+            .join(": ");
+        self.track(remote, |s| {
+            s.last_error = Some(format!("{phase}: {text}"));
+            s.last_error_at = Some(now_text());
+        });
+        let kind: String = text
+            .chars()
+            .filter(|c| !c.is_ascii_digit())
+            .take(120)
+            .collect();
+        let held_back = {
+            use std::collections::hash_map::Entry;
+            match self.reports.lock().entry((remote.clone(), phase, kind)) {
+                Entry::Occupied(mut seen) => {
+                    let (at, n) = seen.get_mut();
+                    if at.elapsed() < REPORT_EVERY {
+                        *n += 1;
+                        return;
+                    }
+                    *at = Instant::now();
+                    std::mem::take(n)
+                }
+                Entry::Vacant(first) => {
+                    first.insert((Instant::now(), 0));
+                    0
+                }
+            }
+        };
+        let again = if held_back > 0 {
+            format!(" ({held_back} more like it since the last report)")
+        } else {
+            String::new()
+        };
+        tracing::warn!(
+            "sessions: {phase} with {remote} failed: {text} [{}]; {then}{again}",
+            self.cursors_line(remote)
+        );
+    }
+
+    /// A stream with `remote` finished: report how (an error at WARN with its
+    /// phase, a clean close at INFO), rate-limited as [`Node::report`].
+    fn ended(&self, remote: &PeerId, r: &anyhow::Result<()>) {
+        match r {
+            Err(e) => {
+                let phase = e.downcast_ref::<Phase>().copied().unwrap_or(Phase::Stream);
+                self.report(remote, phase, e, "the stream ended; the dialer resyncs");
+            }
+            Ok(()) => tracing::info!(
+                "sessions: stream with {remote} closed by the peer [{}]",
+                self.cursors_line(remote)
+            ),
+        }
+    }
+}
+
+/// While alive: a stream with `remote` is up (status surface).
+struct Up<'a> {
+    node: &'a Node,
+    remote: PeerId,
+}
+
+impl<'a> Up<'a> {
+    fn new(node: &'a Node, remote: &PeerId) -> Self {
+        let mut status = node.status.lock();
+        let t = status.entry(remote.clone()).or_default();
+        t.streams += 1;
+        if !t.sync.up {
+            t.sync.up = true;
+            t.sync.since = Some(now_text());
+        }
+        Self {
+            node,
+            remote: remote.clone(),
+        }
+    }
+}
+
+impl Drop for Up<'_> {
+    fn drop(&mut self) {
+        let mut status = self.node.status.lock();
+        if let Some(t) = status.get_mut(&self.remote) {
+            t.streams = t.streams.saturating_sub(1);
+            if t.streams == 0 {
+                t.sync.up = false;
+                t.sync.since = Some(now_text());
+            }
+        }
+    }
 }
 
 /// A multi-part snapshot of one origin being received on this stream.
@@ -205,6 +493,69 @@ struct InFlight {
     _guard: OwnedMutexGuard<()>,
     fenced: HashSet<String>,
     sessions: Vec<AppliedSession>,
+}
+
+/// The writing half of a stream, and the replies (acks) the reading half
+/// queued for it; replies go out ahead of every frame the writer sends.
+struct Out {
+    sink: SplitSink<Stream, Bytes>,
+    replies: mpsc::UnboundedReceiver<Msg>,
+}
+
+impl Out {
+    /// Send the queued replies, then `msg`.
+    async fn send(&mut self, msg: Msg) -> anyhow::Result<()> {
+        while let Ok(reply) = self.replies.try_recv() {
+            self.put(&reply).await?;
+        }
+        self.put(&msg).await
+    }
+
+    /// One frame. Over [`MAX_FRAME`] is refused before it reaches the codec
+    /// (an error of what was being shipped, not of the stream); a failed or
+    /// stalled send is [`Broken`].
+    async fn put(&mut self, msg: &Msg) -> anyhow::Result<()> {
+        let frame = msg.encode()?;
+        anyhow::ensure!(
+            frame.len() <= MAX_FRAME,
+            "a frame of {} bytes (tag {}) is over the {MAX_FRAME}-byte limit",
+            frame.len(),
+            msg.tag()
+        );
+        match tokio::time::timeout(SEND_STALL, self.sink.send(frame)).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(Broken(e.to_string()).into()),
+            Err(_) => Err(Broken(format!(
+                "the peer took no frame for {} s",
+                SEND_STALL.as_secs()
+            ))
+            .into()),
+        }
+    }
+}
+
+/// A shipping result: `Ok(true)` shipped; a failure of what was shipped is
+/// reported and `Ok(false)` (the stream goes on, the caller retries); a
+/// broken stream is the stream's error, with `phase`.
+fn survive(
+    node: &Node,
+    remote: &PeerId,
+    phase: Phase,
+    r: anyhow::Result<()>,
+) -> anyhow::Result<bool> {
+    match r {
+        Ok(()) => Ok(true),
+        Err(e) if e.downcast_ref::<Broken>().is_some() => Err(phased(e, phase)),
+        Err(e) => {
+            node.report(
+                remote,
+                phase,
+                &e,
+                "the stream goes on; retried every minute",
+            );
+            Ok(false)
+        }
+    }
 }
 
 /// The symmetric protocol on one stream to `remote`, opened or accepted.
@@ -227,16 +578,28 @@ pub async fn run_from(
     run(node, remote, framed, Some(first)).await
 }
 
+/// [`stream`], its end reported ([`Node::ended`]).
 async fn run(
     node: &Arc<Node>,
     remote: PeerId,
-    mut framed: Stream,
+    framed: Stream,
     first: Option<Msg>,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         !node.me.0.is_empty(),
         "lone engine (no engine id): nothing ships"
     );
+    let r = stream(node, &remote, framed, first).await;
+    node.ended(&remote, &r);
+    r
+}
+
+async fn stream(
+    node: &Arc<Node>,
+    remote: &PeerId,
+    mut framed: Stream,
+    first: Option<Msg>,
+) -> anyhow::Result<()> {
     // Subscribe before reading the cursors so nothing falls between.
     let mut relay = node.relay.subscribe();
     let mut log = node.store.log_watch();
@@ -246,37 +609,46 @@ async fn run(
     let mut retry = tokio::time::interval(HARNESS_RETRY);
     retry.tick().await;
 
-    let ours = node.held_here().await?;
+    let ours_schema = node.schema();
+    let ours = node.held_here().await.context(Phase::Hello)?;
     framed
         .send(
             Msg::Hello {
                 cursors: ours.clone(),
-                schema: Some(node.schema),
+                schema: Some(ours_schema),
             }
             .encode()?,
         )
-        .await?;
+        .await
+        .context(Phase::Hello)?;
     let first = match first {
         Some(m) => m,
         None => Msg::decode(
             &framed
                 .next()
                 .await
-                .ok_or_else(|| anyhow::anyhow!("closed before hello"))??,
-        )?,
+                .ok_or_else(|| anyhow::anyhow!("closed before hello"))
+                .context(Phase::Hello)?
+                .context(Phase::Hello)?,
+        )
+        .context(Phase::Hello)?,
     };
     let Msg::Hello {
         cursors: theirs,
         schema,
     } = first
     else {
-        anyhow::bail!("expected hello");
+        return Err(
+            anyhow::anyhow!("expected hello, got frame {}", first.tag()).context(Phase::Hello)
+        );
     };
-    node.learn(&remote, &theirs);
-    if let Some((_, seq)) = theirs.iter().find(|(o, _)| *o == node.me) {
+    node.learn(remote, &theirs);
+    let acked = theirs.iter().find(|(o, _)| *o == node.me).map(|(_, s)| *s);
+    if let Some(seq) = acked {
         node.store
-            .set_cursor(&node.me.0, &remote.0, i64::try_from(*seq)?)
-            .await?;
+            .set_cursor(&node.me.0, &remote.0, i64::try_from(seq)?)
+            .await
+            .context(Phase::Hello)?;
     }
     // 183 R1 (E-M3): a peer on an older agent schema (or a pre-183 one,
     // which reports none) cannot apply the 53+ `sessions`/`messages`
@@ -284,115 +656,231 @@ async fn run(
     // would advance. So no log row or snapshot goes to it on this stream,
     // and no cursor of its moves; its next `Hello` (after it upgrades)
     // restarts shipping from the cursors it still holds. Harness frames
-    // carry no rows and still flow.
-    let hold = schema_behind(schema, node.schema);
+    // carry no rows and still flow. The held peer sees our newer schema in
+    // our `Hello` and says so on its side.
+    let hold = schema_behind(schema, ours_schema);
+    let held_by_peer = schema.is_some_and(|v| v > ours_schema);
     if hold {
         tracing::warn!(
-            "sessions: holding log for {remote}: its agent schema {} < ours {}",
+            "sessions: holding log for {remote}: its agent schema {} < ours {ours_schema}; \
+             nothing of ours ships to it until it is upgraded",
             schema_label(schema),
-            node.schema
         );
     }
-
-    // Catch-up: every origin we hold above what they hold (none while holding).
-    for (origin, seq) in ours.iter().filter(|_| !hold) {
-        let after = theirs.iter().find(|(o, _)| o == origin).map(|(_, s)| *s);
-        match after {
-            Some(a) if a >= *seq => {}
-            Some(a) if *origin == node.me => {
-                if !ship_log(node, &remote, &mut framed, a).await? {
-                    send_snapshot(node, &remote, origin, &mut framed).await?;
-                }
-            }
-            // No cursor, or a relayed origin (we hold its rows, not its log).
-            _ => send_snapshot(node, &remote, origin, &mut framed).await?,
-        }
+    if held_by_peer {
+        tracing::warn!(
+            "sessions: {remote} holds its log from us: its agent schema {} > ours {ours_schema}; \
+             nothing of its sessions arrives here until this engine is upgraded",
+            schema_label(schema),
+        );
     }
-    // 139 R2 D3: whatever waited for this peer while the link was down.
-    flush_harness(node, &remote, &mut framed).await?;
+    node.track(remote, |s| {
+        s.last_hello = Some(now_text());
+        s.schema = schema;
+        s.held = hold;
+        s.held_by_peer = held_by_peer;
+        s.acked = acked.unwrap_or(0);
+        s.applied = ours.iter().find(|(o, _)| o == remote).map(|(_, s)| *s);
+        s.peer_head = theirs.iter().find(|(o, _)| o == remote).map(|(_, s)| *s);
+    });
+    let _up = Up::new(node, remote);
 
-    let mut inflight: HashMap<PeerId, InFlight> = HashMap::new();
-    loop {
-        tokio::select! {
-            inbound = framed.next() => {
-                let Some(bytes) = inbound else { return Ok(()) };
-                match Msg::decode(&bytes?)? {
-                    Msg::Hello { .. } => {}
-                    Msg::Log { origin, rows } => {
-                        let Some(last) = rows.last().map(|r| r.seq) else { continue };
-                        if origin == node.me {
-                            continue;
-                        }
-                        node.mark(&remote, &origin, last);
-                        if let Some(seq) = receive_log(node, &origin, &rows).await? {
-                            framed.send(Msg::Ack { origin, seq }.encode()?).await?;
+    let (sink, inbound) = framed.split();
+    let (replies, queued) = mpsc::unbounded_channel();
+    let mut out = Out {
+        sink,
+        replies: queued,
+    };
+    let reader = read(node, remote, inbound, replies);
+    let writer = async {
+        // Origins whose shipping failed on this stream: retried on `retry`,
+        // their live relay skipped meanwhile.
+        let mut failed: HashSet<PeerId> = HashSet::new();
+        // Catch-up: every origin we hold above what they hold (none while holding).
+        for (origin, seq) in ours.iter().filter(|_| !hold) {
+            let after = theirs.iter().find(|(o, _)| o == origin).map(|(_, s)| *s);
+            if after.is_some_and(|a| a >= *seq) {
+                continue;
+            }
+            if !survive(
+                node,
+                remote,
+                Phase::CatchUp,
+                catch_up(node, remote, &mut out, origin, after).await,
+            )? {
+                failed.insert(origin.clone());
+            }
+        }
+        // 139 R2 D3: whatever waited for this peer while the link was down.
+        survive(
+            node,
+            remote,
+            Phase::Harness,
+            flush_harness(node, remote, &mut out).await,
+        )?;
+        loop {
+            tokio::select! {
+                Some(reply) = out.replies.recv() => out.put(&reply).await.map_err(|e| phased(e, Phase::Receive))?,
+                changed = log.changed() => {
+                    changed?;
+                    if !hold && !survive(node, remote, Phase::Ship, ship_own(node, remote, &mut out).await)? {
+                        failed.insert(node.me.clone());
+                    }
+                }
+                () = node.kick.notified() => {
+                    if !hold && !survive(node, remote, Phase::Ship, ship_own(node, remote, &mut out).await)? {
+                        failed.insert(node.me.clone());
+                    }
+                }
+                changed = harness.changed() => {
+                    changed?;
+                    survive(node, remote, Phase::Harness, flush_harness(node, remote, &mut out).await)?;
+                }
+                _ = retry.tick() => {
+                    survive(node, remote, Phase::Harness, flush_harness(node, remote, &mut out).await)?;
+                    for origin in failed.clone().iter().filter(|_| !hold) {
+                        let after = (*origin == node.me).then(|| node.holds(remote, origin));
+                        if survive(node, remote, Phase::CatchUp, catch_up(node, remote, &mut out, origin, after).await)? {
+                            failed.remove(origin);
                         }
                     }
-                    part @ Msg::Snapshot { .. } => receive_snapshot(node, &remote, part, &mut inflight, &mut framed).await?,
-                    Msg::Ack { origin, seq } => {
-                        node.mark(&remote, &origin, seq);
-                        if origin == node.me {
-                            node.store.set_cursor(&node.me.0, &remote.0, i64::try_from(seq)?).await?;
-                        }
-                    }
-                    Msg::Harness { session, kind, id, text, wrapped, .. } => {
-                        let error = match session.parse::<SessionId>() {
-                            Ok(session) => {
-                                let m = agent::supervisor::HarnessDeliver { session, kind, text, wrapped, wake: true };
-                                receive_harness(node, &remote, &id, m).await.err()
-                            }
-                            Err(_) => Some("malformed session id".to_owned()),
-                        };
-                        framed.send(Msg::HarnessAck { id, error }.encode()?).await?;
-                    }
-                    Msg::HarnessAck { id, error } => match error {
-                        None => node.store.harness_delete(&id).await?,
-                        Some(e) => {
-                            tracing::info!("sessions: harness {id} refused by {remote}: {e}");
-                            node.store.harness_refused(&id, &e).await?;
-                        }
-                    },
-                    other => tracing::debug!("sessions: frame {} from {remote} has no handler on this stream", other.tag()),
                 }
-            }
-            changed = log.changed() => {
-                changed?;
-                if !hold {
-                    ship_own(node, &remote, &mut framed).await?;
-                }
-            }
-            () = node.kick.notified() => {
-                if !hold {
-                    ship_own(node, &remote, &mut framed).await?;
-                }
-            }
-            changed = harness.changed() => {
-                changed?;
-                flush_harness(node, &remote, &mut framed).await?;
-            }
-            _ = retry.tick() => flush_harness(node, &remote, &mut framed).await?,
-            relayed = relay.recv() => {
-                match relayed {
+                relayed = relay.recv() => match relayed {
                     Ok((origin, row)) => {
-                        if hold || origin == remote {
+                        if hold || origin == *remote || failed.contains(&origin) {
                             continue;
                         }
-                        match node.holds(&remote, &origin) {
+                        let (phase, r) = match node.holds(remote, &origin) {
                             // They have nothing of this origin yet: bootstrap them.
-                            0 => send_snapshot(node, &remote, &origin, &mut framed).await?,
+                            0 => (Phase::Snapshot, send_snapshot(node, remote, &origin, &mut out).await),
                             held if held < row.seq => {
-                                node.mark(&remote, &origin, row.seq);
-                                framed.send(Msg::Log { origin, rows: vec![row] }.encode()?).await?;
+                                node.mark(remote, &origin, row.seq);
+                                (Phase::Ship, out.send(Msg::Log { origin: origin.clone(), rows: vec![row] }).await)
                             }
-                            _ => {}
+                            _ => (Phase::Ship, Ok(())),
+                        };
+                        if !survive(node, remote, phase, r)? {
+                            failed.insert(origin);
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(n)) => anyhow::bail!("relay lagged by {n}; resyncing"),
+                    // Relayed rows were missed: every relayed origin they hold
+                    // less of than we do gets a snapshot (none on a pair).
+                    Err(broadcast::error::RecvError::Lagged(_)) if !hold => {
+                        let held = node.held_here().await.context(Phase::Ship)?;
+                        for (origin, seq) in held.iter().filter(|(o, _)| *o != node.me && o != remote) {
+                            if node.holds(remote, origin) < *seq
+                                && !survive(node, remote, Phase::Snapshot, send_snapshot(node, remote, origin, &mut out).await)?
+                            {
+                                failed.insert(origin.clone());
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
                     Err(broadcast::error::RecvError::Closed) => return Ok(()),
-                }
+                },
             }
         }
+    };
+    tokio::select! {
+        r = reader => r,
+        r = writer => r,
     }
+}
+
+/// The reading half: apply what arrives, queue the acks for the writer.
+async fn read(
+    node: &Arc<Node>,
+    remote: &PeerId,
+    mut inbound: SplitStream<Stream>,
+    replies: mpsc::UnboundedSender<Msg>,
+) -> anyhow::Result<()> {
+    let mut inflight: HashMap<PeerId, InFlight> = HashMap::new();
+    while let Some(bytes) = inbound.next().await {
+        let msg = Msg::decode(&bytes.context(Phase::Receive)?).context(Phase::Receive)?;
+        match msg {
+            Msg::Hello { .. } => {}
+            Msg::Log { origin, rows } => {
+                let Some(last) = rows.last().map(|r| r.seq) else {
+                    continue;
+                };
+                if origin == node.me {
+                    continue;
+                }
+                node.mark(remote, &origin, last);
+                if origin == *remote {
+                    node.track(remote, |s| {
+                        s.peer_head = Some(s.peer_head.unwrap_or(0).max(last))
+                    });
+                }
+                let moved = receive_log(node, &origin, &rows)
+                    .await
+                    .map_err(|e| phased(e, Phase::Apply))?;
+                if let Some(seq) = moved {
+                    if origin == *remote {
+                        node.track(remote, |s| s.applied = Some(seq));
+                    }
+                    let _ = replies.send(Msg::Ack { origin, seq });
+                }
+            }
+            part @ Msg::Snapshot { .. } => {
+                receive_snapshot(node, remote, part, &mut inflight, &replies)
+                    .await
+                    .map_err(|e| phased(e, Phase::Apply))?
+            }
+            Msg::Ack { origin, seq } => {
+                node.mark(remote, &origin, seq);
+                if origin == node.me {
+                    node.track(remote, |s| s.acked = s.acked.max(seq));
+                    node.store
+                        .set_cursor(&node.me.0, &remote.0, i64::try_from(seq)?)
+                        .await
+                        .context(Phase::Receive)?;
+                }
+            }
+            Msg::Harness {
+                session,
+                kind,
+                id,
+                text,
+                wrapped,
+                ..
+            } => {
+                let error = match session.parse::<SessionId>() {
+                    Ok(session) => {
+                        let m = agent::supervisor::HarnessDeliver {
+                            session,
+                            kind,
+                            text,
+                            wrapped,
+                            wake: true,
+                        };
+                        receive_harness(node, remote, &id, m).await.err()
+                    }
+                    Err(_) => Some("malformed session id".to_owned()),
+                };
+                let _ = replies.send(Msg::HarnessAck { id, error });
+            }
+            Msg::HarnessAck { id, error } => match error {
+                None => node
+                    .store
+                    .harness_delete(&id)
+                    .await
+                    .context(Phase::Harness)?,
+                Some(e) => {
+                    tracing::info!("sessions: harness {id} refused by {remote}: {e}");
+                    node.store
+                        .harness_refused(&id, &e)
+                        .await
+                        .context(Phase::Harness)?;
+                }
+            },
+            other => tracing::debug!(
+                "sessions: frame {} from {remote} has no handler on this stream",
+                other.tag()
+            ),
+        }
+    }
+    Ok(())
 }
 
 /// 139 R2 D2/D3: send every `harness_outbox` row whose session `remote`
@@ -400,11 +888,7 @@ async fn run(
 /// of sessions that came back, drop rows past the TTL with a local note.
 /// Called after the `Hello` exchange, on every enqueue and every
 /// [`HARNESS_RETRY`]. The ack deletes the row ([`Msg::HarnessAck`]).
-async fn flush_harness(
-    node: &Arc<Node>,
-    remote: &PeerId,
-    framed: &mut Stream,
-) -> anyhow::Result<()> {
+async fn flush_harness(node: &Arc<Node>, remote: &PeerId, out: &mut Out) -> anyhow::Result<()> {
     let rows = node.store.harness_outbox().await?;
     if rows.is_empty() {
         return Ok(());
@@ -440,21 +924,17 @@ async fn flush_harness(
         match node.store.owner(session).await? {
             Some((owner, _)) if owner == remote.0 => {
                 node.store.harness_sent(&row.id).await?;
-                framed
-                    .send(
-                        Msg::Harness {
-                            session: row.session,
-                            kind: row.kind,
-                            origin: PeerId(row.origin),
-                            id: row.id,
-                            text: row.text,
-                            wrapped: row.wrapped,
-                            scope: row.scope,
-                            at: row.at,
-                        }
-                        .encode()?,
-                    )
-                    .await?;
+                out.send(Msg::Harness {
+                    session: row.session,
+                    kind: row.kind,
+                    origin: PeerId(row.origin),
+                    id: row.id,
+                    text: row.text,
+                    wrapped: row.wrapped,
+                    scope: row.scope,
+                    at: row.at,
+                })
+                .await?;
             }
             // The session came back here: the supervisor delivers it.
             Some((owner, _)) if owner.is_empty() || owner == node.me.0 => {
@@ -519,47 +999,92 @@ async fn receive_harness(
     handed
 }
 
-/// Our own rows after what `remote` holds; a snapshot if the log no longer
-/// reaches back that far.
-async fn ship_own(node: &Arc<Node>, remote: &PeerId, framed: &mut Stream) -> anyhow::Result<()> {
-    let after = node.holds(remote, &node.me);
-    if !ship_log(node, remote, framed, after).await? {
-        send_snapshot(node, remote, &node.me, framed).await?;
+/// What `remote` needs of `origin` after `after`: our log rows when it is
+/// our own origin and the log reaches back, else a snapshot.
+async fn catch_up(
+    node: &Arc<Node>,
+    remote: &PeerId,
+    out: &mut Out,
+    origin: &PeerId,
+    after: Option<u64>,
+) -> anyhow::Result<()> {
+    #[cfg(test)]
+    if node.fail_ship.lock().contains(origin) {
+        anyhow::bail!("test: shipping {origin} fails");
     }
-    Ok(())
+    match after {
+        Some(a) if *origin == node.me => {
+            if !ship_log(node, remote, out, a).await? {
+                send_snapshot(node, remote, origin, out).await?;
+            }
+            Ok(())
+        }
+        // No cursor, or a relayed origin (we hold its rows, not its log).
+        _ => send_snapshot(node, remote, origin, out).await,
+    }
 }
 
-/// Send our log rows with `seq > after` in frame-sized batches. `false`
-/// when the log does not start right after `after` (pruned, or an orphaned
-/// run we cannot tell apart): the caller sends a snapshot instead.
+/// Our own rows after what `remote` holds; a snapshot if the log no longer
+/// reaches back that far.
+async fn ship_own(node: &Arc<Node>, remote: &PeerId, out: &mut Out) -> anyhow::Result<()> {
+    let after = node.holds(remote, &node.me);
+    catch_up(node, remote, out, &node.me, Some(after)).await
+}
+
+/// Send our log rows with `seq > after` in frame-sized batches, reading
+/// the log a page at a time. `false` when the log does not start right
+/// after `after` (pruned, or an orphaned run we cannot tell apart) or a row
+/// is over [`ROW_MAX`]: the caller sends a snapshot instead.
 async fn ship_log(
     node: &Arc<Node>,
     remote: &PeerId,
-    framed: &mut Stream,
+    out: &mut Out,
     after: u64,
 ) -> anyhow::Result<bool> {
-    let rows = node.store.log_after(i64::try_from(after)?).await?;
     let head = u64::try_from(node.store.log_seq()).unwrap_or(0);
-    match rows.first() {
-        None => return Ok(head <= after),
-        Some(r) if u64::try_from(r.seq).unwrap_or(0) != after + 1 => return Ok(false),
-        Some(_) => {}
-    }
+    let page = i64::try_from(BATCH_ROWS)?;
+    let mut from = after;
     let mut batch: Vec<LogRow> = Vec::new();
     let mut size = 0;
-    for row in rows {
-        let row = LogRow::from(row);
-        if !batch.is_empty()
-            && (batch.len() >= BATCH_ROWS || size + row.changeset.len() > BATCH_BYTES)
-        {
-            send_batch(node, remote, framed, std::mem::take(&mut batch)).await?;
-            size = 0;
+    loop {
+        let rows = node.store.log_page(i64::try_from(from)?, page).await?;
+        if from == after {
+            match rows.first() {
+                None => return Ok(head <= after),
+                Some(r) if u64::try_from(r.seq).unwrap_or(0) != after + 1 => return Ok(false),
+                Some(_) => {}
+            }
         }
-        size += row.changeset.len();
-        batch.push(row);
+        let full = rows.len() == BATCH_ROWS;
+        for row in rows {
+            let row = LogRow::from(row);
+            if row.changeset.len() > ROW_MAX {
+                tracing::warn!(
+                    "sessions: log row {} of session {} is {} bytes, over one {MAX_FRAME}-byte frame: \
+                     {remote} gets a snapshot of {} instead of the log after seq {after}",
+                    row.seq,
+                    row.session_id,
+                    row.changeset.len(),
+                    node.me
+                );
+                return Ok(false);
+            }
+            if !batch.is_empty()
+                && (batch.len() >= BATCH_ROWS || size + row.changeset.len() > BATCH_BYTES)
+            {
+                send_batch(node, remote, out, std::mem::take(&mut batch)).await?;
+                size = 0;
+            }
+            size += row.changeset.len();
+            from = row.seq;
+            batch.push(row);
+        }
+        if !full {
+            break;
+        }
     }
     if !batch.is_empty() {
-        send_batch(node, remote, framed, batch).await?;
+        send_batch(node, remote, out, batch).await?;
     }
     Ok(true)
 }
@@ -567,7 +1092,7 @@ async fn ship_log(
 async fn send_batch(
     node: &Arc<Node>,
     remote: &PeerId,
-    framed: &mut Stream,
+    out: &mut Out,
     rows: Vec<LogRow>,
 ) -> anyhow::Result<()> {
     // Debug builds only: `THEUTH_DEBUG_SHIP_DELAY_SECS=N` holds each batch of
@@ -581,16 +1106,11 @@ async fn send_batch(
     }
     let last = rows.last().map_or(0, |r| r.seq);
     node.mark(remote, &node.me, last);
-    framed
-        .send(
-            Msg::Log {
-                origin: node.me.clone(),
-                rows,
-            }
-            .encode()?,
-        )
-        .await?;
-    Ok(())
+    out.send(Msg::Log {
+        origin: node.me.clone(),
+        rows,
+    })
+    .await
 }
 
 /// Build and send the snapshot of `origin` in parts.
@@ -598,18 +1118,20 @@ async fn send_snapshot(
     node: &Arc<Node>,
     remote: &PeerId,
     origin: &PeerId,
-    framed: &mut Stream,
+    out: &mut Out,
 ) -> anyhow::Result<()> {
-    let snap = build_snapshot(&node.store, origin).await?;
+    let snap = build_snapshot(&node.store, origin)
+        .await
+        .with_context(|| format!("building the snapshot of {origin}"))?;
     let Msg::Snapshot { current_to_seq, .. } = &snap else {
         anyhow::bail!("build_snapshot returned {}", snap.tag());
     };
     let seq = *current_to_seq;
     for part in snapshot::split(snap) {
-        framed.send(part.encode()?).await?;
+        out.send(part).await?;
     }
     node.mark(remote, origin, seq);
-    tracing::debug!("sessions: snapshot of {origin} (to seq {seq}) sent to {remote}");
+    tracing::info!("sessions: snapshot of {origin} (to seq {seq}) sent to {remote}");
     Ok(())
 }
 
@@ -619,7 +1141,8 @@ async fn send_snapshot(
 /// — a second stream (relay beside the direct link, a reconnect overlap)
 /// may deliver ahead. A gap open for [`GAP_WAIT`] ends the stream: the
 /// `Hello` exchange re-sends from the cursor, or snapshots over an orphaned
-/// run. Returns the cursor when it moved (what to ack).
+/// run. A row that fails to apply ends it too, and the next `Hello` asks
+/// for a snapshot of its origin. Returns the cursor when it moved (what to ack).
 async fn receive_log(
     node: &Arc<Node>,
     origin: &PeerId,
@@ -641,19 +1164,42 @@ async fn receive_log(
             let (since, map) = pending
                 .entry(origin.clone())
                 .or_insert_with(|| (Instant::now(), BTreeMap::new()));
-            anyhow::ensure!(
-                since.elapsed() < GAP_WAIT,
-                "rows of {origin} after seq {cursor} missing for {GAP_WAIT:?}; resyncing"
-            );
+            if since.elapsed() >= GAP_WAIT {
+                return Err(anyhow::anyhow!(
+                    "rows of {origin} after seq {cursor} missing for {GAP_WAIT:?} (row {} arrived); resyncing",
+                    row.seq
+                )
+                .context(Phase::Gap));
+            }
             map.insert(row.seq, row);
             continue;
         }
-        let session: SessionId = row.session_id.parse()?;
-        let before = match touched.get(&session) {
-            Some(b) => b.clone(),
-            None => node.store.owner(session).await?,
+        let applied = async {
+            let session: SessionId = row.session_id.parse()?;
+            let before = match touched.get(&session) {
+                Some(b) => b.clone(),
+                None => node.store.owner(session).await?,
+            };
+            let applied = apply_log_row(&node.store, origin, &row).await?;
+            anyhow::Ok((session, before, applied))
+        }
+        .await;
+        let (session, before, applied) = match applied {
+            Ok(v) => v,
+            Err(e) => {
+                node.resnap.lock().insert(origin.clone());
+                return Err(e
+                    .context(format!(
+                        "row {} of session {} from {origin} ({} bytes) did not apply; \
+                         the next hello asks for a snapshot of {origin}",
+                        row.seq,
+                        row.session_id,
+                        row.changeset.len()
+                    ))
+                    .context(Phase::Apply));
+            }
         };
-        match apply_log_row(&node.store, origin, &row).await? {
+        match applied {
             Applied::Applied => {
                 touched.entry(session).or_insert(before);
                 let _ = node.relay.send((origin.clone(), row.clone()));
@@ -704,13 +1250,14 @@ async fn receive_log(
 }
 
 /// One part of a snapshot from `remote`. The first part takes the origin's
-/// lock, which the empty terminator releases after moving the cursor.
+/// lock, which the empty terminator releases after moving the cursor. A
+/// part that fails to apply ends the stream; the next `Hello` asks again.
 async fn receive_snapshot(
     node: &Arc<Node>,
     remote: &PeerId,
     part: Msg,
     inflight: &mut HashMap<PeerId, InFlight>,
-    framed: &mut Stream,
+    replies: &mpsc::UnboundedSender<Msg>,
 ) -> anyhow::Result<()> {
     let Msg::Snapshot {
         origin,
@@ -741,24 +1288,34 @@ async fn receive_snapshot(
         .await?
         .is_none_or(|c| c < *current_to_seq)
     {
-        let applied = snapshot::apply(&node.store, &part, &mut state.fenced, last).await?;
+        let applied = snapshot::apply(&node.store, &part, &mut state.fenced, last)
+            .await
+            .map_err(|e| {
+                node.resnap.lock().insert(origin.clone());
+                e.context(format!(
+                    "snapshot of {origin} (to seq {current_to_seq}) from {remote} did not apply"
+                ))
+                .context(Phase::Apply)
+            })?;
         state.sessions.extend(applied);
     }
     if !last {
         return Ok(());
     }
     let state = inflight.remove(origin).expect("present");
+    node.resnap.lock().remove(origin);
     node.mark(remote, origin, *current_to_seq);
-    framed
-        .send(
-            Msg::Ack {
-                origin: origin.clone(),
-                seq: *current_to_seq,
-            }
-            .encode()?,
-        )
-        .await?;
-    tracing::debug!(
+    if origin == remote {
+        node.track(remote, |s| {
+            s.applied = Some(s.applied.unwrap_or(0).max(*current_to_seq));
+            s.peer_head = Some(s.peer_head.unwrap_or(0).max(*current_to_seq));
+        });
+    }
+    let _ = replies.send(Msg::Ack {
+        origin: origin.clone(),
+        seq: *current_to_seq,
+    });
+    tracing::info!(
         "sessions: snapshot of {origin} (to seq {current_to_seq}) applied from {remote}"
     );
     for (id, owner, epoch, before) in state.sessions {
@@ -1546,15 +2103,34 @@ mod tests {
         tokio::task::JoinHandle<anyhow::Result<()>>,
         Option<u32>,
     ) {
-        use futures::{SinkExt as _, StreamExt as _};
         let node = super::Node::new(store.clone(), None, Duration::from_secs(60));
+        let (z, run, _, ours) = raw_on(node, schema, cursors).await;
+        (z, run, ours)
+    }
+
+    /// [`raw_peer`] against an existing `node`; also returns the cursors of its `Hello`.
+    async fn raw_on(
+        node: Arc<super::Node>,
+        schema: Option<u32>,
+        cursors: Vec<(PeerId, u64)>,
+    ) -> (
+        super::Stream,
+        tokio::task::JoinHandle<anyhow::Result<()>>,
+        Vec<(PeerId, u64)>,
+        Option<u32>,
+    ) {
+        use futures::{SinkExt as _, StreamExt as _};
         let (mine, theirs) = tokio::io::duplex(1 << 20);
         let run = tokio::spawn(async move {
             super::run_stream(&node, PeerId("Z".into()), Box::new(mine)).await
         });
         let mut z = crate::events::framed(Box::new(theirs));
         let hello = crate::types::Msg::decode(&z.next().await.unwrap().unwrap()).unwrap();
-        let crate::types::Msg::Hello { schema: ours, .. } = hello else {
+        let crate::types::Msg::Hello {
+            cursors: held,
+            schema: ours,
+        } = hello
+        else {
             panic!("first frame is not a Hello: {hello:?}");
         };
         z.send(
@@ -1564,7 +2140,7 @@ mod tests {
         )
         .await
         .unwrap();
-        (z, run, ours)
+        (z, run, held, ours)
     }
 
     /// Every frame Z receives until `quiet` passes with none.
@@ -1654,5 +2230,378 @@ mod tests {
             })
             .collect();
         assert_eq!(live.first(), Some(&(head + 1)), "{live:?}");
+    }
+
+    // ---- 2026-11 stall: catch-ups both ways, oversized rows, failures, status ----
+
+    /// `n` bytes of text, distinct per `tag`.
+    fn big(n: usize, tag: usize) -> String {
+        format!("{tag}:{}", "x".repeat(n))
+    }
+
+    /// `session_cursors(origin, peer)`.
+    async fn acked(store: &Store, origin: &str, peer: &str) -> Option<i64> {
+        store
+            .cursors()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|c| c.origin == origin && c.peer == peer)
+            .map(|c| c.seq)
+    }
+
+    /// `n`'s sync-status entry for `peer` (empty when it has none).
+    fn sync_of(n: &Node, peer: &str) -> crate::types::PeerSync {
+        n.shipper
+            .node()
+            .sync_status(&[])
+            .into_iter()
+            .find(|s| s.peer == peer)
+            .unwrap_or_default()
+    }
+
+    /// A held (older) peer upgrades while each side holds a backlog for the
+    /// other larger than the transport's window (the duplex buffers 1 MiB):
+    /// both catch-ups run at once and both arrive. While each side wrote its
+    /// catch-up before reading anything, this wedged the stream forever
+    /// without one error.
+    #[tokio::test]
+    async fn a_held_peer_that_upgrades_gets_the_backlog_while_shipping_its_own() {
+        let ours = agent::store::SESSIONS_WIRE_SCHEMA;
+        let switch = Arc::new(Switch::default());
+        let a = node("A", &switch).await;
+        let b = node("B", &switch).await;
+        b.shipper.node().set_schema(ours - 1);
+        let (sa, sb) = (SessionId::new(), SessionId::new());
+        a.store
+            .create_session(sa, "m", None, None, None)
+            .await
+            .unwrap();
+        b.store
+            .create_session(sb, "m", None, None, None)
+            .await
+            .unwrap();
+        b.store.append(sb, &user("from B")).await.unwrap();
+        link(&switch, &a, &b, true);
+        until("A applies B's rows while holding its own", || async {
+            texts(&a.store, sb).await.len() == 1
+        })
+        .await;
+        for n in 0..24 {
+            a.store.append(sa, &user(&big(64 * 1024, n))).await.unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            b.store.session(sa).await.unwrap().is_none(),
+            "held: nothing of A's reached B"
+        );
+        assert!(sync_of(&a, "B").held && sync_of(&b, "A").held_by_peer);
+
+        // B goes away, writes past the window itself, and returns upgraded.
+        link(&switch, &a, &b, false);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        for n in 0..24 {
+            b.store.append(sb, &asst(&big(64 * 1024, n))).await.unwrap();
+        }
+        b.shipper.node().set_schema(ours);
+        link(&switch, &a, &b, true);
+        until("both backlogs crossed", || async {
+            texts(&a.store, sa).await == texts(&b.store, sa).await
+                && texts(&a.store, sb).await == texts(&b.store, sb).await
+                && sessions(&a.store).await == sessions(&b.store).await
+        })
+        .await;
+        assert_eq!(texts(&b.store, sa).await.len(), 24);
+        assert_eq!(texts(&a.store, sb).await.len(), 25);
+        let (ha, hb) = (a.store.log_seq(), b.store.log_seq());
+        until("each side's ack is back", || async {
+            acked(&a.store, "A", "B").await == Some(ha)
+                && acked(&b.store, "B", "A").await == Some(hb)
+        })
+        .await;
+        assert!(!sync_of(&a, "B").held && !sync_of(&b, "A").held_by_peer);
+    }
+
+    /// A log row over one frame (a fork of a long session: one transaction,
+    /// one changeset) never goes on the wire — the codec refused it and the
+    /// stream failed at the same row on every redial. The peer gets a
+    /// snapshot, every part under a frame, and both directions converge.
+    #[tokio::test]
+    async fn a_log_row_over_one_frame_goes_as_a_snapshot_and_both_ways_converge() {
+        let switch = Arc::new(Switch::default());
+        let a = node("A", &switch).await;
+        let b = node("B", &switch).await;
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        for n in 0..3 {
+            a.store.append(id, &user(&big(23 << 20, n))).await.unwrap();
+        }
+        let fork = a.store.fork(id, None, None).await.unwrap();
+        let widest = a
+            .store
+            .log_after(0)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.changeset.len())
+            .max()
+            .unwrap();
+        assert!(
+            widest > super::ROW_MAX,
+            "the fork is one row over a frame: {widest}"
+        );
+        let sb = SessionId::new();
+        b.store
+            .create_session(sb, "m", None, None, None)
+            .await
+            .unwrap();
+        b.store.append(sb, &user("from B")).await.unwrap();
+
+        link(&switch, &a, &b, true);
+        let head = a.store.log_seq();
+        until("B applied A to its head, A applied B", || async {
+            acked(&b.store, "A", "").await == Some(head) && texts(&a.store, sb).await.len() == 1
+        })
+        .await;
+        assert_eq!(texts(&a.store, fork).await, texts(&b.store, fork).await);
+        assert_eq!(texts(&a.store, id).await, texts(&b.store, id).await);
+        assert_eq!(texts(&b.store, fork).await.len(), 3);
+        until("A has B's ack", || async {
+            acked(&a.store, "A", "B").await == Some(head)
+        })
+        .await;
+        // Live rows follow the snapshot, both ways.
+        a.store.append(fork, &asst("after")).await.unwrap();
+        b.store.append(sb, &asst("after")).await.unwrap();
+        until("live both ways", || async {
+            acked(&b.store, "A", "").await == Some(head + 1) && texts(&a.store, sb).await.len() == 2
+        })
+        .await;
+    }
+
+    /// Shipping one origin keeps failing (here on purpose): it is reported
+    /// and retried, and the stream stays up — the other side's rows are
+    /// still applied and acked. Once the failure clears, the rows go.
+    #[tokio::test]
+    async fn a_failing_origin_does_not_stop_the_other_way() {
+        let switch = Arc::new(Switch::default());
+        let a = node("A", &switch).await;
+        let b = node("B", &switch).await;
+        link(&switch, &a, &b, true);
+        let sa = SessionId::new();
+        a.store
+            .create_session(sa, "m", None, None, None)
+            .await
+            .unwrap();
+        until("B mirrors A", || same_session(&a.store, &b.store, sa)).await;
+
+        a.shipper.node().fail_ship.lock().insert(a.me());
+        a.store.append(sa, &user("waits on A")).await.unwrap();
+        let sb = SessionId::new();
+        b.store
+            .create_session(sb, "m", None, None, None)
+            .await
+            .unwrap();
+        for n in 0..3 {
+            b.store.append(sb, &user(&format!("b{n}"))).await.unwrap();
+        }
+        let hb = b.store.log_seq();
+        until("A applies and acks B's rows", || async {
+            texts(&a.store, sb).await.len() == 3 && acked(&b.store, "B", "A").await == Some(hb)
+        })
+        .await;
+        assert!(texts(&b.store, sa).await.is_empty(), "A's row waits on A");
+        let s = sync_of(&a, "B");
+        assert!(s.up, "the stream stayed up: {s:?}");
+        assert!(
+            s.last_error
+                .as_deref()
+                .is_some_and(|e| e.starts_with("ship: ") && e.contains("test: shipping A fails")),
+            "{s:?}"
+        );
+
+        a.shipper.node().fail_ship.lock().clear();
+        a.store.append(sa, &asst("goes now")).await.unwrap();
+        until("A's rows follow", || async {
+            texts(&b.store, sa).await.len() == 2
+        })
+        .await;
+    }
+
+    /// A peer away so long that the sender pruned its log past the peer's
+    /// cursor gets a snapshot; the backlogs of both sides converge.
+    #[tokio::test]
+    async fn a_peer_offline_past_the_pruned_log_gets_a_snapshot() {
+        let switch = Arc::new(Switch::default());
+        let a = node("A", &switch).await;
+        let b = node("B", &switch).await;
+        link(&switch, &a, &b, true);
+        let (sa, sb) = (SessionId::new(), SessionId::new());
+        a.store
+            .create_session(sa, "m", None, None, None)
+            .await
+            .unwrap();
+        b.store
+            .create_session(sb, "m", None, None, None)
+            .await
+            .unwrap();
+        let both = || async {
+            texts(&a.store, sa).await == texts(&b.store, sa).await
+                && texts(&a.store, sb).await == texts(&b.store, sb).await
+                && sessions(&a.store).await == sessions(&b.store).await
+        };
+        until("mirrored", both).await;
+        let ha = a.store.log_seq();
+        until("B acked A", || async {
+            acked(&a.store, "A", "B").await == Some(ha)
+        })
+        .await;
+
+        link(&switch, &a, &b, false);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        for n in 0..30 {
+            a.store.append(sa, &user(&big(48 * 1024, n))).await.unwrap();
+            b.store.append(sb, &asst(&big(48 * 1024, n))).await.unwrap();
+        }
+        // Days later: A's log no longer reaches back to B's cursor.
+        a.store.prune_log_below(a.store.log_seq()).await.unwrap();
+        assert!(
+            a.store
+                .log_after(0)
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| r.seq > ha + 1)
+        );
+        link(&switch, &a, &b, true);
+        until("both converge", both).await;
+        assert_eq!(texts(&b.store, sa).await.len(), 30);
+        let head = a.store.log_seq();
+        until("B's cursor for A is A's head", || async {
+            acked(&b.store, "A", "").await == Some(head)
+        })
+        .await;
+    }
+
+    /// The status surface (`sessions_sync`, `mesh_peers`): held either way,
+    /// both log positions, and the rows behind each way.
+    #[tokio::test]
+    async fn the_sync_status_reports_lag_and_hold() {
+        let ours = agent::store::SESSIONS_WIRE_SCHEMA;
+        let switch = Arc::new(Switch::default());
+        let a = node("A", &switch).await;
+        let b = node("B", &switch).await;
+        b.shipper.node().set_schema(ours - 1);
+        let (sa, sb) = (SessionId::new(), SessionId::new());
+        a.store
+            .create_session(sa, "m", None, None, None)
+            .await
+            .unwrap();
+        for n in 0..3 {
+            a.store.append(sa, &user(&format!("a{n}"))).await.unwrap();
+        }
+        b.store
+            .create_session(sb, "m", None, None, None)
+            .await
+            .unwrap();
+        b.store.append(sb, &user("b")).await.unwrap();
+        let ha = u64::try_from(a.store.log_seq()).unwrap();
+        let hb = u64::try_from(b.store.log_seq()).unwrap();
+        assert_eq!(sync_of(&a, "B"), crate::types::PeerSync::default());
+
+        link(&switch, &a, &b, true);
+        until("A applied and acked B", || async {
+            texts(&a.store, sb).await.len() == 1 && sync_of(&b, "A").acked == hb
+        })
+        .await;
+        let s = sync_of(&a, "B");
+        assert!(s.up && s.since.is_some() && s.last_hello.is_some(), "{s:?}");
+        assert_eq!(
+            (s.schema, s.held, s.held_by_peer),
+            (Some(ours - 1), true, false)
+        );
+        assert_eq!((s.head, s.acked, s.behind_out), (ha, 0, ha));
+        assert_eq!(
+            (s.peer_head, s.applied, s.behind_in),
+            (Some(hb), Some(hb), Some(0))
+        );
+        let s = sync_of(&b, "A");
+        assert_eq!(
+            (s.schema, s.held, s.held_by_peer),
+            (Some(ours), false, true)
+        );
+        assert_eq!((s.head, s.acked, s.behind_out), (hb, hb, 0));
+        assert_eq!(
+            (s.peer_head, s.applied, s.behind_in),
+            (Some(ha), None, Some(ha))
+        );
+        let line = b.shipper.node().peer_note("A").unwrap();
+        assert!(
+            line.starts_with("sessions=up since ")
+                && line.contains(&format!(" in={ha} behind (applied ?/{ha})"))
+                && line.contains("held_by_peer"),
+            "{line}"
+        );
+
+        link(&switch, &a, &b, false);
+        until("both see the stream down", || async {
+            !sync_of(&a, "B").up && !sync_of(&b, "A").up
+        })
+        .await;
+    }
+
+    /// A row that fails to apply ends the stream, loudly, and the next
+    /// `Hello` leaves its origin out: the peer answers with a snapshot,
+    /// which supersedes the row, instead of re-sending it on every redial.
+    #[tokio::test]
+    async fn a_row_that_fails_to_apply_asks_for_a_snapshot() {
+        use futures::SinkExt as _;
+        let ours = agent::store::SESSIONS_WIRE_SCHEMA;
+        let (store, _dir, _) = engine_a().await;
+        store.set_cursor("Z", "", 5).await.unwrap();
+        let node = super::Node::new(store.clone(), None, Duration::from_secs(60));
+        let z_at = |held: &[(PeerId, u64)]| held.iter().find(|(o, _)| o.0 == "Z").map(|(_, s)| *s);
+        let (mut z, run, held, _) = raw_on(node.clone(), Some(ours), vec![]).await;
+        assert_eq!(z_at(&held), Some(5));
+        let bad = LogRow {
+            seq: 6,
+            session_id: SessionId::new().to_string(),
+            epoch: 1,
+            changeset: vec![0xff; 32],
+            hlc: String::new(),
+        };
+        z.send(
+            crate::types::Msg::Log {
+                origin: PeerId("Z".into()),
+                rows: vec![bad],
+            }
+            .encode()
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let err = run.await.unwrap().unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<super::Phase>(),
+            Some(&super::Phase::Apply),
+            "{err:#}"
+        );
+        assert!(
+            node.sync_status(&[]).iter().any(|s| s.peer == "Z"
+                && s.last_error
+                    .as_deref()
+                    .is_some_and(|e| e.starts_with("apply: row 6 "))),
+            "{:?}",
+            node.sync_status(&[])
+        );
+        let (_z, _run, held, _) = raw_on(node.clone(), Some(ours), vec![]).await;
+        assert_eq!(
+            z_at(&held),
+            None,
+            "Z's cursor is left out: Z answers with a snapshot"
+        );
     }
 }

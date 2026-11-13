@@ -6,7 +6,7 @@ use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::ErrorObjectOwned;
 use runtime::SessionId;
-use sessionsync::types::{SessionOwner, SessionsStatus};
+use sessionsync::types::{PeerSync, SessionOwner, SessionsStatus};
 use rpc_core::{ask, Server};
 use agent::rpc_support::RpcServerExt;
 
@@ -25,6 +25,12 @@ pub trait SessionsyncSessionsApi {
     /// / elsewhere, log head, last snapshot.
     #[method(name = "sessions_status")]
     async fn sessions_status(&self) -> RpcResult<SessionsStatus>;
+    /// Per peer, the session-log replication with it: stream up/down and
+    /// since when, its last `Hello` and agent schema, our head and what it
+    /// acked, its head and what we applied, rows behind each way, held
+    /// either way, last failure. In memory: cheap to poll.
+    #[method(name = "sessions_sync")]
+    async fn sessions_sync(&self) -> RpcResult<Vec<PeerSync>>;
 }
 
 #[async_trait]
@@ -75,6 +81,10 @@ impl SessionsyncSessionsApiServer for Server {
             // ponytail: worker L owns snapshots; surface its timestamp here once it records one.
             last_snapshot: None,
         })
+    }
+
+    async fn sessions_sync(&self) -> RpcResult<Vec<PeerSync>> {
+        ask::<sessionsync::SessionSync, _>(sessionsync::SESSIONS_ACTOR, sessionsync::SyncStatus).await
     }
 }
 

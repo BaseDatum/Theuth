@@ -189,7 +189,21 @@ impl WriteTx<'_> {
     /// and append one `session_log` row per session inside the same
     /// transaction (`session_log` is not attached, so the row is not
     /// recaptured).
-    pub(crate) async fn commit(mut self) -> anyhow::Result<()> {
+    pub(crate) async fn commit(self) -> anyhow::Result<()> {
+        // A failure after seqs were taken (`NotOwner` for a later session, a
+        // failed commit) gives them back: a seq never committed is a gap the
+        // peers' cursors stop at, and each costs them a full snapshot. The
+        // write connection is single: no other transaction took one meanwhile.
+        let store = self.store;
+        let start = store.seq.load(Ordering::SeqCst);
+        let done = self.log_and_commit().await;
+        if done.is_err() {
+            store.seq.store(start, Ordering::SeqCst);
+        }
+        done
+    }
+
+    async fn log_and_commit(mut self) -> anyhow::Result<()> {
         let store = self.store;
         let changeset = {
             // Lock the handle out from the worker thread first; the session
@@ -929,6 +943,18 @@ impl Store {
              WHERE seq > ? AND orphaned = 0 ORDER BY seq",
         )
         .bind(seq)
+        .fetch_all(&self.read)
+        .await?)
+    }
+
+    /// [`Store::log_after`], at most `limit` rows: one page of a long catch-up.
+    pub async fn log_page(&self, seq: i64, limit: i64) -> anyhow::Result<Vec<LogRow>> {
+        Ok(sqlx::query_as(
+            "SELECT seq, session_id, epoch, changeset, hlc, orphaned FROM session_log \
+             WHERE seq > ? AND orphaned = 0 ORDER BY seq LIMIT ?",
+        )
+        .bind(seq)
+        .bind(limit)
         .fetch_all(&self.read)
         .await?)
     }
