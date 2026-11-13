@@ -785,6 +785,8 @@ pub enum CoreAction {
     EffortApplied(Option<String>),
     /// Suppress the existing effort-change echo while its mutation is pending.
     AwaitingEffort(bool),
+    /// Mark an owner-issued session-creating operation for canonical adoption.
+    AwaitingSession(bool),
     /// Deliver one opaque typed message to another mounted owner.
     PostTo(AddressedMessage),
     /// Adopt an independently created session through the existing draft reducer.
