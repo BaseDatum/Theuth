@@ -250,7 +250,7 @@ impl Component for ArtifactsApps {
                 let menu = self.menu.as_ref()?;
                 let title = if menu.apps { format!("apps · {APP_WHERE}  ⏎ open  s show source  e export to ~/Downloads  esc close") } else { "artifacts  ⏎ open  s show inline  e export to ~/Downloads  esc close".into() };
                 let rows: Vec<String> = menu.items.iter().map(|row| match row { Grouped::Heading(heading) => heading.clone(), Grouped::Item(a) => format!("    {}", artifact_row(a)) }).collect();
-                Some(View::Element { rows: rows.len().min(10) + 3, replace: true, element: crate::ui::menu_view(title, rows, menu.cursor, cx.width as u16, cx.height as u16, false) })
+                Some(View::IntrinsicElement { rows: rows.len().min(10) + 3, replace: true, element: crate::ui::menu_view(title, rows, menu.cursor, cx.width as u16, cx.height as u16, false) })
             }
             Surface::Entry { key, .. } => {
                 use iocraft::prelude::{View as BoxView, *};

@@ -259,7 +259,7 @@ impl Component for Link {
                 View::Text(format!("  ·  link ●{}", s.devices.iter().filter(|d| d.online).count()))),
             Surface::Modal => {
                 let Some(Menu::Link { cursor }) = self.menu else { return None };
-                Some(View::Element { element: crate::ui::menu_view(self.link_title(), self.link_rows(), cursor,
+                Some(View::IntrinsicElement { element: crate::ui::menu_view(self.link_title(), self.link_rows(), cursor,
                     cx.width as u16, cx.height as u16, false), rows: 0, replace: false })
             }
             _ => None,

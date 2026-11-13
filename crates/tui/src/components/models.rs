@@ -471,7 +471,7 @@ impl Component for Models {
         if !matches!(at, Surface::Modal) { return None; }
         self.menu.as_ref()?;
         let (title, rows, cursor) = self.presentation(cx.core, cx.width as u16);
-        Some(View::Element { element: crate::ui::menu_view(title, rows, cursor, cx.width as u16, cx.height as u16, false), rows: 0, replace: true })
+        Some(View::IntrinsicElement { element: crate::ui::menu_view(title, rows, cursor, cx.width as u16, cx.height as u16, false), rows: 0, replace: true })
     }
 }
 /// A `/model` picker row (124 §3).

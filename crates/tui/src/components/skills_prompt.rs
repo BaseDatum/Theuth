@@ -186,7 +186,7 @@ impl Component for SkillsPrompt {
                     let desc: String = s.description.chars().take(48).collect();
                     format!("{} {:<20} {:<48} {:<16} {}", if self.loaded_skills.contains(&s.name) { "●" } else { " " }, s.name, desc, s.repo.as_deref().map_or_else(String::new, |r| format!("[{r}]")), if s.always { "always" } else { "" })
                 }).collect();
-                Some(View::Element { element: crate::ui::menu_view("skills  ⏎ use  s show  esc close   ● in context".into(), rows, *cursor, cx.width as u16, cx.height as u16, false), rows: 0, replace: true })
+                Some(View::IntrinsicElement { element: crate::ui::menu_view("skills  ⏎ use  s show  esc close   ● in context".into(), rows, *cursor, cx.width as u16, cx.height as u16, false), rows: 0, replace: true })
             }
             _ => None,
         }

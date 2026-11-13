@@ -301,7 +301,7 @@ impl Component for Secrets {
             }
             Surface::Modal => {
                 let Some(Menu::Secrets { cursor, history }) = self.menu else { return None };
-                Some(View::Element { element: crate::ui::menu_view(self.secrets_title(), self.secrets_rows(), history.unwrap_or(cursor), vc.width as u16, vc.height as u16, false), rows: 0, replace: false })
+                Some(View::IntrinsicElement { element: crate::ui::menu_view(self.secrets_title(), self.secrets_rows(), history.unwrap_or(cursor), vc.width as u16, vc.height as u16, false), rows: 0, replace: false })
             }
             _ => None,
         }

@@ -178,6 +178,6 @@ impl Component for Acp {
                 format!("+ {:<16} {:<20} {}", a.id, format!("{} {}", a.name, a.version), desc)
             }
         }).collect();
-        Some(View::Element { element: crate::ui::menu_view("acp  p probe  ⏎ add from registry  d remove".into(), rows, cursor, cx.width as u16, cx.height as u16, false), rows: 0, replace: true })
+        Some(View::IntrinsicElement { element: crate::ui::menu_view("acp  p probe  ⏎ add from registry  d remove".into(), rows, cursor, cx.width as u16, cx.height as u16, false), rows: 0, replace: true })
     }
 }

@@ -436,7 +436,7 @@ impl Component for ShakePanel {
         if !matches!(at, Surface::Modal) || cx.core.inspecting { return None; }
         let menu = self.menu.as_ref()?;
         let rows = menu.rows();
-        Some(View::Element { rows: rows.len().min(10) + 3, replace: false,
+        Some(View::IntrinsicElement { rows: rows.len().min(10) + 3, replace: false,
             element: crate::ui::menu_view(menu.title(), rows, menu.cursor, cx.width as u16, cx.height as u16, false) })
     }
 }

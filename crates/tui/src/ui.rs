@@ -1198,10 +1198,7 @@ mod tests {
     use crate::components::models::Picker;
     use crate::model::tests::{models_mut, models_reply, models_selection, models_key, harness_reply};
     fn models_menu(m: &Model, width: u16, height: u16) -> Option<AnyElement<'static>> {
-        m.component_views(Surface::Modal, usize::from(width), usize::from(height))
-            .into_iter().find_map(|view| match view {
-                crate::components::View::Element { element, .. } => Some(element), _ => None,
-            })
+        component_slot(m, Surface::Modal, width, height, None).element()
     }
     use agent::ModelInfo;
     use runtime::SessionId;
@@ -1419,6 +1416,41 @@ mod tests {
                     "width {width} budget {budget} {focus:?}: {shown} not in view\n{frame}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn owner_modal_keeps_historical_short_terminal_allocation() {
+        use crate::components::aws::Aws;
+        let mut model = Model::default();
+        model.components.register(Aws {
+            picker: Some((agent::AwsProfiles {
+                profiles: (0..5).map(|i| format!("profile-{i}")).collect(),
+                selected: None, default_profile: "default".into(),
+            }, 0)),
+        }).unwrap();
+        model.components.focus_fixture("aws", crate::components::FocusClass::Modal);
+        let frame = |modal, height| element! {
+            View(width: 100u16, height, flex_direction: FlexDirection::Column) {
+                View(height: 2, flex_shrink: 0.0) { Text(content: "transcript") }
+                #(Some(modal))
+                View(height: 3, flex_shrink: 0.0) { Text(content: "composer") }
+            }
+        }.to_string();
+        for height in [8u16, 10, 12] {
+            // The historical shared menu root has no height or flex_shrink.
+            let original = model.component_views(Surface::Modal, 100, usize::from(height))
+                .into_iter().find_map(|view| match view {
+                    crate::components::View::Element { element, .. }
+                    | crate::components::View::IntrinsicElement { element, .. } => Some(element),
+                    _ => None,
+                }).unwrap();
+            let expected = frame(original, height);
+            assert_eq!(expected.lines().count(), usize::from(height));
+            assert!(expected.lines().nth(2).unwrap().starts_with('╭'), "{expected}");
+            assert!(expected.contains("profile-1"), "{expected}");
+            let actual = frame(component_slot(&model, Surface::Modal, 100, height, None).element().unwrap(), height);
+            assert_eq!(actual, expected, "terminal height {height}");
         }
     }
 

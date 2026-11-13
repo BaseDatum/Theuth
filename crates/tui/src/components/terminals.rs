@@ -452,7 +452,7 @@ impl Component for Terminals {
         let (title, body, rows) = match self.menu.as_ref()? {
             Menu::Terminals { items, cursor } => {
                 let title = "terminals  ⏎ observe (read-only)  r refresh  esc close".to_owned();
-                return Some(super::View::Element {
+                return Some(super::View::IntrinsicElement {
                     rows: items.len().min(10) + 3, replace: false,
                     element: crate::ui::menu_view(title, items.iter().map(terminal_row).collect(), *cursor, width, height, false),
                 });
@@ -472,7 +472,7 @@ impl Component for Terminals {
                 (crate::components::search_attach::state::fit(&view.title(), inner), body, rows)
             }
         };
-        Some(super::View::Element { rows, replace: false, element: element! {
+        Some(super::View::IntrinsicElement { rows, replace: false, element: element! {
             BoxView(border_style: BorderStyle::Round, border_color: crate::ui::OCHRE, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1, width) {
                 Text(content: title, color: crate::ui::SAND, wrap: TextWrap::NoWrap)
                 #(body)

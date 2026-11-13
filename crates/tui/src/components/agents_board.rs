@@ -250,7 +250,7 @@ impl Component for AgentsBoard {
             Surface::Modal => {
                 let (items, cursor) = self.menu.as_ref()?;
                 let rows = items.iter().map(|row| board_row(row.view(), cx.spinner(), cx.width as u16, cx.session_badge(row.info.id))).collect();
-                Some(View::Element { element: crate::ui::menu_view("agents  ⏎ open  esc close  (the one you leave keeps running)".into(), rows, *cursor, cx.width as u16, cx.height as u16, false), rows: 0, replace: true })
+                Some(View::IntrinsicElement { element: crate::ui::menu_view("agents  ⏎ open  esc close  (the one you leave keeps running)".into(), rows, *cursor, cx.width as u16, cx.height as u16, false), rows: 0, replace: true })
             }
             _ => None,
         }

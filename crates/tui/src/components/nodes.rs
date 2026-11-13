@@ -235,7 +235,7 @@ impl Component for Nodes {
                 .map(|nodes| View::Text(format!("  ·  nodes ●{}", nodes.iter().filter(|n| n.online).count()))),
             Surface::Modal => {
                 let Some(Menu::Nodes { cursor }) = self.menu else { return None };
-                Some(View::Element { element: crate::ui::menu_view(self.nodes_title(), self.nodes_rows(), cursor,
+                Some(View::IntrinsicElement { element: crate::ui::menu_view(self.nodes_title(), self.nodes_rows(), cursor,
                     cx.width as u16, cx.height as u16, false), rows: 0, replace: false })
             }
             _ => None,
