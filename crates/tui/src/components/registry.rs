@@ -463,8 +463,8 @@ impl Registry {
     pub fn separate_editor(&self) -> bool {
         self.focus.is_some_and(|(token, _)| self.slots[token.slot].component.as_ref().is_some_and(|component| component.separate_editor()))
     }
-    /// Modal capture excludes composer-backed prompts, just like the core prompt.
+    /// Intrinsic modal capture blocks the composer even with a retained prompt.
     pub fn modal(&self) -> bool {
-        self.separate_editor() || (self.focus.is_some_and(|(_, class)| class == FocusClass::Modal) && self.editor().is_none())
+        self.captures(FocusClass::Modal) || self.separate_editor() || (self.focus.is_some_and(|(_, class)| class == FocusClass::Modal) && self.editor().is_none())
     }
 }
