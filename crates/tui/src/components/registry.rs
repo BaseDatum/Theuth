@@ -376,6 +376,17 @@ impl Registry {
         self.finish(&mut out, core);
         Some(out)
     }
+    /// Route a late slash fallback only after explicit core and owner commands.
+    pub fn slash_fallback(&mut self, name: &str, args: &str, core: &CoreView<'_>) -> Option<Outbox> {
+        let index = self.slots.iter().position(|slot| slot.component.as_ref().is_some_and(|c| c.slash_fallback(name)))?;
+        let token = ComponentToken { slot: index, generation: self.slots[index].generation };
+        let component = self.slots[index].component.as_mut()?;
+        let mut out = Outbox::default();
+        let owner_core = CoreView { commands: &self.commands, ..*core };
+        component.input(Input::Slash { name, args }, &owner_core, token, self.epoch, &mut out);
+        self.finish(&mut out, core);
+        Some(out)
+    }
     /// Registration-ordered rows shared by completion/help and dictation.
     pub fn slash_specs(&self) -> impl Iterator<Item = &'static SlashSpec> + '_ {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()).flat_map(|component| {

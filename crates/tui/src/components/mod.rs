@@ -983,6 +983,8 @@ pub trait Component: Send + Sync + 'static {
     fn history_entry(&mut self, row: agent::HistoryEntry, _opts: &markdown::Options) -> Result<Vec<crate::model::Entry>, agent::HistoryEntry> { Err(row) }
     /// Plain projection of a canonical row; None preserves core formatting.
     fn history_plain(&self, _row: &agent::HistoryEntry) -> Option<Vec<String>> { None }
+    /// Claim an otherwise unhandled slash word after all explicit routes.
+    fn slash_fallback(&self, _name: &str) -> bool { false }
 }
 
 trait ErasedComponent: Send + Sync {
@@ -1002,6 +1004,7 @@ trait ErasedComponent: Send + Sync {
     fn entry_height(&self, key: &str, width: usize) -> Option<usize>;
     fn entry_openable(&self, key: &str) -> bool;
     fn slash_visible(&self, name: &str) -> bool;
+    fn slash_fallback(&self, name: &str) -> bool;
     fn session_hidden(&self, session: SessionId) -> bool;
     fn turn_hidden(&self, seq: i64) -> bool;
     fn entry_toggleable(&self, key: &str) -> Option<bool>;
@@ -1041,6 +1044,7 @@ impl<C: Component> ErasedComponent for Mounted<C> {
     fn entry_height(&self, key: &str, width: usize) -> Option<usize> { self.0.entry_height(key, width) }
     fn entry_openable(&self, key: &str) -> bool { self.0.entry_openable(key) }
     fn slash_visible(&self, name: &str) -> bool { self.0.slash_visible(name) }
+    fn slash_fallback(&self, name: &str) -> bool { self.0.slash_fallback(name) }
     fn session_hidden(&self, session: SessionId) -> bool { self.0.session_hidden(session) }
     fn turn_hidden(&self, seq: i64) -> bool { self.0.turn_hidden(seq) }
     fn entry_toggleable(&self, key: &str) -> Option<bool> { self.0.entry_toggleable(key) }
