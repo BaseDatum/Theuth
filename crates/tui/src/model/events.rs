@@ -22,8 +22,6 @@ pub enum UiEvent {
     AskResolved(AskResolved),
     /// Reply to [`Command::ListSessions`].
     Sessions(Vec<SessionSummary>),
-    /// Reply to [`Command::ListAgents`]: the session's subtree with live state.
-    Agents(Vec<AgentInfo>),
     /// Reply to [`Command::Load`] with `settled_only: false`: shown as is.
     History(SessionId, Loaded),
     /// Reply to [`Command::Load`] with `settled_only: true` (48 §5): shown
@@ -183,8 +181,6 @@ pub enum Command {
     SetCompactStyle(CompactStyle),
     /// `list_sessions`.
     ListSessions,
-    /// `list_agents`: the subtree under a session.
-    ListAgents(SessionId),
     /// `load_session`; `settled_only` (48 §5) reads through the idle actor
     /// and replies with [`UiEvent::Refreshed`] instead of [`UiEvent::History`].
     Load {

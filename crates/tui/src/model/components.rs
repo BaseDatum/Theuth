@@ -369,8 +369,7 @@ impl Model {
             Some("Lagged") => {
                 // Never overwrite an inspected historical page or clear the draft.
                 if !self.historical { self.refresh_context = self.session.is_some(); }
-                if let (Some(session), Some(commands)) = (self.session, &self.component_commands) {
-                    let _ = commands.send(Command::ListAgents(session));
+                if self.session.is_some() && self.component_commands.is_some() {
                     self.component_notify(Lifecycle::SessionRefreshRequested);
                 }
                 self.component_notify(Lifecycle::Resync);
@@ -492,15 +491,13 @@ fn modal_replacement_closes_displaced_surface_without_losing_cache() {
     assert!(matches!(model.menu, Some(Menu::Sessions { .. })));
 }
 
-impl crate::components::SessionMembers for HashMap<SessionId, AgentRow> {
+impl crate::components::SessionMembers for HashMap<SessionId, AgentInfo> {
     fn member(&self, id: SessionId) -> Option<crate::components::SessionMember<'_>> {
-        self.get(&id).map(|row| crate::components::SessionMember { name: &row.info.name, project: row.info.project.as_deref() })
+        self.get(&id).map(|info| crate::components::SessionMember { name: &info.name, project: info.project.as_deref() })
     }
-    fn agent_info(&self, id: SessionId) -> Option<&AgentInfo> {
-        self.get(&id).map(|row| &row.info)
-    }
+    fn agent_info(&self, id: SessionId) -> Option<&AgentInfo> { self.get(&id) }
     fn visit<'a>(&'a self, visitor: &mut dyn FnMut(&'a AgentInfo)) {
-        for row in self.values() { visitor(&row.info); }
+        for info in self.values() { visitor(info); }
     }
 }
 

@@ -46,8 +46,6 @@ pub struct Links {
 
 /// Rows a menu shows at most.
 const MENU_ROWS: usize = 10;
-/// Rows the board shows at most; the rest fold into `… n more (/agents)`.
-const BOARD_ROWS: usize = 6;
 // theuth dark palette (docs/design/25-desktop.md §2.4), truecolor. The terminal's own
 // background stays; primary text is left uncoloured so it follows the terminal's fg.
 // ponytail: assumes a dark terminal; query OSC 11 and swap to the light set if that hurts.
@@ -76,8 +74,6 @@ pub(crate) const CARNELIAN: Color = rgb(0xC45A48);
 const USER: Color = OCHRE;
 /// Tool call cards.
 pub(crate) const TOOL: Color = FAIENCE;
-/// Peer (subagent / parent) message cards.
-const PEER: Color = FAIENCE;
 /// Markdown headings in assistant text.
 const HEADING: Color = OCHRE;
 /// Skill body cards.
@@ -238,7 +234,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         session,
                         settled_only: false,
                     });
-                    let _ = commands.send(Command::ListAgents(session));
                     m.component_notify(crate::components::Lifecycle::SessionRefreshRequested);
                 }
                 // Root metadata moved while a grouped picker is open (51 §3): re-list it.
@@ -606,7 +601,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     Text(content: queued_text(&q.text), color: SAND, wrap: TextWrap::Wrap)
                 }
             }))
-            #(board(&m, width))
             #(before_pinned.element())
             #(pinned.element())
             #(modal)
@@ -848,14 +842,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 .collect(),
             *cursor,
         ),
-        Menu::Agents { items, cursor } => (
-            "agents  ⏎ open  esc close  (the one you leave keeps running)".to_owned(),
-            items
-                .iter()
-                .map(|a| m.board_row(a, width))
-                .collect(),
-            *cursor,
-        ),
     };
     Some(menu_view(title, rows, cursor, width, height, false))
 }
@@ -933,7 +919,7 @@ fn path_box(m: &Model, width: u16) -> Option<AnyElement<'static>> {
 /// chips, board, the todo card's `todo` rows). An estimate by the same
 /// rules the layout follows; a row or two off only moves the first scroll
 /// step, never the pinned bottom.
-fn view_rows(m: &Model, height: u16, input: &str, todo: usize) -> usize {
+fn view_rows(m: &Model, height: u16, input: &str, fixed: usize) -> usize {
     let editor = 2 + input.lines().count().max(1);
     let activity = if m.waiting() { 2 } else { 0 };
     let queued: usize = m
@@ -941,61 +927,17 @@ fn view_rows(m: &Model, height: u16, input: &str, todo: usize) -> usize {
         .iter()
         .map(|q| 4 + queued_text(&q.text).lines().count())
         .sum();
-    let board = match m.board().len() {
-        0 => 0,
-        n => 3 + n.min(BOARD_ROWS) + usize::from(n > BOARD_ROWS),
-    };
     usize::from(height)
         .saturating_sub(
             2 + editor
                 + activity
                 + queued
-                + board
-                + todo,
+                + fixed,
         )
         .max(1)
 }
 
 
-/// The subagent board (design doc 19 §3.3): the live rows of the current
-/// session's subtree, between the transcript and the editor; `None` while
-/// nothing is live. A display only: it takes no keys.
-fn board(m: &Model, width: u16) -> Option<AnyElement<'static>> {
-    let rows = m.board();
-    if rows.is_empty() {
-        return None;
-    }
-    let more = rows.len().saturating_sub(BOARD_ROWS);
-    // border 2 + padding 2, then one less (see `menu`); glyph + name take 17.
-    let fit = usize::from(width).saturating_sub(5);
-    Some(
-        element! {
-            View(border_style: BorderStyle::Round, border_color: SAND, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
-                Text(content: "agents", color: SAND)
-                #(rows.iter().take(BOARD_ROWS).map(|r| {
-                    let row = m.board_row(r, width);
-                    let (glyph, rest) = split_chars(&row, 2);
-                    let (name, rest) = split_chars(rest, 15);
-                    element! {
-                        View(flex_direction: FlexDirection::Row) {
-                            Text(content: glyph.to_owned(), color: BONE_DIM, wrap: TextWrap::NoWrap)
-                            Text(content: name.to_owned(), color: PEER, wrap: TextWrap::NoWrap)
-                            Text(content: rest.chars().take(fit.saturating_sub(17)).collect::<String>(), color: BONE_DIM, wrap: TextWrap::NoWrap)
-                        }
-                    }
-                }))
-                #((more > 0).then(|| element!(Text(content: format!("… {more} more (/agents)"), color: SAND))))
-            }
-        }
-        .into_any(),
-    )
-}
-
-
-/// Split after `n` chars (not bytes): `("⠹ ", rest)`.
-fn split_chars(s: &str, n: usize) -> (&str, &str) {
-    s.split_at(s.char_indices().nth(n).map_or(s.len(), |(i, _)| i))
-}
 
 /// A queued input's chip text: a skill injection (04 §2.4) reads
 /// `◇ <name>  <words>` rather than the whole body.
@@ -1910,11 +1852,11 @@ mod tests {
     fn board_caps_rows_and_stays_tight() {
         use agent::AgentEvent;
         use runtime::SessionId;
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         let root = SessionId::new();
         m.session = Some(root);
         for i in 0..8 {
-            m.apply(UiEvent::Agent(AgentEvent::SubagentSpawned {
+            m.apply(crate::model::tests::wire_event("agent.events", AgentEvent::SubagentSpawned {
                 parent: root,
                 child: SessionId::new(),
                 name: format!("worker-{i}-with-a-long-name"),
@@ -1925,7 +1867,7 @@ mod tests {
             let frame = element! {
                 View(flex_direction: FlexDirection::Column, width, height: 30u16) {
                     View(flex_grow: 1.0_f32, min_height: 0)
-                    #(board(&m, width))
+                    #(component_slot(&m, Surface::BeforePinned, width, 30, None).element())
                     View(height: 3)
                 }
             }
@@ -1945,7 +1887,7 @@ mod tests {
         }
         // Idle everywhere: no board.
         for id in m.agents.keys().copied().collect::<Vec<_>>() {
-            m.apply(UiEvent::Agent(AgentEvent::TurnFinished {
+            m.apply(crate::model::tests::wire_event("agent.events", AgentEvent::TurnFinished {
                 session: id,
                 turn: runtime::TurnId::new(),
                 stop_reason: "end_turn".into(),
@@ -1953,7 +1895,7 @@ mod tests {
                 context: 0,
             }));
         }
-        assert!(board(&m, 80).is_none() && m.status().contains("agents: 8 idle"));
+        assert!(component_slot(&m, Surface::BeforePinned, 80, 30, None).element().is_none() && m.status().contains("agents: 8 idle"));
     }
 
     /// Every look at 80×24 and 120×40 renders without panicking, fits the

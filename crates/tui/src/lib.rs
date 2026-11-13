@@ -501,7 +501,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             generation,
             api.path_complete(session, input, cursor, None).await.ok(),
         ),
-        Command::ListAgents(session) => UiEvent::Agents(msg(api.list_agents(session).await)?),
         Command::Load {
             session,
             settled_only,
@@ -943,16 +942,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 model::engine_chip(&s.owner)
             };
             writeln!(out, "{}  {}  {chip:<8}  {}", s.id, s.model, s.title)
-        }),
-        UiEvent::Agents(list) => list.iter().try_for_each(|a| {
-            writeln!(
-                out,
-                "{}  {}  {}  {}",
-                a.name,
-                a.state.word(),
-                a.last,
-                model::short(a.id)
-            )
         }),
         UiEvent::History(_, loaded) => print_history(out, loaded, &model.components),
         // A busy session's settled reload is refused (48 §5); the model

@@ -3,11 +3,6 @@ use super::*;
 /// Slash commands: name, argument hint (`<x>` required, `[x]` optional, `""` none), description.
 pub const COMMANDS: &[(&str, &str, &str)] = &[
     (
-        "/agents",
-        "",
-        "subagents of this session (picker: ⏎ opens one)",
-    ),
-    (
         "/project",
         "<label|off>",
         "label this session's root for grouping in /sessions and /artifacts (off clears)",

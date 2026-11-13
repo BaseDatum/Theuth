@@ -63,7 +63,7 @@ impl Model {
                 if let Some(depth) = depth {
                     self.agents.insert(
                         *child,
-                        AgentRow::new(AgentInfo {
+                        AgentInfo {
                             id: *child,
                             name: name.clone(),
                             parent: *parent,
@@ -80,16 +80,13 @@ impl Model {
                             cap: *cap,
                             kind: Default::default(),
                             observed: None,
-                        }),
+                        },
                     );
                 }
                 if let Some(p) = &mut self.private
                     && p.member(*parent)
                 {
                     p.members.insert(*child);
-                }
-                if self.session == Some(*parent) {
-                    self.interject(Entry::Info(format!("↳ spawned {name}")));
                 }
                 return;
             }
@@ -122,7 +119,7 @@ impl Model {
                 let Some(depth) = depth else { return };
                 let state = observed_state(observed);
                 let row = self.agents.entry(*child).or_insert_with(|| {
-                    AgentRow::new(AgentInfo {
+                    AgentInfo {
                         id: *child,
                         name: name.clone(),
                         parent: *parent,
@@ -139,30 +136,23 @@ impl Model {
                         cap: None,
                         kind: SessionKind::Observed,
                         observed: None,
-                    })
+                    }
                 });
-                row.info.name.clone_from(name);
+                row.name.clone_from(name);
                 if let Some(m) = model {
-                    row.info.model.clone_from(m);
+                    row.model.clone_from(m);
                 }
-                if row.info.state != state {
+                if row.state != state {
                     let now = Some(chrono::Utc::now());
                     if state == AgentState::Running {
-                        row.info.started_at = row.info.started_at.or(now);
+                        row.started_at = row.started_at.or(now);
                     } else {
-                        row.info.started_at = None;
-                        row.info.finished_at = now;
+                        row.started_at = None;
+                        row.finished_at = now;
                     }
-                    row.info.state = state;
+                    row.state = state;
                 }
-                // Terminal-bad and lost rows linger on the board like a
-                // cancelled native child (`fresh`); a finished one leaves it.
-                row.fresh = matches!(
-                    observed.state,
-                    ObservedState::Failed | ObservedState::Cancelled | ObservedState::Unknown
-                );
-                row.tool = None;
-                row.info.observed = Some(observed.clone());
+                row.observed = Some(observed.clone());
                 return;
             }
             AgentEvent::MessageDelivered {
@@ -662,7 +652,7 @@ impl Model {
 
     fn child_depth(&self, parent: SessionId) -> Option<u8> {
         if self.session == Some(parent) { Some(1) }
-        else { self.agents.get(&parent).map(|row| row.info.depth + 1) }
+        else { self.agents.get(&parent).map(|row| row.depth + 1) }
     }
 
     /// Shared canonical descendant admission, before owner observation.
@@ -672,273 +662,51 @@ impl Model {
             AgentEvent::SubagentSpawned { parent, .. } => self.child_depth(*parent),
             AgentEvent::ObservedChildChanged { child, .. } if self.session == Some(*child) => None,
             AgentEvent::ObservedChildChanged { parent, .. } => self.child_depth(*parent),
-            _ => event.session().and_then(|session| self.agents.get(&session)).map(|row| row.info.depth),
+            _ => event.session().and_then(|session| self.agents.get(&session)).map(|row| row.depth),
         }
     }
 
     /// Adopt authoritative membership independently of any board presentation.
     pub(super) fn adopt_descendants(&mut self, list: Vec<AgentInfo>) {
-        // Reseeding keeps what events taught about rows still there.
-        let mut old = std::mem::take(&mut self.agents);
-        self.agents = list
-            .into_iter()
-            // 125 §7.5: the hidden advisor child is never an ordinary member.
+        self.agents = list.into_iter()
             .filter(|info| info.kind != SessionKind::Advisor)
-            .map(|info| {
-                let row = match old.remove(&info.id) {
-                    Some(mut row) => {
-                        row.info = info;
-                        row
-                    }
-                    None => AgentRow::new(info),
-                };
-                (row.info.id, row)
-            })
+            .map(|info| (info.id, info))
             .collect();
-        // The owned tree's roster: navigating within it is not a leave (51 §4.3).
-        if let Some(p) = &mut self.private
-            && self.session.is_some_and(|s| p.member(s))
+        // Navigating within the owned tree is not a leave (51 §4.3).
+        if let Some(private) = &mut self.private
+            && self.session.is_some_and(|session| private.member(session))
         {
-            p.members.extend(self.agents.keys().copied());
+            private.members.extend(self.agents.keys().copied());
         }
-        self.approvals
-            .retain(|a| Some(a.session) == self.session || self.agents.contains_key(&a.session));
+        self.approvals.retain(|request| Some(request.session) == self.session || self.agents.contains_key(&request.session));
     }
 
-    /// Fold an event of a subtree session into its row (design doc 19 §3.3).
-    /// A direct child's error or cancel also interjects one line here: they
-    /// must not be silent, and the board has everything else.
+    /// Fold canonical turn state into independently retained descendant membership.
     fn track(&mut self, ev: &AgentEvent) {
         if self.descendant_depth(ev).is_none() { return; }
-        let Some(row) = ev.session().and_then(|s| self.agents.get_mut(&s)) else {
-            return;
-        };
-        let direct = self.session == Some(row.info.parent);
-        let mut note = None;
+        let Some(info) = ev.session().and_then(|session| self.agents.get_mut(&session)) else { return; };
         match ev {
             AgentEvent::TurnStarted { .. } => {
-                row.info.state = AgentState::Running;
-                row.info.started_at = Some(chrono::Utc::now());
-                row.tool = None;
-                row.fresh = false;
+                info.state = AgentState::Running;
+                info.started_at = Some(chrono::Utc::now());
             }
-            AgentEvent::ToolCallPending { name, .. } => {
-                row.tool = Some(format!("preparing {name}"));
-            }
-            AgentEvent::ToolCallStarted { name, args, .. } => {
-                if name == "send_message" && args["await_reply"] == true {
-                    row.info.state = AgentState::Awaiting {
-                        from: args["to"].as_str().unwrap_or("?").to_owned(),
-                    };
-                    row.question = args["message"]
-                        .as_str()
-                        .and_then(|m| m.lines().next())
-                        .map(str::to_owned);
-                }
-                row.tool = Some(match first_arg(args) {
-                    Some(arg) => format!("running {name} {arg}"),
-                    None => format!("running {name}"),
-                });
+            AgentEvent::ToolCallStarted { name, args, .. } if name == "send_message" && args["await_reply"] == true => {
+                info.state = AgentState::Awaiting { from: args["to"].as_str().unwrap_or("?").to_owned() };
             }
             AgentEvent::ToolCallFinished { .. } => {
-                row.tool = None;
-                if matches!(row.info.state, AgentState::Awaiting { .. }) {
-                    row.info.state = AgentState::Running;
-                }
+                if matches!(info.state, AgentState::Awaiting { .. }) { info.state = AgentState::Running; }
             }
             AgentEvent::TurnFinished { stop_reason, .. } => {
-                row.info.state = match stop_reason.as_str() {
+                info.state = match stop_reason.as_str() {
                     "error" => AgentState::Error,
                     "cancelled" => AgentState::Cancelled,
                     _ => AgentState::Idle,
                 };
-                row.fresh = row.info.state != AgentState::Idle;
-                row.info.started_at = None;
-                row.info.finished_at = Some(chrono::Utc::now());
-                row.tool = None;
-                if direct && stop_reason == "cancelled" {
-                    note = Some(Entry::Info(format!("↳ {} cancelled", row.info.name)));
-                }
-            }
-            AgentEvent::Error { message, .. } => {
-                row.error = Some(message.clone());
-                if direct {
-                    note = Some(Entry::Error(format!(
-                        "↳ {} error: {message}",
-                        row.info.name
-                    )));
-                }
+                info.started_at = None;
+                info.finished_at = Some(chrono::Utc::now());
             }
             _ => {}
         }
-        if let Some(e) = note {
-            self.interject(e);
-        }
-    }
-}
-
-impl Model {
-
-    /// `/agents`: Enter opens the highlighted subagent — a session switch,
-    /// the same path as `/sessions`; the one left keeps running.
-    pub(super) fn agents_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
-        let Some(Menu::Agents { items, cursor }) = &mut self.menu else {
-            return MenuKey::Consumed;
-        };
-        match code {
-            KeyCode::Up => *cursor = cursor.saturating_sub(1),
-            KeyCode::Down => *cursor = (*cursor + 1).min(items.len().saturating_sub(1)),
-            KeyCode::Esc => self.menu = None,
-            KeyCode::Enter => {
-                let picked = items.get(*cursor).map(|a| a.info.id);
-                self.menu = None;
-                if let Some(id) = picked {
-                    self.resume(id, tx);
-                }
-            }
-            _ => {}
-        }
-        MenuKey::Consumed
-    }
-}
-
-/// One row of the `/agents` picker and the board: the supervisor's snapshot
-/// plus what the TUI learned from this session's events since (design doc
-/// 19 §3.3).
-#[derive(Clone, Debug)]
-pub struct AgentRow {
-    /// The snapshot (`list_agents`) as kept live by `TurnStarted` / `TurnFinished` and friends.
-    pub info: AgentInfo,
-    /// `preparing <tool>` / `running <tool> <arg>` while a call is in flight; the
-    /// tool and its args while an approval is pending. `None` = streaming text.
-    pub tool: Option<String>,
-    /// First line of the question while `Awaiting`.
-    pub question: Option<String>,
-    /// Last `Error` message; the detail of an `Error` row.
-    pub error: Option<String>,
-    /// The turn ended in error / cancelled while this TUI watched and the
-    /// picker has not been opened since: the row stays on the board.
-    pub fresh: bool,
-}
-
-impl AgentRow {
-    /// A row with nothing learned yet.
-    pub fn new(info: AgentInfo) -> Self {
-        Self {
-            info,
-            tool: None,
-            question: None,
-            error: None,
-            fresh: false,
-        }
-    }
-
-    /// The agent is in a turn: running, asking, or waiting on an approval.
-    pub fn live(&self) -> bool {
-        matches!(
-            self.info.state,
-            AgentState::Running | AgentState::Awaiting { .. } | AgentState::Approval { .. }
-        )
-    }
-
-    /// Shown on the board: live, or an unacknowledged error / cancel.
-    pub fn on_board(&self) -> bool {
-        self.live() || self.fresh
-    }
-}
-
-/// Picker / board order (design doc 19 §3.1): running first in spawn order,
-/// then awaiting / approval, then the rest newest-finished first. The id
-/// (UUIDv7, time-ordered) breaks ties so a `HashMap`-fed board never jitters.
-pub(super) fn rank(a: &AgentRow) -> (u8, i64, u128) {
-    let ms = |t: Option<chrono::DateTime<chrono::Utc>>| t.map_or(0, |t| t.timestamp_millis());
-    let id = a.info.id.0.as_u128();
-    match a.info.state {
-        AgentState::Running => (0, ms(a.info.started_at), id),
-        AgentState::Awaiting { .. } | AgentState::Approval { .. } => (1, ms(a.info.started_at), id),
-        _ => (2, -ms(a.info.finished_at), id),
-    }
-}
-
-/// `/agents` picker order; see [`rank`].
-pub fn sort_agents(mut list: Vec<AgentRow>) -> Vec<AgentRow> {
-    list.sort_by_key(rank);
-    list
-}
-
-/// One `/agents` picker or board row: `glyph name state detail age [jN pN ·age]`
-/// (design doc 19 §3.1, 62 §5.1). `spinner` is the running glyph; depth ≥ 2
-/// indents the name under its parent; `width` (terminal columns) bounds the
-/// detail column. Age is elapsed while the agent is live, `ago` since it
-/// finished otherwise; the trailing counts and `last_active` age come from
-/// the snapshot's `activity` and appear only when known.
-pub fn agent_row(a: &AgentRow, spinner: &str, width: u16) -> String {
-    // 141 §10.1: a watch-only child is `◎ name <observed state> watch · <src> [lastIntent]`.
-    let (glyph, word) = match &a.info.observed {
-        Some(o) => (WATCH_GLYPH, observed_word(o.state)),
-        None => (
-            crate::components::broadcast::state::glyph(&a.info.state, spinner),
-            a.info.state.word(),
-        ),
-    };
-    let name = match a.info.depth {
-        0 | 1 => a.info.name.clone(),
-        d => format!("{}↳ {}", " ".repeat(2 * usize::from(d - 1)), a.info.name),
-    };
-    let now = chrono::Utc::now();
-    let age = match (a.info.started_at, a.info.finished_at) {
-        (Some(t), _) if a.live() => elapsed(now - t),
-        (_, Some(t)) => ago(now - t),
-        _ => String::new(),
-    };
-    let active = match crate::components::broadcast::state::age(a.info.activity.last_active) {
-        s if s.is_empty() => s,
-        s => format!(" ·{s}"),
-    };
-    let tail = format!(
-        "  {age}{}{active}",
-        crate::components::broadcast::state::counts(&a.info.activity)
-    );
-    // Glyph, name, state and their gaps take 27 columns, the picker frame 7; the detail gets
-    // what is left after the measured tail (141 R4 T13b: an estimate let long ages overflow).
-    let room = usize::from(width)
-        .saturating_sub(34 + crate::components::search_attach::state::cells(&tail))
-        .max(16);
-    let detail = match (&a.info.observed, &a.info.state) {
-        (Some(o), _) => {
-            let mut d = match o.detail["lastIntent"].as_str() {
-                Some(intent) => format!("watch · {} · {intent}", source_tag(o.source)),
-                None => format!("watch · {}", source_tag(o.source)),
-            };
-            // 141 R3 T13: the child's model when the column has room for it.
-            let m = &a.info.model;
-            if !m.is_empty() && d.chars().count() + 3 + m.chars().count() <= room {
-                d = format!("{d} · {m}");
-            }
-            d
-        }
-        (None, AgentState::Running) => a.tool.clone().unwrap_or_else(|| "streaming".to_owned()),
-        (None, AgentState::Awaiting { from }) => match &a.question {
-            Some(q) => format!("{from}: \"{q}\""),
-            None => from.clone(),
-        },
-        (None, AgentState::Approval { tool }) => a.tool.clone().unwrap_or_else(|| tool.clone()),
-        (None, AgentState::Error) => a.error.clone().unwrap_or_else(|| a.info.last.clone()),
-        (None, AgentState::Cancelled | AgentState::Idle) => a.info.last.clone(),
-    };
-    let detail = crate::components::search_attach::state::fit(&detail, room);
-    format!("{glyph} {name:<14} {word:<9} {detail:<room$}{tail}")
-}
-
-/// Row glyph of a watch-only child (141 §10.1).
-pub const WATCH_GLYPH: &str = "◎";
-
-/// The source tag of a watch-only child (141 §3 UI tags).
-pub fn source_tag(source: ObservedSource) -> &'static str {
-    match source {
-        ObservedSource::Rfd => "ACP",
-        ObservedSource::OpencodeExt | ObservedSource::OpencodeTask => "opencode",
-        ObservedSource::OmpTask => "omp task",
     }
 }
 
@@ -988,6 +756,6 @@ impl Model {
     /// Peer name of a subagent in the current session's subtree; `None`
     /// for the session itself or strangers.
     pub fn peer_name(&self, id: SessionId) -> Option<&str> {
-        self.agents.get(&id).map(|a| a.info.name.as_str())
+        self.agents.get(&id).map(|a| a.name.as_str())
     }
 }

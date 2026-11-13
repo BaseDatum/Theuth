@@ -23,14 +23,6 @@ pub enum Menu {
         /// Highlighted row.
         cursor: usize,
     },
-    /// `/agents` picker.
-    Agents {
-        /// The current session's subtree: running first, then awaiting /
-        /// approval, then the rest newest-finished first.
-        items: Vec<AgentRow>,
-        /// Highlighted row.
-        cursor: usize,
-    },
     /// `/edit`, `/regen`, `/fork` picker over the transcript's turns (29 §6.2).
     Turns {
         /// `(entry index, turn seq, first line of the opener)`, oldest first.
@@ -106,7 +98,6 @@ impl Model {
             None => MenuKey::Consumed,
             Some(Menu::Slash { .. }) => self.slash_key(code, input, tx),
             Some(Menu::Sessions { .. }) => self.sessions_key(code, tx),
-            Some(Menu::Agents { .. }) => self.agents_key(code, tx),
             Some(Menu::Turns { .. }) => self.turns_key(code, tx),
 
         }

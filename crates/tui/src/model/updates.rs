@@ -9,14 +9,9 @@ impl Model {
             UiEvent::Agent(ev) => self.apply_agent(ev),
             UiEvent::Approval(req) => {
                 if let Some(row) = self.agents.get_mut(&req.session) {
-                    row.info.state = AgentState::Approval {
+                    row.state = AgentState::Approval {
                         tool: req.tool.clone(),
                     };
-                    row.tool = Some(format!(
-                        "{} {}",
-                        req.tool,
-                        describe(&req.tool, &req.args).join(" ")
-                    ));
                 }
                 if !self.approvals.iter().any(|pending| pending.id == req.id)
                     && (self.session == Some(req.session) || self.agents.contains_key(&req.session))
@@ -60,24 +55,6 @@ impl Model {
                             .unwrap_or_else(|| grouped_first(&items)),
                     };
                     self.menu = Some(Menu::Sessions { items, cursor });
-                }
-            }
-            UiEvent::Agents(list) => {
-                self.adopt_descendants(list);
-                if !std::mem::take(&mut self.agents_picker_pending) {
-                    return;
-                }
-                // The picker shows errors and cancels; the board lets go of them.
-                for row in self.agents.values_mut() {
-                    row.fresh = false;
-                }
-                if self.agents.is_empty() {
-                    self.entries.push(Entry::Info("no subagents".into()));
-                } else {
-                    self.menu = Some(Menu::Agents {
-                        items: sort_agents(self.agents.values().cloned().collect()),
-                        cursor: 0,
-                    });
                 }
             }
             UiEvent::History(id, loaded) => {

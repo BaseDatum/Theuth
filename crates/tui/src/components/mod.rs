@@ -48,6 +48,7 @@ pub mod advisor;
 pub mod skills_prompt;
 pub mod acp;
 pub mod providers_login;
+pub mod agents_board;
 pub use registry::{Registry, builtin, builtin_with, configured};
 
 #[cfg(test)]

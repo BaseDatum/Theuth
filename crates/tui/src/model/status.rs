@@ -48,7 +48,6 @@ impl Model {
             || self.streaming
             || self.compacting
             || self.vision.is_some()
-            || self.agents.values().any(AgentRow::live)
             || self.components.wake().is_some()
             || self.components.animating()
     }
@@ -131,11 +130,6 @@ impl Model {
         let usage = self.usage.map_or_else(String::new, |u| {
             format!("  {}↑ {}↓", u.prompt, u.completion)
         });
-        let agents = match self.agents.len() {
-            0 => String::new(),
-            _ if self.agents.values().any(AgentRow::on_board) => String::new(),
-            n => format!("  agents: {n} idle"),
-        };
         let queued = match self.queued.len() {
             0 => String::new(),
             n => format!("  ·  {n} queued"),
@@ -172,7 +166,7 @@ impl Model {
         let pinned = self.component_text(Surface::Status(StatusSlot::Pinned));
         let spoken = self.component_text(Surface::Status(StatusSlot::Spoken));
         format!(
-            "{session}  {state}{watch}{usage}{agents}{before_queue}{queued}{work}{before_catalog}{catalog}{editing}{scrolled}{pinned}{spoken}{attached}{resumed}"
+            "{session}  {state}{watch}{usage}{before_queue}{queued}{work}{before_catalog}{catalog}{editing}{scrolled}{pinned}{spoken}{attached}{resumed}"
         )
     }
 
@@ -224,7 +218,7 @@ impl Model {
         };
         let model = match (&self.observed, &self.session_name) {
             (Some(_), name) => format!(
-                "{WATCH_GLYPH} {}  watching · {model}",
+                "◎ {}  watching · {model}",
                 name.as_deref().unwrap_or("subagent")
             ),
             (None, Some(name)) => format!("↳ {name}  child · {model}"),
