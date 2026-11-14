@@ -362,6 +362,7 @@ pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
             "AskRequested" => Some(tools::AskRequested::TOPIC),
             "AskResolved" => Some(tools::AskResolved::TOPIC),
             "JobEvent" => Some(tools::JobEvent::TOPIC),
+            "PeerMessageChanged" => Some(agent::PeerMessageChanged::TOPIC),
             // Declared by the cell owner, not by this transport adapter.
             "CellEvent" => Some("cells.events"),
             "FollowState" => Some(events::FollowState::TOPIC),

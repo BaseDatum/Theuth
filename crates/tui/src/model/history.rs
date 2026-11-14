@@ -154,7 +154,7 @@ pub(crate) fn from_history(h: HistoryEntry, opts: &markdown::Options, registry: 
             // body. A wrapper without `peer` stays the untrusted card
             // `user_entries` always drew: no id, no controls.
             let projection = registry.wrapper(Wrapper { tag: "user", open: "", body: &text, sender: None,
-                origin: peer.as_ref().map(|origin| WrapperOrigin { id: origin.id, from: &origin.from, reply_to: origin.reply_to }), live: false });
+                origin: peer.as_ref().map(|origin| WrapperOrigin { id: origin.id, from: &origin.from, reply_to: origin.reply_to, full: origin.contact_mode == Some(agent::ShareMode::Full) }), live: false });
             let mut out = match projection {
                 Some(WrapperView::Card { kind, title, body }) => vec![card(kind, title, &body)],
                 Some(WrapperView::Hidden) => Vec::new(),

@@ -1466,6 +1466,83 @@
         assert_eq!(e.height(80), 4 + 3);
     }
 
+    /// 186 parity with the web: a contact row whose typed provenance says
+    /// `full` (local or replicated) draws Markdown; cautious or unknown stays plain.
+    #[test]
+    fn a_full_share_contact_row_is_not_plain() {
+        let plain = |contact_mode| {
+            let out = from_history(
+                HistoryEntry::User {
+                    text: "**hi**".into(),
+                    turn: Some(1),
+                    context: None,
+                    peer: Some(PeerOrigin {
+                        id: Uuid::nil(),
+                        from: "peer:sky/ops".into(),
+                        reply_to: None,
+                        scope: None,
+                        contact_mode,
+                    }),
+                    vision: None,
+                    channel: None,
+                },
+                &markdown::Options::default(),
+            );
+            match out.as_slice() {
+                [Entry::Card { kind, .. }] => kind.plain(),
+                other => panic!("{other:?}"),
+            }
+        };
+        assert!(!plain(Some(agent::ShareMode::Full)));
+        assert!(plain(Some(agent::ShareMode::Cautious)));
+        assert!(plain(None));
+    }
+
+    /// A full share's row draws Markdown, so `ui::line` (the one Markdown
+    /// paint path) stops control characters: raw ESC/BEL in the words and a
+    /// `&#27;` entity in a link target paint none; a clean link keeps its OSC 8.
+    /// A tab is not dropped with them: a code block's `a\tb` paints `a    b`.
+    #[test]
+    fn a_full_share_contact_row_paints_no_control_characters() {
+        use iocraft::prelude::{AnyElement, ElementExt as _, FlexDirection, View, element};
+        let out = from_history(
+            HistoryEntry::User {
+                text: "**now** \u{1b}[31mred ring\u{7}\n\n[x](http://a&#27;]52;c;Zm9v&#7;) and [ok](http://ok/)\n\n```\na\tb\n```".into(),
+                turn: Some(1),
+                context: None,
+                peer: Some(PeerOrigin {
+                    id: Uuid::nil(),
+                    from: "peer:sky/ops".into(),
+                    reply_to: None,
+                    scope: None,
+                    contact_mode: Some(agent::ShareMode::Full),
+                }),
+                vision: None,
+                channel: None,
+            },
+            &markdown::Options::default(),
+        );
+        let [Entry::Card { kind, text, .. }] = out.as_slice() else { panic!("{out:?}") };
+        assert!(!kind.plain());
+        let lines: Vec<AnyElement<'static>> = text.view().lines().map(crate::ui::line).collect();
+        let canvas = element!(View(flex_direction: FlexDirection::Column, width: 80u16) { #(lines) }).render(Some(80));
+        let plain = canvas.to_string();
+        assert!(!plain.chars().any(|c| c.is_control() && c != '\n'), "{plain:?}");
+        assert!(plain.contains("red ring") && plain.contains("x and ok"), "{plain:?}");
+        assert!(plain.contains("a    b"), "{plain:?}");
+        let mut ansi = Vec::new();
+        canvas.write_ansi(&mut ansi).unwrap();
+        let ansi = String::from_utf8(ansi).unwrap();
+        assert!(!ansi.contains('\u{7}'), "{ansi:?}");
+        // Every OSC 8 target is clean; the clean link still has one.
+        for target in ansi.split("\u{1b}]8;;").skip(1) {
+            let url = target.split("\u{1b}\\").next().unwrap();
+            assert!(!url.contains(char::is_control), "{ansi:?}");
+        }
+        assert!(ansi.contains("\u{1b}]8;;http://ok/\u{1b}\\"), "{ansi:?}");
+        assert!(!ansi.contains("52;c;"), "{ansi:?}");
+    }
+
     /// A session search hit for tests.
     fn search_session_hit(session: SessionId, seq: Option<i64>) -> agent::search::SearchHit {
         use ::search::MatchRange;

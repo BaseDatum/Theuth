@@ -188,3 +188,144 @@ async fn t1_t7_replica_displays_the_owners_turn_and_acts_on_nothing() {
     a.close().await;
     b.close().await;
 }
+
+/// 0065: a contact's message consumed on A carries its typed provenance
+/// (`messages.peer`) to a replica both ways one learns rows, the log and a
+/// snapshot, though neither replica holds A's exchange record.
+#[tokio::test]
+async fn peer_provenance_rides_the_log_and_a_snapshot() {
+    use agent::ShareMode;
+    use agent::store::communication::AcceptExchange;
+    use sessionsync::apply::{apply_snapshot, build_snapshot};
+    let (a, b, c) = (engine("a").await, engine("b").await, engine("c").await);
+    let chat = session_on(&a.store).await;
+    let to = format!("session:{chat}");
+    let r = a
+        .store
+        .accept_exchange(&AcceptExchange {
+            sender: "peer:sky/ops",
+            recipient: &to,
+            sender_session: None,
+            recipient_session: Some(chat),
+            request_id: Some("r1"),
+            reply_to: None,
+            request_scope: None,
+            generation: 1,
+            body: "hi",
+        })
+        .await
+        .unwrap();
+    a.store
+        .set_exchange_contact(r.id, ShareMode::Full, None)
+        .await
+        .unwrap();
+    a.store
+        .consume_exchange(r.id, chat, 1, genai::chat::ChatMessage::user("hi"))
+        .await
+        .unwrap()
+        .unwrap();
+    let want = a.store.peer_origins(chat).await.unwrap();
+    assert_eq!(
+        want.values()
+            .map(|o| (o.id, o.contact_mode))
+            .collect::<Vec<_>>(),
+        [(r.id, Some(ShareMode::Full))]
+    );
+
+    b.pull(&a).await;
+    assert!(b.store.consumed_exchanges(chat).await.unwrap().is_empty());
+    assert_eq!(b.store.peer_origins(chat).await.unwrap(), want, "log");
+
+    let snap = build_snapshot(&a.store, &a.id()).await.unwrap();
+    apply_snapshot(&c.store, &snap).await.unwrap();
+    assert!(c.store.consumed_exchanges(chat).await.unwrap().is_empty());
+    assert_eq!(c.store.peer_origins(chat).await.unwrap(), want, "snapshot");
+    a.close().await;
+    b.close().await;
+    c.close().await;
+}
+
+/// One `messages` INSERT captured on a table shaped as 2.20.1 has it (0064:
+/// no 0065 `peer`), as that engine's `sqlite3session` writes it.
+fn changeset_of_a_0064_message(session: &str, seq: i64, body: &str) -> Vec<u8> {
+    use libsqlite3_sys as ffi;
+    use std::ffi::CString;
+    unsafe fn exec(db: *mut ffi::sqlite3, sql: &str) {
+        let sql = CString::new(sql).unwrap();
+        let rc = unsafe {
+            ffi::sqlite3_exec(
+                db,
+                sql.as_ptr(),
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, ffi::SQLITE_OK);
+    }
+    unsafe {
+        let mut db = std::ptr::null_mut();
+        assert_eq!(
+            ffi::sqlite3_open(c":memory:".as_ptr(), &mut db),
+            ffi::SQLITE_OK
+        );
+        exec(
+            db,
+            "CREATE TABLE messages (session_id TEXT NOT NULL, seq INTEGER NOT NULL, body TEXT NOT NULL, \
+             excluded TEXT NULL, vision TEXT NULL, at TEXT NULL, thinking_ms INTEGER NULL, \
+             advisory TEXT NULL, channel TEXT NULL, moved TEXT NULL, PRIMARY KEY (session_id, seq))",
+        );
+        let mut s = std::ptr::null_mut();
+        assert_eq!(
+            ffi::sqlite3session_create(db, c"main".as_ptr(), &mut s),
+            ffi::SQLITE_OK
+        );
+        assert_eq!(
+            ffi::sqlite3session_attach(s, c"messages".as_ptr()),
+            ffi::SQLITE_OK
+        );
+        exec(
+            db,
+            &format!(
+                "INSERT INTO messages (session_id, seq, body) VALUES ('{session}', {seq}, '{}')",
+                body.replace('\'', "''")
+            ),
+        );
+        let (mut n, mut p) = (0, std::ptr::null_mut());
+        assert_eq!(
+            ffi::sqlite3session_changeset(s, &mut n, &mut p),
+            ffi::SQLITE_OK
+        );
+        let out = std::slice::from_raw_parts(p.cast::<u8>(), usize::try_from(n).unwrap()).to_vec();
+        ffi::sqlite3_free(p);
+        ffi::sqlite3session_delete(s);
+        ffi::sqlite3_close(db);
+        out
+    }
+}
+
+/// A 2.20.1 peer's row (its `messages` one column short of 0065) still
+/// applies on a 65 store: nothing is skipped, the row lands, `peer` is NULL.
+#[tokio::test]
+async fn a_pre_0065_peers_message_row_applies_with_no_provenance() {
+    let (a, b) = (engine("na").await, engine("nb").await);
+    let chat = session_on(&a.store).await;
+    b.pull(&a).await;
+    let body = serde_json::to_string(&genai::chat::ChatMessage::user("from 2.20.1")).unwrap();
+    let row = sessionsync::types::LogRow {
+        seq: u64::try_from(a.store.log_seq()).unwrap() + 1,
+        session_id: chat.to_string(),
+        epoch: 1,
+        changeset: changeset_of_a_0064_message(&chat.to_string(), 0, &body),
+        hlc: String::new(),
+    };
+    assert_eq!(
+        apply_log_row(&b.store, &a.id(), &row).await.unwrap(),
+        Applied::Applied
+    );
+    let got = b.store.messages(chat).await.unwrap();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(b.store.peer_origins(chat).await.unwrap().is_empty());
+    a.close().await;
+    b.close().await;
+}

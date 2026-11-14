@@ -277,7 +277,7 @@ impl Peers {
                 if cx.core.session == Some(event.session) {
                     if self.peer_shown.len() == 8 { self.peer_shown.pop_front(); }
                     self.peer_shown.push_back(event.text.clone());
-                    cx.core(CoreAction::InterjectCard(peer_card(WrapperOrigin { id: event.origin.id, from: &event.origin.from, reply_to: event.origin.reply_to }, event.text, "")));
+                    cx.core(CoreAction::InterjectCard(peer_card(WrapperOrigin { id: event.origin.id, from: &event.origin.from, reply_to: event.origin.reply_to, full: event.origin.contact_mode == Some(agent::ShareMode::Full) }, event.text, "")));
                 }
             }
             Msg::Agent => {
@@ -353,7 +353,7 @@ impl Component for Peers {
                     (String::new(), words)
                 });
                 let title = peer_title(origin, &facts);
-                return WrapperView::Card { kind: kind(&title), title, body: words };
+                return WrapperView::Card { kind: kind(if origin.full { "" } else { title.as_str() }), title, body: words };
             }
             return if row.live && contact_row(row.body).is_some() { WrapperView::Hidden } else { WrapperView::Fallback };
         }
@@ -415,7 +415,7 @@ fn peer_title(origin: WrapperOrigin<'_>, facts: &str) -> String {
 fn peer_card(origin: WrapperOrigin<'_>, body: String, facts: &str) -> TranscriptCard {
     let title = peer_title(origin, facts);
     TranscriptCard { entry_key: None, group: "peer", key: origin.id, glyph: "⟵", color: crate::ui::FAIENCE,
-        plain: outside_card(kind(""), &title), title, body: markdown::Text::complete(&body), expanded: false }
+        plain: !origin.full && outside_card(kind(""), &title), title, body: markdown::Text::complete(&body), expanded: false }
 }
 
 /// 183 §11.5/§11.6: a peer row a contact wrapper opened, as `(facts, words)`:
