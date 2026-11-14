@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-use agent::AgentEvent;
+use agent::{AgentEvent, PeerMessageChanged};
 use agent::store::Store;
 use bytes::Bytes;
 use futures::{SinkExt as _, StreamExt as _};
@@ -280,6 +280,7 @@ impl EventRelay {
         rt.subscribe::<Self, AskRequested>(&actor).await;
         rt.subscribe::<Self, AskResolved>(&actor).await;
         rt.subscribe::<Self, JobEvent>(&actor).await;
+        rt.subscribe::<Self, PeerMessageChanged>(&actor).await;
         rt.subscribe::<Self, cells::CellEvent>(&actor).await;
         actor
     }
@@ -559,6 +560,16 @@ impl Message<AskResolved> for EventRelay {
         if let Some(session) = self.prompts.remove(&ev.id.0) {
             self.bus(session, "AskResolved", &ev);
         }
+    }
+}
+
+impl Message<PeerMessageChanged> for EventRelay {
+    type Reply = ();
+
+    /// A receipt changed on the owner (answered, replied, failed): a viewer's
+    /// "Expects a reply" chip refetches through the forwarded `list_peer_messages`.
+    async fn handle(&mut self, ev: PeerMessageChanged, _: &mut Context<Self, ()>) {
+        self.bus(ev.session, "PeerMessageChanged", &ev);
     }
 }
 
@@ -1232,6 +1243,42 @@ mod tests {
             !pending(id2),
             "the end of the follow withdraws relayed cards"
         );
+        t.stores.0.close().await;
+        t.stores.1.close().await;
+    }
+
+    /// An exchange's receipt changing on the owner reaches a viewer that
+    /// follows the session as a `Relayed` `PeerMessageChanged`, so its
+    /// pending-answer view refetches.
+    #[tokio::test]
+    async fn a_peer_message_change_on_the_owner_is_relayed_to_the_viewer() {
+        let mut t = two(false).await;
+        let (tap_tx, mut tapped) = mpsc::unbounded_channel();
+        let tap =
+            RelayTap::spawn_with_mailbox(RelayTap(tap_tx, None), runtime::subscriber_mailbox());
+        t.rt_f.subscribe::<RelayTap, Relayed>(&tap).await;
+        t.front.tell(Follow(t.session)).await.unwrap();
+        assert_eq!(t.seen.recv().await, Some("watch"));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let id = uuid::Uuid::now_v7();
+        t.rt_o
+            .publish(PeerMessageChanged {
+                session: t.session,
+                id,
+                state: agent::PeerMessageState::Replied,
+            })
+            .await;
+        let got = tokio::time::timeout(Duration::from_secs(5), tapped.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (got.session, got.kind.as_str()),
+            (t.session, "PeerMessageChanged")
+        );
+        let ev: PeerMessageChanged = serde_json::from_value(got.event).unwrap();
+        assert_eq!((ev.session, ev.id), (t.session, id));
         t.stores.0.close().await;
         t.stores.1.close().await;
     }

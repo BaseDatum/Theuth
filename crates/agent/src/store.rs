@@ -2537,6 +2537,16 @@ impl Store {
         .bind(&sid)
         .execute(&mut *tx)
         .await?;
+        // 0065: an exchange consumed into the deleted tail links no row any
+        // more; left set, its seq would name whatever row reuses it (and the
+        // backfill would stamp that row with this exchange's provenance).
+        sqlx::query(
+            "UPDATE peer_exchanges SET history_seq = NULL WHERE recipient_session = ?1 \
+             AND history_seq >= (SELECT cut_at FROM sessions WHERE id = ?1)",
+        )
+        .bind(&sid)
+        .execute(&mut *tx)
+        .await?;
         // 109 §3.2: the journal rows anchored at the cut go with their messages.
         durability::cut_journal_in(&mut tx, &sid).await?;
         sqlx::query(
@@ -2726,8 +2736,8 @@ impl Store {
         }
         accounting::ensure_owner_in(&mut tx, id, None).await?;
         sqlx::query(
-            "INSERT INTO messages (session_id, seq, body, excluded, vision, at, advisory, moved, channel) \
-             SELECT ?1, seq, body, excluded, vision, at, advisory, moved, channel FROM messages WHERE session_id = ?2 AND seq < ?3 \
+            "INSERT INTO messages (session_id, seq, body, excluded, vision, at, advisory, moved, channel, peer) \
+             SELECT ?1, seq, body, excluded, vision, at, advisory, moved, channel, peer FROM messages WHERE session_id = ?2 AND seq < ?3 \
              AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?2), 9223372036854775807)",
         )
         .bind(&new)

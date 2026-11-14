@@ -163,12 +163,22 @@ impl AgentMessagingApiServer for Server {
         session: SessionId,
         id: Uuid,
     ) -> RpcResult<PeerRecord> {
-        self.authorize_fwd(ext, session).await?;
-        // The owner holds the session's exchange records (a replica has none).
-        if let Some(r) = forward::route(ext, session, "peer_message", (session, id)).await? {
-            return Ok(r);
-        }
-        ask::<Agents, _>(agent::AGENT_ACTOR, GetPeerMessage { session, id }).await
+        local_first(
+            async {
+                self.authorize(ext, session).await?;
+                ask::<Agents, _>(agent::AGENT_ACTOR, GetPeerMessage { session, id }).await
+            },
+            async {
+                self.authorize_fwd(ext, session).await?;
+                if let Some(r) =
+                    forward::route(ext, session, "peer_message", (session, id)).await?
+                {
+                    return Ok(r);
+                }
+                ask::<Agents, _>(agent::AGENT_ACTOR, GetPeerMessage { session, id }).await
+            },
+        )
+        .await
     }
 
     async fn list_peer_messages(
@@ -259,4 +269,54 @@ impl AgentMessagingApiServer for Server {
 pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
     rpc_core::DescribedModule::new(AgentMessagingApiServer::into_rpc(server), rpc_descriptors())
         .expect("agent RPC descriptors")
+}
+
+/// `peer_message` on a mesh: this engine's record when it holds one, else the
+/// owner's. Exchange records are engine-local and no other engine updates
+/// them, so a local hit is current: an old owner keeps answering for its own
+/// records whether the new owner is reachable or not. `owner` is not polled
+/// on a local hit.
+async fn local_first<T>(
+    local: impl Future<Output = RpcResult<T>>,
+    owner: impl Future<Output = RpcResult<T>>,
+) -> RpcResult<T> {
+    match local.await {
+        Ok(r) => Ok(r),
+        Err(_) => owner.await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::local_first;
+    use jsonrpsee::types::ErrorObjectOwned;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn err(code: i32) -> ErrorObjectOwned {
+        ErrorObjectOwned::owned(code, "x", None::<()>)
+    }
+
+    /// A local record answers even while the owner is unreachable (-32010),
+    /// and the owner is never asked then; a local miss is the owner's answer
+    /// (or its error) verbatim.
+    #[tokio::test]
+    async fn a_local_record_answers_before_the_owner_is_asked() {
+        let asked = AtomicBool::new(false);
+        let offline = async {
+            asked.store(true, Ordering::SeqCst);
+            Err::<u8, _>(err(-32010))
+        };
+        assert_eq!(local_first(async { Ok(7) }, offline).await.unwrap(), 7);
+        assert!(!asked.load(Ordering::SeqCst), "the owner was asked");
+        assert_eq!(
+            local_first(async { Err(err(-32000)) }, async { Ok(9u8) })
+                .await
+                .unwrap(),
+            9
+        );
+        let e = local_first(async { Err::<u8, _>(err(-32000)) }, async { Err(err(-32010)) })
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), -32010);
+    }
 }

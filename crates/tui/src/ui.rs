@@ -1149,7 +1149,10 @@ fn plain(
 }
 
 /// One rendered markdown line. `Style` is renderer-agnostic; this is the
-/// iocraft mapping.
+/// iocraft mapping. Every span's text and link target may be remote (a
+/// contact's words; CommonMark decodes `&#27;` even inside a link target):
+/// no control character reaches the terminal, and a link whose target holds
+/// one keeps its text but loses its OSC 8 hyperlink.
 pub(crate) fn line(l: &markdown::Line) -> AnyElement<'static> {
     if l.is_empty() {
         // An empty `Text` measures zero rows.
@@ -1158,7 +1161,12 @@ pub(crate) fn line(l: &markdown::Line) -> AnyElement<'static> {
     let contents: Vec<MixedTextContent> = l
         .iter()
         .map(|s| {
-            let mut c = MixedTextContent::new(&s.text);
+            let text = if s.text.contains(char::is_control) {
+                std::borrow::Cow::Owned(s.text.replace(char::is_control, ""))
+            } else {
+                std::borrow::Cow::Borrowed(s.text.as_str())
+            };
+            let mut c = MixedTextContent::new(text);
             if s.style.bold {
                 c = c.weight(Weight::Bold);
             }
@@ -1177,7 +1185,7 @@ pub(crate) fn line(l: &markdown::Line) -> AnyElement<'static> {
             if s.style.code {
                 c = c.color(FAIENCE);
             }
-            if let Some(url) = &s.style.link {
+            if let Some(url) = s.style.link.as_ref().filter(|u| !u.contains(char::is_control)) {
                 c = c.decoration(TextDecoration::Underline).hyperlink(url);
             }
             c

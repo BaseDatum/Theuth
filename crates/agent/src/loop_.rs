@@ -9044,6 +9044,23 @@ pub(crate) fn peer_wrapper(
     )
 }
 
+/// Whether `text` (a stored user row) holds the wrapper [`peer_wrapper`]
+/// wrote for `record`: its head through `id` and its body, exactly as built
+/// here. The clock stamp before it and `at`/`after`/`reply_expected` depend
+/// on the moment of delivery, so this is containment of the reproducible
+/// parts, never parsing. Rows wrapped otherwise (pre-190 contact turns) read
+/// `false`.
+pub(crate) fn peer_wrapped(record: &PeerRecord, text: &str) -> bool {
+    let head = format!(
+        "<message from=\"{}\" id=\"{}\"",
+        attr(&record.from),
+        record.receipt.id
+    );
+    let body = format!(">\n{}\n</message>", neutralise_delimiters(&record.text));
+    text.find(&head)
+        .is_some_and(|i| text[i + head.len()..].contains(&body))
+}
+
 /// XML attribute escape.
 fn attr(s: &str) -> String {
     s.replace('&', "&amp;")
