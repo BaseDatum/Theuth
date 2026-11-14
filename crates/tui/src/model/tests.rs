@@ -1501,12 +1501,13 @@
     /// A full share's row draws Markdown, so `ui::line` (the one Markdown
     /// paint path) stops control characters: raw ESC/BEL in the words and a
     /// `&#27;` entity in a link target paint none; a clean link keeps its OSC 8.
+    /// A tab is not dropped with them: a code block's `a\tb` paints `a    b`.
     #[test]
     fn a_full_share_contact_row_paints_no_control_characters() {
         use iocraft::prelude::{AnyElement, ElementExt as _, FlexDirection, View, element};
         let out = from_history(
             HistoryEntry::User {
-                text: "**now** \u{1b}[31mred ring\u{7}\n\n[x](http://a&#27;]52;c;Zm9v&#7;) and [ok](http://ok/)".into(),
+                text: "**now** \u{1b}[31mred ring\u{7}\n\n[x](http://a&#27;]52;c;Zm9v&#7;) and [ok](http://ok/)\n\n```\na\tb\n```".into(),
                 turn: Some(1),
                 context: None,
                 peer: Some(PeerOrigin {
@@ -1528,6 +1529,7 @@
         let plain = canvas.to_string();
         assert!(!plain.chars().any(|c| c.is_control() && c != '\n'), "{plain:?}");
         assert!(plain.contains("red ring") && plain.contains("x and ok"), "{plain:?}");
+        assert!(plain.contains("a    b"), "{plain:?}");
         let mut ansi = Vec::new();
         canvas.write_ansi(&mut ansi).unwrap();
         let ansi = String::from_utf8(ansi).unwrap();

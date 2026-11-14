@@ -3505,27 +3505,27 @@ mod tests {
         assert!(store.peer_binding("bob").await.unwrap().is_none());
     }
 
-    /// A full contact's message to `a`, consumed as the session loop stores it
-    /// (behind a clock stamp, inside [`crate::loop_::peer_wrapper`]): its seq and
-    /// the provenance written with it.
+    /// A full contact's message to `a`, consumed as the full path stores it:
+    /// accepted under the authenticated `peer:<binding>`, then (full.rs
+    /// `deliver_full` → `full_intake`) shown under `peer:<contact>`, unscoped,
+    /// wrapped by [`crate::loop_::peer_wrapper`] behind a clock stamp. Its seq
+    /// and the provenance written with it.
     async fn consume_contact(store: &Store, a: SessionId) -> (i64, PeerOrigin) {
         use crate::communication::ShareMode;
         let to = format!("session:{a}");
+        let sender = format!("peer:{}", Uuid::now_v7());
         let r = store
-            .accept_exchange(&accept(
-                "peer:sky/ops",
-                &to,
-                None,
-                Some(a),
-                "hi <b>there</b>",
-            ))
+            .accept_exchange(&accept(&sender, &to, None, Some(a), "hi <b>there</b>"))
             .await
             .unwrap();
         store
             .set_exchange_contact(r.id, ShareMode::Full, None)
             .await
             .unwrap();
-        let record = store.exchange_record(r.id).await.unwrap().unwrap();
+        let mut record = store.exchange_record(r.id).await.unwrap().unwrap();
+        record.contact_mode = Some(ShareMode::Full);
+        record.from = "peer:sky-moore".into();
+        record.request_scope = None;
         let text = format!(
             "[Fri 13 Nov 22:32]\n{}",
             crate::loop_::peer_wrapper(&record, true, chrono::Local::now())

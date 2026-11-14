@@ -272,10 +272,11 @@ pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule 
 }
 
 /// `peer_message` on a mesh: this engine's record when it holds one, else the
-/// owner's. Exchange records are engine-local and no other engine updates
-/// them, so a local hit is current: an old owner keeps answering for its own
-/// records whether the new owner is reachable or not. `owner` is not polled
-/// on a local hit.
+/// owner's. Exchange records are engine-local, so an old owner keeps answering
+/// for its own records whether the new owner is reachable or not. Not always
+/// current: for a request this session sent before its ownership moved, the
+/// reply lands on the new owner, and the old owner's copy keeps reading
+/// "awaiting reply". `owner` is not polled on a local hit.
 async fn local_first<T>(
     local: impl Future<Output = RpcResult<T>>,
     owner: impl Future<Output = RpcResult<T>>,

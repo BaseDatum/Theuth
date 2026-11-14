@@ -1151,7 +1151,8 @@ fn plain(
 /// One rendered markdown line. `Style` is renderer-agnostic; this is the
 /// iocraft mapping. Every span's text and link target may be remote (a
 /// contact's words; CommonMark decodes `&#27;` even inside a link target):
-/// no control character reaches the terminal, and a link whose target holds
+/// no control character reaches the terminal (a tab is four spaces, no tab
+/// stops: code blocks keep their indentation), and a link whose target holds
 /// one keeps its text but loses its OSC 8 hyperlink.
 pub(crate) fn line(l: &markdown::Line) -> AnyElement<'static> {
     if l.is_empty() {
@@ -1162,7 +1163,15 @@ pub(crate) fn line(l: &markdown::Line) -> AnyElement<'static> {
         .iter()
         .map(|s| {
             let text = if s.text.contains(char::is_control) {
-                std::borrow::Cow::Owned(s.text.replace(char::is_control, ""))
+                let mut out = String::with_capacity(s.text.len() + 3);
+                for ch in s.text.chars() {
+                    match ch {
+                        '\t' => out.push_str("    "),
+                        c if c.is_control() => {}
+                        c => out.push(c),
+                    }
+                }
+                std::borrow::Cow::Owned(out)
             } else {
                 std::borrow::Cow::Borrowed(s.text.as_str())
             };
