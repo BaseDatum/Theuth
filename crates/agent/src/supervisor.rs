@@ -11337,14 +11337,27 @@ fn check_files(files: &[PathBuf]) -> Result<(), String> {
     Ok(())
 }
 
+/// Common non-routing configuration for built-in and complete protocol targets.
+fn client_builder() -> genai::ClientBuilder {
+    Client::builder()
+}
+
+/// Complete provider targets need no resolvers. Reuse their connection pool and
+/// return initialization errors rather than panicking on the request path.
+pub(crate) fn protocol_client() -> Result<&'static Client, String> {
+    static CLIENT: std::sync::LazyLock<Result<Client, String>> =
+        std::sync::LazyLock::new(|| client_builder().build().map_err(|e| e.to_string()));
+    CLIENT.as_ref().map_err(Clone::clone)
+}
+
 /// genai client whose keys come from the secrets vault (read per request, so
 /// a new key is live), falling back to each adapter's env var. A login in
 /// force (design doc 05 §2.3) rewrites the target instead: OpenAI → the
 /// ChatGPT Codex backend; Anthropic → the same Messages API with the Claude
 /// Code bearer and betas.
-fn client(auth: Auth) -> anyhow::Result<Client> {
+pub(crate) fn client(auth: Auth) -> anyhow::Result<Client> {
     let keys = auth.clone();
-    Ok(Client::builder()
+    Ok(client_builder()
         .with_auth_resolver_fn(move |m: ModelIden| {
             // SigV4's AuthData is a profile, not a vault key. Resolve it per request below.
             if m.adapter_kind == AdapterKind::BedrockSigv4 {
@@ -11360,6 +11373,8 @@ fn client(auth: Auth) -> anyhow::Result<Client> {
             // fail before any request left the process.
             Ok(keys.key(m.adapter_kind.as_lower_str()).map(AuthData::Key))
         })
+        // Login rewrites apply only to genai-resolved built-in ids.
+        // Theuth-built protocol targets never pass through this resolver.
         .with_service_target_resolver(ServiceTargetResolver::from_resolver_async_fn(
             move |mut target: ServiceTarget| -> Pin<
                 Box<dyn Future<Output = genai::resolver::Result<ServiceTarget>> + Send>,
