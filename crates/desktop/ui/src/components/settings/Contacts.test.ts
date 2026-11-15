@@ -18,8 +18,10 @@ import type { Contact } from "@/rpc/bindings/method.a2a.output"
 import type { FirstWaiting } from "@/rpc/bindings/method.a2a.output"
 import type { Export } from "@/rpc/bindings/method.a2a.output"
 import type { NearbyAgent } from "@/rpc/bindings/method.a2a.output"
+import type { NearbyEngine } from "@/rpc/bindings/method.nodes.output"
 import type { PairCeremony } from "@/rpc/bindings/method.a2a.output"
 import { dispatch } from '@/store/sessions'
+import { useConnection } from '@/store/connection'
 import { Dialog } from '@/components/ui/dialog'
 import { AddContact, CeremonyBody, type CeremonyView, ContactAccess, Contacts, ContactsTab, OLD_ENGINE, ShareDialog, SharingItems } from './Contacts'
 import { toast } from 'sonner'
@@ -79,6 +81,7 @@ const NEARBY: NearbyAgent[] = [
   { name: 'Shopbot', service: '_agent._tcp', addr: '192.168.8.40:8080', eid: null, card: 'http://192.168.8.40:8080/.well-known/agent-card.json', verified: false },
   { name: 'Bob', service: '_a2a._tcp', addr: '192.168.8.21:4433', eid: 'k3j9q2m4x7p1r8t5', card: '/.well-known/agent-card.json', verified: true },
 ]
+const MESH_NEARBY: NearbyEngine = { id: 'studio-machine', name: 'Studio', os_name: 'macOS', addr: '192.168.8.22', seen_ms: NOW }
 const CER: PairCeremony = { id: 'c1', peer: 'k3j9q2m4x7p1r8t5w6y0zabcdefgh', name: 'Bob', os_name: 'macOS', addr: "Bob's MacBook", code: '482913', state: 'waiting', expires_ms: NOW + 120_000 }
 // What `a2a_status` lists: the contact bob (as a peer, with its chat export) beside a real HTTP peer, lab.
 const A2A: A2aStatus = {
@@ -103,6 +106,8 @@ const api = {
   a2a_exports: vi.fn(async (): Promise<Export[]> => EXPORTS),
   contact_window: vi.fn(async (open: boolean) => (open ? { ticket: 'theuth-contact:1.MFRGGZDFMZTWQ2LK', expires_ms: NOW + 600_000 } : null)),
   contact_nearby: vi.fn(async () => NEARBY),
+  mesh_nearby: vi.fn(async (): Promise<NearbyEngine[]> => []),
+  mesh_nearby_watch: vi.fn(async (_on: boolean) => null),
   contact_pair: vi.fn(async (_t: unknown) => CER),
   contact_answer: vi.fn(async (_id: string, _accept: boolean) => null),
   contact_update: vi.fn(echoUpdate),
@@ -117,7 +122,7 @@ const api = {
     { id: 's-old', parent: null, archived: true, title: 'Old', created_at: '2026-11-09T10:00:00Z', here: true, owner: 'me' },
   ]),
   agents_list: vi.fn(async () => [{ file: { name: 'research' }, desk: 'd1', status: 'active' }]),
-  mesh_status: vi.fn(async () => ({ self_id: 'me', self_name: 'studio', peers: [{ id: 'xeus', name: 'xeus' }] })),
+  mesh_status: vi.fn(async () => ({ self_id: 'me', self_name: 'studio', peers: [{ id: 'xeus', name: 'xeus' }], nearby: true })),
   attention_dismiss: vi.fn(async () => null),
   attention_snooze: vi.fn(async () => null),
   sandboxes_list: vi.fn(async () => []),
@@ -161,6 +166,9 @@ const click = (label: string) =>
 
 beforeEach(() => {
   vi.clearAllMocks()
+  useConnection.setState(useConnection.getInitialState())
+  api.contact_nearby.mockResolvedValue(NEARBY)
+  api.mesh_nearby.mockResolvedValue([])
   api.contact_list.mockImplementation(async () => [BOB, ALICE])
   api.contact_update.mockImplementation(echoUpdate)
   api.contact_window.mockImplementation(async (open: boolean) => (open ? { ticket: 'theuth-contact:1.MFRGGZDFMZTWQ2LK', expires_ms: NOW + 600_000 } : null))
@@ -355,6 +363,93 @@ test('Add contact: opens the window, Nearby lists theuth agents first and other 
   expect(api.contact_pair).toHaveBeenCalledWith({ kind: 'card_url', url: 'http://192.168.8.40:8080/.well-known/agent-card.json' })
   await unmount()
   expect(api.contact_window).toHaveBeenLastCalledWith(false)
+})
+
+test('Add contact: mesh Nearby lease renews only while connected, rearms on reconnect and closes on unmount', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+  try {
+    const { unmount } = await mount(createElement(AddContact, { onClose: vi.fn(), onAccess: vi.fn() }))
+    expect(api.mesh_nearby_watch.mock.calls).toEqual([[true]])
+    await run(() => vi.advanceTimersByTime(10_000))
+    expect(api.mesh_nearby_watch.mock.calls).toEqual([[true], [true]])
+    await run(() => useConnection.setState({ state: 'reconnecting' }))
+    await run(() => vi.advanceTimersByTime(30_000))
+    expect(api.mesh_nearby_watch).toHaveBeenCalledTimes(2)
+    await run(() => useConnection.setState({ state: 'open' }))
+    expect(api.mesh_nearby_watch.mock.calls).toEqual([[true], [true], [true]])
+    await unmount()
+    expect(api.mesh_nearby_watch).toHaveBeenLastCalledWith(false)
+    await run(() => vi.advanceTimersByTime(30_000))
+    expect(api.mesh_nearby_watch).toHaveBeenCalledTimes(4)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('Add contact: mesh-only sightings are muted, non-actionable hints instead of an empty list', async () => {
+  api.contact_nearby.mockResolvedValue([])
+  api.mesh_nearby.mockResolvedValue([MESH_NEARBY])
+  await mount(createElement(AddContact, { onClose: vi.fn(), onAccess: vi.fn() }))
+  const row = rowOf('Open Add contact on Studio to add it here.')
+  expect(row.textContent).toContain('macOS')
+  expect(row.classList.contains('text-fg-tertiary')).toBe(true)
+  expect(row.querySelector('button, a, [tabindex], [role=button]')).toBeNull()
+  expect(body()).not.toContain('No agent found')
+  expect(body()).not.toContain('No A2A agent found')
+})
+
+test('Add contact: mesh hints follow agent rows and disappear when an A2A advert arrives', async () => {
+  api.mesh_nearby.mockResolvedValue([MESH_NEARBY])
+  const { qc } = await mount(createElement(AddContact, { onClose: vi.fn(), onAccess: vi.fn() }))
+  expect(body().indexOf('Shopbot')).toBeLessThan(body().indexOf('Open Add contact on Studio'))
+  await run(() => qc.setQueryData(queryKeys.contactNearby, [...NEARBY, { ...NEARBY[1]!, name: 'Studio', eid: MESH_NEARBY.id }]))
+  expect(body()).not.toContain('Open Add contact on Studio')
+  expect(button('Add Studio')?.disabled).toBe(false)
+})
+
+test.each([
+  ['a short A2A hint', 'agent-machine-123456789', 'agent-machine-12'],
+  ['a short mesh id', 'agent-machine-12', 'agent-machine-123456789'],
+])('Add contact: %s deduplicates in either prefix direction and existing contact endpoints stay hidden', async (_label, id, eid) => {
+  api.contact_nearby.mockResolvedValue([{ ...NEARBY[1]!, eid }])
+  api.mesh_nearby.mockResolvedValue([
+    { ...MESH_NEARBY, id, name: 'Advertised' },
+    { ...MESH_NEARBY, id: BOB.endpoint, name: 'Already a contact' },
+    MESH_NEARBY,
+  ])
+  await mount(createElement(AddContact, { onClose: vi.fn(), onAccess: vi.fn() }))
+  expect(body()).not.toContain('Advertised')
+  expect(body()).not.toContain('Already a contact')
+  expect(body()).toContain('Open Add contact on Studio to add it here.')
+})
+
+test('Add contact: no agents or hints explains that the other theuth must open Add contact', async () => {
+  api.contact_nearby.mockResolvedValue([])
+  await mount(createElement(AddContact, { onClose: vi.fn(), onAccess: vi.fn() }))
+  expect(body()).toContain('No agent found on this network yet. Another theuth shows here while Add contact is open on it.')
+  expect(body()).not.toContain('No A2A agent found')
+})
+
+test('Add contact: turning mesh Nearby off hides cached hints without hiding A2A agents', async () => {
+  api.mesh_nearby.mockResolvedValue([MESH_NEARBY])
+  const { qc } = await mount(createElement(AddContact, { onClose: vi.fn(), onAccess: vi.fn() }))
+  expect(body()).toContain('Open Add contact on Studio to add it here.')
+  await run(() => qc.setQueryData(['mesh'], { ...qc.getQueryData<object>(['mesh']), nearby: false }))
+  expect(body()).not.toContain('Open Add contact on Studio')
+  expect(button('Add Bob')?.disabled).toBe(false)
+})
+
+test.each(['mesh_nearby', 'mesh_nearby_watch'])('Add contact: engines without %s receive no mesh Nearby calls or cached hints', async (method) => {
+  const discovery = useConnection.getState().discovery
+  useConnection.setState({ discovery: { ...discovery, unavailable: new Set([method]) } })
+  const qc = qcNew()
+  qc.setQueryData(queryKeys.meshNearby, [MESH_NEARBY])
+  const { unmount } = await mount(createElement(AddContact, { onClose: vi.fn(), onAccess: vi.fn() }), qc)
+  expect(body()).not.toContain('Open Add contact on Studio')
+  expect(button('Add Bob')?.disabled).toBe(false)
+  await unmount()
+  expect(api.mesh_nearby).not.toHaveBeenCalled()
+  expect(api.mesh_nearby_watch).not.toHaveBeenCalled()
 })
 
 test('Invite: the ticket as text and QR, Copy; pasting a ticket or a card URL starts the ceremony', async () => {
