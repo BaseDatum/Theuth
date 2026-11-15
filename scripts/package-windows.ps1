@@ -184,6 +184,47 @@ try {
     [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $Binaries 'onnxruntime.dll'), $true)
 } finally { $archive.Dispose() }
 
+function Invoke-CompanionSmoke {
+    # Runs Theuth.Companion.exe --probe-notify N and reports whether it exited 0.
+    # A WinUI 3 process started from session 0 (ssh, a service, a CI agent) has no interactive window
+    # station: Microsoft.UI.Input.dll fail-fasts (0xC0000602) while the app is still starting, before the
+    # probe writes its first log line. So when this script runs in session 0 the smoke is executed on the
+    # logged-on desktop through a transient scheduled task, and skipped only when nobody is logged on.
+    param([Parameter(Mandatory = $true)][string]$Exe, [int]$Seconds = 3, [int]$TimeoutSec = 90)
+    $me = (Get-Process -Id $PID).SessionId
+    if ($me -ne 0) {
+        $p = Start-Process -FilePath $Exe -ArgumentList '--probe-notify', "$Seconds" -PassThru
+        if (-not $p.WaitForExit($TimeoutSec * 1000)) { $p.Kill(); return @{ Ok = $false; Why = "did not exit within $TimeoutSec s"; Note = '' } }
+        if ($p.ExitCode -ne 0) { return @{ Ok = $false; Why = "exited $($p.ExitCode)"; Note = '' } }
+        return @{ Ok = $true; Why = ''; Note = 'companion smoke: --probe-notify ran in this session' }
+    }
+    $desk = @(Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -ne 0 })
+    if ($desk.Count -eq 0) {
+        return @{ Ok = $true; Why = ''; Note = 'companion smoke: skipped -- session 0 has no interactive desktop to host WinUI; run the package from a desktop shell to exercise it' }
+    }
+    $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $name = "theuth-companion-smoke-$PID"
+    $act = New-ScheduledTaskAction -Execute $Exe -Argument "--probe-notify $Seconds"
+    $prn = New-ScheduledTaskPrincipal -UserId $sid -LogonType Interactive -RunLevel Limited
+    $set = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds $TimeoutSec)
+    $code = $null
+    try {
+        Register-ScheduledTask -TaskName $name -Action $act -Principal $prn -Settings $set -Force | Out-Null
+        $t0 = Get-Date
+        Start-ScheduledTask -TaskName $name
+        while (((Get-Date) - $t0).TotalSeconds -lt $TimeoutSec) {
+            Start-Sleep -Milliseconds 500
+            $info = Get-ScheduledTaskInfo -TaskName $name
+            if ($info.LastTaskResult -ne 267009 -and $info.LastRunTime -ge $t0.AddSeconds(-2)) { $code = $info.LastTaskResult; break }
+        }
+    } finally {
+        Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
+    }
+    if ($null -eq $code) { return @{ Ok = $false; Why = "did not finish in the logged-on session within $TimeoutSec s"; Note = '' } }
+    if ($code -ne 0) { return @{ Ok = $false; Why = ("exited 0x{0:X8} in the logged-on session" -f [uint32]$code); Note = '' } }
+    return @{ Ok = $true; Why = ''; Note = 'companion smoke: --probe-notify ran in the logged-on session (session 0 cannot host WinUI)' }
+}
+
 Write-Host "==> [3b/6] companion (Theuth.Companion.exe, 134 W5)"
 $CompanionBuild = Join-Path $Root 'crates/desktop/companion-windows/build.ps1'
 $CompanionOut = Join-Path $Root 'target/release/companion-windows'
@@ -192,11 +233,11 @@ $Companion = $null
 if (Test-Path $CompanionBuild) {
     Exec 'companion-windows/build.ps1' { pwsh -NoProfile -File $CompanionBuild -Configuration Release }
     if (-not (Test-Path $CompanionExe)) { Fail "$CompanionExe not produced by build.ps1" }
-    if ($env:THEUTH_SKIP_COMPANION_SMOKE -ne '1') {
+        if ($env:THEUTH_SKIP_COMPANION_SMOKE -ne '1') {
         # S2 on the release publish output (§5.7): Register() must succeed from the layout NSIS will install.
-        $probe = Start-Process -FilePath $CompanionExe -ArgumentList '--probe-notify', '3' -PassThru
-        if (-not $probe.WaitForExit(60000)) { $probe.Kill(); Fail "$CompanionExe --probe-notify 3 did not exit within 60 s" }
-        if ($probe.ExitCode -ne 0) { Fail "$CompanionExe --probe-notify 3 exited $($probe.ExitCode) (Register() smoke)" }
+        $smoke = Invoke-CompanionSmoke -Exe $CompanionExe -Seconds 3
+        if (-not $smoke.Ok) { Fail "$CompanionExe --probe-notify 3 $($smoke.Why) (Register() smoke)" }
+        Write-Host "    $($smoke.Note)"
     }
     $Companion = $CompanionOut
     Write-Host ("    {0} files, {1}" -f (Get-ChildItem $CompanionOut -Recurse -File).Count, (Format-Size ((Get-ChildItem $CompanionOut -Recurse -File | Measure-Object Length -Sum).Sum)))
