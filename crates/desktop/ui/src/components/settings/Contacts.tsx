@@ -30,6 +30,7 @@ import { PAIRED_RULE, SHARE_RULE, type Sharing, accessFocus, exportName, fingerp
 import { engineLabel } from '@/lib/owner'
 import { putPair, queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
+import { useConnection } from '@/store/connection'
 import type { Api } from '@/rpc/bindings/client'
 import type { Contact } from "@/rpc/bindings/method.a2a.output"
 import type { ContactMachine } from "@/rpc/bindings/method.a2a.output"
@@ -482,13 +483,19 @@ function windowCall<T>(call: () => Promise<T>): Promise<T> {
 /**
  * 183 §7.4, §12.7: Add contact… — opens the contact window (`contact_window(true)`, closed on unmount) and its two tabs:
  * Nearby agents (`contact_nearby`, patched by `contact_nearby` events) and Invite (this window's ticket as text and QR,
- * or paste theirs). A ceremony this side starts, or a stranger's that arrives while the window is open, replaces the
- * tabs with the code until it ends. "Choose what … may reach" calls `onAccess` with the new contact's endpoint id.
+ * or paste theirs). Holds the mesh Nearby lease too: unpaired machines without an A2A advert or an existing contact
+ * endpoint are hints to open Add contact there, not pairing actions. A ceremony this side starts, or a stranger's
+ * that arrives while the window is open, replaces the tabs with the code until it ends.
+ * "Choose what … may reach" calls `onAccess` with the new contact's endpoint id.
  */
 export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { onClose: () => void; onAccess: (peer: string | undefined) => void; tab?: 'nearby' | 'invite' }) {
   const canQuery1 = useQuerySupport(["contact_nearby"])
+  const canMeshNearby = useQuerySupport(["mesh_nearby", "mesh_nearby_watch"])
   const api = useApi()
   const qc = useQueryClient()
+  const connected = useConnection((c) => c.state === 'open')
+  const mesh = useMesh()
+  const contacts = useContacts()
   const [tab, setTab] = useState(initialTab)
   const [win, setWin] = useState<ContactWindow | null>(null)
   const [winError, setWinError] = useState<string | null>(null)
@@ -509,6 +516,20 @@ export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { 
   }, [])
   const ceremonies = useQuery<Record<string, PairCeremony>>({ queryKey: queryKeys.contactPair, queryFn: () => ({}), enabled: canQuery1 && (false), staleTime: Infinity }).data
   const nearby = useQuery({ queryKey: queryKeys.contactNearby, queryFn: () => api.contact_nearby(), staleTime: 0, enabled: canQuery1 && (win !== null) })
+  const meshNearby = useQuery({ queryKey: queryKeys.meshNearby, queryFn: () => api.mesh_nearby(), staleTime: 0, enabled: canMeshNearby })
+
+  // As in MachinesTab: renew the 30 s lease every 10 s and on reconnect; release it when the dialog unmounts.
+  useEffect(() => {
+    if (!canMeshNearby || !connected) return
+    const watch = () => void api.mesh_nearby_watch(true).catch(() => undefined)
+    watch()
+    const t = setInterval(watch, 10_000)
+    return () => clearInterval(t)
+  }, [api, canMeshNearby, connected])
+  useEffect(() => {
+    if (!canMeshNearby) return
+    return () => void api.mesh_nearby_watch(false).catch(() => undefined)
+  }, [api, canMeshNearby])
 
   const open = useCallback(
     () =>
@@ -588,6 +609,11 @@ export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { 
   }
   // Theuth agents first (verified cards before the rest), then other vendors (§12.7).
   const agents = [...(nearby.data ?? [])].sort((a, b) => Number(!a.eid) - Number(!b.eid) || Number(!a.verified) - Number(!b.verified))
+  const hints = canMeshNearby && mesh.data?.nearby !== false
+    ? (meshNearby.data ?? []).filter((n) =>
+      !agents.some((a) => a.eid && (n.id.startsWith(a.eid) || a.eid.startsWith(n.id))) &&
+      !contacts.data?.some((c) => c.endpoint === n.id))
+    : []
 
   return (
     <Dialog open onOpenChange={(o) => !o && close()}>
@@ -640,7 +666,7 @@ export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { 
                   <TabsTrigger value="invite">Invite</TabsTrigger>
                 </TabsList>
                 <TabsContent value="nearby" className="flex flex-col pt-2">
-                  {agents.length === 0 && <Empty>{win ? 'No A2A agent found on this network yet.' : 'Opening the window…'}</Empty>}
+                  {agents.length === 0 && hints.length === 0 && <Empty>{win ? 'No agent found on this network yet. Another theuth shows here while Add contact is open on it.' : 'Opening the window…'}</Empty>}
                   {agents.map((n) => {
                     const foreign = !n.eid
                     const bad = !!n.eid && unverified.includes(n.eid)
@@ -668,6 +694,17 @@ export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { 
                       </div>
                     )
                   })}
+                  {hints.map((n) => (
+                    <div key={n.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border-subtle py-2.5 text-fg-tertiary last:border-0">
+                      <div className="min-w-0 flex-1 basis-48">
+                        <div className="flex flex-wrap items-center gap-1.5 text-sm font-medium">
+                          {n.name}
+                          {n.os_name && <span className={cn(CHIP, 'text-fg-tertiary')}>{n.os_name}</span>}
+                        </div>
+                        <div className="text-[13px]">Open Add contact on {n.name} to add it here.</div>
+                      </div>
+                    </div>
+                  ))}
                   <p className="pt-2 text-[13px] text-fg-tertiary">This machine is visible on the network only while this window is open.</p>
                 </TabsContent>
                 <TabsContent value="invite" className="flex flex-col gap-4 pt-2">
