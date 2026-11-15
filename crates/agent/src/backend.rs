@@ -3,6 +3,9 @@
 //! Cursor's AgentService is Connect-RPC/protobuf over HTTP/2 and not
 //! OpenAI-shaped, so genai has no adapter for it; `crates/cursor` is that
 //! adapter and this module is the only place in `agent` that reaches it.
+//!
+//! Named provider targets are final: their streams use a reused genai client
+//! without auth/login resolvers; only built-in ids use the shared resolver.
 
 use std::pin::Pin;
 
@@ -267,40 +270,8 @@ impl Backend {
                 .await
             }
             Backend::Genai { client, auth } => {
-                // 160 §5.4: `limit_auth` names the provider row the response headers feed.
-                let (spec, label, limit_auth): (ModelSpec, String, &'static str) =
-                    match target_for(resolved, auth) {
-                        Some(t) => {
-                            let label = connection_label(resolved, t.kind);
-                            let limit_auth = if label == "opencode" {
-                                "api_key"
-                            } else {
-                                "gateway"
-                            };
-                            (
-                                ServiceTarget {
-                                    endpoint: t.endpoint,
-                                    auth: t.auth,
-                                    model: ModelIden::new(t.kind, slug(resolved).to_owned()),
-                                }
-                                .into(),
-                                label,
-                                limit_auth,
-                            )
-                        }
-                        None => {
-                            let target = client
-                                .resolve_service_target(resolved.genai.as_str())
-                                .await
-                                .map_err(provider_error)?;
-                            let kind = target.model.adapter_kind;
-                            (
-                                resolved.genai.as_str().into(),
-                                connection_label(resolved, kind),
-                                crate::limits::auth_mode(kind, &target.auth, auth.login("xai")),
-                            )
-                        }
-                    };
+                let (client, spec, label, limit_auth) =
+                    genai_request(client, resolved, auth).await?;
                 let tap = crate::limits::HeaderTap::new(&label, limit_auth, slug(resolved));
                 let opts = thought_connection(reply_cap(opts.clone(), resolved), &label)
                     .with_raw_frame_sink_arc(tap);
@@ -332,6 +303,49 @@ impl Backend {
                         e
                     })
             }
+        }
+    }
+}
+
+/// The client and spec `stream` sends, with the existing limits attribution.
+async fn genai_request<'a>(
+    client: &'a Client,
+    resolved: &Resolved,
+    auth: &Auth,
+) -> Result<(&'a Client, ModelSpec, String, &'static str), String> {
+    // 160 §5.4: `limit_auth` names the provider row the response headers feed.
+    match target_for(resolved, auth) {
+        Some(t) => {
+            let label = connection_label(resolved, t.kind);
+            let limit_auth = if label == "opencode" {
+                "api_key"
+            } else {
+                "gateway"
+            };
+            Ok((
+                crate::supervisor::protocol_client()?,
+                ServiceTarget {
+                    endpoint: t.endpoint,
+                    auth: t.auth,
+                    model: ModelIden::new(t.kind, slug(resolved).to_owned()),
+                }
+                .into(),
+                label,
+                limit_auth,
+            ))
+        }
+        None => {
+            let target = client
+                .resolve_service_target(resolved.genai.as_str())
+                .await
+                .map_err(provider_error)?;
+            let kind = target.model.adapter_kind;
+            Ok((
+                client,
+                resolved.genai.as_str().into(),
+                connection_label(resolved, kind),
+                crate::limits::auth_mode(kind, &target.auth, auth.login("xai")),
+            ))
         }
     }
 }
@@ -425,6 +439,172 @@ mod tests {
 
     fn catalog() -> models::Catalog {
         models::Catalog::load(std::path::Path::new("/nonexistent"))
+    }
+
+    async fn oauth_auth() -> (crate::TestDir, Auth) {
+        let scratch = crate::TestDir::new("backend-oauth-route");
+        let vault = std::sync::Arc::new(
+            secrets::Vault::open(&scratch.0, secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
+        let mut auth = Auth::stub(&scratch.0);
+        auth.vault = Some(vault.clone());
+        auth.oauth = auth.oauth.with_grants(Some(vault.clone()));
+        for ns in ["openai", "anthropic", "xai"] {
+            auth.oauth
+                .save(
+                    ns,
+                    &oauth::Tokens {
+                        access_token: format!("{ns}-oauth-token"),
+                        refresh_token: None,
+                        expires_at: 4_102_444_800,
+                        account_id: Some("test-account".into()),
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(auth.login(ns), "{ns} login must be in force");
+        }
+        vault.set("opencode", "zk", None, "test").await.unwrap();
+        (scratch, auth)
+    }
+
+    async fn routed_target(resolved: &Resolved, auth: &Auth) -> ServiceTarget {
+        let shared = crate::supervisor::client(auth.clone()).unwrap();
+        let (client, spec, label, limit_auth) =
+            genai_request(&shared, resolved, auth).await.unwrap();
+        if target_for(resolved, auth).is_some() {
+            assert_eq!(label, resolved.provider.as_deref().unwrap());
+            assert_eq!(
+                limit_auth,
+                if label == "opencode" {
+                    "api_key"
+                } else {
+                    "gateway"
+                }
+            );
+        }
+        // Resolves only; no chat, listing, or token refresh can contact a host.
+        client.resolve_service_target(spec).await.unwrap()
+    }
+
+    async fn assert_gateway_route(base: &str, protocol: Option<Protocol>, kind: AdapterKind) {
+        let (scratch, auth) = oauth_auth().await;
+        auth.gateways.write().unwrap().insert(
+            "gateway".into(),
+            Gateway {
+                base_url: base.into(),
+                key: "gateway-key".into(),
+                runtime: None,
+            },
+        );
+        std::fs::write(
+            scratch.0.join("models.json"),
+            serde_json::json!({"gateway": {"models": {"x": {
+                "id": "x", "name": "x", "protocol": protocol,
+                "limit": {"context": 0, "output": 0}
+            }}}})
+            .to_string(),
+        )
+        .unwrap();
+        let resolved = models::Catalog::load(&scratch.0)
+            .resolve("gateway/x", &|_| true)
+            .unwrap();
+        let target = routed_target(&resolved, &auth).await;
+        assert_eq!(target.endpoint.base_url(), base, "gateway endpoint changed");
+        assert_eq!(target.model.adapter_kind, kind, "gateway kind changed");
+        assert_eq!(&*target.model.model_name, "x");
+        assert!(
+            matches!(&target.auth, AuthData::Key(k) if k == "gateway-key"),
+            "gateway key replaced: {:?}",
+            target.auth
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_routing_gateway_chat_is_final() {
+        assert_gateway_route("https://gateway.example/v1/", None, AdapterKind::OpenAI).await;
+    }
+
+    #[tokio::test]
+    async fn oauth_routing_gateway_at_openai_endpoint_is_final() {
+        assert_gateway_route("https://api.openai.com/v1/", None, AdapterKind::OpenAI).await;
+    }
+
+    #[tokio::test]
+    async fn oauth_routing_gateway_responses_is_final() {
+        assert_gateway_route(
+            "https://gateway.example/v1/",
+            Some(Protocol::OpenaiResponses),
+            AdapterKind::OpenAIResp,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn oauth_routing_gateway_anthropic_is_final() {
+        assert_gateway_route(
+            "https://gateway.example/v1/",
+            Some(Protocol::Anthropic),
+            AdapterKind::Anthropic,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn oauth_routing_zen_responses_is_final() {
+        let (_scratch, auth) = oauth_auth().await;
+        let resolved = catalog()
+            .resolve("opencode/gpt-5.6-sol", &|_| true)
+            .unwrap();
+        let target = routed_target(&resolved, &auth).await;
+        assert_eq!(
+            target.endpoint.base_url(),
+            ZEN_ENDPOINT,
+            "Zen endpoint changed"
+        );
+        assert_eq!(target.model.adapter_kind, AdapterKind::OpenAIResp);
+        assert_eq!(&*target.model.model_name, "gpt-5.6-sol");
+        assert!(
+            matches!(&target.auth, AuthData::Key(k) if k == "zk"),
+            "Zen key replaced: {:?}",
+            target.auth
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_routing_builtin_login_rewrites_remain() {
+        let (_scratch, auth) = oauth_auth().await;
+        for (id, kind, endpoint, url) in [
+            (
+                "openai/gpt-5.6-sol",
+                AdapterKind::OpenAIResp,
+                "https://chatgpt.com/backend-api/codex/",
+                "https://chatgpt.com/backend-api/codex/responses",
+            ),
+            (
+                "anthropic/claude-opus-5-5",
+                AdapterKind::Anthropic,
+                "https://api.anthropic.com/v1/",
+                "https://api.anthropic.com/v1/messages?beta=true",
+            ),
+        ] {
+            let resolved = catalog().resolve(id, &|_| true).unwrap();
+            assert!(target_for(&resolved, &auth).is_none());
+            let target = routed_target(&resolved, &auth).await;
+            assert_eq!(target.model.adapter_kind, kind, "{id}");
+            assert_eq!(target.endpoint.base_url(), endpoint, "{id}");
+            assert!(
+                matches!(&target.auth, AuthData::RequestOverride { url: actual, .. } if actual == url),
+                "{id}: missing login override: {:?}",
+                target.auth
+            );
+        }
+        let resolved = catalog().resolve("xai/grok-9-fast", &|_| true).unwrap();
+        let target = routed_target(&resolved, &auth).await;
+        assert_eq!(target.model.adapter_kind, AdapterKind::Xai);
+        assert!(matches!(&target.auth, AuthData::Key(k) if k == "xai-oauth-token"));
     }
 
     fn zen(resolved: &Resolved) -> ProtocolTarget {
