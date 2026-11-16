@@ -7,7 +7,7 @@ import { toolDiff } from '@/lib/editDiff'
 import { DiffStats, DiffView } from './DiffView'
 import { cn } from '@/lib/utils'
 import { type Entry, useSessions } from '@/store/sessions'
-import { ArtifactCard, Progress } from './ArtifactCard'
+import { ArtifactCard, Progress, SourceControl } from './ArtifactCard'
 import { AnsweredAskCard, askQuestions } from './AskCard'
 import { BoardCard, isBoardCreate } from './BoardCard'
 import { ScrapeCard } from './ScrapeCard'
@@ -116,8 +116,8 @@ function PlainTool({ tool, session, readOnly }: { tool: Tool; session: string; r
   const running = !tool.interrupted && (tool.pending || !result)
   const edit = useMemo(() => toolDiff(tool.name, tool.args, result), [tool.name, tool.args, result])
   const expandable = !!(source || edit || result || tool.job)
-  return (
-    <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
+  // 197 §5.1: a `page_preview` card carries its call's source piece; its header keeps the control beside the fold button.
+  const header = (
       <button
         type="button"
         className="flex w-full min-w-0 flex-col gap-1 text-left"
@@ -150,6 +150,17 @@ function PlainTool({ tool, session, readOnly }: { tool: Tool; session: string; r
           </div>
         )}
       </button>
+  )
+  return (
+    <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
+      {tool.name === 'page_preview' ? (
+        <div className="flex min-w-0 items-start gap-2">
+          {header}
+          <SourceControl tool={tool} session={session} readOnly={readOnly} />
+        </div>
+      ) : (
+        header
+      )}
       {expanded && !tool.job && source && !edit && <Source code={source.code} language={source.language} />}
       {expanded && !tool.job && edit && <DiffView model={edit} disclosure={toolKey(tool.callId)} />}
       {expanded && !tool.job && result && (!edit || result.isError) && (

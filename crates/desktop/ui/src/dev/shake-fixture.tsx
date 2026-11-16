@@ -153,6 +153,18 @@ const entries: Entry[] = [
     result: { output: 'shown costs.csv', isError: false, files: [] },
     context: ctx(904, { sources: [{ target: { kind: 'source', owner: { kind: 'message', seq: 903 }, part: 1 }, label: 'costs.csv', removed: false }] }) as never,
   },
+  // §5.1: each card's tool entry carries the source piece of its own call (owner: the assistant row that made it).
+  {
+    id: 't3',
+    kind: 'tool',
+    callId: 'c3',
+    name: 'page_preview',
+    args: { title: 'proof.html', html: '<h1>Proof</h1>' },
+    pending: false,
+    child: false,
+    result: { output: 'previewed proof.html at 1280×800', isError: false, files: [] },
+    context: ctx(906, { sources: [{ target: { kind: 'source', owner: { kind: 'message', seq: 905 }, part: 0 }, label: 'proof.html', removed: true }] }) as never,
+  },
 ]
 const sessions = active().sessions
 sessions.setState((s) => ({ sessions: { ...s.sessions, [S]: { ...empty(S), loaded: true, contextEditable: true, contextRevision: REVISION, entries } } }))

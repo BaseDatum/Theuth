@@ -403,9 +403,10 @@ function Header({ name, busy, extra }: { name: string; busy?: boolean; extra?: R
   );
 }
 
-/** 197 §8: the call's source (`sources`, one per card): `Remove source from context`, or once removed a small tag; the
- * card itself stays either way. A whole row already removed, or a read-only page, shows no control. */
-function SourceControl({ tool, session, readOnly }: { tool: Tool; session: string; readOnly?: boolean }) {
+/** 197 §8, §5.1: the card's own call's source (`tool.context.sources[0]`): `Remove source from context`, or once removed a
+ * small tag; the card itself stays either way. A whole row already removed, or a read-only page, shows no control.
+ * show/app cards draw it in their header here; a `page_preview` card in `MessageTool`'s plain card. */
+export function SourceControl({ tool, session, readOnly }: { tool: Tool; session: string; readOnly?: boolean }) {
   const context = pieces(tool.context);
   const piece = context?.sources?.[0];
   if (!context || !piece) return null;

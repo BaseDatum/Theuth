@@ -10,7 +10,7 @@ import { useToolRuns } from '@/lib/tool-runs'
 import { empty } from '@/store/reduce'
 import { active } from '@/store/engine-scope'
 import { type Entry, type SessionSlice, useSessions } from '@/store/sessions'
-import { ArtifactCard } from './ArtifactCard'
+import { MessageTool } from './MessageTool'
 import { DisclosureScope } from './disclosure'
 import { MessageAssistant } from './MessageAssistant'
 
@@ -102,28 +102,31 @@ test('busy, stale and external sessions keep the control but disable it', () => 
 })
 
 type Tool = Extract<Entry, { kind: 'tool' }>
-const card = (removed: boolean) => {
+// §5.1: the card's tool entry carries its own call's source piece (owner: the assistant row that made the call).
+const card = (removed: boolean, name = 'show') => {
   const tool: Tool = {
     id: 'e2',
     kind: 'tool',
     callId: 'c1',
-    name: 'show',
-    args: { name: 'mock.html', content: '<p>hi</p>' },
+    name,
+    args: name === 'page_preview' ? { title: 'mock.html', html: '<p>hi</p>' } : { name: 'mock.html', content: '<p>hi</p>' },
     pending: false,
     child: false,
     result: { output: 'shown mock.html', isError: false, files: [] },
     context: context([], [{ target: { kind: 'source', owner: { kind: 'message', seq: 6 }, part: 1 }, label: 'mock.html', removed }]) as never,
   }
-  return renderToStaticMarkup(h(TooltipProvider, null, h(ArtifactCard, { tool, session: S })))
+  return renderToStaticMarkup(h(TooltipProvider, null, h(MessageTool, { tool, session: S })))
 }
 
-test('a show card offers Remove source from context in its header; once removed it keeps the card with a small tag', () => {
+test('show, app and page_preview cards offer Remove source from context; once removed the card stays with a small tag', () => {
   slice()
-  const live = card(false)
-  expect(live).toContain('aria-label="Remove source from context"')
-  expect(live).toContain('shown mock.html')
-  const gone = card(true)
-  expect(gone).toContain('Source removed from context')
-  expect(gone).not.toContain('aria-label="Remove source from context"')
-  expect(gone).toContain('shown mock.html')
+  for (const name of ['show', 'app', 'page_preview']) {
+    const live = card(false, name)
+    expect(live).toContain('aria-label="Remove source from context"')
+    expect(live).toContain('shown mock.html')
+    const gone = card(true, name)
+    expect(gone).toContain('Source removed from context')
+    expect(gone).not.toContain('aria-label="Remove source from context"')
+    expect(gone).toContain('shown mock.html')
+  }
 })

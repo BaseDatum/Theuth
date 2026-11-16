@@ -29,9 +29,10 @@ export type ContextItem = {
 
 export type ContextSnapshot = Omit<Out.ContextSnapshot, 'items'> & { items: ContextItem[] } // 197-adapter
 
-/** §5: one fence or source of an assistant row, for the transcript's controls. */
+/** §5: one fence (assistant entries) or source (§5.1: on a show/app/page_preview card's tool entry, its own call's) piece. */
 export type ContextPiece = { target: ContextTarget; label: string; removed: boolean }
 
+/** `fences` on assistant entries, in text order; `sources` on tool entries, the one piece of that card's call (§5.1). */
 export type ContextEntry = Out.ContextEntry & { fences?: ContextPiece[]; sources?: ContextPiece[] } // 197-adapter
 
 export type ContextRemoval = Out.ContextRemoval & { surfaces: number } // 197-adapter
