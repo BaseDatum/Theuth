@@ -339,7 +339,9 @@ impl Signals {
         let Some(store) = &self.store else {
             return true;
         };
-        store.depth(s).await.unwrap_or(1) == 0 && !store.unattended(s).await.unwrap_or(true)
+        !crate::isolation::excluded(&self.data_dir, s)
+            && store.depth(s).await.unwrap_or(1) == 0
+            && !store.unattended(s).await.unwrap_or(true)
     }
 
     /// Desks with a turn running now, from the roster (178 F4: a desk only
@@ -641,6 +643,53 @@ mod tests {
     /// child's turn neither stamps nor counts toward `sessions_since` — the
     /// dreaming session's own turn end after `Dreamt` leaves it at 0.
     /// `DreamStarted` moves `last_dream_at` without resetting the counters.
+    #[tokio::test]
+    async fn isolated_roots_do_not_count_or_cache_rewind_signals() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = agent::store::Store::open(&dir.path().join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let root = SessionId::new();
+        store
+            .create_session(root, "m", None, None, None)
+            .await
+            .unwrap();
+        store.set_memory_identity(root, "ops", true).await.unwrap();
+        store
+            .append(
+                root,
+                &genai::chat::ChatMessage::assistant("isolated secret"),
+            )
+            .await
+            .unwrap();
+        let mut s = Signals::new(dir.path(), "e", Some(store));
+        s.probes = false;
+        let actor = Signals::spawn(s);
+        actor
+            .tell(agent::AgentEvent::TurnFinished {
+                session: root,
+                turn: runtime::TurnId::new(),
+                stop_reason: "end_turn".into(),
+                usage: Default::default(),
+                context: 0,
+            })
+            .await
+            .unwrap();
+        let snap = actor.ask(Snapshot).await.unwrap();
+        assert_eq!(snap.sessions_since, 0);
+        assert!(snap.last_root_turn_at.is_none());
+        actor
+            .tell(agent::AgentEvent::ContextChanged {
+                session: root,
+                revision: "1".into(),
+                reason: "rewind".into(),
+            })
+            .await
+            .unwrap();
+        let _ = actor.ask(Snapshot).await.unwrap();
+        assert!(crate::ledger::pending(dir.path()).is_empty());
+    }
+
     #[tokio::test]
     async fn only_attended_roots_stamp_and_count() {
         let dir = tempfile::tempdir().unwrap();

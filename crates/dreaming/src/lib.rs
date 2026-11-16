@@ -23,6 +23,7 @@ pub mod cases;
 pub mod config;
 pub mod dry_run;
 pub mod edits;
+mod isolation;
 pub mod journal;
 pub mod ledger;
 pub mod night;

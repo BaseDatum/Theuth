@@ -243,6 +243,10 @@ pub struct AgentFile {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub memory: Option<agent::MemoryMode>,
+    /// Local, separate knowledge bundle (196); independent of context memory mode.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub isolated_memory: bool,
     /// 137 R1-D2: per-agent view budget in bytes (16_000..=256_000); `None` =
     /// `agent.endless.view_bytes`.
     #[serde(default)]
@@ -298,6 +302,10 @@ pub struct EngineAgent {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct AgentSummary {
+    /// Uses its own local knowledge bundle.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub isolated_memory: bool,
     /// The file.
     pub file: AgentFile,
     /// Status.

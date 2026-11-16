@@ -124,9 +124,9 @@ impl Tool for SearchTool {
     }
 
     async fn call(&self, a: SearchArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let k = self.0.for_session(cx.session).await?;
         let limit = a.limit.unwrap_or(10).clamp(1, 50);
-        let hits = self
-            .0
+        let hits = k
             .search_for(&a.query, &cwd(), limit, Some(cx.session))
             .await?;
         let mut s = String::new();
@@ -179,8 +179,9 @@ impl Tool for GetTool {
     }
 
     async fn call(&self, a: IdArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let k = self.0.for_session(cx.session).await?;
         if let Some((id, commit)) = a.id.split_once('@') {
-            let c = self.0.read_revision(id, commit).await?;
+            let c = k.read_revision(id, commit).await?;
             let date = c.time.get(..10).unwrap_or(&c.time);
             return Ok(ToolOutput::ok(format!(
                 "revision {} of {date} (read-only; latest: knowledge_get(\"{}\"))\n{}",
@@ -189,12 +190,12 @@ impl Tool for GetTool {
                 c.text
             )));
         }
-        let c = self.0.get(&a.id).await?;
+        let c = k.get(&a.id).await?;
         // 136 §5.3: every read is a vote for the hint shelf — except the
         // night's own (R-28): Tidy reads hundreds of entries and would make
         // `opened == 0` unreachable for anything it touched.
-        if !self.0.is_consolidating_session(cx.session)
-            && let Err(e) = self.0.record_opened(&c.meta.id, chrono::Utc::now()).await
+        if !k.is_consolidating_session(cx.session)
+            && let Err(e) = k.record_opened(&c.meta.id, chrono::Utc::now()).await
         {
             tracing::debug!(id = %c.meta.id, "record_opened: {e:#}");
         }
@@ -257,8 +258,8 @@ impl Tool for ListTool {
     }
 
     async fn call(&self, a: ListArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        let metas = self
-            .0
+        let k = self.0.for_session(cx.session).await?;
+        let metas = k
             .list_for(
                 a.prefix.as_deref(),
                 a.type_.as_deref(),
@@ -301,6 +302,7 @@ impl Tool for PutTool {
     }
 
     async fn call(&self, p: Put, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let k = self.0.for_session(cx.session).await?;
         // 136 §2.1: the consolidation keys are the night's (or the owner's):
         // gated like the five ops and stamped `source: dreaming`, so the
         // night's undo receipt sees the tidy puts and a live session cannot
@@ -312,13 +314,13 @@ impl Tool for PutTool {
             || p.superseded_by.is_some()
             || p.merged_into.is_some();
         let source = if consolidates {
-            consolidating(&self.0, "knowledge_put with a consolidation key", &cx).await?;
+            consolidating(&k, "knowledge_put with a consolidation key", &cx).await?;
             Source::Dreaming
         } else {
             writable(&cx)?;
             Source::Model
         };
-        let (meta, created) = self.0.put_for(p, source, Some(cx.session)).await?;
+        let (meta, created) = k.put_for(p, source, Some(cx.session)).await?;
         let how = if created { "new" } else { "updated" };
         Ok(ToolOutput::ok(format!("put {} ({how})", meta.id)))
     }
@@ -351,8 +353,9 @@ impl Tool for ShareTool {
     }
 
     async fn call(&self, a: ShareArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let k = self.0.for_session(cx.session).await?;
         writable(&cx)?;
-        let meta = self.0.share(&a.id, a.visibility, Some(cx.session)).await?;
+        let meta = k.share(&a.id, a.visibility, Some(cx.session)).await?;
         Ok(ToolOutput::ok(format!(
             "{} is now {}",
             meta.id,
@@ -376,8 +379,9 @@ impl Tool for DeleteTool {
     }
 
     async fn call(&self, a: IdArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let k = self.0.for_session(cx.session).await?;
         writable(&cx)?;
-        self.0.delete(&a.id).await?;
+        k.delete(&a.id).await?;
         Ok(ToolOutput::ok(format!("deleted {}", a.id)))
     }
 }
@@ -409,11 +413,9 @@ impl Tool for HistoryTool {
             .into()
     }
 
-    async fn call(&self, a: HistoryArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        let h = self
-            .0
-            .history(a.id.as_deref(), a.limit.unwrap_or(20))
-            .await?;
+    async fn call(&self, a: HistoryArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let k = self.0.for_session(cx.session).await?;
+        let h = k.history(a.id.as_deref(), a.limit.unwrap_or(20)).await?;
         let mut s = String::new();
         for c in &h.changes {
             s.push_str(&format!("{}  {}  {}\n", c.commit, c.time, c.message));
@@ -455,8 +457,9 @@ impl Tool for RestoreTool {
     }
 
     async fn call(&self, a: RestoreArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let k = self.0.for_session(cx.session).await?;
         writable(&cx)?;
-        let c = self.0.restore(&a.id, a.commit.as_deref()).await?;
+        let c = k.restore(&a.id, a.commit.as_deref()).await?;
         Ok(ToolOutput::ok(format!(
             "restored {} from {}",
             a.id, c.commit
@@ -487,8 +490,9 @@ impl Tool for StatsTool {
             .into()
     }
 
-    async fn call(&self, a: StatsArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        let uses = self.0.stats(&a.ids).await?;
+    async fn call(&self, a: StatsArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let k = self.0.for_session(cx.session).await?;
+        let uses = k.stats(&a.ids).await?;
         let mut s = String::new();
         for u in &uses {
             s.push_str(&format!(
@@ -537,17 +541,16 @@ impl Tool for MergeTool {
     }
 
     async fn call(&self, a: MergeArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        consolidating(&self.0, Self::NAME, &cx).await?;
+        let k = self.0.for_session(cx.session).await?;
+        consolidating(&k, Self::NAME, &cx).await?;
         // The session's agent scope (67 §9); the user's when it has none.
-        let scope =
-            self.0
-                .scope_for(Some(cx.session))
-                .unwrap_or_else(|| crate::types::AgentScope {
-                    owner: crate::types::USER_OWNER.to_owned(),
-                    line: Default::default(),
-                });
-        let r = self
-            .0
+        let scope = k
+            .scope_for(Some(cx.session))
+            .unwrap_or_else(|| crate::types::AgentScope {
+                owner: crate::types::USER_OWNER.to_owned(),
+                line: Default::default(),
+            });
+        let r = k
             .merge(&a.ids, &a.into, &a.body, &a.evidence, &scope)
             .await?;
         Ok(structured(
@@ -588,9 +591,9 @@ impl Tool for SupersedeTool {
     }
 
     async fn call(&self, a: SupersedeArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        consolidating(&self.0, Self::NAME, &cx).await?;
-        let r = self
-            .0
+        let k = self.0.for_session(cx.session).await?;
+        consolidating(&k, Self::NAME, &cx).await?;
+        let r = k
             .supersede(
                 &a.loser,
                 &a.winner,
@@ -630,8 +633,9 @@ impl Tool for ArchiveTool {
     }
 
     async fn call(&self, a: ArchiveArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        consolidating(&self.0, Self::NAME, &cx).await?;
-        let r = self.0.archive(&a.id, &a.reason).await?;
+        let k = self.0.for_session(cx.session).await?;
+        consolidating(&k, Self::NAME, &cx).await?;
+        let r = k.archive(&a.id, &a.reason).await?;
         Ok(structured(format!("archived {}", a.id), r))
     }
 }
@@ -724,11 +728,11 @@ impl Tool for VerifyTool {
     }
 
     async fn call(&self, a: VerifyArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        consolidating(&self.0, Self::NAME, &cx).await?;
-        let cited = self.0.get(&a.id).await?.meta.evidence;
+        let k = self.0.for_session(cx.session).await?;
+        consolidating(&k, Self::NAME, &cx).await?;
+        let cited = k.get(&a.id).await?.meta.evidence;
         check_evidence(a.outcome, &a.evidence, &cited, &cx.resources.root)?;
-        let r = self
-            .0
+        let r = k
             .verify(&a.id, a.outcome, a.note.as_deref(), &a.evidence)
             .await?;
         Ok(structured(format!("verified {}: {:?}", a.id, a.outcome), r))
@@ -762,8 +766,9 @@ impl Tool for RetitleTool {
     }
 
     async fn call(&self, a: RetitleArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        consolidating(&self.0, Self::NAME, &cx).await?;
-        let r = self.0.retitle(&a.id, &a.title, &a.summary).await?;
+        let k = self.0.for_session(cx.session).await?;
+        consolidating(&k, Self::NAME, &cx).await?;
+        let r = k.retitle(&a.id, &a.title, &a.summary).await?;
         Ok(structured(format!("retitled {}", a.id), r))
     }
 }
@@ -828,6 +833,20 @@ mod tests {
         }
     }
 
+    struct Main;
+    #[async_trait::async_trait]
+    impl crate::Scoper for Main {
+        fn scope_for(&self, _: runtime::SessionId) -> Option<crate::AgentScope> {
+            None
+        }
+        async fn bundle_for(
+            &self,
+            _: runtime::SessionId,
+        ) -> std::result::Result<Option<String>, String> {
+            Ok(None)
+        }
+    }
+
     fn cx(private: bool) -> ToolCx {
         let dir = std::env::temp_dir();
         ToolCx {
@@ -868,6 +887,7 @@ mod tests {
         let dir = scratch.0.clone();
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
         let k = Knowledge::open(&dir, rt).await.unwrap();
+        k.set_scoper(Arc::new(Main));
         let msg = "knowledge mutations are disabled in a private session";
         let e = PutTool(k.clone()).call(put(), cx(true)).await.unwrap_err();
         assert_eq!(e.to_string(), msg);
@@ -898,6 +918,7 @@ mod tests {
         let dir = scratch.0.clone();
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
         let k = Knowledge::open(&dir, rt).await.unwrap();
+        k.set_scoper(Arc::new(Main));
         k.put(put(), Source::Model).await.unwrap();
         k.put(
             Put {
@@ -958,6 +979,7 @@ mod tests {
         let dir = scratch.0.clone();
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
         let k = Knowledge::open(&dir, rt).await.unwrap();
+        k.set_scoper(Arc::new(Main));
         let archive = || ArchiveArgs {
             id: "facts/x".into(),
             reason: "old".into(),
@@ -1077,6 +1099,7 @@ mod tests {
         std::fs::write(dir.join("conf/pg.toml"), "port = 5432\n").unwrap();
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
         let k = Knowledge::open(&dir, rt).await.unwrap();
+        k.set_scoper(Arc::new(Main));
         let cited = runtime::SessionId::new();
         k.put(
             Put {

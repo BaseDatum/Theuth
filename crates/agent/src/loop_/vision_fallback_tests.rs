@@ -367,6 +367,29 @@ impl Message<AgentEvent> for Sink {
     }
 }
 
+/// These harnesses have ordinary owner sessions and deliberately do not start a roster.
+pub(super) async fn start_main_knowledge(rt: &Runtime) {
+    struct Main;
+    #[async_trait::async_trait]
+    impl knowledge::Scoper for Main {
+        fn scope_for(&self, _: SessionId) -> Option<knowledge::AgentScope> {
+            None
+        }
+        async fn bundle_for(&self, _: SessionId) -> std::result::Result<Option<String>, String> {
+            Ok(None)
+        }
+    }
+    runtime::Plugin::start(Box::new(knowledge::KnowledgePlugin), rt)
+        .await
+        .unwrap();
+    ActorRef::<KnowledgeActor>::lookup(KNOWLEDGE_ACTOR)
+        .unwrap()
+        .unwrap()
+        .ask(knowledge::RegisterScoper(Arc::new(Main)))
+        .await
+        .unwrap();
+}
+
 /// A fresh store, session, runtime bus and fake provider per scenario.
 pub(super) struct Harness {
     pub(super) dir: PathBuf,

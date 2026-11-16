@@ -20,14 +20,15 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
     rpc_core::merge_described([
         rpc::rpc_module(server.clone()),
         rpc_documents::rpc_module(server),
-    ]).expect("roster RPC composition")
+    ])
+    .expect("roster RPC composition")
 }
 
-/// Provider-owned helpers used by RPC method owners.
-pub mod rpc_support;
 /// Boards RPC methods and typed client.
 pub mod rpc;
-pub use rpc::{BoardsApiClient};
+/// Provider-owned helpers used by RPC method owners.
+pub mod rpc_support;
+pub use rpc::BoardsApiClient;
 pub mod alert;
 pub mod attention;
 pub mod budget;
@@ -558,6 +559,7 @@ impl Roster {
         // 137G: the same for `memory_model:` (the desk's compactor default)
         // and (194) its `memory_effort:`.
         let mut rememory = Vec::new();
+        let mut reroute = Vec::new();
         for (stem, parsed) in file::load_dir(&self.dir) {
             if let Err(e) = AgentName::new(&stem) {
                 tracing::warn!("{}/{stem}.md ignored: {e}", self.dir.display());
@@ -582,6 +584,9 @@ impl Roster {
                             tracing::warn!(agent = %stem, "agents row not written: {e:#}");
                         }
                         let old = before.get(&stem).and_then(|p| p.as_ref().ok());
+                        if old.is_some_and(|o| o.isolated_memory != f.isolated_memory) {
+                            reroute.push(stem.clone());
+                        }
                         // 194 R1: an `effort:`-only edit applies too (the pair travels together).
                         if old.is_some_and(|o| o.model != f.model || o.effort != f.effort) {
                             remodelled.push((stem.clone(), f.model.clone()));
@@ -606,6 +611,11 @@ impl Roster {
         for gone in before.keys().filter(|n| !files.contains_key(*n)) {
             if let Err(e) = self.store.delete_agent(gone).await {
                 tracing::warn!(agent = %gone, "agents row not removed: {e:#}");
+            }
+        }
+        for name in reroute {
+            if let Err(e) = self.retire_memory_context(&name).await {
+                tracing::warn!(agent = %name, "memory context not retired: {e}");
             }
         }
         self.shared.set_files(files, self.theuth_file());
@@ -952,11 +962,29 @@ impl Roster {
         let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
             return;
         };
-        let existing = agents
+        let mut existing = agents
             .ask(agent::DeskSession(name.to_owned()))
             .await
             .ok()
             .flatten();
+        if let Some(session) = existing {
+            let identity = agents.ask(agent::DurableStore).await.ok();
+            let mismatch = match identity {
+                Some(store) => match store.memory_identity(session).await {
+                    Ok((Some((_, isolated, _)), _)) => isolated != f.isolated_memory,
+                    Ok((None, _)) => f.isolated_memory,
+                    Err(_) => true,
+                },
+                None => true,
+            };
+            if mismatch {
+                if let Err(e) = self.retire_memory_context(name).await {
+                    tracing::warn!(agent = %name, "memory context not retired: {e}");
+                    return;
+                }
+                existing = None;
+            }
+        }
         // 137 D12: the file's `memory:`, else `agent.endless.default_desk`.
         let wanted = self.desk_mode(f);
         // 148 F7: a `model:` the catalog no longer resolves does not keep
@@ -1003,6 +1031,17 @@ impl Roster {
                 session
             }
         };
+        // Backfill legacy desk provenance before any turn, too.
+        if let Err(e) = agents
+            .ask(agent::MarkDesk {
+                session,
+                agent: Some(name.to_owned()),
+            })
+            .await
+        {
+            tracing::warn!(agent = %name, "desk identity unavailable: {e}");
+            return;
+        }
         // 183 §6.6: the desk answers to `<agent>@<engine>` from any machine of the mesh. A new
         // desk is an owner-scope root; an older desk keeps its scope and gains the alias.
         let alias = format!("{name}@{}", mesh::self_name());
@@ -1465,7 +1504,14 @@ impl Roster {
         if let Err(e) = agents
             .ask(agent::SendInput {
                 session: Some(d.session),
-                text: desk::notice("journal", desk::CLOSING),
+                text: desk::notice(
+                    "journal",
+                    if self.shared.file(name).is_some_and(|f| f.isolated_memory) {
+                        desk::ISOLATED_CLOSING
+                    } else {
+                        desk::CLOSING
+                    },
+                ),
                 files: vec![],
                 delivery: agent::Delivery::default(),
                 id: None,
@@ -1863,6 +1909,60 @@ impl Roster {
         }
     }
 
+    /// A memory-mode transition cannot keep a model frame or journal from the other partition.
+    async fn retire_memory_context(&mut self, name: &str) -> Result<(), String> {
+        let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+            .ok()
+            .flatten();
+        if let Some(agents) = agents
+            && let Some(session) = agents
+                .ask(agent::DeskSession(name.to_owned()))
+                .await
+                .map_err(|e| e.to_string())?
+        {
+            agents
+                .ask(agent::supervisor::PauseTree { desk: session })
+                .await
+                .map_err(|e| e.to_string())?;
+            agents
+                .ask(agent::supervisor::ReleaseTree { desk: session })
+                .await
+                .map_err(|e| e.to_string())?;
+            agents
+                .ask(agent::MarkDesk {
+                    session,
+                    agent: None,
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+            agents
+                .ask(agent::ArchiveSession {
+                    session,
+                    archived: true,
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+            self.closing.remove(&session);
+        }
+        document::memory::remove(&self.rt.data_dir.join("agent-memory").join(name)).await;
+        self.desks.remove(name);
+        self.held.remove(name);
+        self.shared.clear_desk(name);
+        self.shared.set_resuming(name, false);
+        let journal = self
+            .rt
+            .data_dir
+            .join(desk::JOURNAL_DIR)
+            .join(format!("{name}.md"));
+        if journal.exists() {
+            let parked = journal.parent().unwrap().join(".parked");
+            std::fs::create_dir_all(&parked).map_err(|e| e.to_string())?;
+            std::fs::rename(&journal, parked.join(format!("{name}-{}.md", now_ms())))
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     /// Write the file, update the read model in place (so a `GetAgent` right
     /// after sees it) and mirror the row; the watcher's reconcile then finds
     /// it unchanged and does nothing. A changed body follows into the charter
@@ -1946,6 +2046,7 @@ impl Roster {
             (0, false)
         };
         AgentSummary {
+            isolated_memory: f.isolated_memory,
             file: f,
             status,
             desk: desk.map(|d| d.to_string()),
@@ -2610,6 +2711,17 @@ impl Message<agent::AgentEvent> for Roster {
     }
 }
 
+async fn main_knowledge() -> Result<Arc<knowledge::Knowledge>, String> {
+    let actor = ActorRef::<knowledge::KnowledgeActor>::lookup(knowledge::KNOWLEDGE_ACTOR)
+        .ok()
+        .flatten()
+        .ok_or("knowledge is not running")?;
+    actor
+        .ask(knowledge::Handle)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// 67 §4.4: the lease is followed for the legacy (NULL-home) rows and the
 /// DeliverWake backstop only (182 D4); `Peer` events are not ours.
 impl Message<mesh::MeshEvent> for Roster {
@@ -2817,6 +2929,7 @@ impl Message<ListAgents> for Roster {
                         continue;
                     };
                     out.push(AgentSummary {
+                        isolated_memory: false,
                         file: AgentFile {
                             title: name.clone(),
                             name: agent,
@@ -2831,6 +2944,7 @@ impl Message<ListAgents> for Roster {
                             proposed_by: None,
                             runs_in: Default::default(),
                             memory: None,
+                            isolated_memory: false,
                             view_bytes: None,
                             memory_model: None,
                             memory_effort: None,
@@ -2997,6 +3111,29 @@ impl Message<PutAgent> for Roster {
         // cannot see the `model:` change — apply it here. 194 R1: an
         // `effort:`-only change too (the pair travels together).
         let old_model = old.as_ref().map(|f| (f.model.clone(), f.effort.clone()));
+        let isolation_changed = old
+            .as_ref()
+            .is_some_and(|f| f.isolated_memory != m.0.isolated_memory);
+        if m.0.isolated_memory && old.as_ref().is_none_or(|f| !f.isolated_memory) {
+            let k = main_knowledge().await?;
+            let owner = format!("agent:{}", m.0.name);
+            let count = k
+                .list(None, None, None, u32::MAX)
+                .await
+                .map_err(|e| format!("{e:#}"))?
+                .iter()
+                .filter(|m| m.owner == owner)
+                .count();
+            if count > 0 {
+                return Err(format!(
+                    "isolated_memory: {} already has {count} notes in the main memory; hire a new agent with isolated memory instead (moving existing notes is not supported yet)",
+                    m.0.name
+                ));
+            }
+        }
+        if isolation_changed {
+            self.retire_memory_context(m.0.name.as_str()).await?;
+        }
         let old_memory = old.map(|f| (f.memory_model, f.memory_effort));
         self.write_file(&m.0).await?;
         if old_model != Some((m.0.model.clone(), m.0.effort.clone())) {
@@ -3122,7 +3259,28 @@ impl Message<RemoveAgent> for Roster {
         m: RemoveAgent,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        AgentName::new(&m.name)?;
+        if m.name == AgentName::DEFAULT {
+            return Err("theuth is the built-in default agent and cannot be removed".into());
+        }
+        if !self.dir.join(format!("{}.md", m.name)).is_file() {
+            return Err("no such agent".into());
+        }
+        self.retire_memory_context(&m.name).await?;
+        if let Ok(k) = main_knowledge().await {
+            k.remove_bundle(&m.name)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+        } else {
+            knowledge::store::move_removed_bundle(&self.rt.data_dir, &m.name)
+                .map_err(|e| format!("{e:#}"))?;
+        }
         let approval = self.remove_agent(&m.name).await?;
+        self.shared.remove_file(&m.name);
+        self.store
+            .delete_agent(&m.name)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
         // Reconcile drops the read model, the `agents` row and the desk; the charter document goes to `.trash`.
         let _ = ctx.actor_ref().tell(Reconcile).await;
         if let Some(docs) = document::Handle::lookup() {
@@ -3545,7 +3703,48 @@ impl agent::IdentitySource for Identities {
 /// 67 §9: a session of agent X reads and writes knowledge as `agent:X`, with
 /// X's reporting line (up and down) for `team` items. The user's sessions
 /// and `theuth`'s carry no scope and see everything.
+#[async_trait::async_trait]
 impl knowledge::Scoper for Desks {
+    async fn bundle_for(&self, session: runtime::SessionId) -> Result<Option<String>, String> {
+        let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+            .ok()
+            .flatten()
+            .ok_or("session identity service unavailable")?;
+        let store = agents
+            .ask(agent::DurableStore)
+            .await
+            .map_err(|e| e.to_string())?;
+        let (identity, desk) = store
+            .memory_identity(session)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        if let Some((name, isolated, home)) = identity {
+            self.0.associate(session, &name);
+            if isolated {
+                if self.0.file(&name).is_none_or(|f| !f.isolated_memory) {
+                    return Err(format!("bundle for {name} is parked or removed"));
+                }
+                if !home.is_empty() && mesh::self_id().is_none_or(|me| me != home) {
+                    return Err("bundle belongs to another engine".into());
+                }
+                return Ok(Some(name));
+            }
+            if self.0.file(&name).is_some_and(|f| f.isolated_memory) {
+                return Err(format!(
+                    "memory mode changed for {name}; a fresh desk is required"
+                ));
+            }
+            return Ok(None);
+        }
+        if let Some(name) = desk.or_else(|| self.0.agent_of(session)) {
+            self.0.associate(session, &name);
+            if self.0.file(&name).is_none_or(|f| f.isolated_memory) {
+                return Err(format!("identity not ready for agent {name}"));
+            }
+        }
+        Ok(None)
+    }
+
     fn scope_for(&self, session: runtime::SessionId) -> Option<knowledge::AgentScope> {
         let agent = self.0.agent_of(session)?;
         if agent == AgentName::DEFAULT {
@@ -3566,7 +3765,8 @@ impl knowledge::Scoper for Desks {
 /// Declare wire contracts before starting producers.
 pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
     use wire::RuntimeWire as _;
-    rt.register_wire_event::<attention::AttentionChanged>().await
+    rt.register_wire_event::<attention::AttentionChanged>()
+        .await
 }
 
 /// The plugin: reads `roster`, creates `agents/`, opens the store, spawns
@@ -3793,6 +3993,135 @@ mod tests {
     use super::*;
 
     mod mcp_live;
+
+    #[test]
+    fn isolated_memory_refuses_legacy_parks_resumes_and_removes_without_main_fallback() {
+        with_engine_lock(async {
+            use runtime::Plugin;
+            let data = tmp("isolated-lifecycle");
+            let rt = Runtime::new(figment::Figment::new(), data.clone());
+            let agents = agent::spawn_test_agents(rt.clone(), |_: &str| true)
+                .await
+                .unwrap();
+            Box::new(knowledge::KnowledgePlugin)
+                .start(&rt)
+                .await
+                .unwrap();
+            let knowledge = main_knowledge().await.unwrap();
+            let r = roster_on(rt.clone(), &data).await;
+            knowledge.set_scoper(Arc::new(Desks(r.shared.clone())));
+            let actor = Roster::spawn(r);
+            let legacy = file::parse("legacy", "Legacy.").unwrap();
+            actor.ask(PutAgent(legacy.clone())).await.unwrap();
+            let desk = actor.ask(OpenDesk("legacy".into())).await.unwrap();
+            knowledge
+                .for_session(desk)
+                .await
+                .unwrap()
+                .put_for(
+                    knowledge::Put {
+                        id: "facts/legacy".into(),
+                        type_: "fact".into(),
+                        title: "Legacy".into(),
+                        body: "legacy body".into(),
+                        ..Default::default()
+                    },
+                    knowledge::Source::Model,
+                    Some(desk),
+                )
+                .await
+                .unwrap();
+            let mut enabled = legacy;
+            enabled.isolated_memory = true;
+            let e = actor.ask(PutAgent(enabled)).await.unwrap_err();
+            let kameo::error::SendError::HandlerError(e) = e else {
+                panic!("unexpected error")
+            };
+            assert_eq!(
+                e,
+                "isolated_memory: legacy already has 1 notes in the main memory; hire a new agent with isolated memory instead (moving existing notes is not supported yet)"
+            );
+            let mut f = file::parse("ops", "---\nisolated_memory: true\n---\nOps.").unwrap();
+            actor.ask(PutAgent(f.clone())).await.unwrap();
+            let isolated = actor.ask(OpenDesk("ops".into())).await.unwrap();
+            let own = knowledge.for_session(isolated).await.unwrap();
+            own.put(
+                knowledge::Put {
+                    id: "facts/secret".into(),
+                    type_: "fact".into(),
+                    title: "Secret".into(),
+                    body: "isolated body".into(),
+                    ..Default::default()
+                },
+                knowledge::Source::Model,
+            )
+            .await
+            .unwrap();
+            assert!(
+                actor
+                    .ask(ListAgents)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .find(|a| a.file.name.as_str() == "ops")
+                    .unwrap()
+                    .isolated_memory
+            );
+            f.isolated_memory = false;
+            actor.ask(PutAgent(f.clone())).await.unwrap();
+            assert!(knowledge.for_session(isolated).await.is_err());
+            let plain = actor.ask(OpenDesk("ops".into())).await.unwrap();
+            assert_ne!(plain, isolated);
+            assert!(!knowledge.for_session(plain).await.unwrap().is_isolated());
+            assert!(
+                data.join("agent-memory/ops/knowledge/facts/secret.md")
+                    .is_file()
+            );
+            f.isolated_memory = true;
+            actor.ask(PutAgent(f)).await.unwrap();
+            let resumed = actor.ask(OpenDesk("ops".into())).await.unwrap();
+            assert_eq!(
+                knowledge
+                    .for_session(resumed)
+                    .await
+                    .unwrap()
+                    .get("facts/secret")
+                    .await
+                    .unwrap()
+                    .meta
+                    .owner,
+                "agent:ops"
+            );
+            actor
+                .ask(RemoveAgent {
+                    name: "ops".into(),
+                    note: None,
+                })
+                .await
+                .unwrap();
+            assert!(!data.join("agent-memory/ops").exists());
+            assert!(
+                std::fs::read_dir(data.join("agent-memory/.removed"))
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap()
+                    .path()
+                    .join("knowledge/facts/secret.md")
+                    .is_file()
+            );
+            rt.shutdown.cancel();
+            actor.kill();
+            agents.kill();
+            if let Ok(Some(k)) =
+                ActorRef::<knowledge::KnowledgeActor>::lookup(knowledge::KNOWLEDGE_ACTOR)
+            {
+                k.kill();
+            }
+            unregister(&[agent::AGENT_ACTOR, knowledge::KNOWLEDGE_ACTOR]);
+            let _ = std::fs::remove_dir_all(data);
+        });
+    }
 
     fn tmp(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -5194,6 +5523,7 @@ mod tests {
             ]
         );
         let row = |waiting_on: Vec<String>| AgentSummary {
+            isolated_memory: false,
             file: file::parse("ops", "Ops.").unwrap(),
             status: AgentStatus::Working,
             desk: None,

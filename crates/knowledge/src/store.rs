@@ -88,6 +88,10 @@ pub struct Knowledge {
     consolidating: std::sync::RwLock<Option<SessionId>>,
     /// `knowledge.lifetimes` (136 §5.2): the rank's record cut-off.
     lifetimes: Lifetimes,
+    /// Fixed identity of an isolated store; never replicated or published on main's bus.
+    isolated: Option<String>,
+    /// Lazily opened, ordinary stores. Only the main handle selects bundles.
+    bundles: tokio::sync::Mutex<HashMap<String, Arc<Knowledge>>>,
 }
 
 /// Frontmatter columns of a row, as `list`/`search`/`get` read them ([`META_COLS`]).
@@ -362,11 +366,17 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// the open editor. Migration is on demand — no document is created here —
 /// and the document's own export is recognised by hash and skipped. Fire and
 /// forget: the write path never waits on the document actor or its helper.
-fn notify_document(id: String, path: PathBuf) {
-    let Some(docs) = document::Handle::lookup() else {
-        return;
-    };
+fn notify_document(id: String, path: PathBuf, isolated_root: Option<PathBuf>) {
     tokio::spawn(async move {
+        let docs = match isolated_root {
+            Some(root) => document::memory::lookup(&root)
+                .await
+                .map(document::Handle::from_actor),
+            None => document::Handle::lookup(),
+        };
+        let Some(docs) = docs else {
+            return;
+        };
         let Some(doc) = docs.resolve_knowledge(&id).await else {
             return;
         };
@@ -542,6 +552,30 @@ fn finish_files(root: &Path, entry: &str) -> anyhow::Result<Vec<PathBuf>> {
     Ok(touched)
 }
 
+/// Preserve a removed agent's files, including when the knowledge plugin is disabled.
+pub fn move_removed_bundle(data_dir: &Path, name: &str) -> anyhow::Result<()> {
+    ensure!(valid_agent_name(name), "invalid agent name");
+    let root = data_dir.join("agent-memory");
+    let from = root.join(name);
+    if from.exists() {
+        let removed = root.join(".removed");
+        std::fs::create_dir_all(&removed)?;
+        let secs = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_secs();
+        std::fs::rename(from, removed.join(format!("{name}-{secs}")))?;
+    }
+    Ok(())
+}
+
+fn valid_agent_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
 async fn open_db(path: &Path) -> anyhow::Result<SqlitePool> {
     let opts = SqliteConnectOptions::new()
         .filename(path)
@@ -583,6 +617,14 @@ impl Knowledge {
     /// reconcile), open the index (`CREATE VIRTUAL TABLE IF NOT EXISTS`, no
     /// migrations: it is derived), run `sync` (10 §2.1, §2.4, §3.2).
     pub async fn open(data_dir: &Path, rt: Runtime) -> anyhow::Result<Arc<Self>> {
+        Self::open_bundle(data_dir, rt, None).await
+    }
+
+    async fn open_bundle(
+        data_dir: &Path,
+        rt: Runtime,
+        isolated: Option<String>,
+    ) -> anyhow::Result<Arc<Self>> {
         let root = data_dir.join(DIR);
         std::fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
         let repo = {
@@ -630,6 +672,8 @@ impl Knowledge {
             stale: Mutex::new(HashMap::new()),
             search: crate::search::Caches::default(),
             scoper: std::sync::RwLock::new(None),
+            isolated,
+            bundles: tokio::sync::Mutex::new(HashMap::new()),
             consolidator: std::sync::RwLock::new(None),
             consolidating: std::sync::RwLock::new(None),
             lifetimes,
@@ -649,6 +693,137 @@ impl Knowledge {
     /// Bundle root.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+    /// Select before any model-facing operation. Missing identity is an error,
+    /// not permission to read main. A selected handle can be captured by harvest.
+    pub async fn for_session(self: &Arc<Self>, session: SessionId) -> anyhow::Result<Arc<Self>> {
+        if self.isolated.is_some() {
+            return Ok(self.clone());
+        }
+        let scoper = self
+            .scoper
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let scoper = scoper
+            .ok_or_else(|| anyhow!("isolated memory unavailable here: identity not ready"))?;
+        let name = scoper
+            .bundle_for(session)
+            .await
+            .map_err(|e| anyhow!("isolated memory unavailable here: {e}"))?;
+        match name {
+            None => Ok(self.clone()),
+            Some(name) => self
+                .agent_bundle(&name)
+                .await
+                .map_err(|e| anyhow!("isolated memory unavailable here: {e:#}")),
+        }
+    }
+
+    /// Owner RPC inspection, including a parked bundle; never called with model arguments.
+    pub async fn inspect(self: &Arc<Self>, bundle: Option<&str>) -> anyhow::Result<Arc<Self>> {
+        let Some(bundle) = bundle else {
+            return Ok(self.clone());
+        };
+        let name = bundle
+            .strip_prefix("agent:")
+            .filter(|n| valid_agent_name(n))
+            .ok_or_else(|| anyhow!("unknown bundle: {bundle}"))?;
+        let root = self.rt.data_dir.join("agent-memory").join(name);
+        // A current isolated file permits lazy creation; a parked directory permits reading.
+        let enabled =
+            std::fs::read_to_string(self.rt.data_dir.join("agents").join(format!("{name}.md")))
+                .ok()
+                .and_then(|text| {
+                    text.strip_prefix("---\n")
+                        .and_then(|s| s.split_once("\n---"))
+                        .map(|(fm, _)| fm.to_owned())
+                })
+                .and_then(|fm| serde_yaml::from_str::<serde_json::Value>(&fm).ok())
+                .is_some_and(|fm| fm["isolated_memory"] == true);
+        ensure!(
+            self.rt
+                .data_dir
+                .join("agents")
+                .join(format!("{name}.md"))
+                .is_file()
+                && (enabled || root.is_dir()),
+            "unknown bundle: {bundle}"
+        );
+        self.agent_bundle(name).await
+    }
+
+    async fn agent_bundle(&self, name: &str) -> anyhow::Result<Arc<Self>> {
+        ensure!(valid_agent_name(name), "invalid agent name");
+        let mut bundles = self.bundles.lock().await;
+        if let Some(k) = bundles.get(name) {
+            return Ok(k.clone());
+        }
+        let root = self.rt.data_dir.join("agent-memory").join(name);
+        let k = Self::open_bundle(&root, self.rt.clone(), Some(name.to_owned())).await?;
+        if let Some(s) = self
+            .scoper
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+        {
+            k.set_scoper(s);
+        }
+        if let Some(c) = self
+            .consolidator
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+        {
+            k.set_consolidator(c);
+        }
+        bundles.insert(name.to_owned(), k.clone());
+        Ok(k)
+    }
+
+    /// Retire the cached handle before moving a removed agent's files.
+    pub async fn remove_bundle(&self, name: &str) -> anyhow::Result<()> {
+        ensure!(valid_agent_name(name), "invalid agent name");
+        let root = self.rt.data_dir.join("agent-memory");
+        let from = root.join(name);
+        document::memory::remove(&from).await;
+        let mut bundles = self.bundles.lock().await;
+        if let Some(k) = bundles.remove(name) {
+            k.db.close().await;
+        }
+        move_removed_bundle(&self.rt.data_dir, name)
+    }
+
+    /// Isolated document exports reconcile only their owning physical bundle.
+    pub async fn sync_document_root(&self, root: &Path) -> anyhow::Result<()> {
+        let k = self
+            .bundles
+            .lock()
+            .await
+            .values()
+            .find(|k| k.root().parent() == Some(root))
+            .cloned()
+            .context("isolated memory unavailable here: document bundle was removed")?;
+        k.sync().await?;
+        Ok(())
+    }
+
+    /// Is this an isolated physical store?
+    pub fn is_isolated(&self) -> bool {
+        self.isolated.is_some()
+    }
+
+    async fn publish(&self, event: KnowledgeChanged) {
+        if self.isolated.is_none() {
+            self.rt.publish(event).await;
+        }
+    }
+
+    fn enforce_identity(&self, fm: &mut okf::Frontmatter) {
+        if let Some(name) = &self.isolated {
+            fm.set("owner", Value::String(format!("agent:{name}")));
+            fm.set("visibility", Value::String("private".to_owned()));
+        }
     }
 
     /// Reconcile rows with the files by (mtime, size); commit external edits (10 §3.2).
@@ -701,14 +876,31 @@ impl Knowledge {
             names.push(format!("remove {id}"));
             events.push((id.clone(), KnowledgeOp::Delete));
         }
-        for ix in changed {
+        for mut ix in changed {
+            if self.isolated.is_some() {
+                let path = self.root.join(&ix.path);
+                let text = std::fs::read_to_string(&path)?;
+                let mut doc = Document::parse(&text)?;
+                self.enforce_identity(&mut doc.frontmatter);
+                let normalized = doc.serialize();
+                if normalized != text {
+                    write_atomic(&path, normalized.as_bytes())?;
+                }
+                ix = Indexed::load(&self.root, &path)?;
+            }
             if known.contains_key(&ix.path) {
                 out.updated += 1;
             } else {
                 out.added += 1;
             }
             self.upsert(&ix).await?;
-            notify_document(ix.meta.id.clone(), self.root.join(&ix.path));
+            notify_document(
+                ix.meta.id.clone(),
+                self.root.join(&ix.path),
+                self.isolated
+                    .as_ref()
+                    .map(|_| self.root.parent().unwrap().to_path_buf()),
+            );
             written.push(PathBuf::from(&ix.path));
             names.push(format!("edit {}", ix.meta.id));
             events.push((ix.meta.id, KnowledgeOp::Put));
@@ -720,14 +912,13 @@ impl Knowledge {
                 .await
         };
         for (id, op) in events {
-            self.rt
-                .publish(KnowledgeChanged {
-                    id,
-                    op,
-                    source: Source::Sync,
-                    commit: commit.clone(),
-                })
-                .await;
+            self.publish(KnowledgeChanged {
+                id,
+                op,
+                source: Source::Sync,
+                commit: commit.clone(),
+            })
+            .await;
         }
         Ok(out)
     }
@@ -831,6 +1022,12 @@ impl Knowledge {
 
     /// The scope `session` reads and writes as; `None` = the user's (sees everything).
     pub(crate) fn scope_for(&self, session: Option<SessionId>) -> Option<AgentScope> {
+        if let Some(name) = &self.isolated {
+            return Some(AgentScope {
+                owner: format!("agent:{name}"),
+                line: Default::default(),
+            });
+        }
         let s = session?;
         self.scoper
             .read()
@@ -971,14 +1168,13 @@ impl Knowledge {
 
         let entry = format!("put {id}");
         let w = self.write_concept(&cid, text, &entry, &entry).await?;
-        self.rt
-            .publish(KnowledgeChanged {
-                id,
-                op: KnowledgeOp::Put,
-                source,
-                commit: w.commit.clone(),
-            })
-            .await;
+        self.publish(KnowledgeChanged {
+            id,
+            op: KnowledgeOp::Put,
+            source,
+            commit: w.commit.clone(),
+        })
+        .await;
         Ok((w.meta, w.created))
     }
 
@@ -990,6 +1186,7 @@ impl Knowledge {
         visibility: Visibility,
         session: Option<SessionId>,
     ) -> anyhow::Result<Meta> {
+        ensure!(self.isolated.is_none(), "isolated memory cannot be shared");
         let cid = concept_id(id)?;
         let id = cid.to_string();
         let text = tokio::fs::read_to_string(cid.to_path(&self.root))
@@ -1014,14 +1211,13 @@ impl Knowledge {
         let _g = self.write.lock().await;
         let entry = format!("share {id} {}", visibility.as_str());
         let w = self.write_concept(&cid, text, &entry, &entry).await?;
-        self.rt
-            .publish(KnowledgeChanged {
-                id,
-                op: KnowledgeOp::Put,
-                source: Source::Model,
-                commit: w.commit.clone(),
-            })
-            .await;
+        self.publish(KnowledgeChanged {
+            id,
+            op: KnowledgeOp::Put,
+            source: Source::Model,
+            commit: w.commit.clone(),
+        })
+        .await;
         Ok(w.meta)
     }
 
@@ -1040,14 +1236,13 @@ impl Knowledge {
         let w = self
             .write_concept(&cid, text, &format!("put {id}"), &format!("write {id}"))
             .await?;
-        self.rt
-            .publish(KnowledgeChanged {
-                id,
-                op: KnowledgeOp::Put,
-                source: Source::User,
-                commit: w.commit.clone(),
-            })
-            .await;
+        self.publish(KnowledgeChanged {
+            id,
+            op: KnowledgeOp::Put,
+            source: Source::User,
+            commit: w.commit.clone(),
+        })
+        .await;
         Ok(w.meta)
     }
 
@@ -1094,7 +1289,14 @@ impl Knowledge {
         self.remove_rows(&id).await?;
         removed.sort();
         let commit = self.commit(written, removed, entry).await;
-        if let Some(docs) = document::Handle::lookup() {
+        let docs = if self.isolated.is_some() {
+            document::memory::lookup(self.root.parent().unwrap())
+                .await
+                .map(document::Handle::from_actor)
+        } else {
+            document::Handle::lookup()
+        };
+        if let Some(docs) = docs {
             let id = id.clone();
             tokio::spawn(async move {
                 if let Some(doc) = docs.resolve_knowledge(&id).await
@@ -1104,14 +1306,13 @@ impl Knowledge {
                 }
             });
         }
-        self.rt
-            .publish(KnowledgeChanged {
-                id,
-                op: KnowledgeOp::Delete,
-                source: Source::User,
-                commit,
-            })
-            .await;
+        self.publish(KnowledgeChanged {
+            id,
+            op: KnowledgeOp::Delete,
+            source: Source::User,
+            commit,
+        })
+        .await;
         Ok(())
     }
 
@@ -1314,14 +1515,13 @@ impl Knowledge {
             .write_concept(&cid, text, &format!("restore {id}"), &message)
             .await?;
         let sha = w.commit.context("restore: commit failed")?;
-        self.rt
-            .publish(KnowledgeChanged {
-                id,
-                op: KnowledgeOp::Put,
-                source: Source::User,
-                commit: Some(sha.clone()),
-            })
-            .await;
+        self.publish(KnowledgeChanged {
+            id,
+            op: KnowledgeOp::Put,
+            source: Source::User,
+            commit: Some(sha.clone()),
+        })
+        .await;
         Ok(Change {
             commit: sha,
             time: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
@@ -1366,14 +1566,13 @@ impl Knowledge {
             .await?;
         let sha = commit.context("restore: commit failed")?;
         for m in metas {
-            self.rt
-                .publish(KnowledgeChanged {
-                    id: m.id,
-                    op: KnowledgeOp::Put,
-                    source: Source::User,
-                    commit: Some(sha.clone()),
-                })
-                .await;
+            self.publish(KnowledgeChanged {
+                id: m.id,
+                op: KnowledgeOp::Put,
+                source: Source::User,
+                commit: Some(sha.clone()),
+            })
+            .await;
         }
         Ok(Change {
             commit: sha,
@@ -1414,6 +1613,13 @@ impl Knowledge {
         let mut docs = Vec::with_capacity(files.len());
         for (cid, text) in files {
             let doc = Document::parse(&text)?;
+            let mut doc = doc;
+            self.enforce_identity(&mut doc.frontmatter);
+            let text = if self.isolated.is_some() {
+                doc.serialize()
+            } else {
+                text
+            };
             doc.validate().map_err(|e| anyhow!("{}: {e}", cid))?;
             docs.push((cid, text, doc));
         }
@@ -1435,7 +1641,13 @@ impl Knowledge {
         let mut metas = Vec::with_capacity(ixs.len());
         for ix in ixs {
             self.upsert(&ix).await?;
-            notify_document(ix.meta.id.clone(), self.root.join(&ix.path));
+            notify_document(
+                ix.meta.id.clone(),
+                self.root.join(&ix.path),
+                self.isolated
+                    .as_ref()
+                    .map(|_| self.root.parent().unwrap().to_path_buf()),
+            );
             touched.push(PathBuf::from(&ix.path));
             metas.push(ix.meta);
         }
@@ -2105,14 +2317,13 @@ impl Knowledge {
             .await?;
         let ids: Vec<String> = metas.into_iter().map(|m| m.id).collect();
         for id in &ids {
-            self.rt
-                .publish(KnowledgeChanged {
-                    id: id.clone(),
-                    op,
-                    source: Source::Dreaming,
-                    commit: commit.clone(),
-                })
-                .await;
+            self.publish(KnowledgeChanged {
+                id: id.clone(),
+                op,
+                source: Source::Dreaming,
+                commit: commit.clone(),
+            })
+            .await;
         }
         Ok(Receipt { op, ids, commit })
     }
@@ -3461,9 +3672,13 @@ mod tests {
     /// A fixed session → scope table standing in for the roster (67 §9).
     struct Table(HashMap<SessionId, AgentScope>);
 
+    #[async_trait::async_trait]
     impl Scoper for Table {
         fn scope_for(&self, session: SessionId) -> Option<AgentScope> {
             self.0.get(&session).cloned()
+        }
+        async fn bundle_for(&self, _: SessionId) -> std::result::Result<Option<String>, String> {
+            Ok(None)
         }
     }
 

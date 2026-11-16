@@ -2823,6 +2823,27 @@ impl Message<Tick> for DocumentActor {
     }
 }
 
+/// Persist a selected local knowledge edit before reporting success to its caller.
+pub struct ExportNow(pub DocId);
+impl Message<ExportNow> for DocumentActor {
+    type Reply = DelegatedReply<Result<(), String>>;
+    async fn handle(&mut self, m: ExportNow, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        if let Some(tx) = tx {
+            if let Err(e) = self.load(&m.0) {
+                tx.send(Err(e));
+                return reply;
+            }
+            let (done, rx) = tokio::sync::oneshot::channel();
+            self.export(&m.0, Some(done));
+            tokio::spawn(async move {
+                tx.send(rx.await.unwrap_or_else(|e| Err(e.to_string())));
+            });
+        }
+        reply
+    }
+}
+
 /// `ask` → `()` at harness shutdown: every pending derived-file write is fired and every settled edit is
 /// reported to its owner now, whatever its quiet period says (§4.3 as built: nothing waits out the process).
 #[derive(Clone, Copy, Debug, Default)]

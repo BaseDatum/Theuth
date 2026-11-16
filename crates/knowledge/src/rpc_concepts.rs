@@ -1,10 +1,13 @@
 use crate as knowledge;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
-use knowledge::search::HistoricalConcept;
-use knowledge::{Change, Concept, Delete, Get, History, HistoryOf, Hit, List, Meta, Put, PutConcept, Restore, Revision, RevisionOf, Search, Source, SyncNow, Write};
-use rpc_core::{send, Server};
 use knowledge::rpc_support::knowledge;
+use knowledge::search::HistoricalConcept;
+use knowledge::{
+    Change, Concept, Delete, History, HistoryOf, Hit, Meta, Put, PutConcept, Restore, Revision,
+    RevisionOf, Source, SyncNow, Write,
+};
+use rpc_core::{Server, send};
 
 /// Concepts RPC methods owned by this plugin.
 #[rpc_core_macros::rpc_descriptors(owner = "knowledge", descriptors = rpc_descriptors, audience = "owner")]
@@ -12,10 +15,15 @@ use knowledge::rpc_support::knowledge;
 pub trait KnowledgeConceptsApi {
     /// Search the knowledge bundle (design doc 10 §8); `limit` defaults to 10, max 50.
     #[method(name = "knowledge_search")]
-    async fn knowledge_search(&self, query: String, limit: Option<u32>) -> RpcResult<Vec<Hit>>;
+    async fn knowledge_search(
+        &self,
+        query: String,
+        limit: Option<u32>,
+        bundle: Option<String>,
+    ) -> RpcResult<Vec<Hit>>;
     /// One concept verbatim with its links and citers.
     #[method(name = "knowledge_get")]
-    async fn knowledge_get(&self, id: String) -> RpcResult<Concept>;
+    async fn knowledge_get(&self, id: String, bundle: Option<String>) -> RpcResult<Concept>;
     /// Concept metas sorted by id; `limit` defaults to 50.
     #[method(name = "knowledge_list")]
     async fn knowledge_list(
@@ -24,6 +32,7 @@ pub trait KnowledgeConceptsApi {
         #[argument(rename = "type")] type_: Option<String>,
         tag: Option<String>,
         limit: Option<u32>,
+        bundle: Option<String>,
     ) -> RpcResult<Vec<Meta>>;
     /// Create or update a concept as `source: user`.
     #[method(name = "knowledge_put")]
@@ -62,13 +71,25 @@ pub trait KnowledgeConceptsApi {
 
 #[async_trait]
 impl KnowledgeConceptsApiServer for Server {
-
-    async fn knowledge_search(&self, query: String, limit: Option<u32>) -> RpcResult<Vec<Hit>> {
-        send(&knowledge()?, Search { query, limit }).await
+    async fn knowledge_search(
+        &self,
+        query: String,
+        limit: Option<u32>,
+        bundle: Option<String>,
+    ) -> RpcResult<Vec<Hit>> {
+        let k = bundle_store(bundle.as_deref()).await?;
+        let cwd = std::env::current_dir().map_err(|e| rpc_core::failed(e.to_string()))?;
+        k.search(&query, &cwd, limit.unwrap_or(10).clamp(1, 50))
+            .await
+            .map_err(rpc_core::stub_err)
     }
 
-    async fn knowledge_get(&self, id: String) -> RpcResult<Concept> {
-        send(&knowledge()?, Get { id }).await
+    async fn knowledge_get(&self, id: String, bundle: Option<String>) -> RpcResult<Concept> {
+        bundle_store(bundle.as_deref())
+            .await?
+            .get(&id)
+            .await
+            .map_err(rpc_core::stub_err)
     }
 
     async fn knowledge_list(
@@ -77,17 +98,18 @@ impl KnowledgeConceptsApiServer for Server {
         type_: Option<String>,
         tag: Option<String>,
         limit: Option<u32>,
+        bundle: Option<String>,
     ) -> RpcResult<Vec<Meta>> {
-        send(
-            &knowledge()?,
-            List {
-                prefix,
-                type_,
-                tag,
-                limit,
-            },
-        )
-        .await
+        bundle_store(bundle.as_deref())
+            .await?
+            .list(
+                prefix.as_deref(),
+                type_.as_deref(),
+                tag.as_deref(),
+                limit.unwrap_or(50),
+            )
+            .await
+            .map_err(rpc_core::stub_err)
     }
 
     async fn knowledge_put(&self, put: Put) -> RpcResult<Meta> {
@@ -142,7 +164,20 @@ impl KnowledgeConceptsApiServer for Server {
     }
 }
 
+async fn bundle_store(bundle: Option<&str>) -> RpcResult<std::sync::Arc<knowledge::Knowledge>> {
+    let k = knowledge()?
+        .ask(knowledge::Handle)
+        .await
+        .map_err(|e| rpc_core::failed(e.to_string()))?;
+    k.inspect(bundle).await.map_err(|e| {
+        jsonrpsee::types::ErrorObjectOwned::owned(-32602, format!("{e:#}"), None::<()>)
+    })
+}
+
 pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
-    rpc_core::DescribedModule::new(KnowledgeConceptsApiServer::into_rpc(server), rpc_descriptors())
-        .expect("knowledge RPC descriptors")
+    rpc_core::DescribedModule::new(
+        KnowledgeConceptsApiServer::into_rpc(server),
+        rpc_descriptors(),
+    )
+    .expect("knowledge RPC descriptors")
 }

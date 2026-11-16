@@ -712,7 +712,7 @@ const ROOT_HOPS: usize = 32;
 /// mixed versions for nothing. Never a lower or an unrelated number: a peer
 /// whose value reads as newer is shipped rows its schema cannot apply, and
 /// `sqlite3changeset_apply` skips the table while the cursor advances.
-pub const SESSIONS_WIRE_SCHEMA: u32 = 65;
+pub const SESSIONS_WIRE_SCHEMA: u32 = 66;
 
 impl Store {
     /// Open (creating) the database in WAL mode and run migrations. Two
@@ -1351,6 +1351,52 @@ impl Store {
         Ok(())
     }
 
+    /// Immutable memory provenance on a desk root; descendants resolve through parents,
+    /// including external children and after the desk mark has been retired.
+    pub async fn set_memory_identity(
+        &self,
+        id: SessionId,
+        name: &str,
+        isolated: bool,
+    ) -> anyhow::Result<()> {
+        let identity = serde_json::to_string(&(name, isolated, &*self.me))?;
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "UPDATE sessions SET knowledge_identity = COALESCE(knowledge_identity, ?) WHERE id = ?",
+        )
+        .bind(identity)
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await
+    }
+
+    /// Root memory provenance and legacy desk name. Unknown/broken lineage fails closed.
+    pub async fn memory_identity(
+        &self,
+        id: SessionId,
+    ) -> anyhow::Result<(Option<(String, bool, String)>, Option<String>)> {
+        let mut current = id.to_string();
+        for _ in 0..ROOT_HOPS {
+            let (parent, identity, desk): (Option<String>, Option<String>, Option<String>) =
+                sqlx::query_as(
+                    "SELECT parent, knowledge_identity, desk FROM sessions WHERE id = ?",
+                )
+                .bind(&current)
+                .fetch_optional(&self.read)
+                .await?
+                .with_context(|| format!("session identity not available: {current}"))?;
+            if let Some(identity) = identity {
+                return Ok((Some(serde_json::from_str(&identity)?), desk));
+            }
+            if desk.is_some() || parent.is_none() {
+                return Ok((None, desk));
+            }
+            current = parent.unwrap();
+        }
+        anyhow::bail!("session lineage is cyclic or too deep")
+    }
+
     /// The session marked as `agent`'s desk on this engine, if any
     /// (STALE-WAKE-DESKS: at most one per `(desk, owner)`, archived or not —
     /// a desk put away by an earlier build is still the desk).
@@ -1943,7 +1989,7 @@ impl Store {
     /// since session rows replicate with their `updated_at`.
     pub async fn attended_roots_since(&self, since: Option<&str>) -> anyhow::Result<u32> {
         let (n,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM sessions WHERE parent IS NULL AND NOT unattended \
+            "SELECT COUNT(*) FROM sessions WHERE parent IS NULL AND NOT unattended AND COALESCE(json_extract(knowledge_identity, '$[1]'), 0) = 0 \
              AND (?1 IS NULL OR julianday(updated_at) > julianday(?1))",
         )
         .bind(since)
@@ -2718,10 +2764,12 @@ impl Store {
         let (new, old) = (id.to_string(), src.to_string());
         let now = chrono::Utc::now().to_rfc3339();
         let inserted = sqlx::query(concat!(
-            "INSERT INTO sessions (id, created_at, updated_at, title, tags, model, parent, name, effort, cwd, context_revision, project, owner, epoch) \
+            "INSERT INTO sessions (id, created_at, updated_at, title, tags, model, parent, name, effort, cwd, context_revision, project, owner, epoch, knowledge_identity) \
              SELECT ?, ?, ?, title, tags, model, NULL, NULL, effort, cwd, context_revision, ",
             root_col!("project"),
-            ", ?, 1 FROM sessions WHERE id = ?"
+            ", ?, 1, ",
+            root_col!("knowledge_identity"),
+            " FROM sessions WHERE id = ?"
         ))
         .bind(&new)
         .bind(&now)
@@ -4399,8 +4447,8 @@ mod tests {
     #[tokio::test]
     async fn sessions_wire_schema_tracks_the_replicated_columns() {
         const SNAPSHOT: (u32, &str) = (
-            65,
-            "sessions: id,created_at,title,model,parent,name,effort,cut_at,agent,acp_session,cwd,updated_at,pinned,todo_version,context_revision,scope,alias,project,archived,tags,harness_model,unattended,owner,epoch,desk,harness_commands,context_size,acp_skills,last_stop,finished_at,kind,memory,endless_base,endless_filter,endless_view_bytes,budget,observed_source,observed_state,observed_stop,observed_cancel,observed_description,observed_tool_call,observed_detail,observed_cursor,observed_cost_rule,notebook,acp_previous,endless_paused,endless_spend_override,endless_model,endless_agent_model,approvals,communication,contact_inbox,hidden_tools,endless_effort,endless_agent_effort
+            66,
+            "sessions: id,created_at,title,model,parent,name,effort,cut_at,agent,acp_session,cwd,updated_at,pinned,todo_version,context_revision,scope,alias,project,archived,tags,harness_model,unattended,owner,epoch,desk,harness_commands,context_size,acp_skills,last_stop,finished_at,kind,memory,endless_base,endless_filter,endless_view_bytes,budget,observed_source,observed_state,observed_stop,observed_cancel,observed_description,observed_tool_call,observed_detail,observed_cursor,observed_cost_rule,notebook,acp_previous,endless_paused,endless_spend_override,endless_model,endless_agent_model,approvals,communication,contact_inbox,hidden_tools,endless_effort,endless_agent_effort,knowledge_identity
 messages: session_id,seq,body,excluded,vision,at,thinking_ms,advisory,channel,moved,peer
 epochs: session_id,n,at_seq,tail_from,head,created_at,excluded
 todo_snapshots: session_id,at_seq,k,source,items
@@ -8320,6 +8368,63 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
         store.set_title(id, "again").await.unwrap();
         assert_eq!(store.log_seq(), before + 1);
         drop(store);
+    }
+
+    #[tokio::test]
+    async fn isolated_memory_lineage_survives_retirement_restart_and_external_descendants() {
+        let dir = crate::TestDir::new("isolated-lineage");
+        let path = dir.0.join("sessions.sqlite");
+        let store = Store::open(&path, None).await.unwrap();
+        let (root, child, external) = (SessionId::new(), SessionId::new(), SessionId::new());
+        store
+            .create_session(root, "fake", None, None, None)
+            .await
+            .unwrap();
+        store.set_desk(root, Some("ops")).await.unwrap();
+        store.set_memory_identity(root, "ops", true).await.unwrap();
+        store
+            .create_session(child, "fake", Some(root), Some("child"), None)
+            .await
+            .unwrap();
+        store
+            .create_session(external, "fake", Some(child), Some("external"), None)
+            .await
+            .unwrap();
+        store
+            .append(external, &ChatMessage::user("fork this isolated context"))
+            .await
+            .unwrap();
+        let fork = store.fork(external, None, None).await.unwrap();
+        assert_eq!(
+            store.memory_identity(fork).await.unwrap().0,
+            Some(("ops".into(), true, String::new()))
+        );
+        store.set_desk(root, None).await.unwrap();
+        store.set_memory_identity(root, "ops", false).await.unwrap();
+        store.close().await;
+        let store = Store::open(&path, None).await.unwrap();
+        assert_eq!(
+            store.memory_identity(external).await.unwrap().0,
+            Some(("ops".into(), true, String::new()))
+        );
+        let ledger = store
+            .ledger_since(
+                &crate::LedgerSince {
+                    since: "2000-01-01T00:00:00Z".into(),
+                    until: "2100-01-01T00:00:00Z".into(),
+                    exclude: vec![],
+                    owner_only: false,
+                },
+                &str::to_owned,
+            )
+            .await
+            .unwrap();
+        assert!(
+            ledger.0.sessions.is_empty(),
+            "even a retired isolated tree is never a dreaming input"
+        );
+        assert!(store.memory_identity(SessionId::new()).await.is_err());
+        store.close().await;
     }
 
     // endregion: --- Capture (68 §3)

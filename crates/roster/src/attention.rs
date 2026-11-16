@@ -2152,6 +2152,7 @@ mod tests {
         paused: bool,
     ) -> AgentSummary {
         AgentSummary {
+            isolated_memory: false,
             file: AgentFile {
                 name: AgentName::new(name).unwrap(),
                 title: name.to_uppercase(),
@@ -2166,6 +2167,7 @@ mod tests {
                 proposed_by: proposed_by.map(Into::into),
                 runs_in: Default::default(),
                 memory: None,
+                isolated_memory: false,
                 view_bytes: None,
                 memory_model: None,
                 memory_effort: None,

@@ -141,3 +141,83 @@ Sky approved the phase-1 design on 2026-11-16 at 19:21 ("go for it") with its th
 - **Unchanged:** the main Knowledge page stays main-only. No other screens change.
 
 ## As built
+
+### Engine implementation
+
+- `isolated_memory` is an independent, serde-defaulted agent boolean. Frontmatter emits it only when true; summaries, proposals, drafts and draft approval receipts preserve it. Draft cards say `Memory: isolated`. Generated TypeScript makes the field optional.
+- The main knowledge handle caches lazy, ordinary knowledge stores rooted at `agent-memory/<name>/`. Each has its own `knowledge/` git repository and `knowledge.sqlite`; ownership and visibility are fixed to that agent/private. The main actor, sync loop and MCP catalog remain main-only. Isolated knowledge events are not published on the shared runtime.
+- Migration 66 persists `(agent, isolated_memory, home_engine)` in `sessions.knowledge_identity`. Root identity is immutable; descendant resolution walks durable parents, and forks copy the identity. Unknown, parked, removed and non-home isolated identities fail closed. The selector trait requires an explicit implementation; it has no default-to-main method.
+- Mode changes pause/drain and cancel the old tree, retire its root, stop its local document editor and park its journal before a fresh context is used. Enabling checks main-owned notes and returns the exact refusal. Disabling parks the existing store; re-enabling resumes it after the same check. Removal closes the store and moves the whole directory into `.removed/<name>-<unix-seconds>/`, including when the knowledge plugin is off.
+- Isolated knowledge documents use unregistered local document actors and separate runtime event buses. Reads, direct document IDs, edits and notebook citations resolve the selected bundle; edits await export and reconcile only that original bundle. They do not enter the global document index or mesh replication.
+- Dreaming excludes durable isolated roots, descendants and forks even after retirement, plus their journals, hint/call/session counters, rewind signals, pending/earlier rewinds and saved/replayed cases. Research writes and playbooks select from the study's saved origin.
+
+### Entry-point map
+
+Paths are repository-relative. Native tool rows select through `Knowledge::for_session` before doing any work.
+
+| Entry point | Routing |
+| --- | --- |
+| Session selector | `crates/knowledge/src/store.rs:699`; durable roster resolution `crates/roster/src/lib.rs:3708`; identity persistence/walk `crates/agent/src/store.rs:1356,1375` |
+| `knowledge_search` | `crates/knowledge/src/tools.rs:127` |
+| `knowledge_get`, including revisions | `crates/knowledge/src/tools.rs:182` |
+| `knowledge_list` | `crates/knowledge/src/tools.rs:261` |
+| `knowledge_put` | `crates/knowledge/src/tools.rs:305` |
+| `knowledge_share` | `crates/knowledge/src/tools.rs:356`; selected isolated stores refuse sharing |
+| `knowledge_delete` | `crates/knowledge/src/tools.rs:382` |
+| `knowledge_history` | `crates/knowledge/src/tools.rs:417` |
+| `knowledge_restore` | `crates/knowledge/src/tools.rs:460` |
+| `knowledge_stats` | `crates/knowledge/src/tools.rs:494` |
+| `knowledge_merge` | `crates/knowledge/src/tools.rs:544` |
+| `knowledge_supersede` | `crates/knowledge/src/tools.rs:594` |
+| `knowledge_archive` | `crates/knowledge/src/tools.rs:636` |
+| `knowledge_verify` | `crates/knowledge/src/tools.rs:731` |
+| `knowledge_retitle` | `crates/knowledge/src/tools.rs:769` |
+| Turn hints and harvest | `crates/agent/src/loop_.rs:4896,8280`; capture the selected handle, suppress hints on resolution failure |
+| Sensor knowledge bridge | `crates/agent/src/sensor/bridge.rs:435`; invokes the selected native search tool |
+| Grouped `search` knowledge/history | `crates/rpc-compose/src/search.rs:577,761`; session-selected stores, fixed group order retained |
+| Knowledge document read and edits | `crates/document/src/tools.rs:180,234,643`; selected aliases/direct IDs; local actors at `crates/document/src/memory.rs:62` |
+| Notebook knowledge citations | `crates/document/src/notebook.rs:1293`; agent principals use the same router |
+| Research record/playbook | `crates/autoresearch/src/record.rs:200,243`; saved `study.origin` |
+| Owner RPC search/get/list | `crates/knowledge/src/rpc_concepts.rs:74,87,95`; explicit inspection selector `crates/knowledge/src/store.rs:724`; absent/null is main, `agent:<name>` selects that enabled/parked bundle, unknown is `-32602` |
+| Other owner knowledge RPCs | `crates/knowledge/src/lib.rs:615,623`; retain the single explicitly main actor/store |
+| MCP search/get/list | `crates/mcp-server/src/catalog.rs:738,745,749`; unchanged schemas and positional calls omit bundle, therefore main |
+| Background sync | `crates/knowledge/src/lib.rs:630`; only main |
+| Dreaming ledger/journals/rewinds | `crates/agent/src/store/dreaming.rs:103`; `crates/dreaming/src/ledger.rs:85,112,287` |
+| Dreaming counters and signals | `crates/agent/src/store.rs:1990`; `crates/dreaming/src/dry_run.rs:174,184,185,230`; `crates/dreaming/src/signals.rs:338` |
+| Dreaming cases | `crates/dreaming/src/cases.rs:64,109`; durable provenance exclusion `crates/dreaming/src/isolation.rs:5` |
+| Enable/park/resume/remove | `crates/roster/src/lib.rs:3117,1913,3269`; bundle close/move `crates/knowledge/src/store.rs:785` |
+
+### Regression coverage and gates
+
+New Rust coverage: three knowledge isolation tests (native read/write/revision/history/maintenance paths, sharing, ordinary-session invisibility, owner RPC defaults/parked/unknown bundles, removal/rehire and unavailable identities/bundles); durable retired/restarted/forked lineage; roster refusal/park/resume/removal; fail-closed document aliases; origin-attributed research records; and two dreaming exclusion/signal tests. Existing frontmatter/card tests and the registered grouped-search test were extended; ordinary test fixtures now install an explicit main selector.
+
+All logs are in `/tmp/196e/`.
+
+| Gate | Observed result |
+| --- | --- |
+| Frozen UI/apps/documents dependencies and compiled helpers | Passed; document helper self-test passed |
+| Locked `export_bindings`, wire generation and root/UI binding copies | Passed; export test 1 passed |
+| UI pre-change contract / head `tsc -b --noEmit` | 0 / 0 errors |
+| Full `vitest run src` | 349 files, 2,435 tests passed, including disclosure |
+| Four allowed UI callsites wording scan | 0 matches; no UI source edit was needed because generated trailing bundle parameters are optional |
+| Touched-file rustfmt | Passed |
+| Final nine-crate default-parallel Rust run | 2,037 passed, 5 failed, 4 ignored; `rust-gates-parallel-final.log` |
+| Supplementary serialized nine-crate Rust run | 2,023 passed, 19 failed, 4 ignored; app 50/50, document actor 12/12 and rpc-compose 65/65 passed; `rust-gates-final.log` |
+| Latest `isolat` selection after making the selector mandatory | 11 passed, 0 failed; `selector-tests.log` |
+| Clippy, eight engine crates, `--no-deps -- -D warnings` | Passed; `selector-clippy.log` |
+| Full clippy / added TUI no-deps clippy | Blocked by diagnostics in unchanged `voice/src/history/mod.rs:465` (`chunks_exact_to_as_chunks`) / `tui/src/components/mcp.rs:24` (`large_enum_variant`); no suppressions added |
+| Final locked `BUILD_SLOTS=1` engine build | Passed; `engine-build-final.log` |
+
+The five default-parallel Rust failures are the brief's known `repl::tests::capping_binds_out_name` failure (also fails alone with `--exact`), three app helper timeout/protocol assertions in unchanged `crates/app/src/helper.rs:516,529,618`, and the TUI emoji-source guard reporting unchanged `crates/agent/src/rpc_jobs/history.rs:434,462,470`. The app helper tests all passed in the serialized run. That serialized run instead exposed 17 inbox cases reporting `actor not running` from the existing registry-ask path (`crates/agent/src/communication/network.rs:3493-3504`); those cases passed in both default-parallel runs. These gates are not reported as clean.
+
+Verification deviation: the pre-change UI wire contract was reconstructed from the current export by removing only the new `isolated_memory` properties and the three trailing `bundle` parameters. It was not a second checkout of main. The committed wire fixture was stale for unrelated APIs; the reconstructed baseline and actual head both typechecked with zero errors (`tsc-pre196.log`, `tsc-head.log`). No behavioral contract deviation is intended.
+
+### Scratch proof
+
+`/tmp/196e/proof.md` records the loopback-only, fake-model commands/results, safe configuration before first start, file-log `rpc listening` readiness, native call receipts, hint positive control, main git history, restarts and process cleanup. The first scratch fake incorrectly skipped the genuine user's `<time>` prefix; it was corrected. A receipt assertion was corrected from `body` to the RPC's existing `text` field. Both failed attempts are retained; neither required an engine change.
+
+All eight requested proof steps passed, plus an isolated document read/edit followed immediately by `knowledge_get` and owner RPC inspection. Isolated search returned no main hits/stubs; the plain proof session had no isolated hits or hints; default RPC search returned nothing while `bundle: "agent:iso-proof"` returned the private note. The same desk UUID reopened after restart. The legacy enable refusal matched exactly, disabling created a fresh context while owner inspection still read the parked bundle, re-enabling resumed it, and removal preserved it at `/tmp/196e/eng/agent-memory/.removed/iso-proof-1794863892/`.
+
+Both managed engines exited 0; both fake service instances were stopped. A final process-table check found none of the nine captured engine/fake/worker/document-helper PIDs remaining. Every finite build/test command finished. No live checkout, other engine, push or merge was used.
+
+This is a knowledge-bundle boundary, not a transcript or raw-filesystem sandbox. Phase 1 does not replicate isolated bundles or add bundle-aware MCP tools.

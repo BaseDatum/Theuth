@@ -70,6 +70,9 @@ pub struct AgentProposeArgs {
     /// The effort of `memory_model` (194); default: none (thinking off).
     #[serde(default)]
     pub memory_effort: Option<String>,
+    /// Separate local knowledge bundle.
+    #[serde(default)]
+    pub isolated_memory: bool,
 }
 
 /// The file `a` describes, active and unproposed (the caller sets `paused` /
@@ -109,6 +112,7 @@ fn file_of(
         proposed_by: None,
         runs_in: Default::default(),
         memory: None,
+        isolated_memory: a.isolated_memory,
         view_bytes: None,
         memory_model: a.memory_model,
         memory_effort: a.memory_effort,
@@ -159,6 +163,7 @@ impl Tool for AgentProposeTool {
             Ok(approval) => Ok(ToolOutput::ok(format!(
                 "proposed agents/{name}.md (paused until approved); approval {approval}"
             ))),
+            Err(kameo::error::SendError::HandlerError(e)) => Ok(ToolOutput::err(e)),
             Err(e) => Ok(ToolOutput::err(e.to_string())),
         }
     }
@@ -225,6 +230,7 @@ impl Tool for AgentPutTool {
                     "active"
                 }
             ))),
+            Err(kameo::error::SendError::HandlerError(e)) => Ok(ToolOutput::err(e)),
             Err(e) => Ok(ToolOutput::err(e.to_string())),
         }
     }
@@ -347,6 +353,7 @@ mod tests {
             capabilities: None,
             memory_model: Some("anthropic/claude-haiku-5-5".into()),
             memory_effort: Some("low".into()),
+            isolated_memory: true,
         }
     }
 
@@ -374,6 +381,9 @@ mod tests {
             }
         );
         assert!(!cto.paused && cto.proposed_by.is_none());
+        assert!(cto.isolated_memory);
+        let retained = file::parse("cto", &file::render(&cto)).unwrap();
+        assert!(retained.isolated_memory);
         // an unknown manager is refused; a roster agent or theuth is fine; blank falls back to the default
         assert!(
             file_of(args("ops", Some("cto")), AgentName::DEFAULT, &shared)

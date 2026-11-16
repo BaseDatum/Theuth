@@ -166,9 +166,9 @@ impl SearchResponse {
             .collect()
     }
 
-    /// Replace the groups `again` re-answered; the rest keep their pages. A
-    /// group not yet present is appended: only the first ask adds groups, and
-    /// it answers the whole selection in fixed order.
+    /// Replace the groups `again` re-answered; the rest keep their pages.
+    /// Existing positions preserve selection order, including callers that
+    /// prefill indexing groups before asking partitioned owners.
     fn merge(&mut self, again: SearchResponse) {
         for fresh in again.groups {
             match self
@@ -574,13 +574,56 @@ impl SearchTool {
     ) -> Result<Result<(), String>, Stop> {
         // Same as opening the UI: current knowledge is reconciled once on
         // entry, not per poll and not for history-only requests.
-        if selected.contains(&SearchCategory::Knowledge) {
-            *sync_failed = b.until(sync_knowledge()).await?.err();
+        let selected_knowledge = if selected.iter().any(|c| {
+            matches!(
+                c,
+                SearchCategory::Knowledge | SearchCategory::KnowledgeHistory
+            )
+        }) {
+            match b.until(session_knowledge(b.session)).await? {
+                Ok(k) => k,
+                Err(e) => return Ok(Err(e)),
+            }
+        } else {
+            None
+        };
+        if selected.contains(&SearchCategory::Knowledge)
+            && let Some(k) = &selected_knowledge
+        {
+            *sync_failed = b.until(k.sync()).await?.err().map(|e| format!("{e:#}"));
         }
         let mut pending = selected.to_vec();
         loop {
+            let other = pending
+                .iter()
+                .copied()
+                .filter(|c| {
+                    !matches!(
+                        c,
+                        SearchCategory::Knowledge | SearchCategory::KnowledgeHistory
+                    )
+                })
+                .collect();
+            let mut knowledge_groups = Vec::new();
+            if pending.contains(&SearchCategory::Knowledge) {
+                let page = match &selected_knowledge {
+                    Some(k) => b.until(k.search_concepts(&a.query, a.limit)).await?,
+                    None => SearchPage::unavailable("knowledge is not running"),
+                };
+                knowledge_groups.push(SearchGroup::Knowledge { page });
+            }
+            if pending.contains(&SearchCategory::KnowledgeHistory) {
+                let page = match &selected_knowledge {
+                    Some(k) => b.until(k.search_history(&a.query, a.limit)).await?,
+                    None => SearchPage::unavailable("knowledge is not running"),
+                };
+                knowledge_groups.push(SearchGroup::KnowledgeHistory { page });
+            }
+            resp.merge(SearchResponse {
+                groups: knowledge_groups,
+            });
             match b
-                .until((self.owners)(&self.rt, a.query.clone(), pending, a.limit))
+                .until((self.owners)(&self.rt, a.query.clone(), other, a.limit))
                 .await?
             {
                 Ok(again) => resp.merge(again),
@@ -657,6 +700,11 @@ impl Tool for SearchTool {
         let mut stop = None;
         // Blank query or empty selection: no sync, no ask, no wait (49 §4.2).
         if !a.query.trim().is_empty() && !selected.is_empty() {
+            resp.groups = selected
+                .iter()
+                .copied()
+                .map(SearchGroup::indexing)
+                .collect();
             let mut b = Bound {
                 rt: &self.rt,
                 deadline: tokio::time::Instant::now() + POLL_DEADLINE,
@@ -714,15 +762,18 @@ impl Tool for SearchTool {
 
 /// Reconcile the knowledge index with disk, as the UI does on open. A
 /// missing owner is not a failure here: `run` reports it as unavailable.
-async fn sync_knowledge() -> Result<(), String> {
+async fn session_knowledge(
+    session: SessionId,
+) -> Result<Option<Arc<knowledge::Knowledge>>, String> {
     let Ok(Some(k)) = ActorRef::<knowledge::KnowledgeActor>::lookup(knowledge::KNOWLEDGE_ACTOR)
     else {
-        return Ok(());
+        return Ok(None);
     };
-    k.ask(knowledge::SyncNow)
+    let k = k.ask(knowledge::Handle).await.map_err(|e| e.to_string())?;
+    k.for_session(session)
         .await
-        .map(drop)
-        .map_err(|e| e.to_string())
+        .map(Some)
+        .map_err(|e| format!("{e:#}"))
 }
 
 /// The registry redacts every string of the output after `call`; a snippet it
@@ -1201,6 +1252,52 @@ mod tests {
         .expect("search registered without the rpc listener");
 
         let session = SessionId::new();
+        let isolated = SessionId::new();
+        struct Scope(SessionId);
+        #[async_trait::async_trait]
+        impl knowledge::Scoper for Scope {
+            fn scope_for(&self, _: SessionId) -> Option<knowledge::AgentScope> {
+                None
+            }
+            async fn bundle_for(&self, session: SessionId) -> Result<Option<String>, String> {
+                Ok((session == self.0).then(|| "isolated".into()))
+            }
+        }
+        let k = ActorRef::<knowledge::KnowledgeActor>::lookup(knowledge::KNOWLEDGE_ACTOR)
+            .unwrap()
+            .unwrap()
+            .ask(knowledge::Handle)
+            .await
+            .unwrap();
+        k.set_scoper(Arc::new(Scope(isolated)));
+        for (target, id, title) in [
+            (session, "facts/main-memory", "Main partitionneedle"),
+            (
+                isolated,
+                "facts/isolated-memory",
+                "Isolated partitionneedle",
+            ),
+        ] {
+            let out = reg.ask(Invoke(ToolCall {
+                id: format!("seed-{target}"), name: "knowledge_put".into(),
+                args: serde_json::json!({"id": id, "type": "fact", "title": title, "body": "Only this bundle."}),
+                session: target, quiet: false,
+            })).await.unwrap();
+            assert!(!out.is_error, "{}", out.content);
+        }
+        for (target, own, foreign) in [
+            (session, "facts/main-memory", "facts/isolated-memory"),
+            (isolated, "facts/isolated-memory", "facts/main-memory"),
+        ] {
+            let out = reg.ask(Invoke(ToolCall {
+                id: format!("partition-{target}"), name: "search".into(),
+                args: serde_json::json!({"query": "partitionneedle", "categories": ["knowledge", "knowledge_history"]}),
+                session: target, quiet: false,
+            })).await.unwrap();
+            assert!(!out.is_error, "{}", out.content);
+            assert!(out.content.contains(own), "{}", out.content);
+            assert!(!out.content.contains(foreign), "{}", out.content);
+        }
         let call = |args: serde_json::Value| ToolCall {
             id: "1".into(),
             name: "search".into(),
@@ -1432,7 +1529,7 @@ mod tests {
         // Cancellation of the owning turn, and only that.
         let session = SessionId::new();
         let start = tokio::time::Instant::now();
-        let waiting = tokio::spawn(call(session, &["sessions", "knowledge_history"]));
+        let waiting = tokio::spawn(call(session, &["sessions", "notes"]));
         tokio::time::sleep(POLL_INTERVAL + Duration::from_millis(200)).await;
         rt.publish(finished(SessionId::new(), "cancelled")).await;
         rt.publish(finished(session, "end_turn")).await;
@@ -1450,7 +1547,7 @@ mod tests {
             shape(&out),
             [
                 indexing("cancelled", SearchCategory::Sessions),
-                indexing("cancelled", SearchCategory::KnowledgeHistory),
+                indexing("cancelled", SearchCategory::Notes),
             ]
         );
         assert!(out.content.contains("turn cancelled"), "{}", out.content);

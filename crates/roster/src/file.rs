@@ -26,6 +26,7 @@ struct FrontMatter {
     proposed_by: Option<String>,
     runs_in: Option<String>,
     memory: Option<String>,
+    isolated_memory: Option<bool>,
     view_bytes: Option<u32>,
     memory_model: Option<String>,
     memory_effort: Option<String>,
@@ -88,6 +89,7 @@ pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
         proposed_by: trimmed(fm.proposed_by),
         runs_in: fm.runs_in.as_deref().map_or(Ok(RunsIn::Any), str::parse)?,
         memory,
+        isolated_memory: fm.isolated_memory.unwrap_or(false),
         view_bytes: fm.view_bytes,
         memory_model: trimmed(fm.memory_model),
         memory_effort: trimmed(fm.memory_effort),
@@ -137,6 +139,9 @@ pub fn render(f: &AgentFile) -> String {
     }
     if !f.runs_in.is_any() {
         s.push_str(&format!("runs_in: {}\n", f.runs_in));
+    }
+    if f.isolated_memory {
+        s.push_str("isolated_memory: true\n");
     }
     if let Some(m) = f.memory {
         s.push_str(&format!("memory: {m}\n"));
@@ -242,6 +247,7 @@ pub fn default_agent(data_dir: &Path, model: Option<String>) -> AgentFile {
         proposed_by: None,
         runs_in: RunsIn::Any,
         memory: None,
+        isolated_memory: false,
         view_bytes: None,
         memory_model: None,
         memory_effort: None,
@@ -289,6 +295,7 @@ mod tests {
         assert_eq!(f.mcp, None);
         assert_eq!(f.budget, Budget::None);
         assert!(!f.paused);
+        assert!(!f.isolated_memory);
         assert_eq!(f.proposed_by, None);
         assert_eq!(f.body, "You are Ops.");
     }
@@ -333,6 +340,7 @@ mod tests {
             Some("Production health, incidents, Grafana and ArgoCD. Not code review.")
         );
         assert!(!f.paused);
+        assert!(!f.isolated_memory);
         assert_eq!(f.proposed_by.as_deref(), Some("agent:cto"));
         assert_eq!(f.runs_in, RunsIn::Any);
         assert_eq!(f.body, "You are Ops. Your charter is production.");
@@ -434,6 +442,7 @@ mod tests {
             proposed_by: Some("agent:cto".into()),
             runs_in: RunsIn::Vm("lab".into()),
             memory: Some(agent::MemoryMode::Endless),
+            isolated_memory: true,
             view_bytes: Some(96_000),
             memory_model: Some("anthropic/claude-haiku-5-5".into()),
             memory_effort: Some("8000".into()),

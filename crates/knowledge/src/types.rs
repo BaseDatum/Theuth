@@ -84,9 +84,14 @@ impl AgentScope {
 /// Answers "which agent is this session's" (67 §9). The roster plugin
 /// installs one with [`crate::RegisterScoper`]; until then every session is
 /// the user's.
+#[async_trait::async_trait]
 pub trait Scoper: Send + std::marker::Sync {
     /// `None` for the user's own sessions and the default agent's.
     fn scope_for(&self, session: SessionId) -> Option<AgentScope>;
+
+    /// Resolve a known ordinary session to `None`, an isolated agent to its
+    /// name, or fail closed when its identity or bundle is unavailable.
+    async fn bundle_for(&self, session: SessionId) -> Result<Option<String>, String>;
 }
 
 /// Who wrote a concept (frontmatter `source`; absent for hand-written files).

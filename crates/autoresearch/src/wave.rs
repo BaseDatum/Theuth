@@ -1118,7 +1118,12 @@ mod tests {
                 reason: "fine".into(),
             })
         }
-        async fn seed_playbook(&self, _: &str, _: &runtime::Runtime) -> Result<Option<String>> {
+        async fn seed_playbook(
+            &self,
+            _: &str,
+            _: Option<runtime::SessionId>,
+            _: &runtime::Runtime,
+        ) -> Result<Option<String>> {
             Ok(None)
         }
         async fn code_map(
