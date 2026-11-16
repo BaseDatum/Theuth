@@ -235,9 +235,10 @@ ef9ef710 feat(desktop): SectionBand + SectionRow replace SectionTabs; groupOf in
 ## Settings small screens (2026-11-16)
 
 - Below 1024 px, `TabBand` wraps instead of clipping; each tab keeps at least 40 px width and 52 px height. Labels remain icon-only below `md`.
-- Only the Settings body establishes the named `settings` container, and only below 1024 px. `Row` stacks below 480 px of available body width, including the narrow column on portrait iPad. Existing `stack` and `wide` rows retain their desktop behaviour.
-- Settings-scoped styles wrap long values, section actions and chip text; stacked input/select controls fill their row. Touch controls have a 40 px minimum, including back links and portaled menus.
-- Fine-pointer windows retain native icon/raw-button heights. Wrapped text buttons keep their desktop minimum height (default 36 px, small 32 px, extra-small 24 px, large 40 px); the touch minimum remains 40 px.
+- Only the Settings body establishes the named `settings` container, and only below 1024 px. Wide `Row` controls stack below 480 px of available body width, including the narrow column on portrait iPad. Lone switches, checkboxes, radios and icon buttons stay centred beside their wrapping label and description.
+- Settings-scoped styles wrap long values, section actions and chip text; stacked input/select controls fill their row. Touch targets reach 40 px, including back links and portaled menus. Small controls retain their normal visuals and use an invisible extended hit area; native checkboxes and radios use their label.
+- Fine-pointer windows retain native icon/raw-button heights. Wrapped text buttons keep their desktop minimum height (default 36 px, small 32 px, extra-small 24 px, large 40 px); their touch minimum remains 40 px.
+- Hit-area selectors are flat CSS for WebViews without native nesting. Absolute, fixed and sticky controls never receive the overlay, so its containing block cannot escape to a larger ancestor.
 - Provider forms become single-column forms; model limits become labelled cards. Double and MCP audit tables retain their native table markup and use labelled cards below 1024 px. Voice history puts actions below the text; machine actions and template editor metadata wrap.
 - Phone dialogs fit the visible viewport and scroll vertically; sheets use the phone width. These rules do not affect chat or other pages, and all responsive changes stop at 1024 px.
 - Visual evidence: `/tmp/setmobile/shots/{before,after}/`, every Settings tab at 360 and 390 px, plus all ten categories at 768 px and desktop references at 1024 px. Populated long-value fixtures use isolated query caches; the scratch engine never pairs with another engine.

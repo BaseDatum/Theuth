@@ -1,7 +1,9 @@
 import { type QueryKey, type UseMutationResult, useMutation, useQueryClient } from '@tanstack/react-query'
-import { type ReactNode, useState } from 'react'
+import { isValidElement, type ReactNode, useState } from 'react'
 import { toast } from 'sonner'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import { chordOf } from '@/lib/chord'
 import type { Api } from '@/rpc/bindings/client'
 import type { SyncResult } from "@/rpc/bindings/method.agent.output"
@@ -73,20 +75,26 @@ export function Row({
   wide?: boolean
   children?: ReactNode
 }) {
+  const control = isValidElement<{ type?: string; role?: string; size?: string }>(children) ? children : null
+  const nativeSmall = control?.type === 'input' && (control.props.type === 'checkbox' || control.props.type === 'radio')
+  const small = nativeSmall || control?.type === Switch || control?.props.role === 'switch' || control?.props.role === 'checkbox' || control?.props.role === 'radio' || (control?.type === Button && control.props.size?.startsWith('icon'))
+  const column = wide && !small
+  const Control = nativeSmall ? 'label' : 'div'
   return (
     <div
       data-settings-row=""
+      data-settings-small={small || undefined}
       className={
-        wide
+        column
           ? 'flex flex-col gap-3 border-b border-border-subtle py-4 last:border-0'
-          : `flex items-center justify-between gap-6 border-b border-border-subtle py-4 last:border-0 max-lg:@max-[480px]/settings:flex-col max-lg:@max-[480px]/settings:items-stretch max-lg:@max-[480px]/settings:gap-3${stack ? ' max-md:flex-col max-md:items-stretch max-md:gap-3' : ''}`
+          : `flex items-center justify-between gap-6 border-b border-border-subtle py-4 last:border-0${small ? '' : ' max-lg:@max-[480px]/settings:flex-col max-lg:@max-[480px]/settings:items-stretch max-lg:@max-[480px]/settings:gap-3'}${stack && !small ? ' max-md:flex-col max-md:items-stretch max-md:gap-3' : ''}`
       }
     >
       <div className="min-w-0">
         <div className="text-sm">{label}</div>
         {description && <div className="mt-0.5 text-[13px] text-fg-secondary">{description}</div>}
       </div>
-      {children && <div data-settings-control="" className={`${wide ? 'flex w-full items-center gap-2' : 'flex shrink-0 items-center gap-2'} max-lg:@max-[480px]/settings:w-full max-lg:@max-[480px]/settings:flex-wrap`}>{children}</div>}
+      {children && <Control data-settings-control="" className={`${column ? 'flex w-full items-center gap-2' : 'flex shrink-0 items-center gap-2'}${small ? '' : ' max-lg:@max-[480px]/settings:w-full max-lg:@max-[480px]/settings:flex-wrap'}`}>{children}</Control>}
     </div>
   )
 }

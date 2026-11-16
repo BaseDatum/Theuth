@@ -136,7 +136,7 @@
       max-width: 100%;
     }
 
-    [data-settings-control] > :is(input, [role="combobox"], .relative:has(> input)) {
+    [data-settings-control] > :is(input:not([type="checkbox"], [type="radio"]), [role="combobox"], .relative:has(> input)) {
       width: 100%;
       max-width: none;
     }
@@ -160,20 +160,29 @@
 }
 
 @media (width < 1024px) and (pointer: coarse) {
-  [data-settings-page] :is(button, a, input, select, summary, [role="slider"]),
-  [data-settings-page] button[data-slot="button"][data-size],
-  body:has([data-settings-page]) :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"], [data-slot="popover-content"], [data-slot="select-content"], [data-slot="dropdown-menu-content"]) :is(button, a, input, [role="option"], [role="menuitem"]) {
+  [data-settings-page] :is(button, a, input, select, summary, [role="slider"]):not([role="switch"], [role="checkbox"], [role="radio"], [type="checkbox"], [type="radio"], [data-size^="icon"]),
+  [data-settings-page] button[data-slot="button"][data-size]:not([data-size^="icon"]),
+  body:has([data-settings-page]) :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"], [data-slot="popover-content"], [data-slot="select-content"], [data-slot="dropdown-menu-content"]) :is(button, a, input, [role="option"], [role="menuitem"]):not([role="switch"], [role="checkbox"], [role="radio"], [type="checkbox"], [type="radio"], [data-size^="icon"]) {
     min-height: 40px;
     min-width: 40px;
   }
 
-  [data-settings-page] [data-slot="switch"] {
-    min-width: 52px;
+  /* Expand the hit box, not the visible track, box or icon button. Native inputs use their label. */
+  body:has([data-settings-page]) :is([data-settings-page], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"], [data-slot="popover-content"]) :is([role="switch"], [role="checkbox"], [role="radio"], button[data-size^="icon"], label:has(> input[type="checkbox"], > input[type="radio"])) {
+    min-width: 0;
+    min-height: 0;
   }
 
-  [data-settings-page] [data-slot="switch-thumb"] {
-    width: 24px;
-    height: 24px;
+  body:has([data-settings-page]) :is([data-settings-page], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"], [data-slot="popover-content"]) :is([role="switch"], [role="checkbox"], [role="radio"], button[data-size^="icon"], label:has(> input[type="checkbox"], > input[type="radio"])):not(.absolute, .fixed, .sticky) {
+    position: relative;
+  }
+
+  body:has([data-settings-page]) :is([data-settings-page], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"], [data-slot="popover-content"]) :is([role="switch"], [role="checkbox"], [role="radio"], button[data-size^="icon"], label:has(> input[type="checkbox"], > input[type="radio"])):not(.absolute, .fixed, .sticky)::after {
+    content: "";
+    position: absolute;
+    inset: min(0px, calc((100% - 40px) / 2));
+    min-width: 40px;
+    min-height: 40px;
   }
 
   [data-settings-page] input {
