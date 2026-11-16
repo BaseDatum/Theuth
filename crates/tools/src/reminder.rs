@@ -86,6 +86,45 @@ pub struct ReminderView {
     pub seconds: u64,
 }
 
+/// A pending reminder, including the details needed after reconnecting.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PendingReminderView {
+    /// Session-local reminder id.
+    pub id: String,
+    /// Message delivered when the timer fires.
+    pub message: String,
+    /// Creation time, Unix seconds.
+    pub set_at: i64,
+    /// Delivery time, Unix seconds.
+    pub fires_at: i64,
+}
+
+/// `ask`: pending reminders of one session, in creation order.
+pub struct ListReminders(pub SessionId);
+
+impl Message<ListReminders> for Jobs {
+    type Reply = Vec<PendingReminderView>;
+
+    async fn handle(
+        &mut self,
+        m: ListReminders,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.reminders.get(&m.0).map_or_else(Vec::new, |sr| {
+            sr.pending
+                .iter()
+                .map(|r| PendingReminderView {
+                    id: r.id.clone(),
+                    message: r.message.clone(),
+                    set_at: r.set_at,
+                    fires_at: r.fires_at,
+                })
+                .collect()
+        })
+    }
+}
+
 /// `ask` → `Result<ReminderView, String>`: arm a timer for `session`.
 /// Err names the cap and the pending ids when [`MAX_PENDING`] are pending.
 pub struct SetReminder {
@@ -159,6 +198,7 @@ pub(crate) struct Reminder {
     op: OperationId,
     message: String,
     set_at: i64,
+    fires_at: i64,
     seconds: u64,
     /// Re-armed past due: fires at once, `late="true"`.
     late: bool,
@@ -343,6 +383,7 @@ impl Message<Arm> for Jobs {
                 op,
                 message: m.message.clone(),
                 set_at: m.set_at,
+                fires_at: m.fires_at,
                 seconds: m.seconds,
                 late,
                 task,
@@ -564,6 +605,49 @@ mod tests {
                 kameo::error::SendError::HandlerError(e) => e,
                 e => e.to_string(),
             })
+    }
+
+    #[tokio::test]
+    async fn list_reminders_is_session_scoped_and_pending_only() {
+        let fx = fixture(Duration::ZERO, Duration::from_secs(30)).await;
+        let first = set(&fx, 60, "check the build").await.unwrap();
+        let second = set(&fx, 60, "check the tests").await.unwrap();
+        let rows = fx.jobs.ask(ListReminders(fx.session)).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, first.id);
+        assert_eq!(rows[0].message, "check the build");
+        assert_eq!(rows[0].fires_at - rows[0].set_at, 60);
+        assert!(
+            fx.jobs
+                .ask(ListReminders(SessionId::new()))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        fx.jobs
+            .ask(CancelReminder {
+                session: fx.session,
+                id: first.id,
+            })
+            .await
+            .unwrap();
+        let rows = fx.jobs.ask(ListReminders(fx.session)).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, second.id);
+        fx.jobs
+            .ask(Fired {
+                session: fx.session,
+                id: second.id,
+            })
+            .await
+            .unwrap();
+        assert!(
+            fx.jobs
+                .ask(ListReminders(fx.session))
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

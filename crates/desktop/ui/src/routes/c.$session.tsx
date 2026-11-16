@@ -21,7 +21,8 @@ import { ResumeBanner } from '@/components/chat/ResumeBanner'
 import { Panes } from '@/components/chat/Panes'
 import { SearchSession } from '@/components/chat/SearchSession'
 import { SubagentStrip } from '@/components/chat/SubagentStrip'
-import { TodoCard } from '@/components/chat/TodoCard'
+import { BackgroundArea } from '@/components/chat/BackgroundArea'
+import { relistReminders, relistTerminals } from '@/components/chat/background'
 import { Transcript } from '@/components/chat/Transcript'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
 import { chatName } from '@/lib/attach'
@@ -191,7 +192,7 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
       <Transcript key={`t:${session}`} session={session} />
       {lost && <UnreachableCard session={session} machine={lost} />}
       <SubagentStrip session={session} trailing={advised ? <AdvisorPill session={session} /> : undefined} />
-      <TodoCard key={`d:${session}`} session={session} />
+      <BackgroundArea key={`d:${session}`} session={session} />
       {aboveComposer}
       {watching ? (
         <>
@@ -223,6 +224,8 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
  */
 export function useSessionLoad(session: string): void {
   const api = useApi()
+  const canReminders = useQuerySupport(['list_reminders'])
+  const canTerminals = useQuerySupport(['list_terminals'])
   const navigate = useNavigate()
   // The engine this route mounted under: an RPC landing after a switch writes to its own stores, never the new engine's (48 §5).
   const { sessions: store } = useScope()
@@ -241,6 +244,11 @@ export function useSessionLoad(session: string): void {
     },
     [navigate, session],
   )
+
+  const refreshBackground = useCallback((signal: AbortSignal) => {
+    if (canReminders) void relistReminders(api, store, session, signal).catch((e: unknown) => report(e, signal))
+    if (canTerminals) void relistTerminals(api, store, session, signal).catch((e: unknown) => report(e, signal))
+  }, [api, store, session, canReminders, canTerminals, report])
 
   // The plan (47 §5.4): one `get_todos` when the page carried none (an older engine, a refused read) or a gap
   // marked it stale. `setTodos` only moves forward, so a cached list is never wiped; a failed read leaves the
@@ -266,6 +274,7 @@ export function useSessionLoad(session: string): void {
       // A reconnect rebinds an owned private tree first (51 §4.3); a read before that lands on the old peer and is refused.
       await resumed()
       if (signal.aborted) return
+      refreshBackground(signal)
       const before = store.getState().sessions[session]
       const fresh = before && freshness(before)
       const [page, agents] = await Promise.all([api.load_session(session, null, PAGE), api.list_agents(session), relistArtifacts(api, store, session)])
@@ -276,7 +285,7 @@ export function useSessionLoad(session: string): void {
       const s = store.getState().sessions[session]
       if (!s?.todos || s.todosStale) refreshTodos(signal)
     },
-    [api, session, store, refreshTodos],
+    [api, session, store, refreshTodos, refreshBackground],
   )
 
   // The mutation refresh (48 §5): a settled-only page, installed only when nothing raced it. Calls
@@ -292,6 +301,7 @@ export function useSessionLoad(session: string): void {
       }
       settling.current = true
       void relistArtifacts(api, store, session)
+      refreshBackground(signal)
       void (async () => {
         for (let tries = 0; tries < SETTLE_TRIES; tries++) {
           const s = store.getState().sessions[session]
@@ -315,7 +325,7 @@ export function useSessionLoad(session: string): void {
         }
       })()
     },
-    [api, session, store, report],
+    [api, session, store, report, refreshBackground],
   )
 
   useEffect(() => {
@@ -326,6 +336,7 @@ export function useSessionLoad(session: string): void {
     if (!s?.loaded) {
       load(ctl.signal).catch((e: unknown) => report(e, ctl.signal))
     } else {
+      refreshBackground(ctl.signal)
       api.list_agents(session).then(
         (a) => {
           if (!ctl.signal.aborted) store.getState().setChildren(session, a)
@@ -338,7 +349,7 @@ export function useSessionLoad(session: string): void {
       if (!s.todos || s.todosStale) refreshTodos(ctl.signal)
     }
     return () => ctl.abort()
-  }, [api, session, load, settle, store, refreshTodos, report])
+  }, [api, session, load, settle, store, refreshTodos, refreshBackground, report])
 
   // Reconnect (bare event): everything between is lost, so the visible session is re-fetched in full. A context
   // edit (`ContextChanged`, or the picker's `settled` event) and 129's `Lagged` resync go through the settled path instead.
