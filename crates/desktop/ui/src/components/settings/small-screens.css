@@ -24,10 +24,30 @@
   }
 
   [data-settings-page] button:not([role="tab"], [role="switch"]) {
-    height: auto;
     max-width: 100%;
     white-space: normal;
     overflow-wrap: anywhere;
+  }
+
+  /* Text buttons may grow when wrapping; icon and raw button heights stay native. */
+  [data-settings-page] button[data-slot="button"][data-size]:not([data-size^="icon"]) {
+    height: auto;
+  }
+
+  [data-settings-page] button[data-slot="button"][data-size="default"] {
+    min-height: 2.25rem;
+  }
+
+  [data-settings-page] button[data-slot="button"][data-size="sm"] {
+    min-height: 2rem;
+  }
+
+  [data-settings-page] button[data-slot="button"][data-size="xs"] {
+    min-height: 1.5rem;
+  }
+
+  [data-settings-page] button[data-slot="button"][data-size="lg"] {
+    min-height: 2.5rem;
   }
 
   [data-settings-page] [data-slot="badge"] {
@@ -141,6 +161,7 @@
 
 @media (width < 1024px) and (pointer: coarse) {
   [data-settings-page] :is(button, a, input, select, summary, [role="slider"]),
+  [data-settings-page] button[data-slot="button"][data-size],
   body:has([data-settings-page]) :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"], [data-slot="popover-content"], [data-slot="select-content"], [data-slot="dropdown-menu-content"]) :is(button, a, input, [role="option"], [role="menuitem"]) {
     min-height: 40px;
     min-width: 40px;
