@@ -1,5 +1,9 @@
-use crate::rpc_support::{attach_pty, RpcServerExt};
+mod history;
+
+use crate::rpc_forward as forward;
+use crate::rpc_support::{RpcServerExt, attach_pty};
 use base64::Engine as _;
+pub use history::JobLogPage;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -9,9 +13,8 @@ use rpc_core::{Server, ask, failed, lookup};
 use runtime::SessionId;
 use tokio::sync::broadcast;
 use tools::{
-    CancelJob, CancelOrigin, JOBS_ACTOR, JobId, JobView, Jobs, Key, ListJobs,
-    LiveCounts, LiveCountsRow, PtyChunk, PtyInput, PtyOut, PtyResize, PtyScreen,
-    PtyScreenReply, PtyViewport,
+    CancelJob, CancelOrigin, JOBS_ACTOR, JobId, JobView, Jobs, Key, ListJobs, LiveCounts,
+    LiveCountsRow, PtyChunk, PtyInput, PtyOut, PtyResize, PtyScreen, PtyScreenReply, PtyViewport,
 };
 
 #[rpc_core_macros::rpc_descriptors(owner = "agent", descriptors = rpc_descriptors, audience = "owner")]
@@ -20,6 +23,24 @@ pub trait JobsApi {
     /// Background jobs of a session (14 §2): id, state, seconds, log path, tail.
     #[method(name = "list_jobs", with_extensions)]
     async fn list_jobs(&self, session: SessionId) -> RpcResult<Vec<JobView>>;
+    /// The session's complete job journal merged with live jobs, newest first.
+    #[method(name = "job_history", with_extensions)]
+    async fn job_history(
+        &self,
+        session: SessionId,
+        before_ms: Option<i64>,
+        limit: Option<u32>,
+    ) -> RpcResult<Vec<JobView>>;
+    /// Scrubbed log bytes; without an offset, returns the last page.
+    /// PTYs use the existing terminal viewer instead of raw escape logs.
+    #[method(name = "job_log", with_extensions)]
+    async fn job_log(
+        &self,
+        session: SessionId,
+        id: JobId,
+        offset: Option<u64>,
+        limit: Option<u32>,
+    ) -> RpcResult<JobLogPage>;
     /// Every session with a running job, a live PTY or a pending reminder
     /// (ids only): the desktop's sidebar snapshot after connect / resync.
     #[method(name = "list_live_counts")]
@@ -77,10 +98,49 @@ pub trait JobsApi {
 
 #[async_trait]
 impl JobsApiServer for Server {
-
     async fn list_jobs(&self, ext: &Extensions, session: SessionId) -> RpcResult<Vec<JobView>> {
         self.authorize(ext, session).await?;
         ask::<Jobs, _>(JOBS_ACTOR, ListJobs(session)).await
+    }
+    async fn job_history(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        before_ms: Option<i64>,
+        limit: Option<u32>,
+    ) -> RpcResult<Vec<JobView>> {
+        self.authorize_fwd(ext, session).await?;
+        if let Some(reply) =
+            forward::route(ext, session, "job_history", (session, before_ms, limit)).await?
+        {
+            return Ok(reply);
+        }
+        let store = ask::<crate::Agents, _>(crate::AGENT_ACTOR, crate::DurableStore).await?;
+        let live = ask::<Jobs, _>(JOBS_ACTOR, ListJobs(session)).await?;
+        history::history(&store, session, live, before_ms, limit)
+            .await
+            .map_err(failed)
+    }
+
+    async fn job_log(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        id: JobId,
+        offset: Option<u64>,
+        limit: Option<u32>,
+    ) -> RpcResult<JobLogPage> {
+        self.authorize_fwd(ext, session).await?;
+        if let Some(reply) =
+            forward::route(ext, session, "job_log", (session, &id, offset, limit)).await?
+        {
+            return Ok(reply);
+        }
+        let store = ask::<crate::Agents, _>(crate::AGENT_ACTOR, crate::DurableStore).await?;
+        let live = ask::<Jobs, _>(JOBS_ACTOR, ListJobs(session)).await?;
+        history::log(&store, session, &id, live, offset, limit)
+            .await
+            .map_err(failed)
     }
 
     async fn list_live_counts(&self) -> RpcResult<Vec<LiveCountsRow>> {

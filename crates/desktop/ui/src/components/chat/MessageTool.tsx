@@ -4,9 +4,8 @@ import { Streamdown } from 'streamdown'
 import { ToolSpinner } from './Indicators'
 import { codeDetails, describe, resultLine } from '@/lib/describe'
 import { type DiffLine, diffLines } from '@/lib/diff'
-import { rows } from '@/lib/jobTail'
 import { cn } from '@/lib/utils'
-import { type Entry, type JobTail, useSessions } from '@/store/sessions'
+import { type Entry, useSessions } from '@/store/sessions'
 import { ArtifactCard, Progress } from './ArtifactCard'
 import { AnsweredAskCard, askQuestions } from './AskCard'
 import { BoardCard, isBoardCreate } from './BoardCard'
@@ -16,31 +15,10 @@ import { Attachments } from './Attachments'
 import { fenced, plugins, shikiTheme } from './MessageAssistant'
 import { toolKey } from './disclosure'
 import { useDisclosure } from '@/lib/tool-runs'
+import { TranscriptJob } from './JobCard'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 
-function Job({ job }: { job: JobTail }) {
-  const lines = job.screen ? job.screen.rows : rows(job.lines)
-  // 109 §8.4: `lost` = the job died with the engine (never an exit code).
-  const lost = job.exit?.exit === 'lost'
-  const exit = job.exit && `${lost ? 'lost with the engine' : `exit ${typeof job.exit.exit === 'string' ? job.exit.exit : job.exit.exit.exited}`} · ${job.exit.secs}s`
-  return (
-    <div className="mt-2 font-mono text-xs leading-5 text-fg-tertiary">
-      <div className={lost ? 'italic text-warning' : 'italic'}>
-        {job.id}
-        {exit && ` · ${exit}`}
-      </div>
-      <div className="max-h-[12.5rem] overflow-y-auto">
-        {lines.map((l, i) => (
-          // Positional rows of a scrolling tail: the index is the identity.
-          <div key={i} className="truncate text-fg-secondary">
-            {l}
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
 
 /** `old`/`new` of an `edit` call when the arguments carry both. */
 function editArgs(args: unknown): { old: string; new: string } | null {
@@ -197,15 +175,15 @@ function PlainTool({ tool, session, readOnly }: { tool: Tool; session: string; r
           </div>
         )}
       </button>
-      {expanded && source && <Source code={source.code} language={source.language} />}
-      {expanded && edit && <Diff old={edit.old} new={edit.new} />}
-      {expanded && result && (
+      {expanded && !tool.job && source && <Source code={source.code} language={source.language} />}
+      {expanded && !tool.job && edit && <Diff old={edit.old} new={edit.new} />}
+      {expanded && !tool.job && result && (
         <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap">
           {result.output}
         </pre>
       )}
       {result && <Attachments files={result.files} occurrences={tool.context?.attachments} session={readOnly ? undefined : session} active={tool.context?.active} className="mt-2" />}
-      {expanded && tool.job && <Job job={tool.job} />}
+      {expanded && tool.job && <TranscriptJob tool={tool} session={session} />}
     </div>
   )
 }

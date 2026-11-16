@@ -1613,6 +1613,7 @@ impl Message<Launch<StartPty>> for Jobs {
                 call_id,
                 started,
                 started_ms,
+                ended_ms: None,
                 exit: None,
                 secs: 0,
                 log_path: log_path.clone(),
