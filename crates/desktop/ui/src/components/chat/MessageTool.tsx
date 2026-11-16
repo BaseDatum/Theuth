@@ -151,7 +151,7 @@ function PlainTool({ tool, session, readOnly }: { tool: Tool; session: string; r
         )}
       </button>
       {expanded && !tool.job && source && !edit && <Source code={source.code} language={source.language} />}
-      {expanded && !tool.job && edit && <DiffView model={edit} />}
+      {expanded && !tool.job && edit && <DiffView model={edit} disclosure={toolKey(tool.callId)} />}
       {expanded && !tool.job && result && (!edit || result.isError) && (
         <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap">
           {result.output}

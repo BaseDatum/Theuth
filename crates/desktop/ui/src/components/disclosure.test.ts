@@ -17,6 +17,7 @@ import type { UiEvent as WireEvent } from '@/store/ui-events'
 import { adopt, apply, empty, fromHistory } from '@/store/reduce'
 import type { Entry } from '@/store/sessions'
 import { AttachChip } from './chat/AttachChip'
+import { DiffView } from './chat/DiffView'
 import { DisclosureScope, FenceText, toolKey } from './chat/disclosure'
 import { Message } from './chat/Message'
 import { markdownComponents, plugins, rehypePlugins, shikiTheme } from './chat/MessageAssistant'
@@ -149,6 +150,13 @@ const rows: Row[] = [
     name: 'excerpt show all',
     key: 'r1|excerpt|a.ts|1',
     el: h(DisclosureScope, { value: 'r1' }, h(Excerpt, { path: 'a.ts', text: Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n') })),
+    open: (html) => !html.includes('Show all'),
+  },
+  // Edit-card diffs past the 400-row cap: Show all lives in the store under the tool card's key.
+  {
+    name: 'edit diff show all',
+    key: disclosureKey(toolKey('c1'), 'diff-all'),
+    el: h(DiffView, { disclosure: toolKey('c1'), pairs: [{ path: 'a.ts', old: '', new: Array.from({ length: 450 }, (_, i) => `line ${i}`).join('\n') }] }),
     open: (html) => !html.includes('Show all'),
   },
   // 183 §12.4: the two harness cards fold what the agent was told; the reader's open state lives in the store.
