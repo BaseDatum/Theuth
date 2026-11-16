@@ -218,8 +218,13 @@ else
     if [[ "$LIVE" == "$VERSION" ]]; then
       fail 5 "$S3_VER/ already published and $MANIFEST_NAME is $VERSION — bump the version"
     fi
-    # Partial previous run (objects uploaded, manifest not). Skip sign/upload; verify + write manifest.
-    echo "    $S3_VER/ already has objects; $MANIFEST_NAME is not $VERSION — resuming at verify"
+    # Partial previous run (some objects uploaded, manifest not). Sign is skipped and only the objects
+    # <ver>/ is missing go up: a run that died mid-upload (the 490 MB .dmg hitting the CLI's read
+    # timeout) leaves a prefix of the set, and treating that prefix as the whole set is what made every
+    # retry skip the upload and then 404 in verify, forever.
+    EXISTING="$("${AWS[@]}" s3 ls "$S3_VER/" | awk '{print $4}')"
+    published() { grep -qxF "$1" <<<"$EXISTING"; }
+    echo "    $S3_VER/ already has objects; $MANIFEST_NAME is not $VERSION — resuming (missing objects only)"
     RESUME=1
   fi
 fi
@@ -360,8 +365,13 @@ elif ! command -v docker >/dev/null 2>&1; then
 else
   for f in "${LINUX_TGZ[@]}"; do
     case "$f" in *linux-x86_64*) plat=linux/amd64 ;; *) plat=linux/arm64 ;; esac
+    # `t` is the whole harness binary, not a CLI-only one: on Linux it links the GTK stack (the .deb's
+    # Depends — libwebkit2gtk-4.1-0, libgtk-3-0 — pull the same libraries in), so a bare ubuntu:24.04
+    # image fails in the loader before the binary runs. Install the libraries the loader names, not the
+    # whole webkit stack: the gate still tests glibc, the tarball layout and the binary itself.
+    SMOKE_DEPS='apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq --no-install-recommends libgbm1 libwayland-client0 libxcb1 libasound2t64 libpipewire-0.3-0 >/dev/null 2>&1 && '
     out="$(docker run --rm --platform "$plat" -v "$PWD/$DIST:/d:ro" ubuntu:24.04 \
-      bash -c "tar xzf /d/$f -C /tmp && /tmp/t --version && echo wants=\$(/tmp/t --app-parser-hash) && /tmp/$HELPER --version && printf '' | /tmp/$HELPER && /tmp/$DOC_HELPER --version && printf '' | /tmp/$DOC_HELPER" 2>&1)" || fail 7 "$f: $out"
+      bash -c "${SMOKE_DEPS}tar xzf /d/$f -C /tmp && /tmp/t --version && echo wants=\$(/tmp/t --app-parser-hash) && /tmp/$HELPER --version && printf '' | /tmp/$HELPER && /tmp/$DOC_HELPER --version && printf '' | /tmp/$DOC_HELPER" 2>&1)" || fail 7 "$f: $out"
     [[ "$out" == *"$VERSION"* ]] || fail 7 "$f printed '$out', expected $VERSION"
     [[ "$out" == *"wants=$HELPER_HASH"* ]] || fail 7 "$f: t --app-parser-hash does not name $HELPER_HASH: '$out'"
     [[ "$out" == *"theuth-app-parser $HELPER_HASH"* ]] || fail 7 "$f: $HELPER --version printed '$out', expected 'theuth-app-parser $HELPER_HASH'"
@@ -411,16 +421,38 @@ s3_cp() { # src dest — content type from the destination key; DRY_RUN prints
     *.tar.gz) ct=application/gzip ;; *.zip) ct=application/zip ;; *.sig | *.deb | *.rpm | *.AppImage) ct=application/octet-stream ;; *) ct=text/plain ;;
   esac
   if [[ "$DRY_RUN" == "1" ]]; then echo "    DRY_RUN: aws s3 cp $1 $2"; return 0; fi
-  "${AWS[@]}" s3 cp "$1" "$2" --content-type "$ct" >/dev/null
+  # rustfs stalls the first byte of a large part past the CLI's 60 s default read timeout
+  # (AWS_ERROR_HTTP_RESPONSE_FIRST_BYTE_TIMEOUT on the 490 MB .dmg): give it a longer window and
+  # retry the object, so one stalled part cannot leave <ver>/ holding half a release.
+  local n=1
+  until "${AWS[@]}" s3 cp "$1" "$2" --content-type "$ct" \
+      --cli-read-timeout 300 --cli-connect-timeout 30 >/dev/null; do
+    n=$(( n + 1 ))
+    [[ $n -le 3 ]] || { echo "error: $2: upload failed after 3 attempts" >&2; return 1; }
+    echo "    retry $n: $2" >&2; sleep $(( n * 5 ))
+  done
   echo "    $2"
 }
 
 if [[ "$RESUME" == "1" ]]; then
-  echo "==> resume: skip sign/upload (leave $S3_VER/ immutable)"
+  echo "==> resume: sign skipped; only what $S3_VER/ is missing is uploaded"
   for f in ${SIGNED[@]+"${SIGNED[@]}"}; do
     [[ -s "$DIST/$f.sig" ]] || { echo "error: $DIST/$f.sig missing — cannot resume" >&2; exit 1; }
   done
   [[ -s "$DIST/SHA256SUMS" ]] || { echo "error: $DIST/SHA256SUMS missing — cannot resume" >&2; exit 1; }
+  # The object set a finished release holds. Published objects are never rewritten (the prefix stays
+  # immutable); a missing one — the .dmg the timeout killed, its SHA256SUMS, every .sig after it — goes up.
+  RESUME_SET=(${SIGNED[@]+"${SIGNED[@]}"} "$DMG" ${LINUX_DESKTOP[@]+"${LINUX_DESKTOP[@]}"} SHA256SUMS)
+  for f in ${SIGNED[@]+"${SIGNED[@]}"}; do RESUME_SET+=("$f.sig"); done
+  MISSING=()
+  for f in "${RESUME_SET[@]}"; do
+    if published "$f"; then echo "    present $f"; else MISSING+=("$f"); fi
+  done
+  if [[ ${#MISSING[@]} -gt 0 ]]; then
+    echo "==> upload ${#MISSING[@]} missing object(s) → $S3_VER/"
+    for f in "${MISSING[@]}"; do s3_cp "$DIST/$f" "$S3_VER/$f"; done
+  fi
+  UPLOADS=(${RESUME_SET[@]+"${RESUME_SET[@]}"})   # the summary counts the release's object set
 else
   echo "==> signing ${#SIGNED[@]} payloads (cargo tauri signer sign)"
   for f in ${SIGNED[@]+"${SIGNED[@]}"}; do
