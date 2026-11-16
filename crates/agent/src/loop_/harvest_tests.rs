@@ -40,9 +40,7 @@ async fn harvest_scenarios() {
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
     // The knowledge bundle every turn's `rebase` finds (12 §9.2).
-    runtime::Plugin::start(Box::new(knowledge::KnowledgePlugin), &reg_rt)
-        .await
-        .unwrap();
+    super::vision_fallback_tests::start_main_knowledge(&reg_rt).await;
 
     let mut h = Harness::new(Fake::harvest_held(HOLD)).await;
     let every = AgentConfig::default().knowledge.harvest_every;

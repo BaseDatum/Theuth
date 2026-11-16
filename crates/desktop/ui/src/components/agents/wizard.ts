@@ -1,5 +1,5 @@
 import { THEUTH } from '@/components/tasks/helpers'
-import type { AgentFile } from "@/rpc/bindings/method.roster.input"
+import type { AgentInput as AgentFile } from '@/lib/agent-memory'
 
 /** `/agents/new` in paperclip's order: who → where in the org → how it runs → what it may reach → what it may spend → its charter → review. */
 export const STEPS = ['identity', 'role', 'runtime', 'access', 'budget', 'charter', 'review'] as const
@@ -22,7 +22,7 @@ export const TOOLS = ['read_only', 'mutating', 'destructive'] as const
 export const EFFORTS = ['low', 'medium', 'high', 'max'] as const
 
 export function emptyDraft(): Draft {
-  return { name: '', title: '', reports_to: THEUTH, model: null, effort: null, tools: null, mcp: null, budget: { type: 'none' }, capabilities: null, runs_in: 'any', body: '' }
+  return { name: '', title: '', reports_to: THEUTH, model: null, effort: null, tools: null, mcp: null, budget: { type: 'none' }, capabilities: null, runs_in: 'any', isolated_memory: false, body: '' }
 }
 
 /** The charter the editor opens with; the agent fills in the blanks. */

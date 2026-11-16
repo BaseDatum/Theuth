@@ -30,10 +30,10 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
     rpc_core::merge_described([
         rpc_documents::rpc_module(server.clone()),
         rpc_notebooks::rpc_module(server),
-    ]).expect("document RPC composition")
+    ])
+    .expect("document RPC composition")
 }
 
-pub mod rpc_support;
 pub mod actor;
 pub mod cells;
 pub mod cite_check;
@@ -41,12 +41,14 @@ pub mod helper;
 pub mod hub;
 pub mod index;
 pub mod ingest;
+pub mod memory;
 pub mod meta;
 pub mod mirror;
 pub mod nb_tools;
 pub mod note_cells;
 pub mod notebook;
 pub mod relay;
+pub mod rpc_support;
 pub mod search;
 pub mod share;
 pub mod store;
@@ -155,6 +157,11 @@ pub struct Exported {
 pub struct Handle(ActorRef<DocumentActor>);
 
 impl Handle {
+    /// A local, unregistered document actor selected by the knowledge partition.
+    pub fn from_actor(actor: ActorRef<DocumentActor>) -> Self {
+        Self(actor)
+    }
+
     /// The running actor, or `None` when the plugin is disabled or not started yet.
     pub fn lookup() -> Option<Self> {
         ActorRef::<DocumentActor>::lookup(DOCUMENT_ACTOR)

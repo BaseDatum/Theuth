@@ -60,6 +60,10 @@ pub fn split_for(id: &str, origin: CaseOrigin) -> Split {
 /// recomputed from the id, text fields are scrubbed and `context` clipped.
 /// Returns the stored record.
 pub fn append(data_dir: &Path, case: &Case, night: &str) -> anyhow::Result<Case> {
+    anyhow::ensure!(
+        !crate::isolation::excluded(data_dir, case.source_session),
+        "isolated sessions are excluded from dreaming cases"
+    );
     let mut c = case.clone();
     if c.id.trim().is_empty() {
         c.id = new_id();
@@ -102,6 +106,9 @@ pub fn all(data_dir: &Path) -> anyhow::Result<Vec<Case>> {
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         match serde_json::from_str::<Case>(line) {
             Ok(c) => {
+                if crate::isolation::excluded(data_dir, c.source_session) {
+                    continue;
+                }
                 by_id.insert(c.id.clone(), c);
             }
             Err(e) => tracing::warn!("dreaming: cases.jsonl line skipped: {e}"),

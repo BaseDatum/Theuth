@@ -56,8 +56,8 @@ pub(crate) enum Msg {
 fn send(cx: &mut Cx<'_, '_, Msg>, request: Request) {
     cx.spawn_request(Lane::Concurrent, request, |api, request| async move {
         match request {
-            Request::KnowledgeList => Msg::Knowledge(api.knowledge_list(None, None, None, Some(50)).await.map_err(crate::reason)),
-            Request::KnowledgeSearch(query) => Msg::Knowledge(api.knowledge_search(query, None).await.map(|hits| hits.into_iter().map(|hit| hit.meta).collect()).map_err(crate::reason)),
+            Request::KnowledgeList => Msg::Knowledge(api.knowledge_list(None, None, None, Some(50), None).await.map_err(crate::reason)),
+            Request::KnowledgeSearch(query) => Msg::Knowledge(api.knowledge_search(query, None, None).await.map(|hits| hits.into_iter().map(|hit| hit.meta).collect()).map_err(crate::reason)),
             Request::KnowledgeHistory { id, limit } => {
                 let fetch = u32::try_from(limit + 1).unwrap_or(u32::MAX);
                 let history = api.knowledge_history(id.clone(), Some(fetch)).await.map_err(crate::reason);

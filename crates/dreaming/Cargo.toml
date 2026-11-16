@@ -6,6 +6,7 @@ publish.workspace = true
 description = "Dreaming: the nightly own-context routine that tidies knowledge, mines cases and tunes skills behind a gate (design doc 136)"
 
 [dependencies]
+rusqlite = "0.38"
 runtime = { workspace = true }
 wire = { workspace = true }
 rpc-core = { workspace = true }

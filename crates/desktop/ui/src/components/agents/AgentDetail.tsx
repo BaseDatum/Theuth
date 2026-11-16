@@ -25,22 +25,23 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { type AgentFile, type AgentSummary, isIsolated, memoryRefusal } from '@/lib/agent-memory'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { byRank, rankSummary, rootOf } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
-import type { AgentFile } from "@/rpc/bindings/method.roster.output"
-import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
+import { AgentMemory } from './AgentMemory'
 import { CharterDoc } from './CharterDoc'
 import { CharterEditor } from './CharterEditor'
 import { AccessFields, Field, RuntimeFields } from './RuntimeAccessFields'
 import { ActiveSwitch, ActivityChip, AgentAvatar, BudgetBar, PausedChip } from './identity'
+import { MemoryBadge } from './MemoryBadge'
 import { useAgentActions, useAgentFile } from './queries'
 import type { Draft } from './wizard'
 import { budgetUsed } from './tree'
 
-export const TABS = ['overview', 'charter', 'runtime', 'runs', 'tasks'] as const
+export const TABS = ['overview', 'charter', 'runtime', 'memory', 'runs', 'tasks'] as const
 export type Tab = (typeof TABS)[number]
-const TAB_LABEL: Record<Tab, string> = { overview: 'Overview', charter: 'Charter', runtime: 'Runtime & Access', runs: 'Runs', tasks: 'Tasks' }
+const TAB_LABEL: Record<Tab, string> = { overview: 'Overview', charter: 'Charter', runtime: 'Runtime & Access', memory: 'Memory', runs: 'Runs', tasks: 'Tasks' }
 
 /**
  * `/agents/$name/$tab` — paperclip's AgentDetail: header (avatar, title, Active/Paused switch, activity, actions),
@@ -54,6 +55,8 @@ export function AgentDetail({ name, tab }: { name: string; tab: Tab }) {
   const summary = agents.data?.find((a) => a.file.name === name)
   const { approve, reject, remove } = useAgentActions()
   const [confirmRemove, setConfirmRemove] = useState(false)
+  const isolated = file.data && isIsolated(file.data)
+  const currentTab = tab === 'memory' && !isolated ? 'overview' : tab
   const root = name === THEUTH
   const proposed = summary?.status === 'proposed' || !!file.data?.proposed_by
 
@@ -80,6 +83,7 @@ export function AgentDetail({ name, tab }: { name: string; tab: Tab }) {
                 <h3 className="text-base font-semibold">{file.data.title}</h3>
                 <span className="font-mono text-xs text-fg-tertiary">{name}</span>
                 {root && <Badge variant="outline">built-in</Badge>}
+                <MemoryBadge agent={file.data} />
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-fg-secondary">
                 {summary && !proposed && <ActiveSwitch agent={summary} />}
@@ -121,20 +125,21 @@ export function AgentDetail({ name, tab }: { name: string; tab: Tab }) {
               </>
             )}
           </div>
-          <Tabs value={tab} onValueChange={(t) => void navigate({ to: '/agents/$name/$tab', params: { name, tab: t }, replace: true })} className="min-h-0 flex-1 gap-0">
+          <Tabs value={currentTab} onValueChange={(t) => void navigate({ to: '/agents/$name/$tab', params: { name, tab: t }, replace: true })} className="min-h-0 flex-1 gap-0">
             <TabsList variant="line" className="w-full justify-start overflow-x-auto border-b border-border-subtle px-2">
-              {TABS.map((t) => (
+              {TABS.filter((t) => t !== 'memory' || isolated).map((t) => (
                 <TabsTrigger key={t} value={t}>
                   {TAB_LABEL[t]}
                 </TabsTrigger>
               ))}
             </TabsList>
             <div className="min-h-0 flex-1 overflow-y-auto">
-              {tab === 'overview' && <Overview file={file.data} summary={summary} agents={agents.data ?? []} />}
-              {tab === 'charter' && <Charter file={file.data} />}
-              {tab === 'runtime' && <Runtime key={JSON.stringify(file.data)} file={file.data} />}
-              {tab === 'runs' && <Runs name={name} desk={summary?.desk ?? null} />}
-              {tab === 'tasks' && <TasksTab name={name} />}
+              {currentTab === 'overview' && <Overview file={file.data} summary={summary} agents={agents.data ?? []} />}
+              {currentTab === 'charter' && <Charter file={file.data} />}
+              {currentTab === 'runtime' && <Runtime key={JSON.stringify(file.data)} file={file.data} />}
+              {currentTab === 'memory' && isolated && <AgentMemory key={name} name={name} />}
+              {currentTab === 'runs' && <Runs name={name} desk={summary?.desk ?? null} />}
+              {currentTab === 'tasks' && <TasksTab name={name} />}
             </div>
           </Tabs>
         </>
@@ -405,6 +410,7 @@ function TheuthRuntime() {
 function Runtime({ file: f }: { file: AgentFile }) {
   const { put } = useAgentActions()
   const [d, setD] = useState<Draft & Pick<AgentFile, 'paused' | 'proposed_by'>>(f)
+  const [memoryError, setMemoryError] = useState<string>()
   const dirty = JSON.stringify(d) !== JSON.stringify(f)
   if (f.name === THEUTH) return <TheuthRuntime />
   return (
@@ -412,7 +418,10 @@ function Runtime({ file: f }: { file: AgentFile }) {
       <div className="flex flex-col gap-8 p-4">
         <section>
           <h4 className="mb-3 text-sm font-semibold">Runtime</h4>
-          <RuntimeFields d={d} set={(k, v) => setD((x) => ({ ...x, [k]: v }))} />
+          <RuntimeFields d={d} memoryError={memoryError} set={(k, v) => {
+            if (k === 'isolated_memory') setMemoryError(undefined)
+            setD((x) => ({ ...x, [k]: v }))
+          }} />
         </section>
         <section>
           <h4 className="mb-3 text-sm font-semibold">Access</h4>
@@ -421,10 +430,17 @@ function Runtime({ file: f }: { file: AgentFile }) {
       </div>
       <footer className="sticky bottom-0 flex shrink-0 items-center gap-2 border-t border-border-subtle bg-background px-4 py-2">
         <span className="flex-1 text-[13px] text-fg-tertiary">{dirty && 'You have unsaved changes.'}</span>
-        <Button variant="ghost" size="sm" disabled={!dirty || put.isPending} onClick={() => setD(f)}>
+        <Button variant="ghost" size="sm" disabled={!dirty || put.isPending} onClick={() => { setD(f); setMemoryError(undefined) }}>
           Discard
         </Button>
-        <Button size="sm" disabled={!dirty || put.isPending} onClick={() => put.mutate(d)}>
+        <Button size="sm" disabled={!dirty || put.isPending} onClick={() => put.mutate(d, {
+          onError: (error) => {
+            const message = memoryRefusal(error)
+            if (!message) return
+            setMemoryError(message)
+            setD((x) => ({ ...x, isolated_memory: f.isolated_memory }))
+          },
+        })}>
           Save changes
         </Button>
       </footer>

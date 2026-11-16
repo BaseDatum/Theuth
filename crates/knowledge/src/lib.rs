@@ -39,14 +39,15 @@ pub mod rpc_concepts;
 
 /// Assemble this plugin's RPC methods.
 pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
-    rpc_core::merge_described([
-        rpc_concepts::rpc_module(server),
-    ]).expect("knowledge RPC composition")
+    rpc_core::merge_described([rpc_concepts::rpc_module(server)])
+        .expect("knowledge RPC composition")
 }
 
-pub mod rpc_support;
 pub mod harvest;
+#[cfg(test)]
+mod isolation_tests;
 pub mod repo;
+pub mod rpc_support;
 pub mod search;
 pub mod store;
 pub mod sync;
@@ -566,6 +567,27 @@ impl Message<SyncNow> for KnowledgeActor {
     }
 }
 
+struct MemoryDocuments(Arc<Knowledge>, Runtime);
+#[async_trait::async_trait]
+impl document::memory::Router for MemoryDocuments {
+    async fn root_for(&self, session: runtime::SessionId) -> anyhow::Result<std::path::PathBuf> {
+        Ok(self
+            .0
+            .for_session(session)
+            .await?
+            .root()
+            .parent()
+            .unwrap()
+            .to_path_buf())
+    }
+    async fn sync_root(&self, root: &std::path::Path) -> anyhow::Result<()> {
+        self.0.sync_document_root(root).await
+    }
+    fn runtime(&self) -> Runtime {
+        self.1.clone()
+    }
+}
+
 /// The plugin. Opens the bundle, spawns [`KnowledgeActor`] as [`KNOWLEDGE_ACTOR`],
 /// then registers the `knowledge_*` tools once the registry is up (12 §9.1).
 pub struct KnowledgePlugin;
@@ -597,6 +619,7 @@ impl runtime::Plugin for KnowledgePlugin {
                 return Ok(());
             }
         };
+        document::memory::install(Arc::new(MemoryDocuments(k.clone(), rt.clone())));
         let actor = KnowledgeActor::spawn_with_mailbox(
             KnowledgeActor { k: k.clone() },
             runtime::subscriber_mailbox(),

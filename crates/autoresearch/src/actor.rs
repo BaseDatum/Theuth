@@ -396,8 +396,13 @@ pub trait Backend: Send + Sync {
             .await
     }
     /// The playbook of the last record for this repo.
-    async fn seed_playbook(&self, repo: &str, rt: &runtime::Runtime) -> Result<Option<String>> {
-        crate::record::seed_playbook(repo, rt).await
+    async fn seed_playbook(
+        &self,
+        repo: &str,
+        origin: Option<SessionId>,
+        rt: &runtime::Runtime,
+    ) -> Result<Option<String>> {
+        crate::record::seed_playbook(repo, origin, rt).await
     }
     /// §11.3's report turn as a side call charged to the study session: the
     /// executor writes the prose around the numbers (the tables are inserted by
@@ -2157,7 +2162,11 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
             baseline_n: 0,
         })
         .await?;
-    if let Ok(Some(p)) = env.backend.seed_playbook(&spec.repo, &env.rt).await {
+    if let Ok(Some(p)) = env
+        .backend
+        .seed_playbook(&spec.repo, study.origin, &env.rt)
+        .await
+    {
         patch(
             env,
             study,

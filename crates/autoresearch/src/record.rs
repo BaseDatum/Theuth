@@ -196,6 +196,10 @@ pub async fn write_record(store: &Store, study: &StudyRecord, headline: &str) ->
             "knowledge plugin not running; record not written",
         ));
     };
+    let k = match study.origin {
+        Some(origin) => k.for_session(origin).await.map_err(Error::Other)?,
+        None => k,
+    };
     let put = knowledge::Put {
         id: id.clone(),
         type_: "record".into(),
@@ -226,10 +230,18 @@ pub fn playbook_of(body: &str) -> Option<String> {
 }
 
 /// The playbook of the most recent record for `repo`, if any.
-pub async fn seed_playbook(repo: &str, rt: &runtime::Runtime) -> Result<Option<String>> {
+pub async fn seed_playbook(
+    repo: &str,
+    origin: Option<runtime::SessionId>,
+    rt: &runtime::Runtime,
+) -> Result<Option<String>> {
     let _ = rt;
     let Some(k) = knowledge().await else {
         return Ok(None);
+    };
+    let k = match origin {
+        Some(origin) => k.for_session(origin).await.map_err(Error::Other)?,
+        None => k,
     };
     let prefix = format!("{PREFIX}{}-", repo_name(repo));
     let mut metas = k
@@ -256,6 +268,64 @@ mod tests {
     use super::*;
     use crate::store::ExperimentRecord;
     use crate::types::{StudySpec, Verdict};
+
+    #[tokio::test]
+    async fn study_records_use_the_origin_sessions_bundle() {
+        use runtime::Plugin;
+        struct Origin(runtime::SessionId);
+        #[async_trait::async_trait]
+        impl knowledge::Scoper for Origin {
+            fn scope_for(&self, _: runtime::SessionId) -> Option<knowledge::AgentScope> {
+                None
+            }
+            async fn bundle_for(
+                &self,
+                s: runtime::SessionId,
+            ) -> std::result::Result<Option<String>, String> {
+                Ok((s == self.0).then(|| "researcher".into()))
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        Box::new(knowledge::KnowledgePlugin)
+            .start(&rt)
+            .await
+            .unwrap();
+        let main = knowledge().await.unwrap();
+        let origin = runtime::SessionId::new();
+        main.set_scoper(Arc::new(Origin(origin)));
+        let store = Store::open(dir.path()).await.unwrap();
+        let study = StudyRecord::new(
+            StudySpec {
+                slug: "isolation".into(),
+                repo: "/repo/project".into(),
+                ..Default::default()
+            },
+            Some(origin),
+        );
+        store.create_study(&study).await.unwrap();
+        let id = write_record(&store, &study, "kept one change")
+            .await
+            .unwrap();
+        assert!(main.get(&id).await.is_err());
+        assert_eq!(
+            main.for_session(origin)
+                .await
+                .unwrap()
+                .get(&id)
+                .await
+                .unwrap()
+                .meta
+                .owner,
+            "agent:researcher"
+        );
+        rt.shutdown.cancel();
+        let actor = ActorRef::<knowledge::KnowledgeActor>::lookup(knowledge::KNOWLEDGE_ACTOR)
+            .unwrap()
+            .unwrap();
+        actor.stop_gracefully().await.unwrap();
+        actor.wait_for_shutdown().await;
+    }
 
     #[test]
     fn ids_and_playbook_section() {

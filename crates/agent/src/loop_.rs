@@ -4895,7 +4895,10 @@ impl Turn {
     /// the bundle's files (10 §3.2).
     async fn rebase(&mut self, registry: &ActorRef<ToolRegistry>) {
         self.shared.knowledge = match ActorRef::<KnowledgeActor>::lookup(KNOWLEDGE_ACTOR) {
-            Ok(Some(a)) => a.ask(knowledge::Handle).await.ok(),
+            Ok(Some(a)) => match a.ask(knowledge::Handle).await {
+                Ok(k) => k.for_session(self.shared.id).await.ok(),
+                Err(_) => None,
+            },
             _ => None,
         };
         if let Some(knowledge) = self.knowledge() {

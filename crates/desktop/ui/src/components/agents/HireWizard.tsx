@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { memoryRefusal } from '@/lib/agent-memory'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { CharterDoc, useCharterDoc } from './CharterDoc'
@@ -51,10 +52,13 @@ export function HireWizard() {
   const [d, setD] = useState<Draft>(saved?.draft ?? emptyDraft)
   const [touched, setTouched] = useState(false)
   const taken = agents.data?.map((a) => a.file.name) ?? []
+  const [memoryError, setMemoryError] = useState<string>()
   const errors = validate(step, d, taken)
-  const set: Setter = (k, v) => setD((x) => ({ ...x, [k]: v }))
   useEffect(() => saveDraft({ step, draft: d }), [step, d])
-
+  const set: Setter = (k, v) => {
+    if (k === 'isolated_memory') setMemoryError(undefined)
+    setD((x) => ({ ...x, [k]: v }))
+  }
   const at = STEPS.indexOf(step)
   // Forward jumps stop at the first incomplete step; back is always allowed.
   const bad = firstInvalid(d, taken)
@@ -91,9 +95,16 @@ export function HireWizard() {
         clearDraft()
         void navigate({ to: '/agents/$name/$tab', params: { name: draft.name, tab: 'overview' } })
       },
+      onError: (error) => {
+        const message = memoryRefusal(error)
+        if (!message) return
+        setMemoryError(message)
+        setD((x) => ({ ...x, isolated_memory: false }))
+        go('runtime')
+      },
     })
   }
-  const err = (k: keyof Draft) => (touched ? errors[k] : undefined)
+  const err = (k: keyof Draft) => k === 'isolated_memory' ? memoryError : (touched ? errors[k] : undefined)
 
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -114,6 +125,7 @@ export function HireWizard() {
               clearDraft()
               setD(emptyDraft())
               go('identity')
+              setMemoryError(undefined)
             }}
           >
             Start over
@@ -238,7 +250,7 @@ function StepBody({ step, d, set, err, taken }: { step: Step; d: Draft; set: Set
         </div>
       )
     case 'runtime':
-      return <RuntimeFields d={d} set={set} />
+      return <RuntimeFields d={d} set={set} memoryError={err('isolated_memory')} />
     case 'access':
       return <AccessFields d={d} set={set} />
     case 'budget':
@@ -326,6 +338,7 @@ function Review({ d }: { d: Draft }) {
     ['Capabilities', d.capabilities?.trim() || <span className="text-fg-tertiary">none</span>],
     ['Model', d.model ?? <span className="text-fg-tertiary">node default</span>],
     ['Effort', d.effort ?? <span className="text-fg-tertiary">default</span>],
+    ['Isolated memory', d.isolated_memory ? 'On' : 'Off'],
     ['Tools ceiling', d.tools ?? <span className="text-fg-tertiary">inherited</span>],
     ['MCP', d.mcp === null ? <span className="text-fg-tertiary">every server</span> : d.mcp.length === 0 ? <span className="text-fg-tertiary">none</span> : d.mcp.join(', ')],
     ['Budget', d.budget.type === 'none' ? <span className="text-fg-tertiary">none</span> : `${d.budget.amount} ${d.budget.currency} / month`],

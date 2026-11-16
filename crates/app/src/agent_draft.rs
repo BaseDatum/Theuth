@@ -58,6 +58,9 @@ pub struct AgentDraft {
     /// The effort of `memory_model` (194); default: none (thinking off).
     #[serde(default)]
     pub memory_effort: Option<String>,
+    /// Keeps its own local knowledge; never sees or contributes to main memory.
+    #[serde(default)]
+    pub isolated_memory: bool,
     /// The charter (markdown): purpose, what it owns, what it never does, how it reports.
     pub charter: String,
 }
@@ -234,7 +237,7 @@ impl Tool for AgentDraftTool {
         Ok(ToolOutput {
             structured: Some(serde_json::json!({
                 "record_call_id": loaded.artifact.call_id,
-                "drafts": ids.iter().zip(&args.agents).map(|(id, d)| serde_json::json!({ "id": id, "name": d.name, "exists": existing.contains(d.name.as_str()) })).collect::<Vec<_>>(),
+                "drafts": ids.iter().zip(&args.agents).map(|(id, d)| serde_json::json!({ "id": id, "name": d.name, "exists": existing.contains(d.name.as_str()), "draft": d })).collect::<Vec<_>>(),
             })),
             ..ToolOutput::ok(content)
         })
@@ -328,6 +331,9 @@ pub fn source(
             format!("tools `{}`", d.tools.as_deref().unwrap_or("destructive")),
             format!("budget `{}`", d.budget.as_deref().unwrap_or("none")),
         ];
+        if d.isolated_memory {
+            meta.push("Memory: isolated".to_owned());
+        }
         match &d.mcp {
             None => {}
             Some(l) if l.is_empty() => meta.push("mcp none".to_owned()),
@@ -415,6 +421,7 @@ mod tests {
             capabilities: None,
             memory_model: None,
             memory_effort: None,
+            isolated_memory: false,
             charter: "You own \"prod\".\nNever deploy on Friday.".into(),
         }
     }
@@ -485,6 +492,17 @@ mod tests {
             source(&[long], &existing, "", None)
                 .0
                 .contains(&format!("{}…", "x".repeat(PREVIEW)))
+        );
+        let isolated: AgentDraft = serde_json::from_value(serde_json::json!({
+            "name": "ops", "title": "Ops", "reports_to": "theuth", "charter": "Own ops.", "isolated_memory": true
+        })).unwrap();
+        let retained: AgentDraft =
+            serde_json::from_value(serde_json::to_value(&isolated).unwrap()).unwrap();
+        assert!(retained.isolated_memory);
+        assert!(
+            source(&[retained], &existing, "", None)
+                .0
+                .contains("Memory: isolated")
         );
         // 194: the memory summary pick reads as the model does, its effort beside it.
         let memory = AgentDraft {
