@@ -54,18 +54,18 @@ export function TabBand({
   return (
     <header
       data-tauri-drag-region={mac || undefined}
-      className={cn('flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3', inset && !sidebar.open && mac && 'pl-20')}
+      className={cn('flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3 max-lg:h-auto max-lg:min-h-[52px]', inset && !sidebar.open && mac && 'pl-20')}
     >
       <SidebarLead />
-      <Tabs value={value} onValueChange={onValueChange} className="h-full min-w-0 flex-1 gap-0">
-        <TabsList variant="line" className="w-full gap-0 rounded-none bg-transparent p-0 group-data-[orientation=horizontal]/tabs:h-full">
+      <Tabs value={value} onValueChange={onValueChange} className="h-full min-w-0 flex-1 gap-0 max-lg:h-auto">
+        <TabsList variant="line" className="w-full gap-0 rounded-none bg-transparent p-0 group-data-[orientation=horizontal]/tabs:h-full max-lg:flex-wrap max-lg:group-data-[orientation=horizontal]/tabs:h-auto">
           {tabs.map(({ id, label, icon: Icon }) => (
             <TabsTrigger
               key={id}
               value={id}
               title={label}
               aria-label={label}
-              className="h-full flex-1 rounded-none text-fg-tertiary hover:text-foreground data-[state=active]:text-foreground dark:text-fg-tertiary dark:hover:text-foreground group-data-[orientation=horizontal]/tabs:after:bottom-0"
+              className="h-full flex-1 rounded-none text-fg-tertiary hover:text-foreground data-[state=active]:text-foreground dark:text-fg-tertiary dark:hover:text-foreground group-data-[orientation=horizontal]/tabs:after:bottom-0 max-lg:h-[52px] max-lg:min-w-10 max-lg:flex-auto"
             >
               <Icon />
               <span className="hidden md:inline">{label}</span>

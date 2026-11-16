@@ -109,6 +109,12 @@ test('ready, and the pane renders status, masked token, the last-20 audit tail a
   expect(html).not.toContain(TOKEN)
   expect(html).toContain('meeting_list')
   expect(html).toContain('knowledge_get')
+  const view = document.createElement('div')
+  view.innerHTML = html
+  const rows = [...view.querySelectorAll('.settings-table tr')]
+  expect(rows.map((row) => row.querySelector('[data-label="Tool"]')?.textContent)).toEqual(['meeting_list', 'knowledge_get'])
+  expect(rows.map((row) => row.querySelector('[data-label="Result"]')?.textContent)).toEqual(['ok', 'error'])
+  expect(rows.map((row) => row.querySelector('[data-label="Duration"]')?.textContent)).toEqual(['12 ms', '3 ms'])
   expect(html).toContain('Rotate')
   expect(html).toContain(MCP_SHARED_LINE)
   expect(MCP_SHARED_LINE).toContain('read and write')

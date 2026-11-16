@@ -1,0 +1,161 @@
+/* Settings owns the scope, including its portaled controls. Desktop geometry is unchanged. */
+@media (width < 1024px) {
+  [data-settings-page],
+  body:has([data-settings-page]) :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"], [data-slot="popover-content"], [data-slot="select-content"]) {
+    overflow-wrap: anywhere;
+  }
+
+  [data-settings-page] [data-settings-heading] {
+    height: auto;
+    min-height: 2.25rem;
+    flex-wrap: wrap;
+    gap: .5rem;
+  }
+
+  [data-settings-page] [data-settings-heading] > div,
+  [data-settings-page] [data-settings-control] > :is(span, form) {
+    min-width: 0;
+    max-width: 100%;
+    flex-wrap: wrap;
+  }
+
+  [data-settings-page] .shrink-0 {
+    max-width: 100%;
+  }
+
+  [data-settings-page] button:not([role="tab"], [role="switch"]) {
+    height: auto;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  [data-settings-page] [data-slot="badge"] {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  [data-settings-page] :is(.truncate, .break-words),
+  body:has([data-settings-page]) :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"], [data-slot="popover-content"]) :is(.truncate, .break-words) {
+    overflow-wrap: anywhere;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    max-width: 100%;
+  }
+
+  [data-settings-page] form {
+    flex-wrap: wrap;
+  }
+
+  /* A table keeps its semantics; each record becomes a labelled card. */
+  [data-settings-page] .settings-table,
+  [data-settings-page] .settings-table tbody {
+    display: block;
+  }
+
+  [data-settings-page] .settings-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  [data-settings-page] .settings-table tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .5rem 1rem;
+    margin-block: .75rem;
+    padding: .75rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: .625rem;
+  }
+
+  [data-settings-page] .settings-table td {
+    min-width: 0;
+    max-width: none;
+    padding: 0;
+    white-space: normal;
+    text-align: left;
+  }
+
+  [data-settings-page] .settings-table td:first-child,
+  [data-settings-page] .settings-table td[colspan],
+  [data-settings-page] .settings-table td:last-child:not([data-label]) {
+    grid-column: 1 / -1;
+  }
+
+  [data-settings-page] .settings-table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: .125rem;
+    color: var(--fg-tertiary);
+    font-family: var(--font-sans);
+    font-size: .75rem;
+  }
+
+  body:has([data-settings-page]) :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"]) {
+    max-width: calc(100vw - 1rem);
+    max-height: calc(var(--visible-band, 100dvh) - 1rem);
+    overflow-y: auto;
+  }
+
+  body:has([data-settings-page]) :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"]) :is(button, [data-slot="badge"]) {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+@media (width < 1024px) {
+  @container settings (width < 480px) {
+    [data-settings-row] > div,
+    [data-settings-control] > * {
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    [data-settings-control] > :is(input, [role="combobox"], .relative:has(> input)) {
+      width: 100%;
+      max-width: none;
+    }
+
+    [data-settings-control] > span:has(> [role="combobox"]) {
+      width: 100%;
+    }
+  }
+}
+
+@media (width < 480px) {
+  [data-settings-page] form > :is(input, .relative:has(> input)) {
+    flex-basis: 100%;
+    max-width: none;
+  }
+
+  body:has([data-settings-page]) [data-slot="sheet-content"] {
+    width: 100%;
+    max-width: 100%;
+  }
+}
+
+@media (width < 1024px) and (pointer: coarse) {
+  [data-settings-page] :is(button, a, input, select, summary, [role="slider"]),
+  body:has([data-settings-page]) :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"], [data-slot="popover-content"], [data-slot="select-content"], [data-slot="dropdown-menu-content"]) :is(button, a, input, [role="option"], [role="menuitem"]) {
+    min-height: 40px;
+    min-width: 40px;
+  }
+
+  [data-settings-page] [data-slot="switch"] {
+    min-width: 52px;
+  }
+
+  [data-settings-page] [data-slot="switch-thumb"] {
+    width: 24px;
+    height: 24px;
+  }
+
+  [data-settings-page] input {
+    font-size: 16px;
+  }
+}

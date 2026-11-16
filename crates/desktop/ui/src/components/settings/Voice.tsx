@@ -287,8 +287,8 @@ function PhraseRow({ label, description, value, commit }: { label: string; descr
 function HistoryLine({ row, onPlay, onForget }: { row: HistoryRow; onPlay: () => void; onForget: () => void }) {
   const surface = SURFACES.find(([s]) => s === row.surface)?.[1] ?? row.surface
   return (
-    <div className="flex items-start gap-3 border-b border-border-subtle py-3 text-sm last:border-0">
-      <div className="min-w-0 flex-1">
+    <div className="flex items-start gap-3 border-b border-border-subtle py-3 text-sm last:border-0 max-lg:flex-wrap">
+      <div className="min-w-0 flex-1 max-lg:basis-full">
         <div className="text-xs text-fg-tertiary">
           {ago(Number(row.started_ms))} · {surface}
           {row.reason.startsWith('error') ? ` · ${row.reason}` : ''}

@@ -265,6 +265,15 @@ test('177 U2: the limits editor — Context/Output per model, "unknown" placehol
   // R1-6: the buttons name their model.
   expect(html).toContain('aria-label="Save limits of LFM3-1.7B-MLX-bf16"')
   expect(html).toContain('aria-label="Clear limits of gemma-3-1b"')
+  const cards = html.split('data-model-limit=""').slice(1)
+  expect(cards).toHaveLength(limits.length)
+  for (const [i, card] of cards.entries()) {
+    expect(card).toContain(`aria-label="Context of ${limits[i]!.id}"`)
+    expect(card).toContain(`aria-label="Output of ${limits[i]!.id}"`)
+    expect(card).toContain('Context (tokens)</span>')
+    expect(card).toContain('Output (tokens)</span>')
+    expect(card).toContain('lg:contents')
+  }
   expect(contextPlaceholder({ ...limits[0]!, assumed_context: null })).toBe('unknown')
 })
 

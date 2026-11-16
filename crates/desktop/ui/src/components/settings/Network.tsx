@@ -278,7 +278,7 @@ function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void 
                 </div>
               )}
             </div>
-            <div className="ml-auto flex items-center gap-2">
+            <div className="ml-auto flex items-center gap-2 max-lg:flex-wrap">
               <PathChip peer={p} />
               <span className="ml-1 text-[13px] text-fg-secondary">Agents can message</span>
               <Switch aria-label={`Agents can message ${p.name}`} checked={on} disabled={messaging.isPending} onCheckedChange={(v) => messaging.mutate({ id: p.id, on: v })} />
