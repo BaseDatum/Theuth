@@ -49,8 +49,11 @@ export function empty(id: string): SessionSlice {
     browserLive: false,
     terminal: false,
     ptys: new Set(),
+    terminals: new Set(),
     jobs: new Set(),
     reminders: new Set(),
+    reminderDetails: new Map(),
+    jobBeats: {},
     artifacts: new Map(),
     progress: new Map(),
     scrape: new Map(),
@@ -68,6 +71,9 @@ export function empty(id: string): SessionSlice {
     todos: null,
     todosStale: false,
     todosExpanded: false,
+    subagentsExpanded: false,
+    jobsExpanded: false,
+    remindersExpanded: false,
     todosShown: false,
   };
 }
@@ -880,21 +886,30 @@ export function apply(
         (t) => ({ ...t, job: { id: e.id, command: e.command, lines: [] } }),
       );
       return e.pty
-        ? { ...next, terminal: true, ptys: new Set(next.ptys).add(e.id) }
+        ? { ...next, terminal: true, ptys: new Set(next.ptys).add(e.id), terminals: new Set(next.terminals).add(e.id) }
         : { ...next, jobs: new Set(next.jobs).add(e.id) };
     }
-    case "JobOutput":
-      return patchJob(slice, e.id, (j) => ({
+    case "JobOutput": {
+      const next = patchJob(slice, e.id, (j) => ({
         ...j,
         lines: pushChunk(j.lines, e.chunk),
       }));
+      return slice.jobs.has(e.id) || slice.terminals.has(e.id)
+        ? { ...next, jobBeats: { ...next.jobBeats, [e.id]: (next.jobBeats[e.id] ?? 0) + 1 } }
+        : next;
+    }
     case "JobScreen": {
       const next = patchJob(slice, e.id, (j) => ({
         ...j,
         screen: { rows: e.rows, cursor: e.cursor },
       }));
       // A changing screen is a live terminal again, however it went quiet.
-      return next.ptys.has(e.id) ? next : { ...next, ptys: new Set(next.ptys).add(e.id) };
+      return {
+        ...next,
+        ptys: new Set(next.ptys).add(e.id),
+        terminals: new Set(next.terminals).add(e.id),
+        jobBeats: { ...next.jobBeats, [e.id]: (next.jobBeats[e.id] ?? 0) + 1 },
+      };
     }
     case "JobIdle":
       return jobGone(slice, "ptys", e.id);
@@ -905,14 +920,29 @@ export function apply(
           ? undefined
           : { ...j, exit: { exit: e.exit, secs: Number(e.secs) } },
       );
-      return jobGone(jobGone(next, "ptys", e.id), "jobs", e.id);
+      const terminals = new Set(next.terminals);
+      terminals.delete(e.id);
+      const jobBeats = { ...next.jobBeats };
+      delete jobBeats[e.id];
+      return { ...jobGone(jobGone(next, "ptys", e.id), "jobs", e.id), terminals, jobBeats };
     }
-    // LIVE-GLYPHS (2026-10-07): the sidebar's timer glyph only; the fired card still comes from the `<reminder>` input.
-    case "ReminderSet":
-      return slice.reminders.has(e.id) ? slice : { ...slice, reminders: new Set(slice.reminders).add(e.id) };
+    case "ReminderSet": {
+      if (slice.reminderDetails.has(e.id)) return slice;
+      const { id, message, set_at, fires_at } = e;
+      return {
+        ...slice,
+        reminders: new Set(slice.reminders).add(id),
+        reminderDetails: new Map(slice.reminderDetails).set(id, { id, message, set_at, fires_at }),
+      };
+    }
     case "ReminderFired":
-    case "ReminderCancelled":
-      return jobGone(slice, "reminders", e.id);
+    case "ReminderCancelled": {
+      const next = jobGone(slice, "reminders", e.id);
+      if (!slice.reminderDetails.has(e.id)) return next;
+      const reminderDetails = new Map(slice.reminderDetails);
+      reminderDetails.delete(e.id);
+      return { ...next, reminderDetails };
+    }
     case "BrowserShowLive":
       return { ...slice, browser: true, browserLive: true };
     case "CodeToolRan":

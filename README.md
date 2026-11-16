@@ -550,6 +550,15 @@ environment a terminal would (design doc 18). `just desktop` runs it
 against `target/debug/theuth`; `just package-macos` produces `theuth.app`. See
 [`docs/design/25-desktop.md`](docs/design/25-desktop.md).
 
+Edit-family tool cards (`edit`, `write_file`, `move_text`, `copy_text`, `indent`,
+including Python-cell calls and external ACP edits) show colourised diffs.
+The tool's returned diff takes precedence over argument previews, then ACP
+diff blocks. Collapsed cards show paths and added/removed counts; expanded
+cards show hunks, old/new line numbers and changed words. The first 400 rows
+are shown with **Show all** for larger patches; existing tool folding is unchanged.
+Display-only diff metadata stays in UI/history storage, not model inputs,
+summaries or parent/peer handoffs.
+
 ## Link
 
 Drive the harness from a phone (or any browser) without opening a port.

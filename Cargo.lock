@@ -360,6 +360,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.11.1",
+ "similar 3.2.1",
  "sqlx",
  "surface",
  "tempfile",

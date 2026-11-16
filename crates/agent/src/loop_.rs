@@ -7161,7 +7161,8 @@ impl Turn {
         // The capped text each row keeps (§3.3 step 7), `ERROR:`-less.
         let mut capped: Vec<String> = Vec::with_capacity(calls.len());
         for (call, out) in calls.iter().zip(&outs) {
-            let mut display = frame::truncate(&out.content, DISPLAY_OUTPUT_CHARS);
+            let journal_content = crate::diff_output::native(&out.content, out.structured.as_ref());
+            let mut display = crate::diff_output::display(&journal_content, DISPLAY_OUTPUT_CHARS);
             for f in &out.files {
                 display.push_str("\n[image: ");
                 display.push_str(&f.file_name().unwrap_or(f.as_os_str()).to_string_lossy());
@@ -7176,14 +7177,15 @@ impl Turn {
                 files: out.files.clone(),
             });
             // 07 §6: bounded once, here, with the full text spilled to disk.
+            let model_content = crate::diff_output::strip(&journal_content);
             let content = spill::cap(
                 session,
                 &call.call_id,
-                &out.content,
+                &model_content,
                 self.shared.cfg.max_tool_output_chars,
                 &self.shared.spill_dir,
             );
-            capped.push(content.clone());
+            capped.push(crate::diff_output::carry(content.clone(), &journal_content));
             let mut content = if out.is_error {
                 failed = true;
                 let key = (call.fn_name.clone(), call.fn_arguments.clone());
@@ -7257,11 +7259,11 @@ impl Turn {
                 let mut content = spill::cap(
                     session,
                     &calls[i].call_id,
-                    &out.content,
+                    &crate::diff_output::strip(&out.content),
                     chars / 2,
                     &self.shared.spill_dir,
                 );
-                capped[i] = content.clone();
+                capped[i] = crate::diff_output::carry(content.clone(), &capped[i]);
                 if out.is_error {
                     content.insert_str(0, "ERROR: ");
                 }
@@ -7286,6 +7288,11 @@ impl Turn {
                 first.content.insert_str(0, &format!("{note}\n"));
             }
         }
+        // Stored/history copies retain metadata only after all receipt/batch caps; Frame strips it for models.
+        for (response, output) in responses.iter_mut().zip(&capped) {
+            response.content =
+                crate::diff_output::carry(std::mem::take(&mut response.content), output);
+        }
         let rows: Vec<BatchRow<'_>> = calls
             .iter()
             .zip(&capped)
@@ -7301,7 +7308,7 @@ impl Turn {
         // 47 §5.1–§5.2: a changed plan lands in the same transaction as the
         // batch; a failed write keeps the old canonical list, the events say so
         // and the turn ends instead of running on an unsaved frame.
-        let msg = ChatMessage::from(responses);
+        let mut msg = ChatMessage::from(responses);
         let mut changed = None;
         crash_point(crash::BATCH_BEFORE_MESSAGE);
         match plan.filter(|p| *p != self.state.todos) {
@@ -7312,6 +7319,7 @@ impl Turn {
                     .append_batch(session, &msg, None, &rows)
                     .await
                     .map(|(seq, _)| seq);
+                crate::diff_output::strip_message(&mut msg);
                 self.record(msg, r).await;
             }
             Some(items) => {
@@ -7328,6 +7336,7 @@ impl Turn {
                 match committed {
                     Ok((seq, snapshot)) => {
                         let snapshot = snapshot.expect("todos requested");
+                        crate::diff_output::strip_message(&mut msg);
                         self.state.history.push((seq, msg));
                         self.state.todos = items;
                         self.state.todo_version = snapshot.version;

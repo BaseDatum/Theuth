@@ -457,3 +457,30 @@ message</reminder>` through `inject` — never `<job_result>`. Rows live in
 insert, `Cancelled` → delete, fired → delete in `settle()`. On start the
 supervisor re-arms stored rows after `ActivityRegistered` (`RearmReminder`);
 overdue ones fire at once with `late="true"`, rows of vanished sessions go.
+
+### Desktop background strip (2026-11-16)
+
+Above the composer, category dots show subagents (malachite, ochre while
+awaiting approval), jobs (lapis), terminals (faience) and reminders (plum),
+then the Advisor pill. Activity blinks except on reminders. Subagent dots
+open their chats and remain draggable; job and reminder dots reveal their
+cards; terminal dots open that terminal.
+Sidebar live-work glyphs use the same category palette, defined once in
+`lib/background-colors.ts` for dots, card marks and sidebar glyphs. A
+subagent's pending approval makes the sidebar network glyph ochre; the
+session's thinking/activity indicator keeps its existing colour.
+
+The existing grabber reveals stacked To-do, Subagents, Jobs (including
+terminals) and Reminders cards, omitting empty categories. The area and each
+card start collapsed. `todosShown` controls the area; `todosExpanded`,
+`subagentsExpanded`, `jobsExpanded` and `remindersExpanded` remember each
+session's disclosures through snapshots and switches. Bodies open above
+their headers. Jobs poll `list_jobs` every two seconds only while expanded,
+with Kill/Open actions and a link to the full Jobs sheet. Reminders show
+their message, countdown and Cancel.
+
+`list_reminders(session)` returns pending `{id, message, set_at, fires_at}`
+rows (Unix seconds); `cancel_reminder(session, id)` retires one without
+delivery. Both authorize the session and forward to its owner. The desktop
+hydrates reminder details on load/reconnect and keeps them current from
+reminder events.

@@ -280,6 +280,7 @@ pub fn render_update(rows: &[(i64, HistoryEntry)], opts: UpdateOpts<'_>) -> Stri
                 match r {
                     None => text.push_str(" ⇒ pending"),
                     Some((out, true)) => {
+                        let out = crate::diff_output::strip(out);
                         let first = out.lines().next().unwrap_or("").trim();
                         text.push_str(&format!(
                             " ⇒ error · {} lines — {}",
@@ -288,10 +289,11 @@ pub fn render_update(rows: &[(i64, HistoryEntry)], opts: UpdateOpts<'_>) -> Stri
                         ));
                     }
                     Some((out, false)) => {
+                        let out = crate::diff_output::strip(out);
                         text.push_str(&format!(" ⇒ ok · {} lines", out.lines().count()));
                         if !out.trim().is_empty() {
                             result =
-                                Some(format!("Tool result:\n```text\n{}\n```", cap_result(out)));
+                                Some(format!("Tool result:\n```text\n{}\n```", cap_result(&out)));
                         }
                     }
                 }
@@ -368,6 +370,28 @@ pub fn render_update(rows: &[(i64, HistoryEntry)], opts: UpdateOpts<'_>) -> Stri
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diff_carrier_advisor_update_strips_before_result_caps_and_line_counts() {
+        let carried = crate::diff_output::carried("receipt");
+        for error in [false, true] {
+            let rows = [(
+                1,
+                tool("edit", serde_json::json!({}), Some((&carried, error))),
+            )];
+            let output = render_update(
+                &rows,
+                UpdateOpts {
+                    steps: 1,
+                    ..Default::default()
+                },
+            );
+            assert!(output.contains("receipt"));
+            assert!(output.contains("1 lines"));
+            assert!(!output.contains("theuth-"));
+            assert!(!output.contains("metadata"));
+        }
+    }
+
     use super::*;
 
     fn user(t: &str) -> HistoryEntry {
