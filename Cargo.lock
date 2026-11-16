@@ -6085,6 +6085,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fancy-regex"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a2e16b9a584b602f1e0e5e22c30ca0906786088c27500653e432d086def8b53"
+dependencies = [
+ "bit-set 0.8.0",
+ "regex-automata 0.4.18",
+ "regex-syntax 0.8.11",
+]
+
+[[package]]
 name = "fast-glob"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12679,13 +12690,13 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "1.4.0"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7d354901f6d6655e6bc3826f31c035417025253d7c3f7b3ef1519f681dd3469"
+checksum = "f4f97929e824988444863bed787476e03d7b3d1b21a95c33a9bb31466a67ccd7"
 dependencies = [
  "ahash",
  "chrono",
- "fancy-regex 0.17.0",
+ "fancy-regex 0.20.2",
  "getrandom 0.3.4",
  "hashbrown 0.16.1",
  "indexmap 2.14.2",
@@ -12721,18 +12732,18 @@ dependencies = [
 
 [[package]]
 name = "monty-alloc"
-version = "1.4.0"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ff806373965fb569766ac1ca771b416bd0ce09b3c52074d15459573fd845443"
+checksum = "6095ff633e0d890440e7be6b052a170ef399a08ce657e594532471f6c2ebf004"
 dependencies = [
  "monty-types",
 ]
 
 [[package]]
 name = "monty-fs"
-version = "1.4.0"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a1d749b13e001281bda7501de21cdf54511a6bd0d2cf0dccaccfaf1cfca8059"
+checksum = "b33902aff54ad93c676fd8faf72bbd97e747b6f61b336ae451a0ddca2eef786e"
 dependencies = [
  "ahash",
  "cap-std",
@@ -12742,9 +12753,9 @@ dependencies = [
 
 [[package]]
 name = "monty-macros"
-version = "1.4.0"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb48631728d292ef4fd0eb58a7bbe65047fc70beef3c3659d0d3288a71a28f3c"
+checksum = "11f486980c1b8c952f5caa24979e04d64c92732253209c22b65632cbce78ff9c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -12753,37 +12764,49 @@ dependencies = [
 
 [[package]]
 name = "monty-pool"
-version = "1.4.0"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f445588f2d5cdb161fb7af20bf4fcce7a2331197a140dd6bb0f3d6bcdff2ca5"
+checksum = "84ee10535d98bbd7224cf002b34143468615e7002b3803d059e6977da6d0cd16"
 dependencies = [
+ "bytes",
  "futures-util",
+ "h2",
+ "http",
+ "httpdate",
+ "hyper",
  "monty-fs",
  "monty-proto",
  "monty-types",
+ "nix 0.31.3",
  "rustls",
+ "rustls-platform-verifier 0.7.1",
  "tokio",
- "tokio-tungstenite 0.27.0",
+ "tokio-stream",
+ "tonic",
+ "tower",
 ]
 
 [[package]]
 name = "monty-proto"
-version = "1.4.0"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6020d1f2c05d8ff41de8c5b0c5e97c610f2a1a9d9e1cdb737f1cd54b45fb8f4"
+checksum = "05de4505dd2b0cce62b63dec7b51e6b7a42d1ac42a6932b5b5e30be6f2828916"
 dependencies = [
+ "bytes",
  "monty",
  "monty-type-checking",
  "monty-types",
  "num-bigint 0.4.8",
  "prost",
+ "strum 0.27.2",
+ "tonic",
 ]
 
 [[package]]
 name = "monty-type-checking"
-version = "1.4.0"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afc1311bb9d8e861c3844c65776e41773499190535fb418029f739c627934f08"
+checksum = "f3e40b76300a86a49ec2a9adce34f67e731d4a71b0ad942b53c230b998571345"
 dependencies = [
  "monty-types",
  "monty-typeshed",
@@ -12800,13 +12823,14 @@ dependencies = [
 
 [[package]]
 name = "monty-types"
-version = "1.4.0"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "560e0f529ceb10575efb25dabc95d41e9de0f5036fbb46f02c2ac03d83dc89e3"
+checksum = "f5ab5cdd7efd4b4e67630d7f80c4ad4268b1808f9341a0e00aa7c7f5061ebfb7"
 dependencies = [
  "chrono",
  "jiff",
  "monty-macros",
+ "nix 0.31.3",
  "num-bigint 0.4.8",
  "num-traits",
  "ruff_python_stdlib",
@@ -12819,9 +12843,9 @@ dependencies = [
 
 [[package]]
 name = "monty-typeshed"
-version = "1.4.0"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "526e8922caf9d7f907be952cadb32a95ec7f67da8f634b2e7f353a16a0b50448"
+checksum = "283e58248681a8decd019d41c0237bdcd02bb47eee8f5050674769f4e90ab3e9"
 dependencies = [
  "path-slash",
  "ruff_db",
@@ -22447,22 +22471,6 @@ dependencies = [
 
 [[package]]
 name = "tokio-tungstenite"
-version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "489a59b6730eda1b0171fcfda8b121f4bee2b35cba8645ca35c5f7ba3eb736c1"
-dependencies = [
- "futures-util",
- "log",
- "rustls",
- "rustls-pki-types",
- "tokio",
- "tokio-rustls",
- "tungstenite 0.27.0",
- "webpki-roots 0.26.11",
-]
-
-[[package]]
-name = "tokio-tungstenite"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f72a05e828585856dacd553fba484c242c46e391fb0e58917c942ee9202915c"
@@ -22647,6 +22655,7 @@ dependencies = [
  "socket2",
  "sync_wrapper",
  "tokio",
+ "tokio-rustls",
  "tokio-stream",
  "tokio-util",
  "tower",
@@ -23135,25 +23144,6 @@ dependencies = [
  "voice",
  "web",
  "wire",
-]
-
-[[package]]
-name = "tungstenite"
-version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eadc29d668c91fcc564941132e17b28a7ceb2f3ebf0b9dae3e03fd7a6748eb0d"
-dependencies = [
- "bytes",
- "data-encoding",
- "http",
- "httparse",
- "log",
- "rand 0.9.5",
- "rustls",
- "rustls-pki-types",
- "sha1 0.10.7",
- "thiserror 2.0.21",
- "utf-8",
 ]
 
 [[package]]
