@@ -5,6 +5,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { useQuerySupport } from '@/rpc/capabilities'
+import type { JobCursor } from '@/rpc/bindings/method.agent.input'
 import { JobCard, jobFailed } from './JobCard'
 
 const FILTERS = ['All', 'Running', 'Failed', 'Finished'] as const
@@ -16,9 +17,12 @@ export function JobsSheet({ session, open, onOpenChange }: { session: string; op
   const [filter, setFilter] = useState<typeof FILTERS[number]>('All')
   const query = useInfiniteQuery({
     queryKey: queryKeys.jobHistory(session, 'infinite'),
-    initialPageParam: null as number | null,
+    initialPageParam: null as JobCursor | null,
     queryFn: ({ pageParam }) => api.job_history(session, pageParam, PAGE),
-    getNextPageParam: (last) => last.length === PAGE ? last.at(-1)?.started_ms ?? undefined : undefined,
+    getNextPageParam: (last) => {
+      const job = last.at(-1)
+      return last.length === PAGE && job?.started_ms != null ? { started_ms: job.started_ms, id: job.id } : undefined
+    },
     enabled: supported && open,
     refetchInterval: open ? 2000 : false,
   })

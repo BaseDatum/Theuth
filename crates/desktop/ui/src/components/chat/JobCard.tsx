@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils'
 import { rows } from '@/lib/jobTail'
 import { useSessions, type Entry } from '@/store/sessions'
 import type { JobLogPage, JobView } from '@/rpc/bindings/method.agent.output'
+import type { JobCursor } from '@/rpc/bindings/method.agent.input'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { toolKey } from './disclosure'
 import { useTranscriptJump } from './jump'
@@ -190,14 +191,14 @@ export function TranscriptJob({ tool, session }: { tool: Extract<Entry, { kind: 
     queryKey: [...queryKeys.jobs(session), 'detail', job.id],
     enabled: supported,
     queryFn: async ({ signal }) => {
-      let before: number | null = null
+      let before: JobCursor | null = null
       while (!signal.aborted) {
         const page = await api.job_history(session, before, 200)
         const found = page.find((j) => j.id === job.id)
         if (found || page.length < 200) return found ?? null
-        const next = page.at(-1)?.started_ms
-        if (next == null || next === before) return null
-        before = next
+        const next = page.at(-1)
+        if (next?.started_ms == null || (before !== null && next.started_ms === before.started_ms && next.id === before.id)) return null
+        before = { started_ms: next.started_ms, id: next.id }
       }
       return null
     },

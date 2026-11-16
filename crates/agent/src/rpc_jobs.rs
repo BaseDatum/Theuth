@@ -3,7 +3,7 @@ mod history;
 use crate::rpc_forward as forward;
 use crate::rpc_support::{RpcServerExt, attach_pty};
 use base64::Engine as _;
-pub use history::JobLogPage;
+pub use history::{JobCursor, JobLogPage};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -28,7 +28,7 @@ pub trait JobsApi {
     async fn job_history(
         &self,
         session: SessionId,
-        before_ms: Option<i64>,
+        before: Option<JobCursor>,
         limit: Option<u32>,
     ) -> RpcResult<Vec<JobView>>;
     /// Scrubbed log bytes; without an offset, returns the last page.
@@ -117,18 +117,18 @@ impl JobsApiServer for Server {
         &self,
         ext: &Extensions,
         session: SessionId,
-        before_ms: Option<i64>,
+        before: Option<JobCursor>,
         limit: Option<u32>,
     ) -> RpcResult<Vec<JobView>> {
         self.authorize_fwd(ext, session).await?;
         if let Some(reply) =
-            forward::route(ext, session, "job_history", (session, before_ms, limit)).await?
+            forward::route(ext, session, "job_history", (session, &before, limit)).await?
         {
             return Ok(reply);
         }
         let store = ask::<crate::Agents, _>(crate::AGENT_ACTOR, crate::DurableStore).await?;
         let live = ask::<Jobs, _>(JOBS_ACTOR, ListJobs(session)).await?;
-        history::history(&store, session, live, before_ms, limit)
+        history::history(&store, session, live, before, limit)
             .await
             .map_err(failed)
     }

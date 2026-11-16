@@ -4,6 +4,7 @@ import { act, createElement as h, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { JobLogPage, JobView } from '@/rpc/bindings/method.agent.output'
+import type { JobCursor } from '@/rpc/bindings/method.agent.input'
 import { useToolRuns } from '@/lib/tool-runs'
 import type * as Rpc from '@/lib/rpc'
 import type { Entry } from '@/store/sessions'
@@ -23,7 +24,7 @@ vi.mock('@tanstack/react-router', () => ({ Link: ({ children }: { children: Reac
 vi.mock('@/lib/theme', () => ({ subscribeDark: () => () => {} }))
 const api = {
   job_log: vi.fn<(_s: string, _id: string, offset: number | null, limit: number) => Promise<JobLogPage>>(),
-  job_history: vi.fn<(_s: string, before: number | null, limit: number) => Promise<JobView[]>>(),
+  job_history: vi.fn<(_s: string, before: JobCursor | null, limit: number) => Promise<JobView[]>>(),
   cancel_job: vi.fn(async () => {}),
 }
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))
@@ -120,7 +121,7 @@ test('history pages, keeps older jobs and filters running, failed and finished',
   await click('Failed')
   expect([...document.querySelectorAll('section')].map((s) => s.getAttribute('aria-label'))).toEqual(['Job j99'])
   await click('Load older jobs')
-  expect(api.job_history).toHaveBeenCalledWith('s', 51_000, 50)
+  expect(api.job_history).toHaveBeenCalledWith('s', { started_ms: 51_000, id: 'j51' }, 50)
   expect(document.querySelector('section[aria-label="Job j-old"]')).not.toBeNull()
   await click('Finished')
   expect(document.querySelectorAll('section[aria-label^="Job "]')).toHaveLength(50)
@@ -164,12 +165,13 @@ test('PTY output opens the selected job terminal instead of the first terminal i
   expect(document.body.textContent).toContain('Terminal for j27')
 })
 
-test('an old transcript job resolves its settled state beyond the newest history page', async () => {
-  const recent = Array.from({ length: 200 }, (_, i) => ({ ...job, id: `recent-${i}`, started_ms: 500_000 - i * 1000 }))
-  api.job_history.mockImplementation(async (_s, before) => before === null ? recent : [{ ...job, state: 'exited 9', exit_code: 9, started_ms: 1000, ended_ms: 3000 }])
-  const tool: Extract<Entry, { kind: 'tool' }> = { id: 'old-tool', kind: 'tool', name: 'shell', callId: 'old-call', args: {}, pending: false, child: false, job: { id: 'j1', command: job.command, lines: ['older result'] } }
+test('an old transcript job resolves beyond multiple pages sharing the same start time', async () => {
+  const recent = Array.from({ length: 400 }, (_, i) => ({ ...job, id: `j${String(500 - i).padStart(4, '0')}`, started_ms: 500_000 }))
+  api.job_history.mockImplementation(async (_s, before) => before === null ? recent.slice(0, 200) : before.id === 'j0301' ? recent.slice(200) : [{ ...job, id: 'j0001', state: 'exited 9', exit_code: 9, started_ms: 500_000, ended_ms: 502_000 }])
+  const tool: Extract<Entry, { kind: 'tool' }> = { id: 'old-tool', kind: 'tool', name: 'shell', callId: 'old-call', args: {}, pending: false, child: false, job: { id: 'j0001', command: job.command, lines: ['older result'] } }
   await mount(h(TranscriptJob, { tool, session: 's' }))
-  expect(api.job_history).toHaveBeenCalledWith('s', 301_000, 200)
+  expect(api.job_history).toHaveBeenCalledWith('s', { started_ms: 500_000, id: 'j0301' }, 200)
+  expect(api.job_history).toHaveBeenCalledWith('s', { started_ms: 500_000, id: 'j0101' }, 200)
   expect(host.textContent).toContain('exit 9')
   expect(host.textContent).not.toContain('Kill')
 })

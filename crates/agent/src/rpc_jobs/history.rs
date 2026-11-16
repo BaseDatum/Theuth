@@ -8,6 +8,16 @@ use tools::{JobExit, JobId, JobKind, JobRow, JobView};
 
 use crate::store::Store;
 
+/// Exclusive position in job history, ordered by start time then id, both descending.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct JobCursor {
+    /// The last returned job's start time, unix milliseconds.
+    pub started_ms: i64,
+    /// The last returned job's id, breaking ties at the same millisecond.
+    pub id: JobId,
+}
+
 /// One UTF-8 log page. Offsets always address the stored bytes, before redaction.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -28,7 +38,7 @@ pub(super) async fn history(
     store: &Store,
     session: SessionId,
     live: Vec<JobView>,
-    before_ms: Option<i64>,
+    before: Option<JobCursor>,
     limit: Option<u32>,
 ) -> Result<Vec<JobView>, String> {
     let mut rows: HashMap<_, _> = store
@@ -52,7 +62,12 @@ pub(super) async fn history(
         rows.into_values()
             .map(|row| (view(row, String::new()), true)),
     );
-    views.retain(|(j, _)| before_ms.is_none_or(|before| j.started_ms.unwrap_or(0) < before));
+    views.retain(|(job, _)| {
+        before.as_ref().is_none_or(|cursor| {
+            (job.started_ms.unwrap_or(0), job.id.0.as_str())
+                < (cursor.started_ms, cursor.id.0.as_str())
+        })
+    });
     views.sort_unstable_by(|(a, _), (b, _)| {
         b.started_ms
             .cmp(&a.started_ms)
@@ -306,7 +321,10 @@ mod tests {
             &store,
             session,
             vec![],
-            page.last().unwrap().started_ms,
+            Some(JobCursor {
+                started_ms: page.last().unwrap().started_ms.unwrap(),
+                id: page.last().unwrap().id.clone(),
+            }),
             None,
         )
         .await
@@ -365,6 +383,48 @@ mod tests {
                 .unwrap_err(),
             "log no longer kept"
         );
+    }
+
+    #[tokio::test]
+    async fn history_cursor_pages_equal_start_times_without_skips_or_duplicates() {
+        let dir = crate::TestDir::new("job-history-cursor");
+        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let session = SessionId::new();
+        store
+            .create_session(session, "m", None, None, None)
+            .await
+            .unwrap();
+        let log = dir.0.join("j.log");
+        for (id, started_ms) in [
+            ("j1", 1000),
+            ("j4", 1000),
+            ("j10", 1000),
+            ("j2", 1000),
+            ("j3", 1000),
+            ("j5", 2000),
+            ("j0", 0),
+        ] {
+            store
+                .job_put(&row(session, id, started_ms, &log))
+                .await
+                .unwrap();
+        }
+        let mut before = None;
+        let mut ids = Vec::new();
+        for _ in 0..5 {
+            let page = history(&store, session, vec![], before, Some(2))
+                .await
+                .unwrap();
+            let Some(last) = page.last() else { break };
+            before = Some(JobCursor {
+                started_ms: last.started_ms.unwrap(),
+                id: last.id.clone(),
+            });
+            ids.extend(page.into_iter().map(|job| job.id.0));
+        }
+        assert_eq!(ids, ["j5", "j4", "j3", "j2", "j10", "j1", "j0"]);
     }
 
     #[test]
