@@ -2,6 +2,7 @@ use crate::tools::*;
 use crate::{AgentScope, Knowledge, Scoper, Source, Visibility};
 use runtime::SessionId;
 use std::sync::Arc;
+use std::time::Duration;
 use tools::{Tool, ToolCx};
 
 struct Routes {
@@ -21,6 +22,19 @@ impl Scoper for Routes {
             return Err("bundle is on another engine".into());
         }
         Ok((s == self.isolated).then(|| "ops".into()))
+    }
+}
+
+struct BootScope(Duration);
+#[async_trait::async_trait]
+impl Scoper for BootScope {
+    fn scope_for(&self, _: SessionId) -> Option<AgentScope> {
+        None
+    }
+
+    async fn bundle_for(&self, _: SessionId) -> Result<Option<String>, String> {
+        tokio::time::sleep(self.0).await;
+        Ok(None)
     }
 }
 fn context(session: SessionId, root: &std::path::Path) -> ToolCx {
@@ -390,4 +404,67 @@ async fn unresolved_identity_and_unopenable_bundle_fail_closed() {
             "{e}"
         );
     }
+}
+
+#[tokio::test]
+async fn boot_window_waits_for_late_scoper() {
+    let dir = crate::TestDir::new("knowledge-boot-late");
+    let rt = runtime::Runtime::new(figment::Figment::new(), dir.0.clone());
+    let main = Knowledge::open(&dir.0, rt).await.unwrap();
+    tokio::time::pause();
+    let started = tokio::time::Instant::now();
+    let installing = main.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        installing.set_scoper(Arc::new(BootScope(Duration::ZERO)));
+    });
+    let selected = main.for_session(SessionId::new()).await.unwrap();
+    assert!(Arc::ptr_eq(&main, &selected));
+    assert!(started.elapsed() >= Duration::from_millis(200));
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn boot_window_never_ready_fails_closed_at_five_seconds() {
+    let dir = crate::TestDir::new("knowledge-boot-absent");
+    let rt = runtime::Runtime::new(figment::Figment::new(), dir.0.clone());
+    let main = Knowledge::open(&dir.0, rt).await.unwrap();
+    tokio::time::pause();
+    let started = tokio::time::Instant::now();
+    let error = main.for_session(SessionId::new()).await.err().unwrap();
+    assert_eq!(
+        error.to_string(),
+        "isolated memory unavailable here: identity not ready"
+    );
+    // Tokio rounds timer deadlines up to the next millisecond.
+    let elapsed = started.elapsed();
+    assert!(
+        (Duration::from_secs(5)..=Duration::from_millis(5_001)).contains(&elapsed),
+        "{elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn boot_window_shares_deadline_with_identity_service() {
+    let dir = crate::TestDir::new("knowledge-boot-service");
+    let rt = runtime::Runtime::new(figment::Figment::new(), dir.0.clone());
+    let main = Knowledge::open(&dir.0, rt).await.unwrap();
+    tokio::time::pause();
+    let started = tokio::time::Instant::now();
+    let installing = main.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        installing.set_scoper(Arc::new(BootScope(Duration::from_secs(5))));
+    });
+    let error = main.for_session(SessionId::new()).await.err().unwrap();
+    assert_eq!(
+        error.to_string(),
+        "isolated memory unavailable here: identity not ready"
+    );
+    // Tokio rounds timer deadlines up to the next millisecond.
+    let elapsed = started.elapsed();
+    assert!(
+        (Duration::from_secs(5)..=Duration::from_millis(5_001)).contains(&elapsed),
+        "{elapsed:?}"
+    );
 }

@@ -178,14 +178,14 @@ Paths are repository-relative. Native tool rows select through `Knowledge::for_s
 | Knowledge document read and edits | `crates/document/src/tools.rs:180,234,643`; selected aliases/direct IDs; local actors at `crates/document/src/memory.rs:62` |
 | Notebook knowledge citations | `crates/document/src/notebook.rs:1293`; agent principals use the same router |
 | Research record/playbook | `crates/autoresearch/src/record.rs:200,243`; saved `study.origin` |
-| Owner RPC search/get/list | `crates/knowledge/src/rpc_concepts.rs:74,87,95`; explicit inspection selector `crates/knowledge/src/store.rs:724`; absent/null is main, `agent:<name>` selects that enabled/parked bundle, unknown is `-32602` |
+| Owner RPC search/get/list | `crates/knowledge/src/rpc_concepts.rs:74,87,95`; explicit inspection selector `crates/knowledge/src/store.rs:730`; absent/null is main, `agent:<name>` selects that enabled/parked bundle, unknown is `-32602` |
 | Other owner knowledge RPCs | `crates/knowledge/src/lib.rs:615,623`; retain the single explicitly main actor/store |
 | MCP search/get/list | `crates/mcp-server/src/catalog.rs:738,745,749`; unchanged schemas and positional calls omit bundle, therefore main |
 | Background sync | `crates/knowledge/src/lib.rs:630`; only main |
 | Dreaming ledger/journals/rewinds | `crates/agent/src/store/dreaming.rs:103`; `crates/dreaming/src/ledger.rs:85,112,287` |
 | Dreaming counters and signals | `crates/agent/src/store.rs:1990`; `crates/dreaming/src/dry_run.rs:174,184,185,230`; `crates/dreaming/src/signals.rs:338` |
 | Dreaming cases | `crates/dreaming/src/cases.rs:64,109`; durable provenance exclusion `crates/dreaming/src/isolation.rs:5` |
-| Enable/park/resume/remove | `crates/roster/src/lib.rs:3117,1913,3269`; bundle close/move `crates/knowledge/src/store.rs:785` |
+| Enable/park/resume/remove | `crates/roster/src/lib.rs:3117,1913,3269`; bundle close/move `crates/knowledge/src/store.rs:791` |
 
 ### Regression coverage and gates
 
@@ -222,3 +222,9 @@ All eight requested proof steps passed, plus an isolated document read/edit foll
 Both managed engines exited 0; both fake service instances were stopped. A final process-table check found none of the nine captured engine/fake/worker/document-helper PIDs remaining. Every finite build/test command finished. No live checkout, other engine, push or merge was used.
 
 This is a knowledge-bundle boundary, not a transcript or raw-filesystem sandbox. Phase 1 does not replicate isolated bundles or add bundle-aware MCP tools.
+
+### Review follow-up: boot readiness
+
+Knowledge selection gives scoper registration and identity resolution one shared five-second deadline. The roster retries unavailable Agents/DurableStore services within that deadline; permanent identity and bundle errors remain immediate. Exhaustion keeps the fail-closed error and never reads main implicitly. Paused-clock regressions cover registration after 200 ms, permanent absence, and late registration consuming part of the identity-service budget.
+
+Review gates: all six knowledge isolation tests passed, including the three boot cases (one-millisecond Tokio timer-resolution tolerance). Touched-file rustfmt passed. Requested three-crate clippy remains blocked by unchanged `crates/voice/src/history/mod.rs:465`; the same knowledge/roster/agent set passed `--no-deps -- -D warnings`. Logs: `boot-window-tests-final.log`, `boot-window-clippy.log`, `boot-window-clippy-scoped.log` under `/tmp/196e/`.

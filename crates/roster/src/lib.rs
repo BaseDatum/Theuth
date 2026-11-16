@@ -3706,14 +3706,21 @@ impl agent::IdentitySource for Identities {
 #[async_trait::async_trait]
 impl knowledge::Scoper for Desks {
     async fn bundle_for(&self, session: runtime::SessionId) -> Result<Option<String>, String> {
-        let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
-            .ok()
-            .flatten()
-            .ok_or("session identity service unavailable")?;
-        let store = agents
-            .ask(agent::DurableStore)
-            .await
-            .map_err(|e| e.to_string())?;
+        let store = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+                    .ok()
+                    .flatten();
+                if let Some(agents) = agents
+                    && let Ok(store) = agents.ask(agent::DurableStore).await
+                {
+                    break store;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .map_err(|_| "session identity service unavailable")?;
         let (identity, desk) = store
             .memory_identity(session)
             .await

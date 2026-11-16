@@ -694,23 +694,29 @@ impl Knowledge {
     pub fn root(&self) -> &Path {
         &self.root
     }
-    /// Select before any model-facing operation. Missing identity is an error,
-    /// not permission to read main. A selected handle can be captured by harvest.
+    /// Select before model-facing work, allowing up to five seconds for boot.
+    /// Missing identity never grants main. Harvest can capture a selected handle.
     pub async fn for_session(self: &Arc<Self>, session: SessionId) -> anyhow::Result<Arc<Self>> {
         if self.isolated.is_some() {
             return Ok(self.clone());
         }
-        let scoper = self
-            .scoper
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-        let scoper = scoper
-            .ok_or_else(|| anyhow!("isolated memory unavailable here: identity not ready"))?;
-        let name = scoper
-            .bundle_for(session)
-            .await
-            .map_err(|e| anyhow!("isolated memory unavailable here: {e}"))?;
+        let name = tokio::time::timeout(Duration::from_secs(5), async {
+            let scoper = loop {
+                let scoper = self
+                    .scoper
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
+                if let Some(scoper) = scoper {
+                    break scoper;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            };
+            scoper.bundle_for(session).await
+        })
+        .await
+        .map_err(|_| anyhow!("isolated memory unavailable here: identity not ready"))?
+        .map_err(|e| anyhow!("isolated memory unavailable here: {e}"))?;
         match name {
             None => Ok(self.clone()),
             Some(name) => self
