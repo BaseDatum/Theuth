@@ -171,13 +171,13 @@
   body:has([data-settings-page]) :is([data-settings-page], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"], [data-slot="popover-content"]) :is([role="switch"], [role="checkbox"], [role="radio"], button[data-size^="icon"], label:has(> input[type="checkbox"], > input[type="radio"])) {
     min-width: 0;
     min-height: 0;
-
-    &:not(.absolute, .fixed, .sticky) {
-      position: relative;
-    }
   }
 
-  body:has([data-settings-page]) :is([data-settings-page], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"], [data-slot="popover-content"]) :is([role="switch"], [role="checkbox"], [role="radio"], button[data-size^="icon"], label:has(> input[type="checkbox"], > input[type="radio"]))::after {
+  body:has([data-settings-page]) :is([data-settings-page], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"], [data-slot="popover-content"]) :is([role="switch"], [role="checkbox"], [role="radio"], button[data-size^="icon"], label:has(> input[type="checkbox"], > input[type="radio"])):not(.absolute, .fixed, .sticky) {
+    position: relative;
+  }
+
+  body:has([data-settings-page]) :is([data-settings-page], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"], [data-slot="popover-content"]) :is([role="switch"], [role="checkbox"], [role="radio"], button[data-size^="icon"], label:has(> input[type="checkbox"], > input[type="radio"])):not(.absolute, .fixed, .sticky)::after {
     content: "";
     position: absolute;
     inset: min(0px, calc((100% - 40px) / 2));
