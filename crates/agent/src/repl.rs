@@ -5,6 +5,10 @@
 //! `Invoke` (policy, approvals) exactly like a direct call. The heap is
 //! dumped after every cell to `<data_dir>/runtime/<session>.monty` and
 //! restored on the next open.
+//!
+//! The system runtime index is rebuilt at turn start. Successful server adds
+//! also return the caller's live Python signatures, for use later in that turn;
+//! `tools()` and `help()` always query the session-filtered live registry.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -164,6 +168,28 @@ pub struct RunCx {
     pub(crate) local: Vec<ToolSpec>,
     /// The endless service behind `zoom`/`recall`/`date` in `local`.
     pub(crate) endless: Option<Endless>,
+}
+
+#[cfg(feature = "test-support")]
+impl RunCx {
+    /// A cell context for dependent crates' integration tests, without loop-local tools.
+    pub fn for_test(
+        rt: runtime::Runtime,
+        registry: ActorRef<ToolRegistry>,
+        session: SessionId,
+    ) -> Self {
+        Self {
+            session,
+            turn: TurnId::new(),
+            spill_dir: rt.data_dir.join("spill"),
+            cwd: rt.data_dir.clone(),
+            rt,
+            registry,
+            permit: None,
+            local: Vec::new(),
+            endless: None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1851,6 +1877,19 @@ impl Repl {
                                             ToolOutput::err(format!("tool registry: {e}"))
                                         }),
                                 };
+                                if c.name == "add_mcp_server" && !out.is_error
+                                    && let Some(name) = c.args.get("name").and_then(Value::as_str)
+                                {
+                                    // The prompt index stays cache-stable for this turn.
+                                    // DescribeTools supplies registered names and applies
+                                    // the same session visibility/risk gates as help().
+                                    for tool in cx.registry.ask(tools::DescribeTools(Some(cx.session))).await.unwrap_or_default() {
+                                        if matches!(&tool.source, tools::ToolSource::Mcp { server, .. } if server == name) {
+                                            out.content.push('\n');
+                                            out.content.push_str(&signature(&tool.spec));
+                                        }
+                                    }
+                                }
                                 snapshot_files(&mut out, spill);
                                 out
                             },
@@ -2520,6 +2559,133 @@ mod tests {
             local: Vec::new(),
             endless: None,
         }
+    }
+
+    async fn mcp_live_cx(dir: &Path) -> RunCx {
+        let cx = run_cx(dir).await;
+        if ActorRef::<tools::Mcp>::lookup(tools::MCP_ACTOR)
+            .ok()
+            .flatten()
+            .is_some_and(|a| !a.is_alive())
+        {
+            kameo::registry::ACTOR_REGISTRY
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(tools::MCP_ACTOR);
+        }
+        cx.registry
+            .ask(tools::SetApprovals {
+                session: Some(cx.session),
+                enabled: false,
+                clear: false,
+            })
+            .await
+            .unwrap();
+        tools::mcp::start(&cx.rt, cx.registry.clone(), tools::Policy::default())
+            .await
+            .unwrap();
+        cx
+    }
+
+    fn mcp_live_entry() -> Value {
+        serde_json::json!({"command": "python3", "args": [
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../tools/tests/mcp_live.py")
+        ]})
+    }
+
+    #[test]
+    fn mcp_live_watcher_refreshes_an_existing_python_checkout() {
+        crate::with_test_registry(async {
+            let Some(pool) = monty_pool().await else {
+                return;
+            };
+            let dir = tempdir();
+            let cx = mcp_live_cx(&dir.0).await;
+            let mut repl = Repl::open(&pool, cx.session, &dir.0, cx.clone()).await;
+            let out = repl
+                .run(
+                    "write",
+                    &format!(
+                        "marker = 'kept'\nawait write_file(path={:?}, content={:?})",
+                        dir.0.join("mcp/watched.json").to_string_lossy(),
+                        mcp_live_entry().to_string()
+                    ),
+                )
+                .await;
+            assert!(!out.is_error, "{}", out.content);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if specs(&cx).await.iter().any(|s| s.name == "live_echo") {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            })
+            .await
+            .expect("watcher registers within five seconds");
+            let out = repl
+                .run(
+                    "next",
+                    "assert marker == 'kept'\nreply = await live_echo(value=marker)\nprint(reply)",
+                )
+                .await;
+            assert!(
+                !out.is_error && out.content.contains("live:kept:"),
+                "watcher's next cell must refresh stubs without losing globals: {}",
+                out.content
+            );
+            assert!(
+                prompt_block(&specs(&cx).await, true)
+                    .contains("async def live_echo(value: str) -> Any")
+            );
+            repl.close().await;
+        });
+    }
+
+    #[test]
+    fn mcp_live_remove_refreshes_restored_stubs() {
+        crate::with_test_registry(async {
+            let Some(pool) = monty_pool().await else {
+                return;
+            };
+            let dir = tempdir();
+            let cx = mcp_live_cx(&dir.0).await;
+            ActorRef::<tools::Mcp>::lookup(tools::MCP_ACTOR)
+                .unwrap()
+                .unwrap()
+                .ask(tools::AddServer {
+                    name: "live".into(),
+                    entry: mcp_live_entry(),
+                })
+                .await
+                .unwrap();
+            let mut repl = Repl::open(&pool, cx.session, &dir.0, cx.clone()).await;
+            let out = repl
+                .run(
+                    "before",
+                    "reply = await live_echo(value='before')\nprint(reply)",
+                )
+                .await;
+            assert!(
+                !out.is_error && out.content.contains("live:before:"),
+                "{}",
+                out.content
+            );
+            let out = repl
+                .run("remove", "await remove_mcp_server(name='live')")
+                .await;
+            assert!(!out.is_error, "{}", out.content);
+            let out = repl.run("next", "await live_echo(value='gone')").await;
+            assert!(
+                out.is_error
+                    && out.content.starts_with("type check failed")
+                    && out.content.contains("live_echo"),
+                "removed tool must be absent from restored stubs: {}",
+                out.content
+            );
+            assert!(!prompt_block(&specs(&cx).await, true).contains("async def live_echo("));
+            repl.close().await;
+        });
     }
 
     /// Drives a real checkout through `monty`; skipped when absent.

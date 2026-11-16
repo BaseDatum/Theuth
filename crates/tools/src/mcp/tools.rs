@@ -65,14 +65,22 @@ impl Tool for AddMcpServer {
     const RISK: Risk = Risk::Destructive;
     type Args = AddMcpServerArgs;
 
+    fn promotable(&self) -> bool {
+        // Connecting already has a 20-second bound; a job stub would send the
+        // caller into its next Python cell before the advertised tools exist.
+        false
+    }
+
     fn description(&self) -> String {
         "Register an MCP server: give `command` (+ `args`, `env`, `cwd`) for a local one or `url` (+ `headers`) for a remote one. \
-         Writes mcp/<name>.json, connects, and lists the tools now available. \
+         Writes mcp/<name>.json, connects (up to 20 seconds), and lists the tools now available. \
+         An existing name reconnects its saved entry without rewriting it. \
+         For a desk or its child, grants this server in that agent's mcp: list; other agents are untouched. \
          For a cloned repo (add_mcp_repo), build it with the shell tool first and pass cwd: \"repos/<name>\"."
             .into()
     }
 
-    async fn call(&self, a: AddMcpServerArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, a: AddMcpServerArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let mcp = match mcp() {
             Ok(m) => m,
             Err(out) => return Ok(ToolOutput::err(out)),
@@ -111,9 +119,28 @@ impl Tool for AddMcpServer {
                 .await,
             ) {
                 Ok(s) => {
-                    let tools: Vec<&str> = s.tools.iter().map(|t| t.name.as_str()).collect();
+                    let registry = ActorRef::<crate::ToolRegistry>::lookup(crate::REGISTRY_ACTOR)?
+                        .ok_or_else(|| anyhow::anyhow!("tool registry not running"))?;
+                    if let Some(access) = registry.ask(crate::registry::GetMcpAccess).await?
+                        && let Err(e) = access.grant(cx.session, &s.name).await
+                    {
+                        return Ok(ToolOutput::err(format!(
+                            "`{}` connected, but agent MCP access could not be granted: {e}",
+                            s.name
+                        )));
+                    }
+                    let visible = registry.ask(crate::ListTools(Some(cx.session))).await?;
+                    let tools: Vec<&str> = s
+                        .tools
+                        .iter()
+                        .filter_map(|t| t.registered.as_deref())
+                        .filter(|name| visible.iter().any(|s| s.name == *name))
+                        .collect();
                     ToolOutput::ok(if tools.is_empty() {
-                        format!("`{}` connected; it exposes no tools.", s.name)
+                        format!(
+                            "`{}` connected; no tools are enabled for this session.",
+                            s.name
+                        )
                     } else {
                         format!(
                             "`{}` connected; tools available now: {}",

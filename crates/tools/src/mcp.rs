@@ -934,9 +934,9 @@ pub struct Restart {
     pub name: String,
 }
 
-/// `ask` → `Result<McpServer, String>`: write `entry` as `<name>.json`
-/// (bare-entry form), reconcile, and report the connected server. On connect
-/// failure the file is removed again and the error returned.
+/// `ask` → `Result<McpServer, String>`: connect a new entry before writing
+/// `<name>.json`, or reconnect an existing name using its saved entry without
+/// rewriting its file or home. Connect + tools/list is bounded by 20 seconds.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct AddServer {
@@ -1437,9 +1437,16 @@ impl Message<AddServer> for Mcp {
         let Some(spec) = entry(&m.entry, &self.dir) else {
             return Err("entry is disabled or malformed".into());
         };
+        let existing = desired(&self.dir).remove(&m.name);
+        let adding = existing.is_none();
+        let spec = existing.unwrap_or(spec);
         let path = self.dir.join(format!("{}.json", m.name));
-        if path.exists() || self.known(&m.name).is_ok() {
-            return Err(format!("mcp server `{}` already exists", m.name));
+        if adding && path.exists() {
+            return Err(format!(
+                "{} already exists but has no enabled server `{}`; edit it first",
+                path.display(),
+                m.name
+            ));
         }
         if self.state.gates.server_off(&m.name) {
             return Err(format!("`{}` is off in mcp/config.yaml", m.name));
@@ -1449,27 +1456,53 @@ impl Message<AddServer> for Mcp {
             Some(_) => Some(load_homes(&self.dir)?),
             None => None,
         };
+        if !adding
+            && homes.as_ref().is_some_and(|h| {
+                !place(
+                    h.servers.get(&m.name),
+                    self.machine.as_ref(),
+                    (self.paired)().as_deref(),
+                )
+                .runs()
+            })
+        {
+            return Err(format!(
+                "`{}` does not run here; change its MCP home before reconnecting",
+                m.name
+            ));
+        }
         // Connect before writing: nothing half-added, the caller fixes the
         // entry and calls again. This one wait is the caller's own request.
         let result = attempt(&m.name, &spec, &self.auth_dir)
             .await
             .map_err(|e| format!("{}: connect failed: {e:#}", m.name))?;
-        // 187: added here, so homed here — before the entry, so no reconcile sees it homeless.
-        if let (Some(me), Some(mut homes)) = (&self.machine, homes) {
-            homes.servers.insert(
-                m.name.clone(),
-                Home {
-                    engine: Some(me.id.clone()),
-                    name: Some(me.name.clone()),
-                    ..Home::default()
-                },
-            );
-            write_homes(&self.dir, &homes)?;
-            self.state.homes = homes;
+        if adding {
+            // Added here, so homed here — before the entry, so no reconcile sees it homeless.
+            if let (Some(me), Some(mut homes)) = (&self.machine, homes) {
+                homes.servers.insert(
+                    m.name.clone(),
+                    Home {
+                        engine: Some(me.id.clone()),
+                        name: Some(me.name.clone()),
+                        ..Home::default()
+                    },
+                );
+                write_homes(&self.dir, &homes)?;
+                self.state.homes = homes;
+            }
+            write_json(&path, &m.entry)?;
         }
-        write_json(&path, &m.entry)?;
+        // Keep a healthy connection until its replacement is ready, then remove
+        // every old registration, including tools the new server no longer offers.
+        let orphans = self
+            .state
+            .running
+            .remove(&m.name)
+            .map(|r| r.tools.into_values().collect())
+            .unwrap_or_default();
+        self.state.pending.remove(&m.name);
         self.settle(m.name.clone(), spec, Ok(result), ctx.actor_ref());
-        register(&mut self.state, &self.dir, &self.registry, Vec::new()).await;
+        register(&mut self.state, &self.dir, &self.registry, orphans).await;
         self.rt.publish(progress(&self.state)).await;
         // The watcher's reconcile then finds it running with the same spec.
         Ok(self.server(m.name, None, &HashSet::new()))
@@ -1972,7 +2005,10 @@ impl Message<Settled> for Mcp {
     type Reply = ();
 
     async fn handle(&mut self, m: Settled, ctx: &mut Context<Self, Self::Reply>) {
-        self.state.pending.remove(&m.name);
+        // An explicit add/reconnect may already have superseded this attempt.
+        if !self.state.pending.remove(&m.name) {
+            return;
+        }
         let wanted = desired(&self.dir).get(&m.name) == Some(&m.spec)
             && !self.state.gates.server_off(&m.name)
             && place(
@@ -3314,6 +3350,70 @@ mod tests {
     // ---- 187: homes and the calm failure mode ----
 
     const MISSING: &str = "/nonexistent/mcphome-test-server";
+
+    #[tokio::test]
+    async fn mcp_live_add_has_a_bounded_connect_wait() {
+        let root = crate::TestDir::new("mcp-live-timeout");
+        let mcp = actor(&root.0, None);
+        let started = std::time::Instant::now();
+        let error = mcp
+            .ask(AddServer {
+                name: "slow".into(),
+                entry: serde_json::json!({
+                    "command": "python3",
+                    "args": [concat!(env!("CARGO_MANIFEST_DIR"), "/tests/mcp_live.py"), "60"]
+                }),
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("connect failed") && error.contains("no response within 20s"),
+            "{error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(25),
+            "connect wait was not bounded"
+        );
+        assert!(
+            !root.0.join("mcp/slow.json").exists(),
+            "a timed-out add must not leave a half-added server"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_live_reconnect_preserves_the_saved_entry_and_its_siblings() {
+        let root = crate::TestDir::new("mcp-live-wrapper");
+        let mcp = actor(&root.0, None);
+        let spec = serve_mcp(TestServer::default()).await;
+        let Transport::Http { url, .. } = spec.transport else {
+            unreachable!()
+        };
+        let saved = serde_json::json!({"mcpServers": {
+            "live": {"url": url},
+            "sibling": {"command": MISSING, "disabled": true}
+        }});
+        let path = root.0.join("mcp/bundle.json");
+        write_json(&path, &saved).unwrap();
+        mcp.ask(Reconcile).await.unwrap();
+        settled(&mcp, "live").await;
+        let reply = mcp
+            .ask(AddServer {
+                name: "live".into(),
+                entry: serde_json::json!({"command": MISSING}),
+            })
+            .await;
+        assert!(
+            reply.is_ok(),
+            "reconnect must reuse the saved entry: {reply:?}"
+        );
+        assert!(reply.unwrap().connected);
+        assert_eq!(read_json(&path).unwrap(), saved);
+        assert!(
+            !root.0.join("mcp/live.json").exists(),
+            "reconnect must not create a duplicate entry"
+        );
+    }
 
     fn engine(id: &str) -> Machine {
         Machine {

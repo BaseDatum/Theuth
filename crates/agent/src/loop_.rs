@@ -9358,6 +9358,9 @@ mod budget_tests;
 #[cfg(test)]
 mod runtime_bridge_tests;
 
+#[cfg(test)]
+mod mcp_live_tests;
+
 /// REGEN-STAMP: a regenerated opener replays its `<time …/>` stamp to the model only.
 #[cfg(test)]
 mod regen_stamp_tests;
