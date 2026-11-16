@@ -26,36 +26,36 @@ use std::sync::Arc;
 use runtime::{InputId, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 
+pub mod pathac;
 /// Artifacts RPC methods and typed clients.
 pub mod rpc_artifacts;
+pub mod rpc_attachments;
 /// Concepts RPC methods and typed clients.
 pub mod rpc_concepts;
+pub mod rpc_document;
 /// Documents RPC methods and typed clients.
 pub mod rpc_documents;
-/// Notebooks RPC methods and typed clients.
-pub mod rpc_notebooks;
-/// Sessions RPC methods and typed clients.
-pub mod rpc_sessions;
-/// Tooling RPC methods and typed clients.
-pub mod rpc_tooling;
-/// Messaging RPC methods and typed clients.
-pub mod rpc_messaging;
-/// Hub RPC methods and typed clients.
-pub mod rpc_hub;
-/// Settings RPC methods and typed clients.
-pub mod rpc_settings;
-pub mod pathac;
-pub mod rpc_session_state;
-pub mod rpc_document;
-pub mod rpc_attachments;
-/// Provider-owned helpers used by RPC method owners.
-pub mod rpc_support;
 /// Session-owner forwarding and its immutable startup hooks.
 pub mod rpc_forward;
+/// Hub RPC methods and typed clients.
+pub mod rpc_hub;
 /// Background jobs and terminal RPC methods.
 pub mod rpc_jobs;
+/// Messaging RPC methods and typed clients.
+pub mod rpc_messaging;
+/// Notebooks RPC methods and typed clients.
+pub mod rpc_notebooks;
+pub mod rpc_session_state;
+/// Sessions RPC methods and typed clients.
+pub mod rpc_sessions;
+/// Settings RPC methods and typed clients.
+pub mod rpc_settings;
 /// Skill RPC server and client methods.
 pub mod rpc_skills;
+/// Provider-owned helpers used by RPC method owners.
+pub mod rpc_support;
+/// Tooling RPC methods and typed clients.
+pub mod rpc_tooling;
 /// Turn RPC server and client methods.
 pub mod rpc_turns;
 
@@ -74,7 +74,8 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
         rpc_jobs::rpc_module(server.clone()),
         rpc_skills::rpc_module(server.clone()),
         rpc_turns::rpc_module(server),
-    ]).expect("agent RPC composition")
+    ])
+    .expect("agent RPC composition")
 }
 
 pub mod acp_child;
@@ -89,6 +90,7 @@ pub mod communication;
 pub mod compact;
 pub mod context;
 pub mod continuation;
+mod diff_output;
 pub mod dreaming_ledger;
 pub mod durability;
 pub mod endless;

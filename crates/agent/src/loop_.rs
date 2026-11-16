@@ -7161,7 +7161,10 @@ impl Turn {
         // The capped text each row keeps (§3.3 step 7), `ERROR:`-less.
         let mut capped: Vec<String> = Vec::with_capacity(calls.len());
         for (call, out) in calls.iter().zip(&outs) {
-            let mut display = frame::truncate(&out.content, DISPLAY_OUTPUT_CHARS);
+            let mut display = crate::diff_output::display(
+                &crate::diff_output::native(&out.content, out.structured.as_ref()),
+                DISPLAY_OUTPUT_CHARS,
+            );
             for f in &out.files {
                 display.push_str("\n[image: ");
                 display.push_str(&f.file_name().unwrap_or(f.as_os_str()).to_string_lossy());
