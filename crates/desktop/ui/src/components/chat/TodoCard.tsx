@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils'
+import { backgroundColors } from '@/lib/background-colors'
 import type { Todo } from "@/rpc/bindings/method.agent.output"
 import type { TodoSnapshot } from "@/rpc/bindings/method.agent.output"
 import { useScope } from '@/store/engine-scope'
@@ -57,7 +58,7 @@ export function TodoCard({ session }: { session: string }) {
   return (
     <BackgroundCard
       title="To-do"
-      color="bg-project-sand"
+      color={backgroundColors.todos.bg}
       summary={text ?? [counts, tags, !expanded && now].filter(Boolean).join(' · ')}
       expanded={expanded}
       onExpanded={(open) => store.getState().setTodosExpanded(session, open)}
