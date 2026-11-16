@@ -3,8 +3,11 @@ import { SidebarMenuAction } from '@/components/ui/sidebar'
 import { canPopout, openPopout, type PopoutTarget } from '@/lib/popout'
 import { cn } from '@/lib/utils'
 
-/** A sibling of the row link: hover/focus chrome never navigates, selects or starts its drag. */
-export function SidebarPopoutButton({ target, className }: { target: PopoutTarget | null; className?: string }) {
+/**
+ * A sibling of the row link: hover/focus chrome never navigates, selects or starts its drag. `target` is the window to
+ * open, or, on a creation row, the row's own create step that opens the created thing's window itself.
+ */
+export function SidebarPopoutButton({ target, className }: { target: PopoutTarget | (() => void) | null; className?: string }) {
   if (!target || !canPopout()) return null
   return (
     <SidebarMenuAction
@@ -17,7 +20,8 @@ export function SidebarPopoutButton({ target, className }: { target: PopoutTarge
       onClick={(e) => {
         e.preventDefault()
         e.stopPropagation()
-        void openPopout(target)
+        if (typeof target === 'function') target()
+        else void openPopout(target)
       }}
     >
       <AppWindow />

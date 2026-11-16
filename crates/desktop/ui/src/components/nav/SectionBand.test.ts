@@ -7,7 +7,7 @@ import { expect, test, vi } from 'vitest'
 import { SectionBand, TabBand } from './SectionBand'
 
 type State = { location: { pathname: string } }
-const env = vi.hoisted(() => ({ pathname: '/agents', popped: false, open: true, isMobile: false, mac: false }))
+const env = vi.hoisted(() => ({ pathname: '/agents', popout: null as { kind: string } | null, open: true, isMobile: false, mac: false }))
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => () => Promise.resolve(),
   useRouterState: ({ select }: { select: (s: State) => string }) => select({ location: { pathname: env.pathname } }),
@@ -16,7 +16,7 @@ vi.mock('@/components/ui/sidebar', () => ({
   useSidebar: () => ({ open: env.open, isMobile: env.isMobile, toggleSidebar: () => {} }),
 }))
 vi.mock('@/components/sidebar/SearchTrigger', () => ({ SearchTrigger: () => null }))
-vi.mock('@/lib/popout', () => ({ isPopout: () => env.popped }))
+vi.mock('@/lib/popout', () => ({ isPopout: () => env.popout !== null, get POPOUT() { return env.popout } }))
 vi.mock('@/lib/hotkeys', () => ({ isMacDesktop: () => env.mac }))
 vi.mock('@/store/connection', async (original) => {
   const m = await original<typeof ConnectionModule>()
@@ -55,9 +55,21 @@ test('no tab active on a foreign path', () => {
 })
 
 test('a popped window renders nothing', () => {
-  env.popped = true
+  env.popout = { kind: 'note' }
   expect(render('library')).toBe('')
-  env.popped = false
+  env.popout = null
+})
+
+test('a page window keeps the tabs, its way between the section pages, without a sidebar toggle even when narrow', () => {
+  env.popout = { kind: 'page' }
+  env.pathname = '/notes'
+  env.isMobile = true
+  const html = render('library')
+  expect(tabs(html)).toBe(7)
+  expect(active(html)).toEqual(['Notes'])
+  expect(html).not.toContain('Show sidebar')
+  env.isMobile = false
+  env.popout = null
 })
 
 test('the sidebar toggle shows on a phone or when the rail is closed', () => {

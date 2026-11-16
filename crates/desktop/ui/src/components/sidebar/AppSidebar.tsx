@@ -26,7 +26,8 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar'
 import { BroadcastDialog, openBroadcastDialog } from '@/components/chat/BroadcastDialog'
-import { NewChatOnMenu, openNewChat } from '@/components/chat/NewChatPane'
+import { NewChatOnMenu, machineRows, openNewChat } from '@/components/chat/NewChatPane'
+import { useMesh } from '@/components/tasks/queries'
 import { createNote } from '@/components/notes/create'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { AttentionBadge } from '@/components/hud/AttentionBadge'
@@ -92,16 +93,31 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   // Dragged onto a pane, New chat opens as a draft pane in the split (25 §12.3); a click opens the draft in the
   // focused pane when the view is split, else goes to `/` (the THEUTH mark above always does).
   const dragNew = useSessionDrag(null, 'New chat')
+  // The Chat row's ▸ ("New chat on", only with peers) sits at the right edge; the popout button moves left of it.
+  const peers = machineRows(useMesh().data).length > 0
+  // Every destination row's "Open in new window" (`SidebarPopoutButton`): the row's own click, in its own window. The
+  // padding is reserved whenever the button can exist, so hovering never shifts the row.
+  const pad = canPopout() && 'pointer-fine:pr-8'
   // 143 D3: Note creates then opens — its own window on a desktop (the shell stays put), the note page on a phone/iOS
   // (the sheet closes on the href change above). Reads the notes cache rather than `useNotes()`: no permanent subscription.
+  // `popout` (the row's popout button): the same create, then always its own window.
   const createNoteAndOpen = useMutation({
-    mutationFn: () => createNote(api, queryClient, queryClient.getQueryData<DocSummary[]>(queryKeys.notes) ?? []),
-    onSuccess: (n) => {
-      if (noteOpenMode(isMobile, canPopout()) === 'popout') void openPopout({ kind: 'note', doc: n.id, fresh: true })
+    mutationFn: (_popout: boolean) => createNote(api, queryClient, queryClient.getQueryData<DocSummary[]>(queryKeys.notes) ?? []),
+    onSuccess: (n, popout) => {
+      if (popout || noteOpenMode(isMobile, canPopout()) === 'popout') void openPopout({ kind: 'note', doc: n.id, fresh: true })
       else void navigate({ to: '/notes/$id', params: { id: n.id }, search: { new: true } })
     },
     onError: (e) => toast.error(errorText(e)),
   })
+  // The Talk row's click (and its popout button while idle): talk where the row says, then `show` the talk's session.
+  const openTalk = (show: (session: string) => unknown) =>
+    void talk.open(api, current).then(
+      (session) => {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+        return show(session)
+      },
+      (err: unknown) => toast.error(errorText(err)),
+    )
 
   return (
     <>
@@ -143,8 +159,8 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
+          <SidebarMenuItem className="group/popout-row">
+            <SidebarMenuButton asChild className={cn('h-9 rounded-[10px] px-2.5', canPopout() && (peers ? 'pointer-fine:pr-14' : 'pointer-fine:pr-8'))}>
               <Link
                 to="/"
                 aria-label="New chat"
@@ -158,33 +174,32 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                 <span className="ml-auto text-xs text-fg-tertiary">{label(newChat)}</span>
               </Link>
             </SidebarMenuButton>
+            {/* New chat creates nothing until its first send (`/new`), so its window is that page. */}
+            <SidebarPopoutButton target={{ kind: 'page', path: '/new' }} className={cn('top-2', peers ? 'right-8' : 'right-2')} />
             <NewChatOnMenu />
           </SidebarMenuItem>
           <Capability required={talkRequirements} hide><SidebarMenuItem className="group/popout-row">
-            <SidebarMenuButton asChild isActive={section === 'talk'} className={cn('h-9 rounded-[10px] px-2.5', live && talking.session && 'pointer-fine:pr-8')}>
+            <SidebarMenuButton asChild isActive={section === 'talk'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
               <Link
                 to="/"
                 aria-label={live ? 'Talk (running)' : 'Talk'}
                 onClick={(e) => {
                   e.preventDefault()
-                  void talk.open(api, current).then(
-                    (session) => {
-                      void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
-                      return navigate({ to: '/talk/$session', params: { session } })
-                    },
-                    (err: unknown) => toast.error(errorText(err)),
-                  )
+                  openTalk((session) => navigate({ to: '/talk/$session', params: { session } }))
                 }}
               >
                 <AudioLines /> Talk
                 {live && <span className="ml-auto size-2 shrink-0 rounded-full bg-success" aria-label="talk running" />}
               </Link>
             </SidebarMenuButton>
-            <SidebarPopoutButton target={live && talking.session ? { kind: 'talk', session: talking.session } : null} className="top-2 right-2" />
+            <SidebarPopoutButton
+              target={live && talking.session ? { kind: 'talk', session: talking.session } : () => openTalk((session) => openPopout({ kind: 'talk', session }))}
+              className="top-2 right-2"
+            />
           </SidebarMenuItem></Capability>
-          <Capability required={noteRequirements} hide><SidebarMenuItem>
-            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
-              <button type="button" aria-label="New note" disabled={createNoteAndOpen.isPending} onClick={() => createNoteAndOpen.mutate()}>
+          <Capability required={noteRequirements} hide><SidebarMenuItem className="group/popout-row">
+            <SidebarMenuButton asChild className={cn('h-9 rounded-[10px] px-2.5', pad)}>
+              <button type="button" aria-label="New note" disabled={createNoteAndOpen.isPending} onClick={() => createNoteAndOpen.mutate(false)}>
                 {/* Label in a span (see the Meeting row); the plus overhangs the icon wrapper like the Meeting dot. */}
                 <span className="relative inline-flex">
                   <StickyNote className="size-4" />
@@ -193,10 +208,11 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                 <span>Note</span>
               </button>
             </SidebarMenuButton>
+            <SidebarPopoutButton target={() => { if (!createNoteAndOpen.isPending) createNoteAndOpen.mutate(true) }} className="top-2 right-2" />
           </SidebarMenuItem></Capability>
           {canRecord && (
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={section === 'meeting'} className="h-9 rounded-[10px] px-2.5">
+            <SidebarMenuItem className="group/popout-row">
+              <SidebarMenuButton asChild isActive={section === 'meeting'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
                 <Link to="/meetings/new">
                   {/* The label is a span so the menu button's `[&>span:last-child]:truncate` (overflow hidden) hits it, not the icon wrapper whose dot overhangs. */}
                   <span className="relative inline-flex">
@@ -206,38 +222,44 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                   <span>Meeting</span>
                 </Link>
               </SidebarMenuButton>
+              {/* The row opens the start form, so its window is the form; Start there starts the meeting, as in the shell. */}
+              <SidebarPopoutButton target={{ kind: 'page', path: '/meetings/new' }} className="top-2 right-2" />
             </SidebarMenuItem>
           )}
-          <Capability required={attentionRequirements} hide><SidebarMenuItem>
-            <SidebarMenuButton asChild isActive={section === 'attention'} className="h-9 rounded-[10px] px-2.5">
+          <Capability required={attentionRequirements} hide><SidebarMenuItem className="group/popout-row">
+            <SidebarMenuButton asChild isActive={section === 'attention'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
               <Link to="/attention">
                 <Bell /> Attention
                 <AttentionBadge />
               </Link>
             </SidebarMenuButton>
+            <SidebarPopoutButton target={{ kind: 'page', path: '/attention' }} className="top-2 right-2" />
           </SidebarMenuItem></Capability>
-          {agentsTab && (<SidebarMenuItem>
-            <SidebarMenuButton asChild isActive={section === 'agents'} className="h-9 rounded-[10px] px-2.5">
+          {agentsTab && (<SidebarMenuItem className="group/popout-row">
+            <SidebarMenuButton asChild isActive={section === 'agents'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
               <Link to={agentsTab.to}>
                 <Bot /> Agents
               </Link>
             </SidebarMenuButton>
+            <SidebarPopoutButton target={{ kind: 'page', path: agentsTab.to }} className="top-2 right-2" />
           </SidebarMenuItem>)}
           {/* Artifacts first (Sky, 2026-09-27): the most-opened Library entry; `/library` redirects there too. */}
-          {libraryTab && (<SidebarMenuItem>
-            <SidebarMenuButton asChild isActive={section === 'library'} className="h-9 rounded-[10px] px-2.5">
+          {libraryTab && (<SidebarMenuItem className="group/popout-row">
+            <SidebarMenuButton asChild isActive={section === 'library'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
               <Link to={libraryTab.to}>
                 <Library /> Library
               </Link>
             </SidebarMenuButton>
+            <SidebarPopoutButton target={{ kind: 'page', path: libraryTab.to }} className="top-2 right-2" />
           </SidebarMenuItem>)}
           {/* Sky, 2026-11-02: the costs dashboard (160) gets its own row; the HUD SPEND button stays too. */}
-          <Capability required={costsRequirements} hide><SidebarMenuItem>
-            <SidebarMenuButton asChild isActive={section === 'costs'} className="h-9 rounded-[10px] px-2.5">
+          <Capability required={costsRequirements} hide><SidebarMenuItem className="group/popout-row">
+            <SidebarMenuButton asChild isActive={section === 'costs'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
               <Link to="/costs" preload="intent">
                 <ChartColumn /> Costs
               </Link>
             </SidebarMenuButton>
+            <SidebarPopoutButton target={{ kind: 'page', path: '/costs' }} className="top-2 right-2" />
           </SidebarMenuItem></Capability>
           <Capability required={{ methods: ['desk_open', 'list_sessions'] }} hide><Desks active={session} /></Capability>
         </SidebarMenu>
@@ -246,17 +268,18 @@ export function AppSidebar({ session }: { session: string | undefined }) {
       <div ref={setBarEl} className="shrink-0 empty:hidden" />
       <SidebarFooter className="px-1.5">
         <SidebarMenu>
-          <SidebarMenuItem>
+          <SidebarMenuItem className="group/popout-row">
             {/* 188: Settings is a page; a phone opens its category list first. */}
             <SidebarMenuButton
               isActive={section === 'settings'}
-              className="h-9 rounded-[10px] px-2.5"
+              className={cn('h-9 rounded-[10px] px-2.5', pad)}
               onClick={() => void (isMobile ? navigate({ to: '/settings' }) : settings(navigate, 'appearance'))}
             >
               <Settings /> Settings
               <span className="ml-auto text-xs text-fg-tertiary">v{__APP_VERSION__}</span>
               {pending !== null && <span className="size-1.5 rounded-full bg-fg-tertiary" aria-label="update ready" />}
             </SidebarMenuButton>
+            <SidebarPopoutButton target={{ kind: 'page', path: isMobile ? '/settings' : '/settings/appearance' }} className="top-2 right-2" />
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>

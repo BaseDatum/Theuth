@@ -1,7 +1,8 @@
 // 97b: the tabs ARE the title bar. Every page of a grouped section (Agents · Tasks · Routines, or the seven Library
 // pages, or a Settings category) starts with this 52 px band: the sidebar toggle + search when the rail is closed or on
 // a phone, then the section's tabs filling the width. No TabsContent: the page below IS the content; a tab is a
-// navigation to its route. A popped window has no sidebar and its own OS title bar, so it renders nothing.
+// navigation to its route. A popped window has no sidebar and its own OS title bar, so it renders nothing — except a
+// page window (`page` popout), whose tabs are how it moves between the section's pages.
 
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { type LucideIcon, PanelLeft } from 'lucide-react'
@@ -11,7 +12,7 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { GROUPS, type Group, type Tab, tabOf } from '@/lib/nav'
-import { isPopout } from '@/lib/popout'
+import { POPOUT, isPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
 import { supports } from '@/rpc/discovery'
 import { useConnection } from '@/store/connection'
@@ -50,7 +51,7 @@ export function TabBand({
 }) {
   const sidebar = useSidebar()
   const mac = isMacDesktop()
-  if (isPopout()) return null
+  if (isPopout() && POPOUT?.kind !== 'page') return null
   return (
     <header
       data-tauri-drag-region={mac || undefined}
@@ -77,10 +78,10 @@ export function TabBand({
   )
 }
 
-/** Search and the sidebar toggle, at the left of a page's top bar while the rail is closed or a sheet (phone). */
+/** Search and the sidebar toggle, at the left of a page's top bar while the rail is closed or a sheet (phone); never in a popped window, which has no rail. */
 export function SidebarLead() {
   const sidebar = useSidebar()
-  if (sidebar.open && !sidebar.isMobile) return null
+  if (isPopout() || (sidebar.open && !sidebar.isMobile)) return null
   return (
     <div className="flex shrink-0 items-center">
       <SearchTrigger />

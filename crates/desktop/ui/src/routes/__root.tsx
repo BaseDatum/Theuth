@@ -4,7 +4,7 @@ import { requirements as studyRequirements } from '@/components/autoresearch/req
 import { requirements as costsRequirements } from '@/components/costs/requirements'
 import { requirements as meetingRequirements } from '@/components/meeting/requirements'
 import { searchRequirements } from '@/components/sidebar/requirements'
-import { Outlet, createRootRoute, useNavigate, useParams } from '@tanstack/react-router'
+import { Outlet, createRootRoute, useNavigate, useParams, useRouterState } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { openNewChat } from '@/components/chat/NewChatPane'
 import { DragOverlay } from '@/components/chat/Panes'
@@ -19,17 +19,27 @@ import { useHotkeys } from '@/lib/hotkeys'
 import { CostsPrefetch } from '@/lib/costs/queries'
 import { CostsResident, ResidentCtx } from '@/components/costs/Resident'
 import type { SearchRequest } from '@/lib/search'
-import { isPopout } from '@/lib/popout'
+import { pageTitle } from '@/lib/nav'
+import { POPOUT, isPopout } from '@/lib/popout'
 import { isIsland, isOverlay } from '@/lib/tauri'
 
 /** 03 §0.1: the island webview gets no sidebar, search or hotkeys — just its route; the trail overlay (96 §5.3) likewise. A popout gets the routed column alone. */
 export const Route = createRootRoute({ component: isIsland() || isOverlay() ? Outlet : isPopout() ? Popped : Root })
 
-/** One chat or one artifact in its own window: the column without sidebar, search, drag targets or the meeting bar.
- * `SidebarProvider` stays (closed) because the chat header reads it. */
+/** One chat, one artifact or one sidebar page (`page`) in its own window: the column without sidebar, search, drag
+ * targets or the meeting bar. `SidebarProvider` stays because the headers read it, `open` because there is no rail to
+ * reopen: no page shows a "Show sidebar" toggle or clears traffic lights (a popped window has its own OS title bar). */
 function Popped() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  useEffect(() => {
+    const title = POPOUT?.kind === 'page' ? pageTitle(pathname) : undefined
+    if (title !== undefined) document.title = title
+  }, [pathname])
   return (
-    <SidebarProvider open={false} className="h-band min-h-0">
+    <SidebarProvider open className="h-band min-h-0">
+      {/* A window has its own query cache: a page window (Costs among its pages) loads the cube itself; the shell's
+       * resident costs host stays out, so `/costs` renders the page in the column. */}
+      {POPOUT?.kind === 'page' && <Capability required={costsRequirements} hide><CostsPrefetch /></Capability>}
       <SidebarInset className="min-h-0 overflow-hidden pt-[var(--safe-top)] pr-[var(--safe-right)] pb-[var(--safe-bottom)] pl-[var(--safe-left)]">
         <Outlet />
       </SidebarInset>

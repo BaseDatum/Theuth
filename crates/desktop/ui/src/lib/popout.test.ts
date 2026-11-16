@@ -142,3 +142,26 @@ test('canPopout: a desktop shell or a plain browser has second windows; the iOS 
   shell(true, mac, 5)
   expect(canPopout()).toBe(false)
 })
+
+test('a sidebar page pops out alone at its own route; the `popout-page-` label is what marks the window, and it round-trips', () => {
+  for (const [path, label] of [
+    ['/costs', 'popout-page-costs'],
+    ['/attention', 'popout-page-attention'],
+    ['/artifacts', 'popout-page-artifacts'],
+    ['/settings/appearance', 'popout-page-settings_appearance'],
+    ['/meetings/new', 'popout-page-meetings_new'],
+  ] as const) {
+    const t = { kind: 'page', path } as const
+    expect(popoutLabel(t)).toBe(label)
+    expect(popoutUrl(t)).toBe(`${path}?window=${label}`)
+    expect(popoutTarget(popoutUrl(t))).toEqual(t)
+    expect(popoutTarget(`tauri://localhost${popoutUrl(t)}`)).toEqual(t)
+    expect(popoutSession(t)).toBeNull()
+    expect(popoutMeeting(t)).toBeNull()
+  }
+  // Navigating inside the window keeps it a page window: the label, not the route, says so.
+  expect(popoutTarget('/agents/maya?window=popout-page-agents')).toEqual({ kind: 'page', path: '/agents/maya' })
+  // Without the page label a route keeps its own reading: an id route is its thing, a bare page route nothing.
+  expect(popoutTarget('/artifacts/toolu_01?window=popout-artifact-toolu_01')).toEqual({ kind: 'artifact', callId: 'toolu_01' })
+  expect(popoutTarget('/costs?window=x')).toBeNull()
+})
