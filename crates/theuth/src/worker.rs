@@ -3,7 +3,7 @@
 //! `monty-pool` spawns `<binary> subprocess` and speaks framed protobuf over
 //! the child's stdio. The reference worker (`monty-runtime`'s
 //! `src/subprocess.rs`, MIT, pydantic) is a thin shell around
-//! `monty_proto::worker::Child`; this is that shell, so `theuth` needs no `monty`
+//! `monty_proto::worker::Worker`; this is that shell, so `theuth` needs no `monty`
 //! install next to it. Crash isolation is unchanged: the worker is still a
 //! separate process, and the parent treats an exit without `FatalError` as a crash.
 //!
@@ -12,7 +12,9 @@
 
 use std::{io, panic};
 
-use monty_proto::worker::{Child, EventSink, HandleOutcome, fatal_error_event, protocol_violation};
+use monty_proto::worker::{
+    EventSink, HandleOutcome, Worker, fatal_error_event, protocol_violation,
+};
 use monty_proto::{FrameError, FrameReader, pb, write_frame};
 
 /// BSD `sysexits.h` "remote error in protocol": the frame stream desynchronised,
@@ -23,11 +25,11 @@ const EX_PROTOCOL: u8 = 76;
 pub fn run() -> u8 {
     install_panic_hook();
     let mut reader = FrameReader::new(io::stdin().lock());
-    let mut child = Child::default();
+    let mut child = Worker::default();
     let mut sink = StdoutSink;
 
     loop {
-        match reader.read::<pb::ParentRequest>() {
+        match reader.read::<pb::ClientRequest>() {
             Ok(Some(request)) => {
                 let outcome = child.handle(request, &mut sink);
                 apply_memory_limit(&child);
@@ -81,7 +83,7 @@ pub fn run() -> u8 {
 /// Applies the memory limit of whatever session the child now holds, after
 /// every request; reading the child's state (not the request) keeps a rejected
 /// `Configure`, a restored dump's own limits and a `Reset` honest.
-fn apply_memory_limit(child: &Child) {
+fn apply_memory_limit(child: &Worker) {
     let budget = child.session_budget();
     monty_alloc::set_hard_limit(monty_types::memory_limit_with_headroom(
         budget.max_memory,
@@ -95,13 +97,13 @@ fn apply_memory_limit(child: &Child) {
 struct StdoutSink;
 
 impl EventSink for StdoutSink {
-    fn send(&mut self, event: &pb::ChildEvent) -> Result<(), FrameError> {
+    fn send(&mut self, event: &pb::WorkerEvent) -> Result<(), FrameError> {
         write_frame(&mut io::stdout(), event)
     }
 }
 
 /// Best-effort `FatalError` event, duplicated to stderr; the child exits right after.
-fn fatal(child: &Child, sink: &mut impl EventSink, message: &str) {
+fn fatal(child: &Worker, sink: &mut impl EventSink, message: &str) {
     eprintln!("t subprocess fatal error: {message}");
     let _ = sink.send(&child.fatal_event(message));
 }
