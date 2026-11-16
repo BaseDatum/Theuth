@@ -89,6 +89,7 @@ pub mod communication;
 pub mod compact;
 pub mod context;
 pub mod continuation;
+mod diff_output;
 pub mod dreaming_ledger;
 pub mod durability;
 pub mod endless;

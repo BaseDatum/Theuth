@@ -117,12 +117,17 @@ fn transcript(msgs: &[ChatMessage]) -> String {
         let _ = writeln!(out, "--- {role} [{i}] ---");
         for part in m.content.iter() {
             match part {
-                ContentPart::Text(t) => out.push_str(t),
+                ContentPart::Text(t) => out.push_str(&crate::diff_output::strip(t)),
                 ContentPart::ToolCall(tc) => {
                     let _ = write!(out, "call {}({})", tc.fn_name, tc.fn_arguments);
                 }
                 ContentPart::ToolResponse(r) => {
-                    let _ = write!(out, "result {}:\n{}", r.call_id, r.content);
+                    let _ = write!(
+                        out,
+                        "result {}:\n{}",
+                        r.call_id,
+                        crate::diff_output::strip(&r.content)
+                    );
                     if !r.images.is_empty() {
                         let _ = write!(out, "\n[image ×{}]", r.images.len());
                     }
@@ -183,6 +188,20 @@ pub fn sanitize(call_id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diff_carrier_readable_epoch_archive_contains_receipts_only() {
+        use genai::chat::ToolResponse;
+        let carried = crate::diff_output::carried("receipt");
+        let messages = [
+            ChatMessage::from(vec![ToolResponse::new("c", carried.clone())]),
+            ChatMessage::user(carried),
+        ];
+        let output = transcript(&messages);
+        assert!(output.contains("result c:\nreceipt\n"));
+        assert!(!output.contains("theuth-"));
+        assert!(!output.contains("metadata"));
+    }
+
     use super::*;
 
     #[test]

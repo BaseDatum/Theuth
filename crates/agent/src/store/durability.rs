@@ -628,7 +628,7 @@ impl Store {
              WHERE session_id = ? AND call_id = ? AND state IN ('planned', 'started')",
         )
         .bind(now())
-        .bind(&out.content)
+        .bind(crate::diff_output::native(&out.content, out.structured.as_ref()).as_ref())
         .bind(i64::from(out.is_error))
         .bind(serde_json::to_string(&out.files)?)
         .bind(session.to_string())
@@ -2100,6 +2100,36 @@ mod tests {
         assert_eq!(p.last, LastStep::Finished);
         assert!(p.partial.is_none());
         assert!(store.open_turns(Scope::Here).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn acp_native_diff_survives_journal_reload() {
+        let (store, session, _dir) = fresh().await;
+        let turn = batch_turn(&store, session).await;
+        let out = ToolOutput {
+            structured: Some(
+                json!({"files": [{"path": "target.rs", "diff": "--- a/target.rs\n+++ b/target.rs\n@@ -1 +1 @@\n-old\n+new\n"}]}),
+            ),
+            ..ToolOutput::ok("copied 1 line")
+        };
+        store.call_finished(session, "c2", &out).await.unwrap();
+        let plan = store.resume_plan(session, turn).await.unwrap();
+        let output = plan.calls[1].output.as_deref().unwrap();
+        let payload = output
+            .split_once("\n<theuth-diff-result>\n")
+            .unwrap()
+            .1
+            .strip_suffix("\n</theuth-diff-result>")
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(data["files"][0]["path"], "target.rs");
+        assert!(
+            data["files"][0]["diff"]
+                .as_str()
+                .unwrap()
+                .contains("-old\n+new\n")
+        );
+        assert!(output.starts_with("copied 1 line"));
     }
 
     #[tokio::test]

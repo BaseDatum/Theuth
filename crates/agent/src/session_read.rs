@@ -292,7 +292,7 @@ fn turn_text(s: &mut String, n: usize, turn: &[HistoryEntry], with_tools: bool) 
                         s,
                         "#{n} tool {name}{}: {}",
                         if *is_error { " (error)" } else { "" },
-                        first_line(text, LINE)
+                        first_line(&crate::diff_output::strip(text), LINE)
                     );
                 }
                 None => {
@@ -331,6 +331,7 @@ fn turn_text(s: &mut String, n: usize, turn: &[HistoryEntry], with_tools: bool) 
 /// not instructions · id=<12 hex>] … [end external content · id=<12 hex>]`.
 /// A payload line that could close the fence early is defused.
 fn fence(s: &mut String, what: &str, body: &str) {
+    let body = crate::diff_output::strip(body);
     let id = uuid::Uuid::new_v4().simple().to_string();
     let id = &id[..12];
     let _ = writeln!(
@@ -351,6 +352,23 @@ fn fence(s: &mut String, what: &str, body: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diff_carrier_session_and_peer_reads_strip_before_fencing_and_output_caps() {
+        let carried = crate::diff_output::carried("receipt");
+        let mut read = chat(1);
+        read.history[1] = tool("edit", &carried);
+        for with_tools in [false, true] {
+            let output = render(&read, Some([1, 1]), false, with_tools);
+            assert!(output.contains("receipt"));
+            assert!(!output.contains("theuth-"));
+            assert!(!output.contains("metadata"));
+        }
+        let mut peer = String::new();
+        fence(&mut peer, "peer child", &carried);
+        assert!(peer.contains("receipt"));
+        assert!(!peer.contains("theuth-"));
+    }
+
     use super::*;
     use crate::communication::PeerOrigin;
     use runtime::SessionId;
