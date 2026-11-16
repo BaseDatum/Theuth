@@ -431,7 +431,7 @@ mod tests {
     fn log_pages_keep_utf8_offsets_and_caps() {
         let dir = crate::TestDir::new("job-log-pages");
         let path = dir.0.join("j.log");
-        let content = "aé🙂z".repeat(20_000);
+        let content = "aé𐍈z".repeat(20_000);
         std::fs::write(&path, &content).unwrap();
         let tail = read_log(&path, None, None).unwrap();
         assert!(tail.eof);
@@ -459,7 +459,7 @@ mod tests {
         let dir = crate::TestDir::new("job-log-secrets");
         let path = dir.0.join("j.log");
         let secret = "private-token";
-        std::fs::write(&path, format!("é🙂 {secret} tail {secret}")).unwrap();
+        std::fs::write(&path, format!("é𐍈 {secret} tail {secret}")).unwrap();
         let spans = |s: &str| {
             s.match_indices(secret)
                 .map(|(at, v)| at..at + v.len())
@@ -467,7 +467,7 @@ mod tests {
         };
         let redact = |s: &str| s.replace(secret, "{{secret:TOKEN}}");
         let full = read_log_with(&path, None, None, secret.len(), &spans, &redact).unwrap();
-        assert_eq!(full.text, "é🙂 {{secret:TOKEN}} tail {{secret:TOKEN}}");
+        assert_eq!(full.text, "é𐍈 {{secret:TOKEN}} tail {{secret:TOKEN}}");
         for offset in 0..35 {
             let page =
                 read_log_with(&path, Some(offset), Some(8), secret.len(), &spans, &redact).unwrap();

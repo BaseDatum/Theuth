@@ -100,6 +100,13 @@ impl Store {
             .filter(|r| r.2.is_some())
             .map(|r| r.0.as_str())
             .collect();
+        let isolated: HashSet<String> = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM sessions WHERE json_extract(knowledge_identity, '$[1]') = 1",
+        )
+        .fetch_all(&self.read)
+        .await?
+        .into_iter()
+        .collect();
         let excluded: HashSet<String> = m.exclude.iter().map(ToString::to_string).collect();
         let root_of = |id: &str| -> (String, bool) {
             let mut cur = id;
@@ -132,7 +139,10 @@ impl Store {
                 continue;
             }
             let (root, dropped) = root_of(id);
-            if dropped || (m.owner_only && desks.contains(root.as_str())) {
+            if dropped
+                || isolated.contains(&root)
+                || (m.owner_only && desks.contains(root.as_str()))
+            {
                 continue;
             }
             let Some(sid) = parse_id(id) else { continue };

@@ -171,7 +171,7 @@ pub async fn uses_from_sessions(data_dir: &Path) -> Vec<Uses> {
     // (the newline is escaped there, so no line split).
     let hint = regex::Regex::new(r"- `([a-z0-9][a-z0-9_-]*(?:/[a-z0-9][a-z0-9_-]*)*)`").unwrap();
     let bodies: Vec<String> =
-        sqlx::query_scalar("SELECT body FROM messages WHERE body LIKE '%<knowledge>%'")
+        sqlx::query_scalar("WITH RECURSIVE isolated(id) AS (SELECT id FROM sessions WHERE json_extract(knowledge_identity, '$[1]') = 1 UNION SELECT s.id FROM sessions s JOIN isolated i ON s.parent = i.id) SELECT body FROM messages WHERE session_id NOT IN isolated AND body LIKE '%<knowledge>%'")
             .fetch_all(&mut c)
             .await
             .unwrap_or_default();
@@ -181,8 +181,8 @@ pub async fn uses_from_sessions(data_dir: &Path) -> Vec<Uses> {
         }
     }
     for sql in [
-        "SELECT args FROM inner_calls WHERE name = 'knowledge_get'",
-        "SELECT args FROM tool_calls WHERE name = 'knowledge_get'",
+        "WITH RECURSIVE isolated(id) AS (SELECT id FROM sessions WHERE json_extract(knowledge_identity, '$[1]') = 1 UNION SELECT s.id FROM sessions s JOIN isolated i ON s.parent = i.id) SELECT args FROM inner_calls WHERE session_id NOT IN isolated AND name = 'knowledge_get'",
+        "WITH RECURSIVE isolated(id) AS (SELECT id FROM sessions WHERE json_extract(knowledge_identity, '$[1]') = 1 UNION SELECT s.id FROM sessions s JOIN isolated i ON s.parent = i.id) SELECT args FROM tool_calls WHERE session_id NOT IN isolated AND name = 'knowledge_get'",
     ] {
         let args: Vec<String> = sqlx::query_scalar(sql)
             .fetch_all(&mut c)
@@ -227,25 +227,25 @@ pub async fn read_sessions(data_dir: &Path, since: &str) -> (u64, u64) {
     }
     let sessions = count(
         &mut c,
-        "SELECT count(*) FROM sessions WHERE created_at >= ?1 AND COALESCE(kind, 'chat') != 'advisor'",
+        "WITH RECURSIVE isolated(id) AS (SELECT id FROM sessions WHERE json_extract(knowledge_identity, '$[1]') = 1 UNION SELECT s.id FROM sessions s JOIN isolated i ON s.parent = i.id) SELECT count(*) FROM sessions WHERE id NOT IN isolated AND created_at >= ?1 AND COALESCE(kind, 'chat') != 'advisor'",
         since,
     )
     .await;
     let errors = count(
         &mut c,
-        "SELECT count(*) FROM tool_calls WHERE is_error = 1 AND COALESCE(finished_at, started_at, '') >= ?1",
+        "WITH RECURSIVE isolated(id) AS (SELECT id FROM sessions WHERE json_extract(knowledge_identity, '$[1]') = 1 UNION SELECT s.id FROM sessions s JOIN isolated i ON s.parent = i.id) SELECT count(*) FROM tool_calls WHERE session_id NOT IN isolated AND is_error = 1 AND COALESCE(finished_at, started_at, '') >= ?1",
         since,
     )
     .await;
     let denials = count(
         &mut c,
-        "SELECT count(*) FROM questions WHERE asked_at >= ?1 AND state = 'answered' AND answer LIKE '%deny%'",
+        "WITH RECURSIVE isolated(id) AS (SELECT id FROM sessions WHERE json_extract(knowledge_identity, '$[1]') = 1 UNION SELECT s.id FROM sessions s JOIN isolated i ON s.parent = i.id) SELECT count(*) FROM questions WHERE session_id NOT IN isolated AND asked_at >= ?1 AND state = 'answered' AND answer LIKE '%deny%'",
         since,
     )
     .await;
     let stops = count(
         &mut c,
-        "SELECT count(*) FROM turn_steps WHERE at >= ?1 AND kind = 'turn_finished' AND payload LIKE '%cancelled%'",
+        "WITH RECURSIVE isolated(id) AS (SELECT id FROM sessions WHERE json_extract(knowledge_identity, '$[1]') = 1 UNION SELECT s.id FROM sessions s JOIN isolated i ON s.parent = i.id) SELECT count(*) FROM turn_steps WHERE session_id NOT IN isolated AND at >= ?1 AND kind = 'turn_finished' AND payload LIKE '%cancelled%'",
         since,
     )
     .await;

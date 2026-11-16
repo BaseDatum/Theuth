@@ -1286,7 +1286,20 @@ impl DocumentActor {
             }
             TheuthKind::Knowledge => {
                 let concept = a.id.split('@').next().unwrap_or(&a.id);
-                let path = self.data_dir.join(format!("knowledge/{concept}.md"));
+                if okf::ConceptId::parse(concept).is_err() {
+                    return;
+                }
+                let root = match by {
+                    Principal::Agent { session } => match crate::memory::router() {
+                        Ok(router) => match router.root_for(runtime::SessionId(*session)).await {
+                            Ok(root) => root,
+                            Err(_) => return,
+                        },
+                        Err(_) => return,
+                    },
+                    _ => self.data_dir.clone(),
+                };
+                let path = root.join(format!("knowledge/{concept}.md"));
                 if let Ok(text) = std::fs::read_to_string(&path) {
                     c.available = true;
                     c.status = LocateStatus::Same;

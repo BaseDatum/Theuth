@@ -80,7 +80,11 @@ pub fn pending(data_dir: &Path) -> Vec<(PathBuf, agent::LedgerRewind)> {
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "json"))
         .filter_map(|p| {
-            let r = serde_json::from_str(&std::fs::read_to_string(&p).ok()?).ok()?;
+            let r: agent::LedgerRewind =
+                serde_json::from_str(&std::fs::read_to_string(&p).ok()?).ok()?;
+            if crate::isolation::excluded(data_dir, r.session) {
+                return None;
+            }
             Some((p, r))
         })
         .collect();
@@ -104,6 +108,14 @@ pub fn copy_desk_journals(data_dir: &Path, night: &str) -> Vec<String> {
         let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
+        let agent = name.trim_end_matches(".md");
+        let isolated = std::fs::read_to_string(data_dir.join("agents").join(name))
+            .ok()
+            .and_then(|text| roster::file::parse(agent, &text).ok())
+            .is_some_and(|f| f.isolated_memory);
+        if isolated || name.starts_with('.') {
+            continue;
+        }
         if let Ok(text) = std::fs::read_to_string(&p)
             && write_atomic(&dest.join(name), crate::scrub::scrub(&text).as_bytes()).is_ok()
         {
@@ -272,6 +284,7 @@ pub async fn build(
     let mut pending_rewinds: Vec<agent::LedgerRewind> =
         earlier.map(|e| e.pending_rewinds).unwrap_or_default();
     pending_rewinds.extend(pending.iter().map(|(_, r)| r.clone()));
+    pending_rewinds.retain(|r| !crate::isolation::excluded(data_dir, r.session));
     let desk_journals = copy_desk_journals(data_dir, &night);
     let (mut tidy, backlog) = candidates(data_dir, cfg, knowledge).await;
     cap(&mut tidy.fresh, cfg.caps.triage as usize);

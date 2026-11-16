@@ -32,6 +32,9 @@ pub fn mcp_visible(agent: &AgentFile, server: &str, tool: &str) -> bool {
 }
 
 /// The closing turn's prompt (67 §6.2, §9).
+pub const ISOLATED_CLOSING: &str = "Write your journal: Done / Open / Next / Notes, ≤ 8 KiB. Before you answer, record anything durable you learned this episode with `knowledge_put`. Your memory stays your own; it is never shared with your team or main memory. Every task you checked out must already have its disposition. Answer with the journal text only.";
+
+/// The ordinary closing prompt (67 §6.2, §9), with reporting-line sharing.
 pub const CLOSING: &str = "Write your journal: Done / Open / Next / Notes, ≤ 8 KiB. Before you answer, record anything \
 durable you learned this episode with `knowledge_put` (it is private to you by default) and call `knowledge_share` \
 with `visibility: team` or `shared` for the items your team or everyone should know. Every task you checked out \
@@ -793,7 +796,12 @@ impl Shared {
         self.write().sessions.remove(&session);
     }
 
-    /// Which agent `session` works for; `None` for the user's own sessions.
+    /// Rehydrate the read model from durable session provenance.
+    pub fn associate(&self, session: SessionId, agent: &str) {
+        self.write().sessions.insert(session, agent.to_owned());
+    }
+
+    /// Which agent the session works for; absent for an ordinary owner chat.
     pub fn agent_of(&self, session: SessionId) -> Option<String> {
         self.read().sessions.get(&session).cloned()
     }

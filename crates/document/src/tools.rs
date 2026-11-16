@@ -151,6 +151,7 @@ impl Docs {
                 "`{doc}` is neither a document id, `knowledge:<concept id>`, `meeting:<id>`, `agent-charter:<name>`, `source:<id>` nor `notebook:<id>`"
             ),
         };
+        okf::ConceptId::parse(concept)?;
         let binding = Binding::Knowledge(concept.to_owned());
         if let Some(id) = self
             .actor
@@ -175,7 +176,66 @@ impl Docs {
             .map_err(anyhow::Error::msg)
     }
 
+    /// Select a knowledge editor before resolving aliases or direct document ids.
+    async fn scoped(&self, doc: &str, cx: &ToolCx) -> anyhow::Result<Self> {
+        let direct = DocId::parse(doc);
+        let known = match &direct {
+            Some(id) => self
+                .actor
+                .ask(crate::MetaOf {
+                    doc: id.clone(),
+                    by: Principal::Agent {
+                        session: cx.session.0,
+                    },
+                })
+                .await
+                .ok(),
+            None => None,
+        };
+        let concept = doc
+            .strip_prefix("knowledge:")
+            .or_else(|| {
+                (direct.is_none() && doc.contains('/') && !doc.contains(':')).then_some(doc)
+            })
+            .or_else(|| {
+                known.as_ref().and_then(|m| match &m.binding {
+                    Binding::Knowledge(c) => Some(c.as_str()),
+                    _ => None,
+                })
+            });
+        if concept.is_none() && (direct.is_none() || known.is_some()) {
+            return Ok(self.clone());
+        }
+        let router = crate::memory::router()?;
+        let root = router.root_for(cx.session).await?;
+        if root == self.data_dir {
+            return Ok(self.clone());
+        }
+        if let Some(concept) = concept {
+            // Validate before joining a path; model ids never select another physical root.
+            let cid = okf::ConceptId::parse(concept)?;
+            let _ = cid;
+            let actor = crate::memory::local(root.clone(), router).await?;
+            let selected = Self::new(actor, root);
+            selected.resolve(&format!("knowledge:{concept}")).await?;
+            return Ok(selected);
+        }
+        // An id absent from main can name an isolated copy only in its own local actor.
+        let actor = crate::memory::local(root.clone(), router).await?;
+        Ok(Self::new(actor, root))
+    }
+
     async fn edit(
+        &self,
+        doc: &str,
+        edits: Vec<BlockEdit>,
+        cx: &ToolCx,
+    ) -> anyhow::Result<ToolOutput> {
+        let selected = self.scoped(doc, cx).await?;
+        selected.edit_selected(doc, edits, cx).await
+    }
+
+    async fn edit_selected(
         &self,
         doc: &str,
         mut edits: Vec<BlockEdit>,
@@ -205,7 +265,24 @@ impl Docs {
                 }
             }
         }
-        let r = self.actor.ask(Edit { doc: id, edits, by }).await;
+        let r = self
+            .actor
+            .ask(Edit {
+                doc: id.clone(),
+                edits,
+                by,
+            })
+            .await;
+        if r.is_ok()
+            && let Ok(router) = crate::memory::router()
+            && router.runtime().data_dir != self.data_dir
+        {
+            self.actor
+                .ask(crate::actor::ExportNow(id))
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            router.sync_root(&self.data_dir).await?;
+        }
         Ok(match r {
             Ok(o) => outcome(o),
             Err(kameo::error::SendError::HandlerError(e)) => ToolOutput::err(model_error(&e)),
@@ -562,10 +639,10 @@ impl Tool for ReadTool {
             .into()
     }
 
-    async fn call(&self, a: ReadArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        let id = self.0.resolve(&a.doc).await?;
-        let mut outline = self
-            .0
+    async fn call(&self, a: ReadArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let selected = self.0.scoped(&a.doc, &cx).await?;
+        let id = selected.resolve(&a.doc).await?;
+        let mut outline = selected
             .actor
             .ask(Outline {
                 doc: id.clone(),
@@ -575,8 +652,7 @@ impl Tool for ReadTool {
             .map_err(anyhow::Error::msg)?;
         // 171 §9.6: with the cells plugin's hook, cell rows carry their latest run.
         if let Some(hook) = crate::cells::run_annotations() {
-            let cells = self
-                .0
+            let cells = selected
                 .actor
                 .ask(CodeBlocks(id.clone()))
                 .await
@@ -586,7 +662,7 @@ impl Tool for ReadTool {
         let text = match a.format.as_deref() {
             None | Some("outline") => outline.outline,
             Some("markdown") => {
-                crate::note_cells::reader_markdown(&self.0.actor, id, a.blocks, true).await?
+                crate::note_cells::reader_markdown(&selected.actor, id, a.blocks, true).await?
             }
             Some(other) => {
                 anyhow::bail!("format must be \"outline\" or \"markdown\", not {other:?}")
@@ -1004,6 +1080,25 @@ mod tests {
             rt,
         ));
         (Docs::new(actor, dir.path().to_path_buf()), dir)
+    }
+
+    #[tokio::test]
+    async fn knowledge_alias_fails_closed_before_opening_main_without_a_selector() {
+        let (d, _dir) = docs().await;
+        std::fs::create_dir_all(d.data_dir.join("knowledge/facts")).unwrap();
+        std::fs::write(
+            d.data_dir.join("knowledge/facts/main.md"),
+            "---\ntype: fact\ntitle: Main secret\n---\nmain only",
+        )
+        .unwrap();
+        let args =
+            serde_json::from_value(serde_json::json!({ "doc": "knowledge:facts/main" })).unwrap();
+        let e = ReadTool(d).call(args, cx()).await.unwrap_err();
+        assert!(
+            e.to_string()
+                .starts_with("isolated memory unavailable here:"),
+            "{e}"
+        );
     }
 
     /// 66 §6.4: `meeting:<id>` resolves to the meeting's note; a meeting

@@ -4,9 +4,9 @@ use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use roster::rpc_support::{attention_actor, mask_alerts, roster_actor};
-use tasks::rpc_support::tasks_actor;
 use rpc_core::{Server, lookup, send};
 use runtime::SessionId;
+use tasks::rpc_support::tasks_actor;
 
 #[rpc_core_macros::rpc_descriptors(owner = "roster", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
@@ -122,7 +122,6 @@ pub trait BoardsApi {
 
 #[async_trait]
 impl BoardsApiServer for Server {
-
     async fn theuth_agent_model(&self) -> RpcResult<Option<ModelInfo>> {
         send(&roster_actor()?, roster::TheuthModel).await
     }
@@ -166,7 +165,15 @@ impl BoardsApiServer for Server {
     }
 
     async fn agent_put(&self, file: roster::AgentFile) -> RpcResult<()> {
-        send(&roster_actor()?, roster::PutAgent(file)).await
+        roster_actor()?
+            .ask(roster::PutAgent(file))
+            .await
+            .map_err(|e| match e {
+                kameo::error::SendError::HandlerError(message) => {
+                    jsonrpsee::types::ErrorObjectOwned::owned(-32602, message, None::<()>)
+                }
+                e => rpc_core::failed(e.to_string()),
+            })
     }
 
     async fn agent_pause(&self, name: String, paused: bool) -> RpcResult<()> {

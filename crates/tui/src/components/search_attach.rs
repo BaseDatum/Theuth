@@ -397,7 +397,7 @@ async fn search_request(api: &Engine, kind: state::RequestKind) -> state::Reply 
                 matched,
             }))
         }
-        RequestKind::Concept(id) => Reply::Concept(api.knowledge_get(id).await.map_err(crate::reason)),
+        RequestKind::Concept(id) => Reply::Concept(api.knowledge_get(id, None).await.map_err(crate::reason)),
         RequestKind::Historical { id, commit } => Reply::Historical(
             api.knowledge_read_revision(id, commit)
                 .await

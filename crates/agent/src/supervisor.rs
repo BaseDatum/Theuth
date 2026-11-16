@@ -9346,6 +9346,29 @@ impl Message<MarkDesk> for Agents {
             self.desk_models.remove(&m.session);
             self.desk_efforts.remove(&m.session);
         }
+        if let Some(name) = &m.agent {
+            #[derive(serde::Deserialize, Default)]
+            struct Memory {
+                #[serde(default)]
+                isolated_memory: bool,
+            }
+            let isolated = if name == "theuth" {
+                false
+            } else {
+                let text = std::fs::read_to_string(
+                    self.rt.data_dir.join("agents").join(format!("{name}.md")),
+                )
+                .map_err(|e| format!("isolated memory unavailable here: {e}"))?;
+                pause::front_matter::<Memory>(&text)?
+                    .0
+                    .unwrap_or_default()
+                    .isolated_memory
+            };
+            self.store_for(m.session)
+                .set_memory_identity(m.session, name, isolated)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+        }
         self.store_for(m.session)
             .set_desk(m.session, m.agent.as_deref())
             .await
@@ -15313,6 +15336,8 @@ pub(crate) mod tests {
     async fn desk_models_leave_with_the_desk() {
         let (_scratch, a) = agents().await;
         let dir = a.rt.data_dir.clone();
+        std::fs::create_dir_all(dir.join("agents")).unwrap();
+        std::fs::write(dir.join("agents/ops.md"), "Ops.").unwrap();
         let agents = Agents::spawn(a);
         let open = |agents: &ActorRef<Agents>| {
             let agents = agents.clone();

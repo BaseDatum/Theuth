@@ -50,12 +50,30 @@ async fn start_with(data_dir: &Path, bin: &Path, cfg: DocumentsConfig) -> ActorR
     start_in(rt, data_dir, bin, cfg).await
 }
 
+struct MainMemory(runtime::Runtime);
+
+#[async_trait::async_trait]
+impl document::memory::Router for MainMemory {
+    async fn root_for(&self, _: runtime::SessionId) -> anyhow::Result<std::path::PathBuf> {
+        Ok(self.0.data_dir.clone())
+    }
+
+    async fn sync_root(&self, _: &Path) -> anyhow::Result<()> {
+        anyhow::bail!("this document fixture has no knowledge index")
+    }
+
+    fn runtime(&self) -> runtime::Runtime {
+        self.0.clone()
+    }
+}
+
 async fn start_in(
     rt: runtime::Runtime,
     data_dir: &Path,
     bin: &Path,
     cfg: DocumentsConfig,
 ) -> ActorRef<DocumentActor> {
+    document::memory::install(std::sync::Arc::new(MainMemory(rt.clone())));
     // SEAL: the store seals share-link hashes with the vault's mesh key, as the plugin wires it.
     let vault = secrets::Vault::open(data_dir, secrets::KeyStore::File)
         .await

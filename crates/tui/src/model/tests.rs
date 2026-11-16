@@ -3679,6 +3679,7 @@
         assert_eq!(agents_table(&[]), "no agents");
         let file = roster::file::parse("ops", "---\ntitle: Ops\n---\nYou are Ops.").unwrap();
         let agent = roster::AgentSummary {
+            isolated_memory: false,
             file,
             status: roster::AgentStatus::Working,
             desk: None,
