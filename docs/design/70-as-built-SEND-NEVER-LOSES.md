@@ -84,6 +84,24 @@ Discard; a retry never double-sends.
   in-process engine (`Engine::Local`), where a failure is not ambiguous; the `Entry::Error` line plus the restored text
   is its "not sent" state. Noted, not fixed: `/edit` and `/skill args` also clear before ack.
 
+## New-chat options before the first message (2026-11-16)
+
+The draft's model/effort and pending per-chat choices share `composer-drafts` in localStorage:
+tools/MCP hides, messaging, approvals, memory mode, project, summary model/effort, view budget and root scope/alias.
+The header's session menu, Tools and Messaging sheets, memory controls and slash commands edit these without
+creating a chat. Private retention and project/memory switches below the composer persist with the draft too.
+Global tool gates remain global.
+
+`openDraftSession` sends creation fields through `create_session`, then awaits approvals, messaging, tool hides,
+summary model before its effort, view budget and root scope/alias before allowing a send, Talk or skill.
+Settings clear only after all setters succeed. On failure, the error names the setting; text, held attachments,
+settings and the created chat remain. A retry reapplies settings to that same chat rather than creating another.
+The retained opening and target survive reload. Session setters route by owner, including chats created elsewhere.
+The Model picker's Advisor choice is carried by `CreateSessionOptions.advisor`: the existing `set_advisor`
+does not forward, so creation installs it on the owning machine before returning. Advisors require durable native
+chats; choosing Private clears that incompatible pick. Retention and Advisor choices lock while a failed apply
+retains the created chat, since they are creation-only choices on a remote draft.
+
 ## Tests
 
 - `lib/drafts.test.ts`: send keeps the text until acked, ack drops exactly the sent text (typed-during-flight stays),

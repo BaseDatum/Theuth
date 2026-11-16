@@ -3,7 +3,8 @@
 // text with the held chips (the composer renders it straight from the store, so no local copy can be lost on a
 // remount); `useDrafts.edits` is an in-progress edit of a sent message (`MessageUser`'s bubble), kept apart from the
 // composer draft so entering/cancelling an edit never touches it and a virtualised row scrolling out keeps the edit.
-// `useDrafts.pick` is the new-chat draft's model/effort (148 R1), kept with its text for the same reasons.
+// `useDrafts.pick` is the new-chat draft's model/effort; `settings` holds its other per-chat choices.
+// Both persist with its text. `opening` keeps a created chat when a pending setter fails, including across reloads.
 // All persist to `localStorage` like `note-chat.ts`. `useSkillDraft` is a skill parked for the next send
 // (`/skill:<name>` or Use in the Skills panel), shown as a `◇ name` chip and sent as `use_skill(session, name, words)`.
 //
@@ -20,6 +21,7 @@ import { untilLive, useRemoteStart } from '@/lib/remote-start'
 import type { Api } from '@/rpc/bindings/client'
 import type { CreateSessionOptions } from '@/rpc/bindings/method.sessionsync.input'
 import type { SessionOpen } from "@/rpc/bindings/method.agent.output"
+import type { PeerScope } from '@/rpc/bindings/method.agent.output'
 
 const KEY = 'composer-drafts'
 
@@ -34,11 +36,27 @@ export const EMPTY: Draft = { text: '', pastes: new Map() }
 export type DraftPick = { model: string | null; effort: string | null }
 export const NO_PICK: DraftPick = { model: null, effort: null }
 
+/** New-chat options, spent only after every setter succeeds. Empty means inherit, not an explicit off. */
+export type DraftSettings = {
+  create?: Partial<CreateSessionOptions>
+  approvals?: boolean | null
+  communication?: boolean
+  hidden?: Record<string, boolean>
+  compactorModel?: string | null
+  compactorEffort?: string | null
+  viewBytes?: number
+  scope?: PeerScope
+  alias?: string | null
+}
+type Opening = { open: SessionOpen; engine: string | null; cwd: string | null }
+
 /** `Pastes` is a `Map`: stored as its entries. */
 type Saved = {
   drafts: Record<string, { text: string; pastes: [number, Paste][]; unsent?: string }>
   edits: Record<string, Edit>
   pick?: DraftPick
+  settings?: DraftSettings
+  opening?: Opening | null
 }
 
 type Store = {
@@ -51,6 +69,13 @@ type Store = {
    * ponytail: one pick for every draft pane; per-pane picks if split drafts ever need to differ.
    */
   pick: DraftPick
+  settings: DraftSettings
+  opening: Opening | null
+  setSettings(patch: Partial<DraftSettings>): void
+  setCreate(patch: Partial<CreateSessionOptions>): void
+  setHidden(names: string[], hidden: boolean): void
+  setOpening(opening: Opening | null): void
+  spend(): void
   set(key: string, draft: Draft): void
   setText(key: string, text: string): void
   setPastes(key: string, pastes: Pastes | ((held: Pastes) => Pastes)): void
@@ -67,7 +92,7 @@ type Store = {
   resetPick(): void
 }
 
-type Persisted = Pick<Store, 'by' | 'edits' | 'pick'>
+type Persisted = Pick<Store, 'by' | 'edits' | 'pick' | 'settings' | 'opening'>
 
 export function load(): Persisted {
   try {
@@ -75,18 +100,18 @@ export function load(): Persisted {
     const by: Record<string, Draft> = {}
     for (const [k, d] of Object.entries(s.drafts ?? {}))
       by[k] = { text: d.text, pastes: new Map(d.pastes), ...(d.unsent ? { unsent: d.unsent } : {}) }
-    return { by, edits: s.edits ?? {}, pick: { ...NO_PICK, ...s.pick } }
+    return { by, edits: s.edits ?? {}, pick: { ...NO_PICK, ...s.pick }, settings: s.settings ?? {}, opening: s.opening ?? null }
   } catch {
-    return { by: {}, edits: {}, pick: NO_PICK }
+    return { by: {}, edits: {}, pick: NO_PICK, settings: {}, opening: null }
   }
 }
 
-function save({ by, edits, pick }: Persisted): void {
+function save({ by, edits, pick, settings, opening }: Persisted): void {
   const drafts: Saved['drafts'] = {}
   for (const [k, d] of Object.entries(by))
     if (d.text || d.pastes.size) drafts[k] = { text: d.text, pastes: [...d.pastes], ...(d.unsent ? { unsent: d.unsent } : {}) }
   try {
-    localStorage.setItem(KEY, JSON.stringify({ drafts, edits, pick } satisfies Saved))
+    localStorage.setItem(KEY, JSON.stringify({ drafts, edits, pick, settings, opening } satisfies Saved))
   } catch {
     // Storage full or disabled: the draft still lives in the store for this run.
   }
@@ -94,6 +119,26 @@ function save({ by, edits, pick }: Persisted): void {
 
 export const useDrafts = create<Store>()((set, get) => ({
   ...load(),
+  setSettings(patch) {
+    const settings = { ...get().settings, ...patch }
+    save({ ...get(), settings })
+    set({ settings })
+  },
+  setCreate(patch) {
+    get().setSettings({ create: { ...get().settings.create, ...patch } })
+  },
+  setHidden(names, hidden) {
+    get().setSettings({ hidden: { ...get().settings.hidden, ...Object.fromEntries(names.map((name) => [name, hidden])) } })
+  },
+  setOpening(opening) {
+    save({ ...get(), opening })
+    set({ opening })
+  },
+  spend() {
+    const next = { pick: NO_PICK, settings: {}, opening: null }
+    save({ ...get(), ...next })
+    set(next)
+  },
   set(key, draft) {
     // An emptied box has nothing left to retry.
     const { unsent, ...rest } = draft
@@ -190,8 +235,8 @@ type DraftTarget = { engine: string | null; cwd: string | null; reuse: Reuse | n
  * persisted: a relaunch starts on this machine. Spent with the pick by `openDraftSession`. `reuse`: the empty chat a
  * failed first message left on that machine; its retry sends into it instead of leaving it behind for another. */
 export const useDraftTarget = create<DraftTarget & { set(patch: Partial<DraftTarget>): void }>()((set) => ({
-  engine: null,
-  cwd: null,
+  engine: useDrafts.getState().opening?.engine ?? null,
+  cwd: useDrafts.getState().opening?.cwd ?? null,
   reuse: null,
   set: (patch) => set(patch),
 }))
@@ -200,28 +245,54 @@ export const useDraftTarget = create<DraftTarget & { set(patch: Partial<DraftTar
 const LIVE_WAIT_MS = 2_000
 
 /**
- * 148 R1: open the session a draft's first action creates (a send, Talk, `/<skill>`, a parked skill). `options`
- * (a New Chat switch on, built by the composer with the pick in it) or a bare model/effort pick goes through
- * `create_session`; otherwise `new_session()`. The pick is spent either way. `open` is the `create_session` reply
- * when it ran (a private session needs it); `pick` is what was spent, for seeding the transcript header.
- * 183 §5.6: a chosen machine or folder (`useDraftTarget`) also goes through `create_session`, with `engine` / `cwd`;
- * the retry of a failed first message (`input`, its client input id) to that same machine and folder opens its `reuse`
- * again instead (nothing is created).
+ * Open the session a draft's first action creates (send, Talk or skill). Any pending option selects
+ * `create_session`; project, memory and other creation fields go in that call. Then approvals, messaging,
+ * tool switches, summary model/effort, view size and scope/alias are awaited in order. Only successful
+ * application spends the pick/settings. A failed setter names the setting and leaves the draft and its
+ * created chat intact for retry; no first input can run before this resolves.
  */
 export async function openDraftSession(
   api: Api,
   options: CreateSessionOptions | null = null,
   input?: string,
 ): Promise<{ id: string; open: SessionOpen | null; pick: DraftPick }> {
-  const { pick, resetPick } = useDrafts.getState()
+  const draft = useDrafts.getState()
+  const { pick, settings, opening } = draft
   const target = useDraftTarget.getState()
   const { reuse } = target
-  const again = reuse && reuse.input === input && reuse.engine === target.engine && reuse.cwd === target.cwd ? reuse.session : null
-  const base = options ?? (pick.model || pick.effort || target.engine || target.cwd ? { ...PLAIN_OPTIONS, ...pick } : null)
-  const wanted = !again && base && { ...base, ...(target.engine ? { engine: target.engine } : {}), ...(target.cwd ? { cwd: target.cwd } : {}) }
-  const open = wanted ? await api.create_session(wanted) : null
+  const held = opening && opening.engine === target.engine && opening.cwd === target.cwd ? opening.open : null
+  const again = held?.session ?? (reuse && reuse.input === input && reuse.engine === target.engine && reuse.cwd === target.cwd ? reuse.session : null)
+  const pending = Object.keys(settings).length > 0
+  const base = options ?? (pending || pick.model || pick.effort || target.engine || target.cwd ? { ...PLAIN_OPTIONS, ...pick } : null)
+  const wanted = !again && base && { ...base, ...settings.create, ...(target.engine ? { engine: target.engine } : {}), ...(target.cwd ? { cwd: target.cwd } : {}) }
+  const open = held ?? (wanted ? await api.create_session(wanted) : null)
   const id = again ?? (open ? open.session : await api.new_session())
-  resetPick()
+  // Persist before applying anything: a rejected setter or a reload must not orphan this empty chat.
+  if (pending && open) draft.setOpening({ open, engine: target.engine, cwd: target.cwd })
+  const apply = async (name: string, call: () => Promise<unknown>) => {
+    try {
+      await call()
+    } catch (cause) {
+      throw new Error(`Could not apply ${name}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause })
+    }
+  }
+  // A retry may have edited the create-time choices while the empty chat was retained.
+  if (again && settings.create?.project !== undefined) await apply('project', () => api.set_session_project(id, settings.create!.project ?? null))
+  if (again && settings.create?.memory) await apply('memory', () => api.set_session_memory(id, settings.create!.memory!))
+  if (held && pick.model) await apply('model', () => api.set_model(id, pick.model!, true))
+  if (held) await apply('effort', () => api.set_effort(id, pick.effort, true))
+  if (settings.approvals !== undefined) await apply('approvals', () => api.set_approvals(id, settings.approvals ?? true, settings.approvals === null))
+  if (settings.communication !== undefined) await apply('messaging', () => api.set_communication(id, settings.communication!))
+  for (const hidden of [false, true]) {
+    const names = Object.entries(settings.hidden ?? {}).filter(([, value]) => value === hidden).map(([name]) => name)
+    if (names.length) await apply('tools and MCP switches', () => api.set_mcp_hidden(id, names, hidden))
+  }
+  // A model change can clear its effort, so the model must be installed first.
+  if (settings.compactorModel !== undefined) await apply('summary model', () => api.set_session_compactor_model(id, settings.compactorModel!))
+  if (settings.compactorEffort !== undefined) await apply('summary effort', () => api.set_session_compactor_effort(id, settings.compactorEffort!))
+  if (settings.viewBytes !== undefined) await apply('memory view size', () => api.set_session_view_bytes(id, settings.viewBytes!))
+  if (settings.scope !== undefined) await apply('messaging scope and alias', () => api.set_peer_scope(id, settings.scope!, settings.alias ?? null))
+  draft.spend()
   target.set({ engine: null, cwd: null, reuse: null })
   return { id, open, pick }
 }

@@ -67,6 +67,11 @@ pub struct CreateSessionOptions {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub memory: Option<crate::endless::MemoryMode>,
+    /// Advisor model/effort for this root. Installed on its owner before create
+    /// returns: `set_advisor` is local-only, so a remote draft cannot use it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub advisor: Option<(String, Option<String>)>,
     /// 183 §5.6 (W-10): the mesh engine id to create the session on; `None`
     /// (or this engine) = here. The attached engine forwards the whole call.
     #[serde(default)]

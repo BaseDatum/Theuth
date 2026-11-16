@@ -10,7 +10,7 @@ import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { AppWindow, Contact, CornerLeftUp, Eye, Gauge, LayoutGrid, MessageSquare, Monitor, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
-import { Fragment, type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { useSandboxes } from '@/components/settings/sandbox-queries'
@@ -45,13 +45,14 @@ import { ContextMeter } from './ContextMeter'
 import { CostDialog, CostPill } from './CostPill'
 import { HeaderMenu, MenuRow, useHeaderMenuClose } from './HeaderMenu'
 import { ModelDialog, ModelMenu, ModelRow } from './ModelMenu'
-import { MemoryBadge, MemoryPanel } from './MemoryPanel'
+import { DraftMemory, MemoryBadge, MemoryPanel } from './MemoryPanel'
 import { BrowserIndicator } from './Indicators'
 import { SessionMenu } from './SessionMenu'
 import { MessagingSheet } from './MessagingSheet'
 import { ToolsSheet } from './ToolsSheet'
 import { TerminalButton, TerminalViewer, useHasTerminals } from './TerminalViewer'
 import { EyeMark } from './ObservedBar'
+import { surfaceOf } from './slash'
 const HEADER_REQUIREMENTS: Partial<Record<HeaderId, Requirements>> = {
   search: searchRequirements, memory: memoryRequirements, model: modelRequirements,
   desktop: vmRequirements, context: contextRequirements, cost: sessionCostRequirements,
@@ -381,7 +382,7 @@ export function Header({
         </Button>
       )
     },
-    menu: () => (session ? <SessionMenu session={session} /> : null),
+    menu: () => <SessionMenu session={session ?? ''} />,
     close: () =>
       onClose ? (
         <Button variant="ghost" size="icon" className="rounded-lg text-fg-secondary" aria-label="Close pane" onClick={onClose}>
@@ -390,6 +391,14 @@ export function Header({
       ) : null,
   }
 
+  useEffect(() => {
+    if (session) return
+    const on = (e: Event) => {
+      if (surfaceOf(e) === 'memory') setMemory(true)
+    }
+    window.addEventListener('theuth:open', on)
+    return () => window.removeEventListener('theuth:open', on)
+  }, [session])
   return (
     <header ref={ref} data-header-tier={tier} className="relative flex h-[52px] shrink-0 overflow-hidden">
       <div
@@ -402,6 +411,9 @@ export function Header({
         ))}
       </div>
       <Capability required={approvalsRequirements} hide><ApprovalsSheet open={sheet} onOpenChange={setSheet} /></Capability>
+      {!session && <DraftMemory open={memory} onOpenChange={setMemory} />}
+      <Capability required={messagingRequirements} hide><MessagingSheet session={session ?? ''} /></Capability>
+      <Capability required={toolsRequirements} hide><ToolsSheet session={session ?? ''} /></Capability>
       {compact && <Capability required={modelRequirements} hide><ModelDialog session={session} open={picker} onOpenChange={setPicker} /></Capability>}
       {session && (
         <>
@@ -411,9 +423,6 @@ export function Header({
           <Capability required={artifactRequirements} hide><ArtifactPanel session={session} /></Capability>
           <Capability required={codemapRequirements} hide><CodeMapSheet session={session} /></Capability>
           <Capability required={memoryRequirements} hide><MemoryPanel session={session} open={memory} onOpenChange={setMemory} /></Capability>
-          {/* 188: here, not in the ⋯ menu, so it outlives the menu closing; `?messaging=1` opens it too. */}
-          <Capability required={messagingRequirements} hide><MessagingSheet session={session} /></Capability>
-          <Capability required={toolsRequirements} hide><ToolsSheet session={session} /></Capability>
         </>
       )}
     </header>
