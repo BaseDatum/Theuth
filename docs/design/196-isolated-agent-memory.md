@@ -228,3 +228,9 @@ This is a knowledge-bundle boundary, not a transcript or raw-filesystem sandbox.
 Knowledge selection gives scoper registration and identity resolution one shared five-second deadline. The roster retries unavailable Agents/DurableStore services within that deadline; permanent identity and bundle errors remain immediate. Exhaustion keeps the fail-closed error and never reads main implicitly. Paused-clock regressions cover registration after 200 ms, permanent absence, and late registration consuming part of the identity-service budget.
 
 Review gates: all six knowledge isolation tests passed, including the three boot cases (one-millisecond Tokio timer-resolution tolerance). Touched-file rustfmt passed. Requested three-crate clippy remains blocked by unchanged `crates/voice/src/history/mod.rs:465`; the same knowledge/roster/agent set passed `--no-deps -- -D warnings`. Logs: `boot-window-tests-final.log`, `boot-window-clippy.log`, `boot-window-clippy-scoped.log` under `/tmp/196e/`.
+
+### Review follow-up: jobs log UTF-8 fixtures
+
+Jobs-log pagination and redaction fixtures use the four-byte Gothic letter U+10348 instead of an emoji. Byte lengths and boundary cases are unchanged, without a desktop-source-guard exemption or production log-code change.
+
+Review gates: all four jobs-history tests and the desktop emoji-source guard passed. Touched-file rustfmt check and three-crate scoped clippy (`--no-deps -- -D warnings`) passed. The original emoji-guard failure recorded above is resolved; full clippy retains the unrelated voice diagnostic noted in the boot follow-up. Logs: `jobs-utf8-tests.log`, `jobs-utf8-guard.log`, `jobs-utf8-clippy-scoped.log` under `/tmp/196e/`.
