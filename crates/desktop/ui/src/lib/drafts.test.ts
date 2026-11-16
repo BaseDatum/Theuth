@@ -1,6 +1,6 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import type { Api } from '@/rpc/bindings/client'
-import { EMPTY, NO_PICK, PLAIN_OPTIONS, load, openDraftSession, useDrafts } from './drafts'
+import { EMPTY, NO_PICK, PLAIN_OPTIONS, load, openDraftSession, sendFirst, useDraftTarget, useDrafts } from './drafts'
 import { attach, attachRef } from './pastes'
 
 // No DOM in the test runner: the smallest `Storage` the store needs (the module's own `load()` ran without one and
@@ -17,7 +17,8 @@ const held = attachRef(ref, attach('/tmp/a.png', 4, 4, EMPTY.pastes))
 
 beforeEach(() => {
   localStorage.clear()
-  useDrafts.setState({ by: {}, edits: {}, pick: NO_PICK })
+  useDrafts.setState({ by: {}, edits: {}, pick: NO_PICK, settings: {}, opening: null })
+  useDraftTarget.getState().set({ engine: null, cwd: null, reuse: null })
 })
 
 test('draft → edit → cancel leaves the composer draft intact (text, pastes, attachments)', () => {
@@ -86,7 +87,7 @@ test('a failed send leaves the flagged draft through edits; emptying the box dro
 
 test('a corrupt store reads as empty', () => {
   localStorage.setItem('composer-drafts', '{not json')
-  expect(load()).toEqual({ by: {}, edits: {}, pick: NO_PICK })
+  expect(load()).toEqual({ by: {}, edits: {}, pick: NO_PICK, settings: {}, opening: null })
 })
 
 // 148 R1: the one seam every draft-born session goes through (the composer's send, Talk, `/<skill>`, a parked skill).
@@ -139,4 +140,110 @@ test('148 R1: no pick and no switch → new_session(); a switch (the composer\'s
   expect(create_session).toHaveBeenCalledWith(options)
   expect(new_session).toHaveBeenCalledTimes(1)
   expect(useDrafts.getState().pick.model).toBeNull()
+})
+
+test('pending settings survive a remount and reload; older drafts inherit every option', () => {
+  useDrafts.getState().setSettings({ approvals: false, communication: true, compactorModel: null })
+  useDrafts.getState().setCreate({ memory: 'epochs', project: 'lab' })
+  useDrafts.getState().setHidden(['read_file'], true)
+  useDrafts.getState().setHidden(['write_file'], false)
+  const settings = useDrafts.getState().settings
+  useDrafts.setState(load())
+  expect(useDrafts.getState().settings).toEqual(settings)
+  localStorage.setItem('composer-drafts', JSON.stringify({ drafts: {}, edits: {}, pick: NO_PICK }))
+  expect(load().settings).toEqual({})
+})
+
+const pending = {
+  create: { memory: 'epochs' as const, project: 'lab', advisor: ['summary/model', null] as [string, string | null] },
+  approvals: false,
+  communication: false,
+  hidden: { read_file: true, write_file: false },
+  compactorModel: 'summary/model',
+  compactorEffort: 'high',
+  viewBytes: 128000,
+  scope: 'owner' as const,
+  alias: 'research',
+}
+const setters = [
+  ['set_approvals', 'approvals'],
+  ['set_communication', 'messaging'],
+  ['set_mcp_hidden', 'tools and MCP switches'],
+  ['set_session_compactor_model', 'summary model'],
+  ['set_session_compactor_effort', 'summary effort'],
+  ['set_session_view_bytes', 'memory view size'],
+  ['set_peer_scope', 'messaging scope and alias'],
+] as const
+
+function firstApi(fail?: string) {
+  const calls: [string, unknown[]][] = []
+  let rejected = false
+  const api = new Proxy({} as Api, {
+    get: (_, name: string) => async (...args: unknown[]) => {
+      calls.push([name, args])
+      if (name === fail && !rejected) {
+        rejected = true
+        throw new Error('refused')
+      }
+      return name === 'create_session' ? opened : undefined
+    },
+  })
+  const send = () => sendFirst({
+    api, options: null, input: 'first', machine: () => null,
+    created: async () => { calls.push(['created', []]) },
+    send: (id) => api.send_input(id, 'keep me', [], null, 'first'),
+  })
+  return { api, calls, send }
+}
+
+test('first send awaits create, then every pending setter, then send; spends settings only after application', async () => {
+  const { calls, send } = firstApi()
+  useDrafts.getState().setSettings(pending)
+  useDraftTarget.getState().set({ engine: 'xeus', cwd: '/work' })
+  await send()
+  expect(calls).toEqual([
+    ['create_session', [{ ...PLAIN_OPTIONS, ...pending.create, engine: 'xeus', cwd: '/work' }]],
+    ['set_approvals', ['s-new', false, false]],
+    ['set_communication', ['s-new', false]],
+    ['set_mcp_hidden', ['s-new', ['write_file'], false]],
+    ['set_mcp_hidden', ['s-new', ['read_file'], true]],
+    ['set_session_compactor_model', ['s-new', 'summary/model']],
+    ['set_session_compactor_effort', ['s-new', 'high']],
+    ['set_session_view_bytes', ['s-new', 128000]],
+    ['set_peer_scope', ['s-new', 'owner', 'research']],
+    ['created', []],
+    ['send_input', ['s-new', 'keep me', [], null, 'first']],
+  ])
+  expect(load().settings).toEqual({})
+  expect(load().opening).toBeNull()
+})
+
+test.each(setters)('%s failure keeps text, attachments, settings and created chat across reload; retry never creates twice', async (method, label) => {
+  const { calls, send } = firstApi(method)
+  useDrafts.getState().set('', { text: 'keep me', pastes: held, unsent: 'first' })
+  useDrafts.getState().setSettings(pending)
+  useDraftTarget.getState().set({ engine: 'xeus', cwd: '/work' })
+  await expect(send()).rejects.toThrow(`Could not apply ${label}: refused`)
+  expect(calls.some(([name]) => name === 'send_input' || name === 'created')).toBe(false)
+  useDrafts.setState(load())
+  expect(useDrafts.getState().by['']).toEqual({ text: 'keep me', pastes: held, unsent: 'first' })
+  expect(useDrafts.getState().settings).toEqual(pending)
+  expect(useDrafts.getState().opening?.open.session).toBe('s-new')
+  await send()
+  expect(calls.filter(([name]) => name === 'create_session')).toHaveLength(1)
+  expect(calls.at(-1)).toEqual(['send_input', ['s-new', 'keep me', [], null, 'first']])
+  expect(load().settings).toEqual({})
+})
+
+test('a create failure retains pending settings; explicit inherit and cleared summary picks still apply', async () => {
+  const { api, calls } = firstApi('create_session')
+  useDrafts.getState().setSettings({ approvals: null, compactorModel: null, compactorEffort: null })
+  await expect(openDraftSession(api)).rejects.toThrow('refused')
+  expect(load().settings).toEqual({ approvals: null, compactorModel: null, compactorEffort: null })
+  await openDraftSession(api)
+  expect(calls.slice(-3)).toEqual([
+    ['set_approvals', ['s-new', true, true]],
+    ['set_session_compactor_model', ['s-new', null]],
+    ['set_session_compactor_effort', ['s-new', null]],
+  ])
 })

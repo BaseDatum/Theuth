@@ -85,8 +85,8 @@ impl Agents {
             .map_err(|e| format!("config.yaml: {e}"))
     }
 
-    /// 125 §4.1 items 1–3: turn the advisor of `session` on with `model`.
-    async fn advisor_on(
+    /// Turn the advisor on for an existing chat or a just-created draft.
+    pub(super) async fn advisor_on(
         &mut self,
         session: runtime::SessionId,
         model: String,

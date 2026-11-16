@@ -433,6 +433,62 @@ fn advisor_on_uses_the_live_default() {
     });
 }
 
+#[test]
+fn lifecycle_draft_advisor_is_ready_before_first_input() {
+    crate::with_test_registry(async {
+        let r = Rig::keyed(AdvisorConfig::default(), |_: &str| true).await;
+        let open = r
+            .agents
+            .ask(crate::CreateSession {
+                options: crate::CreateSessionOptions {
+                    model: Some("fake/m".into()),
+                    advisor: Some(("fake/m".into(), None)),
+                    ..Default::default()
+                },
+                peer: None,
+            })
+            .await
+            .unwrap();
+        let status = r
+            .agents
+            .ask(AdvisorStatusOf {
+                session: open.session,
+            })
+            .await
+            .unwrap();
+        assert_eq!(status.state, AdvisorState::Idle);
+        let child = r
+            .store
+            .session(status.advisor.unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(child.parent, Some(open.session));
+        assert_eq!(child.kind, SessionKind::Advisor);
+        assert!(
+            r.script.requests.lock().is_empty(),
+            "creating an advisor starts no model turn"
+        );
+        let refused = r
+            .agents
+            .ask(crate::CreateSession {
+                options: crate::CreateSessionOptions {
+                    retention: tools::Retention::Private,
+                    advisor: Some(("fake/m".into(), None)),
+                    ..Default::default()
+                },
+                peer: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("an advisor needs a durable native chat")
+        );
+    });
+}
+
 /// (1) an update per step with the trailer only mid-turn; (6b) turning on
 /// mid-session seeds the cursor and replays nothing; (9) a silent review is
 /// a good one.

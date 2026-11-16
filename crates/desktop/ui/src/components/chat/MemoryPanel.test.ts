@@ -7,6 +7,7 @@ import { expect, test, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
+import { useDrafts } from '@/lib/drafts'
 import type { Api } from '@/rpc/bindings/client'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { SessionMemory } from "@/rpc/bindings/method.agent.output"
@@ -16,10 +17,9 @@ import { INITIAL, LineNode, MemoryBadge, MemoryFooter, SummaryModel, ViewNote, b
 import { isFoldedNote } from '@/lib/endless'
 import type { Backlog as EndlessBacklog } from "@/rpc/bindings/method.agent.output"
 import type * as Combobox from './ModelCombobox'
-import type { Effort } from './ModelPicker'
 
 // 177 R1-10: what the summary picker was given (its closed popover renders no list to read the order from).
-const pickers = vi.hoisted(() => [] as { 'aria-label'?: string; effort?: Effort }[])
+const pickers = vi.hoisted(() => [] as Parameters<typeof Combobox.ModelCombobox>[0][])
 vi.mock('./ModelCombobox', async (original) => {
   const m = await original<typeof Combobox>()
   return { ...m, ModelCombobox: (p: Parameters<typeof m.ModelCombobox>[0]) => (pickers.push(p), createElement(m.ModelCombobox, p)) }
@@ -338,4 +338,20 @@ test('after a fold the footer counts the excerpt units from the view itself; non
   expect(html).toContain('2 lines shown as excerpts')
   expect(footerWith({ ...folded, settling: true, backlog: waiting })).not.toContain('shown as excerpts')
   expect(footerWith(memory)).toBe('')
+})
+
+test('the draft summary picker keeps model and effort pending, and a new model drops the old effort', () => {
+  const qc = new QueryClient()
+  qc.setQueryData(queryKeys.models, [{ id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5', provider: 'anthropic', efforts: ['low', 'high'] }])
+  useDrafts.setState({ settings: { compactorModel: memory.model, compactorEffort: 'high' } })
+  pickers.length = 0
+  renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(SummaryModel, { session: '', m: { ...memory, model_override: memory.model, effort_override: 'high' } }) }))
+  const picker = pickers.find((p) => p['aria-label'] === 'Summary model')!
+  picker.effort!.onSelect('low')
+  expect(useDrafts.getState().settings.compactorEffort).toBe('low')
+  picker.onChange('other/model')
+  expect(useDrafts.getState().settings).toEqual({ compactorModel: 'other/model', compactorEffort: null })
+  picker.onChange(null)
+  expect(useDrafts.getState().settings.compactorModel).toBeNull()
+  useDrafts.setState({ settings: {} })
 })

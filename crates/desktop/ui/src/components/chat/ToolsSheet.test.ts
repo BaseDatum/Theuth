@@ -6,6 +6,7 @@ import { act, createElement as h, Fragment } from 'react'
 import { createRoot } from 'react-dom/client'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
+import { useDrafts } from '@/lib/drafts'
 import type { McpServer } from "@/rpc/bindings/method.mcp_2dserver.output"
 import { SessionMenu } from './SessionMenu'
 import { ToolsSheet } from './ToolsSheet'
@@ -23,6 +24,8 @@ const fs = { name: 'fs', connected: true, gate: null, tools: [], repo: null, aut
 // Every other reader answers an empty list; the menu and the sheet only need these.
 const answers: Record<string, (...a: never[]) => unknown> = {
   mesh_status: () => ({ self_id: 'me', self_name: 'me', peers: [] }),
+  get_approvals: () => ({ global: true, session: true }),
+  get_communication: () => ({ global: true, effective: true, scope: 'owner', alias: null }),
   mcp_status: () => ({ connecting: [], connected: [], failed: [], homes_problem: null }),
   list_mcp: (session: string | null) => {
     listed.push(session)
@@ -64,4 +67,46 @@ test('⋯ › Tools… opens the Tools sheet of that chat only, listing the serv
   expect(listed).toEqual(['s1'])
   await act(async () => root.unmount())
   host.remove()
+})
+
+test('the draft menu edits pending messaging and approvals and opens its own Tools sheet without creating a chat', async () => {
+  useDrafts.setState({ settings: {}, opening: null })
+  useToolsSheet.getState().hide()
+  listed.length = 0
+  const setters = { set_approvals: vi.fn(), set_communication: vi.fn(), create_session: vi.fn(), new_session: vi.fn() }
+  Object.assign(answers, setters)
+  const host = document.body.appendChild(document.createElement('div'))
+  const root = createRoot(host)
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  await act(async () => root.render(h(QueryClientProvider, { client: qc }, h(Fragment, null, h(SessionMenu, { session: '' }), h(ToolsSheet, { session: '' })))))
+  const trigger = host.querySelector<HTMLButtonElement>('[aria-label="Session menu"]')!
+  const show = async () => act(async () => trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+  await show()
+  const messaging = await vi.waitFor(() => {
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')].find((m) => m.textContent === 'Agent messaging')!
+    expect(item.getAttribute('aria-disabled')).not.toBe('true')
+    return item
+  })
+  await act(async () => messaging.click())
+  expect(useDrafts.getState().settings.communication).toBe(false)
+  await show()
+  const approvals = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((m) => m.textContent?.includes('Approvals:'))!
+  await act(async () => approvals.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })))
+  const off = await vi.waitFor(() => {
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')].find((m) => m.textContent === 'Off')
+    expect(item).toBeDefined()
+    return item!
+  })
+  await act(async () => off.click())
+  expect(useDrafts.getState().settings.approvals).toBe(false)
+  await show()
+  expect(document.querySelector('[role="menuitemcheckbox"]')?.getAttribute('aria-checked')).toBe('false')
+  const tools = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((m) => m.textContent === 'Tools…')!
+  await act(async () => tools.click())
+  await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')?.textContent).toContain('fs'))
+  expect(listed).toEqual([null])
+  for (const setter of Object.values(setters)) expect(setter).not.toHaveBeenCalled()
+  await act(async () => root.unmount())
+  host.remove()
+  useDrafts.setState({ settings: {} })
 })

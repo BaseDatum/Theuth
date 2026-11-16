@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { routed } from '@/lib/owner'
+import { useDrafts } from '@/lib/drafts'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { CommunicationState } from "@/rpc/bindings/method.agent.output"
 import type { PeerScope } from "@/rpc/bindings/method.agent.output"
@@ -64,8 +65,8 @@ function Messaging({ session, peer }: { session: string; peer: string | null }) 
   const qc = useQueryClient()
   const navigate = useNavigate()
   const state = useQuery({ enabled: canQuery1,
-    queryKey: queryKeys.communication(session),
-    queryFn: () => api.get_communication(session),
+    queryKey: queryKeys.communication(session || null),
+    queryFn: () => api.get_communication(session || null),
   })
 
   /**
@@ -80,11 +81,18 @@ function Messaging({ session, peer }: { session: string; peer: string | null }) 
     qc.setQueryData(queryKeys.communication(session), next)
   }
   const setScope = useAction(
-    (v: { scope: PeerScope; alias: string | null }) => routed(session, () => api.set_peer_scope(session, v.scope, v.alias)),
+    async (v: { scope: PeerScope; alias: string | null }) => {
+      if (!session) {
+        useDrafts.getState().setSettings(v)
+        return undefined
+      }
+      return routed(session, () => api.set_peer_scope(session, v.scope, v.alias))
+    },
     { keys: [['communication'], ['peers']], onSuccess: install },
   )
 
-  const s = state.data
+  const pending = useDrafts((s) => s.settings)
+  const s = state.data && (!session ? { ...state.data, scope: pending.scope ?? state.data.scope, alias: pending.alias ?? null } : state.data)
   const openSession = (id: string) => void navigate({ to: '/c/$session', params: { session: id } })
 
   return (
@@ -101,10 +109,10 @@ function Messaging({ session, peer }: { session: string; peer: string | null }) 
       >
         {state.isError && <p className="py-2 text-sm text-destructive">{errorText(state.error)}</p>}
         {state.isPending && <Empty>Loading…</Empty>}
-        {s && <Effective state={s} onOpen={openSession} />}
+        {s && (session ? <Effective state={s} onOpen={openSession} /> : <p className="py-2 text-sm">Agent messaging: {pending.communication === undefined ? 'machine default' : pending.communication ? 'on' : 'off'}. Applied before the first message; the machine-wide switch still applies.</p>)}
       </Section>
       {s && <RootScope session={session} state={s} busy={setScope.isPending} onScope={setScope.mutate} onOpen={openSession} />}
-      <Peers session={session} focus={peer} />
+      {session && <Peers session={session} focus={peer} />}
     </>
   )
 }
@@ -158,7 +166,8 @@ function RootScope({
   onScope(v: { scope: PeerScope; alias: string | null }): void
   onOpen(id: string): void
 }) {
-  const view = scopeView(useSessions((st) => st.sessions[session]))
+  const slice = useSessions((st) => st.sessions[session])
+  const view = scopeView(session ? slice : { loaded: true, parent: null })
   const parent = view.kind === 'inherited' ? view.parent : null
   return (
     <Section title="Root scope">
@@ -168,7 +177,7 @@ function RootScope({
             label="Who may discover this tree"
             description="Owner roots can message one another; isolated trees stay private even to a raw id. Owner-only, never a model tool."
           >
-            <Select value={s.scope} disabled={busy} onValueChange={(v) => onScope({ scope: v as PeerScope, alias: null })}>
+            <Select value={s.scope} disabled={busy} onValueChange={(v) => onScope({ scope: v as PeerScope, alias: s.alias })}>
               <SelectTrigger className={`max-w-72 ${TOUCH}`} aria-label="Root scope">
                 <SelectValue />
               </SelectTrigger>
