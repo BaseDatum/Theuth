@@ -164,6 +164,63 @@ fn target(seen: Seen) -> jsonrpsee::Methods {
         Ok(())
     })
     .unwrap();
+    m.register_method(
+        "job_history",
+        |p, seen, _| -> RpcResult<Vec<tools::JobView>> {
+            let (session, before, limit): (
+                SessionId,
+                Option<agent::rpc_jobs::JobCursor>,
+                Option<u32>,
+            ) = p.parse()?;
+            assert_eq!(
+                before.unwrap(),
+                agent::rpc_jobs::JobCursor {
+                    started_ms: 10_000,
+                    id: tools::JobId("j9".into()),
+                }
+            );
+            assert_eq!(limit, Some(2));
+            seen.lock()
+                .push(("job_history".into(), session.to_string()));
+            Ok(vec![tools::JobView {
+                session,
+                id: tools::JobId("j8".into()),
+                command: "echo owner".into(),
+                state: "exited 0".into(),
+                secs: 2,
+                log: "/owner/jobs/j8.log".into(),
+                tail: "owner output".into(),
+                name: None,
+                pty: false,
+                exit_code: Some(0),
+                started_ms: Some(10_000),
+                ended_ms: Some(12_000),
+                kind: Some("shell".into()),
+                call_id: Some("owner-call".into()),
+                log_bytes: Some(12),
+            }])
+        },
+    )
+    .unwrap();
+    m.register_method(
+        "job_log",
+        |p, seen, _| -> RpcResult<agent::rpc_jobs::JobLogPage> {
+            let (session, id, offset, limit): (SessionId, tools::JobId, Option<u64>, Option<u32>) =
+                p.parse()?;
+            assert_eq!(id.0, "j8");
+            assert_eq!(offset, Some(17));
+            assert_eq!(limit, Some(64));
+            seen.lock().push(("job_log".into(), session.to_string()));
+            Ok(agent::rpc_jobs::JobLogPage {
+                text: "owner output".into(),
+                start: 17,
+                end: 29,
+                total_bytes: 64,
+                eof: false,
+            })
+        },
+    )
+    .unwrap();
     m.into()
 }
 
@@ -298,6 +355,42 @@ async fn a_chat_created_elsewhere_is_forwarded_by_id_while_in_use() {
     api.call::<_, ()>("cancel_reminder", (open.session, "r1"))
         .await
         .unwrap();
+    let jobs: Vec<tools::JobView> = api
+        .call(
+            "job_history",
+            (
+                open.session,
+                Some(agent::rpc_jobs::JobCursor {
+                    started_ms: 10_000,
+                    id: tools::JobId("j9".into()),
+                }),
+                Some(2_u32),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(jobs[0].session, open.session);
+    assert_eq!(jobs[0].id.0, "j8");
+    assert_eq!(jobs[0].command, "echo owner");
+    assert_eq!(jobs[0].exit_code, Some(0));
+    assert_eq!(jobs[0].started_ms, Some(10_000));
+    let log: agent::rpc_jobs::JobLogPage = api
+        .call(
+            "job_log",
+            (
+                open.session,
+                tools::JobId("j8".into()),
+                Some(17_u64),
+                Some(64_u32),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(log.text, "owner output");
+    assert_eq!(
+        (log.start, log.end, log.total_bytes, log.eof),
+        (17, 29, 64, false)
+    );
 
     let methods: Vec<(String, String)> = seen.lock().clone();
     assert_eq!(
@@ -310,7 +403,9 @@ async fn a_chat_created_elsewhere_is_forwarded_by_id_while_in_use() {
             "get_todos",
             "list_mcp",
             "list_reminders",
-            "cancel_reminder"
+            "cancel_reminder",
+            "job_history",
+            "job_log"
         ]
         .map(|m| (m.to_owned(), id.clone()))
         .to_vec()

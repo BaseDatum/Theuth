@@ -69,6 +69,7 @@ export const queryKeys = {
   advisorStatus: (id: string) => ['advisor-status', id] as const,
   terminals: (id: string) => ['terminals', id] as const,
   jobs: (id: string) => ['jobs', id] as const,
+  jobHistory: (id: string, mode: 'page' | 'infinite') => ['jobs', id, 'history', mode] as const,
   prompt: (id: string) => ['prompt', id] as const,
   knowledge: ['knowledge'] as const,
   knowledgeList: ['knowledge', 'list'] as const,

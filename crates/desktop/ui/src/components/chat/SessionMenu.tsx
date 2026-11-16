@@ -58,7 +58,7 @@ import { useModels } from './ModelMenu'
 import { useMessagingSheet } from './messaging-sheet'
 import { useToolsSheet } from './tools-sheet'
 import { type Ctx, openSurface, run, type Surface, surfaceOf } from './slash'
-import { PopoutTerminalButton } from './TerminalViewer'
+import { JobsSheet } from './JobsSheet'
 
 /** One row of the ⋯ menu's settings block (183 §12.2, mock panel 3), in order; `move` is 181's Move to ▸. */
 export type SettingsRow =
@@ -233,81 +233,6 @@ function PromptSheet({
   )
 }
 
-function JobsSheet({
-  session,
-  open,
-  onOpenChange,
-}: {
-  session: string
-  open: boolean
-  onOpenChange(o: boolean): void
-}) {
-  const canQuery2 = useQuerySupport(["list_jobs"])
-  const api = useApi()
-  const key = queryKeys.jobs(session)
-  const { data: jobs = [], refetch } = useQuery({
-    queryKey: key,
-    queryFn: () => api.list_jobs(session),
-    enabled: canQuery2 && (open),
-    refetchInterval: open ? 2000 : false,
-  })
-  const kill = async (id: string) => {
-    try {
-      await api.cancel_job(session, id)
-      toast(`killed ${id}`)
-      void refetch()
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
-    }
-  }
-  return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-full sm:w-[640px] sm:max-w-[640px]">
-        <SheetHeader>
-          <SheetTitle>Background jobs</SheetTitle>
-          <SheetDescription>
-            {jobs.length === 0 ? 'No jobs in this session.' : `${jobs.length} in this session`}
-          </SheetDescription>
-        </SheetHeader>
-        <div className="mx-4 mb-4 min-h-0 flex-1 overflow-auto text-sm">
-          <table className="w-full">
-            <thead className="text-left text-xs text-fg-tertiary">
-              <tr>
-                <th className="py-1 font-medium">id</th>
-                <th className="py-1 font-medium">command</th>
-                <th className="py-1 font-medium">state</th>
-                <th className="py-1 font-medium">secs</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {jobs.map((j) => (
-                <tr key={j.id} className="border-t border-border-subtle align-top">
-                  <td className="py-2 font-mono text-xs">{j.id}</td>
-                  <td className="max-w-64 truncate py-2 font-mono text-xs" title={j.command}>
-                    {j.name ? `${j.name} · ` : ''}
-                    {j.command}
-                  </td>
-                  {/* 109 §8.4: a job that died with the engine; its log is still readable. */}
-                  <td className={j.state === 'lost' ? 'py-2 text-warning' : 'py-2'}>{j.state === 'lost' ? 'lost (engine restarted)' : j.state}</td>
-                  <td className="py-2 tabular-nums">{Number(j.secs)}</td>
-                  <td className="py-1 text-right whitespace-nowrap">
-                    {j.pty && <PopoutTerminalButton session={j.session} job={j.id} className="size-7" />}
-                    {j.state === 'running' && (
-                      <Button size="xs" variant="outline" onClick={() => void kill(j.id)}>
-                        Kill
-                      </Button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </SheetContent>
-    </Sheet>
-  )
-}
 
 /** The `…` menu of the open session; every action is the slash command the TUI would run. */
 export function SessionMenu({ session }: { session: string }) {

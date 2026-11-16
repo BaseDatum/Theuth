@@ -374,6 +374,30 @@ pub struct JobView {
     pub name: Option<String>,
     /// Runs on a pseudo-terminal (22).
     pub pty: bool,
+    /// Process exit status, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub exit_code: Option<i32>,
+    /// Spawn time, unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub started_ms: Option<i64>,
+    /// Settlement time, unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub ended_ms: Option<i64>,
+    /// `shell`, `pty`, or the promoted tool's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub kind: Option<String>,
+    /// The originating tool call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub call_id: Option<String>,
+    /// Current size of the retained log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub log_bytes: Option<u64>,
 }
 
 /// Receives a finished job's shell (14 §0.5: last finished wins).
@@ -439,10 +463,21 @@ pub struct LocalJobIds(pub SessionId);
 
 impl Message<LocalJobIds> for Jobs {
     type Reply = Vec<JobId>;
-    async fn handle(&mut self, query: LocalJobIds, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.sessions.get(&query.0).map_or_else(Vec::new, |session| {
-            session.jobs.iter().filter(|job| job.exit.is_none()).map(|job| job.id.clone()).collect()
-        })
+    async fn handle(
+        &mut self,
+        query: LocalJobIds,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.sessions
+            .get(&query.0)
+            .map_or_else(Vec::new, |session| {
+                session
+                    .jobs
+                    .iter()
+                    .filter(|job| job.exit.is_none())
+                    .map(|job| job.id.clone())
+                    .collect()
+            })
     }
 }
 
@@ -910,6 +945,8 @@ pub(crate) struct Job {
     pub(crate) exit: Option<JobExit>,
     /// Total seconds once finished.
     pub(crate) secs: u64,
+    /// Settlement time, unix ms.
+    pub(crate) ended_ms: Option<i64>,
     pub(crate) log_path: PathBuf,
     pub(crate) log: Arc<Mutex<Log>>,
     pub(crate) pgids: Arc<Mutex<Vec<ProcessTree>>>,
@@ -989,6 +1026,19 @@ impl Job {
             },
             name: self.name.clone(),
             pty: self.on_pty,
+            exit_code: match self.exit {
+                Some(JobExit::Exited(code)) => Some(i32::from(code)),
+                _ => None,
+            },
+            started_ms: Some(self.started_ms),
+            ended_ms: self.ended_ms,
+            kind: Some(if self.kind == JobKind::Promoted {
+                self.command.clone()
+            } else {
+                self.kind.as_str().to_owned()
+            }),
+            call_id: Some(self.call_id.clone()),
+            log_bytes: std::fs::metadata(&self.log_path).ok().map(|m| m.len()),
         }
     }
 }
@@ -1374,6 +1424,7 @@ impl Message<Launch<Start>> for Jobs {
                     call_id,
                     started,
                     started_ms,
+                    ended_ms: None,
                     exit: None,
                     secs: 0,
                     log_path: log_path.clone(),
@@ -1484,6 +1535,7 @@ impl Message<Launch<Adopt>> for Jobs {
                 call_id: m.call_id,
                 started,
                 started_ms,
+                ended_ms: None,
                 exit: None,
                 secs: 0,
                 // No process, no log: the body's output is the result.
@@ -1776,6 +1828,7 @@ impl Message<Finished> for Jobs {
         {
             job.exit = Some(exit);
             job.secs = secs;
+            job.ended_ms = Some(chrono::Utc::now().timestamp_millis());
         }
         // The actor's clone goes; the task's follows. Whichever is last
         // settles, with the result when one is owed (47 §4.1): the model's
@@ -1848,6 +1901,7 @@ impl Jobs {
                         self.live.remove(&job.op);
                         job.exit = Some(JobExit::Lost);
                         job.secs = job.started.elapsed().as_secs();
+                        job.ended_ms = Some(chrono::Utc::now().timestamp_millis());
                     } else if let Some(a) = self.live.get(&job.op) {
                         // Aborting the task skips its settlement, and an escapee may
                         // outlive the kill: say so before the guard can drop as `Finished`.
@@ -1920,6 +1974,7 @@ impl Message<Reaped> for Jobs {
                     call_id: row.call_id,
                     started: Instant::now(),
                     started_ms: row.started_ms,
+                    ended_ms: row.settled_ms,
                     exit: Some(JobExit::Lost),
                     secs,
                     log_path: row.log.unwrap_or_default(),
