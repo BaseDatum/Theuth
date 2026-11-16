@@ -207,7 +207,7 @@ function Doc({
       live={live}
       fallback={
         unavailable !== null ? (
-          <ReadOnly concept={concept} reason={unavailable} onMissing={(target, title) => setMissing({ id: target, title })} />
+          <ReadOnlyDocument concept={concept} reason={unavailable} onMissing={(target, title) => setMissing({ id: target, title })} />
         ) : undefined
       }
       onAsk={ask}
@@ -320,7 +320,7 @@ const RESERVED: Record<string, true> = { index: true, log: true }
  * semantics: external → opener, internal → route, missing → create), on the same paper as the editor, with the
  * reason live editing is unavailable. "Open raw" in the bar still edits the file.
  */
-function ReadOnly({ concept, reason, onMissing }: { concept: Concept; reason: string; onMissing: (id: string, title: string) => void }) {
+export function ReadOnlyDocument({ concept, reason, onMissing, onSelect }: { concept: Concept; reason?: string; onMissing?: (id: string, title: string) => void; onSelect?: (id: string) => void }) {
   const navigate = useNavigate()
   const meta = concept.meta
   const id = meta.id
@@ -335,6 +335,9 @@ function ReadOnly({ concept, reason, onMissing }: { concept: Concept; reason: st
         const internal = kind === 'absolute' || kind === 'relative'
         const inert = internal && (target === null || RESERVED[target] === true)
         const missing = target !== null && exists[target] === false
+        if (internal && onSelect) {
+          return <button type="button" className="text-primary underline disabled:cursor-default disabled:text-fg-tertiary disabled:no-underline" disabled={inert || missing} onClick={() => { if (target) onSelect(target) }}>{children}</button>
+        }
         return (
           <a
             href={href}
@@ -347,7 +350,7 @@ function ReadOnly({ concept, reason, onMissing }: { concept: Concept; reason: st
         )
       },
     }),
-    [id, exists],
+    [id, exists, onSelect],
   )
   const onClick = (e: MouseEvent<HTMLDivElement>) => {
     const a = e.target instanceof Element ? e.target.closest('a') : null
@@ -362,7 +365,7 @@ function ReadOnly({ concept, reason, onMissing }: { concept: Concept; reason: st
     }
     const target = resolveLink(id, href)
     if (target === null || RESERVED[target]) return
-    if (exists[target] === false) onMissing(target, a.textContent?.trim() || target)
+    if (exists[target] === false) onMissing?.(target, a.textContent?.trim() || target)
     else navigate({ to: '/knowledge/$', params: { _splat: target } })
   }
   return (
@@ -381,7 +384,7 @@ function ReadOnly({ concept, reason, onMissing }: { concept: Concept; reason: st
           </div>
           {meta.description && <p className="mt-1 text-fg-secondary">{meta.description}</p>}
           {facts.length > 0 && <p className="mt-1 text-sm text-fg-tertiary">{facts.join(' · ')}</p>}
-          <p className="mt-2 text-xs text-fg-tertiary">live editing unavailable: {reason}</p>
+          {reason && <p className="mt-2 text-xs text-fg-tertiary">live editing unavailable: {reason}</p>}
         </header>
         <div onClickCapture={onClick}>
           <Streamdown mode="static" plugins={plugins} components={components} linkSafety={{ enabled: false }}>

@@ -5,6 +5,7 @@ import { useSandboxes } from '@/components/settings/sandbox-queries'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 import { useHarnesses, useMcpServers, useModels } from './queries'
@@ -28,7 +29,7 @@ export function Field({ label, id, hint, error, children }: { label: string; id:
 }
 
 /** Paperclip's "Harness / Runtime" section for a theuth file: model, effort, tools ceiling. Harness is per task, not per agent. */
-export function RuntimeFields({ d, set }: { d: Draft; set: Setter }) {
+export function RuntimeFields({ d, set, memoryError }: { d: Draft; set: Setter; memoryError?: string }) {
   const models = useModels()
   const harnesses = useHarnesses()
   const efforts = models.data?.find((m) => m.id === d.model)?.efforts ?? EFFORTS
@@ -100,6 +101,16 @@ export function RuntimeFields({ d, set }: { d: Draft; set: Setter }) {
           </SelectContent>
         </Select>
       </Field>
+      <div className="sm:col-span-2">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <Label htmlFor="rt-isolated-memory" className="text-[13px]">Isolated memory</Label>
+            <p id="rt-isolated-help" className="mt-1 text-xs text-fg-secondary">Keeps its own memory. What it learns never reaches your main memory, and it doesn't see yours.</p>
+          </div>
+          <Switch id="rt-isolated-memory" checked={d.isolated_memory === true} onCheckedChange={(v) => set('isolated_memory', v)} aria-describedby={memoryError ? 'rt-isolated-help rt-isolated-error' : 'rt-isolated-help'} aria-invalid={!!memoryError} />
+        </div>
+        {memoryError && <p id="rt-isolated-error" role="alert" className="mt-2 text-xs text-danger">{memoryError}</p>}
+      </div>
       <div className="flex flex-col gap-1.5">
         <span className="text-[13px] font-medium">Harnesses</span>
         <p className="text-xs text-fg-tertiary">

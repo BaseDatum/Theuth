@@ -9,6 +9,15 @@ header (`agent_pause`). What it is doing right now (working / idle / blocked / u
 beneath, not a peer state. **Proposed** appears only in the Hiring inbox. The wizard ends in **Hire** (active) and
 **Hire paused**.
 
+## 196: isolated memory (desktop phase 1)
+
+- Hire › Runtime and the agent's Runtime & Access expose **Isolated memory**, saved by `agent_put`; Review includes the choice. An `isolated_memory:` refusal appears verbatim beneath the switch and reverts it.
+- Isolated agents have a neutral **Isolated memory** badge in list rows and the header, plus a **Memory** tab. Other agents never mount that tab, including a direct Memory URL.
+- Memory lists, searches and previews `knowledge_*` RPCs with `bundle: "agent:<name>"`. Its cache keys include the agent, separate from main memory. The existing knowledge renderer is read-only; internal links stay in this bundle and missing links cannot create notes. No history, editing, sharing or main-memory navigation is exposed here.
+- The footer says the notes are local to this machine. Empty and RPC-error states are inline. At phone widths the list sits above the preview.
+- Until engine bindings land, all temporary field types and trailing-parameter casts live in `src/lib/agent-memory.ts`, marked `// 196-adapter`; regenerate bindings and remove these bridges together.
+- Fixture: `/src/dev/agent-memory-fixture.html?page=agents|memory|runtime|hire&state=notes|empty|error|refuse&theme=light|dark`. `AgentMemory.test.ts` covers toggles, refusals, badges, bundle reads and cache separation. Main Knowledge behavior is unchanged.
+
 ## Screens
 
 | Route | Component | Paperclip counterpart |

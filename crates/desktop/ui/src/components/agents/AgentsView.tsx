@@ -17,6 +17,7 @@ import { OrgChart } from './OrgChart'
 import { ActiveSwitch, ActivityChip, AgentAvatar, BudgetBar, PausedChip, RemoteChip } from './identity'
 import { proposed } from './hiring'
 import { AgentSessionRows } from './AgentSessionRows'
+import { MemoryBadge } from './MemoryBadge'
 import { type Node, type NodeInfo, tree } from './tree'
 
 const VIEW_KEY = 'theuth.agents-view'
@@ -144,12 +145,15 @@ function Row({ node, depth, info }: { node: Node; depth: number; info: NodeInfo 
         <td>
           <span className="flex items-center gap-2" style={{ paddingLeft: depth * 18 }}>
             <AgentAvatar name={name} title={title} size={28} />
-            <span className="min-w-0">
-              <span className="block truncate font-medium">
-                {title}
-                {on && <span className="font-normal text-fg-tertiary"> — on {on}</span>}
+            <span className="flex min-w-0 flex-1 flex-col items-start gap-1 sm:flex-row sm:items-center sm:gap-2">
+              <span className="min-w-0">
+                <span className="block font-medium sm:truncate">
+                  {title}
+                  {on && <span className="font-normal text-fg-tertiary"> — on {on}</span>}
+                </span>
+                <span className="block break-words font-mono text-[11px] text-fg-tertiary sm:truncate">{info.where}</span>
               </span>
-              <span className="block truncate font-mono text-[11px] text-fg-tertiary">{info.where}</span>
+              {a && <MemoryBadge agent={a} />}
             </span>
           </span>
         </td>
