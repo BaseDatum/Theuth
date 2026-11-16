@@ -16,6 +16,7 @@ import { ago } from '@/lib/costs/format'
 import { fmtBytes } from '@/lib/files'
 import { ENDLESS_DEFAULTS, EARLIER_HISTORY, isFoldedNote, tokenEstimate } from '@/lib/endless'
 import { routed } from '@/lib/owner'
+import { useDrafts } from '@/lib/drafts'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { Api } from '@/rpc/bindings/client'
@@ -28,6 +29,7 @@ import type { ViewLine } from "@/rpc/bindings/method.agent.output"
 import { MenuRow } from './HeaderMenu'
 import { ModelCombobox } from './ModelCombobox'
 import { settings } from './slash'
+import { useModels } from './ModelMenu'
 
 /** `id+n`, the line's address in the view (137 §5.1); `prefix` keeps a recall hit apart from the same line in the view. */
 export const lineKey = (l: ViewLine, prefix = ''): string => `${prefix}${l.id}+${l.n}`
@@ -192,15 +194,14 @@ export const modelMutation = (api: Api, qc: QueryClient, session: string) => mem
 export const effortMutation = (api: Api, qc: QueryClient, session: string) => memoryMutation(qc, session, (effort: string | null) => api.set_session_compactor_effort(session, effort))
 
 /** 137G: this chat's summary model on the regular picker (124 §5); "Use default" clears the chat's own pick. 194: the chips belong to the chat's own pick — shown only beside it, at its own stored effort (the Default chip clears it). */
-export function SummaryModel({ session, m }: { session: string; m: SessionMemory }) {
-  const canQuery2 = useQuerySupport(["list_models"])
+export function SummaryModel({ session, m }: { session: string; m: Pick<SessionMemory, 'model' | 'model_override' | 'model_source' | 'effort_override'> }) {
   const api = useApi()
   const qc = useQueryClient()
-  const models = useQuery({ enabled: canQuery2, queryKey: queryKeys.models, queryFn: () => api.list_models() })
+  const models = useModels(session || null)
   const setModel = useMutation(modelMutation(api, qc, session))
   const setEffort = useMutation(effortMutation(api, qc, session))
   const hint = m.model_source ? SOURCE_HINT[m.model_source] : undefined
-  const current = m.model_override ? models.data?.find((x) => x.id === m.model_override) : undefined
+  const current = m.model_override ? models.find((x) => x.id === m.model_override) : undefined
   return (
     <span className="flex min-w-0 items-center gap-1.5">
       <ModelCombobox
@@ -208,15 +209,64 @@ export function SummaryModel({ session, m }: { session: string; m: SessionMemory
         aria-label="Summary model"
         size="sm"
         className="h-6 max-w-56 gap-1 px-2 text-xs text-fg-secondary"
-        models={models.data ?? []}
+        models={models}
         value={m.model}
         none={{ label: 'Use default' }}
         disabled={setModel.isPending || setEffort.isPending}
-        onChange={(id) => setModel.mutate(id)}
-        effort={current && current.efforts.length > 0 ? { levels: current.efforts, current: m.effort_override ?? null, onSelect: (level) => setEffort.mutate(level) } : undefined}
+        onChange={(id) => session ? setModel.mutate(id) : useDrafts.getState().setSettings({ compactorModel: id, compactorEffort: null })}
+        effort={current && current.efforts.length > 0 ? { levels: current.efforts, current: m.effort_override ?? null, onSelect: (level) => session ? setEffort.mutate(level) : useDrafts.getState().setSettings({ compactorEffort: level }) } : undefined}
       />
       {hint && <span className="shrink-0 text-fg-tertiary">{hint}</span>}
     </span>
+  )
+}
+
+function ViewSize({ bytes, busy, onChange }: { bytes: number; busy?: boolean; onChange(bytes: number): void }) {
+  const kb = bytes / 1000
+  const sizes = VIEW_SIZES_KB.includes(kb as (typeof VIEW_SIZES_KB)[number]) ? VIEW_SIZES_KB : [...VIEW_SIZES_KB, kb].sort((a, b) => a - b)
+  return (
+    <Select value={String(kb)} disabled={busy} onValueChange={(v) => onChange(Number(v) * 1000)}>
+      <SelectTrigger size="sm" className="h-6 gap-1 px-2 text-xs text-fg-secondary" aria-label="View size" title={tokenEstimate(bytes)}>
+        <SelectValue>view {kb} KB</SelectValue>
+      </SelectTrigger>
+      <SelectContent align="start">
+        {sizes.map((s) => (
+          <SelectItem key={s} value={String(s)} className="text-xs">
+            view {s} KB <span className="text-fg-tertiary">{tokenEstimate(s * 1000)}</span>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
+/** The same memory choices, held on the draft until its first action creates the chat. */
+export function DraftMemory({ open, onOpenChange }: { open: boolean; onOpenChange(o: boolean): void }) {
+  const api = useApi()
+  const supported = useQuerySupport(['endless_settings_get'])
+  const defaults = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get(), enabled: supported && open })
+  const pending = useDrafts((s) => s.settings)
+  const set = useDrafts((s) => s.setSettings)
+  const mode = pending.create?.memory ?? (defaults.data?.default_chat ? 'endless' : 'epochs')
+  const bytes = pending.viewBytes ?? defaults.data?.view_bytes
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full sm:w-[560px] sm:max-w-[560px]">
+        <SheetHeader>
+          <SheetTitle>Memory</SheetTitle>
+          <SheetDescription>These choices apply before the first message.</SheetDescription>
+        </SheetHeader>
+        <div className="flex flex-col items-start gap-4 px-4">
+          <Select value={mode} onValueChange={(memory) => useDrafts.getState().setCreate({ memory: memory as 'endless' | 'epochs' })}>
+            <SelectTrigger aria-label="Memory mode"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="epochs">Epochs</SelectItem><SelectItem value="endless">Endless memory</SelectItem></SelectContent>
+          </Select>
+          <SummaryModel session="" m={{ model: pending.compactorModel ?? defaults.data?.model ?? '', model_override: pending.compactorModel ?? null, model_source: pending.compactorModel ? 'chat' : 'settings', effort_override: pending.compactorEffort ?? null }} />
+          {bytes !== undefined && <ViewSize bytes={bytes} onChange={(viewBytes) => set({ viewBytes })} />}
+          {defaults.error && <p className="text-sm text-destructive">{defaults.error.message}</p>}
+        </div>
+      </SheetContent>
+    </Sheet>
   )
 }
 
@@ -228,26 +278,13 @@ function Stats({ session, m }: { session: string; m: SessionMemory }) {
   const g = m.stats.guard_trips
   const trips = guardTotal(g)
   const usd = m.stats.usd_estimate
-  const kb = m.view_bytes / 1000
-  const sizes = VIEW_SIZES_KB.includes(kb as (typeof VIEW_SIZES_KB)[number]) ? VIEW_SIZES_KB : [...VIEW_SIZES_KB, kb].sort((a, b) => a - b)
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-secondary">
       <Badge variant="outline" className="text-fg-secondary">
         {m.mode}
       </Badge>
       <SummaryModel session={session} m={m} />
-      <Select value={String(kb)} disabled={setViewBytes.isPending} onValueChange={(v) => setViewBytes.mutate(Number(v) * 1000)}>
-        <SelectTrigger size="sm" className="h-6 gap-1 px-2 text-xs text-fg-secondary" aria-label="View size" title={tokenEstimate(m.view_bytes)}>
-          <SelectValue>view {kb} KB</SelectValue>
-        </SelectTrigger>
-        <SelectContent align="start">
-          {sizes.map((s) => (
-            <SelectItem key={s} value={String(s)} className="text-xs">
-              view {s} KB <span className="text-fg-tertiary">{tokenEstimate(s * 1000)}</span>
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <ViewSize bytes={m.view_bytes} busy={setViewBytes.isPending} onChange={(bytes) => setViewBytes.mutate(bytes)} />
       <span className="tabular-nums">{m.stats.calls.toLocaleString('en-US')} calls</span>
       <Tooltip>
         <TooltipTrigger asChild>

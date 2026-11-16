@@ -12543,6 +12543,15 @@ impl Message<CreateSession> for Agents {
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let project = project::normalize_project(m.options.project.as_deref())?;
+        if let Some((model, effort)) = &m.options.advisor {
+            if m.options.retention != Retention::Durable || m.options.harness.is_some() {
+                return Err("an advisor needs a durable native chat".into());
+            }
+            let resolved = self.catalog.resolve(model, &*self.configured)?;
+            if let (Some(model), Some(effort)) = (resolved.model, effort) {
+                model.validate_effort(effort)?;
+            }
+        }
         // 67 §8: `agent: "<harness>@<engine>"` landed here — the root is a
         // child of our own `acp/agents.yaml` entry, `model` goes to it through
         // its model option (unresolved: it is the harness's id, not ours) and
@@ -12638,6 +12647,11 @@ impl Message<CreateSession> for Agents {
                     .await
                     .map_err(|e| format!("endless: {e:#}"))?;
                 tracing::info!(session = %id, "endless: created in endless mode");
+            }
+            if let Some((model, effort)) = m.options.advisor {
+                self.advisor_on(id, model, effort)
+                    .await
+                    .map_err(|e| format!("advisor: {e}"))?;
             }
             return Ok(SessionOpen {
                 session: id,

@@ -232,7 +232,7 @@ export function isCommand(line: string, skills: readonly string[] | null): boole
 }
 
 /** Header surfaces a command can open; the header listens for `theuth:open`. */
-export type Surface = 'model' | 'prompt' | 'jobs' | 'todos'
+export type Surface = 'model' | 'prompt' | 'jobs' | 'todos' | 'memory'
 
 export function openSurface(surface: Surface): void {
   window.dispatchEvent(new CustomEvent('theuth:open', { detail: surface }))
@@ -241,7 +241,7 @@ export function openSurface(surface: Surface): void {
 /** `theuth:open` detail, when it names a surface. */
 export function surfaceOf(e: Event): Surface | null {
   const d: unknown = e instanceof CustomEvent ? e.detail : null
-  return d === 'model' || d === 'prompt' || d === 'jobs' || d === 'todos' ? d : null
+  return d === 'model' || d === 'prompt' || d === 'jobs' || d === 'todos' || d === 'memory' ? d : null
 }
 
 type Navigate = UseNavigateResult<string>
@@ -385,7 +385,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
     // badge and the Memory panel follow the refreshed `sessions` row (and a notebook's `notebook_chats` row) and `session_memory`.
     case '/endless': {
       if (sub !== 'on' && sub !== 'off') throw new Error(`/endless: expected on|off, got ${JSON.stringify(sub)}`)
-      if (!session) throw new Error('no session yet: the ∞ switch sets a new chat\u2019s memory')
+      if (!session) return useDrafts.getState().setCreate({ memory: sub === 'on' ? 'endless' : 'epochs' })
       const m = await api.set_session_memory(session, sub === 'on' ? 'endless' : 'epochs')
       active().qc.setQueryData(queryKeys.sessionMemory(session), m)
       void active().qc.invalidateQueries({ queryKey: queryKeys.sessions })
@@ -437,8 +437,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
         throw new Error(`/approvals: expected on|off, got ${JSON.stringify(sub)}`)
       if (rest && rest !== 'always')
         throw new Error(`/approvals: expected \`always\`, got ${JSON.stringify(rest)}`)
-      if (!rest && !session)
-        throw new Error('no session yet: send a message first, or use `/approvals off always`')
+      if (!rest && !session) return useDrafts.getState().setSettings({ approvals: sub === 'on' })
       const approvals = await api.set_approvals(rest ? null : session, sub === 'on')
       const { info, setInfo } = useConnection.getState()
       if (info) setInfo({ ...info, approvals })
@@ -450,8 +449,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
         throw new Error(`/communication: expected on|off, got ${JSON.stringify(sub)}`)
       if (rest && rest !== 'always')
         throw new Error(`/communication: expected \`always\`, got ${JSON.stringify(rest)}`)
-      if (!rest && !session)
-        throw new Error('no session yet: send a message first, or use `/communication off always`')
+      if (!rest && !session) return useDrafts.getState().setSettings({ communication: sub === 'on' })
       const target = rest ? null : session
       const state = await api.set_communication(target, sub === 'on')
       active().qc.setQueryData(queryKeys.communication(target), state)
@@ -481,10 +479,10 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       )
       return
     }
-    // In a chat both open its Tools sheet (its own "Off here" switches); without one, Settings › Tools › MCP.
+    // Both an open chat and the draft have their own pending "Off here" switches.
     case '/mcp':
     case '/tools':
-      if (!arg) return session ? useToolsSheet.getState().show(session) : navigate({ to: '/settings/$tab', params: { tab: 'tools' } })
+      if (!arg) return useToolsSheet.getState().show(session ?? '')
       if (sub === 'sync') return synced(await api.sync_mcp())
       if (sub === 'add' && rest) {
         if (gitUrl(rest)) {
@@ -678,8 +676,9 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       }
       throw new Error('usage: /jobs [kill <id>]')
     case '/project': {
-      const id = need(session)
       if (!arg) throw new Error('usage: /project <label>|off')
+      if (!session) return useDrafts.getState().setCreate({ project: arg === 'off' ? null : arg })
+      const id = session
       await api.set_session_project(id, arg === 'off' ? null : arg)
       void active().qc.invalidateQueries({ queryKey: queryKeys.sessions })
       toast(arg === 'off' ? 'project cleared' : `project: ${arg}`)

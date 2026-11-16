@@ -28,6 +28,7 @@ use monty_types::{
     ResourceLimits, SandboxTimeZone, SleepMode,
     unstable::{self, MontyNode},
 };
+use parking_lot::Mutex;
 use regex::Regex;
 use runtime::{SessionId, TurnId};
 use schemars::JsonSchema;
@@ -89,7 +90,7 @@ const RUNTIME_BLOCK: &str = "## Runtime
 `python` runs a sandboxed Python 3.14 subset (Monty): no third-party packages, no
 generators, no class inheritance; stdlib: json re math datetime time random copy collections
 itertools functools dataclasses pathlib base64 hashlib decimal bisect csv tomllib os.path
-asyncio(gather, sleep). State persists, except
+fnmatch annotationlib asyncio(gather, sleep). State persists, except
 names starting with `_`, which do not carry across cells. Imports and variables persist
 across cells; a cell is type-checked before it runs and, if it fails, nothing ran and
 nothing is lost. `asyncio.gather` takes positional awaitables only - no `return_exceptions=`
@@ -1076,7 +1077,8 @@ pub struct Repl {
     cfg: ReplConfig,
     cx: RunCx,
     /// `None` between a crash and the next cell (re-checked-out lazily).
-    checkout: Option<Checkout>,
+    // Monty's callback is Send, not Sync; exclusive access needs no locking.
+    checkout: Option<Mutex<Checkout>>,
     mounts: Vec<MountSpec>,
     /// `<spill_dir>/<session>`: the `/spill` mount's host side; inner tool
     /// images are snapshotted here (52 §7.1).
@@ -1254,7 +1256,7 @@ impl Repl {
     /// A checkout whose worker was taken (memory kill, crash, timeout:
     /// `worker_id()` is `None` once poisoned) counts as absent (131 D4).
     async fn ensure_checkout(&mut self) -> Result<(), PoolError> {
-        match &self.checkout {
+        match self.checkout.as_mut().map(Mutex::get_mut) {
             Some(c) if c.worker_id().is_some() => return Ok(()),
             Some(_) => {
                 tracing::warn!(session = %self.cx.session, "runtime: dropping a dead checkout");
@@ -1288,7 +1290,7 @@ impl Repl {
                 c = self.checkout_warning().await?;
             }
         }
-        self.checkout = Some(c);
+        self.checkout = Some(Mutex::new(c));
         self.dead_cause = None;
         Ok(())
     }
@@ -1341,7 +1343,7 @@ impl Repl {
         self.cfg.type_check_stubs = Some(fresh);
         if let Some(c) = self.checkout.take() {
             tracing::info!(session = %self.cx.session, "runtime: tool set changed, refreshing stubs");
-            if let Err(e) = c.finish().await {
+            if let Err(e) = c.into_inner().finish().await {
                 tracing::debug!("runtime checkout finish: {e}");
             }
         }
@@ -1622,7 +1624,7 @@ impl Repl {
     /// rolls back to the last good dump's and the model hears what is gone.
     /// `Some(size)` of the dump on success.
     async fn dump(&mut self) -> Option<u64> {
-        let c = self.checkout.as_mut()?;
+        let c = self.checkout.as_mut()?.get_mut();
         let bytes = match c.dump().await {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -1684,7 +1686,7 @@ impl Repl {
             tracing::warn!("runtime lost line {}: {e}", self.lost_path.display());
         }
         if let Some(c) = self.checkout.take()
-            && let Err(e) = c.finish().await
+            && let Err(e) = c.into_inner().finish().await
         {
             tracing::debug!("runtime checkout finish: {e}");
         }
@@ -1713,7 +1715,7 @@ impl Repl {
             ..
         } = self;
         let (cx, spill): (&RunCx, &Path) = (cx, spill);
-        let checkout = checkout.as_mut().ok_or(PoolError::Finished)?;
+        let checkout = checkout.as_mut().ok_or(PoolError::Finished)?.get_mut();
         let mut pending = Pending {
             calls: HashMap::new(),
             cx,
@@ -2762,7 +2764,7 @@ mod tests {
             Some("n (int) · out1 (str, 30000) · r (list, 3)")
         );
         // worker killed mid-session → fresh worker, previous dump restored
-        let pid = repl.checkout.as_ref().unwrap().pid().unwrap();
+        let pid = repl.checkout.as_mut().unwrap().get_mut().pid().unwrap();
         std::process::Command::new("kill")
             .args(["-9", &pid.to_string()])
             .status()

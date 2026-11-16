@@ -3,7 +3,7 @@ import { privateRequirements, endlessRequirements } from './requirements'
 import { useQuery } from '@tanstack/react-query'
 import { type UseNavigateResult, useNavigate } from '@tanstack/react-router'
 import { Check, ChevronDown, ChevronRight, Folder } from 'lucide-react'
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { Composer, type DraftCreate } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
 import { LinkBanner } from '@/components/link/LinkFailure'
@@ -21,7 +21,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useDraftTarget, useDrafts } from '@/lib/drafts'
 import { draftProject, newDraft, usePanes } from '@/lib/panes'
 import { useCompactorLabel } from '@/lib/endless'
-import { usePrivate } from '@/lib/private'
+import { VIEW, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { EndlessConfig } from "@/rpc/bindings/method.agent.output"
@@ -70,7 +70,11 @@ export const vanishedTarget = (rows: readonly MachineRow[], loaded: boolean, eng
 /** 183 R1: pick the new chat's machine; a different machine has other models, so the draft's model / effort pick is dropped with it. */
 export function pickMachine(engine: string | null): void {
   const target = useDraftTarget.getState()
-  if (target.engine !== engine) useDrafts.getState().resetPick()
+  if (target.engine !== engine) {
+    const draft = useDrafts.getState()
+    draft.resetPick()
+    if (draft.settings.create?.advisor) draft.setCreate({ advisor: null })
+  }
   target.set({ engine, cwd: null })
 }
 
@@ -234,15 +238,20 @@ export function NewChat({
 }) {
   const canQuery2 = useSupported(endlessRequirements)
   const privateSupported = useSupported(privateRequirements)
-  const [priv, setPriv] = useState(false)
-  const [project, setProject] = useState<string | null>(preset ?? null)
-  // `/` stays mounted across `/` → `/?project=x`, so the preset must follow the URL, not just seed the state.
-  useEffect(() => setProject(preset ?? null), [preset])
   // 137 §11.3: the ∞ switch starts at `agent.endless.default_chat` and is remembered per draft only.
   const api = useApi()
+  const create = useDrafts((s) => s.settings.create)
+  const setCreate = useDrafts((s) => s.setCreate)
+  const priv = create?.retention === 'private'
+  const project = create?.project ?? null
+  const lastPreset = useRef(preset)
+  useEffect(() => {
+    if (preset !== undefined && (lastPreset.current !== preset || useDrafts.getState().settings.create?.project === undefined))
+      useDrafts.getState().setCreate({ project: preset })
+    lastPreset.current = preset
+  }, [preset])
   const endlessSettings = useQuery({ enabled: canQuery2, queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
-  const [endless, setEndless] = useState<boolean | null>(null)
-  const endlessOn = endless ?? (canQuery2 && (endlessSettings.data?.default_chat ?? false))
+  const endlessOn = create?.memory ? create.memory === 'endless' : canQuery2 && (endlessSettings.data?.default_chat ?? false)
   const draft: DraftCreate = { private: priv, project: project?.trim() || null, endless: endlessOn }
   return (
     <>
@@ -255,14 +264,14 @@ export function NewChat({
         <CreateOptions
           priv={priv}
           onPriv={(v) => {
-            setPriv(v)
+            setCreate({ retention: v ? 'private' : 'durable', view: v ? VIEW : null, ...(v ? { advisor: null } : {}) })
             // A private chat's tree is owned by this window's view (51 §4.3): it starts here.
             if (v) useDraftTarget.getState().set({ engine: null, cwd: null })
           }}
           project={project}
-          onProject={setProject}
+          onProject={(project) => setCreate({ project })}
           endless={endlessOn}
-          onEndless={setEndless}
+          onEndless={(on) => setCreate({ memory: on ? 'endless' : 'epochs' })}
           settings={endlessSettings.data}
         />
       </div>
@@ -364,6 +373,7 @@ export function CreateOptions({
 }) {
   const acknowledged = usePrivate((s) => s.acknowledged)
   const acknowledge = usePrivate((s) => s.acknowledge)
+  const opening = useDrafts((s) => s.opening)
   // Two draft panes may be open at once; label ids must not collide.
   const pid = useId()
   const supported = useSupported(endlessRequirements)
@@ -372,7 +382,7 @@ export function CreateOptions({
     <div className="mx-auto mt-1 w-full max-w-[768px] px-4 text-sm">
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <Capability required={privateRequirements} hide><label className="flex items-center gap-2">
-          <Switch checked={priv} onCheckedChange={onPriv} aria-label="Private session" />
+          <Switch checked={priv} disabled={opening !== null} onCheckedChange={onPriv} aria-label="Private session" />
           <span>Private</span>
         </label></Capability>
         <Capability required={endlessRequirements} hide><Tooltip>

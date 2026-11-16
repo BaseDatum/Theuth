@@ -5,6 +5,7 @@ import { afterEach, expect, type Mock, test, vi } from 'vitest'
 import type { ConfigOption } from "@/rpc/bindings/method.agent.output"
 import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { AdvisorCommand, dialogPlacement, HarnessPicker, harnessCurrent, harnessGroups, type Model, slashTarget } from './ModelMenu'
+import { useDrafts } from '@/lib/drafts'
 
 const advisor = vi.hoisted(() => ({ status: undefined as unknown, mutate: (() => {}) as (v: unknown) => void }))
 vi.mock('./advisor', () => ({ useAdvisor: () => advisor.status, useSetAdvisor: () => ({ mutate: (v: unknown) => advisor.mutate(v) }) }))
@@ -124,4 +125,16 @@ test('157 D1 slashTarget: /model reaches the focused pane, any draft, and a page
   // The notebook's chat column: no split pane ever focuses its thread, so it answers on its own.
   expect(slashTarget('s1', 's2', true)).toBe(true)
   expect(slashTarget('s1', null, true)).toBe(true)
+})
+
+test('the draft advisor picker holds model and effort for creation instead of calling set_advisor', async () => {
+  useDrafts.setState({ settings: { create: { advisor: ['openai/gpt-5.4', 'low'] } } })
+  advisor.mutate = vi.fn()
+  const m = { models: catalog, favorites: [], toggleFavorite: async () => {}, done: vi.fn() } as unknown as Model
+  const p = await mount(createElement(AdvisorCommand, { session: '', m, onBack() {} }))
+  expect(p.chipsAfter(p.lead('GPT-5.4openai'))).toEqual(['Default', 'low*', 'high'])
+  await p.click(p.chip('high'))
+  expect(useDrafts.getState().settings.create?.advisor).toEqual(['openai/gpt-5.4', 'high'])
+  expect(advisor.mutate).not.toHaveBeenCalled()
+  useDrafts.setState({ settings: {} })
 })

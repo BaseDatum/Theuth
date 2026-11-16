@@ -851,14 +851,14 @@ export function Composer({
         if (!name) throw new Error('usage: /skill:<name>')
         // The words stay in the box: `reset()` then `setText` when this composer stays mounted; a new chat's
         // composer reads them from `drafts` as it mounts.
-        reset()
         await draftSkill(api, navigate, session, name, words.join(' '))
+        reset()
         if (session) setText(words.join(' '))
         return
       }
       if (isCommand(line, skillIndex?.map((s) => s.name) ?? null)) {
-        reset()
         await run(line, ctx)
+        reset()
         return
       }
       // A parked skill: the server builds the `<skill>` input from its body and these words; `TurnStarted`

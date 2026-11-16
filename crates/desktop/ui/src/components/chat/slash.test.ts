@@ -40,7 +40,7 @@ test('skill index not loaded: a plain word still runs, a path-like word is text'
   expect(isCommand('/', null)).toBe(false)
 })
 
-test('bare /skills opens its page carrying the chat; /mcp and /tools open that chat’s Tools sheet, Settings outside one', async () => {
+test('bare /skills carries the chat; /mcp and /tools open the current chat or draft Tools sheet', async () => {
   const navigate = vi.fn().mockResolvedValue(undefined)
   const ctx = { api: {} as Api, session: 'abc', parent: null, navigate, reload: async () => {} } as unknown as Ctx
   await run('/skills', ctx)
@@ -57,9 +57,9 @@ test('bare /skills opens its page carrying the chat; /mcp and /tools open that c
   useToolsSheet.getState().hide()
   for (const cmd of ['/mcp', '/tools']) {
     await run(cmd, { ...ctx, session: null })
-    expect(navigate).toHaveBeenLastCalledWith({ to: '/settings/$tab', params: { tab: 'tools' } })
+    expect(useToolsSheet.getState().session).toBe('')
   }
-  expect(useToolsSheet.getState().session).toBeNull()
+  expect(navigate).not.toHaveBeenCalled()
   await expect(run('/tools bogus', ctx)).rejects.toThrow('usage: /tools [add <url|json> | sync]')
 })
 
@@ -187,7 +187,7 @@ test('148 R1: in a session /model and /effort switch that session (manual), leav
   expect(useDrafts.getState().pick).toEqual(NO_PICK)
 })
 
-test('157 D3: /endless on|off switches the session through set_session_memory; a draft and a bad argument are refused', async () => {
+test('157 D3: /endless switches an open session, keeps a draft choice pending, and rejects a bad argument', async () => {
   const set_session_memory = vi.fn().mockResolvedValue({ mode: 'endless', view: [] })
   expect(isCommand('/endless on', SKILLS)).toBe(true)
   await run('/endless on', ctxFor({ set_session_memory }, 'abc'))
@@ -195,7 +195,9 @@ test('157 D3: /endless on|off switches the session through set_session_memory; a
   await run('/endless off', ctxFor({ set_session_memory }, 'abc'))
   expect(set_session_memory).toHaveBeenLastCalledWith('abc', 'epochs')
   await expect(run('/endless maybe', ctxFor({ set_session_memory }, 'abc'))).rejects.toThrow(/on\|off/)
-  await expect(run('/endless on', { ...ctxFor({ set_session_memory }), session: null })).rejects.toThrow(/no session yet/)
+  await run('/endless on', { ...ctxFor({ set_session_memory }), session: null })
+  expect(useDrafts.getState().settings.create?.memory).toBe('endless')
+  useDrafts.setState({ settings: {} })
   expect(set_session_memory).toHaveBeenCalledTimes(2)
 })
 
@@ -286,4 +288,19 @@ test('177 U6: /provider limits <provider> <model> <context> [output] — 0 = unk
   for (const bad of ['/provider limits mlx LFM3', '/provider limits mlx', '/provider limits mlx LFM3 big', '/provider limits mlx LFM3 4096 -1', '/provider limits mlx LFM3 1.5'])
     await expect(run(bad, ctxFor({ set_model_limits, provider_models }))).rejects.toThrow('usage: /provider limits <provider> <model> <context> [output]')
   expect(set_model_limits).toHaveBeenCalledTimes(3)
+})
+
+test('draft slash settings stay pending, including explicit off; none calls a session or global setter', async () => {
+  useDrafts.setState({ settings: {} })
+  const api = { set_approvals: vi.fn(), set_communication: vi.fn(), set_session_project: vi.fn(), set_session_memory: vi.fn() }
+  const ctx = { ...ctxFor(api), session: null }
+  await run('/approvals off', ctx)
+  await run('/communication on', ctx)
+  await run('/endless off', ctx)
+  await run('/project lab', ctx)
+  expect(useDrafts.getState().settings).toEqual({ approvals: false, communication: true, create: { memory: 'epochs', project: 'lab' } })
+  await run('/project off', ctx)
+  expect(useDrafts.getState().settings.create?.project).toBeNull()
+  for (const call of Object.values(api)) expect(call).not.toHaveBeenCalled()
+  useDrafts.setState({ settings: {} })
 })

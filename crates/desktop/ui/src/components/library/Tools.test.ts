@@ -8,6 +8,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
+import { useDrafts } from '@/lib/drafts'
 import { LOCAL, useEngines } from '@/link/engines'
 import type { McpServer } from "@/rpc/bindings/method.mcp_2dserver.output"
 import type { McpToolInfo } from "@/rpc/bindings/method.mcp_2dserver.output"
@@ -48,14 +49,19 @@ const tool = (name: string): McpToolInfo => ({ name, description: '', gate: null
 const chat: McpServer[] = [
   server({ name: 'fs', home: 'id-xeus', home_name: 'xeus', home_here: true, state: 'running', connected: true, tools: [tool('read_file'), tool('write_file')] }),
 ]
+let globalServers = servers
 
 const calls: [string, unknown][] = []
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
   useApi: () => ({
-    list_mcp: async (session: string | null) => (session ? chat : servers),
+    list_mcp: async (session: string | null) => (session ? chat : globalServers),
     set_mcp_hidden: async (session: string, names: string[], hidden: boolean) => {
       calls.push(['set_mcp_hidden', [session, names, hidden]])
+      return null
+    },
+    set_mcp_gate: async (...args: unknown[]) => {
+      calls.push(['set_mcp_gate', args])
       return null
     },
     mesh_status: async () => mesh,
@@ -85,11 +91,12 @@ async function mount(session: string | null = null) {
   const el = document.createElement('div')
   document.body.append(el)
   const root = createRoot(el)
-  await act(async () => root.render(createElement(QueryClientProvider, { client: client(), children: createElement(Tools, { session }) })))
+  const qc = client()
+  await act(async () => root.render(createElement(QueryClientProvider, { client: qc, children: createElement(Tools, { session }) })))
   await vi.waitFor(() => {
-    expect(el.textContent).toContain(session ? 'fs2 tools' : 'portable-mcp is not installed on xeus')
+    expect(el.textContent).toContain(session !== null ? 'fs2 tools' : 'portable-mcp is not installed on xeus')
     expect(el.textContent).toContain('homes.yaml is invalid: line 1')
-    if (!session) expect(el.textContent).toContain('Move home here')
+    if (session === null) expect(el.textContent).toContain('Move home here')
   })
   const button = (label: string) => [...el.querySelectorAll('button')].filter((b) => b.textContent === label)
   const unmount = () => {
@@ -101,7 +108,9 @@ async function mount(session: string | null = null) {
 
 afterEach(() => {
   calls.length = 0
+  globalServers = servers
   useEngines.setState({ active: LOCAL })
+  useDrafts.setState({ settings: {}, opening: null })
   vi.restoreAllMocks()
 })
 
@@ -170,5 +179,25 @@ test('188 D2: Log in opens the sign-in URL here; over link it is shown to open o
   expect(open).toHaveBeenCalledTimes(1)
   await act(async () => button('Log out')[0]!.click())
   await vi.waitFor(() => expect(calls).toContainEqual(['mcp_logout', 'grafana']))
+  unmount()
+})
+
+test('draft server and tool switches show persisted pending hides; Off always remains global', async () => {
+  globalServers = chat
+  const { el, button, unmount } = await mount('')
+  expect(button('Off here')[0]?.disabled).toBe(false)
+  await act(async () => button('Off here')[0]!.click())
+  await vi.waitFor(() => expect(useDrafts.getState().settings.hidden).toEqual({ read_file: true, write_file: true }))
+  expect(button('Off here')[0]?.getAttribute('data-state')).toBe('on')
+  expect(calls).not.toContainEqual(expect.arrayContaining(['set_mcp_hidden']))
+  await act(async () => [...el.querySelectorAll('button')].find((b) => b.textContent?.includes('fs'))!.click())
+  const switches = [...el.querySelectorAll<HTMLButtonElement>('[role="switch"]')]
+  expect(switches[0]?.getAttribute('aria-checked')).toBe('false')
+  await act(async () => switches[0]!.click())
+  await vi.waitFor(() => expect(useDrafts.getState().settings.hidden?.read_file).toBe(false))
+  expect(switches[0]?.getAttribute('aria-checked')).toBe('true')
+  await act(async () => button('Off always')[0]!.click())
+  await vi.waitFor(() => expect(calls).toContainEqual(['set_mcp_gate', ['fs', null, 'off']]))
+  expect(useDrafts.getState().settings.hidden).toEqual({ read_file: false, write_file: true })
   unmount()
 })

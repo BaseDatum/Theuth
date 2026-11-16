@@ -311,11 +311,14 @@ const LEAD_ROW = 'flex w-full cursor-default items-center gap-2 px-3 py-2 text-s
 export function AdvisorCommand({ session, m, onBack, className, listClassName }: { session: string; m: Model; onBack(): void; className?: string; listClassName?: string }) {
   const status = useAdvisor(session)
   const set = useSetAdvisor(session)
-  const model = status && status.state !== 'off' ? (status.model ?? undefined) : undefined
+  const pending = useDrafts((s) => s.settings.create?.advisor)
+  const effort = session ? status?.effort : pending?.[1]
+  const model = session ? (status && status.state !== 'off' ? (status.model ?? undefined) : undefined) : pending?.[0]
   const current = m.models.find((x) => x.id === model)
   const pick = (vars: { model: string | null; effort: string | null }) => {
     m.done()
-    set.mutate(vars)
+    if (!session) useDrafts.getState().setCreate({ advisor: vars.model ? [vars.model, vars.effort] : null })
+    else set.mutate(vars)
   }
   return (
     <div className="flex min-h-0 flex-col">
@@ -329,8 +332,8 @@ export function AdvisorCommand({ session, m, onBack, className, listClassName }:
         model={model}
         none={{ value: 'off', label: 'Off' }}
         extra={model && !current ? [model] : undefined}
-        onSelect={(id) => pick({ model: id === 'off' ? null : id, effort: status?.effort ?? null })}
-        effort={current && current.efforts.length > 0 ? { levels: current.efforts, current: status?.effort, onSelect: (lvl) => pick({ model: model ?? null, effort: lvl }) } : undefined}
+        onSelect={(id) => pick({ model: id === 'off' ? null : id, effort: id === model ? effort ?? null : null })}
+        effort={current && current.efforts.length > 0 ? { levels: current.efforts, current: effort, onSelect: (lvl) => pick({ model: model ?? null, effort: lvl }) } : undefined}
         favorites={m.favorites}
         onToggleFavorite={(id) => void m.toggleFavorite(id)}
         className={className}
@@ -340,13 +343,16 @@ export function AdvisorCommand({ session, m, onBack, className, listClassName }:
   )
 }
 
-/** `Advisor · <model name | Off> ›` under the picker; nothing for the draft (a new chat starts with no advisor, 125 ruling 2). */
+/** `Advisor · <model name | Off> ›` under the picker; draft choices ride in `create_session`. */
 function AdvisorRow({ session, models, onOpen, className }: { session: string; models: ModelInfo[]; onOpen(): void; className?: string }) {
   const status = useAdvisor(session)
-  if (!status) return null
-  const name = status.state === 'off' || !status.model ? 'Off' : (models.find((x) => x.id === status.model)?.name ?? status.model)
+  const pending = useDrafts((s) => s.settings.create?.advisor)
+  const locked = useDrafts((s) => s.opening !== null || s.settings.create?.retention === 'private')
+  if (session && !status) return null
+  const model = session ? (status?.state === 'off' ? null : status?.model) : pending?.[0]
+  const name = model ? models.find((x) => x.id === model)?.name ?? model : 'Off'
   return (
-    <button type="button" className={cn(LEAD_ROW, 'border-t border-border-subtle', className)} onClick={onOpen}>
+    <button type="button" disabled={!session && locked} className={cn(LEAD_ROW, 'border-t border-border-subtle disabled:opacity-50', className)} onClick={onOpen}>
       <Eye className="size-4 opacity-70" />
       <span className="truncate">Advisor · {name}</span>
       <ChevronRight className="ml-auto size-4 opacity-70" />
@@ -357,7 +363,7 @@ function AdvisorRow({ session, models, onOpen, className }: { session: string; m
 /** The cmdk body: providers → models, word search, the current model's effort chips under its row (124 §3); the Advisor row below (125 §8.1). */
 function ModelCommand({ m, session, advisor, className, listClassName, footerClassName }: { m: Model; session: string | null; advisor: boolean; className?: string; listClassName?: string; footerClassName?: string }) {
   const [level, setLevel] = useState<'model' | 'advisor'>(advisor ? 'advisor' : 'model')
-  if (level === 'advisor' && session) return <AdvisorCommand session={session} m={m} onBack={() => setLevel('model')} className={className} listClassName={listClassName} />
+  if (level === 'advisor') return <AdvisorCommand session={session ?? ''} m={m} onBack={() => setLevel('model')} className={className} listClassName={listClassName} />
   return (
     <>
       <ModelPicker
@@ -370,7 +376,7 @@ function ModelCommand({ m, session, advisor, className, listClassName, footerCla
         className={className}
         listClassName={listClassName}
       />
-      {session && <AdvisorRow session={session} models={m.models} onOpen={() => setLevel('advisor')} className={footerClassName} />}
+      <AdvisorRow session={session ?? ''} models={m.models} onOpen={() => setLevel('advisor')} className={footerClassName} />
     </>
   )
 }

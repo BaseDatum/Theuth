@@ -37,6 +37,7 @@ import {
 import { age } from '@/components/tasks/helpers'
 import { useAgents, useMesh } from '@/components/tasks/queries'
 import { openMeeting, useMeetingForSession } from '@/lib/meeting-link'
+import { useDrafts } from '@/lib/drafts'
 import { usePanes } from '@/lib/panes'
 import { canPopout, openPopout } from '@/lib/popout'
 import { engineLabel, ownerUnreachable, parkIfOffline, routed, useOwnerOffline } from '@/lib/owner'
@@ -332,7 +333,7 @@ export function SessionMenu({ session }: { session: string }) {
   const [open, setOpen] = useState(false)
   const mesh = useMesh()
   const agents = useAgents()
-  const jobs = useQuery({ queryKey: queryKeys.jobs(session), queryFn: () => api.list_jobs(session), enabled: canQuery3_2 && (open && here) })
+  const jobs = useQuery({ queryKey: queryKeys.jobs(session), queryFn: () => api.list_jobs(session), enabled: canQuery3_2 && (open && here && !!session) })
   // 181 D1 / 183 §12.2: a session owned elsewhere moves from its owner (forwarded), so its own engine is no target.
   const targets = moveTargets(mesh.data, here ? (jobs.data ?? []).filter((j) => j.state === 'running').length : 0).filter((t) => here || t.id !== row?.owner)
   const blocked = moveBlocked(row, sessions.data ?? [], agents.data ?? [])
@@ -354,8 +355,10 @@ export function SessionMenu({ session }: { session: string }) {
   // 183 §12.2: the settings the owner applies, read through it (forwarded readers) while the menu is open; a reader
   // answering -32010, an unreachable owner or a parked call grey the setters (§4.4).
   const owner = !here && row ? engineLabel(row.owner, mesh.data?.peers) : undefined
-  const approvals = useQuery({ queryKey: ['approvals', session], queryFn: () => api.get_approvals(session), enabled: canQuery3_3 && (open), retry: false })
-  const messaging = useQuery({ queryKey: queryKeys.communication(session), queryFn: () => api.get_communication(session), enabled: canQuery3_4 && (open), retry: false })
+  const approvals = useQuery({ queryKey: ['approvals', session || null], queryFn: () => api.get_approvals(session || null), enabled: canQuery3_3 && open, retry: false })
+  const messaging = useQuery({ queryKey: queryKeys.communication(session || null), queryFn: () => api.get_communication(session || null), enabled: canQuery3_4 && open, retry: false })
+  const pending = useDrafts((s) => s.settings)
+  const pick = useDrafts((s) => s.pick)
   const parked = useOwnerOffline((s) => s.by[session] !== undefined)
   const unreachable = mesh.data?.peers.find((p) => p.id === row?.owner)?.reachable === false
   const offline = parked || unreachable || !!ownerUnreachable(approvals.error) || !!ownerUnreachable(messaging.error)
@@ -370,11 +373,11 @@ export function SessionMenu({ session }: { session: string }) {
     self: mesh.data?.self_name || 'this machine',
     offline,
     oldOwner: owner !== undefined && approvals.error instanceof RpcError && approvals.error.code === -32601,
-    approvals: approvals.data,
-    messaging: messaging.data,
-    model: current?.name ?? model ?? 'default',
-    effort,
-  })
+    approvals: !session && approvals.data ? { ...approvals.data, pin: pending.approvals ?? undefined } : approvals.data,
+    messaging: !session && messaging.data ? { effective: pending.communication ?? messaging.data.effective } : messaging.data,
+    model: current?.name ?? (session ? model : pick.model) ?? 'default',
+    effort: session ? effort : pick.effort,
+  }).filter((r) => !!session || (r.id !== 'continue' && r.id !== 'move' && r.id !== 'separator'))
   /** A setter through the owner: -32010 parks it behind the OwnerOfflineCard (nothing runs until Continue here). */
   const set = (call: () => Promise<unknown>) =>
     void routed(session, call)
@@ -383,8 +386,10 @@ export function SessionMenu({ session }: { session: string }) {
         void queryClient.invalidateQueries({ queryKey: ['communication'] })
       })
       .catch((e: unknown) => toast.error(e instanceof Error ? e.message : String(e)))
-  const setApprovals = (v: string) =>
+  const setApprovals = (v: string) => {
+    if (!session) return useDrafts.getState().setSettings({ approvals: v === 'default' ? null : v === 'on' })
     set(() => (v === 'default' ? api.set_approvals(session, approvals.data?.global ?? true, true) : api.set_approvals(session, v === 'on')))
+  }
 
   const focused = usePanes((s) => s.focused === session)
   useEffect(() => {
@@ -399,7 +404,7 @@ export function SessionMenu({ session }: { session: string }) {
 
   const ctx: Ctx = {
     api,
-    session,
+    session: session || null,
     parent,
     navigate,
     async reload() {
@@ -470,7 +475,7 @@ export function SessionMenu({ session }: { session: string }) {
                 </DropdownMenuSub>
               )}
               {r.id === 'messaging' && (
-                <DropdownMenuCheckboxItem checked={r.checked} disabled={r.disabled} onCheckedChange={(on) => set(() => api.set_communication(session, on))}>
+                <DropdownMenuCheckboxItem checked={r.checked} disabled={r.disabled} onCheckedChange={(on) => session ? set(() => api.set_communication(session, on)) : useDrafts.getState().setSettings({ communication: on })}>
                   {r.label}
                 </DropdownMenuCheckboxItem>
               )}
@@ -511,6 +516,7 @@ export function SessionMenu({ session }: { session: string }) {
             </Fragment>
           ))}
           <DropdownMenuSeparator />
+          {session ? <>
           <DropdownMenuItem onSelect={() => setRename(true)}>Rename</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => void navigator.clipboard.writeText(session)}>
             Copy id
@@ -547,13 +553,14 @@ export function SessionMenu({ session }: { session: string }) {
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openSurface('prompt')}>Show prompt</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openSurface('jobs')}>Jobs</DropdownMenuItem>
+          </> : <DropdownMenuItem onSelect={() => openSurface('memory')}>Memory…</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => useMessagingSheet.getState().show(session)}>Messaging…</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => useToolsSheet.getState().show(session)}>Tools…</DropdownMenuItem>
           {/* 183 §12.10: contacts live on this machine; a phone or iPad never shares (§12.8). */}
-          {hasLocal() && <SharingItems session={session} onShare={() => setShare(true)} />}
+          {session && hasLocal() && <SharingItems session={session} onShare={() => setShare(true)} />}
         </DropdownMenuContent>
       </DropdownMenu>
-      <RenameDialog session={session} open={rename} onOpenChange={setRename} />
+      {session && <RenameDialog session={session} open={rename} onOpenChange={setRename} />}
       {share && <ShareDialog session={session} title={row ? chatName(row) : 'this chat'} onClose={() => setShare(false)} />}
       <PromptSheet
         session={session}

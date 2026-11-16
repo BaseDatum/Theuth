@@ -35,6 +35,7 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
+import { useDrafts } from '@/lib/drafts'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { LOCAL, useEngines } from '@/link/engines'
 import type { Gate } from "@/rpc/bindings/method.mcp_2dserver.output"
@@ -45,7 +46,7 @@ import type { Risk } from "@/rpc/bindings/method.agent.output"
 import type { SyncResult } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
 
-/** `tui/model.rs::Switch`: on, hidden in this session, or `off` in `mcp/config.yaml`. */
+/** A switch is on, hidden in this chat, or globally off. */
 type SwitchState = 'on' | 'session' | 'always'
 
 /** A server is `session` when every tool it has registered is hidden. */
@@ -55,7 +56,7 @@ function serverSwitch(s: McpServer): SwitchState {
   return live.length > 0 && live.every((t) => t.hidden) ? 'session' : 'on'
 }
 
-/** The gate select's `annotations` sentinel: no line in `mcp/config.yaml`. */
+/** The gate select's `annotations` sentinel: no explicit risk override. */
 const ANNOTATIONS = 'annotations'
 /** Why a "this chat" switch is greyed on Settings › Tools › MCP: it needs the chat it would apply to. */
 const CHAT_HINT = 'Open from a chat: ⋯ › Tools… or /tools'
@@ -88,6 +89,12 @@ function useMcpActions(session: string | null): Actions {
   const api = useApi()
   const active = useEngines((s) => s.active)
   const keys = [queryKeys.mcp(session), queryKeys.mcp(null)]
+  const hide = async (names: string[], hidden: boolean) => {
+    if (session === null) throw new Error('Open a chat first')
+    if (session === '') useDrafts.getState().setHidden(names, hidden)
+    else await api.set_mcp_hidden(session, names, hidden)
+    return null
+  }
   return {
     gate: useAction(
       (v: { server: string; tool: string | null; gate: Gate | null }) =>
@@ -95,10 +102,7 @@ function useMcpActions(session: string | null): Actions {
       { keys },
     ),
     hidden: useAction(
-      (v: { names: string[]; hidden: boolean }) =>
-        session
-          ? api.set_mcp_hidden(session, v.names, v.hidden)
-          : Promise.reject(new Error('Open a chat first')),
+      (v: { names: string[]; hidden: boolean }) => hide(v.names, v.hidden),
       { keys },
     ),
     // ⏎ in the TUI: turning on undoes whichever switch is off; off asks for the scope.
@@ -107,11 +111,10 @@ function useMcpActions(session: string | null): Actions {
         const from = serverSwitch(v.server)
         const names = v.server.tools.flatMap((t) => (t.registered === null ? [] : [t.registered]))
         if (v.to === 'on') {
-          if (from === 'session' && session) await api.set_mcp_hidden(session, names, false)
+          if (from === 'session') await hide(names, false)
           else if (from === 'always') await api.set_mcp_gate(v.server.name, null, null)
         } else if (v.to === 'session') {
-          if (!session) throw new Error('Open a chat first')
-          await api.set_mcp_hidden(session, names, true)
+          await hide(names, true)
         } else if (from !== 'always') await api.set_mcp_gate(v.server.name, null, 'off')
       },
       { keys },
@@ -157,9 +160,10 @@ export function Tools({ session }: { session: string | null }) {
   const canQuery1 = useQuerySupport(["list_mcp"])
   const canQuery1_2 = useQuerySupport(["mcp_status"])
   const api = useApi()
+  const hidden = useDrafts((s) => s.settings.hidden)
   const servers = useQuery({ enabled: canQuery1,
     queryKey: queryKeys.mcp(session),
-    queryFn: () => api.list_mcp(session),
+    queryFn: () => api.list_mcp(session || null),
   })
   // Under the `mcp` prefix: every `McpProgress` event refreshes it with the list.
   const status = useQuery({ enabled: canQuery1_2, queryKey: ['mcp', 'status'], queryFn: () => api.mcp_status() })
@@ -197,9 +201,10 @@ export function Tools({ session }: { session: string | null }) {
           or a JSON entry.
         </Empty>
       )}
-      {servers.data?.map((s) => (
-        <ServerRow key={s.name} server={s} session={session} machines={machines} act={act} />
-      ))}
+      {servers.data?.map((server) => {
+        const s = session === '' ? { ...server, tools: server.tools.map((t) => ({ ...t, hidden: t.registered ? hidden?.[t.registered] ?? t.hidden : t.hidden })) } : server
+        return <ServerRow key={s.name} server={s} session={session} machines={machines} act={act} />
+      })}
     </Section>
   )
 }
@@ -268,7 +273,7 @@ function ServerRow({
   const on = sw !== 'always' && s.connected
   // 187: a server not running here says why (homed elsewhere, not installed here, …).
   const status = sw === 'always' ? 'off' : s.connected ? 'connected' : s.auth === 'required' ? 'login required' : stateText(s, machines ?? [])
-  const sessionHint = !session ? CHAT_HINT : !live ? 'Not connected' : undefined
+  const sessionHint = session === null ? CHAT_HINT : !live ? 'Not connected' : undefined
   return (
     <Collapsible
       open={open}
@@ -437,8 +442,8 @@ function ToolRow({
         />
         <Switch
           checked={!t.hidden}
-          disabled={!session || t.registered === null}
-          title={!session ? CHAT_HINT : undefined}
+          disabled={session === null || t.registered === null}
+          title={session === null ? CHAT_HINT : undefined}
           onCheckedChange={(v) =>
             t.registered && act.hidden.mutate({ names: [t.registered], hidden: !v })
           }
