@@ -15,6 +15,7 @@ import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { AgentInfo } from '@/store/ui-events'
 import type { AgentState } from "@/rpc/bindings/method.agent.output"
 import { useSessionField, useSessions } from '@/store/sessions'
+import { SidebarPopoutButton } from './SidebarPopoutButton'
 
 export const GLYPH: Record<AgentState['state'], ReactNode> = {
   running: '●',
@@ -43,17 +44,20 @@ export const SubagentRow = memo(function SubagentRow({
   active,
   now,
   cost,
+  popout = false,
 }: {
   row: AgentInfo
   active: boolean
   now: number
   /** The child's inclusive total from the root's `session_cost` (51 §6.5); unknown for deeper rows. */
   cost: CostBucket | undefined
+  /** Sidebar-only hover chrome; the Agents page keeps its existing row layout. */
+  popout?: boolean
 }) {
   const drag = useSessionDrag(row.id, row.name)
   const observed = row.observed ?? undefined
   const resting = observed && (observed.state === 'idle' || observed.state === 'pending' || observed.state === 'unknown')
-  return (
+  const content = (
     <Link
       to="/c/$session"
       params={{ session: row.id }}
@@ -62,6 +66,7 @@ export const SubagentRow = memo(function SubagentRow({
         'flex h-7 items-center gap-1.5 rounded-md pr-2 text-xs text-fg-secondary hover:bg-sidebar-accent',
         active && 'bg-sidebar-accent font-medium text-foreground',
         resting && 'opacity-60',
+        popout && 'pointer-fine:pr-8',
       )}
       style={{ paddingLeft: 8 + row.depth * 12 }}
       title={
@@ -108,6 +113,12 @@ export const SubagentRow = memo(function SubagentRow({
       <span className="tabular-nums text-fg-tertiary">{ago(row.activity?.last_active ?? row.started_at ?? row.finished_at, now)}</span>
     </Link>
   )
+  return popout ? (
+    <div className="group/popout-row relative">
+      {content}
+      <SidebarPopoutButton target={{ kind: 'chat', session: row.id }} className="top-1 right-1" />
+    </div>
+  ) : content
 })
 
 /**
@@ -200,7 +211,7 @@ export function AgentTree({ session, active, liveOnly = false }: { session: stri
         moreClass="flex h-7 items-center gap-1.5 rounded-md pr-2 text-xs text-fg-tertiary hover:bg-sidebar-accent"
         render={(r, sub) => (
           <>
-            <SubagentRow row={r} active={r.id === active} now={now} cost={cost?.children.find((c) => c.session === r.id)?.total} />
+            <SubagentRow row={r} active={r.id === active} now={now} cost={cost?.children.find((c) => c.session === r.id)?.total} popout />
             {sub}
           </>
         )}

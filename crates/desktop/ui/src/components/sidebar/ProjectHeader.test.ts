@@ -27,6 +27,7 @@ test.each([
   const menu = host.querySelector<HTMLButtonElement>('[aria-label="Project options"]')!
   expect(plus.title).toBe(label)
   expect(plus.compareDocumentPosition(menu) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(host.querySelector('[aria-label="Open in new window"]')).toBeNull()
   await act(async () => plus.click())
   expect(openNewChat).toHaveBeenCalledExactlyOnceWith(navigate, project)
   expect(toggle).not.toHaveBeenCalled()

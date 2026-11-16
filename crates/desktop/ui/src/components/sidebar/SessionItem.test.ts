@@ -1,5 +1,8 @@
 import '../settings/test-dom'
 import type * as Rpc from '@/lib/rpc'
+import type * as Popout from '@/lib/popout'
+import { canPopout, openPopout } from '@/lib/popout'
+import { usePanes } from '@/lib/panes'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, createElement, type ComponentProps } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -12,12 +15,18 @@ import { empty } from '@/store/reduce'
 import { useSessions } from '@/store/sessions'
 import { SessionItem } from './SessionItem'
 
+const navigate = vi.fn()
+const select = vi.fn()
+const rowClick = vi.fn()
+const rowPointerDown = vi.fn()
+const rowMouseDown = vi.fn()
 vi.mock('@tanstack/react-router', () => ({
-  useNavigate: () => vi.fn(),
+  useNavigate: () => navigate,
   Link: ({ to, params, ...props }: ComponentProps<'a'> & { to: string; params: Record<string, string> }) => createElement('a', { ...props, href: to.replace(/\$(\w+)/g, (_, key: string) => encodeURIComponent(params[key]!)) }),
 }))
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
 vi.mock('@/lib/meeting-link', () => ({ useMeetingForSession: () => null, openMeeting: vi.fn() }))
+vi.mock('@/lib/popout', async (original) => ({ ...(await original<typeof Popout>()), canPopout: vi.fn(() => true), openPopout: vi.fn(async () => {}) }))
 
 const child = receiveComponent('method.agent.output.SessionSummary', { id: 'child', title: 'child', model: 'm', parent: 'root', running: true, created_at: '2026-11-16T12:00:00Z', updated_at: '2026-11-16T12:00:00Z' })
 const glyph = (label: string) => document.querySelector(`[role="img"][aria-label="${label}"]`)!
@@ -27,12 +36,15 @@ async function mount(subagents: SessionSummary[] = [child]) {
   const host = document.body.appendChild(document.createElement('div'))
   const root = createRoot(host)
   client = new QueryClient()
-  await act(async () => root.render(createElement(QueryClientProvider, { client, children: createElement(SidebarProvider, null, createElement(SessionItem, {
-    id: 'root', title: 'Background work', created: '2026-11-16T12:00:00Z', tags: [], pinned: false, archived: false, project: null, owner: '', epoch: 1, here: true, running: true, endless: false, subagents, active: false, selected: false, selecting: false, select: vi.fn(),
-  })) })))
+  await act(async () => root.render(createElement(QueryClientProvider, { client, children: createElement(SidebarProvider, null, createElement('div', { onClick: rowClick, onPointerDown: rowPointerDown, onMouseDown: rowMouseDown }, createElement(SessionItem, {
+    id: 'root', title: 'Background work', created: '2026-11-16T12:00:00Z', tags: [], pinned: false, archived: false, project: null, owner: '', epoch: 1, here: true, running: true, endless: false, subagents, active: false, selected: false, selecting: false, select,
+  }))) })))
   unmount = async () => { await act(async () => root.unmount()) }
 }
 beforeEach(() => {
+  vi.clearAllMocks()
+  vi.mocked(canPopout).mockReturnValue(true)
+  usePanes.setState({ root: null, focused: null, drag: null })
   useSessions.setState({ sessions: {
     root: { ...empty('root'), activity: 'thinking', running: true, jobs: new Set(['j1', 'j2']), ptys: new Set(['pty1']), reminders: new Set(['r1']) },
     child: { ...empty('child'), running: true },
@@ -79,4 +91,41 @@ test('watch-only subagents use warning for requires_action, including live updat
   expect(glyph('1 subagent running').getAttribute('class')).toContain('text-warning')
   await act(async () => useSessions.setState((s) => ({ sessions: { ...s.sessions, child: { ...s.sessions.child!, observed: { ...observed, state: 'running' } } } })))
   expect(glyph('1 subagent running').getAttribute('class')).toContain('text-project-malachite')
+})
+
+test('a session hover action opens its chat without row selection, navigation or drag', async () => {
+  await mount()
+  const button = document.querySelector<HTMLButtonElement>('button[aria-label="Open in new window"]')!
+  expect(button.title).toBe('Open in new window')
+  expect(button.querySelector('.lucide-app-window')).not.toBeNull()
+  expect(button.closest('a')).toBeNull()
+  await act(async () => {
+    button.dispatchEvent(Object.assign(new MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 10 }), { pointerId: 1, pointerType: 'mouse' }))
+    button.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))
+    button.dispatchEvent(Object.assign(new MouseEvent('pointermove', { bubbles: true, clientX: 60 }), { pointerId: 1, pointerType: 'mouse' }))
+    button.click()
+  })
+  expect(openPopout).toHaveBeenCalledExactlyOnceWith({ kind: 'chat', session: 'root' })
+  expect(rowClick).not.toHaveBeenCalled()
+  expect(rowPointerDown).not.toHaveBeenCalled()
+  expect(rowMouseDown).not.toHaveBeenCalled()
+  expect(select).not.toHaveBeenCalled()
+  expect(navigate).not.toHaveBeenCalled()
+  expect(usePanes.getState().drag).toBeNull()
+})
+
+test('no session hover action where second windows are unavailable', async () => {
+  vi.mocked(canPopout).mockReturnValue(false)
+  await mount()
+  expect(document.querySelector('button[aria-label="Open in new window"]')).toBeNull()
+})
+
+test('the existing chat options menu retains Open in new window', async () => {
+  await mount()
+  const options = document.querySelector<HTMLButtonElement>('button[aria-label="Chat options"]')!
+  await act(async () => options.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+  const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((el) => el.textContent === 'Open in new window')!
+  expect(item).toBeDefined()
+  await act(async () => item.click())
+  expect(openPopout).toHaveBeenCalledWith({ kind: 'chat', session: 'root' })
 })

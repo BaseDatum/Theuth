@@ -44,6 +44,7 @@ import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { type Activity, type SessionSlice, shownActivity, useSessionField, useSessions } from '@/store/sessions'
 import { routed, useEngineLabel } from '@/lib/owner'
 import { useApprovals } from '@/store/approvals'
+import { SidebarPopoutButton } from './SidebarPopoutButton'
 
 /** One glyph per non-idle `Activity`: what the session is doing right now, readable at a glance in the list. */
 const ACTIVITY: Record<Exclude<Activity, 'idle'>, [LucideIcon | ComponentType<{ className?: string; 'aria-label'?: string; role?: string }>, string]> = {
@@ -276,7 +277,7 @@ export const SessionItem = memo(function SessionItem({
   }
 
   return (
-    <div className="group/menu-item relative">
+    <div className="group/menu-item group/popout-row relative">
       {editing !== null ? (
         <Input
           autoFocus
@@ -297,7 +298,7 @@ export const SessionItem = memo(function SessionItem({
             asChild
             isActive={active}
             aria-selected={selected}
-            className={cn('h-9 rounded-[10px] px-2.5', selected && 'bg-sidebar-accent', archived && 'text-fg-tertiary')}
+            className={cn('h-9 rounded-[10px] px-2.5', canPopout() && 'pointer-fine:pr-16!', selected && 'bg-sidebar-accent', archived && 'text-fg-tertiary')}
           >
             <Link
               to="/c/$session"
@@ -340,6 +341,7 @@ export const SessionItem = memo(function SessionItem({
               {!here && <EngineChip owner={owner} epoch={epoch} className="ml-auto" />}
             </Link>
           </SidebarMenuButton>
+          <SidebarPopoutButton target={{ kind: 'chat', session: id }} className="top-2 right-8" />
           <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
             <DropdownMenuTrigger asChild>
               <SidebarMenuAction showOnHover className="top-2 right-2" aria-label="Chat options">
