@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest'
 import type { Todo } from "@/rpc/bindings/method.agent.output"
 import type { TodoSnapshot } from "@/rpc/bindings/method.agent.output"
-import { handleLabel, note, summarize } from './TodoCard'
+import { note, summarize } from './TodoCard'
 
 const t = (status: Todo['status'], text: string = status): Todo => ({ text, status, reason: null })
 
@@ -26,8 +26,3 @@ test('no list: unknown says loading or unavailable, a stale empty says so; only 
   expect(note(empty, false)).toBeNull()
 })
 
-test('grabber label: hidden names what it reveals (counts or the note), shown just hides', () => {
-  expect(handleLabel(false, '2/5 done · 1 blocked')).toBe('Show to-dos · 2/5 done · 1 blocked')
-  expect(handleLabel(false, note(null, false) as string)).toBe('Show to-dos · loading…')
-  expect(handleLabel(true, '2/5 done')).toBe('Hide to-dos')
-})

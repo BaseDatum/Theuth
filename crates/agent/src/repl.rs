@@ -1986,7 +1986,10 @@ impl Repl {
                                     session: cx.session,
                                     turn: cx.turn,
                                     call_id: call.id,
-                                    output: crate::frame::truncate(&out.content, DISPLAY_CHARS),
+                                    output: crate::diff_output::display(
+                                        &crate::diff_output::native(&out.content, out.structured.as_ref()),
+                                        DISPLAY_CHARS,
+                                    ),
                                     is_error: out.is_error,
                                     files: out.files.clone(),
                                 })

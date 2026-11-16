@@ -3,7 +3,8 @@ import { memo, useEffect, useMemo, useState } from 'react'
 import { Streamdown } from 'streamdown'
 import { ToolSpinner } from './Indicators'
 import { codeDetails, describe, resultLine } from '@/lib/describe'
-import { type DiffLine, diffLines } from '@/lib/diff'
+import { toolDiff } from '@/lib/editDiff'
+import { DiffStats, DiffView } from './DiffView'
 import { cn } from '@/lib/utils'
 import { type Entry, useSessions } from '@/store/sessions'
 import { ArtifactCard, Progress } from './ArtifactCard'
@@ -20,13 +21,6 @@ import { TranscriptJob } from './JobCard'
 type Tool = Extract<Entry, { kind: 'tool' }>
 
 
-/** `old`/`new` of an `edit` call when the arguments carry both. */
-function editArgs(args: unknown): { old: string; new: string } | null {
-  if (typeof args !== 'object' || args === null) return null
-  const { old, new: next } = args as Record<string, unknown>
-  return typeof old === 'string' && typeof next === 'string' ? { old, new: next } : null
-}
-
 /** Source shown only inside an expanded tool card. */
 function Source({ code, language }: { code: string; language: string }) {
   return (
@@ -38,27 +32,6 @@ function Source({ code, language }: { code: string; language: string }) {
     >
       {fenced(code, language)}
     </Streamdown>
-  )
-}
-
-const ROW: Record<DiffLine['op'], string> = {
-  ' ': 'text-fg-tertiary',
-  '-': 'bg-danger-bg text-danger',
-  '+': 'bg-success-bg text-success',
-}
-
-/** Unified line diff of an `edit`'s `old` → `new`. */
-function Diff({ old, new: next }: { old: string; new: string }) {
-  const lines = useMemo(() => diffLines(old, next), [old, next])
-  return (
-    <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-layer-2 py-2 font-mono text-xs leading-5">
-      {lines.map((l, i) => (
-        // Positional rows of one diff: the index is the identity.
-        <div key={i} className={cn('px-3 whitespace-pre-wrap wrap-anywhere', ROW[l.op])}>
-          {l.op} {l.text}
-        </div>
-      ))}
-    </pre>
   )
 }
 
@@ -141,7 +114,7 @@ function PlainTool({ tool, session, readOnly }: { tool: Tool; session: string; r
   const sandbox = useSessions((s) => (tool.pending ? s.sessions[session]?.sandbox.get(tool.callId) : undefined))
   const { result } = tool
   const running = !tool.interrupted && (tool.pending || !result)
-  const edit = tool.name === 'edit' ? editArgs(tool.args) : null
+  const edit = useMemo(() => toolDiff(tool.name, tool.args, result), [tool.name, tool.args, result])
   const expandable = !!(source || edit || result || tool.job)
   return (
     <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
@@ -151,12 +124,14 @@ function PlainTool({ tool, session, readOnly }: { tool: Tool; session: string; r
         aria-expanded={expandable ? expanded : undefined}
         onClick={() => expandable && setExpanded((v) => !v)}
       >
-        <div className="flex items-center gap-2 font-medium">
+        <div className="flex flex-wrap items-center gap-2 font-medium">
           {tool.child ? <span className="shrink-0 text-fg-secondary">↳</span> : <Wrench className="size-3.5 shrink-0 text-fg-secondary" />}
           <span className="wrap-anywhere">{tool.name}</span>
+          {edit && <><span className="min-w-0 break-all font-mono text-xs text-fg-secondary">{edit.path}</span><DiffStats {...edit} /></>}
+          {edit && result && <span className={cn('ml-auto truncate font-mono text-xs', result.isError ? 'text-danger' : 'text-success')}>{result.isError ? '✗' : '✓'} {result.output.split('\n')[0]}</span>}
           {running && <ToolSpinner />}
         </div>
-        {lines.length > 0 && (
+        {!edit && lines.length > 0 && (
           <pre className="w-full font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap text-fg-secondary">
             {lines.join('\n')}
           </pre>
@@ -169,15 +144,15 @@ function PlainTool({ tool, session, readOnly }: { tool: Tool; session: string; r
           </div>
         )}
         {tool.interrupted && <div className="w-full font-mono text-xs text-fg-tertiary opacity-70">interrupted by restart</div>}
-        {result && (
+        {result && !edit && (
           <div className={cn('w-full truncate font-mono text-xs', result.isError ? 'text-danger' : 'text-success')}>
             {result.isError ? '✗' : '✓'} {resultLine(result.output)}
           </div>
         )}
       </button>
-      {expanded && !tool.job && source && <Source code={source.code} language={source.language} />}
-      {expanded && !tool.job && edit && <Diff old={edit.old} new={edit.new} />}
-      {expanded && !tool.job && result && (
+      {expanded && !tool.job && source && !edit && <Source code={source.code} language={source.language} />}
+      {expanded && !tool.job && edit && <DiffView model={edit} />}
+      {expanded && !tool.job && result && (!edit || result.isError) && (
         <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap">
           {result.output}
         </pre>

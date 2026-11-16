@@ -72,6 +72,8 @@ pub fn derive(
 
 /// §4 echo cap: head ⅔ + `[… N chars cut]` + tail ⅓, counted in chars.
 pub fn cap(s: &str, cap_chars: u32) -> String {
+    let text = crate::diff_output::strip(s);
+    let s = text.as_ref();
     let cap = cap_chars as usize;
     let n = s.chars().count();
     if n <= cap {
@@ -87,6 +89,16 @@ pub fn cap(s: &str, cap_chars: u32) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diff_carrier_endless_units_strip_before_echo_cap() {
+        let input = crate::diff_output::carried("receipt");
+        let message = ChatMessage::from(vec![ToolResponse::new("c", input.clone())]);
+        let units = derive(1, None, &message, 32, 0);
+        assert_eq!(units[0].text, "receipt");
+        assert_eq!(cap(&input, 32), "receipt");
+        assert_eq!(message.content.tool_responses()[0].content, input);
+    }
+
     use super::*;
     use genai::chat::{MessageContent, ToolCall, ToolResponse};
 

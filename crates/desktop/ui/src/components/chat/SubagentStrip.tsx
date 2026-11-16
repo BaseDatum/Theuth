@@ -1,71 +1,86 @@
 import { Link } from '@tanstack/react-router'
-import { type ReactNode, useMemo } from 'react'
+import { Fragment, type ReactNode, useMemo } from 'react'
+import { toast } from 'sonner'
 import { dotLabel } from '@/components/agents/sessions'
 import { useSessionDrag } from '@/components/chat/Panes'
-import { stripRows } from '@/lib/session-tree'
+import { canPopout, openPopout } from '@/lib/popout'
+import { STRIP_CAP, stripRows } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
 import type { AgentInfo } from '@/store/ui-events'
+import { useScope } from '@/store/engine-scope'
 import { useSessionField } from '@/store/sessions'
-import { WatchDot } from './ObservedBar'
 
-/**
- * 93: `● ● ●` centred above the to-do card, else directly above the composer (no label — Sky, 2026-10-04; above the
- * to-do — Sky, 2026-10-06, 112 §1) — one dot per live subagent (any depth) of the open session, in spawn order,
- * blinking on that subagent's streaming events (`AgentInfo.beat`, stamped by the reducer). Nothing when the subtree
- * is quiet; one row, never more, `+N` past `STRIP_CAP`. `trailing` (125 §8.2: the advisor pill) rides the same row after
- * the dots and keeps it rendered on its own when no subagent is live.
- */
+/** One row of category dots, independently capped; the Advisor pill remains last. */
 export function SubagentStrip({ session, trailing }: { session: string; trailing?: ReactNode }) {
+  const { sessions: store } = useScope()
   const children = useSessionField(session, 'children')
   const { shown, more } = useMemo(() => stripRows(children ?? {}), [children])
-  if (shown.length === 0 && !trailing) return null
-  const n = shown.length + more
+  const jobs = useSessionField(session, 'jobs')
+  const ptys = useSessionField(session, 'ptys')
+  const terminals = useSessionField(session, 'terminals')
+  const terminalIds = useMemo(() => new Set([...(terminals ?? []), ...(ptys ?? [])]), [terminals, ptys])
+  const reminders = useSessionField(session, 'reminders')
+  const details = useSessionField(session, 'reminderDetails')
+  const beats = useSessionField(session, 'jobBeats')
+  const reveal = (card: 'jobs' | 'reminders') => {
+    store.getState().setTodosShown(session, true)
+    store.getState().setBackgroundExpanded(session, card, true)
+  }
+  const groups: ReactNode[] = []
+  if (shown.length) groups.push(
+    <div className="flex items-center" aria-label={`${shown.length + more} subagents running`}>
+      {shown.map((row) => <SubagentLink key={row.id} row={row} className="subagent-dot-in flex size-6 shrink-0 items-center justify-center"><ActivityDot color={row.state.state === 'approval' ? 'bg-warning' : 'bg-project-malachite'} beat={row.beat} /></SubagentLink>)}
+      {more > 0 && <span className="shrink-0 tabular-nums">+{more}</span>}
+    </div>,
+  )
+  for (const [category, ids, color] of [
+    ['Jobs', jobs, 'bg-project-lapis'],
+    ['Terminals', terminalIds, 'bg-project-faience'],
+    ['Reminders', reminders, 'bg-project-plum'],
+  ] as const) {
+    if (!ids?.size) continue
+    groups.push(
+      <div className="flex items-center" aria-label={`${ids.size} ${category.toLowerCase()}`}>
+        {[...ids].slice(0, STRIP_CAP).map((id) => {
+          const label = category === 'Reminders' ? `Reminder ${id} · ${details?.get(id)?.message ?? 'pending'}` : `${category === 'Jobs' ? 'Job' : 'Terminal'} ${id} · ${category === 'Jobs' ? 'show running jobs' : 'open terminal'}`
+          const dot = <ActivityDot color={color} beat={category === 'Reminders' ? undefined : beats?.[id]} />
+          return category === 'Terminals'
+            ? <TerminalLink key={id} session={session} job={id} label={label} className="flex size-6 shrink-0 items-center justify-center">{dot}</TerminalLink>
+            : <button key={id} type="button" title={label} aria-label={label} className="flex size-6 shrink-0 items-center justify-center rounded outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => reveal(category === 'Jobs' ? 'jobs' : 'reminders')}>{dot}</button>
+        })}
+        {ids.size > STRIP_CAP && <span className="shrink-0 tabular-nums">+{ids.size - STRIP_CAP}</span>}
+      </div>,
+    )
+  }
+  if (!groups.length && !trailing) return null
   return (
-    <div className="mx-auto flex h-7 w-full shrink-0 select-none items-center justify-center gap-3 px-4 text-xs text-fg-tertiary md:max-w-[768px]">
-      {shown.length > 0 && (
-        <div className="flex items-center gap-1.5 overflow-hidden whitespace-nowrap" aria-label={`${n} subagent${n === 1 ? '' : 's'} running`}>
-          {shown.map((row) => (
-            <SubagentDot key={row.id} row={row} />
-          ))}
-          {more > 0 && <span className="tabular-nums">+{more}</span>}
-        </div>
-      )}
+    <div className="mx-auto flex min-h-7 w-full shrink-0 select-none items-center justify-center gap-3 px-4 text-xs text-fg-tertiary md:max-w-[768px]">
+      {groups.length > 0 && <div className="flex min-w-0 items-center gap-2 overflow-x-auto">
+        {groups.map((group, i) => <Fragment key={i}>{i > 0 && <span role="separator" className="h-3 w-px shrink-0 bg-border" />}{group}</Fragment>)}
+      </div>}
       {trailing}
     </div>
   )
 }
 
-/**
- * One subagent: the connected-state dot (green; amber when blocked on an approval) inside a 24 px link that opens
- * the subagent's chat or drags it into a pane. The circle is keyed on `beat`, so each beat remounts it and the
- * one-shot `subagent-blink` animation restarts — no timers. A watch-only child (141 §9.2c) is the same dot in its
- * harness state's colour, titled `watching`.
- */
-function SubagentDot({ row }: { row: AgentInfo }) {
+export function ActivityDot({ color, beat }: { color: string; beat?: number }) {
+  return <span key={beat ?? 0} className={cn('subagent-dot size-2 shrink-0 rounded-full', color, beat !== undefined && 'subagent-blink')} />
+}
+
+/** Identical drag target for a subagent's dot and detail row. */
+export function SubagentLink({ row, children, className }: { row: AgentInfo; children: ReactNode; className: string }) {
   const drag = useSessionDrag(row.id, row.name)
-  const observed = row.observed ?? undefined
   const label = dotLabel(row)
+  return <Link to="/c/$session" params={{ session: row.id }} {...drag} title={label} aria-label={label} className={className}>{children}</Link>
+}
+
+/** Same popout as PopoutTerminalButton, with an in-page terminal on iOS. */
+export function TerminalLink({ session, job, label, className, children }: { session: string; job: string; label: string; className: string; children: ReactNode }) {
   return (
-    <Link
-      to="/c/$session"
-      params={{ session: row.id }}
-      {...drag}
-      className="subagent-dot-in flex size-6 shrink-0 items-center justify-center"
-      title={label}
-      aria-label={label}
-    >
-      {observed ? (
-        <WatchDot state={observed.state} beat={row.beat} />
-      ) : (
-        <span
-          key={row.beat ?? 0}
-          className={cn(
-            'subagent-dot size-2 rounded-full',
-            row.state.state === 'approval' ? 'bg-warning' : 'bg-success',
-            row.beat !== undefined && 'subagent-blink',
-          )}
-        />
-      )}
-    </Link>
+    <Link to="/pty/$session/$job" params={{ session, job }} title={label} aria-label={label} className={className} onClick={(e) => {
+      if (!canPopout() || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+      e.preventDefault()
+      void openPopout({ kind: 'pty', session, job }).catch((e: unknown) => toast.error(String(e)))
+    }}>{children}</Link>
   )
 }

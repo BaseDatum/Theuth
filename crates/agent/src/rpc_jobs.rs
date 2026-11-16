@@ -94,6 +94,17 @@ pub trait JobsApi {
         rows: Option<u16>,
         cols: Option<u16>,
     ) -> SubscriptionResult;
+
+    /// Pending reminder details, read from the session's owner.
+    #[method(name = "list_reminders", with_extensions)]
+    async fn list_reminders(
+        &self,
+        session: SessionId,
+    ) -> RpcResult<Vec<tools::reminder::PendingReminderView>>;
+
+    /// Cancel a pending reminder without delivering it.
+    #[method(name = "cancel_reminder", with_extensions)]
+    async fn cancel_reminder(&self, session: SessionId, id: String) -> RpcResult<()>;
 }
 
 #[async_trait]
@@ -298,6 +309,35 @@ impl JobsApiServer for Server {
             }
         });
         Ok(())
+    }
+
+    async fn list_reminders(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+    ) -> RpcResult<Vec<tools::reminder::PendingReminderView>> {
+        self.authorize_fwd(ext, session).await?;
+        if let Some(rows) =
+            crate::rpc_forward::route(ext, session, "list_reminders", (session,)).await?
+        {
+            return Ok(rows);
+        }
+        ask::<Jobs, _>(JOBS_ACTOR, tools::reminder::ListReminders(session)).await
+    }
+
+    async fn cancel_reminder(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        id: String,
+    ) -> RpcResult<()> {
+        self.authorize_fwd(ext, session).await?;
+        if let Some(reply) =
+            crate::rpc_forward::route(ext, session, "cancel_reminder", (session, &id)).await?
+        {
+            return Ok(reply);
+        }
+        ask::<Jobs, _>(JOBS_ACTOR, tools::CancelReminder { session, id }).await
     }
 }
 

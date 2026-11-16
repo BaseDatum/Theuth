@@ -1840,3 +1840,50 @@ test('186: a reloaded page stamps the calls of a full contact\'s turn from its t
   expect(lastOpenedBy(history)).toBeNull()
   expect(lastOpenedBy(history.slice(1, 2))).toBeUndefined()
 })
+
+test('background cards: independent per-session flags survive history and live snapshots', () => {
+  const st = useSessions.getState()
+  const a = 'background-a'
+  const b = 'background-b'
+  st.ensure(a)
+  st.ensure(b)
+  expect(useSessions.getState().sessions[a]).toMatchObject({ todosShown: false, todosExpanded: false, subagentsExpanded: false, jobsExpanded: false, remindersExpanded: false })
+  st.setTodosShown(a, true)
+  st.setBackgroundExpanded(a, 'subagents', true)
+  st.setBackgroundExpanded(a, 'jobs', true)
+  st.setBackgroundExpanded(a, 'reminders', true)
+  const same = useSessions.getState()
+  st.setBackgroundExpanded(a, 'jobs', true)
+  expect(useSessions.getState()).toBe(same)
+  st.loadHistory(a, receiveComponent('method.agent.output.Loaded', { ...loaded(), history: [], first_seq: null, more: false }), 'replace')
+  st.seedLive([])
+  expect(useSessions.getState().sessions[a]).toMatchObject({ todosShown: true, todosExpanded: false, subagentsExpanded: true, jobsExpanded: true, remindersExpanded: true })
+  expect(useSessions.getState().sessions[b]).toMatchObject({ todosShown: false, subagentsExpanded: false, jobsExpanded: false, remindersExpanded: false })
+})
+
+test('background activity: jobs blink without transcript rows; quiet terminals remain reachable until exit', () => {
+  let s = empty(S)
+  s = apply(s, { type: 'JobStarted', session: S, id: 'j1', command: 'make', kind: 'shell', call_id: 'c1', log: '/l', name: null, pty: false }, ctx())
+  s = apply(s, { type: 'JobOutput', session: S, id: 'j1', chunk: 'output' }, ctx())
+  expect(s.jobBeats.j1).toBe(1)
+  s = apply(s, { type: 'JobOutput', session: S, id: 'j1', chunk: 'more' }, ctx())
+  expect(s.jobBeats.j1).toBe(2)
+  s = apply(s, { type: 'JobScreen', session: S, id: 'j2', rows: ['prompt'], cursor: [0, 0] }, ctx())
+  expect(s.jobBeats.j2).toBe(1)
+  s = apply(s, { type: 'JobIdle', session: S, id: 'j2', command: 'python', name: null, nudge: 1, quiet_secs: 1, secs: 1, user_typed_secs: null, why: '', output: '' }, ctx())
+  expect(s.ptys.has('j2')).toBe(false)
+  expect(s.terminals.has('j2')).toBe(true)
+  s = apply(s, { type: 'JobFinished', session: S, id: 'j2', command: 'python', kind: 'pty', exit: 'killed', secs: 1, output: '', inline: false, pty: true }, ctx())
+  expect(s.terminals.has('j2')).toBe(false)
+  expect(s.jobBeats.j2).toBeUndefined()
+})
+
+test('reminder details follow events even after an ids-only snapshot', () => {
+  const id = 'reminder-details'
+  const st = useSessions.getState()
+  st.seedLive([{ session: id, jobs: [], ptys: [], reminders: ['r1'] }])
+  st.applyEvents([{ type: 'ReminderSet', session: id, id: 'r1', message: 'check build', set_at: 1, fires_at: 61, seconds: 60 }])
+  expect(useSessions.getState().sessions[id]?.reminderDetails.get('r1')).toEqual({ id: 'r1', message: 'check build', set_at: 1, fires_at: 61 })
+  st.applyEvents([{ type: 'ReminderCancelled', session: id, id: 'r1' }])
+  expect(useSessions.getState().sessions[id]?.reminderDetails.has('r1')).toBe(false)
+})

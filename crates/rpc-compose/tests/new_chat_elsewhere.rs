@@ -143,6 +143,27 @@ fn target(seen: Seen) -> jsonrpsee::Methods {
         },
     )
     .unwrap();
+    m.register_method(
+        "list_reminders",
+        |p, seen, _| -> RpcResult<Vec<tools::reminder::PendingReminderView>> {
+            let session: String = p.sequence().next()?;
+            seen.lock().push(("list_reminders".into(), session));
+            Ok(vec![tools::reminder::PendingReminderView {
+                id: "r1".into(),
+                message: "check the owner".into(),
+                set_at: 10,
+                fires_at: 70,
+            }])
+        },
+    )
+    .unwrap();
+    m.register_method("cancel_reminder", |p, seen, _| -> RpcResult<()> {
+        let (session, id): (String, String) = p.parse()?;
+        assert_eq!(id, "r1");
+        seen.lock().push(("cancel_reminder".into(), session));
+        Ok(())
+    })
+    .unwrap();
     m.into()
 }
 
@@ -270,6 +291,13 @@ async fn a_chat_created_elsewhere_is_forwarded_by_id_while_in_use() {
     // The Tools switches read the owner's hides, not this engine's (empty) set.
     let mcp: Vec<tools::McpServer> = api.call("list_mcp", (Some(open.session),)).await.unwrap();
     assert!(mcp[0].tools[0].hidden, "{mcp:?}");
+    let reminders: Vec<tools::reminder::PendingReminderView> =
+        api.call("list_reminders", (open.session,)).await.unwrap();
+    assert_eq!(reminders[0].message, "check the owner");
+    assert_eq!(reminders[0].fires_at, 70);
+    api.call::<_, ()>("cancel_reminder", (open.session, "r1"))
+        .await
+        .unwrap();
 
     let methods: Vec<(String, String)> = seen.lock().clone();
     assert_eq!(
@@ -280,7 +308,9 @@ async fn a_chat_created_elsewhere_is_forwarded_by_id_while_in_use() {
             "load_session",
             "list_agents",
             "get_todos",
-            "list_mcp"
+            "list_mcp",
+            "list_reminders",
+            "cancel_reminder"
         ]
         .map(|m| (m.to_owned(), id.clone()))
         .to_vec()
@@ -454,5 +484,7 @@ fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server
         rpc::rpc_module(server.clone()),
         mcp_server::rpc_module(server.clone()),
         cells::rpc_module(server),
-    ]).expect("test RPC descriptors").module
+    ])
+    .expect("test RPC descriptors")
+    .module
 }

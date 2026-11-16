@@ -9,7 +9,7 @@
 //! supervisor's continuation ledger (47 §4.3); the harness's plan is the
 //! session's persistent todo snapshot (47 §5.3).
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -198,6 +198,8 @@ pub(crate) struct Turn {
     messages: Vec<ChatMessage>,
     /// Calls started and not yet finished, in start order.
     open: Vec<String>,
+    /// Latest content snapshot; a terminal status may arrive without its earlier Diff blocks.
+    tool_content: HashMap<String, Vec<agent_client_protocol::schema::v1::ToolCallContent>>,
     /// The last queued message is a tool response: the turn must still close
     /// with an assistant row so the next user message opens a turn.
     tool_last: bool,
@@ -242,6 +244,7 @@ impl Turn {
             flushed: 0,
             messages: Vec::new(),
             open: Vec::new(),
+            tool_content: HashMap::new(),
             tool_last: false,
             last_tool: None,
             tokens: None,
@@ -311,7 +314,7 @@ impl Turn {
         };
         self.messages.push(ChatMessage::from(vec![ToolResponse::new(
             call_id,
-            crate::frame::truncate(&text, DISPLAY_OUTPUT_CHARS),
+            crate::diff_output::display(&text, DISPLAY_OUTPUT_CHARS),
         )]));
         self.tool_last = true;
     }
@@ -324,9 +327,12 @@ impl Turn {
         }
         error
             .or_else(|| {
-                self.last_tool
-                    .as_ref()
-                    .map(|t| format!("[no reply; last tool result]\n{t}"))
+                self.last_tool.as_ref().map(|t| {
+                    format!(
+                        "[no reply; last tool result]\n{}",
+                        crate::diff_output::strip(t)
+                    )
+                })
             })
             .unwrap_or_else(|| "(no text)".into())
     }
@@ -983,7 +989,7 @@ impl AcpChild {
     /// Send `text` as `session/prompt`; its result arrives as [`PromptDone`].
     fn prompt(&mut self, text: &str, me: &ActorRef<Self>) {
         let Some(harness) = &self.harness else { return };
-        let fut = harness.prompt(text.to_owned());
+        let fut = harness.prompt(crate::diff_output::strip(text).into_owned());
         self.worked = true;
         // 155 §3.1: delivered = the `session/prompt` call (busy retries included).
         self.activity.delivered(Instant::now());
@@ -1547,6 +1553,9 @@ pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEven
         }],
         SessionUpdate::ToolCall(tc) => {
             let call_id = tc.tool_call_id.0.to_string();
+            if !tc.content.is_empty() {
+                turn.tool_content.insert(call_id.clone(), tc.content);
+            }
             let args = with_kind(tc.raw_input, tc.kind);
             turn.call_started(&call_id, &tc.title, args.clone());
             let mut out = vec![AgentEvent::ToolCallStarted {
@@ -1558,7 +1567,8 @@ pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEven
             }];
             // Some harnesses report a finished call in one message.
             if let Some(is_error) = finished(tc.status) {
-                let output = output(&tc.content, tc.raw_output.as_ref());
+                let content = turn.tool_content.remove(&call_id).unwrap_or_default();
+                let output = output(&content, tc.raw_output.as_ref());
                 turn.last_tool = Some(output.clone());
                 turn.call_finished(&call_id, &output, is_error);
                 out.push(AgentEvent::ToolCallFinished {
@@ -1572,27 +1582,30 @@ pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEven
             }
             out
         }
-        SessionUpdate::ToolCallUpdate(u) => match u.fields.status.and_then(finished) {
-            Some(is_error) => {
-                let call_id = u.tool_call_id.0.to_string();
-                let output = output(
-                    u.fields.content.as_deref().unwrap_or_default(),
-                    u.fields.raw_output.as_ref(),
-                );
-                turn.last_tool = Some(output.clone());
-                turn.call_finished(&call_id, &output, is_error);
-                vec![AgentEvent::ToolCallFinished {
-                    session,
-                    turn: id,
-                    call_id,
-                    output,
-                    is_error,
-                    files: Vec::new(),
-                }]
+        SessionUpdate::ToolCallUpdate(u) => {
+            let call_id = u.tool_call_id.0.to_string();
+            if let Some(content) = u.fields.content {
+                turn.tool_content.insert(call_id.clone(), content);
             }
-            // Pending / in-progress / partial content: the card already shows the call.
-            None => Vec::new(),
-        },
+            match u.fields.status.and_then(finished) {
+                Some(is_error) => {
+                    let content = turn.tool_content.remove(&call_id).unwrap_or_default();
+                    let output = output(&content, u.fields.raw_output.as_ref());
+                    turn.last_tool = Some(output.clone());
+                    turn.call_finished(&call_id, &output, is_error);
+                    vec![AgentEvent::ToolCallFinished {
+                        session,
+                        turn: id,
+                        call_id,
+                        output,
+                        is_error,
+                        files: Vec::new(),
+                    }]
+                }
+                // Pending / in-progress: retain content until the status-only finish.
+                None => Vec::new(),
+            }
+        }
         // Plans are canonical state, not transcript text: `AcpChild::plan`.
         SessionUpdate::Plan(_) => Vec::new(),
         // usage_update: session facts, handled in the mailbox (75 §5).
@@ -1632,20 +1645,58 @@ fn finished(status: ToolCallStatus) -> Option<bool> {
     }
 }
 
-/// Rendered tool output: the content blocks, else the raw output, else `""`.
+/// Render content as before, marking ACP diffs as unified patches rather than flattening their type.
 fn output(
     content: &[agent_client_protocol::schema::v1::ToolCallContent],
     raw: Option<&serde_json::Value>,
 ) -> String {
-    let text = acp::render_content(content);
-    if !text.is_empty() {
-        return text;
+    use agent_client_protocol::schema::v1::ToolCallContent;
+    let mut text = String::new();
+    for block in content {
+        let rendered = match block {
+            ToolCallContent::Diff(d) => {
+                let path = d.path.to_string_lossy();
+                let patch = similar::TextDiff::from_lines(
+                    d.old_text.as_deref().unwrap_or_default(),
+                    &d.new_text,
+                )
+                .unified_diff()
+                .context_radius(3)
+                .header(
+                    if d.old_text.is_some() {
+                        &path
+                    } else {
+                        "/dev/null"
+                    },
+                    &path,
+                )
+                .to_string();
+                let patch = if patch.is_empty() {
+                    format!("--- {path}\n+++ {path}\n")
+                } else {
+                    patch
+                };
+                format!(
+                    "{path}{}{patch}{}",
+                    crate::diff_output::ACP_START,
+                    crate::diff_output::ACP_END
+                )
+            }
+            _ => acp::render_content(std::slice::from_ref(block)),
+        };
+        if !text.is_empty() && !rendered.starts_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&rendered);
     }
-    match raw {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(v) => serde_json::to_string_pretty(v).unwrap_or_default(),
-        None => String::new(),
+    if text.is_empty() {
+        text = match raw {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(v) => serde_json::to_string_pretty(v).unwrap_or_default(),
+            None => String::new(),
+        };
     }
+    crate::diff_output::native(&text, raw).into_owned()
 }
 
 impl Actor for AcpChild {
@@ -2285,6 +2336,30 @@ impl Message<SetOption> for AcpChild {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn diff_carrier_acp_parent_fallback_keeps_original_receipt() {
+        let mut turn = turn();
+        turn.last_tool = Some(crate::diff_output::carried("receipt"));
+        assert_eq!(turn.result(None), "[no reply; last tool result]\nreceipt");
+        assert!(
+            turn.last_tool
+                .as_ref()
+                .unwrap()
+                .contains("<theuth-diff-result>")
+        );
+    }
+
+    #[tokio::test]
+    async fn diff_carrier_acp_peer_prompt_does_not_send_ui_metadata() {
+        let mut rig = Rig::new(Duration::from_secs(3600)).await;
+        rig.input(&crate::diff_output::carried("peer receipt"))
+            .await;
+        let (id, text) = rig.fake.prompt().await;
+        assert_eq!(text, "peer receipt");
+        rig.fake.end_turn(&id);
+        rig.until_finished().await;
+    }
+
     use agent_client_protocol::schema::v1::{
         ContentBlock, ContentChunk, Cost, PlanEntry, PlanEntryPriority, ToolCall, ToolCallContent,
         ToolCallUpdate, ToolCallUpdateFields, ToolKind, UsageUpdate,
@@ -2297,6 +2372,76 @@ pub(crate) mod tests {
 
     fn turn() -> Turn {
         Turn::new(SessionId::new(), TurnId::new(), None)
+    }
+
+    #[tokio::test]
+    async fn acp_diff_carrier_survives_partial_updates_and_history() {
+        use agent_client_protocol::schema::v1::Diff;
+        let mut t = turn();
+        let before = format!("{}old\nlast", "context\n".repeat(500));
+        let after = format!("{}new\nlast\n", "context\n".repeat(500));
+        let block = ToolCallContent::Diff(Diff::new("src/a.rs", after).old_text(before));
+        translate(
+            SessionUpdate::ToolCall(
+                ToolCall::new("edit", "Update source")
+                    .kind(ToolKind::Edit)
+                    .content(vec![block]),
+            ),
+            &mut t,
+        );
+        let events = translate(
+            update(
+                "edit",
+                ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+            ),
+            &mut t,
+        );
+        let [AgentEvent::ToolCallFinished { output, .. }] = &events[..] else {
+            panic!("{events:?}")
+        };
+        assert!(output.contains(crate::diff_output::ACP_START));
+        assert!(output.contains("--- src/a.rs\n+++ src/a.rs\n@@"));
+        assert!(output.contains("-old\n"));
+        assert!(output.contains("+new\n"));
+        assert!(output.contains("\\ No newline at end of file"));
+        let carrier = output.clone();
+        let (_, history) = stored(&mut t).await;
+        assert!(history.iter().any(|row| matches!(row, HistoryEntry::Tool { result: Some((text, false)), .. } if text == &carrier)));
+
+        // Multiple files and a large block sent before the terminal update must survive completion.
+        let mut t = turn();
+        translate(
+            SessionUpdate::ToolCall(ToolCall::new("edit", "Patch")),
+            &mut t,
+        );
+        let large = (0..500).map(|n| format!("line {n}\n")).collect::<String>();
+        translate(
+            update(
+                "edit",
+                ToolCallUpdateFields::new().content(vec![
+                    ToolCallContent::from("Updated two files"),
+                    ToolCallContent::Diff(Diff::new("new.txt", large)),
+                    ToolCallContent::Diff(Diff::new("other.txt", "new\n").old_text("old\n")),
+                ]),
+            ),
+            &mut t,
+        );
+        let events = translate(
+            update(
+                "edit",
+                ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+            ),
+            &mut t,
+        );
+        let [AgentEvent::ToolCallFinished { output, .. }] = &events[..] else {
+            panic!("{events:?}")
+        };
+        assert!(output.starts_with("Updated two files"));
+        assert!(output.contains("+++ new.txt"));
+        assert!(output.contains("+line 499"));
+        assert!(output.contains("+++ other.txt"));
+        let (_, history) = stored(&mut t).await;
+        assert!(history.iter().any(|row| matches!(row, HistoryEntry::Tool { result: Some((text, false)), .. } if text.contains("+line 499") && text.contains("+++ other.txt"))));
     }
 
     #[test]

@@ -120,7 +120,7 @@ pub fn serialise(head: Option<&ChatMessage>, folded: &[ChatMessage], cols: usize
     if let Some(h) = head {
         wrap("== epoch head ==", cols, &mut out);
         for t in h.content.texts() {
-            wrap(t, cols, &mut out);
+            wrap(&crate::diff_output::strip(t), cols, &mut out);
         }
     }
     let mut names: HashMap<&str, &str> = HashMap::new();
@@ -133,9 +133,11 @@ pub fn serialise(head: Option<&ChatMessage>, folded: &[ChatMessage], cols: usize
         };
         for p in m.content.iter() {
             match p {
-                ContentPart::Text(t) if !t.trim().is_empty() => {
-                    wrap(&format!("[{tag}] {t}"), cols, &mut out)
-                }
+                ContentPart::Text(t) if !t.trim().is_empty() => wrap(
+                    &format!("[{tag}] {}", crate::diff_output::strip(t)),
+                    cols,
+                    &mut out,
+                ),
                 ContentPart::Binary(_) => wrap("[image frame omitted]", cols, &mut out),
                 ContentPart::ToolCall(c) => {
                     names.insert(&c.call_id, &c.fn_name);
@@ -148,7 +150,10 @@ pub fn serialise(head: Option<&ChatMessage>, folded: &[ChatMessage], cols: usize
                         .copied()
                         .or(r.fn_name.as_deref())
                         .unwrap_or("?");
-                    let mut line = format!("[tool {name}] {}", elide(&r.content));
+                    let mut line = format!(
+                        "[tool {name}] {}",
+                        elide(&crate::diff_output::strip(&r.content))
+                    );
                     for b in &r.images {
                         line.push(' ');
                         crate::loop_::binary_tag(&mut line, b);
@@ -278,6 +283,21 @@ fn elide(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diff_carrier_snapshot_archives_strip_before_eliding_and_wrapping() {
+        let carried = crate::diff_output::carried("receipt");
+        let head = ChatMessage::user(carried.clone());
+        let messages = [
+            ChatMessage::from(vec![ToolResponse::new("c", carried.clone())]),
+            ChatMessage::user(carried),
+        ];
+        let lines = serialise(Some(&head), &messages, 80).join("\n");
+        assert!(lines.contains("receipt"));
+        assert!(!lines.contains("theuth-"));
+        assert!(!lines.contains("metadata"));
+        assert!(!lines.contains("omitted"));
+    }
+
     use genai::chat::{MessageContent, ToolCall, ToolResponse};
 
     use super::*;
