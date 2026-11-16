@@ -1,4 +1,4 @@
-use crate::rpc_support::{attach_pty, RpcServerExt};
+use crate::rpc_support::{RpcServerExt, attach_pty};
 use base64::Engine as _;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
@@ -9,9 +9,8 @@ use rpc_core::{Server, ask, failed, lookup};
 use runtime::SessionId;
 use tokio::sync::broadcast;
 use tools::{
-    CancelJob, CancelOrigin, JOBS_ACTOR, JobId, JobView, Jobs, Key, ListJobs,
-    LiveCounts, LiveCountsRow, PtyChunk, PtyInput, PtyOut, PtyResize, PtyScreen,
-    PtyScreenReply, PtyViewport,
+    CancelJob, CancelOrigin, JOBS_ACTOR, JobId, JobView, Jobs, Key, ListJobs, LiveCounts,
+    LiveCountsRow, PtyChunk, PtyInput, PtyOut, PtyResize, PtyScreen, PtyScreenReply, PtyViewport,
 };
 
 #[rpc_core_macros::rpc_descriptors(owner = "agent", descriptors = rpc_descriptors, audience = "owner")]
@@ -73,11 +72,21 @@ pub trait JobsApi {
         rows: Option<u16>,
         cols: Option<u16>,
     ) -> SubscriptionResult;
+
+    /// Pending reminder details, read from the session's owner.
+    #[method(name = "list_reminders", with_extensions)]
+    async fn list_reminders(
+        &self,
+        session: SessionId,
+    ) -> RpcResult<Vec<tools::reminder::PendingReminderView>>;
+
+    /// Cancel a pending reminder without delivering it.
+    #[method(name = "cancel_reminder", with_extensions)]
+    async fn cancel_reminder(&self, session: SessionId, id: String) -> RpcResult<()>;
 }
 
 #[async_trait]
 impl JobsApiServer for Server {
-
     async fn list_jobs(&self, ext: &Extensions, session: SessionId) -> RpcResult<Vec<JobView>> {
         self.authorize(ext, session).await?;
         ask::<Jobs, _>(JOBS_ACTOR, ListJobs(session)).await
@@ -238,6 +247,35 @@ impl JobsApiServer for Server {
             }
         });
         Ok(())
+    }
+
+    async fn list_reminders(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+    ) -> RpcResult<Vec<tools::reminder::PendingReminderView>> {
+        self.authorize_fwd(ext, session).await?;
+        if let Some(rows) =
+            crate::rpc_forward::route(ext, session, "list_reminders", (session,)).await?
+        {
+            return Ok(rows);
+        }
+        ask::<Jobs, _>(JOBS_ACTOR, tools::reminder::ListReminders(session)).await
+    }
+
+    async fn cancel_reminder(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        id: String,
+    ) -> RpcResult<()> {
+        self.authorize_fwd(ext, session).await?;
+        if let Some(reply) =
+            crate::rpc_forward::route(ext, session, "cancel_reminder", (session, &id)).await?
+        {
+            return Ok(reply);
+        }
+        ask::<Jobs, _>(JOBS_ACTOR, tools::CancelReminder { session, id }).await
     }
 }
 

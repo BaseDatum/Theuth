@@ -19,6 +19,7 @@ import type { SessionKind } from "@/rpc/bindings/method.agent.output"
 import type { ResumeCause } from "@/rpc/bindings/method.agent.output"
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { TodoSnapshot } from "@/rpc/bindings/method.agent.output"
+import type { PendingReminderView } from "@/rpc/bindings/method.agent.output"
 import type { Usage } from "@/rpc/bindings/event.agent_2eevents.output"
 import type { UiEvent as WireEvent } from '@/store/ui-events'
 import type { AgentInfo } from '@/store/ui-events'
@@ -300,10 +301,16 @@ export type SessionSlice = {
   terminal: boolean;
   /** PTY jobs whose screen is still changing: added on `JobStarted.pty`/`JobScreen`, dropped on `JobIdle`/`JobFinished`. The sidebar's live-terminal glyph. */
   ptys: Set<string>;
+  /** Running terminals, including quiet ones; unlike `ptys`, only exit removes them. */
+  terminals: Set<string>;
   /** Non-PTY background jobs still running (`JobStarted` until `JobFinished`). The sidebar's background-job glyph. */
   jobs: Set<string>;
   /** Pending reminders (`ReminderSet` until `ReminderFired`/`ReminderCancelled`). The sidebar's reminder glyph. */
   reminders: Set<string>;
+  /** Pending reminder details, hydrated after load/reconnect and updated by events. */
+  reminderDetails: Map<string, PendingReminderView>;
+  /** Activity counters restart the one-shot dot animation, even without a loaded tool row. */
+  jobBeats: Record<string, number>;
   /** Artifacts by `call_id` of the `show` call that made them (35 §7.3); fed by `ArtifactShown` and `list_artifacts`. */
   artifacts: Map<string, Artifact>;
   /** Tool calls whose arguments are still streaming (`ToolCallProgress`), by `call_id`; cleared on `ToolCallStarted`.
@@ -331,7 +338,10 @@ export type SessionSlice = {
   todosStale: boolean;
   /** The todo card is expanded (47 §6.1); survives snapshots and session switches within this client. */
   todosExpanded: boolean;
-  /** The todo block is shown above the composer (TODO-HANDLE R1); the grabber and `/todos` toggle it. Default hidden. */
+  subagentsExpanded: boolean;
+  jobsExpanded: boolean;
+  remindersExpanded: boolean;
+  /** The whole background area is shown above the composer; the grabber and `/todos` toggle it. Default hidden. */
   todosShown: boolean;
   /** 109 §8.2: the interruption banner above the composer; cleared by the next turn that is not the resumed one. */
   resume?: ResumeBanner;
@@ -403,6 +413,9 @@ type SessionsStore = {
   setTodosExpanded(id: string, expanded: boolean): void;
   /** Show or hide the todo block (the grabber's state); independent of `todosExpanded`. */
   setTodosShown(id: string, shown: boolean): void;
+  setBackgroundExpanded(id: string, card: "subagents" | "jobs" | "reminders", expanded: boolean): void;
+  setReminders(id: string, rows: PendingReminderView[]): void;
+  setTerminals(id: string, ids: Iterable<string>): void;
   /** A gap may hide a `TodoChanged`: label the list stale (one session, or every session) until a snapshot confirms it. */
   markTodosStale(id?: string): void;
   resetLagged(): void;
@@ -728,6 +741,33 @@ export const createSessions = (): SessionsApi =>
               };
         });
       },
+      setBackgroundExpanded(id, card, expanded) {
+        const key = `${card}Expanded` as const;
+        set((st) => {
+          const cur = st.sessions[id] ?? empty(id);
+          return cur[key] === expanded ? st : { sessions: { ...st.sessions, [id]: { ...cur, [key]: expanded } } };
+        });
+      },
+      setReminders(id, rows) {
+        set((st) => ({
+          sessions: {
+            ...st.sessions,
+            [id]: {
+              ...(st.sessions[id] ?? empty(id)),
+              reminders: new Set(rows.map((r) => r.id)),
+              reminderDetails: new Map(rows.map((r) => [r.id, r])),
+            },
+          },
+        }));
+      },
+      setTerminals(id, ids) {
+        set((st) => ({
+          sessions: {
+            ...st.sessions,
+            [id]: { ...(st.sessions[id] ?? empty(id)), terminals: new Set(ids) },
+          },
+        }));
+      },
       markTodosStale(id) {
         set((st) => ({
           sessions: Object.fromEntries(
@@ -806,11 +846,13 @@ export const createSessions = (): SessionsApi =>
               jobs: new Set(r.jobs),
               ptys: new Set(r.ptys),
               reminders: new Set(r.reminders),
+              reminderDetails: new Map([...(sessions[r.session]?.reminderDetails ?? [])].filter(([id]) => r.reminders.includes(id))),
+              jobBeats: Object.fromEntries(Object.entries(sessions[r.session]?.jobBeats ?? {}).filter(([id]) => r.jobs.includes(id) || r.ptys.includes(id))),
             };
           }
           for (const [id, s] of Object.entries(sessions)) {
             if (seen.has(id) || !(s.jobs.size || s.ptys.size || s.reminders.size)) continue;
-            sessions[id] = { ...s, jobs: new Set(), ptys: new Set(), reminders: new Set() };
+            sessions[id] = { ...s, jobs: new Set(), ptys: new Set(), reminders: new Set(), reminderDetails: new Map(), jobBeats: {} };
           }
           return { sessions };
         });
