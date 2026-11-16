@@ -164,4 +164,9 @@ test('a sidebar page pops out alone at its own route; the `popout-page-` label i
   // Without the page label a route keeps its own reading: an id route is its thing, a bare page route nothing.
   expect(popoutTarget('/artifacts/toolu_01?window=popout-artifact-toolu_01')).toEqual({ kind: 'artifact', callId: 'toolu_01' })
   expect(popoutTarget('/costs?window=x')).toBeNull()
+  // A keyed page (New chat, per press) gets its own label; the window still reads as that page.
+  const fresh = { kind: 'page', path: '/new', key: 'a1b2c3d4' } as const
+  expect(popoutLabel(fresh)).toBe('popout-page-new-a1b2c3d4')
+  expect(popoutUrl(fresh)).toBe('/new?window=popout-page-new-a1b2c3d4')
+  expect(popoutTarget(popoutUrl(fresh))).toEqual({ kind: 'page', path: '/new' })
 })

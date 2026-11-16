@@ -27,11 +27,13 @@ export type PopoutTarget =
   /** `/vm/$name`: one sandbox VM's desktop alone (79 §6.2); label `popout-vm-<name>`. */
   | { kind: 'vm'; name: string }
   /** A sidebar page (`/costs`, `/attention`, `/artifacts`, `/settings/$tab`, …) alone, navigable inside its window; label
-   * `popout-page-<route>`, which is also what marks the URL as a page window (a page route has no id to key on). */
-  | { kind: 'page'; path: string }
+   * `popout-page-<route>`, which is also what marks the URL as a page window (a page route has no id to key on). `key`
+   * (New chat: one per press) makes the label `popout-page-<route>-<key>`, a new window instead of focusing the open
+   * one; like `note.fresh` it lives in the label only, never in the parsed target. */
+  | { kind: 'page'; path: string; key?: string }
 
 const idOf = (t: PopoutTarget): string =>
-  t.kind === 'page' ? t.path.replace(/^\//, '') :
+  t.kind === 'page' ? `${t.path.replace(/^\//, '')}${t.key ? `-${t.key}` : ''}` :
   t.kind === 'chat' || t.kind === 'talk'
     ? t.session
     : t.kind === 'artifact'

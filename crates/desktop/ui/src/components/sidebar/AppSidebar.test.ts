@@ -11,7 +11,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { openNewChat } from '@/components/chat/NewChatPane'
 import { createNote } from '@/components/notes/create'
 import { SidebarProvider } from '@/components/ui/sidebar'
-import { canPopout, openPopout } from '@/lib/popout'
+import { canPopout, openPopout, popoutLabel, type PopoutTarget } from '@/lib/popout'
 import * as talk from '@/lib/talk'
 import type { DocSummary } from '@/rpc/bindings/method.agent.output'
 import { AppSidebar } from './AppSidebar'
@@ -94,13 +94,28 @@ test('every page row pops its own route alone; the click on the button never nav
   for (const [label, path] of pages) {
     const { button } = row(label)
     await click(button!)
-    expect(openPopout).toHaveBeenLastCalledWith({ kind: 'page', path })
+    expect(openPopout).toHaveBeenLastCalledWith(label === 'Chat' ? { kind: 'page', path, key: expect.any(String) } : { kind: 'page', path })
   }
   expect(openPopout).toHaveBeenCalledTimes(pages.length)
   expect(navigate).not.toHaveBeenCalled()
   expect(openNewChat).not.toHaveBeenCalled()
   // The home mark is not a destination row.
   expect(row('THEUTH').button).toBeNull()
+})
+
+test('every New chat press opens a fresh window (its own label); a second Costs press brings the same window forward', async () => {
+  await mount()
+  const labels = async (name: string) => {
+    vi.mocked(openPopout).mockClear()
+    await click(row(name).button!)
+    await click(row(name).button!)
+    return vi.mocked(openPopout).mock.calls.map(([t]: [PopoutTarget]) => popoutLabel(t))
+  }
+  const [first, second] = await labels('Chat')
+  expect(first).toMatch(/^popout-page-new-/)
+  expect(second).toMatch(/^popout-page-new-/)
+  expect(first).not.toBe(second)
+  expect(await labels('Costs')).toEqual(['popout-page-costs', 'popout-page-costs'])
 })
 
 test('idle Talk starts a talk exactly as its click does, then pops that talk; a refusal toasts and opens nothing', async () => {

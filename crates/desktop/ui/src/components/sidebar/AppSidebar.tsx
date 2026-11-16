@@ -174,8 +174,12 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                 <span className="ml-auto text-xs text-fg-tertiary">{label(newChat)}</span>
               </Link>
             </SidebarMenuButton>
-            {/* New chat creates nothing until its first send (`/new`), so its window is that page. */}
-            <SidebarPopoutButton target={{ kind: 'page', path: '/new' }} className={cn('top-2', peers ? 'right-8' : 'right-2')} />
+            {/* New chat creates nothing until its first send (`/new`), so its window is that page; every press a new
+             * window (`key`), since the last one may already be the chat its first send made. */}
+            <SidebarPopoutButton
+              target={() => void openPopout({ kind: 'page', path: '/new', key: crypto.randomUUID().slice(0, 8) })}
+              className={cn('top-2', peers ? 'right-8' : 'right-2')}
+            />
             <NewChatOnMenu />
           </SidebarMenuItem>
           <Capability required={talkRequirements} hide><SidebarMenuItem className="group/popout-row">
