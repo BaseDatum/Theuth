@@ -69,7 +69,7 @@ test('paired word changes mark individual identifiers, not unchanged punctuation
   const [old, next] = wordChanges('const first = second;', 'const newer = other;')
   expect(old.filter((p) => p.changed).map((p) => p.text)).toEqual(['first', 'second'])
   expect(next.filter((p) => p.changed).map((p) => p.text)).toEqual(['newer', 'other'])
-  const html = renderToStaticMarkup(createElement(DiffView, { pairs: [{ path: 'f', old: '<script>old</script>', new: '<script>new</script>' }] }))
+  const html = renderToStaticMarkup(createElement(DiffView, { disclosure: 'c1', pairs: [{ path: 'f', old: '<script>old</script>', new: '<script>new</script>' }] }))
   expect(html).toContain('<ins ')
   expect(html).toContain('<del ')
   expect(html).toContain('&lt;script&gt;')
@@ -78,7 +78,7 @@ test('paired word changes mark individual identifiers, not unchanged punctuation
 
 test('DiffView caps rows across files and offers Show all without dropping the total counts', () => {
   const model = pairsDiff([{ path: 'large', old: '', new: Array.from({ length: 450 }, (_, i) => `line-${i}`).join('\n') + '\n' }])
-  const html = renderToStaticMarkup(createElement(DiffView, { model }))
+  const html = renderToStaticMarkup(createElement(DiffView, { model, disclosure: 'c2' }))
   expect(html.match(/<tr/g)).toHaveLength(400)
   expect(html).toContain('Show all 451 lines')
   expect(html).not.toContain('line-449')

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type * as Router from '@tanstack/react-router'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { costsFixture, limitsFixture } from '@/dev/costs-fixture'
@@ -19,6 +19,14 @@ vi.mock('@/components/sidebar/SearchTrigger', () => ({ SearchTrigger: () => null
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
 
 const NOW = Date.parse('2026-11-02T14:25:00Z')
+
+// The page's ranges (30D, Today) read the clock: pin it to the fixtures' NOW, or the window drifts off their rows.
+beforeEach(() => {
+  vi.useFakeTimers({ now: NOW, toFake: ['Date'] })
+})
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 function render(s: CostsSearch, seed = true): string {
   const qc = new QueryClient()

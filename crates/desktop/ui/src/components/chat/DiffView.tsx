@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { type DiffModel, type DiffPair, type DiffRow, type WordPart, pairsDiff, parseUnified, wordChanges } from '@/lib/editDiff'
+import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
 
 const ROW_CAP = 400
@@ -29,10 +30,11 @@ export function DiffStats({ added, removed }: Pick<DiffModel, 'added' | 'removed
   </span>
 }
 
-/** Unified patches and argument-only snippets share the same file/hunk/line layout. */
-export function DiffView({ model, diff, pairs }: { model?: DiffModel; diff?: string; pairs?: DiffPair[] }) {
+/** Unified patches and argument-only snippets share the same file/hunk/line layout. `disclosure` is the owning
+ * card's key: Show all lives in the disclosure store, so a remount or reload keeps it. */
+export function DiffView({ model, diff, pairs, disclosure }: { model?: DiffModel; diff?: string; pairs?: DiffPair[]; disclosure: string }) {
   const parsed = useMemo(() => model ?? (diff !== undefined ? parseUnified(diff) : pairsDiff(pairs ?? [])), [model, diff, pairs])
-  const [all, setAll] = useState(false)
+  const [all, setAll] = useDisclosure(disclosureKey(disclosure, 'diff-all'))
   const total = parsed.files.reduce((n, file) => n + file.rows.length, 0)
   let remaining = all ? Infinity : ROW_CAP
   return <div className="mt-2 -mx-4 max-h-[300px] overflow-auto border-t border-border-subtle font-mono text-xs leading-5" aria-label="File diff">
