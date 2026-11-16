@@ -470,6 +470,16 @@ Sidebar live-work glyphs use the same category palette, defined once in
 subagent's pending approval makes the sidebar network glyph ochre; the
 session's thinking/activity indicator keeps its existing colour.
 
+Addressable sidebar rows expose an `AppWindow` action on hover or
+focus-within: chats, desk tiles, desk-tree headers and subagent rows open
+their chat; a running Talk entry opens its existing talk target. The action
+is an absolutely positioned sibling of the row link, stops click/press
+propagation, and never shifts the row on hover. Coarse pointers hide the new
+action; the chat's existing menu entry remains. Project headers are unchanged.
+Unopened desks, home/creation/index navigation, idle Talk, section headers
+and Show more controls have no existing popout target and get no action.
+The global sidebar does not list individual notes, notebooks or meetings.
+
 The existing grabber reveals stacked To-do, Subagents, Jobs (including
 terminals) and Reminders cards, omitting empty categories. The area and each
 card start collapsed. `todosShown` controls the area; `todosExpanded`,

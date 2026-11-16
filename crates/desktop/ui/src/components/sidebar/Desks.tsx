@@ -13,12 +13,14 @@ import { Button } from '@/components/ui/button'
 import { SidebarGroupLabel, SidebarMenuButton, SidebarMenuItem } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { canPopout } from '@/lib/popout'
 import { live, subtrees } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { useSessionField, useSessions } from '@/store/sessions'
 import { AgentTree } from './AgentTree'
 import { runningSubagents } from './SessionItem'
+import { SidebarPopoutButton } from './SidebarPopoutButton'
 
 const NONE: SessionSummary[] = []
 
@@ -100,18 +102,21 @@ function DeskTree({ id, name, active }: { id: string; name: string; active: stri
   return (
     <SidebarMenuItem>
       {rows.length > 0 && (
-        <Link
-          to="/c/$session"
-          params={{ session: id }}
-          {...drag}
-          data-desk-header
-          className="mx-1 flex h-7 items-center gap-1.5 rounded-md px-2 text-xs hover:bg-sidebar-accent"
-        >
-          <span className="truncate font-semibold">{name}</span>
-          <span className="shrink-0 text-fg-tertiary">
-            {n} live · {rows.length - n} finished
-          </span>
-        </Link>
+        <div className="group/popout-row relative">
+          <Link
+            to="/c/$session"
+            params={{ session: id }}
+            {...drag}
+            data-desk-header
+            className="mx-1 flex h-7 items-center gap-1.5 rounded-md px-2 text-xs hover:bg-sidebar-accent pointer-fine:pr-8"
+          >
+            <span className="truncate font-semibold">{name}</span>
+            <span className="shrink-0 text-fg-tertiary">
+              {n} live · {rows.length - n} finished
+            </span>
+          </Link>
+          <SidebarPopoutButton target={{ kind: 'chat', session: id }} className="top-1 right-2" />
+        </div>
       )}
       <AgentTree session={id} active={active} />
     </SidebarMenuItem>
@@ -169,12 +174,12 @@ function DeskTile({
           {subRunning}
         </span>
       )}
-      <span className="pointer-coarse:hidden">{label}</span>
+      <span className={cn('pointer-coarse:hidden', id !== null && canPopout() && 'group-hover/popout-row:opacity-0 group-focus-within/popout-row:opacity-0')}>{label}</span>
       <span className="hidden max-w-full truncate px-3 text-xs pointer-coarse:block">{name}</span>
     </>
   )
   return (
-    <li>
+    <li className="group/popout-row relative">
       <Tooltip>
         <TooltipTrigger asChild>
           <SidebarMenuButton
@@ -202,6 +207,7 @@ function DeskTile({
           {name} · {state}
         </TooltipContent>
       </Tooltip>
+      <SidebarPopoutButton target={id === null ? null : { kind: 'chat', session: id }} className="inset-0! m-auto size-6 bg-sidebar-accent" />
     </li>
   )
 }

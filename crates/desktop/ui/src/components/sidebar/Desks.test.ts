@@ -7,6 +7,8 @@ import { keys } from '@/components/tasks/queries'
 import { SidebarMenu, SidebarProvider } from '@/components/ui/sidebar'
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
+import type * as Popout from '@/lib/popout'
+import { openPopout } from '@/lib/popout'
 import { usePanes } from '@/lib/panes'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { AgentInfo } from '@/store/ui-events'
@@ -26,6 +28,7 @@ vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
   useApi: () => ({ list_sessions: async () => SESSIONS, agents_list: async () => AGENTS }),
 }))
+vi.mock('@/lib/popout', async (original) => ({ ...(await original<typeof Popout>()), canPopout: () => true, openPopout: vi.fn(async () => {}) }))
 
 const agent = (name: string, desk: string | null, status = 'idle') => ({ desk, status, file: { name } })
 const AGENTS = [agent('sergei', 'd-sergei'), agent('theuth', 'd-theuth', 'working'), agent('stas', 'd-stas'), agent('maya', null), agent('ghost', null, 'proposed')]
@@ -144,5 +147,27 @@ test('a desk with a session drags into a pane like any session row, tile and tre
   expect(await dragOf(host.querySelector<HTMLElement>('[data-desk-header]')!)).toBe('d-sergei')
   expect(tile('maya').hasAttribute('data-drag-row')).toBe(false)
   expect(await dragOf(tile('maya'))).toBeUndefined()
+  await act(async () => root.unmount())
+})
+
+test('desk tiles and the desk-tree header pop out their own chats; unopened desks have no target', async () => {
+  vi.mocked(openPopout).mockClear()
+  useSessions.getState().setChildren('d-sergei', [info('sub-1', 'd-sergei', 'running')])
+  const { host, root, tile } = await mount('d-sergei')
+  for (const name of ['theuth', 'sergei', 'stas']) {
+    const button = tile(name).closest('li')!.querySelector<HTMLButtonElement>('button[aria-label="Open in new window"]')!
+    expect(button.title).toBe('Open in new window')
+    expect(button.querySelector('.lucide-app-window')).not.toBeNull()
+    expect(button.closest('a')).toBeNull()
+    expect(await dragOf(button)).toBeUndefined()
+    await act(async () => button.click())
+    expect(openPopout).toHaveBeenLastCalledWith({ kind: 'chat', session: `d-${name}` })
+  }
+  expect(tile('maya').closest('li')!.querySelector('[aria-label="Open in new window"]')).toBeNull()
+  const header = host.querySelector<HTMLElement>('[data-desk-header]')!
+  const button = header.parentElement!.querySelector<HTMLButtonElement>('button[aria-label="Open in new window"]')!
+  await act(async () => button.click())
+  expect(openPopout).toHaveBeenLastCalledWith({ kind: 'chat', session: 'd-sergei' })
+  expect(openPopout).toHaveBeenCalledTimes(4)
   await act(async () => root.unmount())
 })

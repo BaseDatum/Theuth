@@ -46,6 +46,7 @@ import type { DocSummary } from "@/rpc/bindings/method.agent.output"
 import { Desks } from './Desks'
 import { SearchTrigger } from './SearchTrigger'
 import { SessionList } from './SessionList'
+import { SidebarPopoutButton } from './SidebarPopoutButton'
 
 /** Injected by vite `define` from tauri.conf.json. */
 declare const __APP_VERSION__: string
@@ -159,8 +160,8 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             </SidebarMenuButton>
             <NewChatOnMenu />
           </SidebarMenuItem>
-          <Capability required={talkRequirements} hide><SidebarMenuItem>
-            <SidebarMenuButton asChild isActive={section === 'talk'} className="h-9 rounded-[10px] px-2.5">
+          <Capability required={talkRequirements} hide><SidebarMenuItem className="group/popout-row">
+            <SidebarMenuButton asChild isActive={section === 'talk'} className={cn('h-9 rounded-[10px] px-2.5', live && talking.session && 'pointer-fine:pr-8')}>
               <Link
                 to="/"
                 aria-label={live ? 'Talk (running)' : 'Talk'}
@@ -179,6 +180,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                 {live && <span className="ml-auto size-2 shrink-0 rounded-full bg-success" aria-label="talk running" />}
               </Link>
             </SidebarMenuButton>
+            <SidebarPopoutButton target={live && talking.session ? { kind: 'talk', session: talking.session } : null} className="top-2 right-2" />
           </SidebarMenuItem></Capability>
           <Capability required={noteRequirements} hide><SidebarMenuItem>
             <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
