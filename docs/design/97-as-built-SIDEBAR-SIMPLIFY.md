@@ -231,3 +231,13 @@ ef9ef710 feat(desktop): SectionBand + SectionRow replace SectionTabs; groupOf in
 - No Tauri run, no phone/relay run, no browser screenshot: band/row alignment (52 + 44 px), the underline sitting on the band border, equal-width triggers, the icon-only fold under 768 px, the macOS drag region on the band, and the popped windows' unchanged headers were not exercised in a live window.
 - The SSR smokes cover: `SectionBand` trigger count, active trigger per pathname, the three `hidden md:inline` label spans, `h-[52px]`, the absence of `@container`, `null` when popped, the toggle under `isMobile`/`!open`; `SectionRow` back/title/children order. They do not render CSS — the Tailwind class-merge outcomes (`h-full` on the list, `after:bottom-0`, `rounded-none`, `text-fg-tertiary` over the primitive's `text-foreground/60` / `dark:text-muted-foreground`) are by reading `components/ui/tabs.tsx`, not measurement.
 - `mobile-zoom.test.ts` red in both full runs is a 5 s timeout of a synchronous source scan at load average 50-65; it passes alone. Not re-timed on an idle machine.
+
+## Settings small screens (2026-11-16)
+
+- Below 1024 px, `TabBand` wraps instead of clipping; each tab keeps at least 40 px width and 52 px height. Labels remain icon-only below `md`.
+- Only the Settings body establishes the named `settings` container, and only below 1024 px. `Row` stacks below 480 px of available body width, including the narrow column on portrait iPad. Existing `stack` and `wide` rows retain their desktop behaviour.
+- Settings-scoped styles wrap long values, section actions and chip text; stacked input/select controls fill their row. Touch controls have a 40 px minimum, including back links and portaled menus.
+- Fine-pointer windows retain native icon/raw-button heights. Wrapped text buttons keep their desktop minimum height (default 36 px, small 32 px, extra-small 24 px, large 40 px); the touch minimum remains 40 px.
+- Provider forms become single-column forms; model limits become labelled cards. Double and MCP audit tables retain their native table markup and use labelled cards below 1024 px. Voice history puts actions below the text; machine actions and template editor metadata wrap.
+- Phone dialogs fit the visible viewport and scroll vertically; sheets use the phone width. These rules do not affect chat or other pages, and all responsive changes stop at 1024 px.
+- Visual evidence: `/tmp/setmobile/shots/{before,after}/`, every Settings tab at 360 and 390 px, plus all ten categories at 768 px and desktop references at 1024 px. Populated long-value fixtures use isolated query caches; the scratch engine never pairs with another engine.

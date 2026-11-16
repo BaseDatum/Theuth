@@ -75,17 +75,18 @@ export function Row({
 }) {
   return (
     <div
+      data-settings-row=""
       className={
         wide
           ? 'flex flex-col gap-3 border-b border-border-subtle py-4 last:border-0'
-          : `flex items-center justify-between gap-6 border-b border-border-subtle py-4 last:border-0${stack ? ' max-md:flex-col max-md:items-stretch max-md:gap-3' : ''}`
+          : `flex items-center justify-between gap-6 border-b border-border-subtle py-4 last:border-0 max-lg:@max-[480px]/settings:flex-col max-lg:@max-[480px]/settings:items-stretch max-lg:@max-[480px]/settings:gap-3${stack ? ' max-md:flex-col max-md:items-stretch max-md:gap-3' : ''}`
       }
     >
       <div className="min-w-0">
         <div className="text-sm">{label}</div>
         {description && <div className="mt-0.5 text-[13px] text-fg-secondary">{description}</div>}
       </div>
-      {children && <div className={wide ? 'flex w-full items-center gap-2' : 'flex shrink-0 items-center gap-2'}>{children}</div>}
+      {children && <div data-settings-control="" className={`${wide ? 'flex w-full items-center gap-2' : 'flex shrink-0 items-center gap-2'} max-lg:@max-[480px]/settings:w-full max-lg:@max-[480px]/settings:flex-wrap`}>{children}</div>}
     </div>
   )
 }
@@ -94,7 +95,7 @@ export function Row({
 export function Section({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
   return (
     <section className="mb-8">
-      <div className="flex h-9 items-center justify-between">
+      <div data-settings-heading="" className="flex h-9 items-center justify-between">
         <h3 className="text-base font-semibold">{title}</h3>
         {actions && <div className="flex items-center gap-2">{actions}</div>}
       </div>

@@ -82,7 +82,7 @@ export function MeetingTemplates({ initial = null }: Partial<TabProps> & { initi
       {draft && (
         <div className="flex flex-col gap-2 py-4">
           {draft.isNew ? (
-            <div className="flex items-center gap-2 text-[13px]">
+            <div className="flex items-center gap-2 text-[13px] max-lg:flex-wrap">
               <Input className="h-8 w-64" placeholder="Name of the file" aria-label="Template slug" value={draft.slug} onChange={(e) => setDraft({ ...draft, slug: e.target.value })} />
               <span className="text-fg-tertiary">{slug ? `${slug}.md` : 'lowercase words joined by -'}</span>
               {taken && <span className="text-destructive">already exists</span>}

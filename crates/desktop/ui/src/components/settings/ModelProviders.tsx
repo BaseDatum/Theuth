@@ -408,7 +408,7 @@ export function LocalServerForm({ form, names, onChange, onSubmit, pending }: { 
   const ready = !!(form.name.trim() && form.url.trim())
   return (
     <form
-      className="mt-3 grid grid-cols-[12rem_1fr_auto] gap-2"
+      className="mt-3 grid grid-cols-1 gap-2 max-lg:[&>*]:col-span-full lg:grid-cols-[12rem_1fr_auto]"
       aria-label="Add local server"
       onSubmit={(e) => {
         e.preventDefault()
@@ -464,7 +464,7 @@ export function CustomProviderForm({ form, names, onChange, onSubmit, pending }:
   const ready = !!(form.name.trim() && form.url.trim() && (local || form.key.trim()))
   return (
     <form
-      className="mt-4 grid grid-cols-[1fr_2fr_2fr_auto] gap-2"
+      className="mt-4 grid grid-cols-1 gap-2 max-lg:[&>*]:col-span-full lg:grid-cols-[1fr_2fr_2fr_auto]"
       aria-label="Add custom provider"
       onSubmit={(e) => {
         e.preventDefault()
@@ -516,11 +516,11 @@ export function ModelLimits({ provider }: { provider: string }) {
       ) : models.data.length === 0 ? (
         <Empty>No models listed yet; Refresh models asks the server.</Empty>
       ) : (
-        <div className="grid grid-cols-[minmax(0,1fr)_13rem_6.5rem_auto] items-center gap-x-2 gap-y-2 text-[13px]">
-          <span className="text-fg-tertiary">Model</span>
-          <span className="text-fg-tertiary">Context (tokens)</span>
-          <span className="text-fg-tertiary">Output (tokens)</span>
-          <span />
+        <div className="grid gap-3 text-[13px] lg:grid-cols-[minmax(0,1fr)_13rem_6.5rem_auto] lg:items-center lg:gap-x-2 lg:gap-y-2">
+          <span className="hidden text-fg-tertiary lg:block">Model</span>
+          <span className="hidden text-fg-tertiary lg:block">Context (tokens)</span>
+          <span className="hidden text-fg-tertiary lg:block">Output (tokens)</span>
+          <span className="hidden lg:block" />
           {models.data.map((m) => (
             <LimitRow key={`${m.id}\n${m.context}\n${m.output}\n${m.source}`} m={m} save={save} />
           ))}
@@ -541,8 +541,8 @@ function LimitRow({ m, save }: { m: ProviderModel; save: Action<Limits, Provider
     if (e.key === 'Enter' && next && !busy) save.mutate(next)
   }
   return (
-    <>
-      <span className="flex min-w-0 flex-col">
+    <div data-model-limit="" className="grid min-w-0 grid-cols-2 items-center gap-2 rounded-[10px] border border-border-subtle p-3 lg:contents">
+      <span className="flex min-w-0 flex-col max-lg:col-span-full">
         <span className="truncate font-mono" title={m.id}>
           {m.name}
         </span>
@@ -550,8 +550,14 @@ function LimitRow({ m, save }: { m: ProviderModel; save: Action<Limits, Provider
           {LIMIT_SOURCE[m.source]}
         </Badge>
       </span>
-      <Input type="number" min={1} className="h-8 px-2 text-right text-[13px] md:text-[13px]" aria-label={`Context of ${m.id}`} placeholder={contextPlaceholder(m)} value={ctx} onChange={(e) => setCtx(e.target.value)} onKeyDown={enter} />
-      <Input type="number" min={1} className="h-8 px-2 text-right text-[13px] md:text-[13px]" aria-label={`Output of ${m.id}`} placeholder="unknown" value={out} onChange={(e) => setOut(e.target.value)} onKeyDown={enter} />
+      <label className="min-w-0 lg:contents">
+        <span className="mb-1 block text-xs text-fg-tertiary lg:hidden">Context (tokens)</span>
+        <Input type="number" min={1} className="h-8 px-2 text-right text-[13px] md:text-[13px]" aria-label={`Context of ${m.id}`} placeholder={contextPlaceholder(m)} value={ctx} onChange={(e) => setCtx(e.target.value)} onKeyDown={enter} />
+      </label>
+      <label className="min-w-0 lg:contents">
+        <span className="mb-1 block text-xs text-fg-tertiary lg:hidden">Output (tokens)</span>
+        <Input type="number" min={1} className="h-8 px-2 text-right text-[13px] md:text-[13px]" aria-label={`Output of ${m.id}`} placeholder="unknown" value={out} onChange={(e) => setOut(e.target.value)} onKeyDown={enter} />
+      </label>
       <span className="flex items-center gap-1">
         <Button size="xs" variant="outline" aria-label={`Save limits of ${m.id}`} disabled={!next || busy} onClick={() => next && save.mutate(next)}>
           Save
@@ -560,7 +566,7 @@ function LimitRow({ m, save }: { m: ProviderModel; save: Action<Limits, Provider
           Clear
         </Button>
       </span>
-    </>
+    </div>
   )
 }
 

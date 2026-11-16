@@ -246,7 +246,7 @@ function Classes({ classes, loading, error }: { classes: DoubleClass[]; loading:
   if (classes.length === 0) return <Empty>No classes yet. The first approval or question the double sees creates one.</Empty>
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-left text-xs">
+      <table className="settings-table w-full text-left text-xs">
         <thead className="text-fg-tertiary">
           <tr>
             {['class', 'n', 'rung', 'acc', 'ECE', 'cap', 'mutating opt-in', 'last decision', ''].map((h) => (
@@ -260,16 +260,16 @@ function Classes({ classes, loading, error }: { classes: DoubleClass[]; loading:
           {classes.map((c) => (
             <Fragment key={c.key}>
               <tr className="border-t border-border-subtle align-middle">
-                <td className="max-w-[260px] truncate py-1.5 pr-3 font-mono" title={c.key}>
+                <td data-label="class" className="max-w-[260px] truncate py-1.5 pr-3 font-mono" title={c.key}>
                   {c.key}
                 </td>
-                <td className="py-1.5 pr-3 tabular-nums">{c.n}</td>
-                <td className="py-1.5 pr-3 tabular-nums" title={c.cap_reason ?? undefined}>
+                <td data-label="n" className="py-1.5 pr-3 tabular-nums">{c.n}</td>
+                <td data-label="rung" className="py-1.5 pr-3 tabular-nums" title={c.cap_reason ?? undefined}>
                   {rungGlyph(c.rung)} L{c.rung}
                 </td>
-                <td className="py-1.5 pr-3 tabular-nums">{pct(c.kpis.accuracy)}</td>
-                <td className="py-1.5 pr-3 tabular-nums">{c.kpis.ece.toFixed(3)}</td>
-                <td className="py-1.5 pr-3">
+                <td data-label="acc" className="py-1.5 pr-3 tabular-nums">{pct(c.kpis.accuracy)}</td>
+                <td data-label="ECE" className="py-1.5 pr-3 tabular-nums">{c.kpis.ece.toFixed(3)}</td>
+                <td data-label="cap" className="py-1.5 pr-3">
                   <Select value={String(c.cap)} disabled={busy} onValueChange={(v) => cap.mutate({ c, rung: Number(v) })}>
                     <SelectTrigger className="h-7 w-20 text-xs" aria-label={`cap of ${c.key}`}>
                       <SelectValue />
@@ -283,10 +283,10 @@ function Classes({ classes, loading, error }: { classes: DoubleClass[]; loading:
                     </SelectContent>
                   </Select>
                 </td>
-                <td className="py-1.5 pr-3">
+                <td data-label="mutating opt-in" className="py-1.5 pr-3">
                   <Switch checked={c.mutating_opt_in} disabled={busy} onCheckedChange={(v) => optIn.mutate({ c, on: v })} aria-label={`mutating opt-in of ${c.key}`} />
                 </td>
-                <td className="py-1.5 pr-3 tabular-nums">{at(c.last_decision_at)}</td>
+                <td data-label="last decision" className="py-1.5 pr-3 tabular-nums">{at(c.last_decision_at)}</td>
                 <td className="py-1.5 whitespace-nowrap">
                   <Button size="xs" variant="ghost" onClick={() => setOpen(open === c.key ? null : c.key)}>
                     {open === c.key ? 'hide' : 'examples'}
@@ -461,7 +461,7 @@ function RunLog({ last, live }: { last: DoubleRun | null | undefined; live: Doub
   // `double_status` carries the most recent `runs` row; the live `DoubleTrainingState` events of this session fill in the rest.
   if (!last && live.length === 0) return <Empty>No training runs yet.</Empty>
   return (
-    <table className="w-full text-left text-xs">
+    <table className="settings-table w-full text-left text-xs">
       <thead className="text-fg-tertiary">
         <tr>
           {['run', 'tier', 'venue', 'state', 'detail'].map((h) => (
@@ -474,23 +474,23 @@ function RunLog({ last, live }: { last: DoubleRun | null | undefined; live: Doub
       <tbody>
         {live.map((e) => (
           <tr key={e.run_id} className="border-t border-border-subtle">
-            <td className="py-1 pr-3 font-mono">{e.run_id.slice(0, 8)}</td>
-            <td className="py-1 pr-3">{e.tier.toUpperCase()}</td>
-            <td className="py-1 pr-3">{e.venue}</td>
-            <td className="py-1 pr-3">
+            <td data-label="run" className="py-1 pr-3 font-mono">{e.run_id.slice(0, 8)}</td>
+            <td data-label="tier" className="py-1 pr-3">{e.tier.toUpperCase()}</td>
+            <td data-label="venue" className="py-1 pr-3">{e.venue}</td>
+            <td data-label="state" className="py-1 pr-3">
               {e.state}
               {e.progress !== undefined && e.progress !== null ? ` · ${pct(e.progress)}` : ''}
             </td>
-            <td className="py-1 text-fg-secondary">{e.message}</td>
+            <td data-label="detail" className="py-1 text-fg-secondary">{e.message}</td>
           </tr>
         ))}
         {last && !live.some((e) => e.run_id === last.id) && (
           <tr className="border-t border-border-subtle">
-            <td className="py-1 pr-3 font-mono">{last.id.slice(0, 8)}</td>
-            <td className="py-1 pr-3">{last.tier.toUpperCase()}</td>
-            <td className="py-1 pr-3">{last.venue}</td>
-            <td className="py-1 pr-3">{last.state}</td>
-            <td className="py-1 text-fg-secondary">{runLine(last)}</td>
+            <td data-label="run" className="py-1 pr-3 font-mono">{last.id.slice(0, 8)}</td>
+            <td data-label="tier" className="py-1 pr-3">{last.tier.toUpperCase()}</td>
+            <td data-label="venue" className="py-1 pr-3">{last.venue}</td>
+            <td data-label="state" className="py-1 pr-3">{last.state}</td>
+            <td data-label="detail" className="py-1 text-fg-secondary">{runLine(last)}</td>
           </tr>
         )}
       </tbody>

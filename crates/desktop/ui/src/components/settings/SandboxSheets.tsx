@@ -62,11 +62,11 @@ function SharesEditor({ shares, onChange }: { shares: Mount[]; onChange: (s: Mou
     <div className="flex flex-col gap-2">
       {shares.length === 0 && <p className="text-xs text-fg-tertiary">No folder is shared. The VM sees only what you add here.</p>}
       {shares.map((s, i) => (
-        <div key={s.host} className="flex items-center gap-2 text-[13px]">
+        <div key={s.host} className="flex items-center gap-2 text-[13px] max-lg:flex-wrap">
           <span className="min-w-0 flex-1 truncate font-mono text-xs" title={s.host}>
             {s.host}
           </span>
-          <span className="shrink-0 font-mono text-xs text-fg-tertiary">→ {s.guest}</span>
+          <span className="shrink-0 font-mono text-xs text-fg-tertiary max-lg:max-w-full max-lg:wrap-anywhere">→ {s.guest}</span>
           <label className="flex shrink-0 items-center gap-1 text-xs text-fg-secondary">
             <Switch checked={s.readonly} aria-label={`${s.host} read-only`} onCheckedChange={(ro) => onChange(shares.map((x, j) => (j === i ? { ...x, readonly: ro } : x)))} /> read-only
           </label>

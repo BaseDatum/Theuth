@@ -116,16 +116,16 @@ export function Mcp() {
         ) : audit.data.length === 0 ? (
           <Empty>No MCP calls yet.</Empty>
         ) : (
-          <table className="w-full text-[13px]">
+          <table className="settings-table w-full text-[13px]">
             <tbody>
               {audit.data.map((l) => (
                 <tr key={`${l.at}-${l.tool}-${l.args_sha256}`} className="border-b border-border-subtle last:border-0">
-                  <td className="py-1 pr-3 whitespace-nowrap text-fg-tertiary">{formatAt(Date.parse(l.at))}</td>
-                  <td className="py-1 pr-3 text-fg-secondary">{l.client}</td>
-                  <td className="py-1 pr-3 font-mono">{l.tool}</td>
-                  <td className="py-1 pr-3 text-fg-tertiary">{l.transport}</td>
-                  <td className={`py-1 pr-3 ${l.ok ? '' : 'text-destructive'}`}>{l.ok ? 'ok' : 'error'}</td>
-                  <td className="py-1 text-right text-fg-tertiary">{l.ms} ms</td>
+                  <td data-label="When" className="py-1 pr-3 whitespace-nowrap text-fg-tertiary">{formatAt(Date.parse(l.at))}</td>
+                  <td data-label="Client" className="py-1 pr-3 text-fg-secondary">{l.client}</td>
+                  <td data-label="Tool" className="py-1 pr-3 font-mono">{l.tool}</td>
+                  <td data-label="Transport" className="py-1 pr-3 text-fg-tertiary">{l.transport}</td>
+                  <td data-label="Result" className={`py-1 pr-3 ${l.ok ? '' : 'text-destructive'}`}>{l.ok ? 'ok' : 'error'}</td>
+                  <td data-label="Duration" className="py-1 text-right text-fg-tertiary">{l.ms} ms</td>
                 </tr>
               ))}
             </tbody>

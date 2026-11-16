@@ -95,3 +95,17 @@ test('188: a band of any tabs marks its value active; beside a column it leaves 
   env.mac = false
   env.open = true
 })
+
+test('narrow bands wrap every tab with a 40px minimum instead of clipping later tabs', () => {
+  const html = renderToStaticMarkup(createElement(TabBand, {
+    tabs: Array.from({ length: 6 }, (_, i) => ({ id: String(i), label: `Tab ${i}`, icon: Monitor })),
+    value: '5',
+    onValueChange: () => {},
+  }))
+  expect(tabs(html)).toBe(6)
+  expect(active(html)).toEqual(['Tab 5'])
+  expect(html).toContain('max-lg:flex-wrap')
+  expect(html).toContain('max-lg:group-data-[orientation=horizontal]/tabs:h-auto')
+  expect(html.match(/max-lg:min-w-10/g)).toHaveLength(6)
+  expect(html.match(/max-lg:h-\[52px\]/g)).toHaveLength(6)
+})

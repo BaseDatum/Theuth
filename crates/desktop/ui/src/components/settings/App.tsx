@@ -85,7 +85,7 @@ export function App() {
         // The removed Name row carried the node's version; it stays beside the title (188 A2).
         <Section title="Node" actions={<span className="text-[13px] text-fg-secondary">{`theuth ${info.version}`}</span>}>
           <Row label={`Data directory on ${info.name}`}>
-            <code className="max-w-96 truncate font-mono text-[13px] text-fg-tertiary">
+            <code title={info.data_dir} className="max-w-96 truncate font-mono text-[13px] text-fg-tertiary">
               {info.data_dir}
             </code>
           </Row>

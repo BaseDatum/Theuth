@@ -1,3 +1,4 @@
+import './small-screens.css'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
 import { SidebarLead, TabBand } from '@/components/nav/SectionBand'
@@ -38,7 +39,7 @@ export function SettingsPage({ tab, focus }: { tab: string; focus: string | null
   )
   // Keyed by tab: a new tab starts at the top.
   const body = (
-    <div key={tab} className="min-h-0 flex-1 overflow-y-auto">
+    <div key={tab} className="min-h-0 min-w-0 flex-1 overflow-y-auto max-lg:@container/settings">
       <div className="mx-auto w-full max-w-[720px] px-4 pt-4 pb-8 md:px-6">
         <RestartBanner />
         {current.required ? <Capability required={current.required}><current.Component focus={focus} /></Capability> : <current.Component focus={focus} />}
@@ -47,7 +48,7 @@ export function SettingsPage({ tab, focus }: { tab: string; focus: string | null
   )
   if (mobile) {
     return (
-      <article className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <article data-settings-page="" className="flex min-h-0 min-w-0 flex-1 flex-col">
         {band}
         <SectionRow back={{ to: '/settings', label: 'Back to settings' }} title={category.label} />
         {body}
@@ -55,7 +56,7 @@ export function SettingsPage({ tab, focus }: { tab: string; focus: string | null
     )
   }
   return (
-    <article className="flex min-h-0 min-w-0 flex-1">
+    <article data-settings-page="" className="flex min-h-0 min-w-0 flex-1">
       <Categories current={category} />
       <div className="flex min-w-0 flex-1 flex-col">
         {band}
@@ -105,7 +106,7 @@ function Categories({ current }: { current: SettingsCategory }) {
 export function SettingsHome() {
   const discovery = useConnection(s => s.discovery)
   return (
-    <article className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <article data-settings-page="" className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3">
         <SidebarLead />
         <h2 className="px-1 text-sm font-semibold">Settings</h2>
