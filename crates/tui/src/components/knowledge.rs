@@ -1,19 +1,13 @@
 //! Knowledge browsing, revision history and detached session harvesting.
 use super::*;
-use ::knowledge::{Change, ChangeStatus, HarvestResult, History, Meta, Revision};
 use iocraft::KeyCode;
+use ::knowledge::{Change, ChangeStatus, HarvestResult, History, Meta, Revision};
 use rpc_compose::api::clients::{AgentConceptsApiClient, KnowledgeConceptsApiClient};
 use runtime::SessionId;
 
 #[derive(Default)]
-pub(crate) struct Knowledge {
-    pub(crate) menu: Option<Menu>,
-    pub(crate) harvesting: bool,
-}
-#[expect(
-    clippy::large_enum_variant,
-    reason = "The single held menu already lives in its boxed owner."
-)]
+pub(crate) struct Knowledge { pub(crate) menu: Option<Menu>, pub(crate) harvesting: bool }
+#[expect(clippy::large_enum_variant, reason = "The single held menu already lives in its boxed owner.")]
 pub(crate) enum Menu {
     /// `/knowledge [query]` picker (10 §6).
     Knowledge {
@@ -48,86 +42,39 @@ pub(crate) enum Menu {
 }
 #[derive(Clone, Debug)]
 pub(crate) enum Request {
-    KnowledgeList,
-    KnowledgeSearch(String),
-    KnowledgeHistory {
-        id: Option<String>,
-        limit: usize,
-    },
-    KnowledgeRevision {
-        commit: String,
-        id: Option<String>,
-        card: bool,
-    },
-    KnowledgeRestore {
-        id: String,
-        commit: Option<String>,
-    },
-    Harvest(SessionId),
+    KnowledgeList, KnowledgeSearch(String), KnowledgeHistory { id: Option<String>, limit: usize },
+    KnowledgeRevision { commit: String, id: Option<String>, card: bool },
+    KnowledgeRestore { id: String, commit: Option<String> }, Harvest(SessionId),
 }
 pub(crate) enum Msg {
     Knowledge(Result<Vec<Meta>, String>),
-    KnowledgeHistory {
-        id: Option<String>,
-        limit: usize,
-        history: Result<History, String>,
-    },
-    KnowledgeRevision {
-        id: Option<String>,
-        card: bool,
-        revision: Result<Revision, String>,
-    },
-    KnowledgeRestored(Result<Change, String>),
-    Harvested(Result<HarvestResult, String>),
-    HarvestingSession(SessionId),
-    HarvestedEvent {
-        session: SessionId,
-        added: u32,
-        updated: u32,
-    },
+    KnowledgeHistory { id: Option<String>, limit: usize, history: Result<History, String> },
+    KnowledgeRevision { id: Option<String>, card: bool, revision: Result<Revision, String> },
+    KnowledgeRestored(Result<Change, String>), Harvested(Result<HarvestResult, String>),
+    HarvestingSession(SessionId), HarvestedEvent { session: SessionId, added: u32, updated: u32 },
 }
 fn send(cx: &mut Cx<'_, '_, Msg>, request: Request) {
     cx.spawn_request(Lane::Concurrent, request, |api, request| async move {
         match request {
-            Request::KnowledgeList => Msg::Knowledge(
-                api.knowledge_list(None, None, None, Some(50), None)
-                    .await
-                    .map_err(crate::reason),
-            ),
-            Request::KnowledgeSearch(query) => Msg::Knowledge(
-                api.knowledge_search(query, None, None)
-                    .await
-                    .map(|hits| hits.into_iter().map(|hit| hit.meta).collect())
-                    .map_err(crate::reason),
-            ),
+            Request::KnowledgeList => Msg::Knowledge(api.knowledge_list(None, None, None, Some(50), None).await.map_err(crate::reason)),
+            Request::KnowledgeSearch(query) => Msg::Knowledge(api.knowledge_search(query, None, None).await.map(|hits| hits.into_iter().map(|hit| hit.meta).collect()).map_err(crate::reason)),
             Request::KnowledgeHistory { id, limit } => {
                 let fetch = u32::try_from(limit + 1).unwrap_or(u32::MAX);
-                let history = api
-                    .knowledge_history(id.clone(), Some(fetch))
-                    .await
-                    .map_err(crate::reason);
+                let history = api.knowledge_history(id.clone(), Some(fetch)).await.map_err(crate::reason);
                 Msg::KnowledgeHistory { id, limit, history }
             }
             Request::KnowledgeRevision { commit, id, card } => {
-                let revision = api
-                    .knowledge_revision(commit, id.clone())
-                    .await
-                    .map_err(crate::reason);
+                let revision = api.knowledge_revision(commit, id.clone()).await.map_err(crate::reason);
                 Msg::KnowledgeRevision { id, card, revision }
             }
-            Request::KnowledgeRestore { id, commit } => Msg::KnowledgeRestored(
-                api.knowledge_restore(id, commit)
-                    .await
-                    .map_err(crate::reason),
-            ),
-            Request::Harvest(session) => {
-                Msg::Harvested(api.knowledge_harvest(session).await.map_err(crate::reason))
-            }
+            Request::KnowledgeRestore { id, commit } => Msg::KnowledgeRestored(api.knowledge_restore(id, commit).await.map_err(crate::reason)),
+            Request::Harvest(session) => Msg::Harvested(api.knowledge_harvest(session).await.map_err(crate::reason)),
         }
     });
 }
 
 impl Knowledge {
+
     /// `/knowledge [query | history [id] | show <commit> [id] | restore <id> [commit] | harvest]`.
     fn knowledge_cmd(&mut self, arg: &str, tx: &mut Cx<'_, '_, Msg>) {
         let (sub, rest) = arg
@@ -138,9 +85,7 @@ impl Knowledge {
             ("history", id) => {
                 self.open_history((!id.is_empty()).then(|| id.to_owned()), HISTORY_PAGE, tx);
             }
-            ("show", "") => tx.core(CoreAction::Reject(
-                "usage: /knowledge show <commit> [id]".into(),
-            )),
+            ("show", "") => tx.core(CoreAction::Reject("usage: /knowledge show <commit> [id]".into())),
             ("show", rest) => {
                 let (commit, id) = rest
                     .split_once(' ')
@@ -154,9 +99,7 @@ impl Knowledge {
                     },
                 );
             }
-            ("restore", "") => tx.core(CoreAction::Reject(
-                "usage: /knowledge restore <id> [commit]".into(),
-            )),
+            ("restore", "") => tx.core(CoreAction::Reject("usage: /knowledge restore <id> [commit]".into())),
             ("restore", rest) => {
                 let (id, commit) = rest
                     .split_once(' ')
@@ -179,6 +122,7 @@ impl Knowledge {
 }
 
 impl Knowledge {
+
     /// `/knowledge`: `⏎` / `h` opens the highlighted concept's history, `H`
     /// the whole bundle's (deleted concepts included).
     fn knowledge_key(&mut self, code: KeyCode, tx: &mut Cx<'_, '_, Msg>) {
@@ -423,229 +367,67 @@ fn status_name(s: ChangeStatus) -> &'static str {
 impl Component for Knowledge {
     type Msg = Msg;
     fn declaration(&self) -> Declaration {
-        Declaration {
-            id: "knowledge",
-            interests: &[Interest {
-                topic: "agent.events",
-                version: 1,
-                variants: &["Harvesting", "Harvested"],
-            }],
-            slash: &[(
-                "/knowledge",
-                "[query | history [id] | show <commit> [id] | restore <id> [commit] | harvest]",
-                "knowledge base: list, search, history, show a commit, restore, harvest",
-            )],
-            bindings: &[],
-        }
+        Declaration { id: "knowledge", interests: &[Interest { topic: "agent.events", version: 1, variants: &["Harvesting", "Harvested"] }], slash: &[("/knowledge", "[query | history [id] | show <commit> [id] | restore <id> [commit] | harvest]", "knowledge base: list, search, history, show a commit, restore, harvest")], bindings: &[] }
     }
     fn decode(&self, event: &TopicEvent, core: &CoreView<'_>) -> Option<Msg> {
-        if event.topic().is_some()
-            && (event.topic() != Some("agent.events") || event.version() != Some(1))
-        {
-            return None;
-        }
+        if event.topic().is_some() && (event.topic() != Some("agent.events") || event.version() != Some(1)) { return None; }
         match core.agent? {
             agent::AgentEvent::Harvesting { session } => Some(Msg::HarvestingSession(*session)),
-            agent::AgentEvent::Harvested {
-                session,
-                added,
-                updated,
-            } => Some(Msg::HarvestedEvent {
-                session: *session,
-                added: *added,
-                updated: *updated,
-            }),
+            agent::AgentEvent::Harvested { session, added, updated } => Some(Msg::HarvestedEvent { session: *session, added: *added, updated: *updated }),
             _ => None,
         }
     }
     fn update(&mut self, input: Input<'_, Msg>, cx: &mut Cx<'_, '_, Msg>) {
-        if cx.core.reasoning
-            && matches!(
-                &input,
-                Input::Message(
-                    Msg::Knowledge(Ok(_))
-                        | Msg::KnowledgeHistory { history: Ok(_), .. }
-                        | Msg::KnowledgeRevision {
-                            revision: Ok(_),
-                            ..
-                        }
-                        | Msg::KnowledgeRestored(Ok(_))
-                        | Msg::Harvested(Ok(_))
-                        | Msg::HarvestingSession(_)
-                        | Msg::HarvestedEvent { .. }
-                )
-            )
-        {
+        if cx.core.reasoning && matches!(&input, Input::Message(Msg::Knowledge(Ok(_)) | Msg::KnowledgeHistory { history: Ok(_), .. } | Msg::KnowledgeRevision { revision: Ok(_), .. } | Msg::KnowledgeRestored(Ok(_)) | Msg::Harvested(Ok(_)) | Msg::HarvestingSession(_) | Msg::HarvestedEvent { .. })) {
             cx.plain(Plain::Text("\x1b[0m\n".into()));
         }
         match input {
-            Input::Slash { args, .. } => {
-                self.knowledge_cmd(args, cx);
-                if self.menu.is_some() {
-                    cx.focus(FocusClass::Modal);
-                }
-            }
+            Input::Slash { args, .. } => { self.knowledge_cmd(args, cx); if self.menu.is_some() { cx.focus(FocusClass::Modal); } }
             Input::Key(key) if self.menu.is_some() => {
                 cx.consume_key();
-                match self.menu {
-                    Some(Menu::Knowledge { .. }) => self.knowledge_key(key.code, cx),
-                    _ => self.knowledge_history_key(key.code, cx),
-                }
-                if self.menu.is_none() {
-                    cx.close();
-                }
+                match self.menu { Some(Menu::Knowledge { .. }) => self.knowledge_key(key.code, cx), _ => self.knowledge_history_key(key.code, cx) }
+                if self.menu.is_none() { cx.close(); }
             }
             Input::Message(Msg::Knowledge(Ok(items))) => {
-                for item in &items {
-                    cx.plain(Plain::Line(meta_line(item)));
-                }
-                self.menu = Some(Menu::Knowledge { items, cursor: 0 });
-                cx.focus(FocusClass::Modal);
+                for item in &items { cx.plain(Plain::Line(meta_line(item))); }
+                self.menu = Some(Menu::Knowledge { items, cursor: 0 }); cx.focus(FocusClass::Modal);
             }
-            Input::Message(Msg::KnowledgeHistory {
-                id,
-                limit,
-                history: Ok(history),
-            }) => {
-                for change in &history.changes {
-                    cx.plain(Plain::Line(format!(
-                        "{}  {}  {}",
-                        change.commit, change.time, change.message
-                    )));
-                }
-                if let Some(diff) = &history.diff {
-                    cx.plain(Plain::Line(diff.clone()));
-                }
-                if let Some(Menu::KnowledgeHistory {
-                    id: open,
-                    changes: shown,
-                    limit: page,
-                    more,
-                    loading,
-                    error,
-                    ..
-                }) = &mut self.menu
-                    && *open == id
-                    && *page == limit
-                {
-                    let mut changes = history.changes;
-                    *more = changes.len() > limit;
-                    changes.truncate(limit);
-                    *shown = changes;
-                    *loading = false;
-                    *error = None;
+            Input::Message(Msg::KnowledgeHistory { id, limit, history: Ok(history) }) => {
+                for change in &history.changes { cx.plain(Plain::Line(format!("{}  {}  {}", change.commit, change.time, change.message))); }
+                if let Some(diff) = &history.diff { cx.plain(Plain::Line(diff.clone())); }
+                if let Some(Menu::KnowledgeHistory { id: open, changes: shown, limit: page, more, loading, error, .. }) = &mut self.menu
+                    && *open == id && *page == limit {
+                    let mut changes = history.changes; *more = changes.len() > limit; changes.truncate(limit);
+                    *shown = changes; *loading = false; *error = None;
                 }
             }
-            Input::Message(Msg::KnowledgeRevision {
-                id,
-                card,
-                revision: Ok(revision),
-            }) => {
-                cx.plain(Plain::Line(format!(
-                    "{}  {}  {}  parent {}\n{}",
-                    revision.change.commit,
-                    revision.change.time,
-                    revision.change.message,
-                    revision.parent.as_deref().unwrap_or("none"),
-                    revision_rows(&revision).join("\n")
-                )));
+            Input::Message(Msg::KnowledgeRevision { id, card, revision: Ok(revision) }) => {
+                cx.plain(Plain::Line(format!("{}  {}  {}  parent {}\n{}", revision.change.commit, revision.change.time, revision.change.message, revision.parent.as_deref().unwrap_or("none"), revision_rows(&revision).join("\n"))));
                 if card {
-                    let title = format!(
-                        "knowledge {}  {}{}",
-                        revision.change.commit,
-                        revision.change.message,
-                        id.map_or(String::new(), |id| format!("  ({id})"))
-                    );
-                    cx.core(CoreAction::AppendCard(TranscriptCard {
-                        entry_key: None,
-                        group: "knowledge",
-                        key: uuid::Uuid::new_v4(),
-                        glyph: "◇",
-                        color: crate::ui::OCHRE,
-                        title,
-                        body: markdown::Text::complete(&format!(
-                            "```diff\n{}\n```",
-                            revision_rows(&revision).join("\n")
-                        )),
-                        expanded: false,
-                        plain: false,
-                    }));
-                } else if let Some(Menu::KnowledgeHistory {
-                    id: open,
-                    pending,
-                    revision: shown,
-                    ..
-                }) = &mut self.menu
-                    && *open == id
-                    && pending.as_deref() == Some(revision.change.commit.as_str())
-                {
-                    *pending = None;
-                    *shown = Some((revision, 0, 0));
+                    let title = format!("knowledge {}  {}{}", revision.change.commit, revision.change.message, id.map_or(String::new(), |id| format!("  ({id})")));
+                    cx.core(CoreAction::AppendCard(TranscriptCard { entry_key: None, group: "knowledge", key: uuid::Uuid::new_v4(), glyph: "◇", color: crate::ui::OCHRE, title, body: markdown::Text::complete(&format!("```diff\n{}\n```", revision_rows(&revision).join("\n"))), expanded: false, plain: false }));
+                } else if let Some(Menu::KnowledgeHistory { id: open, pending, revision: shown, .. }) = &mut self.menu
+                    && *open == id && pending.as_deref() == Some(revision.change.commit.as_str()) {
+                    *pending = None; *shown = Some((revision, 0, 0));
                 }
             }
-            Input::Message(Msg::KnowledgeRestored(Ok(change))) => {
-                let text = format!("{}  {}", change.commit, change.message);
-                cx.plain(Plain::Line(text.clone()));
-                cx.core(CoreAction::Notice(text));
-            }
-            Input::Message(Msg::Harvested(Ok(result))) => {
-                let text = format!("knowledge +{} ~{}", result.added, result.updated);
-                cx.plain(Plain::Line(text.clone()));
-                cx.core(CoreAction::Notice(text));
-            }
-            Input::Message(
-                Msg::Knowledge(Err(error))
-                | Msg::KnowledgeHistory {
-                    history: Err(error),
-                    ..
-                }
-                | Msg::KnowledgeRevision {
-                    revision: Err(error),
-                    ..
-                }
-                | Msg::KnowledgeRestored(Err(error))
-                | Msg::Harvested(Err(error)),
-            ) => cx.error(error),
+            Input::Message(Msg::KnowledgeRestored(Ok(change))) => { let text = format!("{}  {}", change.commit, change.message); cx.plain(Plain::Line(text.clone())); cx.core(CoreAction::Notice(text)); }
+            Input::Message(Msg::Harvested(Ok(result))) => { let text = format!("knowledge +{} ~{}", result.added, result.updated); cx.plain(Plain::Line(text.clone())); cx.core(CoreAction::Notice(text)); }
+            Input::Message(Msg::Knowledge(Err(error)) | Msg::KnowledgeHistory { history: Err(error), .. } | Msg::KnowledgeRevision { revision: Err(error), .. } | Msg::KnowledgeRestored(Err(error)) | Msg::Harvested(Err(error))) => cx.error(error),
             Input::Message(Msg::HarvestingSession(session)) => {
-                cx.claim_plain();
-                if cx.core.session == Some(session) && !cx.core.inspecting {
-                    self.harvesting = true;
-                }
+                cx.claim_plain(); if cx.core.session == Some(session) && !cx.core.inspecting { self.harvesting = true; }
             }
-            Input::Message(Msg::HarvestedEvent {
-                session,
-                added,
-                updated,
-            }) => {
-                cx.claim_plain();
-                let text = format!("knowledge +{added} ~{updated}");
-                cx.plain(Plain::Line(text.clone()));
-                if cx.core.session == Some(session) && !cx.core.inspecting {
-                    self.harvesting = false;
-                    cx.interject(text);
-                }
+            Input::Message(Msg::HarvestedEvent { session, added, updated }) => {
+                cx.claim_plain(); let text = format!("knowledge +{added} ~{updated}"); cx.plain(Plain::Line(text.clone()));
+                if cx.core.session == Some(session) && !cx.core.inspecting { self.harvesting = false; cx.interject(text); }
             }
             Input::Lifecycle(Lifecycle::CommandFailed(message)) => {
-                if let Some(Menu::KnowledgeHistory {
-                    loading,
-                    pending,
-                    error,
-                    ..
-                }) = &mut self.menu
-                    && (*loading || pending.is_some())
-                {
-                    *loading = false;
-                    *pending = None;
-                    *error = Some(message.into());
-                    cx.claim_error();
+                if let Some(Menu::KnowledgeHistory { loading, pending, error, .. }) = &mut self.menu && (*loading || pending.is_some()) {
+                    *loading = false; *pending = None; *error = Some(message.into()); cx.claim_error();
                 }
             }
             Input::Lifecycle(Lifecycle::FocusLost) => self.menu = None,
-            Input::Lifecycle(Lifecycle::SessionReset | Lifecycle::EngineChanged) => {
-                self.menu = None;
-                self.harvesting = false;
-                cx.close();
-            }
+            Input::Lifecycle(Lifecycle::SessionReset | Lifecycle::EngineChanged) => { self.menu = None; self.harvesting = false; cx.close(); }
             _ => {}
         }
     }
@@ -654,50 +436,16 @@ impl Component for Knowledge {
             Surface::Activity if self.harvesting => Some(View::Text("harvesting…".into())),
             Surface::Modal => {
                 let (title, rows, cursor) = match self.menu.as_ref()? {
-                    Menu::Knowledge { items, cursor } => (
-                        "knowledge  ⏎/h history of concept  H history of all  esc close".into(),
-                        if items.is_empty() {
-                            vec![
-                                "no concepts · H shows the history of all (deleted ones too)"
-                                    .into(),
-                            ]
-                        } else {
-                            items.iter().map(meta_line).collect()
-                        },
-                        *cursor,
-                    ),
+                    Menu::Knowledge { items, cursor } => ("knowledge  ⏎/h history of concept  H history of all  esc close".into(), if items.is_empty() { vec!["no concepts · H shows the history of all (deleted ones too)".into()] } else { items.iter().map(meta_line).collect() }, *cursor),
                     Menu::KnowledgeHistory { .. } => self.knowledge_history_menu(),
                 };
-                let tall = matches!(
-                    self.menu,
-                    Some(Menu::KnowledgeHistory {
-                        revision: Some(_),
-                        ..
-                    })
-                );
+                let tall = matches!(self.menu, Some(Menu::KnowledgeHistory { revision: Some(_), .. }));
                 let height = cx.height as u16;
-                let count = rows.len().min(if tall {
-                    usize::from(height.saturating_sub(10)).max(10)
-                } else {
-                    10
-                }) + 3;
-                Some(View::IntrinsicElement {
-                    rows: count,
-                    replace: false,
-                    element: crate::ui::menu_view(
-                        title,
-                        rows,
-                        cursor,
-                        cx.width as u16,
-                        height,
-                        tall,
-                    ),
-                })
+                let count = rows.len().min(if tall { usize::from(height.saturating_sub(10)).max(10) } else { 10 }) + 3;
+                Some(View::IntrinsicElement { rows: count, replace: false, element: crate::ui::menu_view(title, rows, cursor, cx.width as u16, height, tall) })
             }
             _ => None,
         }
     }
-    fn animating(&self) -> bool {
-        self.harvesting
-    }
+    fn animating(&self) -> bool { self.harvesting }
 }

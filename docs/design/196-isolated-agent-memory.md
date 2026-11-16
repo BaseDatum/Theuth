@@ -200,17 +200,18 @@ All logs are in `/tmp/196e/`.
 | UI pre-change contract / head `tsc -b --noEmit` | 0 / 0 errors |
 | Full `vitest run src` | 349 files, 2,435 tests passed, including disclosure |
 | Four allowed UI callsites wording scan | 0 matches; no UI source edit was needed because generated trailing bundle parameters are optional |
-| Touched-file rustfmt | Passed |
+| Rustfmt | Engine touched files formatted; the three mechanical TUI edits retain their original legacy formatting to avoid unrelated whole-file churn |
 | Final nine-crate default-parallel Rust run | 2,037 passed, 5 failed, 4 ignored; `rust-gates-parallel-final.log` |
 | Supplementary serialized nine-crate Rust run | 2,023 passed, 19 failed, 4 ignored; app 50/50, document actor 12/12 and rpc-compose 65/65 passed; `rust-gates-final.log` |
 | Latest `isolat` selection after making the selector mandatory | 11 passed, 0 failed; `selector-tests.log` |
+| TUI formatting-only cleanup | Nine-crate test build passed; exact agent-picker test 1 passed; `tui-format-compile.log`, `tui-format-test.log` |
 | Clippy, eight engine crates, `--no-deps -- -D warnings` | Passed; `selector-clippy.log` |
 | Full clippy / added TUI no-deps clippy | Blocked by diagnostics in unchanged `voice/src/history/mod.rs:465` (`chunks_exact_to_as_chunks`) / `tui/src/components/mcp.rs:24` (`large_enum_variant`); no suppressions added |
 | Final locked `BUILD_SLOTS=1` engine build | Passed; `engine-build-final.log` |
 
 The five default-parallel Rust failures are the brief's known `repl::tests::capping_binds_out_name` failure (also fails alone with `--exact`), three app helper timeout/protocol assertions in unchanged `crates/app/src/helper.rs:516,529,618`, and the TUI emoji-source guard reporting unchanged `crates/agent/src/rpc_jobs/history.rs:434,462,470`. The app helper tests all passed in the serialized run. That serialized run instead exposed 17 inbox cases reporting `actor not running` from the existing registry-ask path (`crates/agent/src/communication/network.rs:3493-3504`); those cases passed in both default-parallel runs. These gates are not reported as clean.
 
-Verification deviation: the pre-change UI wire contract was reconstructed from the current export by removing only the new `isolated_memory` properties and the three trailing `bundle` parameters. It was not a second checkout of main. The committed wire fixture was stale for unrelated APIs; the reconstructed baseline and actual head both typechecked with zero errors (`tsc-pre196.log`, `tsc-head.log`). No behavioral contract deviation is intended.
+Verification deviation: the pre-change UI wire contract was reconstructed from the current export by removing only the new `isolated_memory` properties and the three trailing `bundle` parameters. It was not a second checkout of main. The committed wire fixture was stale for unrelated APIs; the reconstructed baseline and actual head both typechecked with zero errors (`tsc-pre196.log`, `tsc-head.log`). No behavioral contract deviation is intended. The required Rust TUI caller/summary edits are mechanical. A formatter initially rewrote their legacy formatting; a separate cleanup commit restores the original formatting while retaining only the three trailing `None` arguments and the summary boolean.
 
 ### Scratch proof
 
