@@ -325,6 +325,7 @@ pub fn fold_text(s: &str) -> Option<String> {
 
 /// Fold every oversize tool result in `m` in place; how many were folded.
 pub fn fold_tool_results(m: &mut ChatMessage) -> usize {
+    crate::diff_output::strip_message(m);
     let mut n = 0;
     for part in m.content.iter_mut() {
         if let ContentPart::ToolResponse(r) = part
@@ -707,6 +708,16 @@ pub fn style_of_head(text: &str) -> CompactStyle {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diff_carrier_compaction_tail_strips_before_folding() {
+        let mut message = ChatMessage::from(vec![ToolResponse::new(
+            "c",
+            crate::diff_output::carried("receipt"),
+        )]);
+        fold_tool_results(&mut message);
+        assert_eq!(message.content.tool_responses()[0].content, "receipt");
+    }
+
     use genai::chat::{MessageContent, ToolCall, ToolResponse};
 
     use super::*;

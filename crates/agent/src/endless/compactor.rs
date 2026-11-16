@@ -1158,6 +1158,9 @@ impl ModelCompactor {
             messages.push(ChatMessage::user(ctx.to_owned()));
         }
         messages.extend_from_slice(convo);
+        messages
+            .iter_mut()
+            .for_each(crate::diff_output::strip_message);
         let mut req = ChatRequest::new(messages);
         if t != Transport::Anthropic {
             req = req.with_system(self.system.clone());
@@ -1800,7 +1803,7 @@ mod tests {
     }
 
     #[test]
-    fn request_marks_context_block_on_anthropic_only() {
+    fn diff_carrier_request_marks_context_block_on_anthropic_only() {
         let c = ModelCompactor {
             session: SessionId::new(),
             model: Resolved {
@@ -1842,5 +1845,17 @@ mod tests {
         // R1-12 / R2-4: cloud first byte and idle = the attempt bound.
         assert_eq!(opts.stream_header_timeout, Some(Duration::from_secs(300)));
         assert_eq!(opts.stream_read_timeout, Some(Duration::from_secs(300)));
+        let carried = crate::diff_output::carried("receipt");
+        let convo = [ChatMessage::user(carried.clone())];
+        for transport in [Transport::Anthropic, Transport::OpenAiLike] {
+            let (request, _) = c.request(transport, &carried, &convo);
+            for message in request
+                .messages
+                .iter()
+                .filter(|m| m.role == genai::chat::ChatRole::User)
+            {
+                assert_eq!(message.content.first_text(), Some("receipt"));
+            }
+        }
     }
 }

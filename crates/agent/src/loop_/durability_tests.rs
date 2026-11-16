@@ -2150,3 +2150,89 @@ async fn relaunched_turn_is_marked_while_it_runs(
     );
     assert!(h.store.open_turn(h.id).await.unwrap().is_none());
 }
+
+#[test]
+fn diff_carrier_resume_model_receipts_survive_restart() {
+    crate::with_test_registry(async {
+        let dir = crate::TestDir::new("diff-carrier-resume");
+        let hits = dir.0.join("hits");
+        let (registry, _holds) = registry(&dir.0, &hits, false).await;
+        let mut h = Harness::new(BatchFake).await;
+        journal(&registry, &h.store).await;
+        let turn_id = TurnId::new();
+        let call = |id: &str, name: &str| ToolCall {
+            call_id: id.into(),
+            fn_name: name.into(),
+            fn_arguments: json!({}),
+            thought_signatures: None,
+        };
+        h.store
+            .append_input(h.id, turn_id, &ChatMessage::user("go"), None, "user", None)
+            .await
+            .unwrap();
+        h.store
+            .append_tool_use(
+                h.id,
+                turn_id,
+                &ChatMessage::from(vec![call(C1, PROBE), call(C2, POKE)]),
+                None,
+                0,
+                &[
+                    (call(C1, PROBE), Risk::ReadOnly),
+                    (call(C2, POKE), Risk::Mutating),
+                ],
+            )
+            .await
+            .unwrap();
+        for (id, receipt) in [(C1, "probe receipt"), (C2, "poke receipt")] {
+            h.store
+                .call_finished(
+                    h.id,
+                    id,
+                    &ToolOutput::ok(crate::diff_output::carried(receipt)),
+                )
+                .await
+                .unwrap();
+        }
+        // A fresh Turn loads the unfinished batch from the durable rows, as after a restart.
+        let plan = h.store.resume_plan(h.id, turn_id).await.unwrap();
+        let (turn, _) = h.turn("openai/textonly", CancellationToken::new()).await;
+        turn.resume(plan, None).await;
+        let events = h.drain().await;
+        let requests = h.requests().await;
+        let actual: Vec<String> = requests.last().unwrap()["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "tool")
+            .map(|m| {
+                let text = m["content"]
+                    .as_str()
+                    .unwrap()
+                    .lines()
+                    .filter(|l| !l.starts_with("<engine_restart "))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                clock::strip(&text).to_string()
+            })
+            .collect();
+        assert_eq!(actual, ["probe receipt", "poke receipt"]);
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::ToolCallFinished { output, .. } if output.contains("<theuth-diff-result>"))));
+        let rows = h.store.calls_of(h.id, turn_id).await.unwrap();
+        assert!(
+            rows.iter()
+                .all(|r| r.output.as_ref().unwrap().contains("<theuth-diff-result>"))
+        );
+        let stored = h.store.messages(h.id).await.unwrap();
+        assert!(
+            stored
+                .iter()
+                .flat_map(|(_, m)| m.content.tool_responses())
+                .all(|r| r.content.contains("<theuth-diff-result>"))
+        );
+        assert!(
+            hits_of(&hits_file(&hits, h.id)).is_empty(),
+            "finished edits must not rerun"
+        );
+    });
+}

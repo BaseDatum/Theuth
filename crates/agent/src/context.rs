@@ -634,12 +634,17 @@ impl Active {
         let head = self
             .head
             .as_ref()
-            .and_then(|(h, mask)| project_head(h, mask));
+            .and_then(|(h, mask)| project_head(h, mask))
+            .map(|mut head| {
+                crate::diff_output::strip_message(&mut head);
+                head
+            });
         let tail = self
             .rows
             .iter()
             .filter_map(|(seq, m, mask)| {
                 let mut m = project(m, mask)?;
+                crate::diff_output::strip_message(&mut m);
                 // 70 COMPACT-SIZE: rows that were the kept tail when the epoch
                 // was cut travel with oversize tool results folded, exactly as
                 // the actor folded them in memory; rows appended since do not.
@@ -1101,6 +1106,22 @@ pub fn save_blob(bytes: &[u8], ext: &str, data_dir: &Path) -> std::io::Result<Pa
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diff_carrier_rebased_context_strips_before_kept_tail_folding() {
+        for at_seq in [-1, 10] {
+            let mut active = frame();
+            active.at_seq = at_seq;
+            let carried = crate::diff_output::carried("receipt");
+            active.rows[2].1 = ChatMessage::from(vec![ToolResponse::new("c1", carried.clone())]);
+            let (_, tail) = active.effective();
+            assert_eq!(tail[2].1.content.tool_responses()[0].content, "receipt");
+            assert_eq!(
+                active.rows[2].1.content.tool_responses()[0].content,
+                carried
+            );
+        }
+    }
+
     use genai::chat::{ToolCall, ToolResponse};
 
     use super::*;

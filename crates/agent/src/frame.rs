@@ -238,6 +238,9 @@ impl Frame<'_> {
         }
         messages.extend(self.head.cloned());
         messages.extend_from_slice(self.history);
+        messages
+            .iter_mut()
+            .for_each(crate::diff_output::strip_message);
         if !self.vision {
             messages.iter_mut().for_each(strip_images);
         }
@@ -564,6 +567,46 @@ pub fn truncate(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diff_carrier_model_requests_strip_head_history_and_tool_results() {
+        let carried = crate::diff_output::carried("receipt");
+        let head = ChatMessage::user(carried.clone());
+        let history = [ChatMessage::from(vec![ToolResponse::new(
+            "c",
+            carried.clone(),
+        )])];
+        for transport in [
+            Transport::Anthropic,
+            Transport::Plain,
+            Transport::OpenAiLike,
+        ] {
+            let (request, _) = Frame {
+                tools: &[],
+                system: "sys",
+                head: Some(&head),
+                history: &history,
+                vision: true,
+                strip_reasoning: false,
+                max_tokens: None,
+            }
+            .request(transport, SessionId::new(), None);
+            let result = request
+                .messages
+                .iter()
+                .flat_map(|m| m.content.tool_responses())
+                .next()
+                .unwrap();
+            assert_eq!(result.content, "receipt");
+            assert!(
+                request
+                    .messages
+                    .iter()
+                    .any(|m| m.content.first_text() == Some("receipt"))
+            );
+        }
+        assert_eq!(history[0].content.tool_responses()[0].content, carried);
+    }
+
     use super::*;
     use genai::chat::{MessageContent, ToolCall, ToolResponse};
     use serde_json::json;

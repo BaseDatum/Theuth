@@ -327,9 +327,12 @@ impl Turn {
         }
         error
             .or_else(|| {
-                self.last_tool
-                    .as_ref()
-                    .map(|t| format!("[no reply; last tool result]\n{t}"))
+                self.last_tool.as_ref().map(|t| {
+                    format!(
+                        "[no reply; last tool result]\n{}",
+                        crate::diff_output::strip(t)
+                    )
+                })
             })
             .unwrap_or_else(|| "(no text)".into())
     }
@@ -986,7 +989,7 @@ impl AcpChild {
     /// Send `text` as `session/prompt`; its result arrives as [`PromptDone`].
     fn prompt(&mut self, text: &str, me: &ActorRef<Self>) {
         let Some(harness) = &self.harness else { return };
-        let fut = harness.prompt(text.to_owned());
+        let fut = harness.prompt(crate::diff_output::strip(text).into_owned());
         self.worked = true;
         // 155 §3.1: delivered = the `session/prompt` call (busy retries included).
         self.activity.delivered(Instant::now());
@@ -2333,6 +2336,30 @@ impl Message<SetOption> for AcpChild {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn diff_carrier_acp_parent_fallback_keeps_original_receipt() {
+        let mut turn = turn();
+        turn.last_tool = Some(crate::diff_output::carried("receipt"));
+        assert_eq!(turn.result(None), "[no reply; last tool result]\nreceipt");
+        assert!(
+            turn.last_tool
+                .as_ref()
+                .unwrap()
+                .contains("<theuth-diff-result>")
+        );
+    }
+
+    #[tokio::test]
+    async fn diff_carrier_acp_peer_prompt_does_not_send_ui_metadata() {
+        let mut rig = Rig::new(Duration::from_secs(3600)).await;
+        rig.input(&crate::diff_output::carried("peer receipt"))
+            .await;
+        let (id, text) = rig.fake.prompt().await;
+        assert_eq!(text, "peer receipt");
+        rig.fake.end_turn(&id);
+        rig.until_finished().await;
+    }
+
     use agent_client_protocol::schema::v1::{
         ContentBlock, ContentChunk, Cost, PlanEntry, PlanEntryPriority, ToolCall, ToolCallContent,
         ToolCallUpdate, ToolCallUpdateFields, ToolKind, UsageUpdate,

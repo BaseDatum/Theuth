@@ -504,7 +504,7 @@ fn render(out: &mut String, m: &ChatMessage) {
     });
     for p in m.content.iter() {
         match p {
-            ContentPart::Text(t) => out.push_str(t),
+            ContentPart::Text(t) => out.push_str(&crate::diff_output::strip(t)),
             ContentPart::Binary(b) => crate::loop_::binary_tag(out, b),
             ContentPart::ToolCall(c) => {
                 out.push_str("[tool call ");
@@ -517,7 +517,7 @@ fn render(out: &mut String, m: &ChatMessage) {
                 out.push_str("[tool result ");
                 out.push_str(r.fn_name.as_deref().unwrap_or(&r.call_id));
                 out.push_str("]\n");
-                out.push_str(&r.content);
+                out.push_str(&crate::diff_output::strip(&r.content));
                 for b in &r.images {
                     out.push(' ');
                     crate::loop_::binary_tag(out, b);
@@ -907,6 +907,19 @@ pub fn image_caused(err: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diff_carrier_vision_question_context_keeps_receipts_only() {
+        let carried = crate::diff_output::carried("receipt");
+        let message = ChatMessage::from(vec![ToolResponse::new("c", carried.clone())]);
+        let mut output = String::new();
+        render(&mut output, &message);
+        render(&mut output, &ChatMessage::user(carried.clone()));
+        assert!(output.contains("receipt"));
+        assert!(!output.contains("theuth-"));
+        assert!(!output.contains("metadata"));
+        assert_eq!(message.content.tool_responses()[0].content, carried);
+    }
+
     use genai::chat::{ToolCall, ToolResponse};
 
     use super::*;

@@ -556,6 +556,8 @@ The tool's returned diff takes precedence over argument previews, then ACP
 diff blocks. Collapsed cards show paths and added/removed counts; expanded
 cards show hunks, old/new line numbers and changed words. The first 400 rows
 are shown with **Show all** for larger patches; existing tool folding is unchanged.
+Display-only diff metadata stays in UI/history storage, not model inputs,
+summaries or parent/peer handoffs.
 
 ## Link
 
