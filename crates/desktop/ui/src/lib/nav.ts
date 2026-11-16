@@ -64,3 +64,11 @@ export const sectionOf = (pathname: string): Section => {
   if (pathname === '/settings' || pathname.startsWith('/settings/')) return 'settings'
   return null
 }
+
+/** A page window's title: the tab or page at exactly `pathname`; `undefined` on a detail page, which titles itself or keeps the last. */
+export const pageTitle = (pathname: string): string | undefined => {
+  const group = groupOf(pathname)
+  if (group) return GROUPS[group].find((t) => t.to === pathname)?.label
+  const section = sectionOf(pathname)
+  return section === 'attention' ? 'Attention' : section === 'costs' ? 'Costs' : section === 'settings' ? 'Settings' : section === 'meeting' ? 'Start meeting' : undefined
+}

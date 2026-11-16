@@ -3,10 +3,10 @@
 // rate while they catch up (§6.5).
 
 import { useNavigate } from '@tanstack/react-router'
-import { Download, PanelLeft } from 'lucide-react'
+import { Download } from 'lucide-react'
 import { memo, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
+import { SidebarLead } from '@/components/nav/SectionBand'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
 import { type Dim, defaultTz, type Filters, HOUR_MS, type Index, type Metric, options, type Range, series, sessions, toCsv } from '@/lib/costs/cube'
@@ -147,14 +147,7 @@ export function CostsPage({ search, visible }: { search: CostsSearch; visible: b
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header data-tauri-drag-region={mac || undefined} className={cn('flex h-[52px] shrink-0 items-center gap-2.5 border-b border-border-subtle px-3 md:px-4', !sidebar.open && mac && 'pl-20')}>
-        {(!sidebar.open || sidebar.isMobile) && (
-          <div className="flex shrink-0 items-center">
-            <SearchTrigger />
-            <Button variant="ghost" size="icon-sm" aria-label="Show sidebar" onClick={sidebar.toggleSidebar}>
-              <PanelLeft />
-            </Button>
-          </div>
-        )}
+        <SidebarLead />
         <h1 className="text-[15px] font-semibold tracking-[0.2px]">Costs</h1>
         <span className="hidden min-w-0 items-center gap-1.5 truncate font-mono text-[10px] tracking-[1.4px] text-fg-tertiary uppercase sm:inline-flex">
           <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-success motion-safe:animate-pulse" />

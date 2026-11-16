@@ -9,6 +9,7 @@ import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
 import type * as Popout from '@/lib/popout'
 import { openPopout } from '@/lib/popout'
+import { toast } from 'sonner'
 import { usePanes } from '@/lib/panes'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { AgentInfo } from '@/store/ui-events'
@@ -24,10 +25,12 @@ vi.mock('@tanstack/react-router', async (original) => ({
 vi.mock('./AgentTree', () => ({
   AgentTree: (p: { session: string; liveOnly?: boolean }) => h('div', { 'data-tree': p.session, 'data-live-only': String(p.liveOnly ?? false) }),
 }))
+const deskOpen = vi.hoisted(() => vi.fn<(name: string) => Promise<string>>())
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
-  useApi: () => ({ list_sessions: async () => SESSIONS, agents_list: async () => AGENTS }),
+  useApi: () => ({ list_sessions: async () => SESSIONS, agents_list: async () => AGENTS, desk_open: deskOpen }),
 }))
+vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
 vi.mock('@/lib/popout', async (original) => ({ ...(await original<typeof Popout>()), canPopout: () => true, openPopout: vi.fn(async () => {}) }))
 
 const agent = (name: string, desk: string | null, status = 'idle') => ({ desk, status, file: { name } })
@@ -150,7 +153,7 @@ test('a desk with a session drags into a pane like any session row, tile and tre
   await act(async () => root.unmount())
 })
 
-test('desk tiles and the desk-tree header pop out their own chats; unopened desks have no target', async () => {
+test('desk tiles and the desk-tree header pop out their own chats', async () => {
   vi.mocked(openPopout).mockClear()
   useSessions.getState().setChildren('d-sergei', [info('sub-1', 'd-sergei', 'running')])
   const { host, root, tile } = await mount('d-sergei')
@@ -163,11 +166,27 @@ test('desk tiles and the desk-tree header pop out their own chats; unopened desk
     await act(async () => button.click())
     expect(openPopout).toHaveBeenLastCalledWith({ kind: 'chat', session: `d-${name}` })
   }
-  expect(tile('maya').closest('li')!.querySelector('[aria-label="Open in new window"]')).toBeNull()
   const header = host.querySelector<HTMLElement>('[data-desk-header]')!
   const button = header.parentElement!.querySelector<HTMLButtonElement>('button[aria-label="Open in new window"]')!
   await act(async () => button.click())
   expect(openPopout).toHaveBeenLastCalledWith({ kind: 'chat', session: 'd-sergei' })
   expect(openPopout).toHaveBeenCalledTimes(4)
+  await act(async () => root.unmount())
+})
+
+test('an unopened desk pops out through its own desk_open, then opens the desk chat; a refusal toasts and opens nothing', async () => {
+  vi.mocked(openPopout).mockClear()
+  const { host, root, tile } = await mount(undefined)
+  // The group label (with its Broadcast button) is a header, not a destination.
+  expect(host.querySelector('[data-sidebar="group-label"] [aria-label="Open in new window"]')).toBeNull()
+  const button = () => tile('maya').closest('li')!.querySelector<HTMLButtonElement>('button[aria-label="Open in new window"]')!
+  deskOpen.mockResolvedValueOnce('d-maya')
+  await act(async () => button().click())
+  expect(deskOpen).toHaveBeenCalledExactlyOnceWith('maya')
+  expect(openPopout).toHaveBeenCalledExactlyOnceWith({ kind: 'chat', session: 'd-maya' })
+  deskOpen.mockRejectedValueOnce(new Error('roster busy'))
+  await act(async () => button().click())
+  expect(toast.error).toHaveBeenCalledExactlyOnceWith('roster busy')
+  expect(openPopout).toHaveBeenCalledTimes(1)
   await act(async () => root.unmount())
 })

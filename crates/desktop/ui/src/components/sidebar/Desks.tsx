@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button'
 import { SidebarGroupLabel, SidebarMenuButton, SidebarMenuItem } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { canPopout } from '@/lib/popout'
+import { canPopout, openPopout } from '@/lib/popout'
 import { live, subtrees } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
@@ -150,12 +150,14 @@ function DeskTile({
   // Spread only on the session Link: a desk without a session opens via `desk_open` and has nothing to drag.
   const drag = useSessionDrag(id, name)
   const subRunning = useSessions((s) => runningSubagents(subagents, s.sessions))
+  // `popout`: the tile's "Open in new window" — the same `desk_open`, then the desk's chat in its own window.
   const open = useMutation({
-    mutationFn: () => api.desk_open(name),
-    onSuccess: (session) => {
+    mutationFn: (_popout: boolean) => api.desk_open(name),
+    onSuccess: (session, popout) => {
       void queryClient.invalidateQueries({ queryKey: keys.agents })
       void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
-      void navigate({ to: '/c/$session', params: { session } })
+      if (popout) void openPopout({ kind: 'chat', session })
+      else void navigate({ to: '/c/$session', params: { session } })
     },
     onError: (e) => toast.error(errorText(e)),
   })
@@ -174,7 +176,7 @@ function DeskTile({
           {subRunning}
         </span>
       )}
-      <span className={cn('pointer-coarse:hidden', id !== null && canPopout() && 'group-hover/popout-row:opacity-0 group-focus-within/popout-row:opacity-0')}>{label}</span>
+      <span className={cn('pointer-coarse:hidden', canPopout() && 'group-hover/popout-row:opacity-0 group-focus-within/popout-row:opacity-0')}>{label}</span>
       <span className="hidden max-w-full truncate px-3 text-xs pointer-coarse:block">{name}</span>
     </>
   )
@@ -193,7 +195,7 @@ function DeskTile({
             )}
           >
             {id === null ? (
-              <button type="button" disabled={open.isPending} aria-busy={open.isPending} onClick={() => open.mutate()}>
+              <button type="button" disabled={open.isPending} aria-busy={open.isPending} onClick={() => open.mutate(false)}>
                 {body}
               </button>
             ) : (
@@ -207,7 +209,7 @@ function DeskTile({
           {name} · {state}
         </TooltipContent>
       </Tooltip>
-      <SidebarPopoutButton target={id === null ? null : { kind: 'chat', session: id }} className="inset-0! m-auto size-6 bg-sidebar-accent" />
+      <SidebarPopoutButton target={id !== null ? { kind: 'chat', session: id } : () => { if (!open.isPending) open.mutate(true) }} className="inset-0! m-auto size-6 bg-sidebar-accent" />
     </li>
   )
 }
