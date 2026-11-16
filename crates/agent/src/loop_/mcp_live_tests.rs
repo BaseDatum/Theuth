@@ -268,9 +268,7 @@ fn mcp_live_slow_server_settles_before_add_returns() {
             })
             .await
             .unwrap();
-        let start = std::time::Instant::now();
         let events = run(&mut h, "ADD").await;
-        let elapsed = start.elapsed();
         let added = output(&events, "cell_0");
         assert!(
             !added.0 && added.1.contains("connected"),
@@ -281,9 +279,8 @@ fn mcp_live_slow_server_settles_before_add_returns() {
             !called.0 && called.1.contains("live:slow:"),
             "slow next cell: {called:?}"
         );
-        assert!(
-            elapsed >= Duration::from_secs(3) && elapsed < Duration::from_secs(15),
-            "slow add must wait for tools/list, bounded: {elapsed:?}"
-        );
+        // The actor's 20-second connect ceiling is exercised separately by
+        // mcp::tests::mcp_live_add_has_a_bounded_connect_wait; model/worker
+        // startup is not part of that deadline.
     });
 }

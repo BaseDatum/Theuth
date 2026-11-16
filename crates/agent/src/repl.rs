@@ -1071,6 +1071,76 @@ struct Snapshot {
     imports: BTreeMap<String, String>,
 }
 
+/// Monty's Load adopts the dump's typing state, not the checkout's fresh
+/// configuration. Replace only our known stub prefix, preserving committed
+/// user declarations; a reopened/legacy dump gets missing runtime names only.
+fn rebase_dump_stubs(bytes: &mut Vec<u8>, previous: Option<&str>, fresh: &str) {
+    let rebase = || -> anyhow::Result<Option<Vec<u8>>> {
+        let mut dump = monty::Dump::load(bytes)?;
+        let Some(typing) = &mut dump.type_check else {
+            return Ok(None);
+        };
+        let committed = &mut typing.committed_stubs;
+        if previous.is_none() && committed.starts_with(fresh) {
+            return Ok(None);
+        }
+        if let Some(previous) = previous.filter(|old| committed.starts_with(*old)) {
+            if previous == fresh {
+                return Ok(None);
+            }
+            committed.replace_range(..previous.len(), fresh);
+        } else {
+            let missing: Vec<_> = {
+                let declared: BTreeSet<_> = committed.lines().filter_map(stub_name).collect();
+                fresh
+                    .lines()
+                    .filter(|line| line.starts_with("async def "))
+                    .filter(|line| stub_name(line).is_some_and(|name| !declared.contains(name)))
+                    .collect()
+            };
+            if missing.is_empty() {
+                return Ok(None);
+            }
+            committed.push('\n');
+            for declaration in missing {
+                committed.push_str(declaration);
+                committed.push('\n');
+            }
+        }
+        let state = match &dump.state {
+            monty::Session::Idle(state) => monty::SessionRef::Idle(state),
+            monty::Session::Suspended(state) => monty::SessionRef::Suspended(state),
+            monty::Session::Running(state) => monty::SessionRef::Running(state),
+        };
+        Ok(Some(monty::dump(
+            &dump.script_name,
+            dump.type_check.as_ref(),
+            &dump.module_stubs,
+            state,
+        )?))
+    };
+    match rebase() {
+        Ok(Some(rebased)) => *bytes = rebased,
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(%error, "runtime: could not rebase tool stubs; restoring original snapshot")
+        }
+    }
+}
+
+/// Top-level function or variable declarations in the checker's generated .pyi.
+fn stub_name(line: &str) -> Option<&str> {
+    if let Some(function) = line
+        .strip_prefix("async def ")
+        .or_else(|| line.strip_prefix("def "))
+    {
+        return function.split_once('(').map(|(name, _)| name);
+    }
+    let (name, _) = line.split_once(':')?;
+    (!name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+        .then_some(name)
+}
+
 /// One session's runtime for one turn (08 §4).
 pub struct Repl {
     pool: Arc<Pool>,
@@ -1192,10 +1262,15 @@ impl Repl {
             imports.clear();
             None
         } else {
-            std::fs::read(&dump_path).ok().map(|bytes| Snapshot {
-                bytes,
-                names: names.clone(),
-                imports: imports.clone(),
+            std::fs::read(&dump_path).ok().map(|mut bytes| {
+                if let Some(fresh) = cfg.type_check_stubs.as_deref() {
+                    rebase_dump_stubs(&mut bytes, None, fresh);
+                }
+                Snapshot {
+                    bytes,
+                    names: names.clone(),
+                    imports: imports.clone(),
+                }
             })
         };
         let candidates = names.keys().cloned().collect();
@@ -1331,14 +1406,20 @@ impl Repl {
         }
     }
 
-    /// Stubs follow the live tool set (a server that connected since the
-    /// last cell is callable now, not next turn). The checker's config is
-    /// fixed per checkout, so a change means a fresh checkout restored from
-    /// the last dump — milliseconds, and the heap is byte-identical.
+    /// Stubs follow the live tool set without losing the heap. Load restores
+    /// the dump's own typing state, so rebase its harness declarations before
+    /// handing it to a fresh checkout.
     async fn refresh_stubs(&mut self) {
         let fresh = stubs(&specs(&self.cx).await);
         if self.cfg.type_check_stubs.as_deref() == Some(fresh.as_str()) {
             return;
+        }
+        if let Some(snapshot) = &mut self.last_dump {
+            rebase_dump_stubs(
+                &mut snapshot.bytes,
+                self.cfg.type_check_stubs.as_deref(),
+                &fresh,
+            );
         }
         self.cfg.type_check_stubs = Some(fresh);
         if let Some(c) = self.checkout.take() {
@@ -2686,6 +2767,87 @@ mod tests {
                 out.content
             );
             assert!(!prompt_block(&specs(&cx).await, true).contains("async def live_echo("));
+            repl.close().await;
+        });
+    }
+
+    #[test]
+    fn mcp_live_stub_rebase_preserves_an_unreadable_dump() {
+        let mut bytes = b"MONTY\0\xff\xfforiginal".to_vec();
+        let original = bytes.clone();
+        rebase_dump_stubs(&mut bytes, Some("old"), "fresh");
+        assert_eq!(
+            bytes, original,
+            "codec failure must not alter the snapshot handed to Load"
+        );
+    }
+
+    #[test]
+    fn mcp_live_stub_rebase_preserves_globals_across_cells_and_reopen() {
+        crate::with_test_registry(async {
+            let Some(pool) = monty_pool().await else {
+                return;
+            };
+            let dir = tempdir();
+            let cx = mcp_live_cx(&dir.0).await;
+            let mut repl = Repl::open(&pool, cx.session, &dir.0, cx.clone()).await;
+            let payload = hex::encode((0..=255u8).collect::<Vec<_>>());
+            let seed = format!(
+                "import json\npayload = bytes.fromhex({payload:?})\nrows = [{{'text': 'naïve\\n\\u0000', 'n': 123456789012345}}]\nalias = rows\nfactor = 7\ndef scale(value: int) -> int:\n    return value * factor"
+            );
+            let seeded = repl.run("seed", &seed).await;
+            assert!(!seeded.is_error, "{}", seeded.content);
+            let probe = "assert alias is rows\nprint(json.dumps([payload.hex(), rows, scale(6)], ensure_ascii=False, sort_keys=True))";
+            let before = repl.run("before", probe).await;
+            assert!(!before.is_error, "{}", before.content);
+            let added = repl
+                .run(
+                    "add",
+                    &format!(
+                        "added = await add_mcp_server(name='live', command='python3', args={})",
+                        mcp_live_entry()["args"]
+                    ),
+                )
+                .await;
+            assert!(!added.is_error, "{}", added.content);
+            let after = repl.run("after", &format!(
+                "assert (await live_echo(value='globals')).startswith('live:globals:')\n{probe}"
+            )).await;
+            assert!(!after.is_error, "{}", after.content);
+            assert_eq!(
+                after.content.as_bytes(),
+                before.content.as_bytes(),
+                "the stub prefix rebase changed user globals"
+            );
+            repl.close().await;
+
+            // A closed turn has no previous cfg in memory. The extra server
+            // renames both tools, exercising missing-name declarations on reopen.
+            ActorRef::<tools::Mcp>::lookup(tools::MCP_ACTOR)
+                .unwrap()
+                .unwrap()
+                .ask(tools::AddServer {
+                    name: "later".into(),
+                    entry: mcp_live_entry(),
+                })
+                .await
+                .unwrap();
+            let mut repl = Repl::open(&pool, cx.session, &dir.0, cx).await;
+            let reopened = repl.run("reopened", &format!(
+                "assert (await later__live_echo(value='reopened')).startswith('live:reopened:')\n{probe}"
+            )).await;
+            assert!(!reopened.is_error, "{}", reopened.content);
+            assert_eq!(
+                reopened.content.as_bytes(),
+                before.content.as_bytes(),
+                "the missing-name rebase changed user globals"
+            );
+            let removed = repl.run("old-name", "await live_echo(value='gone')").await;
+            assert!(
+                removed.is_error && removed.content.contains("live_echo"),
+                "a removed name must fail cleanly: {}",
+                removed.content
+            );
             repl.close().await;
         });
     }
