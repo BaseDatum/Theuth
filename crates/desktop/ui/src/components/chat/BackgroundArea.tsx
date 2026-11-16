@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { liveRows } from '@/components/agents/sessions'
+import { backgroundColors } from '@/lib/background-colors'
 import { usePanes } from '@/lib/panes'
 import { fmtThought } from '@/lib/time'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -77,12 +78,12 @@ export function BackgroundArea({ session }: { session: string }) {
         <div id={blockId} className="mx-auto flex max-h-[calc(var(--visible-band,100dvh)/2)] w-full max-w-[768px] shrink-0 flex-col gap-1.5 overflow-y-auto px-4">
           {hasTodos && <TodoCard session={session} />}
           {!!agents.length && (
-            <BackgroundCard title="Subagents" color="bg-project-malachite" summary={`${agents.length} live${waiting ? ` · ${waiting} waiting on approval` : ''}`} expanded={subagentsExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'subagents', open)}>
+            <BackgroundCard title="Subagents" color={backgroundColors.subagents.bg} summary={`${agents.length} live${waiting ? ` · ${waiting} waiting on approval` : ''}`} expanded={subagentsExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'subagents', open)}>
               <ul>
                 {agents.map((row) => (
                   <li key={row.id}>
                     <SubagentLink row={row} className="flex min-h-8 items-center gap-2 rounded py-1 outline-none hover:bg-layer-2 focus-visible:ring-2 focus-visible:ring-ring">
-                      <ActivityDot color={row.state.state === 'approval' ? 'bg-warning' : 'bg-project-malachite'} />
+                      <ActivityDot color={backgroundColors[row.state.state === 'approval' ? 'approval' : 'subagents'].bg} />
                       <span className="min-w-0 flex-1"><span className="block truncate font-medium">{row.name}</span><span className="block truncate text-fg-tertiary">{row.model || row.agent || 'model unavailable'}</span></span>
                       <span className="text-fg-secondary">{row.state.state === 'approval' ? 'waiting on approval' : row.state.state === 'awaiting' ? 'waiting on peer' : 'running'}</span>
                       <span className="shrink-0 text-fg-tertiary tabular-nums">{row.started_at ? fmtThought(Math.max(0, now - Date.parse(row.started_at))) ?? '0s' : '—'}</span>
@@ -93,12 +94,12 @@ export function BackgroundArea({ session }: { session: string }) {
             </BackgroundCard>
           )}
           {(jobCount > 0 || terminalCount > 0) && (
-            <BackgroundCard title="Jobs" color="bg-project-lapis" summary={[jobCount > 0 && `${jobCount} running`, terminalCount > 0 && `${terminalCount} terminal${terminalCount === 1 ? '' : 's'}`].filter(Boolean).join(' · ')} expanded={jobsExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'jobs', open)}>
+            <BackgroundCard title="Jobs" color={backgroundColors.jobs.bg} summary={[jobCount > 0 && `${jobCount} running`, terminalCount > 0 && `${terminalCount} terminal${terminalCount === 1 ? '' : 's'}`].filter(Boolean).join(' · ')} expanded={jobsExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'jobs', open)}>
               {jobsExpanded && <JobsRows session={session} />}
             </BackgroundCard>
           )}
           {reminderCount > 0 && (
-            <BackgroundCard title="Reminders" color="bg-project-plum" summary={`${reminderCount} pending${next === null ? '' : ` · ${countdown(next, now) === 'due now' ? 'due now' : `in ${countdown(next, now)}`}`}`} expanded={remindersExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'reminders', open)}>
+            <BackgroundCard title="Reminders" color={backgroundColors.reminders.bg} summary={`${reminderCount} pending${next === null ? '' : ` · ${countdown(next, now) === 'due now' ? 'due now' : `in ${countdown(next, now)}`}`}`} expanded={remindersExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'reminders', open)}>
               {remindersExpanded && <ul>{[...(reminders ?? [])].map((id) => <ReminderRow key={id} session={session} id={id} reminder={details?.get(id)} now={now} />)}</ul>}
             </BackgroundCard>
           )}
@@ -136,7 +137,7 @@ function JobsRows({ session }: { session: string }) {
       {!canList ? <p role="status">Jobs unavailable on this engine.</p> : query.error ? <p role="alert">{query.error.message}</p> : query.isPending ? <p role="status">Loading jobs…</p> : !rows.length ? <p role="status">No running jobs.</p> : (
         <ul>{rows.map((job) => (
           <li key={job.id} className="flex min-h-8 items-center gap-2 py-1">
-            <ActivityDot color={job.pty ? 'bg-project-faience' : 'bg-project-lapis'} />
+            <ActivityDot color={backgroundColors[job.pty ? 'terminals' : 'jobs'].bg} />
             <span className="min-w-0 flex-1 truncate font-mono" title={job.command}>{job.command}</span>
             <span className="shrink-0 text-fg-tertiary tabular-nums">{fmtThought(Number(job.secs) * 1000 + Math.max(0, now - query.dataUpdatedAt)) ?? '0s'}</span>
             {job.pty ? <TerminalLink session={session} job={job.id} label={`Open terminal ${job.id}`} className="shrink-0 rounded border px-1.5 py-0.5 hover:bg-layer-2">Open</TerminalLink> : canKill && <button type="button" disabled={killing !== null} onClick={() => void kill(job.id)} className="shrink-0 rounded border px-1.5 py-0.5 hover:bg-layer-2 disabled:opacity-50">{killing === job.id ? 'Killing…' : 'Kill'}</button>}
@@ -166,7 +167,7 @@ function ReminderRow({ session, id, reminder, now }: { session: string; id: stri
   }
   return (
     <li className="flex min-h-8 items-center gap-2 py-1">
-      <ActivityDot color="bg-project-plum" />
+      <ActivityDot color={backgroundColors.reminders.bg} />
       <span className="min-w-0 flex-1 break-words">{reminder?.message ?? `${id} · details unavailable`}</span>
       <span className="shrink-0 text-fg-tertiary tabular-nums" title={reminder ? new Date(reminder.fires_at * 1000).toLocaleString() : undefined}>{reminder ? countdown(reminder.fires_at, now) : '—'}</span>
       {canCancel && <button type="button" disabled={cancelling} onClick={() => void cancel()} className="shrink-0 rounded border px-1.5 py-0.5 hover:bg-layer-2 disabled:opacity-50">{cancelling ? 'Cancelling…' : 'Cancel'}</button>}

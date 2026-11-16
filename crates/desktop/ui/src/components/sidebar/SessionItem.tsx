@@ -27,6 +27,7 @@ import { HarvestIndicator, PtyIcon, ThinkingIndicator } from '@/components/chat/
 import { useSessionDrag } from '@/components/chat/Panes'
 import { ChatPicker } from '@/components/notes/ChatPicker'
 import { type AttachRef, chatName, toRef } from '@/lib/attach'
+import { backgroundColors } from '@/lib/background-colors'
 import { previewText } from '@/lib/channel-origin'
 import { useProjects } from '@/components/chat/ProjectPicker'
 import { parseSpoken } from '@/lib/injected'
@@ -42,6 +43,7 @@ import { cn } from '@/lib/utils'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { type Activity, type SessionSlice, shownActivity, useSessionField, useSessions } from '@/store/sessions'
 import { routed, useEngineLabel } from '@/lib/owner'
+import { useApprovals } from '@/store/approvals'
 
 /** One glyph per non-idle `Activity`: what the session is doing right now, readable at a glance in the list. */
 const ACTIVITY: Record<Exclude<Activity, 'idle'>, [LucideIcon | ComponentType<{ className?: string; 'aria-label'?: string; role?: string }>, string]> = {
@@ -83,9 +85,9 @@ function SessionPending({ id }: { id: string }) {
   const reminders = useSessionField(id, 'reminders')?.size ?? 0
   return (
     <>
-      {jobs > 0 && <Cog className="size-3.5 shrink-0 animate-pulse text-info" aria-label={`${jobs} background job${jobs === 1 ? '' : 's'}`} role="img" />}
-      {ptys > 0 && <PtyIcon live className="size-3.5 shrink-0 text-info" aria-label={`${ptys} live terminal${ptys === 1 ? '' : 's'}`} role="img" />}
-      {reminders > 0 && <Timer className="size-3.5 shrink-0 text-info" aria-label={`${reminders} reminder${reminders === 1 ? '' : 's'} pending`} role="img" />}
+      {jobs > 0 && <Cog className={cn('size-3.5 shrink-0 animate-pulse', backgroundColors.jobs.text)} aria-label={`${jobs} background job${jobs === 1 ? '' : 's'}`} role="img" />}
+      {ptys > 0 && <PtyIcon live className={cn('size-3.5 shrink-0', backgroundColors.terminals.text)} aria-label={`${ptys} live terminal${ptys === 1 ? '' : 's'}`} role="img" />}
+      {reminders > 0 && <Timer className={cn('size-3.5 shrink-0', backgroundColors.reminders.text)} aria-label={`${reminders} reminder${reminders === 1 ? '' : 's'} pending`} role="img" />}
     </>
   )
 }
@@ -104,9 +106,11 @@ export const runningSubagents = (subagents: readonly SessionSummary[], slices: R
 /** Subagent glyph: shown while any descendant (any depth) is running; the tree below a selected row (or a desk) shows which. */
 export function SessionSubagents({ subagents = NONE }: { subagents: readonly SessionSummary[] | undefined }) {
   const n = useSessions((s) => runningSubagents(subagents, s.sessions))
+  const approval = useApprovals((s) => s.pending.some((p) => subagents.some((d) => d.id === p.session)))
+  const observedApproval = useSessions((s) => subagents.some((d) => (s.sessions[d.id]?.observed ?? d.observed)?.state === 'requires_action'))
   if (n === 0) return null
   const label = `${n} subagent${n === 1 ? '' : 's'} running`
-  return <Network className="size-3.5 shrink-0 animate-pulse text-info" aria-label={label} role="img" />
+  return <Network className={cn('size-3.5 shrink-0 animate-pulse', backgroundColors[approval || observedApproval ? 'approval' : 'subagents'].text)} aria-label={label} role="img" />
 }
 
 /** Submenu body: the other known projects, then a new one (typed inline). Mounted only while the submenu is open. */

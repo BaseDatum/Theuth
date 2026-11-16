@@ -465,6 +465,10 @@ awaiting approval), jobs (lapis), terminals (faience) and reminders (plum),
 then the Advisor pill. Activity blinks except on reminders. Subagent dots
 open their chats and remain draggable; job and reminder dots reveal their
 cards; terminal dots open that terminal.
+Sidebar live-work glyphs use the same category palette, defined once in
+`lib/background-colors.ts` for dots, card marks and sidebar glyphs. A
+subagent's pending approval makes the sidebar network glyph ochre; the
+session's thinking/activity indicator keeps its existing colour.
 
 The existing grabber reveals stacked To-do, Subagents, Jobs (including
 terminals) and Reminders cards, omitting empty categories. The area and each

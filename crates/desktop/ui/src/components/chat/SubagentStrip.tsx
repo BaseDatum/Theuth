@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { dotLabel } from '@/components/agents/sessions'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { canPopout, openPopout } from '@/lib/popout'
+import { backgroundColors } from '@/lib/background-colors'
 import { STRIP_CAP, stripRows } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
 import type { AgentInfo } from '@/store/ui-events'
@@ -29,14 +30,14 @@ export function SubagentStrip({ session, trailing }: { session: string; trailing
   const groups: ReactNode[] = []
   if (shown.length) groups.push(
     <div className="flex items-center" aria-label={`${shown.length + more} subagents running`}>
-      {shown.map((row) => <SubagentLink key={row.id} row={row} className="subagent-dot-in flex size-6 shrink-0 items-center justify-center"><ActivityDot color={row.state.state === 'approval' ? 'bg-warning' : 'bg-project-malachite'} beat={row.beat} /></SubagentLink>)}
+      {shown.map((row) => <SubagentLink key={row.id} row={row} className="subagent-dot-in flex size-6 shrink-0 items-center justify-center"><ActivityDot color={backgroundColors[row.state.state === 'approval' ? 'approval' : 'subagents'].bg} beat={row.beat} /></SubagentLink>)}
       {more > 0 && <span className="shrink-0 tabular-nums">+{more}</span>}
     </div>,
   )
   for (const [category, ids, color] of [
-    ['Jobs', jobs, 'bg-project-lapis'],
-    ['Terminals', terminalIds, 'bg-project-faience'],
-    ['Reminders', reminders, 'bg-project-plum'],
+    ['Jobs', jobs, backgroundColors.jobs.bg],
+    ['Terminals', terminalIds, backgroundColors.terminals.bg],
+    ['Reminders', reminders, backgroundColors.reminders.bg],
   ] as const) {
     if (!ids?.size) continue
     groups.push(
