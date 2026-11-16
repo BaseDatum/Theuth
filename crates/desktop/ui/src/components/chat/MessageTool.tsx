@@ -89,7 +89,7 @@ export const MessageTool = memo(function MessageTool({ tool, session, readOnly }
   if (roster.length > 0) return <RosterCard tool={tool} rows={roster} />
   const card =
     tool.name === 'show' || tool.name === 'app' || tool.name === 'task_draft' || tool.name === 'agent_draft' || tool.name === 'routine_draft' || tool.name === 'autoresearch_draft' ? (
-      <ArtifactCard tool={tool} session={session} />
+      <ArtifactCard tool={tool} session={session} readOnly={readOnly} />
     ) : tool.name === 'crawl' || tool.name === 'map_site' || tool.name === 'scrape_url' || tool.name === 'search_web' ? (
       <ScrapeCard tool={tool} session={session} />
     ) : tool.name === 'remind_me_in' ? (

@@ -5,6 +5,7 @@ import {
   AppWindow,
   File,
   FileArchive,
+  FileX,
   FileCode,
   FileText,
   FolderOpen,
@@ -44,6 +45,7 @@ import {
 import { fmtBytes, isLocal, readText, readTextOnline, resolveFile } from "@/lib/files";
 import { resultLine } from "@/lib/describe";
 import { canPopout, openPopout } from "@/lib/popout";
+import { pieces } from "@/lib/context-197";
 import { isPrivate, privateOwner } from "@/lib/private";
 import { useApi } from "@/lib/rpc";
 import { cn } from "@/lib/utils";
@@ -56,6 +58,7 @@ import { partialShow } from "@/store/reduce";
 import { ChatPicker } from "@/components/notes/ChatPicker";
 import { attachTo, toRef } from "@/lib/attach";
 import { Img } from "./Attachments";
+import { RemoveButton } from "./MessageAssistant";
 import { HtmlPage, capFromArgs } from "./HtmlPage";
 
 type Tool = Extract<Entry, { kind: "tool" }>;
@@ -388,14 +391,40 @@ function Preview({ a, text }: { a: Artifact; text: string | null }) {
   );
 }
 
-/** Wrench + `<name>` header row: the tool trace reads the same whatever the body. */
-function Header({ name, busy }: { name: string; busy?: boolean }) {
+/** Wrench + `<name>` header row: the tool trace reads the same whatever the body. `extra` sits at its end (197 §8's source control). */
+function Header({ name, busy, extra }: { name: string; busy?: boolean; extra?: ReactNode }) {
   return (
     <div className="flex items-center gap-2 font-medium">
       <Wrench className="size-3.5 shrink-0 text-fg-secondary" />
       <span>{name}</span>
       {busy && <ToolSpinner />}
+      {extra}
     </div>
+  );
+}
+
+/** 197 §8: the call's source (`sources`, one per card): `Remove source from context`, or once removed a small tag; the
+ * card itself stays either way. A whole row already removed, or a read-only page, shows no control. */
+function SourceControl({ tool, session, readOnly }: { tool: Tool; session: string; readOnly?: boolean }) {
+  const context = pieces(tool.context);
+  const piece = context?.sources?.[0];
+  if (!context || !piece) return null;
+  if (piece.removed)
+    return (
+      <span className="ml-auto shrink-0 rounded-md bg-layer-2 px-1.5 py-0.5 text-[11px] font-normal text-fg-secondary">
+        Source removed from context
+      </span>
+    );
+  if (readOnly || context.removed) return null;
+  return (
+    <RemoveButton
+      session={session}
+      target={piece.target}
+      active={context.active}
+      icon={FileX}
+      label="Remove source from context"
+      className="-my-3 ml-auto shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
+    />
   );
 }
 
@@ -426,12 +455,14 @@ function Frame({
   slot,
   onClick,
   busy,
+  extra,
 }: {
   name: string;
   children: ReactNode;
   slot: ReactNode;
   onClick?: () => void;
   busy?: boolean;
+  extra?: ReactNode;
 }) {
   const click = (e: MouseEvent<HTMLDivElement>) => {
     // Buttons and menus inside the card keep their own actions.
@@ -448,7 +479,7 @@ function Frame({
       )}
       onClick={click}
     >
-      <Header name={name} busy={busy} />
+      <Header name={name} busy={busy} extra={extra} />
       <div className="mt-2 flex min-w-0 gap-3">
         {slot}
         <div className="flex min-w-0 flex-1 flex-col gap-1">{children}</div>
@@ -468,9 +499,11 @@ const FAILED_SLOT = (
 export const ArtifactCard = memo(function ArtifactCard({
   tool,
   session,
+  readOnly,
 }: {
   tool: Tool;
   session: string;
+  readOnly?: boolean;
 }) {
   const artifact = useSessions((s) =>
     s.sessions[session]?.artifacts.get(tool.callId),
@@ -492,13 +525,14 @@ export const ArtifactCard = memo(function ArtifactCard({
   const open = () =>
     // The toast's name before a record exists: the `name` the call gave, else the base name of its `path`.
     void openShow(api, session, tool.callId, partialShow(JSON.stringify(tool.args ?? {}))?.name ?? tool.name);
+  const source = <SourceControl tool={tool} session={session} readOnly={readOnly} />;
 
   if (artifact?.kind === "html") {
     // 120 §3: the card is the page — borderless at reply width on the transcript background; header row kept, one
     // caption line below, the controls in a hover/focus toolbar at the frame's top-right. The page owns its clicks.
     return (
       <div className="my-2 min-w-0 text-sm">
-        <Header name={tool.name} />
+        <Header name={tool.name} extra={source} />
         <HtmlPage
           callId={tool.callId}
           html={text}
@@ -533,6 +567,7 @@ export const ArtifactCard = memo(function ArtifactCard({
     return (
       <Frame
         name={tool.name}
+        extra={source}
         slot={<Preview a={artifact} text={text} />}
         onClick={open}
       >
@@ -562,7 +597,7 @@ export const ArtifactCard = memo(function ArtifactCard({
   if (result?.isError) {
     const [first = "", ...rest] = result.output.split("\n");
     return (
-      <Frame name={tool.name} slot={FAILED_SLOT} onClick={draft && open}>
+      <Frame name={tool.name} slot={FAILED_SLOT} onClick={draft && open} extra={source}>
         <div className="rounded-lg bg-danger-bg px-3 py-2 text-danger">
           <div className="font-mono text-xs wrap-anywhere">
             {resultLine(first)}
@@ -597,6 +632,7 @@ export const ArtifactCard = memo(function ArtifactCard({
   return (
     <Frame
       name={tool.name}
+      extra={source}
       slot={ArtifactWriting}
       busy={!result}
       onClick={draft || (result && !result.isError) ? open : undefined}
