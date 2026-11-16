@@ -52,6 +52,7 @@ nucleo = { workspace = true }
 gray_matter = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 serde_yaml = { workspace = true }
+monty = { workspace = true }
 monty-pool = { workspace = true }
 monty-types = { workspace = true }
 monty-fs = { workspace = true }

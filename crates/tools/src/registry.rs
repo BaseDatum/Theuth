@@ -326,9 +326,15 @@ pub struct InstallCommunicationAccess(pub Arc<dyn CommunicationAccess>);
 /// tool of `server` named `tool` (the server's own name) is offered. A tool
 /// it refuses is hidden exactly like a [`SetHidden`] one. Sessions the
 /// source does not know are unaffected (`true`).
+#[async_trait::async_trait]
 pub trait McpAccess: Send + Sync {
     /// May `session` see `server`'s `tool`?
     fn allows(&self, session: SessionId, server: &str, tool: &str) -> bool;
+
+    /// Persist access for the agent whose approved `add_mcp_server` just connected
+    /// `server`. Unrestricted sessions need no grant. Must update the read model
+    /// before returning; other visibility and risk gates still apply.
+    async fn grant(&self, session: SessionId, server: &str) -> Result<(), String>;
 }
 
 /// `ask` → `()`: install the [`McpAccess`] source; installing again replaces it.
@@ -339,6 +345,17 @@ impl Message<InstallMcpAccess> for ToolRegistry {
 
     async fn handle(&mut self, m: InstallMcpAccess, _: &mut Context<Self, Self::Reply>) {
         self.mcp_access = Some(m.0);
+    }
+}
+
+/// Clone the source so granting can await the roster outside this mailbox.
+pub(crate) struct GetMcpAccess;
+
+impl Message<GetMcpAccess> for ToolRegistry {
+    type Reply = Option<Arc<dyn McpAccess>>;
+
+    async fn handle(&mut self, _: GetMcpAccess, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.mcp_access.clone()
     }
 }
 

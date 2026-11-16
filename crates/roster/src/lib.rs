@@ -94,6 +94,12 @@ pub struct GetAgent(pub String);
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PutAgent(pub AgentFile);
 
+/// An approved server add grants only the caller's agent, through its file.
+struct GrantMcp {
+    agent: String,
+    server: String,
+}
+
 /// `ask` → `Result<(), String>`: rewrite the file's `paused:` line; a paused
 /// agent's queued wakes are held. `Err("no such agent")`; `theuth` is refused.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -3007,6 +3013,26 @@ impl Message<PutAgent> for Roster {
     }
 }
 
+impl Message<GrantMcp> for Roster {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: GrantMcp, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        // Read disk, not a possibly stale watcher snapshot: preserve an edit
+        // that arrived while the server was connecting.
+        let path = self.dir.join(format!("{}.md", m.agent));
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let mut f = file::parse(&m.agent, &text)?;
+        if let Some(list) = &mut f.mcp
+            && !list.contains(&m.server)
+        {
+            list.push(m.server);
+            self.write_file(&f).await?;
+        }
+        Ok(())
+    }
+}
+
 impl Message<PauseAgent> for Roster {
     type Reply = Result<(), String>;
 
@@ -3405,12 +3431,34 @@ impl tasks::DeskRouter for Desks {
 /// 67 §6.3: an MCP tool is offered to a session only when the agent it works
 /// for lists the server (or `server.tool`); `theuth` and sessions of no agent
 /// see everything. Descendants are the agent's too ([`Shared::inherit`]).
+#[async_trait::async_trait]
 impl ::tools::McpAccess for Desks {
     fn allows(&self, session: runtime::SessionId, server: &str, tool: &str) -> bool {
         self.0
             .agent_of(session)
             .and_then(|a| self.0.file(&a))
             .is_none_or(|f| desk::mcp_visible(&f, server, tool))
+    }
+
+    async fn grant(&self, session: runtime::SessionId, server: &str) -> Result<(), String> {
+        let Some(agent) = self.0.agent_of(session).filter(|a| a != AgentName::DEFAULT) else {
+            return Ok(());
+        };
+        if self
+            .0
+            .file(&agent)
+            .is_none_or(|f| f.mcp.is_none_or(|list| list.iter().any(|s| s == server)))
+        {
+            return Ok(());
+        }
+        actor()
+            .ok_or("roster is not running")?
+            .ask(GrantMcp {
+                agent,
+                server: server.to_owned(),
+            })
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -3743,6 +3791,8 @@ pub fn actor() -> Option<ActorRef<Roster>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod mcp_live;
 
     fn tmp(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

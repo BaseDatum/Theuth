@@ -266,6 +266,7 @@ encoding_rs = "0.8"  # 122 D3: charset decoding of legacy-encoded pages (already
 # Documents as Markdown (design doc 20): PDF/Office/ODF/RTF/EPUB, pure Rust, no external binaries.
 anydoc = "0.2"
 # Python runtime (design doc 08): pool of `monty` worker subprocesses.
+monty = "=1.6.0"
 monty-pool = "=1.6.0"
 monty-types = "=1.6.0"
 monty-fs = "=1.6.0"
