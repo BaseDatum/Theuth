@@ -57,9 +57,13 @@ impl ShakeCategory {
             Self::Tools => k == ContextKind::Tool,
             Self::Notes => k == ContextKind::Note,
             Self::Agents => k == ContextKind::Peer,
+            // A pre-197 engine still sends legacy `message` rows.
             Self::Messages => matches!(
                 k,
-                ContextKind::User | ContextKind::Assistant | ContextKind::Summary
+                ContextKind::User
+                    | ContextKind::Assistant
+                    | ContextKind::Summary
+                    | ContextKind::Message
             ),
             Self::Summary => k == ContextKind::Summary,
         }
@@ -130,6 +134,7 @@ pub struct ReviewRow {
 /// Lowercase kind for picker rows and the print-mode inventory.
 pub fn kind_name(k: ContextKind) -> &'static str {
     match k {
+        ContextKind::Message => "message",
         ContextKind::Image => "image",
         ContextKind::Document => "document",
         ContextKind::Surface => "surface",

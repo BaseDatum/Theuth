@@ -106,8 +106,9 @@ pub enum ContextTarget {
 }
 
 /// What an inventory item is, for the `/shake <category>` filters (197 §1).
-/// Declaration order keeps the pre-197 wire positions (`message` → `user`,
-/// then `image`, `document`, `tool`, `summary`); new kinds follow.
+/// Declaration order keeps the pre-197 wire positions (`message`, `image`,
+/// `document`, `tool`, `summary`); the 197 kinds follow, so the schema
+/// change is additive.
 #[derive(
     Clone,
     Copy,
@@ -124,8 +125,9 @@ pub enum ContextTarget {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum ContextKind {
-    /// A row the user typed (replaces pre-197 `message`).
-    User,
+    /// Legacy: pre-197 text rows. Never emitted since 197 (user, assistant,
+    /// note and peer rows replaced it); kept so the wire stays additive.
+    Message,
     /// An image occurrence (user attachment, tool screenshot, tool image, summary frame).
     Image,
     /// A non-image binary occurrence (native PDF).
@@ -140,6 +142,8 @@ pub enum ContextKind {
     Note,
     /// A message another agent sent (the row has peer provenance).
     Peer,
+    /// A row the user typed.
+    User,
     /// An assistant row with text.
     Assistant,
 }
@@ -2400,6 +2404,7 @@ mod tests {
         assert_eq!(snap.items[5].remove_with, [msg(1)]);
         assert_eq!(snap.items[1].label, "a.png");
         assert_eq!(snap.items[0].label, "look");
+        assert!(snap.items.iter().all(|i| i.kind != ContextKind::Message));
         assert_eq!(snap.revision, "3");
         assert!(
             snap.items
@@ -2725,6 +2730,8 @@ mod tests {
                 (fence(14, 0, 0), K::Surface, "diagram"),
             ]
         );
+        // The legacy pre-197 kind is never emitted.
+        assert!(snap.items.iter().all(|i| i.kind != K::Message));
         let item = |t: ContextTarget| snap.items.iter().find(|i| i.target == t).unwrap();
         let shown = |t| {
             let i = item(t);
