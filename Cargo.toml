@@ -109,22 +109,23 @@ objc2-av-foundation = { version = "0.3", default-features = false, features = ["
 libc = "0.2"  # 53
 # Phase 4 (04-post): Nemotron 3 Diarization (Streaming Sortformer ONNX) + wespeaker embeddings run
 # on `ort` directly (04-post-nemotron-as-built); `realfft` = the STFT of the diariser's log-mel front
-# end (already in the graph under parakeet-rs); `knf-rs` = kaldi fbank features for wespeaker (cmake,
-# as `ptts`); `hound` = the WAV the review pane plays.
+# end (already in the graph under parakeet-rs); `knf-rs` = kaldi fbank features for wespeaker (needs
+# cmake); `hound` = the WAV the review pane plays.
 realfft = "3.5"
 knf-rs = "0.3"  # 53
 hound = "3.5"  # 53
-# Voice (design doc 43): `ptts` = pure-Rust Pocket TTS (`sp` = SentencePiece `tokenizer.model`,
-# the file the checkpoint ships; needs cmake); `opus` = libopus for 80 ms packets on the wire.
-# crates.io 0.2.3 predates `ptts::synth::Synth` (the streaming API 43 §2.1 relies on); the rev is
-# main on 2026-09-16, still 0.2.3 + xn 0.2.4 from crates.io. Drop the git ref when 0.2.4 ships.
-# Held (2026-11-02): v0.6.0 drops SentencePiece/`sp` and `TTSConfig::v202601`; needs config.json + tokenizer.json in the checkpoint.
-ptts = { git = "https://github.com/gradium-ai/xn-ptts", rev = "5d50b5209ff9bbd7d3bac5a26f3c3bc1934fca89", features = ["sp"] }
-xn = "0.2.4"  # ptts's tensor library; only `set_num_threads` is called directly
+# Voice (design doc 43): `ptts` = pure-Rust Pocket TTS, crates.io 0.7.1 with a one-line in-repo patch
+# (see [patch.crates-io]); `hf` = the Hugging Face `tokenizer.json` reader (tokenizers, already in the
+# graph with `fancy-regex` + `onig`); the voice crate adds `metal` on macOS. The checkpoint is Kyutai's
+# english_2026-10 with our own config.json (crates/voice/data/pocket-tts-en-2026-10). `audio` (voice
+# cloning from audio) and `hub` (hf:// downloads) stay off. `opus` = libopus for 80 ms packets on the wire.
+ptts = { version = "0.7.1", default-features = false, features = ["hf"] }
+xn = "0.2.14"  # ptts's tensor library; only `set_num_threads` is called directly
 opus = "0.4"
 # Voice notes (design doc 45): `parakeet-rs` = Parakeet TDT speech-to-text on ONNX Runtime. `load-dynamic`, not
-# pyke's static build: that archive carries protobuf 3.21 with default visibility, `sentencepiece` (ptts) carries
-# protobuf-lite 3.14, and one process cannot hold both — the TTS load aborts. The dylib lives beside the checkpoint.
+# pyke's static build: `ort` below is `load-dynamic` workspace-wide (one ort-sys per graph). (Until ptts 0.7.1 it
+# also kept pyke's protobuf 3.21 away from `sentencepiece`'s protobuf-lite 3.14; ptts no longer uses sentencepiece.)
+# The dylib lives beside the checkpoint.
 parakeet-rs = { version = "0.3", default-features = false, features = ["cpu", "load-dynamic"] }
 # ort held at rc.13: rc.14+ needs an explicit `Environment` per `Session::builder`, and wavekat-vad 0.1.17 (latest) still calls `Session::builder()`; ort-sys `links = "onnxruntime"` allows one ort per graph.
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic", "half", "coreml", "api-22"] }  # parakeet-rs's pin; `half` = typed `f16` tensors for laya's fp16 outputs (57 §2); `coreml` = the CoreML EP option builder (registered on macOS only, 57 §12.6); `api-22` = plugin EP registration (`Environment::register_ep_library`, `SessionBuilder::with_devices`, 58 step 13) — the runtime must be ONNX Runtime ≥ 1.22 (we ship 1.27)
@@ -485,6 +486,15 @@ flexaudio-os-macos = { path = "vendor/flexaudio-os-macos" }
 # grows a BoringSSL provider option, or Signal's store stops needing SQLCipher.
 # Held at 0.36 (crates.io 0.39.1): presage-store-sqlite and rusqlite 0.38 (unjar) need ^0.36, sqlx-sqlite 0.9 <0.38.
 libsqlite3-sys = { path = "vendor/libsqlite3-sys" }
+# ptts (Pocket TTS, voice crate): 0.7.1 refuses Kyutai's english_2026-10 checkpoint with
+# `1 unused tensors ["flow_lm.bos_before_voice"]` — that checkpoint opens every voice prompt
+# with a learnt BOS (`insert_bos_before_voice`), which 0.7.1 does not implement. `vendor/ptts` =
+# crates.io 0.7.1 (gradium-ai/xn-ptts 5f9522b, Cargo.lock dropped) + that tensor added to
+# `loader::is_unused_by_tts_model`; the BOS reaches the model as row 0 of every voice file
+# (crates/voice/build-voices/from_state.py). Drop when a ptts release reads
+# `insert_bos_before_voice` (branch alex/pocket-tts-models, e614cb9), and regenerate the voices
+# without the BOS row.
+ptts = { path = "vendor/ptts" }
 
 # boring-sys (libsignal's BoringSSL, also the crypto behind vendor/libsqlite3-sys): upstream emits
 # no `cargo:include`, so dependents cannot compile C against its headers. Branch

@@ -46,8 +46,11 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 
 # 76 §0.5: Apple's VoiceProcessingIO mic unit (AEC + AGC + NS), moved here from the meeting crate.
+# `metal`: Pocket TTS on the GPU (`DeviceKind::Auto` picks it; CPU if Metal fails to start) —
+# first audio 6 ms against 26 ms on the CPU, at ~1 % of the CPU (M3 Max, 2026-11-17).
 [target.'cfg(target_os = "macos")'.dependencies]
 coreaudio-rs = { workspace = true }
+ptts = { workspace = true, features = ["metal"] }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts"]

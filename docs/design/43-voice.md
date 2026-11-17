@@ -588,6 +588,37 @@ above is recorded here rather than rewritten into it.
 - **Leftovers:** none in-tree (the spike example and its dev-deps were
   removed).
 
+### 11.1 Checkpoint swap (2026-11-17): Kyutai english_2026-10 on ptts 0.7.1
+
+Supersedes the bullets above on model files, voice files and the git pin.
+
+- **Files:** `<data_dir>/models/pocket-tts-en-2026-10/` (`voice::TTS_MODEL_SUBDIR`):
+  `model.safetensors` + `tokenizer.json` from the ungated
+  `kyutai/pocket-tts-without-voice-cloning/languages/english_2026-10` (CC BY 4.0; the gated
+  weights with `mimi.encoder.*` zeroed), and from the repo `config.json` and `voices/`
+  (`crates/voice/data/pocket-tts-en-2026-10/`, `repo:` origins in `scripts/fetch-models.sh`;
+  attribution beside them). `pocket-tts/` stays in REQUIRED for earlier engines until the next
+  release.
+- **config.json:** `TTSConfig::v202601`'s values plus `mimi.inner_dim: 32` (the encoder narrows to
+  32, the width of `speaker_proj`), `gelu: tanh`, `time_rms_norm: rms_var`, `flow_type: lsd`,
+  `audio_delay: 0` (read only by ptts's speech-to-speech path). Temperature: ptts's default 0.3,
+  Kyutai's `default_temperature` for this checkpoint (was 0.7).
+- **Voices:** Kyutai's `embeddings/*.safetensors` are flow-LM KV caches, not embeddings.
+  `crates/voice/build-voices/from_state.py` inverts them to `emb` files (layer-0 V → LayerNorm(x) by
+  least squares over `speaker_proj`; per-row scale from layer 1) and re-runs all six layers:
+  K/V within 1e-6 relative of Kyutai's. Row 0 is `flow_lm.bos_before_voice`: this checkpoint opens
+  every voice prompt with it (`insert_bos_before_voice`), which ptts 0.7.1 does not implement, so
+  the voice file carries it and `vendor/ptts` (0.7.1 + one line) lets the loader skip the tensor.
+  Voices: `peter_yearsley` (default) and `alba` (notebooks' second host).
+- **Level:** Kyutai's states keep their recording's level: `peter_yearsley` synthesizes at
+  -31 dBFS RMS (the old locally made voice, from a loudness-normalized prompt, -18), `alba` -19.
+  `speak.rs` `VOICE_GAIN_DB` adds +10 dB and a limiter (1 dB headroom, 2 ms lookahead) to
+  `peter_yearsley` through ptts's `post_process`: -21 dBFS, peak 0.89.
+- **Device:** `DeviceKind::Auto` with ptts `metal` on macOS. M3 Max, release, 10 sentences ×5,
+  median time to first audio / RTF: Metal 6 ms / 0.040 (~1 % CPU), Accelerate 17 ms / 0.058,
+  CPU 26 ms / 0.072; the old checkpoint on ptts 5d50b52 CPU 65 ms / 0.080. A new binary's first
+  Metal load compiles its kernels (1.4–2.4 s); later loads take 70–500 ms.
+
 ## 12. Amendments to 00 and 25 (same commit series)
 
 - 00 §9: data dir gains `models/pocket-tts/` (mirrored Pocket TTS
