@@ -128,7 +128,7 @@ exactly: the skeleton above, `…land.```json-render { "root": "r` as text below
 
 - `bunx tsc -b --noEmit` (build-lock): 0 `error TS` (`/tmp/fence-skel/tsc.txt`). No baseline diff needed.
 - `bunx vitest run src/components/chat src/store src/lib/no-emoji.test.ts`: 92 files, 908 tests passed (`vitest-chat.txt`).
-- Full `bunx vitest run` (BUILD_SLOTS=1): see `vitest-full.txt`; result in the final report.
+- Full `bunx vitest run` (BUILD_SLOTS=1): 359 files, 2524 tests passed (`vitest-full.txt`).
 - `mbx check -p agent`: ok, 0 errors (`check-agent.txt`). `mbx clippy -p agent --no-deps --tests -- -D warnings -A
   clippy::chunks_exact_to_as_chunks -A deprecated`: ok, 0 warnings in agent (only cargo's future-incompat note for the
   `block` dependency) (`clippy-agent.txt`). `mbx test -p agent --no-run`: ok. `mbx test -p agent fence_round`: 1 passed;
