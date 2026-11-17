@@ -752,7 +752,9 @@ impl Store {
 
     /// D17 share re-check: `contact` (a record id, merges followed) is neither removed nor
     /// blocked, and still shares `session` with us: an export of it granted to the
-    /// contact (no member refusing), or a live `~return` conversation into it.
+    /// contact (no member refusing), or a live `~return` conversation into it (one this
+    /// chat opened toward the contact's export, `outbound`). The contact's own conversation
+    /// into our export never outlives the grant (199-Z1, found live).
     pub async fn share_live(&self, session: &str, contact: &str) -> anyhow::Result<bool> {
         let root = self.contact_root(contact).await?;
         let live: bool = sqlx::query_scalar(
@@ -763,7 +765,8 @@ impl Store {
                 AND NOT EXISTS (SELECT 1 FROM contact_grants g JOIN a2a_exports x ON x.id = g.export \
                  WHERE g.contact = ?1 AND g.granted = 0 AND x.session = ?2)) \
                OR EXISTS (SELECT 1 FROM contact_threads t JOIN contacts c ON c.id = ?1 \
-                 WHERE 'peer:' || t.binding = c.binding AND t.session = ?2 AND t.last_ms >= ?3))",
+                 WHERE 'peer:' || t.binding = c.binding AND t.session = ?2 AND t.outbound = 1 \
+                 AND t.last_ms >= ?3))",
         )
         .bind(&root)
         .bind(session)
@@ -1139,6 +1142,21 @@ mod tests {
         assert!(!store.share_live(&sid, "rec").await.unwrap());
         exec(&store, "UPDATE contacts SET blocked = 0 WHERE id = 'rec'").await;
         exec(&store, "DELETE FROM contact_grants").await;
+        // 199-Z1: the contact's own conversation into our (now ungranted) export keeps
+        // nothing alive.
+        sqlx::query(
+            "INSERT INTO contact_threads (id, binding, context_id, session, export, outbound, \
+             last_ms) VALUES ('b1|in', 'b1', 'in', ?, 'proj', 0, ?)",
+        )
+        .bind(&sid)
+        .bind(now_ms())
+        .execute(&store.write)
+        .await
+        .unwrap();
+        assert!(
+            !store.share_live(&sid, "rec").await.unwrap(),
+            "an ungranted export with the contact's conversation into it"
+        );
         sqlx::query(
             "INSERT INTO contact_threads (id, binding, context_id, session, export, outbound, \
              last_ms) VALUES ('b1|c', 'b1', 'c', ?, '', 1, ?)",
