@@ -26,8 +26,14 @@ export type PopoutTarget =
   | { kind: 'talk'; session: string }
   /** `/vm/$name`: one sandbox VM's desktop alone (79 §6.2); label `popout-vm-<name>`. */
   | { kind: 'vm'; name: string }
+  /** A sidebar page (`/costs`, `/attention`, `/artifacts`, `/settings/$tab`, …) alone, navigable inside its window; label
+   * `popout-page-<route>`, which is also what marks the URL as a page window (a page route has no id to key on). `key`
+   * (New chat: one per press) makes the label `popout-page-<route>-<key>`, a new window instead of focusing the open
+   * one; like `note.fresh` it lives in the label only, never in the parsed target. */
+  | { kind: 'page'; path: string; key?: string }
 
 const idOf = (t: PopoutTarget): string =>
+  t.kind === 'page' ? `${t.path.replace(/^\//, '')}${t.key ? `-${t.key}` : ''}` :
   t.kind === 'chat' || t.kind === 'talk'
     ? t.session
     : t.kind === 'artifact'
@@ -45,6 +51,7 @@ const idOf = (t: PopoutTarget): string =>
                 : t.meeting
 
 const pathOf = (t: PopoutTarget): string =>
+  t.kind === 'page' ? t.path :
   t.kind === 'chat' || t.kind === 'talk'
     ? `/${t.kind === 'chat' ? 'c' : 'talk'}/${encodeURIComponent(t.session)}`
     : t.kind === 'artifact'
@@ -77,8 +84,10 @@ export const noteOpenMode = (isMobile: boolean, canPopout: boolean): 'popout' | 
 /** What a window at `href` shows alone, or `null` for the ordinary shell (no `?window=` or a route that has no popped form). */
 export function popoutTarget(href: string): PopoutTarget | null {
   const url = new URL(href, 'http://x')
-  if (!url.searchParams.get('window')) return null
+  const label = url.searchParams.get('window')
+  if (!label) return null
   const [, head, id, sub] = url.pathname.split('/')
+  if (label.startsWith('popout-page-')) return { kind: 'page', path: url.pathname }
   if (!id) return null
   if (head === 'pty') return sub ? { kind: 'pty', session: decodeURIComponent(id), job: decodeURIComponent(sub) } : null
   if (head === 'codemap') return sub ? { kind: 'codemap', session: decodeURIComponent(id), root: decodeURIComponent(sub) } : null

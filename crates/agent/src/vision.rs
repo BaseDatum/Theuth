@@ -155,12 +155,13 @@ impl VisionSource {
     /// second image of tool response part 3, `h2.p1` in a head. Independent of
     /// status and of the configured fallback (52 §4.2).
     pub fn reference(&self) -> String {
+        let row = |owner: ContextOwner| match owner {
+            ContextOwner::Message { seq } => format!("m{seq}"),
+            ContextOwner::Head { epoch } => format!("h{epoch}"),
+        };
         match self.target {
             ContextTarget::Binary { owner, part, image } => {
-                let mut s = match owner {
-                    ContextOwner::Message { seq } => format!("m{seq}.p{part}"),
-                    ContextOwner::Head { epoch } => format!("h{epoch}.p{part}"),
-                };
+                let mut s = format!("{}.p{part}", row(owner));
                 if let Some(i) = image {
                     s.push_str(&format!(".i{i}"));
                 }
@@ -168,6 +169,11 @@ impl VisionSource {
             }
             ContextTarget::Message { seq } => format!("m{seq}"),
             ContextTarget::Head { epoch } => format!("h{epoch}"),
+            // `decode` admits binary sources only; named for completeness.
+            ContextTarget::Fence { owner, part, index } => {
+                format!("{}.p{part}.f{index}", row(owner))
+            }
+            ContextTarget::Source { owner, part } => format!("{}.p{part}.s", row(owner)),
         }
     }
 }
@@ -976,8 +982,8 @@ mod tests {
         assert_ne!(all[0].source, all[1].source);
 
         let mask = Mask {
-            whole: false,
             binaries: vec![at(1, None)],
+            ..Mask::default()
         };
         let some = images(owner(7), &m, &mask);
         assert_eq!(refs(&some), ["m7.p3"], "original coordinates stay fixed");
@@ -996,7 +1002,7 @@ mod tests {
                 &m,
                 &Mask {
                     whole: true,
-                    binaries: vec![]
+                    ..Mask::default()
                 }
             )
             .is_empty()
@@ -1024,8 +1030,8 @@ mod tests {
     fn nested_tool_images_project_with_envelope_and_text_kept() {
         let m = tool();
         let mask = Mask {
-            whole: false,
             binaries: vec![at(0, Some(0))],
+            ..Mask::default()
         };
         let ims = images(owner(3), &m, &mask);
         assert_eq!(refs(&ims), ["m3.p0.i1", "m3.p1.i0"]);

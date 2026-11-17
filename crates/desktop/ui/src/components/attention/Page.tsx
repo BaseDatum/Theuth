@@ -1,10 +1,9 @@
 import { Outlet, useParams } from '@tanstack/react-router'
-import { ChevronDown, PanelLeft } from 'lucide-react'
+import { ChevronDown } from 'lucide-react'
 import { useState } from 'react'
 import { ATTENTION_EMPTY } from '@/components/hud/Hud'
 import { useAttention } from '@/components/hud/queries'
-import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
-import { Button } from '@/components/ui/button'
+import { SidebarLead } from '@/components/nav/SectionBand'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import { isMacDesktop } from '@/lib/hotkeys'
@@ -51,14 +50,7 @@ export function Page() {
         data-tauri-drag-region={mac || undefined}
         className={cn('h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3', !sidebar.open && mac && 'pl-20', active ? 'hidden md:flex' : 'flex')}
       >
-        {(!sidebar.open || sidebar.isMobile) && (
-          <div className="flex shrink-0 items-center">
-            <SearchTrigger />
-            <Button variant="ghost" size="icon-sm" aria-label="Show sidebar" onClick={sidebar.toggleSidebar}>
-              <PanelLeft />
-            </Button>
-          </div>
-        )}
+        <SidebarLead />
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">
           Attention {items && <span className="font-normal text-fg-tertiary tabular-nums">{items.length}</span>}
         </h2>

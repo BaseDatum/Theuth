@@ -184,6 +184,7 @@ pub fn removal_line(r: &ContextRemoval) -> String {
         (r.messages, "message(s)"),
         (r.images, "image(s)"),
         (r.documents, "document(s)"),
+        (r.surfaces, "surface(s)"),
         (r.heads, "summary head(s)"),
     ] {
         if n > 0 {

@@ -8,7 +8,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use genai::chat::{Binary, ChatMessage, ChatRole, ContentPart, MessageContent};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use genai::chat::{Binary, ChatMessage, ChatRole, ContentPart, MessageContent, ToolCall};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -85,9 +87,28 @@ pub enum ContextTarget {
         /// `Some`: index into the `ToolResponse.images` of that part.
         image: Option<u32>,
     },
+    /// One surface fence inside one text part of an assistant row (197 §3).
+    Fence {
+        /// The row; only `Message` owners have fences.
+        owner: ContextOwner,
+        /// Index into the row's original content parts (a text part).
+        part: u32,
+        /// 0-based ordinal of the surface fences of that original text part ([`surface_fences`]).
+        index: u32,
+    },
+    /// The source argument of one `show` / `app` / `page_preview` call part (197 §3).
+    Source {
+        /// The row; only `Message` owners have sources.
+        owner: ContextOwner,
+        /// Index into the row's original content parts (a tool call part).
+        part: u32,
+    },
 }
 
-/// What an inventory item is, for the `/shake <category>` filters.
+/// What an inventory item is, for the `/shake <category>` filters (197 §1).
+/// Declaration order keeps the pre-197 wire positions (`message`, `image`,
+/// `document`, `tool`, `summary`); the 197 kinds follow, so the schema
+/// change is additive.
 #[derive(
     Clone,
     Copy,
@@ -104,9 +125,10 @@ pub enum ContextTarget {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum ContextKind {
-    /// A user/assistant/system message with text.
+    /// Legacy: pre-197 text rows. Never emitted since 197 (user, assistant,
+    /// note and peer rows replaced it); kept so the wire stays additive.
     Message,
-    /// An image occurrence (user attachment, tool screenshot, snap frame).
+    /// An image occurrence (user attachment, tool screenshot, tool image, summary frame).
     Image,
     /// A non-image binary occurrence (native PDF).
     Document,
@@ -114,9 +136,19 @@ pub enum ContextKind {
     Tool,
     /// The current epoch head.
     Summary,
+    /// A surface fence in a reply, or the source of a `show` / `app` / `page_preview` call.
+    Surface,
+    /// A harness-injected row (knowledge hints, todos, time stamps, notices).
+    Note,
+    /// A message another agent sent (the row has peer provenance).
+    Peer,
+    /// A row the user typed.
+    User,
+    /// An assistant row with text.
+    Assistant,
 }
 
-/// One row of the active-context inventory (48 §3.2). No bodies.
+/// One row of the active-context inventory (48 §3.2, 197 §2). No bodies.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ContextItem {
@@ -124,8 +156,23 @@ pub struct ContextItem {
     pub target: ContextTarget,
     /// Category.
     pub kind: ContextKind,
-    /// Short safe display label (bounded preview or attachment name).
+    /// Stable lowercase group key within the category (197 §1). `default`:
+    /// a reply from an engine before 197 has none (wire receiver view).
+    #[serde(default)]
+    pub group: String,
+    /// Short safe display label (bounded preview or attachment name), ≤ 80 chars.
     pub label: String,
+    /// Secondary line (`PNG · 1568×1103`, `in reply`, the other tool names), ≤ 60 chars.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub detail: Option<String>,
+    /// `compact::est` of what removing this target takes out (197 §2 token rule).
+    #[serde(default)]
+    pub tokens: u32,
+    /// RFC 3339 time of the row, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub at: Option<String>,
     /// Whole-message companions the protocol requires to go with it.
     pub remove_with: Vec<ContextTarget>,
 }
@@ -145,7 +192,8 @@ pub struct ContextSnapshot {
     /// First seq of the active tail.
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub tail_from: i64,
-    /// Active items: head, its images, then rows and their binaries in seq order.
+    /// Active items: head, its images, then rows in seq order, each followed
+    /// by its binaries, then its surface fences and sources.
     pub items: Vec<ContextItem>,
     /// `compact::est` over the effective head + tail (not provider usage).
     pub estimated_tokens: u32,
@@ -234,6 +282,18 @@ pub struct ContextAttachment {
     pub removed: bool,
 }
 
+/// One surface fence or source of a history row, for transcript controls (197 §5).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ContextPiece {
+    /// Its `ContextTarget::Fence` or `ContextTarget::Source` coordinates.
+    pub target: ContextTarget,
+    /// The inventory label (diagram types, card name).
+    pub label: String,
+    /// Excluded from the effective frame.
+    pub removed: bool,
+}
+
 /// Context metadata of one raw history row (48 §3.2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -256,6 +316,14 @@ pub struct ContextEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub at: Option<String>,
+    /// Surface fences of an assistant row, in text order across its parts (197 §5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<ContextPiece>>", optional))]
+    pub fences: Vec<ContextPiece>,
+    /// `show` / `app` / `page_preview` sources of an assistant row, in part order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<ContextPiece>>", optional))]
+    pub sources: Vec<ContextPiece>,
 }
 
 /// Result of a committed (or no-op) removal.
@@ -272,6 +340,9 @@ pub struct ContextRemoval {
     pub documents: u32,
     /// 1 when the current head was newly excluded.
     pub heads: u32,
+    /// Surface fences and sources newly excluded (not counting subsumed ones).
+    #[serde(default)]
+    pub surfaces: u32,
     /// Post-edit `compact::est` of the effective frame.
     pub estimated_tokens: u32,
 }
@@ -315,6 +386,15 @@ pub struct BinaryAt {
     pub image: Option<u32>,
 }
 
+/// One excluded surface fence: original text part and its fence ordinal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct FenceAt {
+    /// Original content-part index (a text part).
+    pub part: u32,
+    /// Ordinal among that part's surface fences ([`surface_fences`]).
+    pub index: u32,
+}
+
 /// Exclusions of one row, stored as JSON in `messages.excluded` /
 /// `epochs.excluded` (`NULL` = empty). Coordinates only, never content.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -325,6 +405,12 @@ pub struct Mask {
     /// Excluded binary occurrences, sorted.
     #[serde(default)]
     pub binaries: Vec<BinaryAt>,
+    /// Excluded surface fences, sorted (197 §3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fences: Vec<FenceAt>,
+    /// Call parts whose source argument is swapped for a marker, sorted (197 §3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<u32>,
 }
 
 impl Mask {
@@ -350,7 +436,12 @@ impl Mask {
 
     /// Nothing excluded.
     pub fn is_empty(&self) -> bool {
-        !self.whole && self.binaries.is_empty()
+        !self.whole && !self.partial()
+    }
+
+    /// Something inside the row is excluded (binaries, fences or sources).
+    pub fn partial(&self) -> bool {
+        !self.binaries.is_empty() || !self.fences.is_empty() || !self.sources.is_empty()
     }
 
     /// `at` is excluded.
@@ -379,12 +470,14 @@ fn meaningful(p: &ContentPart) -> bool {
 /// Effective copy of `m` under `mask`: `None` when the whole row is excluded
 /// or its last meaningful part went with the excluded binaries. A tool
 /// response whose only content was its images keeps its envelope with
-/// [`IMAGE_REMOVED`]. Other parts are byte-identical clones.
+/// [`IMAGE_REMOVED`]. An excluded surface fence becomes its one-line marker
+/// inside its text part, an excluded source its marker inside that call's
+/// arguments (197 §4). Other parts are byte-identical clones.
 pub fn project(m: &ChatMessage, mask: &Mask) -> Option<ChatMessage> {
     if mask.whole {
         return None;
     }
-    if mask.binaries.is_empty() {
+    if !mask.partial() {
         return Some(m.clone());
     }
     let mut parts = Vec::with_capacity(m.content.len());
@@ -412,6 +505,14 @@ pub fn project(m: &ChatMessage, mask: &Mask) -> Option<ChatMessage> {
                     r.content = IMAGE_REMOVED.to_owned();
                 }
                 parts.push(ContentPart::ToolResponse(r));
+            }
+            ContentPart::Text(t) if mask.fences.iter().any(|f| f.part == part) => {
+                parts.push(ContentPart::Text(cut_fences(t, |index| {
+                    mask.fences.contains(&FenceAt { part, index })
+                })));
+            }
+            ContentPart::ToolCall(c) if mask.sources.contains(&part) => {
+                parts.push(ContentPart::ToolCall(cut_source(c)));
             }
             other => parts.push(other.clone()),
         }
@@ -468,6 +569,302 @@ fn partial_caption(text: &str, kept: usize, dropped: usize) -> String {
 }
 
 // endregion: --- Projection
+
+// region:    --- Surfaces
+
+/// Fence info strings that are surfaces (197 §1): what the desktop renders as pictures.
+const SURFACE_LANGS: [&str; 3] = ["json-render", "openui", "mermaid"];
+
+/// One surface fence of a text part (197 §3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SurfaceFence<'a> {
+    /// `json-render`, `openui` or `mermaid`.
+    pub lang: &'a str,
+    /// From the opening line's start to the closing line's end, its line
+    /// break excluded; to the part's last line end when unclosed.
+    pub range: std::ops::Range<usize>,
+    /// The lines between the fence lines.
+    pub body: &'a str,
+}
+
+/// The surface fences of one text part, in order: the one scanner the
+/// inventory, the projection and the history entries share (197 §3; the
+/// desktop applies the same rule to find the fence `index`).
+///
+/// A fence opens with a line that starts (no indent) with three or more
+/// `` ` `` or `~` immediately followed by its info string (a backtick
+/// opener's info holds no backtick). It closes at the next line made of the
+/// same character, at least as many, then only whitespace; an unclosed fence
+/// runs to the end of the part. Only info strings exactly `json-render`,
+/// `openui` or `mermaid` (trailing whitespace aside) are surface fences and
+/// counted. Every other fence (` ```rust `, a bare ` ``` `) is skipped whole:
+/// a surface-looking line inside it is content. `\r\n` line ends are accepted.
+pub fn surface_fences(text: &str) -> Vec<SurfaceFence<'_>> {
+    let surface = |lang: &str| SURFACE_LANGS.contains(&lang);
+    let mut out = Vec::new();
+    // (fence char, run length, info, opening line start, body start)
+    let mut open: Option<(u8, usize, &str, usize, usize)> = None;
+    let mut at = 0;
+    for line in text.split_inclusive('\n') {
+        let start = at;
+        at += line.len();
+        let bare = line.trim_end_matches(['\n', '\r']);
+        let lead = |c: u8| bare.bytes().take_while(|b| *b == c).count();
+        match open {
+            None => {
+                let Some(c) = bare.bytes().next().filter(|c| matches!(c, b'`' | b'~')) else {
+                    continue;
+                };
+                let run = lead(c);
+                let info = bare[run..].trim_end();
+                if run >= 3 && !(c == b'`' && info.contains('`')) {
+                    open = Some((c, run, info, start, at));
+                }
+            }
+            Some((c, run, lang, from, body)) => {
+                let n = lead(c);
+                if n >= run && bare[n..].trim().is_empty() {
+                    if surface(lang) {
+                        out.push(SurfaceFence {
+                            lang,
+                            range: from..start + bare.len(),
+                            body: &text[body..start],
+                        });
+                    }
+                    open = None;
+                }
+            }
+        }
+    }
+    if let Some((_, _, lang, from, body)) = open
+        && surface(lang)
+    {
+        out.push(SurfaceFence {
+            lang,
+            range: from..text.trim_end_matches(['\n', '\r']).len(),
+            body: &text[body..],
+        });
+    }
+    out
+}
+
+/// Up to three distinct json-render element `type`s in the order the
+/// `elements` map lists them; empty when the body does not parse.
+fn json_render_types(body: &str) -> Vec<String> {
+    use serde::de::{IgnoredAny, MapAccess, Visitor};
+    #[derive(Deserialize)]
+    struct Element {
+        #[serde(rename = "type")]
+        ty: Option<String>,
+    }
+    /// The `elements` values in document order (serde_json's map is sorted).
+    #[derive(Default)]
+    struct Ordered(Vec<String>);
+    impl<'de> Deserialize<'de> for Ordered {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct V;
+            impl<'de> Visitor<'de> for V {
+                type Value = Ordered;
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("an elements map")
+                }
+                fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Ordered, A::Error> {
+                    let mut out: Vec<String> = Vec::new();
+                    while let Some((_, e)) = map.next_entry::<IgnoredAny, Element>()? {
+                        if let Some(t) = e.ty.filter(|t| out.len() < 3 && !out.contains(t)) {
+                            out.push(t);
+                        }
+                    }
+                    Ok(Ordered(out))
+                }
+            }
+            d.deserialize_map(V)
+        }
+    }
+    #[derive(Deserialize)]
+    struct Doc {
+        #[serde(default)]
+        elements: Ordered,
+    }
+    serde_json::from_str::<Doc>(body).map_or_else(|_| Vec::new(), |d| d.elements.0)
+}
+
+/// A mermaid body's diagram keyword (`sequenceDiagram`, `flowchart`): the
+/// first word after front matter and `%%` lines.
+fn mermaid_keyword(body: &str) -> Option<&str> {
+    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
+    let mut first = lines.next()?;
+    if first == "---" {
+        lines.by_ref().find(|l| *l == "---")?;
+        first = lines.next()?;
+    }
+    std::iter::once(first)
+        .chain(lines)
+        .find(|l| !l.starts_with("%%"))?
+        .split(|c: char| c.is_whitespace() || c == ';')
+        .next()
+}
+
+/// An OpenUI Lang body's root component: `root = Stack([...])` → `Stack`.
+fn openui_root(body: &str) -> Option<&str> {
+    body.lines().find_map(|l| {
+        let r = l
+            .trim()
+            .strip_prefix("root")?
+            .trim_start()
+            .strip_prefix('=')?;
+        let r = r.trim_start();
+        let id = &r[..r
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(r.len())];
+        (!id.is_empty()).then_some(id)
+    })
+}
+
+/// Inventory label of a surface fence (197 §1).
+fn fence_label(f: &SurfaceFence<'_>) -> String {
+    match f.lang {
+        "json-render" => match json_render_types(f.body) {
+            t if t.is_empty() => "diagram".into(),
+            t => preview(&t.join(", ")),
+        },
+        "mermaid" => preview(mermaid_keyword(f.body).unwrap_or("mermaid")),
+        _ => preview(&openui_root(f.body).map_or("openui".into(), |r| format!("openui: {r}"))),
+    }
+}
+
+/// The one line the model sees in place of a removed fence (197 §4).
+fn fence_marker(f: &SurfaceFence<'_>) -> String {
+    match f.lang {
+        "json-render" => match json_render_types(f.body) {
+            t if t.is_empty() => "[diagram removed from context]".into(),
+            t => format!("[diagram removed from context: {}]", t.join(", ")),
+        },
+        "mermaid" => "[mermaid diagram removed from context]".into(),
+        _ => "[openui surface removed from context]".into(),
+    }
+}
+
+/// `text` with each surface fence whose ordinal `removed` accepts replaced
+/// by its marker; the text around it, newlines included, unchanged.
+fn cut_fences(text: &str, removed: impl Fn(u32) -> bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for (k, f) in surface_fences(text).iter().enumerate() {
+        if u32::try_from(k).is_ok_and(&removed) {
+            out.push_str(&text[at..f.range.start]);
+            out.push_str(&fence_marker(f));
+            at = f.range.end;
+        }
+    }
+    out.push_str(&text[at..]);
+    out
+}
+
+/// A call whose source argument can be swapped for a marker (197 §3):
+/// `(field, group, value)` for `show` `content` (group `page` for an
+/// `.html`/`.htm` name, else `file`), `app` `source` and `page_preview`
+/// `html`, when that field is a non-empty string.
+fn source_of(c: &ToolCall) -> Option<(&'static str, &'static str, &str)> {
+    let (field, group) = match c.fn_name.as_str() {
+        "show" => {
+            let name = arg(c, "name").unwrap_or("").to_ascii_lowercase();
+            let page = name.ends_with(".html") || name.ends_with(".htm");
+            ("content", if page { "page" } else { "file" })
+        }
+        "app" => ("source", "app"),
+        "page_preview" => ("html", "page"),
+        _ => return None,
+    };
+    Some((field, group, arg(c, field)?))
+}
+
+/// A non-empty string argument of `c`.
+fn arg<'a>(c: &'a ToolCall, key: &str) -> Option<&'a str> {
+    c.fn_arguments.get(key)?.as_str().filter(|s| !s.is_empty())
+}
+
+/// What a card is called: its `name` argument, else `title`, else the tool.
+fn card_name(c: &ToolCall) -> &str {
+    arg(c, "name")
+        .or_else(|| arg(c, "title"))
+        .unwrap_or(&c.fn_name)
+}
+
+/// `c` with its source argument replaced by `[<group> removed from context:
+/// <name>]`; the call id and every other argument unchanged (197 §4).
+fn cut_source(c: &ToolCall) -> ToolCall {
+    let mut out = c.clone();
+    if let Some((field, group, _)) = source_of(c) {
+        out.fn_arguments[field] =
+            serde_json::Value::String(format!("[{group} removed from context: {}]", card_name(c)));
+    }
+    out
+}
+
+/// One surface fence or source of a row, with its removal state.
+struct Surface {
+    target: ContextTarget,
+    group: &'static str,
+    label: String,
+    detail: &'static str,
+    tokens: u32,
+    removed: bool,
+}
+
+/// Every surface fence (text order) then every source (part order) of an
+/// assistant row under `mask`; nothing for other rows or a head.
+fn surfaces(owner: ContextOwner, m: &ChatMessage, mask: &Mask) -> Vec<Surface> {
+    let mut out = Vec::new();
+    if m.role != ChatRole::Assistant || !matches!(owner, ContextOwner::Message { .. }) {
+        return out;
+    }
+    // compact::est's chars/4.
+    let est = |n: usize| u32::try_from(n / 4).unwrap_or(u32::MAX);
+    let parts = || {
+        m.content
+            .iter()
+            .enumerate()
+            .map_while(|(i, p)| Some((u32::try_from(i).ok()?, p)))
+    };
+    for (part, p) in parts() {
+        let ContentPart::Text(t) = p else { continue };
+        for (k, f) in surface_fences(t).iter().enumerate() {
+            let Ok(index) = u32::try_from(k) else { break };
+            out.push(Surface {
+                target: ContextTarget::Fence { owner, part, index },
+                group: "diagram",
+                label: fence_label(f),
+                detail: "in reply",
+                tokens: est(f.range.len()),
+                removed: mask.whole || mask.fences.contains(&FenceAt { part, index }),
+            });
+        }
+    }
+    for (part, p) in parts() {
+        let ContentPart::ToolCall(c) = p else {
+            continue;
+        };
+        let Some((_, group, value)) = source_of(c) else {
+            continue;
+        };
+        out.push(Surface {
+            target: ContextTarget::Source { owner, part },
+            group,
+            label: preview(card_name(c)),
+            detail: match c.fn_name.as_str() {
+                "show" => "show",
+                "app" => "app",
+                _ => "page_preview",
+            },
+            tokens: est(value.len()),
+            removed: mask.whole || mask.sources.contains(&part),
+        });
+    }
+    out
+}
+
+// endregion: --- Surfaces
 
 // region:    --- Tool protocol
 
@@ -589,6 +986,22 @@ pub struct Active {
     pub head: Option<(ChatMessage, Mask)>,
     /// Raw tail rows with their masks, seq ascending.
     pub rows: Vec<(i64, ChatMessage, Mask)>,
+    /// Per-row facts beyond the body, by seq, for the inventory (197 §1–§2);
+    /// a row without an entry is an untyped row of unknown time.
+    pub meta: BTreeMap<i64, RowMeta>,
+}
+
+/// What the store knows about a row besides its body and mask.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RowMeta {
+    /// `messages.at` (RFC 3339 UTC).
+    pub at: Option<String>,
+    /// A typed note (vision, advisory, moved: the store's `Row::is_note`).
+    pub note: bool,
+    /// Peer provenance: the sender address (`PeerOrigin::from`).
+    pub peer: Option<String>,
+    /// The sender's display name, when the store knows one.
+    pub sender: Option<String>,
 }
 
 /// Masks an edit writes; empty = no-op.
@@ -606,6 +1019,8 @@ pub struct Plan {
     pub documents: u32,
     /// The head was newly excluded whole.
     pub heads: u32,
+    /// Surface fences and sources newly excluded.
+    pub surfaces: u32,
 }
 
 impl Plan {
@@ -687,56 +1102,88 @@ impl Active {
         }
     }
 
-    /// Active-context inventory (48 §2.1): head, its binaries, then each live
-    /// row and its binaries in seq order. `editable`/`reason` are the actor's.
+    /// The row a fence or source target names; a head has neither (197 §3).
+    fn surface_owner(&self, owner: ContextOwner) -> Result<(&ChatMessage, &Mask), String> {
+        match owner {
+            ContextOwner::Message { seq } => self.row(seq),
+            ContextOwner::Head { epoch } => Err(format!(
+                "epoch {epoch}: a summary head has no surface fences or sources"
+            )),
+        }
+    }
+
+    /// Active-context inventory (48 §2.1, 197 §1–§2): head, its binaries,
+    /// then each live row followed by its binaries, fences and sources, in
+    /// seq order. `editable`/`reason` are the actor's. Tokens price the
+    /// effective frame, so a whole row counts what is left of it.
     pub fn snapshot(&self, revision: &str, groups: &Groups) -> ContextSnapshot {
+        let (head, tail) = self.effective();
+        let head_tokens = head.as_ref().map_or(0, compact::est);
+        let tokens: HashMap<i64, u32> = tail.iter().map(|(s, m)| (*s, compact::est(m))).collect();
+        let estimated_tokens = tail
+            .iter()
+            .fold(head_tokens, |acc, (s, _)| acc.saturating_add(tokens[s]));
+        // Results rarely store their tool's name: the calls in the frame have it.
+        let calls: HashMap<&str, &str> = self
+            .rows
+            .iter()
+            .flat_map(|(_, m, _)| m.content.tool_calls())
+            .map(|c| (c.call_id.as_str(), c.fn_name.as_str()))
+            .collect();
         let mut items = Vec::new();
         if let Some((h, mask)) = &self.head
             && !mask.whole
         {
-            let owner = ContextOwner::Head { epoch: self.epoch };
             items.push(ContextItem {
                 target: ContextTarget::Head { epoch: self.epoch },
                 kind: ContextKind::Summary,
-                label: format!("Summary (epoch {}): {}", self.epoch, preview(&head_body(h))),
+                group: "summary".into(),
+                label: preview(&format!("Summary (epoch {}): {}", self.epoch, head_body(h))),
+                detail: None,
+                tokens: head_tokens,
+                at: None,
                 remove_with: Vec::new(),
             });
-            items.extend(
-                attachments(owner, h, mask)
-                    .into_iter()
-                    .filter(|a| !a.removed)
-                    .map(|a| ContextItem {
-                        target: a.target,
-                        kind: ContextKind::Image,
-                        label: format!("Summary image: {}", a.name),
-                        remove_with: Vec::new(),
-                    }),
+            binary_items(
+                &mut items,
+                ContextOwner::Head { epoch: self.epoch },
+                h,
+                mask,
+                None,
+                &calls,
             );
         }
+        let none = RowMeta::default();
         for (seq, m, mask) in &self.rows {
             if mask.whole {
                 continue;
             }
             let owner = ContextOwner::Message { seq: *seq };
-            let (kind, label) = describe(m);
+            let meta = self.meta.get(seq).unwrap_or(&none);
+            let class = classify(m, meta, &calls);
             items.push(ContextItem {
                 target: ContextTarget::Message { seq: *seq },
-                kind,
-                label,
+                kind: class.kind,
+                group: class.group,
+                label: class.label,
+                detail: class.detail,
+                tokens: tokens.get(seq).copied().unwrap_or(0),
+                at: meta.at.clone(),
                 remove_with: groups.remove_with(*seq),
             });
+            binary_items(&mut items, owner, m, mask, meta.at.as_ref(), &calls);
             items.extend(
-                attachments(owner, m, mask)
+                surfaces(owner, m, mask)
                     .into_iter()
-                    .filter(|a| !a.removed)
-                    .map(|a| ContextItem {
-                        target: a.target,
-                        kind: if is_image_mime(&a.mime) {
-                            ContextKind::Image
-                        } else {
-                            ContextKind::Document
-                        },
-                        label: a.name,
+                    .filter(|s| !s.removed)
+                    .map(|s| ContextItem {
+                        target: s.target,
+                        kind: ContextKind::Surface,
+                        group: s.group.into(),
+                        label: s.label,
+                        detail: Some(s.detail.into()),
+                        tokens: s.tokens,
+                        at: meta.at.clone(),
                         remove_with: Vec::new(),
                     }),
             );
@@ -748,19 +1195,21 @@ impl Active {
             epoch: self.epoch,
             tail_from: self.tail_from,
             items,
-            estimated_tokens: self.estimate(),
+            estimated_tokens,
         }
     }
 
     /// Resolve `targets` against this frame (48 §3.2): deduplicate, refuse
     /// unknown/malformed coordinates, require every protocol companion of a
     /// whole-message target to be included, let whole removal subsume the
-    /// row's binaries, and treat exact already-removed targets as no-ops.
+    /// row's binaries, fences and sources, and treat exact already-removed
+    /// targets as no-ops.
     pub fn plan(&self, targets: &[ContextTarget], groups: &Groups) -> Result<Plan, String> {
         let targets: BTreeSet<ContextTarget> = targets.iter().copied().collect();
         let mut whole_rows: BTreeSet<i64> = BTreeSet::new();
         let mut whole_head = false;
-        let mut bins: BTreeMap<ContextOwner, BTreeSet<BinaryAt>> = BTreeMap::new();
+        // Pieces asked for inside each owner, in the shape of a mask.
+        let mut want: BTreeMap<ContextOwner, Mask> = BTreeMap::new();
         for t in targets {
             match t {
                 ContextTarget::Message { seq } => {
@@ -774,9 +1223,23 @@ impl Active {
                 ContextTarget::Binary { owner, part, image } => {
                     let (m, _) = self.owner(owner)?;
                     binary_at(m, part, image)?;
-                    bins.entry(owner)
+                    want.entry(owner)
                         .or_default()
-                        .insert(BinaryAt { part, image });
+                        .binaries
+                        .push(BinaryAt { part, image });
+                }
+                ContextTarget::Fence { owner, part, index } => {
+                    let (m, _) = self.surface_owner(owner)?;
+                    fence_at(m, part, index)?;
+                    want.entry(owner)
+                        .or_default()
+                        .fences
+                        .push(FenceAt { part, index });
+                }
+                ContextTarget::Source { owner, part } => {
+                    let (m, _) = self.surface_owner(owner)?;
+                    source_at(m, part)?;
+                    want.entry(owner).or_default().sources.push(part);
                 }
             }
         }
@@ -806,7 +1269,7 @@ impl Active {
                     seq,
                     Mask {
                         whole: true,
-                        binaries: mask.binaries.clone(),
+                        ..mask.clone()
                     },
                 );
                 plan.messages += 1;
@@ -817,12 +1280,12 @@ impl Active {
             if !mask.whole {
                 plan.head = Some(Mask {
                     whole: true,
-                    binaries: mask.binaries.clone(),
+                    ..mask.clone()
                 });
                 plan.heads += 1;
             }
         }
-        for (owner, ats) in bins {
+        for (owner, want) in want {
             let subsumed = match owner {
                 ContextOwner::Message { seq } => whole_rows.contains(&seq),
                 ContextOwner::Head { .. } => whole_head,
@@ -832,7 +1295,7 @@ impl Active {
                 continue;
             }
             let mut new = mask.clone();
-            for at in ats {
+            for at in want.binaries {
                 if new.has(at) {
                     continue;
                 }
@@ -843,8 +1306,22 @@ impl Active {
                     plan.documents += 1;
                 }
             }
-            if new.binaries.len() != mask.binaries.len() {
+            for at in want.fences {
+                if !new.fences.contains(&at) {
+                    new.fences.push(at);
+                    plan.surfaces += 1;
+                }
+            }
+            for part in want.sources {
+                if !new.sources.contains(&part) {
+                    new.sources.push(part);
+                    plan.surfaces += 1;
+                }
+            }
+            if new != *mask {
                 new.binaries.sort();
+                new.fences.sort();
+                new.sources.sort();
                 match owner {
                     ContextOwner::Message { seq } => {
                         plan.rows.insert(seq, new);
@@ -966,6 +1443,37 @@ fn binary_at(m: &ChatMessage, part: u32, image: Option<u32>) -> Result<&Binary, 
     }
 }
 
+/// Check that `(part, index)` names a surface fence of assistant text in `m`.
+fn fence_at(m: &ChatMessage, part: u32, index: u32) -> Result<(), String> {
+    let p = m
+        .content
+        .parts()
+        .get(part as usize)
+        .ok_or_else(|| format!("part {part} does not exist"))?;
+    let ContentPart::Text(t) = p else {
+        return Err(format!("part {part} is not a text part"));
+    };
+    if m.role != ChatRole::Assistant {
+        return Err(format!("part {part} is not assistant text"));
+    }
+    if surface_fences(t).len() <= index as usize {
+        return Err(format!("part {part} has no surface fence {index}"));
+    }
+    Ok(())
+}
+
+/// Check that `part` of `m` is a call with a removable source (197 §3).
+fn source_at(m: &ChatMessage, part: u32) -> Result<(), String> {
+    match m.content.parts().get(part as usize) {
+        None => Err(format!("part {part} does not exist")),
+        Some(ContentPart::ToolCall(c)) if source_of(c).is_some() => Ok(()),
+        Some(ContentPart::ToolCall(_)) => Err(format!(
+            "part {part} has no show, app or page_preview source"
+        )),
+        Some(_) => Err(format!("part {part} is not a tool call")),
+    }
+}
+
 /// Every binary occurrence of `m` with its removal state under `mask`.
 pub fn attachments(owner: ContextOwner, m: &ChatMessage, mask: &Mask) -> Vec<ContextAttachment> {
     let mut out = Vec::new();
@@ -1006,6 +1514,14 @@ pub fn entry(
         ContextOwner::Message { seq } => ContextTarget::Message { seq },
         ContextOwner::Head { epoch } => ContextTarget::Head { epoch },
     };
+    let (fences, sources) = surfaces(owner, m, mask)
+        .into_iter()
+        .map(|s| ContextPiece {
+            target: s.target,
+            label: s.label,
+            removed: s.removed,
+        })
+        .partition(|p| matches!(p.target, ContextTarget::Fence { .. }));
     ContextEntry {
         target,
         active,
@@ -1014,6 +1530,8 @@ pub fn entry(
         attachments: attachments(owner, m, mask),
         vision: None,
         at: None,
+        fences,
+        sources,
     }
 }
 
@@ -1031,35 +1549,354 @@ fn is_image_mime(mime: &str) -> bool {
     mime.trim().to_ascii_lowercase().starts_with("image/")
 }
 
-/// Category and bounded label of a live row.
-fn describe(m: &ChatMessage) -> (ContextKind, String) {
+/// Tools whose result images are screenshots (197 §1 `image` · `screenshot`).
+const SCREENSHOT_TOOLS: [&str; 2] = ["computer_screenshot", "browser_screenshot"];
+
+/// Longest inventory detail (chars) before `…`.
+const DETAIL_CHARS: usize = 60;
+
+/// Base64 chars of a binary decoded for its header (48 KiB of bytes).
+// ponytail: a JPEG whose frame header sits past this (a huge EXIF block) reads format-only.
+const HEADER_B64: usize = 64 * 1024;
+
+/// The live, unmasked binary occurrences of `m` as inventory items (197 §1):
+/// a head's are `image` · `summary`; direct binaries of a row are
+/// `attachment`; tool-result images are `screenshot` for the screenshot
+/// tools and `tool` otherwise; non-images are `document`.
+fn binary_items(
+    out: &mut Vec<ContextItem>,
+    owner: ContextOwner,
+    m: &ChatMessage,
+    mask: &Mask,
+    at: Option<&String>,
+    calls: &HashMap<&str, &str>,
+) {
+    let head = matches!(owner, ContextOwner::Head { .. });
+    let mut one = |part: u32, image: Option<u32>, b: &Binary, tokens: u32, tool: Option<&str>| {
+        if mask.has(BinaryAt { part, image }) {
+            return;
+        }
+        let (kind, group) = match (is_image_mime(&b.content_type), head, tool) {
+            (false, _, _) => (ContextKind::Document, "document"),
+            (true, true, _) => (ContextKind::Image, "summary"),
+            (true, false, None) => (ContextKind::Image, "attachment"),
+            (true, false, Some(t)) if SCREENSHOT_TOOLS.contains(&t) => {
+                (ContextKind::Image, "screenshot")
+            }
+            (true, false, Some(_)) => (ContextKind::Image, "tool"),
+        };
+        let name = match (&b.name, tool) {
+            (None, Some(t)) if !t.is_empty() => t.to_owned(),
+            _ => binary_name(b),
+        };
+        out.push(ContextItem {
+            target: ContextTarget::Binary { owner, part, image },
+            kind,
+            group: group.into(),
+            label: preview(&if head {
+                format!("Summary image: {name}")
+            } else {
+                name
+            }),
+            detail: Some(binary_detail(b)),
+            tokens,
+            at: at.cloned(),
+            remove_with: Vec::new(),
+        });
+    };
+    for (i, p) in m.content.iter().enumerate() {
+        let Ok(part) = u32::try_from(i) else { break };
+        match p {
+            ContentPart::Binary(b) => one(part, None, b, compact::est_part(p), None),
+            ContentPart::ToolResponse(r) => {
+                let tool = r
+                    .fn_name
+                    .as_deref()
+                    .or_else(|| calls.get(r.call_id.as_str()).copied())
+                    .or(Some(""));
+                for (k, b) in r.images.iter().enumerate() {
+                    let Ok(k) = u32::try_from(k) else { break };
+                    // `compact::est_part` charges a tool image flat.
+                    one(part, Some(k), b, compact::IMAGE_TOKENS, tool);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `PNG · 1568×1103`: the MIME subtype uppercased, with the dimensions from
+/// the stored header for PNG, JPEG, GIF and WebP; the format alone otherwise.
+fn binary_detail(b: &Binary) -> String {
+    let mime = b.content_type.split(';').next().unwrap_or("").trim();
+    let format = mime.rsplit('/').next().unwrap_or(mime).to_ascii_uppercase();
+    let dims = match &b.source {
+        genai::chat::BinarySource::Base64(data) => {
+            let n = data.len().min(HEADER_B64) / 4 * 4;
+            BASE64
+                .decode(&data.as_bytes()[..n])
+                .ok()
+                .and_then(|h| image_dims(&h))
+        }
+        _ => None,
+    };
+    bound(
+        &match dims {
+            Some((w, h)) => format!("{format} · {w}×{h}"),
+            None => format,
+        },
+        DETAIL_CHARS,
+    )
+}
+
+/// Width and height from the first bytes of a PNG, GIF, WebP or JPEG file.
+fn image_dims(b: &[u8]) -> Option<(u32, u32)> {
+    let at = |i: usize, n: usize| b.get(i..i + n);
+    let be16 = |i| at(i, 2).map(|s| u32::from(u16::from_be_bytes([s[0], s[1]])));
+    let le16 = |i| at(i, 2).map(|s| u32::from(u16::from_le_bytes([s[0], s[1]])));
+    let le24 = |i| at(i, 3).map(|s| u32::from_le_bytes([s[0], s[1], s[2], 0]));
+    if b.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let be32 = |i| at(i, 4).map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]));
+        return Some((be32(16)?, be32(20)?));
+    }
+    if b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a") {
+        return Some((le16(6)?, le16(8)?));
+    }
+    if b.starts_with(b"RIFF") && at(8, 4) == Some(b"WEBP") {
+        return match at(12, 4)? {
+            b"VP8 " => Some((le16(26)? & 0x3fff, le16(28)? & 0x3fff)),
+            b"VP8L" => {
+                let v = le24(21)? | (u32::from(*b.get(24)?) << 24);
+                Some(((v & 0x3fff) + 1, ((v >> 14) & 0x3fff) + 1))
+            }
+            b"VP8X" => Some((le24(24)? + 1, le24(27)? + 1)),
+            _ => None,
+        };
+    }
+    if b.starts_with(&[0xFF, 0xD8]) {
+        // Walk the marker segments to the first start-of-frame.
+        let mut i = 2;
+        while *b.get(i)? == 0xFF {
+            let marker = *b.get(i + 1)?;
+            match marker {
+                0xFF => i += 1,
+                0x01 | 0xD0..=0xD8 => i += 2,
+                0xC0..=0xCF if !matches!(marker, 0xC4 | 0xC8 | 0xCC) => {
+                    return Some((be16(i + 7)?, be16(i + 5)?));
+                }
+                _ => i += 2 + usize::try_from(be16(i + 2)?).ok()?,
+            }
+        }
+    }
+    None
+}
+
+/// Category, group, label and detail of a live row (197 §1).
+struct Class {
+    kind: ContextKind,
+    group: String,
+    label: String,
+    detail: Option<String>,
+}
+
+/// Classify a live row. Tool exchanges first (group: the row's first tool
+/// name, results named by their call when they do not store one); then, for
+/// user rows, peer provenance, a typed note, and the transcript's harness
+/// rule ([`injected`]); what is left is the user's.
+fn classify(m: &ChatMessage, meta: &RowMeta, calls: &HashMap<&str, &str>) -> Class {
+    let tool = |what: &str, names: Vec<&str>| {
+        let mut distinct: Vec<&str> = Vec::new();
+        for n in names {
+            if !distinct.contains(&n) {
+                distinct.push(n);
+            }
+        }
+        Class {
+            kind: ContextKind::Tool,
+            group: distinct.first().copied().unwrap_or("tool").to_owned(),
+            label: preview(&format!("{what}: {}", distinct.join(", "))),
+            detail: (distinct.len() > 1).then(|| bound(&distinct[1..].join(", "), DETAIL_CHARS)),
+        }
+    };
     let responses = m.content.tool_responses();
     if !responses.is_empty() {
-        let names: Vec<&str> = responses
+        let names = responses
             .iter()
-            .map(|r| r.fn_name.as_deref().unwrap_or(r.call_id.as_str()))
+            .map(|r| {
+                r.fn_name
+                    .as_deref()
+                    .or_else(|| calls.get(r.call_id.as_str()).copied())
+                    .unwrap_or(r.call_id.as_str())
+            })
             .collect();
-        return (
-            ContextKind::Tool,
-            preview(&format!("tool result: {}", names.join(", "))),
-        );
+        return tool("tool result", names);
     }
-    let calls = m.content.tool_calls();
+    // `text_of` (binary tags included) for the rules; the words alone for labels.
     let text = text_of(&m.content);
-    if m.role == ChatRole::Assistant && text.trim().is_empty() && !calls.is_empty() {
-        let names: Vec<&str> = calls.iter().map(|c| c.fn_name.as_str()).collect();
-        return (
-            ContextKind::Tool,
-            preview(&format!("tool call: {}", names.join(", "))),
-        );
-    }
-    let kind = if m.role == ChatRole::Tool {
-        ContextKind::Tool
-    } else {
-        ContextKind::Message
+    let words = match m.content.texts().join("\n") {
+        w if w.trim().is_empty() => text.clone(),
+        w => w,
     };
-    let role = m.role.to_string().to_ascii_lowercase();
-    (kind, preview(&format!("{role}: {text}")))
+    let note = |group: &str| Class {
+        kind: ContextKind::Note,
+        group: group.to_owned(),
+        label: match preview(wrapper_body(crate::clock::strip(&words))) {
+            l if l.is_empty() => preview(&words),
+            l => l,
+        },
+        detail: None,
+    };
+    match m.role {
+        ChatRole::Assistant if text.trim().is_empty() && !m.content.tool_calls().is_empty() => {
+            let names = m
+                .content
+                .tool_calls()
+                .iter()
+                .map(|c| c.fn_name.as_str())
+                .collect();
+            tool("tool call", names)
+        }
+        ChatRole::Assistant => Class {
+            kind: ContextKind::Assistant,
+            group: "assistant".into(),
+            label: preview(&words),
+            detail: None,
+        },
+        ChatRole::Tool => tool("tool result", Vec::new()),
+        ChatRole::System => note("notice"),
+        ChatRole::User => match &meta.peer {
+            Some(address) => Class {
+                kind: ContextKind::Peer,
+                group: "peer".into(),
+                label: preview(&format!(
+                    "{}: {}",
+                    meta.sender.as_deref().unwrap_or(address),
+                    preview(wrapper_body(crate::clock::strip(&words)))
+                )),
+                detail: Some(bound(address, DETAIL_CHARS)),
+            },
+            None if meta.note => note("notice"),
+            None => match injected(&text) {
+                Some(group) => note(group),
+                None => Class {
+                    kind: ContextKind::User,
+                    group: "user".into(),
+                    label: preview(crate::clock::strip(&words)),
+                    detail: None,
+                },
+            },
+        },
+    }
+}
+
+/// Harness wrappers that carry attributes (or none): the transcript cards
+/// or hides them (desktop `lib/injected.ts` `classify`, TUI
+/// `transcript::injected`).
+const HARNESS_WRAPPERS: &[&str] = &[
+    "subagent_result",
+    "message",
+    "job_result",
+    "job_idle",
+    "reminder",
+    "schedule",
+    "desk",
+    "advisory",
+    "child_lost",
+    "child_stalled",
+    "peer_state",
+    "autoresearch",
+    "cell_result",
+    "cell_error",
+    "budget",
+    "resume_handoff",
+    "context_summary",
+    "runtime",
+    "surface_error",
+    "notebook",
+    "notebook_changes",
+    "contact_message",
+];
+
+/// Engine notes that are harness rows only as a bare tag (a human's
+/// `<rounds source="user">` stays text).
+const HARNESS_NOTES: &[&str] = &[
+    "todo",
+    "knowledge",
+    "todo_continue",
+    "rounds",
+    "context_pressure",
+    "recovery",
+    "continue",
+    "steer",
+    "vision",
+    "nudge",
+    "journal",
+    "memory",
+];
+
+/// Self-closing harness notes (183 §11).
+const HARNESS_SELF_CLOSING: &[&str] = &["session_moved", "engine_restart", "contact_inbox"];
+
+/// The `note` group of a harness-injected user row, `None` for the user's
+/// own words. The rule is the transcript's (desktop `classify`, TUI
+/// `transcript::injected`): after the model's `<time …/>` stamp the WHOLE
+/// text is harness elements; leading text, a skill chip or one unknown tag
+/// makes it the user's. A row that is only the stamp is `time`; otherwise
+/// the first element picks `knowledge`, `todo` or `notice`.
+fn injected(text: &str) -> Option<&'static str> {
+    let stamped = text.trim_start().starts_with("<time ");
+    let mut rest = crate::clock::strip(text).trim();
+    if rest.is_empty() {
+        return stamped.then_some("time");
+    }
+    let mut group = None;
+    while !rest.is_empty() {
+        // A desk's wake (roster 67 §7.3) is the last block and not tag-wrapped.
+        if rest.starts_with("Wake: ") {
+            return Some(group.unwrap_or("notice"));
+        }
+        let open = rest.strip_prefix('<')?;
+        let end = open.find(|c: char| c == '>' || c == '/' || c.is_whitespace())?;
+        let name = &open[..end];
+        let bare = open[end..].starts_with('>');
+        group.get_or_insert(match name {
+            "knowledge" => "knowledge",
+            "todo" => "todo",
+            _ => "notice",
+        });
+        if HARNESS_SELF_CLOSING.contains(&name) {
+            if name == "contact_inbox" {
+                // Its notice line and the contact's first words ride on the card.
+                return group;
+            }
+            rest = rest[rest.find("/>")? + 2..].trim_start();
+            continue;
+        }
+        if !(HARNESS_WRAPPERS.contains(&name) || bare && HARNESS_NOTES.contains(&name)) {
+            return None;
+        }
+        let close = format!("</{name}>");
+        // A contact's untrusted words cannot end their card early.
+        let at = if name == "contact_message" {
+            rest.rfind(&close)?
+        } else {
+            rest.find(&close)?
+        };
+        rest = rest[at + close.len()..].trim_start();
+    }
+    group
+}
+
+/// The inside of a leading wrapper element (`<knowledge>\nX\n</knowledge>` →
+/// `X`…); `text` itself when it does not open with a tag.
+fn wrapper_body(text: &str) -> &str {
+    let t = text.trim();
+    if !t.starts_with('<') {
+        return t;
+    }
+    let start = t.find('>').map_or(0, |i| i + 1);
+    let end = t.rfind("</").filter(|e| *e >= start).unwrap_or(t.len());
+    &t[start..end]
 }
 
 /// The caption/summary text of a head without its `<context_summary>` tags.
@@ -1081,8 +1918,13 @@ pub fn preview(text: &str) -> String {
         .map(str::trim)
         .find(|l| !l.is_empty())
         .unwrap_or("");
-    let mut out: String = line.chars().take(LABEL_CHARS).collect();
-    if line.chars().nth(LABEL_CHARS).is_some() {
+    bound(line, LABEL_CHARS)
+}
+
+/// `text` cut to `max` chars, `…` when cut.
+fn bound(text: &str, max: usize) -> String {
+    let mut out: String = text.chars().take(max).collect();
+    if text.chars().nth(max).is_some() {
         out.push('…');
     }
     out
@@ -1147,6 +1989,20 @@ mod tests {
         BinaryAt { part, image }
     }
 
+    fn bins(binaries: Vec<BinaryAt>) -> Mask {
+        Mask {
+            binaries,
+            ..Mask::default()
+        }
+    }
+
+    fn whole() -> Mask {
+        Mask {
+            whole: true,
+            ..Mask::default()
+        }
+    }
+
     fn row(seq: i64, m: ChatMessage) -> (i64, ChatMessage, Mask) {
         (seq, m, Mask::default())
     }
@@ -1192,6 +2048,7 @@ mod tests {
                 row(2, tool),
                 row(3, ChatMessage::assistant(MessageContent::from_text("done"))),
             ],
+            meta: BTreeMap::new(),
         }
     }
 
@@ -1199,10 +2056,7 @@ mod tests {
     fn mask_round_trips_and_null_means_empty() {
         assert_eq!(Mask::decode(None).unwrap(), Mask::default());
         assert_eq!(Mask::default().encode().unwrap(), None);
-        let m = Mask {
-            whole: false,
-            binaries: vec![at(1, None), at(2, Some(1))],
-        };
+        let m = bins(vec![at(1, None), at(2, Some(1))]);
         let s = m.encode().unwrap().unwrap();
         assert_eq!(Mask::decode(Some(&s)).unwrap(), m);
         assert!(Mask::decode(Some("{nope")).is_err());
@@ -1212,10 +2066,7 @@ mod tests {
     fn project_drops_exact_occurrences_by_original_index() {
         let f = frame();
         // A and the PDF gone; B (same name as a tool image) stays.
-        let mask = Mask {
-            whole: false,
-            binaries: vec![at(1, None), at(3, None)],
-        };
+        let mask = bins(vec![at(1, None), at(3, None)]);
         let got = project(&f.rows[0].1, &mask).unwrap();
         let names: Vec<_> = got
             .content
@@ -1227,10 +2078,7 @@ mod tests {
         assert_eq!(got.content.texts(), ["look"]);
         // Tool image C: text, call id and sibling image D untouched; c2's
         // image-only body keeps its envelope with the neutral marker.
-        let mask = Mask {
-            whole: false,
-            binaries: vec![at(0, Some(0)), at(1, Some(0))],
-        };
+        let mask = bins(vec![at(0, Some(0)), at(1, Some(0))]);
         let got = project(&f.rows[2].1, &mask).unwrap();
         let rs = got.content.tool_responses();
         assert_eq!(
@@ -1248,16 +2096,7 @@ mod tests {
             serde_json::to_string(&project(&f.rows[1].1, &Mask::default()).unwrap()).unwrap(),
             serde_json::to_string(&f.rows[1].1).unwrap()
         );
-        assert!(
-            project(
-                &f.rows[1].1,
-                &Mask {
-                    whole: true,
-                    binaries: vec![]
-                }
-            )
-            .is_none()
-        );
+        assert!(project(&f.rows[1].1, &whole()).is_none());
     }
 
     #[test]
@@ -1266,16 +2105,7 @@ mod tests {
             ContentPart::Text("  ".into()),
             ContentPart::Binary(img("only.png")),
         ]));
-        assert!(
-            project(
-                &m,
-                &Mask {
-                    whole: false,
-                    binaries: vec![at(1, None)]
-                }
-            )
-            .is_none()
-        );
+        assert!(project(&m, &bins(vec![at(1, None)])).is_none());
     }
 
     #[test]
@@ -1293,10 +2123,7 @@ mod tests {
             ContentPart::Binary(img("frame-2.png")),
             ContentPart::Text(compact::HEAD_CLOSE.into()),
         ]));
-        let mask = Mask {
-            whole: false,
-            binaries: vec![at(2, None)],
-        };
+        let mask = bins(vec![at(2, None)]);
         let got = project_head(&head, &mask).unwrap();
         let text = text_of(&got.content);
         assert!(
@@ -1317,16 +2144,7 @@ mod tests {
             serde_json::to_string(&project_head(&head, &Mask::default()).unwrap()).unwrap(),
             serde_json::to_string(&head).unwrap()
         );
-        assert!(
-            project_head(
-                &head,
-                &Mask {
-                    whole: true,
-                    binaries: vec![]
-                }
-            )
-            .is_none()
-        );
+        assert!(project_head(&head, &whole()).is_none());
     }
 
     #[test]
@@ -1493,14 +2311,7 @@ mod tests {
         // refused by validation on its own (independent of `plan` closure)...
         let f = frame();
         let only_tool = Plan {
-            rows: [(
-                2,
-                Mask {
-                    whole: true,
-                    binaries: vec![],
-                },
-            )]
-            .into(),
+            rows: [(2, whole())].into(),
             ..Plan::default()
         };
         refuses(&f.apply(&only_tool), "tool call c1 without a result");
@@ -1547,6 +2358,7 @@ mod tests {
                 row(4, ChatMessage::user("u")),
                 row(5, ChatMessage::assistant(MessageContent::from_text("a"))),
             ],
+            meta: BTreeMap::new(),
         };
         let g = f.groups();
         let p = f.plan(&[ContextTarget::Head { epoch: 1 }], &g).unwrap();
@@ -1576,26 +2388,23 @@ mod tests {
         assert_eq!(
             kinds,
             [
-                (msg(0), ContextKind::Message),
+                (msg(0), ContextKind::User),
                 (bin(0, 1, None), ContextKind::Image),
                 (bin(0, 2, None), ContextKind::Image),
                 (bin(0, 3, None), ContextKind::Document),
-                (msg(1), ContextKind::Message),
+                (msg(1), ContextKind::Assistant),
                 (msg(2), ContextKind::Tool),
                 (bin(2, 0, Some(0)), ContextKind::Image),
                 (bin(2, 0, Some(1)), ContextKind::Image),
                 (bin(2, 1, Some(0)), ContextKind::Image),
-                (msg(3), ContextKind::Message),
+                (msg(3), ContextKind::Assistant),
             ]
         );
         assert_eq!(snap.items[4].remove_with, [msg(2)]);
         assert_eq!(snap.items[5].remove_with, [msg(1)]);
         assert_eq!(snap.items[1].label, "a.png");
-        assert!(
-            snap.items[0].label.starts_with("user: look"),
-            "{}",
-            snap.items[0].label
-        );
+        assert_eq!(snap.items[0].label, "look");
+        assert!(snap.items.iter().all(|i| i.kind != ContextKind::Message));
         assert_eq!(snap.revision, "3");
         assert!(
             snap.items
@@ -1616,10 +2425,7 @@ mod tests {
     #[test]
     fn entries_report_every_occurrence_with_removed_flags() {
         let f = frame();
-        let mask = Mask {
-            whole: false,
-            binaries: vec![at(0, Some(1))],
-        };
+        let mask = bins(vec![at(0, Some(1))]);
         let e = entry(
             ContextOwner::Message { seq: 2 },
             &f.rows[2].1,
@@ -1649,10 +2455,7 @@ mod tests {
         let e = entry(
             ContextOwner::Message { seq: 0 },
             &f.rows[0].1,
-            &Mask {
-                whole: true,
-                binaries: vec![],
-            },
+            &whole(),
             false,
             vec![],
         );
@@ -1668,6 +2471,723 @@ mod tests {
         assert!(p.ends_with('…'));
         assert_eq!(preview(""), "");
     }
+
+    // region:    --- 197 SHAKE-BY-CATEGORY
+
+    fn tcall(id: &str, name: &str, args: serde_json::Value) -> ToolCall {
+        ToolCall {
+            call_id: id.into(),
+            fn_name: name.into(),
+            fn_arguments: args,
+            thought_signatures: None,
+        }
+    }
+
+    fn image(mime: &str, bytes: &[u8], name: Option<&str>) -> Binary {
+        Binary::from_base64(mime, BASE64.encode(bytes), name.map(Into::into))
+    }
+
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        let mut v = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        v.extend(w.to_be_bytes());
+        v.extend(h.to_be_bytes());
+        v.extend([8, 6, 0, 0, 0]);
+        v
+    }
+
+    /// SOI, a JFIF APP0 segment, then the baseline frame header.
+    fn jpeg(w: u16, h: u16) -> Vec<u8> {
+        let mut v = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+        v.extend(b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0");
+        v.extend([0xFF, 0xC0, 0x00, 0x11, 0x08]);
+        v.extend(h.to_be_bytes());
+        v.extend(w.to_be_bytes());
+        v.extend([3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
+        v
+    }
+
+    fn gif(w: u16, h: u16) -> Vec<u8> {
+        let mut v = b"GIF89a".to_vec();
+        v.extend(w.to_le_bytes());
+        v.extend(h.to_le_bytes());
+        v.extend([0, 0, 0]);
+        v
+    }
+
+    fn webp(chunk: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut v = b"RIFF\0\0\0\0WEBP".to_vec();
+        v.extend(chunk);
+        v.extend((payload.len() as u32).to_le_bytes());
+        v.extend(payload);
+        v
+    }
+
+    const JSON_RENDER: &str = r#"{"root":"s","elements":{"m":{"type":"MetricGrid","props":{}},"c":{"type":"Checklist","props":{}},"m2":{"type":"MetricGrid","props":{}},"t":{"type":"Table","props":{}},"k":{"type":"KeyValueList","props":{}},"s":{"type":"Stack","props":{},"children":["m","c"]}}}"#;
+
+    /// Two surface fences with prose between them, and a ```` ```rust ````
+    /// fence holding a mermaid-looking line that is content.
+    fn reply() -> String {
+        format!(
+            "The branch is in.\n```json-render\n{JSON_RENDER}\n```\nTwo things:\n```mermaid\nsequenceDiagram\n  A->>B: hi\n```\n````rust\n```mermaid\nnot a fence\n```\n````\nDone."
+        )
+    }
+
+    fn user_text(seq: i64, text: &str) -> (i64, ChatMessage, Mask) {
+        row(seq, ChatMessage::user(text))
+    }
+
+    fn fence(seq: i64, part: u32, index: u32) -> ContextTarget {
+        ContextTarget::Fence {
+            owner: ContextOwner::Message { seq },
+            part,
+            index,
+        }
+    }
+
+    fn source(seq: i64, part: u32) -> ContextTarget {
+        ContextTarget::Source {
+            owner: ContextOwner::Message { seq },
+            part,
+        }
+    }
+
+    /// One row per §1 kind/group, behind a snap head with one frame.
+    fn categories() -> Active {
+        let head = ChatMessage::user(MessageContent::from_parts(vec![
+            ContentPart::Text("<context_summary epoch=\"1\">\nearlier work".into()),
+            ContentPart::Binary(image("image/png", &png(800, 600), Some("frame-0.png"))),
+            ContentPart::Text(compact::HEAD_CLOSE.into()),
+        ]));
+        let user = ChatMessage::user(MessageContent::from_parts(vec![
+            ContentPart::Text(
+                "<time now=\"2026-11-16 22:31 +00:00 (Mon)\"/>\nshake images please".into(),
+            ),
+            ContentPart::Binary(image("image/png", &png(1568, 1103), Some("shot.png"))),
+            ContentPart::Binary(image("image/jpeg", &jpeg(640, 480), Some("/tmp/photo.jpg"))),
+        ]));
+        let cards = ChatMessage::assistant(MessageContent::from_parts(vec![
+            ContentPart::Text(reply()),
+            ContentPart::ToolCall(tcall(
+                "s1",
+                "show",
+                serde_json::json!({"name": "mock.html", "content": "<html><body>hi</body></html>"}),
+            )),
+            ContentPart::ToolCall(tcall(
+                "a1",
+                "app",
+                serde_json::json!({"name": "counter", "source": "root = Stack([])", "title": "Counter"}),
+            )),
+            ContentPart::ToolCall(tcall(
+                "p1",
+                "page_preview",
+                serde_json::json!({"html": "<p>draft</p>", "title": "Draft", "width": 390}),
+            )),
+            ContentPart::ToolCall(tcall(
+                "s2",
+                "show",
+                serde_json::json!({"content": "# notes"}),
+            )),
+            ContentPart::ToolCall(tcall(
+                "s3",
+                "show",
+                serde_json::json!({"path": "/x/y.md", "name": "y.md"}),
+            )),
+        ]));
+        let results = ChatMessage::from(
+            ["s1", "a1", "p1", "s2", "s3"]
+                .map(|id| ToolResponse::new(id, "shown"))
+                .to_vec(),
+        );
+        let shots = ChatMessage::from(vec![
+            tcall("c1", "computer_screenshot", serde_json::json!({})),
+            tcall(
+                "c2",
+                "read_file",
+                serde_json::json!({"path": "/p/diagram.webp"}),
+            ),
+            tcall("c3", "read_file", serde_json::json!({"path": "/p/a.md"})),
+        ]);
+        let shot_results = ChatMessage::from(vec![
+            ToolResponse::new("c1", "").with_images(vec![image("image/gif", &gif(32, 16), None)]),
+            ToolResponse::new("c2", "").with_images(vec![image(
+                "image/webp",
+                &webp(b"VP8X", &[0, 0, 0, 0, 0x7f, 0x07, 0, 0x37, 0x04, 0]),
+                Some("/p/diagram.webp"),
+            )]),
+            ToolResponse::new("c3", "# a"),
+        ]);
+        let pdf_only = ChatMessage::user(MessageContent::from_parts(vec![ContentPart::Binary(
+            pdf("spec.pdf"),
+        )]));
+        let openui = ChatMessage::assistant(MessageContent::from_text(
+            "Try it:\n```openui\nroot = Stack([a])\na = TextContent(\"x\")\n```\n",
+        ));
+        let mut meta = BTreeMap::new();
+        meta.insert(
+            0,
+            RowMeta {
+                at: Some("2026-11-16T22:31:00Z".into()),
+                ..RowMeta::default()
+            },
+        );
+        meta.insert(
+            9,
+            RowMeta {
+                peer: Some("session:abc".into()),
+                sender: Some("iso-engine".into()),
+                ..RowMeta::default()
+            },
+        );
+        meta.insert(
+            10,
+            RowMeta {
+                note: true,
+                ..RowMeta::default()
+            },
+        );
+        Active {
+            epoch: 1,
+            tail_from: 0,
+            at_seq: -1,
+            head: Some((head, Mask::default())),
+            rows: vec![
+                row(0, user),
+                row(1, cards),
+                row(2, results),
+                row(3, shots),
+                row(4, shot_results),
+                user_text(
+                    5,
+                    "<knowledge>\nConcepts that may be relevant:\n- `facts/a` — A\n</knowledge>",
+                ),
+                user_text(6, "<todo>\nTodo (0/2 done):\n  ▸ a\n</todo>"),
+                user_text(7, "<time now=\"2026-11-16 22:40 +00:00 (Mon)\"/>"),
+                user_text(
+                    8,
+                    "<job_result id=\"j1\" command=\"ls\" exit=\"0\" secs=\"1\">\nout\n</job_result>\n<child_stalled child=\"w\" session=\"s\" phase=\"p\" quiet_secs=\"9\" at=\"t\">\nquiet\n</child_stalled>",
+                ),
+                user_text(
+                    9,
+                    "<message from=\"session:abc\" id=\"i\">\nreport ready\n</message>",
+                ),
+                user_text(10, "the fallback model saw a cat"),
+                row(11, pdf_only),
+                user_text(12, "<rounds source=\"user\">mine</rounds>"),
+                user_text(13, "<skill name=\"x\">body</skill> go"),
+                row(14, openui),
+            ],
+            meta,
+        }
+    }
+
+    #[test]
+    fn classifier_gives_every_item_one_kind_and_group() {
+        use ContextKind as K;
+        let f = categories();
+        f.validate().unwrap();
+        let snap = f.snapshot("1", &f.groups());
+        let head_bin = ContextTarget::Binary {
+            owner: ContextOwner::Head { epoch: 1 },
+            part: 1,
+            image: None,
+        };
+        let got: Vec<(ContextTarget, ContextKind, &str)> = snap
+            .items
+            .iter()
+            .map(|i| (i.target, i.kind, i.group.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (ContextTarget::Head { epoch: 1 }, K::Summary, "summary"),
+                (head_bin, K::Image, "summary"),
+                (msg(0), K::User, "user"),
+                (bin(0, 1, None), K::Image, "attachment"),
+                (bin(0, 2, None), K::Image, "attachment"),
+                (msg(1), K::Assistant, "assistant"),
+                (fence(1, 0, 0), K::Surface, "diagram"),
+                (fence(1, 0, 1), K::Surface, "diagram"),
+                (source(1, 1), K::Surface, "page"),
+                (source(1, 2), K::Surface, "app"),
+                (source(1, 3), K::Surface, "page"),
+                (source(1, 4), K::Surface, "file"),
+                (msg(2), K::Tool, "show"),
+                (msg(3), K::Tool, "computer_screenshot"),
+                (msg(4), K::Tool, "computer_screenshot"),
+                (bin(4, 0, Some(0)), K::Image, "screenshot"),
+                (bin(4, 1, Some(0)), K::Image, "tool"),
+                (msg(5), K::Note, "knowledge"),
+                (msg(6), K::Note, "todo"),
+                (msg(7), K::Note, "time"),
+                (msg(8), K::Note, "notice"),
+                (msg(9), K::Peer, "peer"),
+                (msg(10), K::Note, "notice"),
+                (msg(11), K::User, "user"),
+                (bin(11, 0, None), K::Document, "document"),
+                (msg(12), K::User, "user"),
+                (msg(13), K::User, "user"),
+                (msg(14), K::Assistant, "assistant"),
+                (fence(14, 0, 0), K::Surface, "diagram"),
+            ]
+        );
+        // The legacy pre-197 kind is never emitted.
+        assert!(snap.items.iter().all(|i| i.kind != K::Message));
+        let item = |t: ContextTarget| snap.items.iter().find(|i| i.target == t).unwrap();
+        let shown = |t| {
+            let i = item(t);
+            (i.label.as_str(), i.detail.as_deref())
+        };
+        assert_eq!(
+            shown(head_bin),
+            ("Summary image: frame-0.png", Some("PNG · 800×600"))
+        );
+        assert_eq!(shown(msg(0)), ("shake images please", None));
+        assert_eq!(
+            shown(bin(0, 1, None)),
+            ("shot.png", Some("PNG · 1568×1103"))
+        );
+        assert_eq!(
+            shown(bin(0, 2, None)),
+            ("photo.jpg", Some("JPEG · 640×480"))
+        );
+        assert_eq!(
+            shown(fence(1, 0, 0)),
+            ("MetricGrid, Checklist, Table", Some("in reply"))
+        );
+        assert_eq!(shown(fence(1, 0, 1)), ("sequenceDiagram", Some("in reply")));
+        assert_eq!(shown(fence(14, 0, 0)), ("openui: Stack", Some("in reply")));
+        assert_eq!(shown(source(1, 1)), ("mock.html", Some("show")));
+        assert_eq!(shown(source(1, 2)), ("counter", Some("app")));
+        assert_eq!(shown(source(1, 3)), ("Draft", Some("page_preview")));
+        assert_eq!(shown(source(1, 4)), ("show", Some("show")));
+        assert_eq!(
+            shown(msg(2)),
+            (
+                "tool result: show, app, page_preview",
+                Some("app, page_preview")
+            )
+        );
+        assert_eq!(
+            shown(msg(3)),
+            (
+                "tool call: computer_screenshot, read_file",
+                Some("read_file")
+            )
+        );
+        assert_eq!(
+            shown(bin(4, 0, Some(0))),
+            ("computer_screenshot", Some("GIF · 32×16"))
+        );
+        assert_eq!(
+            shown(bin(4, 1, Some(0))),
+            ("diagram.webp", Some("WEBP · 1920×1080"))
+        );
+        assert_eq!(shown(msg(5)), ("Concepts that may be relevant:", None));
+        assert_eq!(
+            shown(msg(9)),
+            ("iso-engine: report ready", Some("session:abc"))
+        );
+        assert_eq!(shown(bin(11, 0, None)), ("spec.pdf", Some("PDF")));
+        // The row's time rides on the row and its pieces.
+        assert_eq!(item(msg(0)).at.as_deref(), Some("2026-11-16T22:31:00Z"));
+        assert_eq!(item(bin(0, 1, None)).at, item(msg(0)).at);
+        assert_eq!(item(msg(1)).at, None);
+        assert!(snap.items.iter().all(|i| {
+            i.label.chars().count() <= LABEL_CHARS + 1
+                && i.detail
+                    .as_ref()
+                    .is_none_or(|d| d.chars().count() <= DETAIL_CHARS + 1)
+        }));
+    }
+
+    #[test]
+    fn image_details_read_header_dimensions_or_fall_back_to_the_format() {
+        let detail = |mime: &str, bytes: &[u8]| binary_detail(&image(mime, bytes, None));
+        assert_eq!(detail("image/png", &png(1568, 1103)), "PNG · 1568×1103");
+        assert_eq!(detail("image/jpeg", &jpeg(640, 480)), "JPEG · 640×480");
+        assert_eq!(detail("image/gif", &gif(32, 16)), "GIF · 32×16");
+        // VP8X canvas (w-1, h-1 as 24 bits), VP8L (14-bit fields), lossy VP8 frame.
+        let vp8x = webp(b"VP8X", &[0, 0, 0, 0, 0x7f, 0x07, 0, 0x37, 0x04, 0]);
+        let bits: u32 = 99 | (49 << 14);
+        let mut vp8l = vec![0x2f];
+        vp8l.extend(bits.to_le_bytes());
+        let vp8l = webp(b"VP8L", &vp8l);
+        let mut vp8 = vec![0, 0, 0, 0x9d, 0x01, 0x2a];
+        vp8.extend(300u16.to_le_bytes());
+        vp8.extend(200u16.to_le_bytes());
+        let vp8 = webp(b"VP8 ", &vp8);
+        assert_eq!(detail("image/webp", &vp8x), "WEBP · 1920×1080");
+        assert_eq!(detail("image/webp", &vp8l), "WEBP · 100×50");
+        assert_eq!(detail("image/webp", &vp8), "WEBP · 300×200");
+        // Format only: an unread format, a header that does not parse, a document.
+        assert_eq!(detail("image/heic", b"\0\0\0\x18ftypheic"), "HEIC");
+        assert_eq!(detail("image/png", b"not a png at all"), "PNG");
+        assert_eq!(detail("image/jpeg", &[0xFF, 0xD8, 0xFF]), "JPEG");
+        assert_eq!(detail("application/pdf; x=1", b"%PDF-1.7"), "PDF");
+    }
+
+    #[test]
+    fn injected_rows_follow_the_transcript_rule() {
+        for (text, want) in [
+            ("<knowledge>\nx\n</knowledge>", Some("knowledge")),
+            ("<time now=\"x\"/>\n<todo>\nTodo\n</todo>", Some("todo")),
+            ("<time now=\"x\"/>", Some("time")),
+            (
+                "<reminder id=\"r3\" after=\"60\">\nping\n</reminder>",
+                Some("notice"),
+            ),
+            ("<surface_error>\nfix it\n</surface_error>", Some("notice")),
+            (
+                "<cell_result run=\"1\" exit=\"0\" secs=\"1\">\nok\n</cell_result>",
+                Some("notice"),
+            ),
+            (
+                "<schedule name=\"daily\" at=\"t\">\ngo\n</schedule>",
+                Some("notice"),
+            ),
+            ("<vision>\nobs\n</vision>", Some("notice")),
+            ("<session_moved to=\"a\" from=\"b\"/>", Some("notice")),
+            // The user's: leading words, attributes on a bare-only note, an
+            // unclosed or unknown tag, text after the wrappers, a skill, no text.
+            ("hello <todo>x</todo>", None),
+            ("<todo source=\"me\">\nx\n</todo>", None),
+            ("<knowledge>\nunclosed", None),
+            ("<div>html</div>", None),
+            ("<todo>\nx\n</todo>\nand my words", None),
+            ("<skill name=\"x\">body</skill> go", None),
+            ("", None),
+            ("<time now=\"x\"/>\nreal words", None),
+        ] {
+            assert_eq!(injected(text), want, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn surface_fence_scanner_rule() {
+        let t = "```not``` a fence\n  ```mermaid\nindented: content\n``` mermaid\nspaced: other fence\n```\na\n~~~~mermaid\ngraph TD\n~~~\nstill inside\n~~~~~\nb\n```json-render \r\n{}\r\n```\r\nc\n```bash\n```openui\n```\n```openui\nroot = X()\n";
+        let got = surface_fences(t);
+        let langs: Vec<&str> = got.iter().map(|f| f.lang).collect();
+        assert_eq!(langs, ["mermaid", "json-render", "openui"]);
+        assert_eq!(
+            &t[got[0].range.clone()],
+            "~~~~mermaid\ngraph TD\n~~~\nstill inside\n~~~~~"
+        );
+        assert_eq!(got[0].body, "graph TD\n~~~\nstill inside\n");
+        assert_eq!(&t[got[1].range.clone()], "```json-render \r\n{}\r\n```");
+        assert_eq!(got[1].body, "{}\r\n");
+        // Unclosed: to the end of the part, its final line break kept outside.
+        assert_eq!(&t[got[2].range.clone()], "```openui\nroot = X()");
+        assert_eq!(got[2].body, "root = X()\n");
+        // Two in one part, and none in plain text or inside other fences.
+        assert_eq!(surface_fences(&reply()).len(), 2);
+        assert!(surface_fences("```rust\n```mermaid\n```\n").is_empty());
+        assert!(surface_fences("no fences").is_empty());
+    }
+
+    #[test]
+    fn fences_and_sources_project_to_markers_and_keep_the_exchange() {
+        let f = categories();
+        let g = f.groups();
+        let p = f
+            .plan(
+                &[
+                    fence(1, 0, 0),
+                    fence(1, 0, 1),
+                    source(1, 1),
+                    source(1, 2),
+                    source(1, 3),
+                    source(1, 4),
+                    fence(14, 0, 0),
+                ],
+                &g,
+            )
+            .unwrap();
+        assert_eq!((p.messages, p.images, p.surfaces), (0, 0, 7));
+        assert_eq!(
+            p.rows[&1].fences,
+            [FenceAt { part: 0, index: 0 }, FenceAt { part: 0, index: 1 }]
+        );
+        assert_eq!(p.rows[&1].sources, [1, 2, 3, 4]);
+        let after = f.apply(&p);
+        after.validate().unwrap();
+        let (_, tail) = after.effective();
+        let row = |seq: i64| &tail.iter().find(|(s, _)| *s == seq).unwrap().1;
+        assert_eq!(
+            row(1).content.texts(),
+            [
+                "The branch is in.\n[diagram removed from context: MetricGrid, Checklist, Table]\nTwo things:\n[mermaid diagram removed from context]\n````rust\n```mermaid\nnot a fence\n```\n````\nDone."
+            ]
+        );
+        assert_eq!(
+            row(14).content.texts(),
+            ["Try it:\n[openui surface removed from context]\n"]
+        );
+        let calls = row(1).content.tool_calls();
+        let field = |i: usize, k: &str| calls[i].fn_arguments[k].clone();
+        assert_eq!(
+            field(0, "content"),
+            "[page removed from context: mock.html]"
+        );
+        assert_eq!(field(0, "name"), "mock.html");
+        assert_eq!(field(1, "source"), "[app removed from context: counter]");
+        assert_eq!(field(1, "title"), "Counter");
+        assert_eq!(field(2, "html"), "[page removed from context: Draft]");
+        assert_eq!(field(2, "width"), 390);
+        assert_eq!(field(3, "content"), "[file removed from context: show]");
+        // The path-shown card, every call id and the paired results are untouched.
+        assert_eq!(
+            calls[4].fn_arguments,
+            serde_json::json!({"path": "/x/y.md", "name": "y.md"})
+        );
+        let ids: Vec<&str> = calls.iter().map(|c| c.call_id.as_str()).collect();
+        assert_eq!(ids, ["s1", "a1", "p1", "s2", "s3"]);
+        assert_eq!(
+            serde_json::to_string(row(2)).unwrap(),
+            serde_json::to_string(&f.rows[2].1).unwrap()
+        );
+        // The raw rows keep their originals.
+        assert_eq!(after.rows[1].1.content.texts(), [reply().as_str()]);
+        // A json-render body that does not parse gets the bare marker.
+        assert_eq!(
+            cut_fences("a\n```json-render\n{nope\n```\nb", |_| true),
+            "a\n[diagram removed from context]\nb"
+        );
+        assert_eq!(
+            fence_label(&surface_fences("```json-render\n{nope\n```")[0]),
+            "diagram"
+        );
+    }
+
+    #[test]
+    fn plan_subsumes_refuses_and_noops_for_surfaces() {
+        let f = categories();
+        let g = f.groups();
+        // A whole row takes its fences and sources: nothing counted twice.
+        let p = f
+            .plan(&[msg(1), msg(2), fence(1, 0, 0), source(1, 1)], &g)
+            .unwrap();
+        assert_eq!((p.messages, p.surfaces), (2, 0));
+        assert!(p.rows[&1].whole && p.rows[&1].fences.is_empty());
+        let head_fence = ContextTarget::Fence {
+            owner: ContextOwner::Head { epoch: 1 },
+            part: 0,
+            index: 0,
+        };
+        let head_source = ContextTarget::Source {
+            owner: ContextOwner::Head { epoch: 1 },
+            part: 0,
+        };
+        for (t, needle) in [
+            (head_fence, "summary head has no surface"),
+            (head_source, "summary head has no surface"),
+            (fence(99, 0, 0), "not in the active context"),
+            (fence(1, 0, 2), "part 0 has no surface fence 2"),
+            (fence(1, 9, 0), "part 9 does not exist"),
+            (fence(1, 1, 0), "part 1 is not a text part"),
+            (fence(0, 0, 0), "part 0 is not assistant text"),
+            (source(1, 0), "part 0 is not a tool call"),
+            (source(2, 0), "part 0 is not a tool call"),
+            (
+                source(1, 5),
+                "part 5 has no show, app or page_preview source",
+            ),
+            (source(1, 6), "part 6 does not exist"),
+        ] {
+            let err = f.plan(&[t], &g).unwrap_err();
+            assert!(err.contains(needle), "{t:?}: {err}");
+        }
+        // Already removed: a no-op; a later edit merges and keeps them sorted.
+        let p = f.plan(&[source(1, 3), fence(1, 0, 1)], &g).unwrap();
+        let after = f.apply(&p);
+        let g2 = after.groups();
+        assert!(
+            after
+                .plan(&[source(1, 3), fence(1, 0, 1)], &g2)
+                .unwrap()
+                .is_empty()
+        );
+        let p2 = after
+            .plan(&[source(1, 1), fence(1, 0, 0), bin(0, 1, None)], &g2)
+            .unwrap();
+        assert_eq!((p2.surfaces, p2.images), (2, 1));
+        assert_eq!(p2.rows[&1].sources, [1, 3]);
+        assert_eq!(
+            p2.rows[&1].fences,
+            [FenceAt { part: 0, index: 0 }, FenceAt { part: 0, index: 1 }]
+        );
+        // Removed pieces leave the inventory.
+        let snap = after.snapshot("2", &g2);
+        assert!(
+            !snap
+                .items
+                .iter()
+                .any(|i| i.target == source(1, 3) || i.target == fence(1, 0, 1))
+        );
+        assert!(snap.items.iter().any(|i| i.target == fence(1, 0, 0)));
+    }
+
+    #[test]
+    fn masks_with_surfaces_round_trip_and_old_masks_decode() {
+        let old = r#"{"whole":false,"binaries":[{"part":1}]}"#;
+        let m = Mask::decode(Some(old)).unwrap();
+        assert_eq!(m, bins(vec![at(1, None)]));
+        // An old-shape mask still encodes in the old shape.
+        assert_eq!(m.encode().unwrap().as_deref(), Some(old));
+        let m = Mask {
+            fences: vec![FenceAt { part: 0, index: 1 }],
+            sources: vec![2, 4],
+            ..Mask::default()
+        };
+        let s = m.encode().unwrap().unwrap();
+        assert!(
+            s.contains(r#""fences":[{"part":0,"index":1}]"#) && s.contains(r#""sources":[2,4]"#),
+            "{s}"
+        );
+        assert_eq!(Mask::decode(Some(&s)).unwrap(), m);
+        assert!(!m.is_empty());
+        let only_sources = Mask {
+            sources: vec![1],
+            ..Mask::default()
+        };
+        assert!(!only_sources.is_empty() && only_sources.partial());
+        assert!(Mask::default().is_empty() && !whole().partial() && !whole().is_empty());
+    }
+
+    #[test]
+    fn tokens_price_what_each_target_takes_out() {
+        let f = categories();
+        let g = f.groups();
+        let snap = f.snapshot("1", &g);
+        let item = |t: ContextTarget| snap.items.iter().find(|i| i.target == t).unwrap();
+        // Pieces: a fence its text, a source its value, a tool image the flat charge.
+        let text = reply();
+        let fence0 = &surface_fences(&text)[0];
+        assert_eq!(item(fence(1, 0, 0)).tokens, (fence0.range.len() / 4) as u32);
+        assert_eq!(
+            item(source(1, 1)).tokens,
+            ("<html><body>hi</body></html>".len() / 4) as u32
+        );
+        assert_eq!(item(bin(4, 0, Some(0))).tokens, compact::IMAGE_TOKENS);
+        assert_eq!(
+            item(bin(0, 1, None)).tokens,
+            compact::est_part(&f.rows[0].1.content.parts()[1])
+        );
+        // A whole row includes its pieces; the head is its projected head.
+        let row1 = item(msg(1)).tokens;
+        assert_eq!(row1, compact::est(&f.rows[1].1));
+        let pieces: u32 = snap
+            .items
+            .iter()
+            .filter(|i| {
+                matches!(
+                    i.target,
+                    ContextTarget::Fence {
+                        owner: ContextOwner::Message { seq: 1 },
+                        ..
+                    } | ContextTarget::Source {
+                        owner: ContextOwner::Message { seq: 1 },
+                        ..
+                    }
+                )
+            })
+            .map(|i| i.tokens)
+            .sum();
+        assert!(row1 > pieces, "{row1} vs {pieces}");
+        // The UI's sum rule: {row 1, its fence, its source, row 2} counts the
+        // two rows only, and removing them takes exactly that out.
+        let picked = [msg(1), fence(1, 0, 0), source(1, 1), msg(2)];
+        let sum: u32 = picked
+            .iter()
+            .map(|t| item(*t))
+            .filter(|i| {
+                !matches!(i.target, ContextTarget::Fence { owner: ContextOwner::Message { seq }, .. } | ContextTarget::Source { owner: ContextOwner::Message { seq }, .. } if picked.contains(&msg(seq)))
+            })
+            .map(|i| i.tokens)
+            .sum();
+        assert_eq!(sum, row1 + item(msg(2)).tokens);
+        let after = f.apply(&f.plan(&picked, &g).unwrap());
+        assert_eq!(snap.estimated_tokens - after.estimate(), sum);
+        assert_eq!(snap.estimated_tokens, f.estimate());
+        // A partly shaken row counts what is left of it.
+        let cut = f.apply(&f.plan(&[fence(1, 0, 0)], &g).unwrap());
+        let left = cut.snapshot("2", &cut.groups());
+        let row1_after = left
+            .items
+            .iter()
+            .find(|i| i.target == msg(1))
+            .unwrap()
+            .tokens;
+        assert_eq!(
+            row1_after,
+            compact::est(&project(&cut.rows[1].1, &cut.rows[1].2).unwrap())
+        );
+        assert!(row1_after < row1);
+    }
+
+    #[test]
+    fn history_entries_carry_fences_and_sources_with_removed_flags() {
+        let f = categories();
+        let mask = Mask {
+            fences: vec![FenceAt { part: 0, index: 0 }],
+            sources: vec![1],
+            ..Mask::default()
+        };
+        let e = entry(
+            ContextOwner::Message { seq: 1 },
+            &f.rows[1].1,
+            &mask,
+            true,
+            vec![msg(2)],
+        );
+        let pieces = |ps: &[ContextPiece]| -> Vec<(ContextTarget, String, bool)> {
+            ps.iter()
+                .map(|p| (p.target, p.label.clone(), p.removed))
+                .collect()
+        };
+        assert_eq!(
+            pieces(&e.fences),
+            [
+                (
+                    fence(1, 0, 0),
+                    "MetricGrid, Checklist, Table".to_owned(),
+                    true
+                ),
+                (fence(1, 0, 1), "sequenceDiagram".to_owned(), false),
+            ]
+        );
+        assert_eq!(
+            pieces(&e.sources),
+            [
+                (source(1, 1), "mock.html".to_owned(), true),
+                (source(1, 2), "counter".to_owned(), false),
+                (source(1, 3), "Draft".to_owned(), false),
+                (source(1, 4), "show".to_owned(), false),
+            ]
+        );
+        // A whole removal marks every piece removed; rows without pieces omit the arrays.
+        let e = entry(
+            ContextOwner::Message { seq: 1 },
+            &f.rows[1].1,
+            &whole(),
+            false,
+            vec![],
+        );
+        assert!(e.fences.iter().chain(&e.sources).all(|p| p.removed));
+        let user = entry(
+            ContextOwner::Message { seq: 0 },
+            &f.rows[0].1,
+            &Mask::default(),
+            true,
+            vec![],
+        );
+        let json = serde_json::to_value(&user).unwrap();
+        assert!(
+            json.get("fences").is_none() && json.get("sources").is_none(),
+            "{json}"
+        );
+    }
+
+    // endregion: --- 197 SHAKE-BY-CATEGORY
 
     #[test]
     fn save_blob_names_by_content_hash() {

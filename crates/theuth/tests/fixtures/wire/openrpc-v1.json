@@ -3258,6 +3258,71 @@
               "image"
             ],
             "type": "object"
+          },
+          {
+            "description": "One surface fence inside one text part of an assistant row (197 §3).",
+            "properties": {
+              "index": {
+                "description": "0-based ordinal of the surface fences of that original text part ([`surface_fences`]).",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "fence",
+                "type": "string"
+              },
+              "owner": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.output.ContextOwner"
+                  }
+                ],
+                "description": "The row; only `Message` owners have fences."
+              },
+              "part": {
+                "description": "Index into the row's original content parts (a text part).",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "owner",
+              "part",
+              "index"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The source argument of one `show` / `app` / `page_preview` call part (197 §3).",
+            "properties": {
+              "kind": {
+                "const": "source",
+                "type": "string"
+              },
+              "owner": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.output.ContextOwner"
+                  }
+                ],
+                "description": "The row; only `Message` owners have sources."
+              },
+              "part": {
+                "description": "Index into the row's original content parts (a tool call part).",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "owner",
+              "part"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -6222,6 +6287,71 @@
               },
               "part": {
                 "description": "Index into the row's original content parts.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "owner",
+              "part"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "One surface fence inside one text part of an assistant row (197 §3).",
+            "properties": {
+              "index": {
+                "description": "0-based ordinal of the surface fences of that original text part ([`surface_fences`]).",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "fence",
+                "type": "string"
+              },
+              "owner": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.receiver.ContextOwner"
+                  }
+                ],
+                "description": "The row; only `Message` owners have fences."
+              },
+              "part": {
+                "description": "Index into the row's original content parts (a text part).",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "owner",
+              "part",
+              "index"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The source argument of one `show` / `app` / `page_preview` call part (197 §3).",
+            "properties": {
+              "kind": {
+                "const": "source",
+                "type": "string"
+              },
+              "owner": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.receiver.ContextOwner"
+                  }
+                ],
+                "description": "The row; only `Message` owners have sources."
+              },
+              "part": {
+                "description": "Index into the row's original content parts (a tool call part).",
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
@@ -30643,6 +30773,71 @@
               "part"
             ],
             "type": "object"
+          },
+          {
+            "description": "One surface fence inside one text part of an assistant row (197 §3).",
+            "properties": {
+              "index": {
+                "description": "0-based ordinal of the surface fences of that original text part ([`surface_fences`]).",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "fence",
+                "type": "string"
+              },
+              "owner": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/method.agent.input.ContextOwner"
+                  }
+                ],
+                "description": "The row; only `Message` owners have fences."
+              },
+              "part": {
+                "description": "Index into the row's original content parts (a text part).",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "owner",
+              "part",
+              "index"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The source argument of one `show` / `app` / `page_preview` call part (197 §3).",
+            "properties": {
+              "kind": {
+                "const": "source",
+                "type": "string"
+              },
+              "owner": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/method.agent.input.ContextOwner"
+                  }
+                ],
+                "description": "The row; only `Message` owners have sources."
+              },
+              "part": {
+                "description": "Index into the row's original content parts (a tool call part).",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "owner",
+              "part"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -31066,6 +31261,29 @@
             "type": "string"
           }
         ]
+      },
+      "method.agent.input.JobCursor": {
+        "description": "Exclusive position in job history, ordered by start time then id, both descending.",
+        "properties": {
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.JobId"
+              }
+            ],
+            "description": "The last returned job's id, breaking ties at the same millisecond."
+          },
+          "started_ms": {
+            "description": "The last returned job's start time, unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "started_ms",
+          "id"
+        ],
+        "type": "object"
       },
       "method.agent.input.JobId": {
         "description": "`j{n}`, `n` per session starting at 1.",
@@ -33416,6 +33634,13 @@
             },
             "type": "array"
           },
+          "fences": {
+            "description": "Surface fences of an assistant row, in text order across its parts (197 §5).",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.output.ContextPiece"
+            },
+            "type": "array"
+          },
           "remove_with": {
             "description": "Companions a whole-message removal requires (active rows only).",
             "items": {
@@ -33426,6 +33651,13 @@
           "removed": {
             "description": "The whole row is excluded.",
             "type": "boolean"
+          },
+          "sources": {
+            "description": "`show` / `app` / `page_preview` sources of an assistant row, in part order.",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.output.ContextPiece"
+            },
+            "type": "array"
           },
           "target": {
             "allOf": [
@@ -33504,8 +33736,27 @@
         "type": "object"
       },
       "method.agent.output.ContextItem": {
-        "description": "One row of the active-context inventory (48 §3.2). No bodies.",
+        "description": "One row of the active-context inventory (48 §3.2, 197 §2). No bodies.",
         "properties": {
+          "at": {
+            "description": "RFC 3339 time of the row, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detail": {
+            "description": "Secondary line (`PNG · 1568×1103`, `in reply`, the other tool names), ≤ 60 chars.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group": {
+            "default": "",
+            "description": "Stable lowercase group key within the category (197 §1). `default`:\na reply from an engine before 197 has none (wire receiver view).",
+            "type": "string"
+          },
           "kind": {
             "allOf": [
               {
@@ -33515,7 +33766,7 @@
             "description": "Category."
           },
           "label": {
-            "description": "Short safe display label (bounded preview or attachment name).",
+            "description": "Short safe display label (bounded preview or attachment name), ≤ 80 chars.",
             "type": "string"
           },
           "remove_with": {
@@ -33532,12 +33783,21 @@
               }
             ],
             "description": "What to send back to remove it."
+          },
+          "tokens": {
+            "default": 0,
+            "description": "`compact::est` of what removing this target takes out (197 §2 token rule).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "required": [
           "target",
           "kind",
+          "group",
           "label",
+          "tokens",
           "remove_with"
         ],
         "type": "object"
@@ -33600,16 +33860,16 @@
         "type": "object"
       },
       "method.agent.output.ContextKind": {
-        "description": "What an inventory item is, for the `/shake <category>` filters.",
+        "description": "What an inventory item is, for the `/shake <category>` filters (197 §1).\nDeclaration order keeps the pre-197 wire positions (`message`, `image`,\n`document`, `tool`, `summary`); the 197 kinds follow, so the schema\nchange is additive.",
         "oneOf": [
           {
             "const": "message",
-            "description": "A user/assistant/system message with text.",
+            "description": "Legacy: pre-197 text rows. Never emitted since 197 (user, assistant,\nnote and peer rows replaced it); kept so the wire stays additive.",
             "type": "string"
           },
           {
             "const": "image",
-            "description": "An image occurrence (user attachment, tool screenshot, snap frame).",
+            "description": "An image occurrence (user attachment, tool screenshot, tool image, summary frame).",
             "type": "string"
           },
           {
@@ -33625,6 +33885,31 @@
           {
             "const": "summary",
             "description": "The current epoch head.",
+            "type": "string"
+          },
+          {
+            "const": "surface",
+            "description": "A surface fence in a reply, or the source of a `show` / `app` / `page_preview` call.",
+            "type": "string"
+          },
+          {
+            "const": "note",
+            "description": "A harness-injected row (knowledge hints, todos, time stamps, notices).",
+            "type": "string"
+          },
+          {
+            "const": "peer",
+            "description": "A message another agent sent (the row has peer provenance).",
+            "type": "string"
+          },
+          {
+            "const": "user",
+            "description": "A row the user typed.",
+            "type": "string"
+          },
+          {
+            "const": "assistant",
+            "description": "An assistant row with text.",
             "type": "string"
           }
         ]
@@ -33698,6 +33983,33 @@
           }
         ]
       },
+      "method.agent.output.ContextPiece": {
+        "description": "One surface fence or source of a history row, for transcript controls (197 §5).",
+        "properties": {
+          "label": {
+            "description": "The inventory label (diagram types, card name).",
+            "type": "string"
+          },
+          "removed": {
+            "description": "Excluded from the effective frame.",
+            "type": "boolean"
+          },
+          "target": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.ContextTarget"
+              }
+            ],
+            "description": "Its `ContextTarget::Fence` or `ContextTarget::Source` coordinates."
+          }
+        },
+        "required": [
+          "target",
+          "label",
+          "removed"
+        ],
+        "type": "object"
+      },
       "method.agent.output.ContextRemoval": {
         "description": "Result of a committed (or no-op) removal.",
         "properties": {
@@ -33734,6 +34046,13 @@
           "revision": {
             "description": "Revision after the edit (unchanged for a no-op).",
             "type": "string"
+          },
+          "surfaces": {
+            "default": 0,
+            "description": "Surface fences and sources newly excluded (not counting subsumed ones).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "required": [
@@ -33742,6 +34061,7 @@
           "images",
           "documents",
           "heads",
+          "surfaces",
           "estimated_tokens"
         ],
         "type": "object"
@@ -33766,7 +34086,7 @@
             "type": "integer"
           },
           "items": {
-            "description": "Active items: head, its images, then rows and their binaries in seq order.",
+            "description": "Active items: head, its images, then rows in seq order, each followed\nby its binaries, then its surface fences and sources.",
             "items": {
               "$ref": "#/components/schemas/method.agent.output.ContextItem"
             },
@@ -33898,6 +34218,71 @@
               "owner",
               "part",
               "image"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "One surface fence inside one text part of an assistant row (197 §3).",
+            "properties": {
+              "index": {
+                "description": "0-based ordinal of the surface fences of that original text part ([`surface_fences`]).",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "fence",
+                "type": "string"
+              },
+              "owner": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/method.agent.output.ContextOwner"
+                  }
+                ],
+                "description": "The row; only `Message` owners have fences."
+              },
+              "part": {
+                "description": "Index into the row's original content parts (a text part).",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "owner",
+              "part",
+              "index"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The source argument of one `show` / `app` / `page_preview` call part (197 §3).",
+            "properties": {
+              "kind": {
+                "const": "source",
+                "type": "string"
+              },
+              "owner": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/method.agent.output.ContextOwner"
+                  }
+                ],
+                "description": "The row; only `Message` owners have sources."
+              },
+              "part": {
+                "description": "Index into the row's original content parts (a tool call part).",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "owner",
+              "part"
             ],
             "type": "object"
           }
@@ -35775,12 +36160,74 @@
         "description": "`j{n}`, `n` per session starting at 1.",
         "type": "string"
       },
+      "method.agent.output.JobLogPage": {
+        "description": "One UTF-8 log page. Offsets always address the stored bytes, before redaction.",
+        "properties": {
+          "end": {
+            "description": "Exclusive byte offset; pass it as offset to read subsequent output.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "eof": {
+            "description": "This page reached the observed end of the log.",
+            "type": "boolean"
+          },
+          "start": {
+            "description": "Inclusive byte offset in the stored log, before redaction.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "text": {
+            "description": "Secret-scrubbed UTF-8 output.",
+            "type": "string"
+          },
+          "total_bytes": {
+            "description": "Stored log size at the time of the read.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "text",
+          "start",
+          "end",
+          "total_bytes",
+          "eof"
+        ],
+        "type": "object"
+      },
       "method.agent.output.JobView": {
         "description": "One row of [`ListJobs`].",
         "properties": {
+          "call_id": {
+            "description": "The originating tool call.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "command": {
             "description": "Command line.",
             "type": "string"
+          },
+          "ended_ms": {
+            "description": "Settlement time, unix milliseconds.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "exit_code": {
+            "description": "Process exit status, when known.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "id": {
             "allOf": [
@@ -35790,9 +36237,25 @@
             ],
             "description": "Job."
           },
+          "kind": {
+            "description": "`shell`, `pty`, or the promoted tool's name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "log": {
             "description": "Log file.",
             "type": "string"
+          },
+          "log_bytes": {
+            "description": "Current size of the retained log.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "name": {
             "description": "`start`'s `name` label (22 §2.1), PTY jobs only.",
@@ -35818,6 +36281,14 @@
               }
             ],
             "description": "Owning session."
+          },
+          "started_ms": {
+            "description": "Spawn time, unix milliseconds.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "state": {
             "description": "`running` | `exited 0` | `timeout` | `killed` | `lost` (109 §5.4: died\nwith a previous engine; `tail` is the log tail or the stored screen).",
@@ -37649,6 +38120,36 @@
             "type": "string"
           }
         ]
+      },
+      "method.agent.output.PendingReminderView": {
+        "description": "A pending reminder, including the details needed after reconnecting.",
+        "properties": {
+          "fires_at": {
+            "description": "Delivery time, Unix seconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "description": "Session-local reminder id.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Message delivered when the timer fires.",
+            "type": "string"
+          },
+          "set_at": {
+            "description": "Creation time, Unix seconds.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "message",
+          "set_at",
+          "fires_at"
+        ],
+        "type": "object"
       },
       "method.agent.output.ProjectStyle": {
         "description": "A project's icon and colour (51 §3 as-built): one row per styled project,\nkeyed by the label; both fields are allow-listed keys ([`project::ICONS`],\n[`project::COLORS`]) that every client maps through its own theme.",
@@ -42768,6 +43269,13 @@
             },
             "type": "array"
           },
+          "fences": {
+            "description": "Surface fences of an assistant row, in text order across its parts (197 §5).",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.receiver.ContextPiece"
+            },
+            "type": "array"
+          },
           "remove_with": {
             "description": "Companions a whole-message removal requires (active rows only).",
             "items": {
@@ -42778,6 +43286,13 @@
           "removed": {
             "description": "The whole row is excluded.",
             "type": "boolean"
+          },
+          "sources": {
+            "description": "`show` / `app` / `page_preview` sources of an assistant row, in part order.",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.receiver.ContextPiece"
+            },
+            "type": "array"
           },
           "target": {
             "allOf": [
@@ -42856,8 +43371,27 @@
         "type": "object"
       },
       "method.agent.receiver.ContextItem": {
-        "description": "One row of the active-context inventory (48 §3.2). No bodies.",
+        "description": "One row of the active-context inventory (48 §3.2, 197 §2). No bodies.",
         "properties": {
+          "at": {
+            "description": "RFC 3339 time of the row, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detail": {
+            "description": "Secondary line (`PNG · 1568×1103`, `in reply`, the other tool names), ≤ 60 chars.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group": {
+            "default": "",
+            "description": "Stable lowercase group key within the category (197 §1). `default`:\na reply from an engine before 197 has none (wire receiver view).",
+            "type": "string"
+          },
           "kind": {
             "allOf": [
               {
@@ -42867,7 +43401,7 @@
             "description": "Category."
           },
           "label": {
-            "description": "Short safe display label (bounded preview or attachment name).",
+            "description": "Short safe display label (bounded preview or attachment name), ≤ 80 chars.",
             "type": "string"
           },
           "remove_with": {
@@ -42884,6 +43418,13 @@
               }
             ],
             "description": "What to send back to remove it."
+          },
+          "tokens": {
+            "default": 0,
+            "description": "`compact::est` of what removing this target takes out (197 §2 token rule).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "required": [
@@ -42952,16 +43493,16 @@
         "type": "object"
       },
       "method.agent.receiver.ContextKind": {
-        "description": "What an inventory item is, for the `/shake <category>` filters.",
+        "description": "What an inventory item is, for the `/shake <category>` filters (197 §1).\nDeclaration order keeps the pre-197 wire positions (`message`, `image`,\n`document`, `tool`, `summary`); the 197 kinds follow, so the schema\nchange is additive.",
         "oneOf": [
           {
             "const": "message",
-            "description": "A user/assistant/system message with text.",
+            "description": "Legacy: pre-197 text rows. Never emitted since 197 (user, assistant,\nnote and peer rows replaced it); kept so the wire stays additive.",
             "type": "string"
           },
           {
             "const": "image",
-            "description": "An image occurrence (user attachment, tool screenshot, snap frame).",
+            "description": "An image occurrence (user attachment, tool screenshot, tool image, summary frame).",
             "type": "string"
           },
           {
@@ -42977,6 +43518,31 @@
           {
             "const": "summary",
             "description": "The current epoch head.",
+            "type": "string"
+          },
+          {
+            "const": "surface",
+            "description": "A surface fence in a reply, or the source of a `show` / `app` / `page_preview` call.",
+            "type": "string"
+          },
+          {
+            "const": "note",
+            "description": "A harness-injected row (knowledge hints, todos, time stamps, notices).",
+            "type": "string"
+          },
+          {
+            "const": "peer",
+            "description": "A message another agent sent (the row has peer provenance).",
+            "type": "string"
+          },
+          {
+            "const": "user",
+            "description": "A row the user typed.",
+            "type": "string"
+          },
+          {
+            "const": "assistant",
+            "description": "An assistant row with text.",
             "type": "string"
           }
         ]
@@ -43050,6 +43616,33 @@
           }
         ]
       },
+      "method.agent.receiver.ContextPiece": {
+        "description": "One surface fence or source of a history row, for transcript controls (197 §5).",
+        "properties": {
+          "label": {
+            "description": "The inventory label (diagram types, card name).",
+            "type": "string"
+          },
+          "removed": {
+            "description": "Excluded from the effective frame.",
+            "type": "boolean"
+          },
+          "target": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.ContextTarget"
+              }
+            ],
+            "description": "Its `ContextTarget::Fence` or `ContextTarget::Source` coordinates."
+          }
+        },
+        "required": [
+          "target",
+          "label",
+          "removed"
+        ],
+        "type": "object"
+      },
       "method.agent.receiver.ContextRemoval": {
         "description": "Result of a committed (or no-op) removal.",
         "properties": {
@@ -43086,6 +43679,13 @@
           "revision": {
             "description": "Revision after the edit (unchanged for a no-op).",
             "type": "string"
+          },
+          "surfaces": {
+            "default": 0,
+            "description": "Surface fences and sources newly excluded (not counting subsumed ones).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "required": [
@@ -43118,7 +43718,7 @@
             "type": "integer"
           },
           "items": {
-            "description": "Active items: head, its images, then rows and their binaries in seq order.",
+            "description": "Active items: head, its images, then rows in seq order, each followed\nby its binaries, then its surface fences and sources.",
             "items": {
               "$ref": "#/components/schemas/method.agent.receiver.ContextItem"
             },
@@ -43239,6 +43839,71 @@
               },
               "part": {
                 "description": "Index into the row's original content parts.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "owner",
+              "part"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "One surface fence inside one text part of an assistant row (197 §3).",
+            "properties": {
+              "index": {
+                "description": "0-based ordinal of the surface fences of that original text part ([`surface_fences`]).",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "fence",
+                "type": "string"
+              },
+              "owner": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/method.agent.receiver.ContextOwner"
+                  }
+                ],
+                "description": "The row; only `Message` owners have fences."
+              },
+              "part": {
+                "description": "Index into the row's original content parts (a text part).",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "owner",
+              "part",
+              "index"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The source argument of one `show` / `app` / `page_preview` call part (197 §3).",
+            "properties": {
+              "kind": {
+                "const": "source",
+                "type": "string"
+              },
+              "owner": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/method.agent.receiver.ContextOwner"
+                  }
+                ],
+                "description": "The row; only `Message` owners have sources."
+              },
+              "part": {
+                "description": "Index into the row's original content parts (a tool call part).",
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
@@ -45064,12 +45729,74 @@
         "description": "`j{n}`, `n` per session starting at 1.",
         "type": "string"
       },
+      "method.agent.receiver.JobLogPage": {
+        "description": "One UTF-8 log page. Offsets always address the stored bytes, before redaction.",
+        "properties": {
+          "end": {
+            "description": "Exclusive byte offset; pass it as offset to read subsequent output.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "eof": {
+            "description": "This page reached the observed end of the log.",
+            "type": "boolean"
+          },
+          "start": {
+            "description": "Inclusive byte offset in the stored log, before redaction.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "text": {
+            "description": "Secret-scrubbed UTF-8 output.",
+            "type": "string"
+          },
+          "total_bytes": {
+            "description": "Stored log size at the time of the read.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "text",
+          "start",
+          "end",
+          "total_bytes",
+          "eof"
+        ],
+        "type": "object"
+      },
       "method.agent.receiver.JobView": {
         "description": "One row of [`ListJobs`].",
         "properties": {
+          "call_id": {
+            "description": "The originating tool call.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "command": {
             "description": "Command line.",
             "type": "string"
+          },
+          "ended_ms": {
+            "description": "Settlement time, unix milliseconds.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "exit_code": {
+            "description": "Process exit status, when known.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "id": {
             "allOf": [
@@ -45079,9 +45806,25 @@
             ],
             "description": "Job."
           },
+          "kind": {
+            "description": "`shell`, `pty`, or the promoted tool's name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "log": {
             "description": "Log file.",
             "type": "string"
+          },
+          "log_bytes": {
+            "description": "Current size of the retained log.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "name": {
             "description": "`start`'s `name` label (22 §2.1), PTY jobs only.",
@@ -45107,6 +45850,14 @@
               }
             ],
             "description": "Owning session."
+          },
+          "started_ms": {
+            "description": "Spawn time, unix milliseconds.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "state": {
             "description": "`running` | `exited 0` | `timeout` | `killed` | `lost` (109 §5.4: died\nwith a previous engine; `tail` is the log tail or the stored screen).",
@@ -46881,6 +47632,36 @@
             "type": "string"
           }
         ]
+      },
+      "method.agent.receiver.PendingReminderView": {
+        "description": "A pending reminder, including the details needed after reconnecting.",
+        "properties": {
+          "fires_at": {
+            "description": "Delivery time, Unix seconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "description": "Session-local reminder id.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Message delivered when the timer fires.",
+            "type": "string"
+          },
+          "set_at": {
+            "description": "Creation time, Unix seconds.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "message",
+          "set_at",
+          "fires_at"
+        ],
+        "type": "object"
       },
       "method.agent.receiver.ProjectStyle": {
         "description": "A project's icon and colour (51 §3 as-built): one row per styled project,\nkeyed by the label; both fields are allow-listed keys ([`project::ICONS`],\n[`project::COLORS`]) that every client maps through its own theme.",
@@ -92736,6 +93517,11 @@
               "null"
             ]
           },
+          "isolated_memory": {
+            "default": false,
+            "description": "Local, separate knowledge bundle (196); independent of context memory mode.",
+            "type": "boolean"
+          },
           "mcp": {
             "description": "MCP servers (or `server.tool`) it may see (67 §6.3): `None` = every\nserver, `Some([])` = none, `Some(list)` = only those.",
             "items": {
@@ -93754,6 +94540,11 @@
               "null"
             ]
           },
+          "isolated_memory": {
+            "default": false,
+            "description": "Local, separate knowledge bundle (196); independent of context memory mode.",
+            "type": "boolean"
+          },
           "mcp": {
             "description": "MCP servers (or `server.tool`) it may see (67 §6.3): `None` = every\nserver, `Some([])` = none, `Some(list)` = only those.",
             "items": {
@@ -93867,6 +94658,7 @@
           "proposed_by",
           "runs_in",
           "memory",
+          "isolated_memory",
           "view_bytes",
           "memory_model",
           "memory_effort",
@@ -93951,6 +94743,11 @@
             "minimum": 0,
             "type": "integer"
           },
+          "isolated_memory": {
+            "default": false,
+            "description": "Uses its own local knowledge bundle.",
+            "type": "boolean"
+          },
           "open_tasks": {
             "description": "Tasks it owns in `todo` / `doing` / `blocked` / `review`.",
             "format": "uint32",
@@ -93984,6 +94781,7 @@
           }
         },
         "required": [
+          "isolated_memory",
           "file",
           "status",
           "desk",
@@ -95769,6 +96567,11 @@
               "null"
             ]
           },
+          "isolated_memory": {
+            "default": false,
+            "description": "Local, separate knowledge bundle (196); independent of context memory mode.",
+            "type": "boolean"
+          },
           "mcp": {
             "description": "MCP servers (or `server.tool`) it may see (67 §6.3): `None` = every\nserver, `Some([])` = none, `Some(list)` = only those.",
             "items": {
@@ -95954,6 +96757,11 @@
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
+          },
+          "isolated_memory": {
+            "default": false,
+            "description": "Uses its own local knowledge bundle.",
+            "type": "boolean"
           },
           "open_tasks": {
             "description": "Tasks it owns in `todo` / `doing` / `blocked` / `review`.",
@@ -107342,6 +108150,27 @@
       "method.sessionsync.input.CreateSessionOptions": {
         "description": "Options of `create_session`. `view` is the client's view id, required\nfor a private root (it names the single owner); `project` is root\nmetadata; `cwd` is recorded on the row.",
         "properties": {
+          "advisor": {
+            "default": null,
+            "description": "Advisor model/effort for this root. Installed on its owner before create\nreturns: `set_advisor` is local-only, so a remote draft cannot use it.",
+            "items": [
+              {
+                "type": "string"
+              },
+              {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            ],
+            "maxItems": 2,
+            "minItems": 2,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "cap": {
             "anyOf": [
               {
@@ -116545,6 +117374,40 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "cancel_reminder",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "cell_ask",
       "paramStructure": "by-position",
       "params": [
@@ -121781,6 +122644,126 @@
       "x-theuth-owner": "nodes"
     },
     {
+      "name": "job_history",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "before",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.JobCursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "schema": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.output.JobView"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.receiver.JobView"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "job_log",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.JobId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "offset",
+          "required": false,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "schema": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.JobLogPage"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.JobLogPage"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "knowledge_delete",
       "paramStructure": "by-position",
       "params": [
@@ -121815,6 +122798,17 @@
           "required": true,
           "schema": {
             "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "bundle",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "x-theuth-aliases": []
         }
@@ -121945,6 +122939,17 @@
             "minimum": 0,
             "type": [
               "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "bundle",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -122124,6 +123129,17 @@
             "minimum": 0,
             "type": [
               "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "bundle",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -122998,6 +124014,38 @@
         "x-theuth-receiverSchema": {
           "items": {
             "$ref": "#/components/schemas/method.agent.receiver.QueuedInput"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "list_reminders",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.output.PendingReminderView"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.receiver.PendingReminderView"
           },
           "type": "array"
         }

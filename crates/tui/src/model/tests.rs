@@ -308,7 +308,7 @@
         assert!(!m.entries.iter().any(|entry| matches!(entry, Entry::Error(text) if text == "wrong requester")));
     }
     use agent::{ContextItem, ContextKind, ContextSnapshot, ModelInfo};
-    use crate::components::shake::{ShakePanel, ShakeCategory, ShakeStage, expand, SHAKE_USAGE, Msg as ShakeMsg, Request as ShakeRequest};
+    use crate::components::shake::{ReviewRow, Shake, ShakePanel, ShakeCategory, ShakeStage, expand, SHAKE_USAGE, Msg as ShakeMsg, Request as ShakeRequest};
     use agent::todo::{Status as TodoStatus, TodoSnapshot, TodoSource};
     use crate::components::todos::{Todos, TodoCard, TODO_ROWS, Msg as TodosMsg, Request as TodosRequest};
 
@@ -963,7 +963,8 @@
 
     /// An inventory: a user message with two images, an assistant call
     /// row paired with its tool response (each the other's companion, the
-    /// response holding a screenshot), a PDF part, and the epoch head.
+    /// response holding a screenshot), a PDF part, a reply with a diagram
+    /// fence, and the epoch head.
     fn shake_inventory() -> Vec<ContextItem> {
         use agent::ContextOwner as O;
         let msg = |seq| ContextTarget::Message { seq };
@@ -972,18 +973,22 @@
             part,
             image: None,
         };
-        let item = |target, kind, label: &str, remove_with: Vec<ContextTarget>| ContextItem {
+        let item = |target, kind, group: &str, label: &str, remove_with: Vec<ContextTarget>| ContextItem {
             target,
             kind,
+            group: group.into(),
             label: label.into(),
+            detail: None,
+            tokens: 0,
+            at: None,
             remove_with,
         };
         vec![
-            item(msg(1), ContextKind::Message, "you: look at these", vec![]),
-            item(bin(1, 1), ContextKind::Image, "a.png", vec![]),
-            item(bin(1, 2), ContextKind::Image, "b.png", vec![]),
-            item(msg(2), ContextKind::Tool, "shell: ls", vec![msg(3)]),
-            item(msg(3), ContextKind::Tool, "shell result", vec![msg(2)]),
+            item(msg(1), ContextKind::User, "user", "look at these", vec![]),
+            item(bin(1, 1), ContextKind::Image, "attachment", "a.png", vec![]),
+            item(bin(1, 2), ContextKind::Image, "attachment", "b.png", vec![]),
+            item(msg(2), ContextKind::Tool, "shell", "tool call: shell", vec![msg(3)]),
+            item(msg(3), ContextKind::Tool, "shell", "tool result: shell", vec![msg(2)]),
             item(
                 ContextTarget::Binary {
                     owner: O::Message { seq: 3 },
@@ -991,13 +996,27 @@
                     image: Some(0),
                 },
                 ContextKind::Image,
+                "screenshot",
                 "screen.png",
                 vec![],
             ),
-            item(bin(4, 0), ContextKind::Document, "report.pdf", vec![]),
+            item(bin(4, 0), ContextKind::Document, "document", "report.pdf", vec![]),
+            item(msg(5), ContextKind::Assistant, "assistant", "here is the plan", vec![]),
+            item(
+                ContextTarget::Fence {
+                    owner: O::Message { seq: 5 },
+                    part: 0,
+                    index: 0,
+                },
+                ContextKind::Surface,
+                "diagram",
+                "MetricGrid",
+                vec![],
+            ),
             item(
                 ContextTarget::Head { epoch: 2 },
                 ContextKind::Summary,
+                "summary",
                 "summary (epoch 2)",
                 vec![],
             ),
@@ -1038,6 +1057,35 @@
             rows[0].target,
             ContextTarget::Binary { part: 1, .. }
         ));
+        // A fence alone is its own row; its ticked reply subsumes it.
+        let rows = expand(&items, &BTreeSet::from([8]));
+        assert!(matches!(rows[..], [ReviewRow { target: ContextTarget::Fence { index: 0, .. }, .. }]));
+        let rows = expand(&items, &BTreeSet::from([7, 8]));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].target, ContextTarget::Message { seq: 5 });
+    }
+
+    #[test]
+    fn shake_lines_show_kind_and_group() {
+        let items = shake_inventory();
+        let mut s = Shake {
+            session: SessionId::new(),
+            revision: "7".into(),
+            shown: (0..items.len()).collect(),
+            selected: BTreeSet::from([5, 8]),
+            items,
+            cursor: 0,
+            stage: ShakeStage::Pick,
+            review: Vec::new(),
+        };
+        let rows = s.rows();
+        assert!(rows[5].starts_with("[x] image · screenshot") && rows[5].ends_with("screen.png"), "{}", rows[5]);
+        assert!(rows[3].starts_with("[ ] tool · shell") && rows[3].ends_with(" · +1 message(s)"), "{}", rows[3]);
+        s.review = expand(&s.items, &s.selected);
+        s.stage = ShakeStage::Review;
+        let rows = s.rows();
+        assert!(rows[1].starts_with("surface · diagram") && rows[1].contains("MetricGrid · cut out of its reply"), "{}", rows[1]);
+        assert!(s.title().contains("1 attachment(s), 1 surface(s)"), "{}", s.title());
     }
 
     #[test]
@@ -1064,14 +1112,21 @@
             category: Some(ShakeCategory::Images),
             result: Ok(snapshot(shake_inventory())),
         });
-        // Every image ticked (the tool screenshot too, the PDF not), straight into review.
+        // Every image ticked (the tool screenshot too, the PDF not), in the
+        // picker (197 §7); ⏎ reviews them.
+        let Some(s) = &m.components.get::<ShakePanel>().unwrap().menu else {
+            panic!("picker open");
+        };
+        assert_eq!((s.stage, s.shown.len(), s.selected.len()), (ShakeStage::Pick, 3, 3));
+        assert!(!m.input_focused(), "the picker is modal");
+        component_menu_key(&mut m, "shake", KeyCode::Enter);
         let Some(s) = &m.components.get::<ShakePanel>().unwrap().menu else {
             panic!("picker open");
         };
         assert_eq!(s.stage, ShakeStage::Review);
         assert_eq!(s.review.len(), 3);
         assert!(s.review.iter().all(|r| r.kind == ContextKind::Image));
-        assert!(!m.input_focused(), "the picker is modal");
+        assert!(rx.try_recv().is_err(), "review is not a removal");
         // Esc backs into the picker (images only listed); a second Esc closes it.
         component_menu_key(&mut m, "shake", KeyCode::Esc);
         let Some(s) = &m.components.get::<ShakePanel>().unwrap().menu else {
@@ -1120,7 +1175,7 @@
         };
         assert_eq!(
             (s.stage, s.shown.len(), s.selected.len()),
-            (ShakeStage::Pick, 8, 0)
+            (ShakeStage::Pick, 10, 0)
         );
         // ⏎ with nothing ticked stays put; esc closes without a request.
         component_menu_key(&mut m, "shake", KeyCode::Enter);
@@ -1135,12 +1190,9 @@
         let Some(s) = &m.components.get::<ShakePanel>().unwrap().menu else {
             panic!("picker open");
         };
+        // The conversation: user, assistant and summary rows, nothing ticked.
         assert!(s.selected.is_empty());
-        assert!(
-            s.shown
-                .iter()
-                .all(|&i| s.items[i].kind == ContextKind::Message)
-        );
+        assert_eq!(s.shown, [0, 7, 9]);
         m.component_notify(crate::components::Lifecycle::FocusLost);
         // No documents in an image-only context: a notice, no picker.
         let images: Vec<_> = shake_inventory()
@@ -1273,6 +1325,8 @@
                 attachments,
                 vision: None,
                 at: None,
+                fences: vec![],
+                sources: vec![],
             })
         };
         let shot = |removed| ContextAttachment {
@@ -1713,6 +1767,8 @@
                 attachments: vec![],
                 vision: None,
                 at: None,
+                fences: vec![],
+                sources: vec![],
             }),
         };
         let loaded = Loaded {
@@ -6495,6 +6551,8 @@
                 attachments: vec![],
                 vision: Some(note.clone()),
                 at: None,
+                fences: vec![],
+                sources: vec![],
             }),
             peer: None,
             vision: Some(note),
