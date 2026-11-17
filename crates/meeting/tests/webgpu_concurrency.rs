@@ -96,20 +96,24 @@ fn three_webgpu_sessions_run_concurrently_and_one_drops_mid_run() -> anyhow::Res
     }
 
     let t = Instant::now();
+    // Progress on stderr (unbuffered): a native crash during load then shows which step died.
+    eprintln!("data dir {}; opening the diariser", data_dir.display());
     let mut diariser = diar::open(&models)?;
+    eprintln!(
+        "diariser open on {} (ONNX Runtime {}) in {:?}",
+        models::onnx::ep(),
+        models::onnx::runtime_version().unwrap_or("of unknown version"),
+        t.elapsed()
+    );
     let Some(gpu) = models::onnx::webgpu_device() else {
-        eprintln!(
-            "skip: no WebGPU device ({}); sessions are on the CPU, which cannot race",
-            models::onnx::ep()
-        );
+        eprintln!("skip: no WebGPU device; sessions are on the CPU, which cannot race");
         return Ok(());
     };
     let mut mic = Stream::open(&stt_dir, &data_dir)?;
     let mut system = Stream::open(&stt_dir, &data_dir)?;
     eprintln!("sessions on {gpu} loaded in {:?}", t.elapsed());
     eprintln!(
-        "ONNX Runtime {}; run lock {}",
-        models::onnx::runtime_version().unwrap_or("of unknown version"),
+        "run lock {}",
         if models::onnx::gpu_lock_free() {
             "off: concurrent WebGPU sessions"
         } else {

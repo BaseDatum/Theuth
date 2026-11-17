@@ -12,9 +12,13 @@
   at it and runs the test once as its own process. Build it first with a cargo-test job (`--no-run`, same -p set) so
   this run compiles nothing. Exit code = the test's.
 
+  With -NoPlugin the data dir gets no plugins\ folder: a CPU-only control (the runtime loads and the diariser opens on
+  the CPU; the test then skips) that never loads the WebGPU plugin.
+
 .EXAMPLE
-  pwsh -File crates\desktop\companion-windows\ort-webgpu-test.ps1
+  pwsh -File crates\desktop\companion-windows\ort-webgpu-test.ps1 [-NoPlugin]
 #>
+param([switch] $NoPlugin)
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $pins = Get-Content (Join-Path $repo 'scripts\ort-version.env') -Raw
@@ -43,10 +47,10 @@ function Fetch([string] $url, [string] $file, [string] $sha) {
 $zip = Fetch "https://github.com/microsoft/onnxruntime/releases/download/v$ort/onnxruntime-win-x64-$ort.zip" "onnxruntime-win-x64-$ort.zip" $ortSha
 $nupkg = Fetch "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.ep.webgpu/$ep/microsoft.ml.onnxruntime.ep.webgpu.$ep.nupkg" "microsoft.ml.onnxruntime.ep.webgpu.$ep.nupkg" $epSha
 
-$data = Join-Path $work "data-$ort-$ep"   # reused across runs; never deleted here (it holds junctions to the real models)
+$data = Join-Path $work ("data-$ort-$ep" + $(if ($NoPlugin) { '-cpu' } else { '' }))   # reused across runs; never deleted here (it holds junctions to the real models)
 $rt = Join-Path $data 'models\onnxruntime'
 $plugins = Join-Path $rt 'plugins'
-New-Item -ItemType Directory -Force $plugins | Out-Null
+New-Item -ItemType Directory -Force $rt | Out-Null
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 function Extract([string] $archive, [string] $member, [string] $dest) {
     $z = [System.IO.Compression.ZipFile]::OpenRead($archive)
@@ -58,8 +62,11 @@ function Extract([string] $archive, [string] $member, [string] $dest) {
 }
 Extract $zip "onnxruntime-win-x64-$ort/lib/onnxruntime.dll" (Join-Path $rt 'onnxruntime.dll')
 Set-Content -NoNewline -Path (Join-Path $rt 'VERSION') -Value "$ort`n"
-foreach ($f in 'onnxruntime_providers_webgpu.dll', 'dxcompiler.dll') {   # release-models.sh plugin_files_of win-*
-    Extract $nupkg "runtimes/win-x64/native/$f" (Join-Path $plugins $f)
+if (-not $NoPlugin) {
+    New-Item -ItemType Directory -Force $plugins | Out-Null
+    foreach ($f in 'onnxruntime_providers_webgpu.dll', 'dxcompiler.dll') {   # release-models.sh plugin_files_of win-*
+        Extract $nupkg "runtimes/win-x64/native/$f" (Join-Path $plugins $f)
+    }
 }
 $models = Join-Path $env:USERPROFILE '.theuth\models'
 foreach ($m in 'nemotron-streaming-en', 'nemotron-diarization', 'pyannote') {
