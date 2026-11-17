@@ -87,4 +87,11 @@ real mid-turn run against a scratch engine.
 
 ## Gates
 
-See the section below, filled after the runs.
+All from `crates/desktop/ui` under `~/.theuth/bin/build-lock`:
+
+- `bunx tsc -b --noEmit`: 0 `error TS` (baseline before the change also 0; `/tmp/cells-midturn/tsc-base.txt`, `tsc.txt`).
+- targeted `bunx vitest run src/store/stored-tail.test.ts src/components/cells/{CellFence,Cell,RunbookBar}.test.ts
+  src/store/{reduce,sessions}.test.ts src/components/disclosure.test.ts src/lib/no-emoji.test.ts`: 8 files, 166 tests
+  passed (`/tmp/cells-midturn/vitest.txt`).
+- full `BUILD_SLOTS=1 … bunx vitest run src`: 360 files, 2531 tests passed (`/tmp/cells-midturn/vitest-full.txt`).
+- No Rust touched: no cargo/mbx gates.
