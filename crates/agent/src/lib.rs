@@ -127,6 +127,13 @@ pub mod vision;
 #[cfg(test)]
 pub(crate) static REGISTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(test)]
+thread_local! {
+    /// This thread runs a [`with_test_registry`] body (its current-thread runtime): the
+    /// registry under the process-wide name is its own (`network::tool_registry`).
+    pub(crate) static OWNS_REGISTRY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Run a registry-starting test body: the lock is taken before the runtime
 /// is built and released after it is dropped, so the actors the body
 /// registered are dead — not merely about to be — when the next test's
@@ -149,11 +156,14 @@ pub(crate) fn with_test_registry<F: Future>(body: F) -> F::Output {
             .unwrap_or_else(|p| p.into_inner())
             .remove(knowledge::KNOWLEDGE_ACTOR);
     }
-    tokio::runtime::Builder::new_current_thread()
+    OWNS_REGISTRY.with(|o| o.set(true));
+    let out = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("test runtime")
-        .block_on(body)
+        .block_on(body);
+    OWNS_REGISTRY.with(|o| o.set(false));
+    out
 }
 
 /// A test scratch directory under `$TMPDIR`, `theuth-<tag>-<uuid>`, removed
@@ -3935,6 +3945,14 @@ pub enum AgentEvent {
         /// The typed card.
         advisory: Advisory,
     },
+    /// 199: a contact file changed state, or moved bytes (at most twice a second per
+    /// file). Cards key it by `(file.holder, file.id)`.
+    ContactFileChanged {
+        /// The chat the file belongs to.
+        session: SessionId,
+        /// Its current card.
+        file: communication::files::ContactFile,
+    },
 }
 
 impl wire::WireEvent for AgentEvent {
@@ -3996,7 +4014,8 @@ impl AgentEvent {
             | Self::TurnSuspended { session, .. }
             | Self::PartialDropped { session, .. }
             | Self::AdvisorChanged { session, .. }
-            | Self::AdvisoryAdded { session, .. } => Some(*session),
+            | Self::AdvisoryAdded { session, .. }
+            | Self::ContactFileChanged { session, .. } => Some(*session),
             Self::SubagentSpawned { child, .. } | Self::ObservedChildChanged { child, .. } => {
                 Some(*child)
             }

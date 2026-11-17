@@ -211,8 +211,9 @@ struct Ctx {
     mdns: Arc<dyn contacts::discovery::Mdns>,
     /// 183 §7.4: the window and the ceremonies.
     contacts: Mutex<contacts::Contacts>,
-    /// 183 F1: each contact's last fetched offers, by endpoint id.
-    offers: Mutex<std::collections::HashMap<String, contacts::offers::Cached>>,
+    /// 183 F1: each contact's last fetched offers, by endpoint id. 199: shared with the
+    /// contact clients (a file send reads whether the card advertises files).
+    offers: contacts::offers::Cards,
     /// 191 (D2): `contacts_ready`, shared with the agent (which only reads it): set once the
     /// mesh latch is done and the first contact reconcile finished.
     ready: Arc<std::sync::atomic::AtomicBool>,
@@ -224,6 +225,8 @@ struct Ctx {
     roster_lock: tokio::sync::Mutex<()>,
     /// 191 (P2): push generation per contact endpoint (a newer push supersedes a retry).
     pushes: Arc<Mutex<std::collections::HashMap<String, u64>>>,
+    /// 199: each contact's active file transfers, cut on a membership or block change.
+    transfers: contacts::files::Transfers,
     /// Tests: awaited once by the next pass right after it staged its snapshot (a write
     /// landing mid-pass).
     #[cfg(test)]
@@ -723,6 +726,7 @@ impl Ctx {
                         display,
                         members,
                         net.clone(),
+                        self.offers.clone(),
                         agents.clone(),
                         vault.clone(),
                         CancellationToken::new(),
@@ -757,6 +761,7 @@ impl Ctx {
                     } else {
                         Vec::new()
                     },
+                    full_access: p.full_access,
                 }
             })
             .collect();
@@ -886,7 +891,14 @@ impl Ctx {
             }
         }
         let joined = !live.staged.contacts.is_empty();
+        // 199 (D10): a contact whose admitted machines or block state changed loses its
+        // active file transfers on this side (route GETs and receipts, downloads and receipt
+        // POSTs end `Cancelled`); the next one re-checks against this snapshot.
+        let cut = contacts::files::changed_members(&prev.staged, &live.staged);
         *self.shared.write() = live;
+        for id in &cut {
+            self.transfers.cut(id);
+        }
         for (alias, eids) in ended {
             if let Err(e) = agents
                 .ask(agent::communication::network::ContactRelease {
@@ -1251,6 +1263,11 @@ impl Ctx {
     /// Serve `theuth/a2a/1` on `net` (the mesh's endpoint; a test's own).
     async fn attach(self: &Arc<Self>, net: Arc<mesh::net::Net>) {
         net.set_contacts(Arc::new(contacts::reach::Gate(Arc::downgrade(self))));
+        // 199: the receiver's client rides the same endpoint (this engine's, in its runtime).
+        agent::communication::files::set_fetch(
+            &self.rt,
+            Arc::new(contacts::files::ContactFetch(Arc::downgrade(self))),
+        );
         let _ = self.net.set(net.clone());
         if !self.shared.read().staged.contacts.is_empty() {
             net.join_network().await;
@@ -1412,12 +1429,13 @@ impl runtime::Plugin for A2aPlugin {
             contacts: Mutex::new(contacts::Contacts::new(
                 cfg!(debug_assertions) && std::env::var_os("THEUTH_DEV_CONTACTS_DIR").is_some(),
             )),
-            offers: Mutex::default(),
+            offers: Arc::default(),
             ready: agent::communication::network::CONTACTS_READY.clone(),
             latched: Arc::new(mesh::synced),
             rosters: Mutex::default(),
             roster_lock: tokio::sync::Mutex::new(()),
             pushes: Arc::default(),
+            transfers: contacts::files::Transfers::default(),
             #[cfg(test)]
             mid_pass: Mutex::default(),
         });
@@ -1442,12 +1460,13 @@ impl runtime::Plugin for A2aPlugin {
     }
 }
 
-/// 183 tests: one engine's A2A context over `dir`, its mesh endpoint `net`, a fake LAN and,
-/// when given, its live agent (then `peers.yaml` reloads and the ceremony pins). 191: with
-/// that engine's own `contacts_ready` (its agent holds the same one) and mesh latch.
+/// 183 tests: one engine's A2A context in `rt` (its data dir; its agent's, when given, so
+/// both reach the same 199 seams), its mesh endpoint `net`, a fake LAN and, when given, its
+/// live agent (then `peers.yaml` reloads and the ceremony pins). 191: with that engine's own
+/// `contacts_ready` (its agent holds the same one) and mesh latch.
 #[cfg(test)]
 async fn test_ctx(
-    dir: &std::path::Path,
+    rt: Runtime,
     net: Arc<mesh::net::Net>,
     mdns: Arc<dyn contacts::discovery::Mdns>,
     cfg: A2aConfig,
@@ -1455,7 +1474,6 @@ async fn test_ctx(
     ready: Arc<std::sync::atomic::AtomicBool>,
     latched: Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> Arc<Ctx> {
-    let rt = Runtime::new(figment::Figment::new(), dir.to_path_buf());
     let listener = cfg.listener();
     let ctx = Arc::new(Ctx {
         rt,
@@ -1472,12 +1490,13 @@ async fn test_ctx(
         net: std::sync::OnceLock::new(),
         mdns,
         contacts: Mutex::new(contacts::Contacts::new(true)),
-        offers: Mutex::default(),
+        offers: Arc::default(),
         ready,
         latched,
         rosters: Mutex::default(),
         roster_lock: tokio::sync::Mutex::new(()),
         pushes: Arc::default(),
+        transfers: contacts::files::Transfers::default(),
         mid_pass: Mutex::default(),
     });
     if let Some(agents) = agents {
@@ -1604,6 +1623,7 @@ mod tests {
                     allow_private: false,
                     eid: None,
                     record: None,
+                    full_access: false,
                 },
             );
         }

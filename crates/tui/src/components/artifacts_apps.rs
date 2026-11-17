@@ -366,12 +366,12 @@ const INLINE_LINES: usize = 200;
 /// Rows of a CSV artifact shown inline.
 const CSV_ROWS: usize = 20;
 
-/// Bytes as `512 B` / `3.2 KB` / `1.4 MB`.
+/// Bytes as `512 B` / `3.2 kB` / `1.4 MB`, decimal (199 UI-2: one unit system).
 pub fn bytes_label(bytes: u64) -> String {
     match bytes {
-        b if b < 1024 => format!("{b} B"),
-        b if b < 1024 * 1024 => format!("{:.1} KB", b as f64 / 1024.0),
-        b => format!("{:.1} MB", b as f64 / (1024.0 * 1024.0)),
+        b if b < 1_000 => format!("{b} B"),
+        b if b < 1_000_000 => format!("{:.1} kB", b as f64 / 1e3),
+        b => format!("{:.1} MB", b as f64 / 1e6),
     }
 }
 

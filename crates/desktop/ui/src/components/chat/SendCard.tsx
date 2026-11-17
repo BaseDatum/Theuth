@@ -4,6 +4,7 @@ import { useQueries } from '@tanstack/react-query'
 import { Fragment, useMemo } from 'react'
 import { Streamdown } from 'streamdown'
 import { Button } from '@/components/ui/button'
+import { withoutFileNotes } from '@/lib/injected'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { formatAt } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -13,6 +14,7 @@ import { Chip, Clock, useOverflow } from './MessagePeer'
 import { useScopedDisclosure } from './disclosure'
 import { useTranscriptJump } from './jump'
 import { NIL, type SentReceipt, type Track, isOutside, isTerminal, parseReceipts, recipientLabel, trackOf, useDirectory } from './peer-identity'
+import { SentFiles, sentFiles } from './ContactFiles'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 type Peer = Extract<Entry, { kind: 'peer' }>
@@ -78,10 +80,12 @@ function More({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   )
 }
 
-/** One recipient's answer, clamped to about three lines with a measured `Show all`. An outside agent's words stay plain text. */
+/** One recipient's answer, clamped to about three lines with a measured `Show all`. An outside agent's words stay plain
+ * text. 199-Z2: an awaited answer's file placeholders and hint are not words (the files are their own cards). */
 function Answer({ label, text, outside, part, at, onJump }: { label: string; text: string; outside: boolean; part: string; at?: number; onJump?: () => void }) {
   const [open, setOpen] = useScopedDisclosure(part)
   const [ref, hidden] = useOverflow<HTMLDivElement>(!open)
+  const words = withoutFileNotes(text)
   return (
     <div className="mt-2.5 border-t border-dashed border-border-subtle pt-2 text-[13px]">
       <div className="mb-0.5 flex flex-wrap items-center gap-x-1 text-xs text-fg-secondary">
@@ -95,10 +99,10 @@ function Answer({ label, text, outside, part, at, onJump }: { label: string; tex
       </div>
       <div ref={ref} className={cn(!open && 'max-h-[4.5rem] overflow-hidden')}>
         {outside ? (
-          <p className="whitespace-pre-wrap wrap-anywhere">{text}</p>
+          <p className="whitespace-pre-wrap wrap-anywhere">{words}</p>
         ) : (
           <Streamdown mode="static" className="text-[13px] [&_p]:my-0">
-            {text}
+            {words}
           </Streamdown>
         )}
       </div>
@@ -120,9 +124,12 @@ function Answer({ label, text, outside, part, at, onJump }: { label: string; tex
 export function SendCard({ tool, session, at, readOnly }: { tool: Tool; session: string; at?: number; readOnly?: boolean }) {
   const canQuery1 = useQuerySupport(["peer_message"])
   const api = useApi()
-  const args = (tool.args ?? {}) as { to?: unknown; message?: unknown }
+  const args = (tool.args ?? {}) as { to?: unknown; message?: unknown; files?: unknown }
   const message = typeof args.message === 'string' ? args.message : ''
   const to = [...new Set(typeof args.to === 'string' ? [args.to] : Array.isArray(args.to) ? args.to.filter((t): t is string => typeof t === 'string') : [])]
+  // 199: the call's `files` (absolute paths). The tool's `structured.files` never reaches this card (`ToolCallFinished`
+  // and the stored tool row carry the text only), so each receipt's record names its offered files (`PeerRecord.files`).
+  const paths = Array.isArray(args.files) ? args.files.filter((p): p is string => typeof p === 'string') : []
   const parsed = useMemo(() => (tool.result ? parseReceipts(tool.result.output, Math.max(1, to.length)) : { receipts: [], replies: {}, unexpected: false }), [tool.result, to.length])
   const { receipts, replies, unexpected } = parsed
   // Distinct receipts, not `to` entries: two spellings of one peer send once. An older engine's reply that cut a
@@ -141,11 +148,14 @@ export function SendCard({ tool, session, at, readOnly }: { tool: Tool; session:
       return {
         queryKey: queryKeys.peerMessage(session, id),
         queryFn: () => api.peer_message(session, id),
-        enabled: canQuery1 && (!isTerminal(r.state) || (!single && r.state === 'replied')),
+        // 199: a send with files reads its record for them whatever the receipt's state.
+        enabled: canQuery1 && (!isTerminal(r.state) || (!single && r.state === 'replied') || paths.length > 0),
       }
     }),
   })
   const answer = useSessions((s) => answerFor(s.sessions[session]?.entries, single?.id))
+  const live = useSessions((s) => s.sessions[session]?.files)
+  const offered = paths.length ? sentFiles(ids, results.map((q) => q.data?.files), live) : []
   const [fullText, setFullText] = useScopedDisclosure('send-text')
   const [textRef, textHidden] = useOverflow<HTMLParagraphElement>(!fullText)
   const [details, setDetails] = useScopedDisclosure('send-details')
@@ -197,6 +207,7 @@ export function SendCard({ tool, session, at, readOnly }: { tool: Tool; session:
           {textHidden || fullText ? <More open={fullText} onToggle={() => setFullText((v) => !v)} /> : null}
         </>
       ) : null}
+      {paths.length > 0 && !refused ? <SentFiles files={offered} paths={paths} session={session} /> : null}
       {!tool.result ? (
         tool.interrupted ? (
           <div className="mt-2 text-xs text-fg-tertiary">Interrupted by restart</div>

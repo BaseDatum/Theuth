@@ -352,6 +352,7 @@ impl Model {
                     || self.sent.take().as_deref() == Some(said);
                 if !shown {
                     self.entries.extend(user_entries(text, Some(turn_seq), &self.components));
+                    crate::components::files::fold_notices(&mut self.entries);
                 } else if let Some(at) = self
                     .entries
                     .iter()
@@ -529,7 +530,8 @@ impl Model {
             AgentEvent::Error { message, .. } => {
                 self.compacting = false;
                 self.vision = None;
-                self.entries.push(Entry::Error(message));
+                self.entries.push(crate::components::files::ended(&message).unwrap_or_else(|| Entry::Error(message)));
+                crate::components::files::fold_notices(&mut self.entries);
             }
             // 141 §10.1: handled in the roster match above (it returns before
             // the tail-finishing rules, which a detail-only update must skip).
@@ -575,6 +577,8 @@ impl Model {
             | AgentEvent::SessionOwnerChanged { .. }
             | AgentEvent::SessionClosing { .. }
             | AgentEvent::PartialDropped { .. } => {}
+            // 199: every line of the file takes its state; an outgoing file's first event adds its line.
+            AgentEvent::ContactFileChanged { file, .. } => crate::components::files::changed(&mut self.entries, &file),
             // 139 §9.3 (D5): a system takeover left the turn open here, not
             // resumed; the engine's local note (W2) carries the Resume hint.
             AgentEvent::ResumePending { from, .. } => {

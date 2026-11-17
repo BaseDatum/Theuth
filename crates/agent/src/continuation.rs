@@ -384,6 +384,29 @@ impl Ledger {
         self.sessions.get(&session).map_or(0, |e| e.request.chain)
     }
 
+    /// Tests: `session`'s pending tickets with their origins.
+    #[cfg(test)]
+    pub(crate) fn pending_for_test(&self, session: SessionId) -> Vec<(u64, InputOrigin)> {
+        self.sessions.get(&session).map_or_else(Vec::new, |e| {
+            e.pending.iter().map(|(id, (o, _, _))| (*id, *o)).collect()
+        })
+    }
+
+    /// Tests: `session`'s current request as `(reminders, chain)`, and set it.
+    #[cfg(test)]
+    pub(crate) fn request_for_test(
+        &mut self,
+        session: SessionId,
+        set: Option<(u8, u32)>,
+    ) -> (u8, u32) {
+        let e = self.sessions.entry(session).or_default();
+        if let Some((reminders, chain)) = set {
+            e.request.reminders = reminders;
+            e.request.chain = chain;
+        }
+        (e.request.reminders, e.request.chain)
+    }
+
     /// 50 §8: an automatic input from `from` into `to` would exceed
     /// [`crate::communication::CHAIN_MAX`] links; the supervisor refuses it
     /// visibly instead of admitting it. `from: None` is a non-session sender

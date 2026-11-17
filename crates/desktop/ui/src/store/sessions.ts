@@ -1,7 +1,7 @@
 import type { TaggedTopicPayloads, TopicEvent, TopicKey, TopicPayloads } from '@/rpc/bindings/client';
 import { type StoreApi, createStore } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
-import type { CellResultInput, ContactNote, Injected, ParentViewLine, RestartNote } from '@/lib/injected';
+import type { CellResultInput, ContactNote, FileNote, Injected, ParentViewLine, RestartNote } from '@/lib/injected';
 import { codeFromHistory } from '@/lib/codemap/slice';
 import type { CodemapSlice } from '@/lib/codemap/types';
 import { useRemoteStart } from '@/lib/remote-start';
@@ -12,7 +12,7 @@ import type { ContextEntry } from "@/rpc/bindings/method.agent.output"
 import type { HarnessCommand } from "@/rpc/bindings/method.agent.output"
 import type { JobExit } from "@/rpc/bindings/method.agent.output"
 import type { LiveCountsRow } from "@/rpc/bindings/method.agent.output"
-import type { PeerOrigin } from "@/rpc/bindings/method.agent.output"
+import type { ContactFile, PeerOrigin } from "@/rpc/bindings/method.agent.output"
 import type { ObservedMeta } from "@/rpc/bindings/method.agent.output"
 import type { QueuedInput } from "@/rpc/bindings/method.agent.output"
 import type { SessionKind } from "@/rpc/bindings/method.agent.output"
@@ -150,8 +150,11 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
       origin?: PeerOrigin;
       seq?: number;
       contact?: ContactNote & { note: string };
+      /** 199: the files the message carries — the row's `state="receiving"` placeholders on replay, `PeerDelivered.files`
+       * live, as the same notes; the card's current state comes from `SessionSlice.files` and the notice rows. */
+      files?: FileNote[];
     }
-  | Extract<Injected, { kind: 'engine' | 'desk' | 'wake' | 'resume' | 'lost' | 'child' | 'autoresearch' | 'moved' | 'engine_restart' | 'contact_inbox' | 'contact_message' }>
+  | Extract<Injected, { kind: 'engine' | 'desk' | 'wake' | 'resume' | 'lost' | 'child' | 'autoresearch' | 'moved' | 'engine_restart' | 'contact_inbox' | 'contact_message' | 'file' }>
   /** 171 §9.1: a cell result the agent read; `turn` when its stored row opened the turn (`foldCells` hands it on). */
   | (CellResultInput & { turn?: number })
   /** 152 D3: the view an endless parent handed a native child before its brief (137 R1-D1); folded, the lines render
@@ -317,6 +320,8 @@ export type SessionSlice = {
   /** Tool calls whose arguments are still streaming (`ToolCallProgress`), by `call_id`; cleared on `ToolCallStarted`.
    * `writing` = a `show` call carrying `content` (writing a file) rather than a `path` (showing one). */
   progress: Map<string, { name?: string; writing?: boolean; bytes: number }>;
+  /** 199: contact files by `holder/id` as `ContactFileChanged` (and `PeerDelivered.files`) last reported them. */
+  files: Map<string, ContactFile>;
   /** Live crawl/scrape URLs by `call_id`; dropped on finish, the card then parses the result. */
   scrape: Map<string, { inflight: string[]; done: string[]; limit: number }>;
   /** 79 §4.4: the latest `SandboxEvent.Progress` line of a `sandbox_*` tool call by `call_id`; dropped on finish. */

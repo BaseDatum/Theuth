@@ -63,6 +63,10 @@ base64 = { workspace = true }
 mime_guess = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+# 199 (D9): contact-file digests from the gate's handle.
+blake3 = { workspace = true }
+# 199 (D6): `O_NONBLOCK` / `fcntl` in the egress gate; the macOS quarantine xattr.
+libc = { workspace = true }
 # Design doc 50 §4: the SDK's core protocol types back durable A2A task
 # records in `communication::network`; HTTP client/server stay in `crates/a2a`.
 a2a-types = { workspace = true }
@@ -78,6 +82,9 @@ figment = { workspace = true }
 aws-types = { workspace = true }
 wiremock = { workspace = true }
 tempfile = "3"
+image = { workspace = true }
+# 199-E3: the loopback HTTPS server of the foreign-download tests (web's fixtures).
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs"] }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "knowledge/ts", "secrets/ts", "search/ts", "acp/ts", "models/ts"]

@@ -13,7 +13,9 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { PeerRecord } from "@/rpc/bindings/method.agent.output"
+import type { PeerInfo, PeerRecord } from "@/rpc/bindings/method.agent.output"
+import { AttachFiles, answerPeer } from './ContactFiles'
+import { isOutside } from './peer-identity'
 
 const TOUCH = 'pointer-coarse:min-h-11'
 
@@ -32,6 +34,16 @@ export function Peers({ session, focus }: { session: string; focus: string | nul
   )
 }
 
+/** 200 (Contract): the line under a page whose contact machines did not all answer in time (the model reads the same). */
+export const partialLine = (partial: readonly string[]) =>
+  `partial: no answer in time from ${partial.join(', ')}; their sessions may be missing from this page (repeat this call to retry)`
+
+/** A contact's own `peer:<contact>` row (not one of its shares or sessions): its title is the engine's hint
+ * (`full access · more: …`, `+N more: …`, `did not answer: …`). */
+const contactRow = (p: PeerInfo) => p.kind === 'a2a' && p.tags[0] === 'contact' && !p.name.includes('/')
+
+/** 200: contact session rows (`peer:<contact>/session:<uuid>`) list under their contact with its machine, never with Open:
+ * a contact's session is messaged, never read here. The `partial` line stands under the list whatever page is loaded. */
 function Directory({ session }: { session: string }) {
   const canQuery1 = useQuerySupport(["list_peers"])
   const api = useApi()
@@ -45,6 +57,8 @@ function Directory({ session }: { session: string }) {
     getNextPageParam: (last) => last.cursor,
   })
   const rows = peers.data?.pages.flatMap((p) => p.peers) ?? []
+  // An engine without 200 sends no `partial`.
+  const partial = [...new Set(peers.data?.pages.flatMap((p) => p.partial ?? []) ?? [])]
   return (
     <Section
       title="Peers"
@@ -82,14 +96,16 @@ function Directory({ session }: { session: string }) {
                 <Badge variant="outline">{p.kind}</Badge>
                 <Badge variant="outline">{p.relationship}</Badge>
                 <Badge variant={p.state === 'offline' ? 'destructive' : 'secondary'}>{p.state}</Badge>
+                {contactRow(p) && p.title?.startsWith('full access') && <Badge variant="outline">full access</Badge>}
               </span>
             }
             description={
               <>
                 <span className="break-all font-mono text-xs">{p.address}</span>
                 <span className="block">
-                  {p.send ? ['send', p.reply && 'reply', p.stream && 'stream'].filter(Boolean).join(' · ') : 'does not accept messages'}
+                  {[p.engine, p.send ? ['send', p.reply && 'reply', p.stream && 'stream'].filter(Boolean).join(' · ') : 'does not accept messages'].filter(Boolean).join(' · ')}
                 </span>
+                {contactRow(p) && p.title && <span className="block">{p.title}</span>}
               </>
             }
           >
@@ -114,6 +130,13 @@ function Directory({ session }: { session: string }) {
           </Row>
         )
       })}
+      {partial.length > 0 && (
+        <Row label={<span role="status" className="text-warning">{partialLine(partial)}</span>}>
+          <Button variant="outline" size="sm" className={TOUCH} onClick={() => void peers.refetch()}>
+            <RefreshCw /> Retry
+          </Button>
+        </Row>
+      )}
       {peers.hasNextPage && (
         <Button
           variant="ghost"
@@ -246,14 +269,19 @@ function Request({
     enabled: canQuery4 && (open),
   })
   const [text, setText] = useState('')
-  const send = useAction((t: string) => routed(session, () => api.answer_peer_request(session, id, t)), {
+  // 199 D15: an answer to a contact may carry files, picked on the chat's machine only.
+  const [files, setFiles] = useState<string[]>([])
+  const attach = side === 'answer' && isOutside(r.from)
+  const send = useAction((t: string) => routed(session, () => answerPeer(api, session, id, t, attach ? files : [])), {
     keys: [['peer-messages', session], queryKeys.peerMessage(session, id)],
     onSuccess: (receipt) => {
       if (!receipt) return // parked behind the chat's OwnerOfflineCard: nothing was answered
       setText('')
+      setFiles([])
       toast(`Answered ${id.slice(0, 8)} · ${receipt.state}`)
     },
   })
+  const ready = !!text.trim() || (attach && files.length > 0)
   const d = detail.data ?? r
   const terminal = d.receipt.state === 'replied' || d.receipt.state === 'suppressed' || d.receipt.state === 'failed'
 
@@ -344,8 +372,7 @@ function Request({
           className="mt-2 flex flex-col gap-2"
           onSubmit={(e) => {
             e.preventDefault()
-            const t = text.trim()
-            if (t) send.mutate(t)
+            if (ready) send.mutate(text.trim())
           }}
         >
           <Textarea
@@ -362,8 +389,13 @@ function Request({
               if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) e.currentTarget.form?.requestSubmit()
             }}
           />
-          <div className="flex justify-end">
-            <Button type="submit" size="sm" className={TOUCH} disabled={send.isPending || !text.trim()} aria-busy={send.isPending || undefined}>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {attach ? (
+              <div className="mr-auto min-w-0">
+                <AttachFiles session={session} files={files} onChange={setFiles} disabled={send.isPending} />
+              </div>
+            ) : null}
+            <Button type="submit" size="sm" className={TOUCH} disabled={send.isPending || !ready} aria-busy={send.isPending || undefined}>
               {side === 'answer' ? 'Answer as this chat' : 'Resolve wait'}
             </Button>
           </div>

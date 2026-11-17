@@ -354,6 +354,8 @@ pub fn injected<'a>(text: &'a str, mut project: impl FnMut(Wrapper<'a>) -> Optio
             _ => return None,
         };
         let (body, tail) = after.split_once(close)?;
+        // 199: a message's `<message_file …/>` placeholders and hint are its own tail.
+        let tail = if name == "message" { crate::components::files::skip(tail) } else { tail };
         let row = Wrapper { tag: name, open, body: body.strip_prefix('\n').unwrap_or(body).trim_end(),
             sender: None, origin: None, live: false };
         match project(row) {

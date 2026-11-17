@@ -3049,6 +3049,37 @@
               "advisory"
             ],
             "type": "object"
+          },
+          {
+            "description": "199: a contact file changed state, or moved bytes (at most twice a second per\nfile). Cards key it by `(file.holder, file.id)`.",
+            "properties": {
+              "file": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.output.ContactFile"
+                  }
+                ],
+                "description": "Its current card."
+              },
+              "session": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.output.SessionId"
+                  }
+                ],
+                "description": "The chat the file belongs to."
+              },
+              "type": {
+                "const": "ContactFileChanged",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "session",
+              "file"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -3151,6 +3182,134 @@
             "type": "string"
           }
         ]
+      },
+      "event.agent_2eevents.output.ContactFile": {
+        "description": "One file between contacts as a card shows it (`ContactFileChanged`,\n`PeerDelivered.files`, `contact_file`). Keys: `(holder, id)`.",
+        "oneOf": [
+          {
+            "description": "An offered file.",
+            "properties": {
+              "direction": {
+                "const": "out",
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/components/schemas/event.agent_2eevents.output.OutState"
+              }
+            },
+            "required": [
+              "direction",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A received file.",
+            "properties": {
+              "direction": {
+                "const": "in",
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/components/schemas/event.agent_2eevents.output.InState"
+              }
+            },
+            "required": [
+              "direction",
+              "state"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "blake3": {
+            "description": "Declared or computed BLAKE3, 64 lowercase hex.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contact": {
+            "description": "The contact's display alias.",
+            "type": "string"
+          },
+          "contact_id": {
+            "description": "`ContactFacts.id`, the contact's record id; never the alias.",
+            "type": "string"
+          },
+          "deadline": {
+            "description": "The local deadline (D8).",
+            "format": "date-time",
+            "type": "string"
+          },
+          "done": {
+            "description": "Bytes moved so far.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "error": {
+            "description": "Why it failed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exchange": {
+            "description": "The exchange (message) that carried it.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "holder": {
+            "description": "The holder's endpoint id: the engine that stores (in) or serves (out) the bytes.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The holder's local id, 32 lowercase hex.",
+            "type": "string"
+          },
+          "machine": {
+            "description": "The holder's machine name.",
+            "type": "string"
+          },
+          "media_type": {
+            "description": "Descriptive media type (`mime_guess`, else `application/octet-stream`).",
+            "type": "string"
+          },
+          "name": {
+            "description": "The sanitised declared name.",
+            "type": "string"
+          },
+          "path": {
+            "description": "In: the saved path on the holder.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "description": "Declared, then actual size; `None` only for a P3 download in flight.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "holder",
+          "exchange",
+          "contact_id",
+          "contact",
+          "name",
+          "media_type",
+          "done",
+          "machine",
+          "deadline"
+        ],
+        "type": "object"
       },
       "event.agent_2eevents.output.ContextOwner": {
         "description": "Which stored row a binary occurrence lives in.",
@@ -3455,6 +3614,41 @@
         ],
         "type": "object"
       },
+      "event.agent_2eevents.output.InState": {
+        "description": "An incoming file's state; `Received` and `Failed` are terminal.",
+        "oneOf": [
+          {
+            "const": "queued",
+            "description": "Waiting for a download slot.",
+            "type": "string"
+          },
+          {
+            "const": "receiving",
+            "description": "Bytes are arriving.",
+            "type": "string"
+          },
+          {
+            "const": "publishing",
+            "description": "Verified; being linked into place (resolved by inode on restart).",
+            "type": "string"
+          },
+          {
+            "const": "saved",
+            "description": "Published while its exchange is still `accepted` or `held`: waits for it.",
+            "type": "string"
+          },
+          {
+            "const": "received",
+            "description": "Published, and its notice durably queued.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Failed; `error` says why.",
+            "type": "string"
+          }
+        ]
+      },
       "event.agent_2eevents.output.InputId": {
         "description": "One user input, identified by its sender so it can be shown before any\nreply arrives.",
         "format": "uuid",
@@ -3622,6 +3816,31 @@
           {
             "const": "unknown",
             "description": "Lost contact / activity unobservable.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.agent_2eevents.output.OutState": {
+        "description": "An outgoing file's state; `Sent` and `Failed` are terminal.",
+        "oneOf": [
+          {
+            "const": "queued",
+            "description": "Offered; the receiver has not started fetching.",
+            "type": "string"
+          },
+          {
+            "const": "sending",
+            "description": "The receiver is fetching.",
+            "type": "string"
+          },
+          {
+            "const": "sent",
+            "description": "The receiver's `received` receipt arrived.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Failed; `error` says why.",
             "type": "string"
           }
         ]
@@ -6106,6 +6325,37 @@
               "advisory"
             ],
             "type": "object"
+          },
+          {
+            "description": "199: a contact file changed state, or moved bytes (at most twice a second per\nfile). Cards key it by `(file.holder, file.id)`.",
+            "properties": {
+              "file": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.receiver.ContactFile"
+                  }
+                ],
+                "description": "Its current card."
+              },
+              "session": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.receiver.SessionId"
+                  }
+                ],
+                "description": "The chat the file belongs to."
+              },
+              "type": {
+                "const": "ContactFileChanged",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "session",
+              "file"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -6208,6 +6458,134 @@
             "type": "string"
           }
         ]
+      },
+      "event.agent_2eevents.receiver.ContactFile": {
+        "description": "One file between contacts as a card shows it (`ContactFileChanged`,\n`PeerDelivered.files`, `contact_file`). Keys: `(holder, id)`.",
+        "oneOf": [
+          {
+            "description": "An offered file.",
+            "properties": {
+              "direction": {
+                "const": "out",
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/components/schemas/event.agent_2eevents.receiver.OutState"
+              }
+            },
+            "required": [
+              "direction",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A received file.",
+            "properties": {
+              "direction": {
+                "const": "in",
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/components/schemas/event.agent_2eevents.receiver.InState"
+              }
+            },
+            "required": [
+              "direction",
+              "state"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "blake3": {
+            "description": "Declared or computed BLAKE3, 64 lowercase hex.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contact": {
+            "description": "The contact's display alias.",
+            "type": "string"
+          },
+          "contact_id": {
+            "description": "`ContactFacts.id`, the contact's record id; never the alias.",
+            "type": "string"
+          },
+          "deadline": {
+            "description": "The local deadline (D8).",
+            "format": "date-time",
+            "type": "string"
+          },
+          "done": {
+            "description": "Bytes moved so far.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "error": {
+            "description": "Why it failed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exchange": {
+            "description": "The exchange (message) that carried it.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "holder": {
+            "description": "The holder's endpoint id: the engine that stores (in) or serves (out) the bytes.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The holder's local id, 32 lowercase hex.",
+            "type": "string"
+          },
+          "machine": {
+            "description": "The holder's machine name.",
+            "type": "string"
+          },
+          "media_type": {
+            "description": "Descriptive media type (`mime_guess`, else `application/octet-stream`).",
+            "type": "string"
+          },
+          "name": {
+            "description": "The sanitised declared name.",
+            "type": "string"
+          },
+          "path": {
+            "description": "In: the saved path on the holder.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "description": "Declared, then actual size; `None` only for a P3 download in flight.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "holder",
+          "exchange",
+          "contact_id",
+          "contact",
+          "name",
+          "media_type",
+          "done",
+          "machine",
+          "deadline"
+        ],
+        "type": "object"
       },
       "event.agent_2eevents.receiver.ContextOwner": {
         "description": "Which stored row a binary occurrence lives in.",
@@ -6511,6 +6889,41 @@
         ],
         "type": "object"
       },
+      "event.agent_2eevents.receiver.InState": {
+        "description": "An incoming file's state; `Received` and `Failed` are terminal.",
+        "oneOf": [
+          {
+            "const": "queued",
+            "description": "Waiting for a download slot.",
+            "type": "string"
+          },
+          {
+            "const": "receiving",
+            "description": "Bytes are arriving.",
+            "type": "string"
+          },
+          {
+            "const": "publishing",
+            "description": "Verified; being linked into place (resolved by inode on restart).",
+            "type": "string"
+          },
+          {
+            "const": "saved",
+            "description": "Published while its exchange is still `accepted` or `held`: waits for it.",
+            "type": "string"
+          },
+          {
+            "const": "received",
+            "description": "Published, and its notice durably queued.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Failed; `error` says why.",
+            "type": "string"
+          }
+        ]
+      },
       "event.agent_2eevents.receiver.InputId": {
         "description": "One user input, identified by its sender so it can be shown before any\nreply arrives.",
         "format": "uuid",
@@ -6674,6 +7087,31 @@
           {
             "const": "unknown",
             "description": "Lost contact / activity unobservable.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.agent_2eevents.receiver.OutState": {
+        "description": "An outgoing file's state; `Sent` and `Failed` are terminal.",
+        "oneOf": [
+          {
+            "const": "queued",
+            "description": "Offered; the receiver has not started fetching.",
+            "type": "string"
+          },
+          {
+            "const": "sending",
+            "description": "The receiver is fetching.",
+            "type": "string"
+          },
+          {
+            "const": "sent",
+            "description": "The receiver's `received` receipt arrived.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Failed; `error` says why.",
             "type": "string"
           }
         ]
@@ -7487,9 +7925,205 @@
         "format": "uuid",
         "type": "string"
       },
+      "event.agent_2epeer_2ddelivered.output.ContactFile": {
+        "description": "One file between contacts as a card shows it (`ContactFileChanged`,\n`PeerDelivered.files`, `contact_file`). Keys: `(holder, id)`.",
+        "oneOf": [
+          {
+            "description": "An offered file.",
+            "properties": {
+              "direction": {
+                "const": "out",
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/components/schemas/event.agent_2epeer_2ddelivered.output.OutState"
+              }
+            },
+            "required": [
+              "direction",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A received file.",
+            "properties": {
+              "direction": {
+                "const": "in",
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/components/schemas/event.agent_2epeer_2ddelivered.output.InState"
+              }
+            },
+            "required": [
+              "direction",
+              "state"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "blake3": {
+            "description": "Declared or computed BLAKE3, 64 lowercase hex.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contact": {
+            "description": "The contact's display alias.",
+            "type": "string"
+          },
+          "contact_id": {
+            "description": "`ContactFacts.id`, the contact's record id; never the alias.",
+            "type": "string"
+          },
+          "deadline": {
+            "description": "The local deadline (D8).",
+            "format": "date-time",
+            "type": "string"
+          },
+          "done": {
+            "description": "Bytes moved so far.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "error": {
+            "description": "Why it failed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exchange": {
+            "description": "The exchange (message) that carried it.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "holder": {
+            "description": "The holder's endpoint id: the engine that stores (in) or serves (out) the bytes.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The holder's local id, 32 lowercase hex.",
+            "type": "string"
+          },
+          "machine": {
+            "description": "The holder's machine name.",
+            "type": "string"
+          },
+          "media_type": {
+            "description": "Descriptive media type (`mime_guess`, else `application/octet-stream`).",
+            "type": "string"
+          },
+          "name": {
+            "description": "The sanitised declared name.",
+            "type": "string"
+          },
+          "path": {
+            "description": "In: the saved path on the holder.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "description": "Declared, then actual size; `None` only for a P3 download in flight.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "holder",
+          "exchange",
+          "contact_id",
+          "contact",
+          "name",
+          "media_type",
+          "done",
+          "machine",
+          "deadline"
+        ],
+        "type": "object"
+      },
+      "event.agent_2epeer_2ddelivered.output.InState": {
+        "description": "An incoming file's state; `Received` and `Failed` are terminal.",
+        "oneOf": [
+          {
+            "const": "queued",
+            "description": "Waiting for a download slot.",
+            "type": "string"
+          },
+          {
+            "const": "receiving",
+            "description": "Bytes are arriving.",
+            "type": "string"
+          },
+          {
+            "const": "publishing",
+            "description": "Verified; being linked into place (resolved by inode on restart).",
+            "type": "string"
+          },
+          {
+            "const": "saved",
+            "description": "Published while its exchange is still `accepted` or `held`: waits for it.",
+            "type": "string"
+          },
+          {
+            "const": "received",
+            "description": "Published, and its notice durably queued.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Failed; `error` says why.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.agent_2epeer_2ddelivered.output.OutState": {
+        "description": "An outgoing file's state; `Sent` and `Failed` are terminal.",
+        "oneOf": [
+          {
+            "const": "queued",
+            "description": "Offered; the receiver has not started fetching.",
+            "type": "string"
+          },
+          {
+            "const": "sending",
+            "description": "The receiver is fetching.",
+            "type": "string"
+          },
+          {
+            "const": "sent",
+            "description": "The receiver's `received` receipt arrived.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Failed; `error` says why.",
+            "type": "string"
+          }
+        ]
+      },
       "event.agent_2epeer_2ddelivered.output.PeerDelivered": {
         "description": "Event: a peer exchange became part of `session`'s transcript (§10):\nemitted after the consumption transaction linked it to row `seq` in\n`turn`, never for a merely accepted or suppressed input. Structured\nsuccessor of `AgentEvent::MessageDelivered` for peer input; that legacy\nevent still fires until every surface renders this one.",
         "properties": {
+          "files": {
+            "default": [],
+            "description": "199: the files the message carries, for the live card's receiving placeholders.",
+            "items": {
+              "$ref": "#/components/schemas/event.agent_2epeer_2ddelivered.output.ContactFile"
+            },
+            "type": "array"
+          },
           "origin": {
             "allOf": [
               {
@@ -7534,6 +8168,7 @@
           "text",
           "seq",
           "turn",
+          "files",
           "type"
         ],
         "type": "object"
@@ -7613,9 +8248,205 @@
         "format": "uuid",
         "type": "string"
       },
+      "event.agent_2epeer_2ddelivered.receiver.ContactFile": {
+        "description": "One file between contacts as a card shows it (`ContactFileChanged`,\n`PeerDelivered.files`, `contact_file`). Keys: `(holder, id)`.",
+        "oneOf": [
+          {
+            "description": "An offered file.",
+            "properties": {
+              "direction": {
+                "const": "out",
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/components/schemas/event.agent_2epeer_2ddelivered.receiver.OutState"
+              }
+            },
+            "required": [
+              "direction",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A received file.",
+            "properties": {
+              "direction": {
+                "const": "in",
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/components/schemas/event.agent_2epeer_2ddelivered.receiver.InState"
+              }
+            },
+            "required": [
+              "direction",
+              "state"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "blake3": {
+            "description": "Declared or computed BLAKE3, 64 lowercase hex.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contact": {
+            "description": "The contact's display alias.",
+            "type": "string"
+          },
+          "contact_id": {
+            "description": "`ContactFacts.id`, the contact's record id; never the alias.",
+            "type": "string"
+          },
+          "deadline": {
+            "description": "The local deadline (D8).",
+            "format": "date-time",
+            "type": "string"
+          },
+          "done": {
+            "description": "Bytes moved so far.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "error": {
+            "description": "Why it failed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exchange": {
+            "description": "The exchange (message) that carried it.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "holder": {
+            "description": "The holder's endpoint id: the engine that stores (in) or serves (out) the bytes.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The holder's local id, 32 lowercase hex.",
+            "type": "string"
+          },
+          "machine": {
+            "description": "The holder's machine name.",
+            "type": "string"
+          },
+          "media_type": {
+            "description": "Descriptive media type (`mime_guess`, else `application/octet-stream`).",
+            "type": "string"
+          },
+          "name": {
+            "description": "The sanitised declared name.",
+            "type": "string"
+          },
+          "path": {
+            "description": "In: the saved path on the holder.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "description": "Declared, then actual size; `None` only for a P3 download in flight.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "holder",
+          "exchange",
+          "contact_id",
+          "contact",
+          "name",
+          "media_type",
+          "done",
+          "machine",
+          "deadline"
+        ],
+        "type": "object"
+      },
+      "event.agent_2epeer_2ddelivered.receiver.InState": {
+        "description": "An incoming file's state; `Received` and `Failed` are terminal.",
+        "oneOf": [
+          {
+            "const": "queued",
+            "description": "Waiting for a download slot.",
+            "type": "string"
+          },
+          {
+            "const": "receiving",
+            "description": "Bytes are arriving.",
+            "type": "string"
+          },
+          {
+            "const": "publishing",
+            "description": "Verified; being linked into place (resolved by inode on restart).",
+            "type": "string"
+          },
+          {
+            "const": "saved",
+            "description": "Published while its exchange is still `accepted` or `held`: waits for it.",
+            "type": "string"
+          },
+          {
+            "const": "received",
+            "description": "Published, and its notice durably queued.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Failed; `error` says why.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.agent_2epeer_2ddelivered.receiver.OutState": {
+        "description": "An outgoing file's state; `Sent` and `Failed` are terminal.",
+        "oneOf": [
+          {
+            "const": "queued",
+            "description": "Offered; the receiver has not started fetching.",
+            "type": "string"
+          },
+          {
+            "const": "sending",
+            "description": "The receiver is fetching.",
+            "type": "string"
+          },
+          {
+            "const": "sent",
+            "description": "The receiver's `received` receipt arrived.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Failed; `error` says why.",
+            "type": "string"
+          }
+        ]
+      },
       "event.agent_2epeer_2ddelivered.receiver.PeerDelivered": {
         "description": "Event: a peer exchange became part of `session`'s transcript (§10):\nemitted after the consumption transaction linked it to row `seq` in\n`turn`, never for a merely accepted or suppressed input. Structured\nsuccessor of `AgentEvent::MessageDelivered` for peer input; that legacy\nevent still fires until every surface renders this one.",
         "properties": {
+          "files": {
+            "default": [],
+            "description": "199: the files the message carries, for the live card's receiving placeholders.",
+            "items": {
+              "$ref": "#/components/schemas/event.agent_2epeer_2ddelivered.receiver.ContactFile"
+            },
+            "type": "array"
+          },
           "origin": {
             "allOf": [
               {
@@ -28783,6 +29614,14 @@
               "null"
             ]
           },
+          "full_access": {
+            "default": null,
+            "description": "200 (D1): give or take back full access (every record of the group).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "grant": {
             "default": null,
             "description": "Export names (or ids) to grant; every other grant stays.",
@@ -29195,6 +30034,19 @@
             "description": "Export → first-contact answer; a missing export is `ask`.",
             "type": "object"
           },
+          "full_access": {
+            "default": false,
+            "description": "200 (D1): we gave it full access: any of its sessions may list and message ours.",
+            "type": "boolean"
+          },
+          "full_access_from": {
+            "default": null,
+            "description": "200 (D11): whether it gave us full access, from its last verified card; `None` when\nits card lacks the `full-access/v1` extension (an engine without 200).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "full_capable": {
             "description": "186 (D10): its card advertises [`EXT_FULL`]. Shown only: a share never depends on it.",
             "type": "boolean"
@@ -29286,7 +30138,9 @@
           "problem",
           "problem_kind",
           "paired_on",
-          "machines"
+          "machines",
+          "full_access",
+          "full_access_from"
         ],
         "type": "object"
       },
@@ -29957,6 +30811,19 @@
             },
             "description": "Export → first-contact answer; a missing export is `ask`.",
             "type": "object"
+          },
+          "full_access": {
+            "default": false,
+            "description": "200 (D1): we gave it full access: any of its sessions may list and message ours.",
+            "type": "boolean"
+          },
+          "full_access_from": {
+            "default": null,
+            "description": "200 (D11): whether it gave us full access, from its last verified card; `None` when\nits card lacks the `full-access/v1` extension (an engine without 200).",
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "full_capable": {
             "description": "186 (D10): its card advertises [`EXT_FULL`]. Shown only: a share never depends on it.",
@@ -33533,6 +34400,152 @@
         ],
         "type": "object"
       },
+      "method.agent.output.ContactFile": {
+        "description": "One file between contacts as a card shows it (`ContactFileChanged`,\n`PeerDelivered.files`, `contact_file`). Keys: `(holder, id)`.",
+        "oneOf": [
+          {
+            "description": "An offered file.",
+            "properties": {
+              "direction": {
+                "const": "out",
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/components/schemas/method.agent.output.OutState"
+              }
+            },
+            "required": [
+              "direction",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A received file.",
+            "properties": {
+              "direction": {
+                "const": "in",
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/components/schemas/method.agent.output.InState"
+              }
+            },
+            "required": [
+              "direction",
+              "state"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "blake3": {
+            "description": "Declared or computed BLAKE3, 64 lowercase hex.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contact": {
+            "description": "The contact's display alias.",
+            "type": "string"
+          },
+          "contact_id": {
+            "description": "`ContactFacts.id`, the contact's record id; never the alias.",
+            "type": "string"
+          },
+          "deadline": {
+            "description": "The local deadline (D8).",
+            "format": "date-time",
+            "type": "string"
+          },
+          "done": {
+            "description": "Bytes moved so far.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "error": {
+            "description": "Why it failed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exchange": {
+            "description": "The exchange (message) that carried it.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "holder": {
+            "description": "The holder's endpoint id: the engine that stores (in) or serves (out) the bytes.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The holder's local id, 32 lowercase hex.",
+            "type": "string"
+          },
+          "machine": {
+            "description": "The holder's machine name.",
+            "type": "string"
+          },
+          "media_type": {
+            "description": "Descriptive media type (`mime_guess`, else `application/octet-stream`).",
+            "type": "string"
+          },
+          "name": {
+            "description": "The sanitised declared name.",
+            "type": "string"
+          },
+          "path": {
+            "description": "In: the saved path on the holder.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "description": "Declared, then actual size; `None` only for a P3 download in flight.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "holder",
+          "exchange",
+          "contact_id",
+          "contact",
+          "name",
+          "media_type",
+          "done",
+          "machine",
+          "deadline"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.ContactFileThumbnail": {
+        "description": "`contact_file_thumbnail`'s answer: a fitted still image.",
+        "properties": {
+          "data": {
+            "description": "Base64 image bytes.",
+            "type": "string"
+          },
+          "mime": {
+            "description": "The actual MIME of `data` (from `tools::images::Fitted`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mime",
+          "data"
+        ],
+        "type": "object"
+      },
       "method.agent.output.ContextAttachment": {
         "description": "One binary occurrence of a history row, for transcript controls.",
         "properties": {
@@ -36096,6 +37109,41 @@
           }
         ]
       },
+      "method.agent.output.InState": {
+        "description": "An incoming file's state; `Received` and `Failed` are terminal.",
+        "oneOf": [
+          {
+            "const": "queued",
+            "description": "Waiting for a download slot.",
+            "type": "string"
+          },
+          {
+            "const": "receiving",
+            "description": "Bytes are arriving.",
+            "type": "string"
+          },
+          {
+            "const": "publishing",
+            "description": "Verified; being linked into place (resolved by inode on restart).",
+            "type": "string"
+          },
+          {
+            "const": "saved",
+            "description": "Published while its exchange is still `accepted` or `held`: waits for it.",
+            "type": "string"
+          },
+          {
+            "const": "received",
+            "description": "Published, and its notice durably queued.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Failed; `error` says why.",
+            "type": "string"
+          }
+        ]
+      },
       "method.agent.output.InputId": {
         "description": "One user input, identified by its sender so it can be shown before any\nreply arrives.",
         "format": "uuid",
@@ -37173,6 +38221,31 @@
         ],
         "type": "object"
       },
+      "method.agent.output.NoticeAdmission": {
+        "description": "`contact_file_notice`'s answer: the owner holds the notice (pending or committed).",
+        "oneOf": [
+          {
+            "const": "accepted",
+            "description": "Admitted now, or already pending or committed (a repeat enqueues nothing).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.agent.output.NoticeStatus": {
+        "description": "`contact_file_notice_status`'s answer.",
+        "oneOf": [
+          {
+            "const": "committed",
+            "description": "The owner's journal has an `input_accepted` step with this `input_id`, or its\n`errors` table this id.",
+            "type": "string"
+          },
+          {
+            "const": "unknown",
+            "description": "Neither: the holder re-sends on its backoff.",
+            "type": "string"
+          }
+        ]
+      },
       "method.agent.output.ObservedMeta": {
         "description": "Watch-only facts of an `observed` row (141 §5.1), carried on\n[`AgentInfo`], [`SessionSummary`], [`Loaded`] and\n[`AgentEvent::ObservedChildChanged`].",
         "properties": {
@@ -37313,6 +38386,31 @@
           {
             "const": "unknown",
             "description": "Lost contact / activity unobservable.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.agent.output.OutState": {
+        "description": "An outgoing file's state; `Sent` and `Failed` are terminal.",
+        "oneOf": [
+          {
+            "const": "queued",
+            "description": "Offered; the receiver has not started fetching.",
+            "type": "string"
+          },
+          {
+            "const": "sending",
+            "description": "The receiver is fetching.",
+            "type": "string"
+          },
+          {
+            "const": "sent",
+            "description": "The receiver's `received` receipt arrived.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Failed; `error` says why.",
             "type": "string"
           }
         ]
@@ -37919,6 +39017,14 @@
               "null"
             ]
           },
+          "partial": {
+            "default": [],
+            "description": "200 (D8): the contact machines that did not answer for this page, each\n`<contact>/<machine name>`; their sessions may be missing from it.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "peers": {
             "description": "Rows in stable order.",
             "items": {
@@ -37929,7 +39035,8 @@
         },
         "required": [
           "peers",
-          "cursor"
+          "cursor",
+          "partial"
         ],
         "type": "object"
       },
@@ -38022,6 +39129,14 @@
             "format": "date-time",
             "type": "string"
           },
+          "files": {
+            "default": [],
+            "description": "199: the files this exchange carries, in message order (`contact_files` rows).",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.output.ContactFile"
+            },
+            "type": "array"
+          },
           "from": {
             "description": "Authenticated sender address.",
             "type": "string"
@@ -38061,7 +39176,8 @@
           "session",
           "text",
           "created_at",
-          "request_scope"
+          "request_scope",
+          "files"
         ],
         "type": "object"
       },
@@ -43171,6 +44287,152 @@
         ],
         "type": "object"
       },
+      "method.agent.receiver.ContactFile": {
+        "description": "One file between contacts as a card shows it (`ContactFileChanged`,\n`PeerDelivered.files`, `contact_file`). Keys: `(holder, id)`.",
+        "oneOf": [
+          {
+            "description": "An offered file.",
+            "properties": {
+              "direction": {
+                "const": "out",
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/components/schemas/method.agent.receiver.OutState"
+              }
+            },
+            "required": [
+              "direction",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A received file.",
+            "properties": {
+              "direction": {
+                "const": "in",
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/components/schemas/method.agent.receiver.InState"
+              }
+            },
+            "required": [
+              "direction",
+              "state"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "blake3": {
+            "description": "Declared or computed BLAKE3, 64 lowercase hex.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contact": {
+            "description": "The contact's display alias.",
+            "type": "string"
+          },
+          "contact_id": {
+            "description": "`ContactFacts.id`, the contact's record id; never the alias.",
+            "type": "string"
+          },
+          "deadline": {
+            "description": "The local deadline (D8).",
+            "format": "date-time",
+            "type": "string"
+          },
+          "done": {
+            "description": "Bytes moved so far.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "error": {
+            "description": "Why it failed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exchange": {
+            "description": "The exchange (message) that carried it.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "holder": {
+            "description": "The holder's endpoint id: the engine that stores (in) or serves (out) the bytes.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The holder's local id, 32 lowercase hex.",
+            "type": "string"
+          },
+          "machine": {
+            "description": "The holder's machine name.",
+            "type": "string"
+          },
+          "media_type": {
+            "description": "Descriptive media type (`mime_guess`, else `application/octet-stream`).",
+            "type": "string"
+          },
+          "name": {
+            "description": "The sanitised declared name.",
+            "type": "string"
+          },
+          "path": {
+            "description": "In: the saved path on the holder.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "description": "Declared, then actual size; `None` only for a P3 download in flight.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "holder",
+          "exchange",
+          "contact_id",
+          "contact",
+          "name",
+          "media_type",
+          "done",
+          "machine",
+          "deadline"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.ContactFileThumbnail": {
+        "description": "`contact_file_thumbnail`'s answer: a fitted still image.",
+        "properties": {
+          "data": {
+            "description": "Base64 image bytes.",
+            "type": "string"
+          },
+          "mime": {
+            "description": "The actual MIME of `data` (from `tools::images::Fitted`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mime",
+          "data"
+        ],
+        "type": "object"
+      },
       "method.agent.receiver.ContextAttachment": {
         "description": "One binary occurrence of a history row, for transcript controls.",
         "properties": {
@@ -45665,6 +46927,41 @@
           }
         ]
       },
+      "method.agent.receiver.InState": {
+        "description": "An incoming file's state; `Received` and `Failed` are terminal.",
+        "oneOf": [
+          {
+            "const": "queued",
+            "description": "Waiting for a download slot.",
+            "type": "string"
+          },
+          {
+            "const": "receiving",
+            "description": "Bytes are arriving.",
+            "type": "string"
+          },
+          {
+            "const": "publishing",
+            "description": "Verified; being linked into place (resolved by inode on restart).",
+            "type": "string"
+          },
+          {
+            "const": "saved",
+            "description": "Published while its exchange is still `accepted` or `held`: waits for it.",
+            "type": "string"
+          },
+          {
+            "const": "received",
+            "description": "Published, and its notice durably queued.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Failed; `error` says why.",
+            "type": "string"
+          }
+        ]
+      },
       "method.agent.receiver.InputId": {
         "description": "One user input, identified by its sender so it can be shown before any\nreply arrives.",
         "format": "uuid",
@@ -46710,6 +48007,31 @@
         ],
         "type": "object"
       },
+      "method.agent.receiver.NoticeAdmission": {
+        "description": "`contact_file_notice`'s answer: the owner holds the notice (pending or committed).",
+        "oneOf": [
+          {
+            "const": "accepted",
+            "description": "Admitted now, or already pending or committed (a repeat enqueues nothing).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.agent.receiver.NoticeStatus": {
+        "description": "`contact_file_notice_status`'s answer.",
+        "oneOf": [
+          {
+            "const": "committed",
+            "description": "The owner's journal has an `input_accepted` step with this `input_id`, or its\n`errors` table this id.",
+            "type": "string"
+          },
+          {
+            "const": "unknown",
+            "description": "Neither: the holder re-sends on its backoff.",
+            "type": "string"
+          }
+        ]
+      },
       "method.agent.receiver.ObservedMeta": {
         "description": "Watch-only facts of an `observed` row (141 §5.1), carried on\n[`AgentInfo`], [`SessionSummary`], [`Loaded`] and\n[`AgentEvent::ObservedChildChanged`].",
         "properties": {
@@ -46846,6 +48168,31 @@
           {
             "const": "unknown",
             "description": "Lost contact / activity unobservable.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.agent.receiver.OutState": {
+        "description": "An outgoing file's state; `Sent` and `Failed` are terminal.",
+        "oneOf": [
+          {
+            "const": "queued",
+            "description": "Offered; the receiver has not started fetching.",
+            "type": "string"
+          },
+          {
+            "const": "sending",
+            "description": "The receiver is fetching.",
+            "type": "string"
+          },
+          {
+            "const": "sent",
+            "description": "The receiver's `received` receipt arrived.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Failed; `error` says why.",
             "type": "string"
           }
         ]
@@ -47438,6 +48785,14 @@
               "null"
             ]
           },
+          "partial": {
+            "default": [],
+            "description": "200 (D8): the contact machines that did not answer for this page, each\n`<contact>/<machine name>`; their sessions may be missing from it.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "peers": {
             "description": "Rows in stable order.",
             "items": {
@@ -47534,6 +48889,14 @@
             "description": "Acceptance time.",
             "format": "date-time",
             "type": "string"
+          },
+          "files": {
+            "default": [],
+            "description": "199: the files this exchange carries, in message order (`contact_files` rows).",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.receiver.ContactFile"
+            },
+            "type": "array"
           },
           "from": {
             "description": "Authenticated sender address.",
@@ -115750,6 +117113,20 @@
             "type": "string"
           },
           "x-theuth-aliases": []
+        },
+        {
+          "name": "files",
+          "required": false,
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
         }
       ],
       "result": {
@@ -118937,6 +120314,284 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "a2a"
+    },
+    {
+      "name": "contact_file",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "holder",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.ContactFile"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.ContactFile"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "contact_file_authority",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "holder",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "boolean"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "boolean"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "contact_file_export",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "holder",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "dest",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "string"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "string"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "contact_file_fetch",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "holder",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "string"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "string"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "contact_file_notice",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "notice_id",
+          "required": true,
+          "schema": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "noticeId"
+          ]
+        },
+        {
+          "name": "contact_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "contactId"
+          ]
+        },
+        {
+          "name": "notice",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.NoticeAdmission"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.NoticeAdmission"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "contact_file_notice_status",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "notice_id",
+          "required": true,
+          "schema": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "noticeId"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.NoticeStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.NoticeStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "contact_file_thumbnail",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "holder",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.ContactFileThumbnail"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.ContactFileThumbnail"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
     },
     {
       "name": "contact_first_answer",

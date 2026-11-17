@@ -942,7 +942,7 @@ fn queued_text(text: &str) -> String {
     match agent::skills::injected(text) {
         Some((name, _, "")) => format!("◇ {name}"),
         Some((name, _, rest)) => format!("◇ {name}  {rest}"),
-        None => text.to_owned(),
+        None => crate::components::files::notice_line(text).unwrap_or_else(|| text.to_owned()),
     }
 }
 
@@ -2175,6 +2175,35 @@ mod tests {
                 4,
                 "margin + 3 rows: {frame}"
             );
+        }
+    }
+
+    /// 199: every file line form paints as its glyph line, never the `<message_file>`
+    /// markup, and with no control or bidi character from the contact's name.
+    #[test]
+    fn file_lines_paint_without_markup_or_controls() {
+        let el = |state: &str| format!("<message_file from=\"peer:maya\" message=\"m\" name=\"a\u{1b}\u{202E}b.pdf\" type=\"application/pdf\" {state} holder=\"5f3a\" file=\"9d0c\"/>");
+        let hint = "File notice from theuth, not from peer:maya: no reply to the contact is needed.";
+        let user = |text: String| agent::HistoryEntry::User { text, turn: None, context: None, peer: None, vision: None, channel: None };
+        let error = |text: String| agent::HistoryEntry::Error { text, context: None };
+        let rows = [
+            (user(format!("<message from=\"peer:maya\" id=\"m\">\nhi\n</message>\n{}\nFiles from peer:maya are arriving; a notice follows when each one is saved or fails.", el("bytes=\"24100000\" state=\"receiving\""))), "▤ ab.pdf · 24.1 MB · application/pdf · receiving"),
+            (user(format!("{}\n{hint}", el("state=\"received\" saved=\"/tmp/ab.pdf\" bytes=\"24100000\""))), "▤ ab.pdf · 24.1 MB · application/pdf · saved"),
+            (user(format!("{}\n{hint}", el("state=\"failed\" reason=\"gone\""))), "✕ ab.pdf · application/pdf · failed · gone"),
+            (error(format!("{}\nFile notice from theuth: the share with peer:maya has ended, so this was not given to the agent.", el("state=\"failed\" reason=\"gone\""))), "✕ ab.pdf · application/pdf · failed · gone · not given to the agent"),
+            (error(el("state=\"lost\"")), "File notice (unreadable)"),
+        ];
+        for (row, want) in rows {
+            let entries = crate::model::from_history(row, &markdown::Options::default(), &mut crate::components::builtin());
+            let frame = element! {
+                View(flex_direction: FlexDirection::Column, width: 120u16) {
+                    #(entries.iter().map(|e| entry(e, "", 0, 120, Vec::new(), None)))
+                }
+            }
+            .to_string();
+            assert!(frame.contains(want), "{want}\n{frame}");
+            assert!(!frame.contains("<message_file") && !frame.contains("Files from"), "{frame}");
+            assert!(!frame.chars().any(|c| (c.is_control() && c != '\n') || c == '\u{202E}'), "{frame:?}");
         }
     }
 }

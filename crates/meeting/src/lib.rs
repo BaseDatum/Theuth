@@ -5755,7 +5755,7 @@ mod tests {
         )
         .unwrap();
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
-        let agents = agent::spawn_engine_agents(rt, Default::default()).await;
+        let agents = agent::spawn_engine_agents(rt, Default::default(), None).await;
         let mut manifest =
             Manifest::new(MeetingId::new(), zoom(), "2026-10-10T10:00:00+02:00".into());
         let start = (Some("testp/thinker".into()), Some("high".into()));

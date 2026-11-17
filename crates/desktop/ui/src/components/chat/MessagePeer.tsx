@@ -13,7 +13,8 @@ import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { formatAt, fullAt } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import type { ContactNote } from '@/lib/injected'
+import type { ContactNote, FileNote } from '@/lib/injected'
+import { AttachFiles, PeerFiles, answerPeer } from './ContactFiles'
 import type { PeerOrigin } from "@/rpc/bindings/method.agent.output"
 import type { PeerRecord } from "@/rpc/bindings/method.agent.output"
 import { useSessionField } from '@/store/sessions'
@@ -203,6 +204,8 @@ function Provenance({ origin, seq, session, request, contact }: { origin: PeerOr
 /** Answer drafts by `session|exchange id`, in memory: every mount of the card shares one, so folding a group or the
  * virtualiser dropping the row never loses what the owner typed (171F B13: transcript row state lives in a store). */
 export const useAnswerDrafts = create<Record<string, string>>()(() => ({}))
+/** 199 D15: the files picked for an answer, by the same `session|exchange id` key. */
+export const useAnswerFiles = create<Record<string, string[]>>()(() => ({}))
 
 /**
  * Whether the clamped element hides content (`scrollHeight > clientHeight`), re-measured on every resize, so a phone
@@ -225,29 +228,31 @@ export function useOverflow<T extends HTMLElement>(clamped: boolean): [RefObject
 }
 
 /** The owner answers a request this chat owes (`answer_peer_request`, as the chat's Messaging… sheet does). */
-function AnswerForm({ session, id, onDone }: { session: string; id: string; onDone: () => void }) {
+function AnswerForm({ session, id, contact, onDone }: { session: string; id: string; contact: boolean; onDone: () => void }) {
   const api = useApi()
   const key = `${session}|${id}`
   // The live state is the server snapshot too (as `useDisclosure`), so a preset draft shows on the first render.
   const read = () => useAnswerDrafts.getState()[key] ?? ''
   const text = useSyncExternalStore(useAnswerDrafts.subscribe, read, read)
   const setText = (t: string) => useAnswerDrafts.setState({ [key]: t })
-  const send = useAction((t: string) => routed(session, () => api.answer_peer_request(session, id, t)), {
+  const files = useAnswerFiles((s) => s[key]) ?? NO_FILES
+  const send = useAction((t: string) => routed(session, () => answerPeer(api, session, id, t, files)), {
     keys: [['peer-messages', session], queryKeys.peerMessage(session, id)],
     onSuccess: (receipt) => {
       if (!receipt) return // parked behind the chat's OwnerOfflineCard: nothing was answered
-      useAnswerDrafts.setState((s) => Object.fromEntries(Object.entries(s).filter(([k]) => k !== key)), true)
+      useAnswerDrafts.setState(({ [key]: _, ...rest }) => rest, true)
+      useAnswerFiles.setState(({ [key]: _, ...rest }) => rest, true)
       onDone()
       toast(`Answered ${id.slice(0, 8)} · ${receipt.state}`)
     },
   })
+  const ready = !!text.trim() || files.length > 0
   return (
     <form
       className="mx-4 mb-3 flex flex-col gap-2"
       onSubmit={(e) => {
         e.preventDefault()
-        const t = text.trim()
-        if (t) send.mutate(t)
+        if (ready) send.mutate(text.trim())
       }}
     >
       <Textarea
@@ -260,8 +265,14 @@ function AnswerForm({ session, id, onDone }: { session: string; id: string; onDo
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) e.currentTarget.form?.requestSubmit()
         }}
       />
-      <div className="flex justify-end">
-        <Button type="submit" size="sm" className={TOUCH} disabled={send.isPending || !text.trim()} aria-busy={send.isPending || undefined}>
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {/* 199 D15: files go to contacts only. */}
+        {contact ? (
+          <div className="mr-auto min-w-0">
+            <AttachFiles session={session} files={files} onChange={(f) => useAnswerFiles.setState({ [key]: f })} disabled={send.isPending} />
+          </div>
+        ) : null}
+        <Button type="submit" size="sm" className={TOUCH} disabled={send.isPending || !ready} aria-busy={send.isPending || undefined}>
           Send answer
         </Button>
       </div>
@@ -269,10 +280,12 @@ function AnswerForm({ session, id, onDone }: { session: string; id: string; onDo
   )
 }
 
+const NO_FILES: string[] = []
+
 /** `remove`: `Message`'s remove-from-context control for a stored row; it sits in the header row, after the time, so it
  * never overlaps the outside band above. `contact`: the facts and harness note of the contact wrapper the row came in. */
 type PeerContact = ContactNote & { note: string }
-type Props = { from: string; text: string; origin?: PeerOrigin; seq?: number; session: string; at?: number; remove?: ReactNode; contact?: PeerContact }
+type Props = { from: string; text: string; origin?: PeerOrigin; seq?: number; session: string; at?: number; remove?: ReactNode; contact?: PeerContact; files?: FileNote[] }
 
 /** A contact's cap in words: the header tag and Details › Access say it alike. */
 export const capLabel = (cap: string) => (cap === 'read_only' ? 'read-only' : cap === 'mutating' ? 'can make changes' : cap)
@@ -287,6 +300,8 @@ function PeerCard({
   at,
   remove,
   contact,
+  files,
+  session,
   sender,
   tone,
   id,
@@ -349,6 +364,7 @@ function PeerCard({
           </Streamdown>
         )}
       </div>
+      {files?.length ? <PeerFiles files={files} session={session} /> : null}
       <div className="flex flex-wrap items-center gap-2 px-4 pt-2 pb-2.5">
         {hidden || open ? (
           <Button type="button" variant="outline" size="xs" className={TOUCH} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
@@ -415,7 +431,7 @@ function OriginCard({ origin, session, seq, sender, ...rest }: Props & { origin:
       }
       after={
         <>
-          {awaiting && answering ? <AnswerForm session={session} id={origin.id} onDone={() => setAnswering(false)} /> : null}
+          {awaiting && answering ? <AnswerForm session={session} id={origin.id} contact={isOutside(origin.from)} onDone={() => setAnswering(false)} /> : null}
           {details ? <Provenance origin={origin} seq={seq} session={session} request={request} contact={rest.contact} /> : null}
         </>
       }

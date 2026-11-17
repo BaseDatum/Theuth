@@ -114,6 +114,38 @@ pub fn outliner() -> Option<Arc<dyn Outliner>> {
     OUTLINER.get().cloned()
 }
 
+/// 199 D14: the largest file `read_file` reads whole, 256 MB (268,435,456 bytes).
+pub const READ_MAX: u64 = 256 * 1024 * 1024;
+
+/// D14: `path` whole, refused by its size above `max` and cut at `max` if it grows between
+/// the stat and the read. The registry prefixes `read_file: `.
+async fn read_bounded(path: &Path, shown: &str, max: u64) -> anyhow::Result<Vec<u8>> {
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| anyhow::anyhow!("{shown}: {e}"))?;
+    let size = file
+        .metadata()
+        .await
+        .map_err(|e| anyhow::anyhow!("{shown}: {e}"))?
+        .len();
+    anyhow::ensure!(
+        size <= max,
+        "{shown} is {size} bytes; too large to read whole (limit {} MB). Use shell tools such as head, tail, file or ffprobe.",
+        max >> 20
+    );
+    read_capped(file, size, max)
+        .await
+        .map_err(|e| anyhow::anyhow!("{shown}: {e}"))
+}
+
+/// At most `max` bytes of `file`, sized for the `size` it was stat'ed at.
+async fn read_capped(file: tokio::fs::File, size: u64, max: u64) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt as _;
+    let mut buf = Vec::with_capacity(usize::try_from(size.min(max)).unwrap_or(0));
+    file.take(max).read_to_end(&mut buf).await?;
+    Ok(buf)
+}
+
 /// Read a text file, an image (as a picture), or a document rendered as Markdown.
 pub struct ReadFile;
 
@@ -131,9 +163,7 @@ impl Tool for ReadFile {
         let shown = a.path.display().to_string();
         let path = crate::seat::resolve(cx.session, &a.path);
         crate::seat::refuse_cell_record(&cx.resources.root, &path)?;
-        let bytes = tokio::fs::read(&path)
-            .await
-            .map_err(|e| anyhow::anyhow!("{shown}: {e}"))?;
+        let bytes = read_bounded(&path, &shown, READ_MAX).await?;
         if crate::images::sniff(&bytes).is_some() {
             return read_image(&shown, bytes, &a, &cx).await;
         }
@@ -826,6 +856,49 @@ mod tests {
             cancel: tokio_util::sync::CancellationToken::new(),
             promote_after: None,
         }
+    }
+
+    /// 199 D14: a 300 MB file is refused by its size, before a byte is read.
+    #[tokio::test]
+    async fn read_file_refuses_a_file_over_256_mb() {
+        let (_dir, path) = scratch("");
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(300_000_000)
+            .unwrap();
+        let args: ReadFileArgs =
+            serde_json::from_value(serde_json::json!({ "path": path })).unwrap();
+        let e = Tool::call(&ReadFile, args, cx())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            e,
+            format!(
+                "{} is 300000000 bytes; too large to read whole (limit 256 MB). Use shell tools such as head, tail, file or ffprobe.",
+                path.display()
+            )
+        );
+    }
+
+    /// 199 D14: a file that grows between the stat and the read is cut at the cap.
+    #[tokio::test]
+    async fn read_is_cut_at_the_cap_when_the_file_grows() {
+        use std::io::Write as _;
+        let (_dir, path) = scratch("12345");
+        let file = tokio::fs::File::open(&path).await.unwrap();
+        let size = file.metadata().await.unwrap().len();
+        assert_eq!(size, 5);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"6789")
+            .unwrap();
+        assert_eq!(read_capped(file, size, 7).await.unwrap(), b"1234567");
+        assert_eq!(read_bounded(&path, "f", 100).await.unwrap(), b"123456789");
     }
 
     async fn read(args: ReadFileArgs) -> String {

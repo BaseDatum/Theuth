@@ -60,6 +60,7 @@ pub mod accounting;
 pub mod advisor;
 mod capture;
 pub mod communication;
+pub mod contact_files;
 pub mod contacts;
 pub mod dreaming;
 pub mod durability;
@@ -100,7 +101,7 @@ pub struct Store {
     read: SqlitePool,
     /// 176 E5: test-only stall (ms) before `session`, `list_sessions` and
     /// `descendants`, so a test can hold a read in flight.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     read_delay: Arc<std::sync::atomic::AtomicU64>,
 }
 
@@ -833,7 +834,7 @@ impl Store {
             harness_tx: Arc::new(tokio::sync::watch::Sender::new(0)),
             write,
             read,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             read_delay: Arc::default(),
         };
         // 0065: provenance of rows consumed before `messages.peer`, captured
@@ -881,7 +882,7 @@ impl Store {
             clock: Arc::new(replica::Clock::new(hlc_origin(""), (0, 0))),
             write: pool.clone(),
             read: pool,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             read_delay: Arc::default(),
         })
     }
@@ -891,15 +892,16 @@ impl Store {
         self.private
     }
 
-    /// The read pool, for crate-internal probes (tests of pragmas and the like).
-    #[cfg(test)]
+    /// The read pool, for crate-internal probes (tests of pragmas and the like) and
+    /// 199 P2's reads of `contact_files` and the notice rows.
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.read
     }
 
     /// 176 E5: make `session`, `list_sessions` and `descendants` take `d`
-    /// longer on every clone of this store (zero turns it off).
-    #[cfg(test)]
+    /// longer on every clone of this store (zero turns it off). 200: also under
+    /// `test-support`, for a dependent crate's test.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn set_read_delay(&self, d: Duration) {
         self.read_delay
             .store(d.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
@@ -907,7 +909,7 @@ impl Store {
 
     /// The [`Self::set_read_delay`] stall; nothing outside tests.
     async fn stall(&self) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             let ms = self.read_delay.load(std::sync::atomic::Ordering::Relaxed);
             if ms > 0 {
@@ -2284,15 +2286,27 @@ impl Store {
     /// Record a UI-only failure behind the last visible message (`-1` in an
     /// empty session). Not a context change: no revision or `updated_at` bump.
     pub async fn record_error(&self, id: SessionId, text: &str) -> anyhow::Result<()> {
+        self.record_error_once(id, uuid::Uuid::now_v7(), text).await
+    }
+
+    /// [`Self::record_error`] under a caller's id: a second call with the same id
+    /// changes nothing (199 D17: an ended share's file notice, keyed by its notice id).
+    pub async fn record_error_once(
+        &self,
+        id: SessionId,
+        error: uuid::Uuid,
+        text: &str,
+    ) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
         sqlx::query(
             "INSERT INTO errors (id, session_id, at_seq, text) \
              SELECT ?3, ?1, COALESCE(MAX(seq), -1), ?2 FROM messages WHERE session_id = ?1 \
-             AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807)",
+             AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807) \
+             ON CONFLICT(id) DO NOTHING",
         )
         .bind(id.to_string())
         .bind(text)
-        .bind(uuid::Uuid::now_v7().to_string())
+        .bind(error.to_string())
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -3254,6 +3268,15 @@ impl Store {
     pub(crate) async fn break_session_for_test(&self, id: SessionId) {
         sqlx::query("UPDATE sessions SET created_at = 'not a time' WHERE id = ?")
             .bind(id.to_string())
+            .execute(&self.write)
+            .await
+            .unwrap();
+    }
+
+    /// Tests: run one statement on the write pool.
+    #[cfg(test)]
+    pub(crate) async fn exec_for_test(&self, sql: &str) {
+        sqlx::query(sqlx::AssertSqlSafe(sql.to_owned()))
             .execute(&self.write)
             .await
             .unwrap();
@@ -4544,6 +4567,49 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
             "a replicated session table changed its columns: bump SESSIONS_WIRE_SCHEMA to the \
              migration that did it and take the snapshot again"
         );
+    }
+
+    /// 199: `0067_contact_files` applies, is node-local (not attached to the session
+    /// log) and leaves the wire schema at 67.
+    #[tokio::test]
+    async fn contact_files_table_is_node_local() {
+        let (store, id, _dir) = fresh().await;
+        sqlx::query(
+            "INSERT INTO contact_files (id, direction, session, exchange, seq, contact_id, name, \
+             media_type, source, state, created_ms, deadline_ms) \
+             VALUES ('0f8e2d4c6a1b3957e0d2c4b6a8f01357', 'in', ?, 'x', 0, 'rec', 'a.pdf', \
+             'application/pdf', 'iroh://e/a2a/files/0f8e2d4c6a1b3957e0d2c4b6a8f01357', 'queued', 0, 1)",
+        )
+        .bind(id.to_string())
+        .execute(&store.write)
+        .await
+        .unwrap();
+        let done: i64 = sqlx::query_scalar("SELECT done FROM contact_files")
+            .fetch_one(&store.read)
+            .await
+            .unwrap();
+        assert_eq!(done, 0, "`done` defaults to 0");
+        assert!(!capture::ATTACHED.iter().any(|(t, _)| *t == "contact_files"));
+        assert_eq!(SESSIONS_WIRE_SCHEMA, 67);
+    }
+
+    /// 199 D17: a repeat of one error id leaves one row.
+    #[tokio::test]
+    async fn record_error_once_is_keyed_by_its_id() {
+        let (store, id, _dir) = fresh().await;
+        let notice = uuid::Uuid::now_v7();
+        store.record_error_once(id, notice, "first").await.unwrap();
+        store.record_error_once(id, notice, "again").await.unwrap();
+        store.record_error(id, "other").await.unwrap();
+        let texts: Vec<String> = store
+            .errors(id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(_, t)| t)
+            .collect();
+        assert_eq!(texts.len(), 2);
+        assert!(texts.contains(&"first".to_owned()) && !texts.contains(&"again".to_owned()));
     }
 
     /// 183 §9.1: 0053's per-session settings start NULL (inherit) and accept

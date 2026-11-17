@@ -65,17 +65,24 @@ pub(crate) async fn node(name: &str, dir: &std::path::Path) -> Arc<mesh::net::Ne
 /// own `contacts_ready`, shared by its agent; a live engine's first reload sets it, one with
 /// no agent is taken as past its first pass. The mesh latch is done.
 async fn engine(name: &str, lan: &Lan, live: bool, cfg: A2aConfig) -> Engine {
+    engine_as(name, lan, live, cfg, false).await
+}
+
+/// [`engine`]; `own_id`: its store's engine id is its endpoint, as in a binary (a file
+/// offer's holder is the id its URL names), else `""`.
+async fn engine_as(name: &str, lan: &Lan, live: bool, cfg: A2aConfig, own_id: bool) -> Engine {
     let dir = tempfile::tempdir().unwrap();
     let net = node(name, dir.path()).await;
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(!live));
+    let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+    let id = own_id.then(|| net.id.0.clone());
     let agents = if live {
-        let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
-        Some(agent::spawn_engine_agents(rt, ready.clone()).await)
+        Some(agent::spawn_engine_agents(rt.clone(), ready.clone(), id.as_deref()).await)
     } else {
         None
     };
     let ctx = crate::test_ctx(
-        dir.path(),
+        rt,
         net.clone(),
         Arc::new(lan.clone()),
         cfg,
@@ -1462,6 +1469,24 @@ where
     panic!("timed out waiting for {what}");
 }
 
+/// The runners report consumption and outbound outcomes to the supervisor registered as
+/// `AGENT_ACTOR` (one per engine process). One test at a time holds that name (`agents`'s,
+/// until the guard drops); a finished test's leftover registration is dropped first.
+async fn supervise(
+    agents: &kameo::actor::ActorRef<agent::Agents>,
+) -> tokio::sync::MutexGuard<'static, ()> {
+    static NAME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let guard = NAME.lock().await;
+    kameo::registry::ACTOR_REGISTRY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(agent::AGENT_ACTOR);
+    agents
+        .register(agent::AGENT_ACTOR)
+        .expect("the supervisor name is free under its lock");
+    guard
+}
+
 /// 186 (D4, D5, D12), 190 (D2, D8, review 1): a chat shared with a contact. `cautious` is
 /// refused, `full` is accepted and ignored, and a share is never refused for the contact's
 /// version (its card unread or older). The contact's message is a peer row in the shared
@@ -1484,9 +1509,7 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
     // The runners report consumption and outcomes to the registered supervisor (one per
     // engine process): here A's, the side whose tasks complete on consumption. B's reports
     // reach A and find nothing of theirs; B's own steps here go by direct refs.
-    a_agents
-        .register(agent::AGENT_ACTOR)
-        .expect("no other test registers a supervisor");
+    let _supervisor = supervise(&a_agents).await;
     let chat_of = |agents: kameo::actor::ActorRef<agent::Agents>| async move {
         agents
             .ask(agent::CreateSession {
@@ -2043,10 +2066,10 @@ async fn contacts_are_refused_until_the_latch_and_the_first_reconcile() {
         Arc::new(AtomicBool::new(false)),
         Arc::new(AtomicBool::new(false)),
     );
-    let agents = agent::spawn_engine_agents(rt, ready.clone()).await;
+    let agents = agent::spawn_engine_agents(rt.clone(), ready.clone(), None).await;
     let l = latch.clone();
     let ctx = crate::test_ctx(
-        dir.path(),
+        rt,
         net.clone(),
         Arc::new(lan.clone()),
         cfg(600),
@@ -2296,10 +2319,10 @@ async fn only_a_deleted_chat_tombstones_its_exports_never_a_listing() {
         Arc::new(AtomicBool::new(false)),
         Arc::new(AtomicBool::new(false)),
     );
-    let agents = agent::spawn_engine_agents(rt.clone(), ready.clone()).await;
+    let agents = agent::spawn_engine_agents(rt.clone(), ready.clone(), None).await;
     let l = latch.clone();
     let ctx = crate::test_ctx(
-        dir.path(),
+        rt.clone(),
         net.clone(),
         Arc::new(lan.clone()),
         cfg(600),
@@ -2914,6 +2937,213 @@ async fn a_hold_fails_on_a_block_wherever_it_is_written() {
     );
 }
 
+/// 199: the agent's offers as A's file route reaches them, registered in A's runtime, each
+/// offer under its contact's record id and the sender's id.
+#[cfg(unix)]
+#[derive(Default)]
+struct FileOffers(
+    parking_lot::Mutex<std::collections::HashMap<(String, String), (std::fs::File, u64)>>,
+    parking_lot::Mutex<Vec<(String, String, agent::communication::files::Receipt)>>,
+);
+
+#[cfg(unix)]
+impl FileOffers {
+    fn on(e: &Engine) -> Arc<Self> {
+        let o = Arc::new(FileOffers::default());
+        agent::communication::files::set_offers(&e.ctx.rt, o.clone());
+        o
+    }
+
+    /// Offer `file` (served once: a pipe cannot be reopened) of `len` bytes to `contact`.
+    fn offer(&self, contact: &str, id: &str, file: std::fs::File, len: u64) {
+        self.0
+            .lock()
+            .insert((contact.into(), id.into()), (file, len));
+    }
+}
+
+#[cfg(unix)]
+#[async_trait::async_trait]
+impl agent::communication::files::FileOffers for FileOffers {
+    async fn open(
+        &self,
+        contact: &str,
+        id: &str,
+    ) -> Result<agent::communication::files::OfferHandle, agent::communication::files::OfferError>
+    {
+        let (file, len) = self
+            .0
+            .lock()
+            .remove(&(contact.to_owned(), id.to_owned()))
+            .ok_or(agent::communication::files::OfferError::Unknown)?;
+        Ok(agent::communication::files::OfferHandle {
+            file,
+            len,
+            blake3: String::new(),
+            deadline: chrono::Utc::now() + chrono::Duration::days(7),
+        })
+    }
+
+    async fn receipt(
+        &self,
+        contact: &str,
+        id: &str,
+        receipt: agent::communication::files::Receipt,
+    ) -> Result<(), agent::communication::files::OfferError> {
+        self.1.lock().push((contact.into(), id.into(), receipt));
+        Ok(())
+    }
+}
+
+/// 199 (D2, D10) over real iroh: B downloads A's offer on a stream of its own (A's route
+/// authorises B by B's record id on A) and posts its receipt; a URL host that is no machine
+/// of A is refused with nothing dialled; B blocking A mid-transfer cuts B's download, and A
+/// blocking B cuts A's transfers of B.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_contact_file_streams_on_its_own_stream_and_a_block_cuts_it() {
+    use agent::communication::files::{
+        Fetch, FileFetch as _, Receipt, Timer, TransferError, disk::blake3_of,
+    };
+    use std::io::Write as _;
+    let lan = Lan::default();
+    let a = engine("a", &lan, true, cfg(600)).await;
+    let b = engine("b", &lan, true, cfg(600)).await;
+    let (b_on_a, a_on_b) = paired(&a, &b).await;
+    let rec_b = a.ctx.shared.read().staged.contacts[&b_on_a].id.clone();
+    let rec_a = b.ctx.shared.read().staged.contacts[&a_on_b].id.clone();
+    let offers = FileOffers::on(&a);
+    let dir = tempfile::tempdir().unwrap();
+    let size = 300_000u64;
+    let src = dir.path().join("src");
+    std::fs::write(&src, (0..size).map(|i| (i % 251) as u8).collect::<Vec<_>>()).unwrap();
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    offers.offer(&rec_b, &id, std::fs::File::open(&src).unwrap(), size);
+
+    let timer = || Timer::until(tokio::time::Instant::now() + Duration::from_secs(600));
+    let fetch = files::ContactFetch(Arc::downgrade(&b.ctx));
+    let f = Fetch {
+        contact: rec_a.clone(),
+        member: a.eid(),
+        id: id.clone(),
+        size,
+        partial: dir.path().join("partial"),
+        have: 0,
+        timer: timer(),
+    };
+    // SEC-N1: before B's contacts are ready (mesh latch, first reconcile) a resumed
+    // download waits (retryable, nothing dialled or written); once ready it proceeds.
+    b.ctx
+        .ready
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let err = fetch.download(&f, &mut |_| {}).await.unwrap_err();
+    assert!(matches!(err, TransferError::NotYet), "{err}");
+    assert!(!f.partial.exists(), "nothing written before ready");
+    b.ctx.ready.store(true, std::sync::atomic::Ordering::SeqCst);
+    let got = fetch.download(&f, &mut |_| {}).await.unwrap();
+    let want = blake3_of(&std::fs::File::open(&src).unwrap(), size).unwrap();
+    assert_eq!((got.bytes, got.blake3), (size, want));
+    fetch
+        .send_receipt(&rec_a, &a.eid(), &id, &Receipt::Received, timer())
+        .await
+        .unwrap();
+    assert!(
+        offers
+            .1
+            .lock()
+            .contains(&(rec_b.clone(), id.clone(), Receipt::Received)),
+        "the receipt reached A's offer of B"
+    );
+
+    let stranger = iroh::SecretKey::generate().public().to_string();
+    for refused in [
+        Fetch {
+            member: stranger,
+            ..f.clone()
+        },
+        Fetch {
+            contact: "rec-other".into(),
+            ..f.clone()
+        },
+    ] {
+        let err = fetch.download(&refused, &mut |_| {}).await.unwrap_err();
+        assert!(matches!(err, TransferError::Cancelled), "{err}");
+    }
+
+    // B blocks A mid-download: B's own pass cuts it.
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    let piped = uuid::Uuid::new_v4().simple().to_string();
+    offers.offer(
+        &rec_b,
+        &piped,
+        std::os::fd::OwnedFd::from(reader).into(),
+        1_000_000,
+    );
+    let moved = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let task = {
+        let (w, moved) = (Arc::downgrade(&b.ctx), moved.clone());
+        let f = Fetch {
+            id: piped,
+            size: 1_000_000,
+            partial: dir.path().join("piped"),
+            ..f.clone()
+        };
+        tokio::spawn(async move {
+            files::ContactFetch(w)
+                .download(&f, &mut |n| {
+                    moved.store(n, std::sync::atomic::Ordering::SeqCst)
+                })
+                .await
+        })
+    };
+    writer.write_all(&[7; 1000]).unwrap();
+    until("bytes arriving", || {
+        (moved.load(std::sync::atomic::Ordering::SeqCst) == 1000).then_some(())
+    })
+    .await;
+    b.ctx
+        .remove_contact(ContactRemove {
+            name: a_on_b.clone(),
+            block: true,
+        })
+        .await
+        .unwrap();
+    let err = tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .expect("the block ends the download long before its idle")
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(err, TransferError::Cancelled), "{err}");
+    // SEC-N1: the block (a revocation the latch would sync) refuses once ready; before it,
+    // still only the retryable wait.
+    b.ctx
+        .ready
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let err = fetch.download(&f, &mut |_| {}).await.unwrap_err();
+    assert!(matches!(err, TransferError::NotYet), "{err}");
+    b.ctx.ready.store(true, std::sync::atomic::Ordering::SeqCst);
+    let err = fetch.download(&f, &mut |_| {}).await.unwrap_err();
+    assert!(matches!(err, TransferError::Cancelled), "{err}");
+
+    // A blocks B: every transfer of B on A is cut.
+    let serving = a.ctx.transfers.token(&rec_b);
+    a.ctx
+        .remove_contact(ContactRemove {
+            name: b_on_a.clone(),
+            block: true,
+        })
+        .await
+        .unwrap();
+    until("A cut B's transfers", || {
+        serving.is_cancelled().then_some(())
+    })
+    .await;
+    drop(writer);
+}
+
+#[cfg(unix)]
+mod file_transfers;
 mod forward;
+mod full_access;
 mod owners;
 mod rosters;

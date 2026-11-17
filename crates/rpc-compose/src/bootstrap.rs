@@ -18,6 +18,11 @@ pub(crate) fn install_forward_hooks() {
         fetch_attachment: |t, dir, name, prefer| {
             Box::pin(artifact::mesh::fetch_attachment_via(t, dir, name, prefer))
         },
+        fetch_contact_file: |t, data_dir, holder, id, notice| {
+            Box::pin(artifact::mesh::fetch_contact_file_via(
+                t, data_dir, holder, id, notice,
+            ))
+        },
     });
 }
 

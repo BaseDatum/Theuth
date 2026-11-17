@@ -32,9 +32,9 @@ export const extOf = (name: string): string => {
   return i < 0 ? '' : name.slice(i + 1).toLowerCase()
 }
 
-/** `84 KB`, `1.2 MB`, `312 B`. */
+/** Decimal, as the TUI and the engine's limit: `84 kB`, `1.2 MB`, `312 B`, `4.7 GB`. */
 export const fmtBytes = (n: number): string =>
-  n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`
+  n < 1e3 ? `${n} B` : n < 1e6 ? `${(n / 1e3).toFixed(n < 1e4 ? 1 : 0)} kB` : n < 1e9 ? `${(n / 1e6).toFixed(1)} MB` : `${(n / 1e9).toFixed(1)} GB`
 
 /** MIME subtypes whose `put_attachment` ext differs (45 §7.1: files are named by container). */
 const EXT: Record<string, string> = { jpeg: 'jpg', mp4: 'm4a', mpeg: 'mp3' }

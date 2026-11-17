@@ -13,6 +13,7 @@ use a2a_server::jsonrpc::jsonrpc_router;
 use a2a_server::{RequestHandler, ServiceParams};
 use a2a_types::*;
 use agent::Agents;
+use agent::communication::network::access::{SESSION_ROUTE, session_route};
 use agent::communication::network::{
     A2aCancel, A2aGet, A2aList, A2aPrincipal, A2aReturn, A2aSend, A2aStream, A2aSubscribe,
     RETURN_ROUTE, TaskStream,
@@ -147,6 +148,8 @@ pub(crate) struct Charged;
 struct ContactGrant {
     alias: String,
     facts: crate::config::ContactFacts,
+    /// 200 (D1): this contact has full access (`Peer.full_access`), D4 (2).
+    full_access: bool,
 }
 
 impl Live {
@@ -236,6 +239,7 @@ impl Live {
                         ContactGrant {
                             alias: p.peer.clone(),
                             facts,
+                            full_access: staged.peers.get(&p.peer).is_some_and(|x| x.full_access),
                         },
                     ))
                 })
@@ -272,7 +276,10 @@ impl Live {
             )));
             let export_router = Router::new()
                 .merge(agent_card_router(card).layer(middleware::map_response(private_card)))
-                .nest_service("/rpc", jsonrpc_router(handler))
+                .nest_service(
+                    "/rpc",
+                    jsonrpc_router(handler).layer(middleware::from_fn(exactly_one)),
+                )
                 .layer(RequestBodyLimitLayer::new(BODY_LIMIT));
             router = router.nest(&prefix, export_router);
         }
@@ -291,7 +298,30 @@ impl Live {
             router = router.nest(
                 &format!("/agents/{RETURN_ROUTE}"),
                 Router::new()
-                    .nest_service("/rpc", jsonrpc_router(handler))
+                    .nest_service(
+                        "/rpc",
+                        jsonrpc_router(handler).layer(middleware::from_fn(exactly_one)),
+                    )
+                    .layer(RequestBodyLimitLayer::new(BODY_LIMIT)),
+            );
+            // 200 (D3): the one `~session` handler every contact's `session:<uuid>` path is
+            // rewritten to; never reached by its own name.
+            let handler = Arc::new(Handler {
+                export: SESSION_ROUTE.to_owned(),
+                export_id: None,
+                target: Target::Session,
+                agents: agents.clone(),
+                subscribers: subscribers.clone(),
+                epochs: epochs.clone(),
+                grants: grants.clone(),
+            });
+            router = router.nest(
+                &format!("/agents/{SESSION_ROUTE}"),
+                Router::new()
+                    .nest_service(
+                        "/rpc",
+                        jsonrpc_router(handler).layer(middleware::from_fn(exactly_one)),
+                    )
                     .layer(RequestBodyLimitLayer::new(BODY_LIMIT)),
             );
         }
@@ -338,6 +368,18 @@ impl Live {
         self.contacts.get(eid)?.exports.iter().min().cloned()
     }
 
+    /// 200 (D7): the grant epoch of the contact pinned to `eid` and whether it has full
+    /// access, from this one configuration (the listing runs inside that epoch).
+    pub(crate) fn full_access_of(&self, eid: &str) -> Option<(CancellationToken, bool)> {
+        let p = self.contacts.get(eid)?;
+        let on = self
+            .staged
+            .peers
+            .get(&p.peer)
+            .is_some_and(|x| x.full_access);
+        Some((p.epoch.clone(), on))
+    }
+
     /// The export exists and its session is effectively enabled right now; an agent export
     /// while agent communication is on (its inbox is checked at admission).
     fn open(&self, export: &str) -> bool {
@@ -379,6 +421,8 @@ async fn dispatch(State(shared): State<Shared>, mut req: Request) -> Response {
     let live = shared.read().clone();
     // Any inbound copy of the trusted seam is an attack or a bug; never forward it.
     req.headers_mut().remove(PRINCIPAL_HEADER);
+    // 200 (D3): so is any inbound copy of the session header.
+    crate::contacts::sessions::strip_session_header(req.headers_mut());
     let mut export = req
         .uri()
         .path()
@@ -420,8 +464,33 @@ async fn dispatch(State(shared): State<Shared>, mut req: Request) -> Response {
     // disabled export is not disclosed and its cached routes never answer. 186 (D5): the
     // return route is every contact's, on its own stream only.
     let contact = req.extensions().get::<ContactCaller>().is_some();
+    // 200 (D3): a contact's `session:<uuid>` is the one `~session` handler, the session in the
+    // trusted header; `~session` by name, or a bearer on a `session:` path, is not found.
+    let mut session = false;
+    if let Some(e) = export.as_deref() {
+        if e == SESSION_ROUTE {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        if let Some(id) = session_route(e) {
+            if !contact {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+            let rest = &req.uri().path()[format!("/agents/{e}").len()..];
+            let Ok(uri) = format!("/agents/{SESSION_ROUTE}{rest}").parse() else {
+                return StatusCode::NOT_FOUND.into_response();
+            };
+            *req.uri_mut() = uri;
+            let Ok(v) = HeaderValue::from_str(&id.to_string()) else {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            };
+            req.headers_mut()
+                .insert(crate::contacts::sessions::SESSION_HEADER, v);
+            session = true;
+        }
+    }
     let Some(export) = export.filter(|e| {
-        (contact && e == RETURN_ROUTE) || (principal.exports.contains(e) && live.open(e))
+        (contact && (session || e == RETURN_ROUTE))
+            || (principal.exports.contains(e) && live.open(e))
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -563,9 +632,17 @@ pub fn trim_history(task: &mut Task, history_length: Option<i32>) {
 }
 
 /// Protocol-level request validation (§6.2): ProtoJSON defaults a missing
-/// `message` to an empty one, so emptiness is checked here; only text parts;
-/// no push config, no required extensions.
-pub fn validate_send(req: &SendMessageRequest) -> Result<(), A2AError> {
+/// `message` to an empty one, so emptiness is checked here; text parts, and 199 (D1) file
+/// references from `caller` (the contact it came from; `None` for an HTTP peer, which
+/// sends none) under `extensions == [EXT_FILES]`; no push config, no other extensions.
+/// 199-E3 (P3, D16): an HTTP peer's files, inline `raw` (within [`BODY_LIMIT`]) or at an
+/// `https` URL without credentials (what it serves is checked when it is fetched).
+/// The one rule decoding loses (exactly one content field per part) is [`exactly_one`]'s.
+pub fn validate_send(
+    req: &SendMessageRequest,
+    caller: Option<&crate::config::ContactFacts>,
+) -> Result<(), A2AError> {
+    use crate::contacts::{EXT_FILES, files};
     let m = &req.message;
     if m.message_id.trim().is_empty() {
         return Err(A2AError::invalid_params("message.messageId is required"));
@@ -573,14 +650,33 @@ pub fn validate_send(req: &SendMessageRequest) -> Result<(), A2AError> {
     if m.parts.is_empty() {
         return Err(A2AError::invalid_params("message.parts must not be empty"));
     }
-    if m.extensions.as_ref().is_some_and(|e| !e.is_empty()) {
-        return Err(A2AError::new(
-            error_code::EXTENSION_SUPPORT_REQUIRED,
-            "extensions are not supported",
-        ));
-    }
-    if m.parts.iter().any(|p| p.as_text().is_none()) {
-        return Err(A2AError::content_type_not_supported());
+    let with_files = match m.extensions.as_deref() {
+        None | Some([]) => false,
+        Some([e]) if e == EXT_FILES => true,
+        Some(_) => {
+            return Err(A2AError::new(
+                error_code::EXTENSION_SUPPORT_REQUIRED,
+                "extensions are not supported",
+            ));
+        }
+    };
+    let members = caller
+        .filter(|f| !f.id.is_empty())
+        .map_or(&[][..], |f| &f.eids[..]);
+    for (i, p) in m.parts.iter().enumerate() {
+        let invalid = |why: &str| A2AError::invalid_params(format!("message.parts[{i}]: {why}"));
+        match &p.content {
+            PartContent::Text(_) => {}
+            PartContent::Url(url) if with_files => {
+                files::check_reference(url, p.metadata.as_ref(), members)
+                    .map_err(|why| invalid(&why))?;
+            }
+            PartContent::Raw(_) if caller.is_none() => {}
+            PartContent::Url(url) if caller.is_none() => {
+                agent::communication::files::foreign::https_url(url).map_err(invalid)?;
+            }
+            _ => return Err(A2AError::content_type_not_supported()),
+        }
     }
     if let Some(cfg) = &req.configuration {
         if cfg.task_push_notification_config.is_some() {
@@ -602,6 +698,31 @@ fn accepts_text(mode: &str) -> bool {
     m == "*/*" || m == "text/*" || m.starts_with("text/plain") || m == "text"
 }
 
+/// 199 (D1): the body layer of every JSON-RPC route, inside [`BODY_LIMIT`]:
+/// `contacts::files::check_part_content` on the raw JSON before the SDK decodes it (which
+/// takes the first content field it knows, so a part with both `text` and `url` would pass
+/// as text). A refusal is the JSON-RPC `invalid_params` naming the part; a body that is no
+/// JSON object is the router's to refuse.
+async fn exactly_one(req: Request, next: middleware::Next) -> Response {
+    let (head, body) = req.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, BODY_LIMIT).await else {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    };
+    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
+        && let Err(why) = crate::contacts::files::check_part_content(&v)
+    {
+        let e = A2AError::invalid_params(why);
+        return axum::Json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": v.get("id").cloned().unwrap_or_default(),
+            "error": {"code": e.code, "message": e.message},
+        }))
+        .into_response();
+    }
+    next.run(Request::from_parts(head, axum::body::Body::from(bytes)))
+        .await
+}
+
 /// What one export route publishes.
 #[derive(Clone, Debug)]
 enum Target {
@@ -612,6 +733,9 @@ enum Target {
     Agent(String, agent::communication::network::InboxHome),
     /// 186 (D5): the return route: a contact's answers in conversations this engine opened.
     Return,
+    /// 200 (D3): the one `~session` handler: the session a full-access contact named, from
+    /// the trusted header `dispatch` set; `SendMessage`, `GetTask` and `CancelTask` only.
+    Session,
 }
 
 /// Application seam per export: typed requests → agent commands (§4).
@@ -653,6 +777,9 @@ impl Handler {
 
     /// `send`: a `SendMessage` or the streaming send (191 S4: a read never opens an inbox).
     async fn admit(&self, params: &ServiceParams, send: bool) -> Result<A2aPrincipal, A2AError> {
+        if matches!(self.target, Target::Session) {
+            return self.admit_session(params).await;
+        }
         let (binding, route) = self.caller(params)?;
         // 183 §7.6: a contact's origin rides with every admission (the first-contact hold).
         // 190 (D1): every share is full.
@@ -697,6 +824,7 @@ impl Handler {
                     "the return route takes answers (SendMessage) only",
                 ));
             }
+            (Target::Session, _) => return Err(A2AError::internal("admit_session serves it")),
         };
         Ok(A2aPrincipal {
             binding,
@@ -706,6 +834,50 @@ impl Handler {
             contact,
             ask_first,
         })
+    }
+
+    /// 200 (D3, D4 (1)-(3)): a contact's `session:<uuid>` (the gate ran): full access, else
+    /// `full access is off`; the row half on this machine, else the plain `not owner`. The
+    /// principal's export is `session:<uuid>` (never the mounted name); no first-contact hold.
+    async fn admit_session(&self, params: &ServiceParams) -> Result<A2aPrincipal, A2AError> {
+        use agent::communication::network::access;
+        let (binding, route) = self.caller(params)?;
+        let session = params
+            .get(crate::contacts::sessions::SESSION_HEADER)
+            .and_then(|v| v.first())
+            .and_then(|v| v.parse::<SessionId>().ok())
+            .ok_or_else(|| A2AError::internal("session layer did not run"))?;
+        let grant = self.grants.get(&binding).ok_or_else(|| {
+            A2AError::unsupported_operation("export unavailable: only contacts reach sessions")
+        })?;
+        if !grant.full_access {
+            return Err(A2AError::unsupported_operation(access::OFF));
+        }
+        self.ask(access::FullAccessRow(session)).await?;
+        let export = format!("{}{session}", access::SESSION_PREFIX);
+        Ok(A2aPrincipal {
+            binding,
+            export: export.clone(),
+            session,
+            route: route.clone(),
+            contact: Some(agent::communication::ContactOrigin {
+                contact: grant.alias.clone(),
+                machine: grant.facts.machine.clone(),
+                export,
+                mode: agent::ShareMode::Full,
+            }),
+            ask_first: false,
+        })
+    }
+
+    /// 200 (D3): a method `~session` does not serve.
+    fn session_only(&self) -> Result<(), A2AError> {
+        if matches!(self.target, Target::Session) {
+            return Err(A2AError::unsupported_operation(
+                "a contact's session takes SendMessage, GetTask and CancelTask only",
+            ));
+        }
+        Ok(())
     }
 
     /// 191 (D3, S4): the strict session resolve of a contact's message, before any task
@@ -718,6 +890,11 @@ impl Handler {
                 .await?;
         }
         Ok(())
+    }
+
+    /// 199: the contact facts of `p`'s binding (its machines name the files it may offer).
+    fn facts(&self, p: &A2aPrincipal) -> Option<&crate::config::ContactFacts> {
+        self.grants.get(&p.binding).map(|g| &g.facts)
     }
 
     /// Ask the agent; the supervisor answers some commands through a
@@ -796,7 +973,7 @@ impl RequestHandler for Handler {
             if !self.grants.contains_key(&binding) {
                 return Err(A2AError::task_not_found("conversation"));
             }
-            validate_send(&req)?;
+            validate_send(&req, self.grants.get(&binding).map(|g| &g.facts))?;
             return self
                 .ask(A2aReturn {
                     binding,
@@ -807,7 +984,7 @@ impl RequestHandler for Handler {
         }
         let principal = self.admit(params, true).await?;
         self.owned(&principal).await?;
-        validate_send(&req)?;
+        validate_send(&req, self.facts(&principal))?;
         let history_length = req.configuration.as_ref().and_then(|c| c.history_length);
         let mut response = self
             .ask(A2aSend {
@@ -826,9 +1003,10 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: SendMessageRequest,
     ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
+        self.session_only()?;
         let principal = self.admit(params, true).await?;
         self.owned(&principal).await?;
-        validate_send(&req)?;
+        validate_send(&req, self.facts(&principal))?;
         let stream = self
             .ask(A2aStream {
                 principal: principal.clone(),
@@ -860,6 +1038,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: ListTasksRequest,
     ) -> Result<ListTasksResponse, A2AError> {
+        self.session_only()?;
         let principal = self.admit(params, false).await?;
         let history_length = req.history_length;
         let include_artifacts = req.include_artifacts == Some(true);
@@ -896,6 +1075,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: SubscribeToTaskRequest,
     ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
+        self.session_only()?;
         let principal = self.admit(params, false).await?;
         let stream = self
             .ask(A2aSubscribe {
@@ -1251,6 +1431,94 @@ mod tests {
         );
     }
 
+    /// 200 (D3): only a contact's `session:<uuid>` path reaches the one `~session` handler,
+    /// with the session in the trusted header `dispatch` set; `~session` by name, a bearer on
+    /// a `session:` path and a non-canonical id are 404; a forged header on a share path is
+    /// stripped, never seen.
+    #[tokio::test]
+    async fn only_a_contacts_session_path_reaches_the_session_handler() {
+        use crate::contacts::sessions::SESSION_HEADER;
+        use agent::communication::{PeerScope, Policy};
+        use axum::http::HeaderMap;
+        use axum::routing::post;
+        async fn echo(headers: HeaderMap) -> Response {
+            let seen = headers
+                .get(SESSION_HEADER)
+                .cloned()
+                .unwrap_or_else(|| HeaderValue::from_static("none"));
+            (StatusCode::OK, [("x-seen-session", seen)]).into_response()
+        }
+        let research = SessionId::new();
+        let mut policy = Policy::new(true, "test");
+        policy.record_root(research, PeerScope::Owner).unwrap();
+        let router = Router::new()
+            .nest(
+                "/agents/research",
+                Router::new().nest_service("/rpc", post(echo)),
+            )
+            .nest(
+                &format!("/agents/{SESSION_ROUTE}"),
+                Router::new().nest_service("/rpc", post(echo)),
+            );
+        let principal = |id: u128| {
+            Arc::new(Principal::new(
+                Uuid::from_u128(id),
+                "maya".into(),
+                HashSet::from(["research".to_owned()]),
+                CancellationToken::new(),
+            ))
+        };
+        let shared: Shared = Arc::new(RwLock::new(Arc::new(Live {
+            router,
+            principals: vec![(Token::for_test("tok-a"), principal(1))],
+            contacts: HashMap::from([("maya-eid".to_owned(), principal(2))]),
+            exports: HashMap::from([("research".to_owned(), research)]),
+            agents: HashSet::new(),
+            policy: Some(SharedPolicy::new(policy)),
+            staged: Staged::default(),
+            bindings: BTreeMap::new(),
+        })));
+        let id = SessionId::new();
+        let send = |path: String, contact: bool, forged: bool| {
+            let shared = shared.clone();
+            async move {
+                let mut req = Request::builder().method("POST").uri(path);
+                if !contact {
+                    req = req.header(header::AUTHORIZATION, "Bearer tok-a");
+                }
+                if forged {
+                    req = req.header(SESSION_HEADER, SessionId::new().to_string());
+                }
+                let mut req = req.body(axum::body::Body::empty()).unwrap();
+                if contact {
+                    req.extensions_mut()
+                        .insert(ContactCaller("maya-eid".into()));
+                }
+                app(shared).oneshot(req).await.unwrap()
+            }
+        };
+        let r = send(format!("/agents/session:{id}/rpc"), true, true).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()["x-seen-session"], id.to_string().as_str());
+        let r = send("/agents/research/rpc".into(), true, true).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()["x-seen-session"], "none", "a forged header");
+        for (path, contact) in [
+            (format!("/agents/{SESSION_ROUTE}/rpc"), true),
+            (format!("/agents/session:{id}/rpc"), false),
+            (
+                format!("/agents/session:{}/rpc", id.to_string().to_uppercase()),
+                true,
+            ),
+        ] {
+            assert_eq!(
+                send(path.clone(), contact, false).await.status(),
+                StatusCode::NOT_FOUND,
+                "{path} (contact: {contact})"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn bounded_stream_ends_with_revocation_when_grant_retired() {
         let epoch = CancellationToken::new();
@@ -1295,18 +1563,18 @@ mod tests {
     #[test]
     fn send_validation() {
         let ok = Message::new(Role::User, vec![Part::text("hi")]);
-        assert!(validate_send(&send(ok.clone())).is_ok());
+        assert!(validate_send(&send(ok.clone()), None).is_ok());
 
         let mut empty_id = ok.clone();
         empty_id.message_id.clear();
         assert_eq!(
-            validate_send(&send(empty_id)).unwrap_err().code,
+            validate_send(&send(empty_id), None).unwrap_err().code,
             error_code::INVALID_PARAMS
         );
 
         let no_parts = Message::new(Role::User, vec![]);
         assert_eq!(
-            validate_send(&send(no_parts)).unwrap_err().code,
+            validate_send(&send(no_parts), None).unwrap_err().code,
             error_code::INVALID_PARAMS
         );
 
@@ -1319,15 +1587,16 @@ mod tests {
                 metadata: None,
             }],
         );
+        // 199-E3: an HTTP peer's URL part must be a credential-free `https` file URL.
         assert_eq!(
-            validate_send(&send(file)).unwrap_err().code,
-            error_code::CONTENT_TYPE_NOT_SUPPORTED
+            validate_send(&send(file), None).unwrap_err().code,
+            error_code::INVALID_PARAMS
         );
 
         let mut ext = ok.clone();
         ext.extensions = Some(vec!["https://example/ext".into()]);
         assert_eq!(
-            validate_send(&send(ext)).unwrap_err().code,
+            validate_send(&send(ext), None).unwrap_err().code,
             error_code::EXTENSION_SUPPORT_REQUIRED
         );
 
@@ -1346,7 +1615,7 @@ mod tests {
             return_immediately: None,
         });
         assert_eq!(
-            validate_send(&push).unwrap_err().code,
+            validate_send(&push, None).unwrap_err().code,
             error_code::PUSH_NOTIFICATION_NOT_SUPPORTED
         );
 
@@ -1358,9 +1627,226 @@ mod tests {
             return_immediately: None,
         });
         assert_eq!(
-            validate_send(&modes).unwrap_err().code,
+            validate_send(&modes, None).unwrap_err().code,
             error_code::CONTENT_TYPE_NOT_SUPPORTED
         );
+    }
+
+    /// 199-E3 (P3, D16): from an HTTP peer (no files extension), inline `raw` parts and
+    /// `https` URL parts are admitted beside text; any other URL, or one with userinfo, is
+    /// `invalid_params` naming the part; `data` stays unsupported. A contact (a theuth)
+    /// sends no such parts.
+    #[test]
+    fn foreign_files_are_admitted_inline_or_at_https_urls_only() {
+        let msg = |parts: Vec<Part>| {
+            let mut m = Message::new(Role::User, parts);
+            m.message_id = "m1".into();
+            send(m)
+        };
+        let raw = Part::raw(vec![0x89, b'P', b'N', b'G'])
+            .with_filename("dot.png")
+            .with_media_type("image/png");
+        let https = Part::url("https://files.example/report.pdf");
+        assert!(
+            validate_send(
+                &msg(vec![Part::text("see"), raw.clone(), https.clone()]),
+                None
+            )
+            .is_ok()
+        );
+        assert!(validate_send(&msg(vec![raw.clone()]), None).is_ok());
+        for (url, why) in [
+            ("http://files.example/report.pdf", "the url is not https"),
+            (
+                "https://user:pw@files.example/f",
+                "the url carries credentials",
+            ),
+            (
+                "https://user@files.example/f",
+                "the url carries credentials",
+            ),
+            ("file:///etc/passwd", "the url is not https"),
+            ("not a url", "the url does not parse"),
+        ] {
+            let e = validate_send(&msg(vec![Part::text("see"), Part::url(url)]), None).unwrap_err();
+            assert_eq!(e.code, error_code::INVALID_PARAMS, "{url}");
+            assert_eq!(e.message, format!("message.parts[1]: {why}"), "{url}");
+        }
+        assert_eq!(
+            validate_send(&msg(vec![Part::data(serde_json::json!({"k": 1}))]), None)
+                .unwrap_err()
+                .code,
+            error_code::CONTENT_TYPE_NOT_SUPPORTED
+        );
+        let maya = contact("rec-maya", &["7a7a"]);
+        for p in [raw, https] {
+            assert_eq!(
+                validate_send(&msg(vec![p]), Some(&maya)).unwrap_err().code,
+                error_code::CONTENT_TYPE_NOT_SUPPORTED
+            );
+        }
+    }
+
+    fn contact(id: &str, eids: &[&str]) -> crate::config::ContactFacts {
+        crate::config::ContactFacts {
+            id: id.into(),
+            eid: eids[0].into(),
+            eids: eids.iter().map(|e| (*e).to_owned()).collect(),
+            display: String::new(),
+            machine: String::new(),
+            first_contact: Default::default(),
+            blocked: false,
+            paired_ms: 0,
+            addrs: Vec::new(),
+        }
+    }
+
+    /// 199 (D1): a file-bearing message built as the client builds it and carried as
+    /// ProtoJSON both ways is admitted only from a machine of the sending contact, only
+    /// under `extensions: [EXT_FILES]` and only with sound metadata; plain text needs no
+    /// extension, exactly as before files.
+    #[test]
+    fn file_references_are_admitted_from_the_senders_machines_only() {
+        use crate::contacts::{EXT_FILES, files};
+        use agent::communication::files::{ContactFile, FileState, OutState};
+        let holder = "5b2f0c8e9d41a7b3c6e05f1d2a9b8c7e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c";
+        let file = ContactFile {
+            id: "0f8e2d4c6a1b3957e0d2c4b6a8f01357".into(),
+            holder: holder.into(),
+            state: FileState::Out(OutState::Queued),
+            exchange: Uuid::nil(),
+            contact_id: "rec-maya".into(),
+            contact: "maya".into(),
+            name: "handoff.pdf".into(),
+            media_type: "application/pdf".into(),
+            size: Some(2_516_582),
+            blake3: Some("a3f1c09be27d4458e61f0b9c2d7e8a4f5b6c3d2e1f0a9b8c7d6e5f4a3b2c1d0e".into()),
+            done: 0,
+            error: None,
+            path: None,
+            machine: "xeus".into(),
+            deadline: "2026-11-24T14:32:00.75Z".parse().unwrap(),
+        };
+        let mut m = Message::new(
+            Role::User,
+            vec![Part::text("see"), files::reference_part(&file)],
+        );
+        m.message_id = "m1".into();
+        m.extensions = Some(vec![EXT_FILES.to_owned()]);
+        let wire = a2a_pb::protojson_conv::to_value(&send(m)).unwrap();
+        let part = &wire["message"]["parts"][1];
+        assert_eq!(part["url"], files::file_url(holder, &file.id).as_str());
+        assert_eq!(
+            part["metadata"][EXT_FILES]["expires"],
+            "2026-11-24T14:32:00Z"
+        );
+        assert_eq!(wire["message"]["extensions"][0], EXT_FILES);
+        let back: SendMessageRequest = a2a_pb::protojson_conv::from_value(wire).unwrap();
+
+        let maya = contact("rec-maya", &["7a7a", holder]);
+        assert!(validate_send(&back, Some(&maya)).is_ok());
+        let invalid = |r: &SendMessageRequest, caller: Option<&crate::config::ContactFacts>| {
+            let e = validate_send(r, caller).unwrap_err();
+            assert_eq!(e.code, error_code::INVALID_PARAMS, "{}", e.message);
+            assert!(e.message.starts_with("message.parts[1]: "), "{}", e.message);
+        };
+        // Another contact's machine, an import without a record, an HTTP peer.
+        invalid(&back, Some(&contact("rec-bob", &["7a7a"])));
+        invalid(&back, Some(&contact("", &[holder])));
+        invalid(&back, None);
+        let with = |f: &dyn Fn(&mut Part)| {
+            let mut r = back.clone();
+            f(&mut r.message.parts[1]);
+            r
+        };
+        let meta = |p: &mut Part| {
+            p.metadata
+                .as_mut()
+                .unwrap()
+                .get_mut(EXT_FILES)
+                .unwrap()
+                .clone()
+        };
+        for broken in [
+            with(&|p| {
+                p.content =
+                    PartContent::Url(format!("https://{holder}/a2a/files/{}", "0".repeat(32)))
+            }),
+            with(&|p| p.metadata = None),
+            with(&|p| {
+                let mut v = meta(p);
+                v["size"] = serde_json::json!(5_000_000_001u64);
+                p.metadata = Some(HashMap::from([(EXT_FILES.to_owned(), v)]));
+            }),
+            with(&|p| {
+                let mut v = meta(p);
+                v["expires"] = serde_json::json!("next week");
+                p.metadata = Some(HashMap::from([(EXT_FILES.to_owned(), v)]));
+            }),
+        ] {
+            invalid(&broken, Some(&maya));
+        }
+        // No extension: the part is unsupported, as on an engine before files; another
+        // extension beside it is still required.
+        let mut bare = back.clone();
+        bare.message.extensions = None;
+        assert_eq!(
+            validate_send(&bare, Some(&maya)).unwrap_err().code,
+            error_code::CONTENT_TYPE_NOT_SUPPORTED
+        );
+        let mut more = back.clone();
+        more.message.extensions = Some(vec![EXT_FILES.to_owned(), "https://example/ext".into()]);
+        assert_eq!(
+            validate_send(&more, Some(&maya)).unwrap_err().code,
+            error_code::EXTENSION_SUPPORT_REQUIRED
+        );
+        // Plain text without extensions, from a contact or not.
+        let mut text = Message::new(Role::User, vec![Part::text("hi")]);
+        text.message_id = "m2".into();
+        assert!(validate_send(&send(text.clone()), Some(&maya)).is_ok());
+        assert!(validate_send(&send(text), None).is_ok());
+    }
+
+    /// 199 (D1): a part with both `text` and `url` is refused on the raw JSON-RPC body (the
+    /// SDK would take it as text), naming the part with the request's id; every other body
+    /// passes on unchanged.
+    #[tokio::test]
+    async fn the_body_layer_refuses_a_part_with_two_contents() {
+        let app = Router::new()
+            .route(
+                "/",
+                axum::routing::post(|b: axum::body::Bytes| async move { b }),
+            )
+            .layer(middleware::from_fn(exactly_one));
+        let call = |body: serde_json::Value| {
+            let app = app.clone();
+            async move {
+                let req = axum::http::Request::post("/")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap();
+                let resp = app.oneshot(req).await.unwrap();
+                let b = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<serde_json::Value>(&b).unwrap()
+            }
+        };
+        let body = |part: serde_json::Value| {
+            serde_json::json!({"jsonrpc": "2.0", "id": 7, "method": "SendMessage",
+                "params": {"message": {"messageId": "m", "role": "ROLE_USER", "parts": [part]}}})
+        };
+        let got = call(body(
+            serde_json::json!({"text": "x", "url": "iroh://h/a2a/files/0"}),
+        ))
+        .await;
+        assert_eq!(got["id"], 7);
+        assert_eq!(got["error"]["code"], error_code::INVALID_PARAMS);
+        assert_eq!(
+            got["error"]["message"],
+            "message.parts[0] must set exactly one of text, raw, url or data"
+        );
+        let one = body(serde_json::json!({"text": "x"}));
+        assert_eq!(call(one.clone()).await, one);
     }
 
     #[test]

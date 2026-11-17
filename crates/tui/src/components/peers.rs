@@ -1,6 +1,6 @@
 //! Communication switches, peer directory/answers and authenticated transcript cards.
 use super::*;
-use std::collections::VecDeque;
+use std::{collections::VecDeque, path::{Path, PathBuf}};
 use uuid::Uuid;
 use serde::Deserialize;
 use rpc_compose::api::clients::{AgentMessagingApiClient, A2aMessagingApiClient};
@@ -26,7 +26,18 @@ pub(crate) enum Menu {
 }
 #[derive(Debug)]
 pub(crate) enum Prompt {
-    PeerAnswer { session: SessionId, reply_to: Uuid, from: String, resolve: bool },
+    /// `files`: D15 attachments, admitted only when `attach` is [`Attach::Here`].
+    PeerAnswer { session: SessionId, reply_to: Uuid, from: String, resolve: bool, files: Vec<PathBuf>, attach: Attach },
+}
+/// D15: whether the answering chat lives on this machine, where the egress gate can open a file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Attach {
+    /// Not read yet.
+    Unknown,
+    /// This machine owns the chat.
+    Here,
+    /// The owning machine's name (its short id when the mesh does not name it).
+    On(String),
 }
 /// Exact owner request carried into the effect.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,7 +74,11 @@ pub enum Request {
         reply_to: Uuid,
         /// Human answer.
         text: String,
+        /// D15: absolute paths attached on the chat's machine.
+        files: Vec<PathBuf>,
     },
+    /// D15: where the answering chat lives.
+    ChatOwner(SessionId),
     /// Inspect network listener, peers and exports.
     A2aStatus,
     /// Validate and atomically reload network configuration.
@@ -74,6 +89,7 @@ pub(crate) enum Msg {
     Peers(SessionId, Result<PeerPage, String>),
     PeerRequests(SessionId, PeerMessagePage),
     PeerAnswered(PeerReceipt),
+    Owner(SessionId, Attach),
     A2a(a2a::A2aStatus),
     CommunicationChanged,
     PeerMessageChanged(PeerMessageChanged),
@@ -95,7 +111,19 @@ impl Peers {
                     Request::SetPeerScope { root, scope, alias } => Msg::Communication(api.set_peer_scope(root, scope, alias).await.map_err(crate::reason)?),
                     Request::ListPeers(session) => Msg::Peers(session, api.list_peers(session, None, None, None).await.map_err(crate::reason)),
                     Request::ListPeerRequests(session) => Msg::PeerRequests(session, api.list_peer_messages(session, None, None, true).await.map_err(crate::reason)?),
-                    Request::AnswerPeerRequest { session, reply_to, text } => Msg::PeerAnswered(api.answer_peer_request(session, reply_to, text).await.map_err(crate::reason)?),
+                    // D15: `files` is the optional 4th parameter, sent only when non-empty.
+                    Request::AnswerPeerRequest { session, reply_to, text, files } => Msg::PeerAnswered(api.answer_peer_request(session, reply_to, text, (!files.is_empty()).then_some(files)).await.map_err(crate::reason)?),
+                    Request::ChatOwner(session) => {
+                        use rpc_compose::api::clients::{AgentSessionsApiClient, NetworkApiClient};
+                        let attach = match api.list_sessions().await.map_err(crate::reason)?.into_iter().find(|s| s.id == session) {
+                            None => Attach::Unknown,
+                            Some(s) if s.here => Attach::Here,
+                            Some(s) => Attach::On(api.mesh_status().await.ok()
+                                .and_then(|mesh| mesh.peers.into_iter().find(|p| p.id.0 == s.owner).map(|p| clean(&p.name)))
+                                .unwrap_or_else(|| crate::model::engine_chip(&s.owner))),
+                        };
+                        Msg::Owner(session, attach)
+                    }
                     Request::A2aStatus => Msg::A2a(api.a2a_status().await.map_err(crate::reason)?),
                     Request::ReloadA2a => Msg::A2a(api.reload_a2a().await.map_err(crate::reason)?),
                 })
@@ -166,8 +194,12 @@ impl Peers {
         let mut rows = match peers {
             None => vec![PeerRow::Note("loading peers…".into())],
             Some(Err(error)) => vec![PeerRow::Note(format!("no peers · {error}"))],
-            Some(Ok(page)) if page.peers.is_empty() => vec![PeerRow::Note("no peers this session may address".into())],
-            Some(Ok(page)) => page.peers.iter().map(PeerRow::Peer).collect(),
+            Some(Ok(page)) => {
+                let mut rows = if page.peers.is_empty() { vec![PeerRow::Note("no peers this session may address".into())] }
+                    else { page.peers.iter().map(PeerRow::Peer).collect() };
+                rows.extend(partial_line(&page.partial).map(PeerRow::Note));
+                rows
+            }
         };
         rows.push(PeerRow::Sep);
         match requests {
@@ -211,6 +243,7 @@ impl Peers {
             (KeyCode::Enter | KeyCode::Char('i'), Some(PeerRow::Request(record, resolve))) => Act::Inspect(request_card(record, *resolve)),
             (KeyCode::Char('a'), Some(PeerRow::Request(record, resolve))) => Act::Answer(Prompt::PeerAnswer {
                 session, reply_to: record.receipt.id, from: if *resolve { record.receipt.to.clone() } else { record.from.clone() }, resolve: *resolve,
+                files: Vec::new(), attach: Attach::Unknown,
             }),
             _ => Act::Nothing,
         };
@@ -221,7 +254,7 @@ impl Peers {
             Act::Move(to) => *current = to,
             Act::Open(id) => { self.menu = None; cx.close(); cx.core(CoreAction::ResumeSession(id)); }
             Act::Inspect(card) => { self.menu = None; cx.close(); cx.core(CoreAction::AppendCard(card)); }
-            Act::Answer(prompt) => { self.menu = None; self.prompt = Some(prompt); }
+            Act::Answer(prompt) => { self.menu = None; self.prompt = Some(prompt); self.request(Request::ChatOwner(session), cx); }
             Act::Refresh => { self.request(Request::ListPeers(session), cx); self.request(Request::ListPeerRequests(session), cx); }
             Act::Note(note) => cx.core(CoreAction::Notice(note.into())),
             Act::Close => { self.menu = None; cx.close(); }
@@ -243,8 +276,11 @@ impl Peers {
             Msg::Peers(session, page) => {
                 match &page {
                     Err(error) => cx.plain(Plain::Line(format!("no peers · {error}"))),
-                    Ok(page) if page.peers.is_empty() => cx.plain(Plain::Line("no peers this session may address".into())),
-                    Ok(page) => for peer in &page.peers { cx.plain(Plain::Line(PeerRow::Peer(peer).line())); },
+                    Ok(page) => {
+                        if page.peers.is_empty() { cx.plain(Plain::Line("no peers this session may address".into())); }
+                        for peer in &page.peers { cx.plain(Plain::Line(PeerRow::Peer(peer).line())); }
+                        if let Some(line) = partial_line(&page.partial) { cx.plain(Plain::Line(line)); }
+                    }
                 }
                 if let Some(Menu::Peers { session: current, peers, .. }) = &mut self.menu && *current == session { *peers = Some(page); }
             }
@@ -268,6 +304,7 @@ impl Peers {
                 cx.plain(Plain::Line(line(id.to_string())));
                 cx.core(CoreAction::Notice(line(short_uuid(id))));
             }
+            Msg::Owner(session, owner) => if let Some(Prompt::PeerAnswer { session: current, attach, .. }) = &mut self.prompt && *current == session { *attach = owner; },
             Msg::A2a(status) => for line in a2a_lines(&status) { cx.plain(Plain::Line(line.clone())); cx.core(CoreAction::Notice(line)); },
             Msg::CommunicationChanged | Msg::A2aChanged => { self.refresh_communication = true; self.refresh_peers |= self.menu.is_some(); }
             Msg::PeerMessageChanged(event) => { self.refresh_peers |= matches!(&self.menu, Some(Menu::Peers { session, .. }) if *session == event.session); }
@@ -278,6 +315,8 @@ impl Peers {
                     if self.peer_shown.len() == 8 { self.peer_shown.pop_front(); }
                     self.peer_shown.push_back(event.text.clone());
                     cx.core(CoreAction::InterjectCard(peer_card(WrapperOrigin { id: event.origin.id, from: &event.origin.from, reply_to: event.origin.reply_to, full: event.origin.contact_mode == Some(agent::ShareMode::Full) }, event.text, "")));
+                    // 199: the message's files follow it as their own lines (`ContactFileChanged` moves them on).
+                    for file in &event.files { cx.core(CoreAction::InterjectCard(super::files::Line::from(file).card(false, "file"))); }
                 }
             }
             Msg::Agent => {
@@ -326,8 +365,21 @@ impl Component for Peers {
                 _ => cx.core(CoreAction::Reject("usage: /a2a [reload]".into())),
             },
             Input::Key(key) => self.key(key.code, cx),
-            Input::Submit(line) => if let Some(Prompt::PeerAnswer { session, reply_to, .. }) = self.prompt.take() {
-                cx.consume_key(); cx.close(); self.request(Request::AnswerPeerRequest { session, reply_to, text: line.to_owned() }, cx);
+            Input::Submit(line) => if let Some(Prompt::PeerAnswer { files, attach, .. }) = &mut self.prompt {
+                cx.consume_key();
+                // D15: `+<absolute path>` attaches a file, only where the chat lives.
+                if let Some(path) = line.strip_prefix('+').map(str::trim) {
+                    let note = match attach {
+                        Attach::Here if Path::new(path).is_absolute() => { files.push(path.into()); format!("peers: attached {path} ({} files)", files.len()) }
+                        Attach::Here => format!("files: {path} is not an absolute path"),
+                        Attach::On(machine) => format!("attach on {machine}"),
+                        Attach::Unknown => "attach: this chat's machine is not known yet".to_owned(),
+                    };
+                    cx.core(CoreAction::Notice(note));
+                    return;
+                }
+                let Some(Prompt::PeerAnswer { session, reply_to, files, .. }) = self.prompt.take() else { return };
+                cx.close(); self.request(Request::AnswerPeerRequest { session, reply_to, text: line.to_owned(), files }, cx);
             },
             Input::Message(message) => self.message(message, cx),
             Input::Tick { .. } => {
@@ -364,8 +416,14 @@ impl Component for Peers {
         project_xml(row)
     }
     fn editor(&self) -> Option<Editor> {
-        let Prompt::PeerAnswer { reply_to, from, resolve, .. } = self.prompt.as_ref()?;
-        Some(Editor { hint: format!("peers  {} {} · {}  answer  (esc cancel)",
+        let Prompt::PeerAnswer { reply_to, from, resolve, files, attach, .. } = self.prompt.as_ref()?;
+        let attach = match attach {
+            Attach::Unknown => String::new(),
+            Attach::Here if files.is_empty() => "  · +<path> attaches".to_owned(),
+            Attach::Here => format!("  · +<path> attaches ({} attached)", files.len()),
+            Attach::On(machine) => format!("  · attach on {machine}"),
+        };
+        Some(Editor { hint: format!("peers  {} {} · {}  answer{attach}  (esc cancel)",
             if *resolve { "resolve own wait on" } else { "answer for this session to" }, short_uuid(*reply_to), from), masked: false, submit_empty: false })
     }
     fn view(&self, at: Surface<'_>, cx: &ViewCx<'_>) -> Option<View> {
@@ -424,6 +482,8 @@ fn peer_card(origin: WrapperOrigin<'_>, body: String, facts: &str) -> Transcript
 /// `<message>` after an inbox's `<contact_inbox/>` notice. `facts` is the
 /// header tail: ` · bob on <machine> via <export> · read-only`.
 pub(super) fn contact_row(text: &str) -> Option<(String, String)> {
+    // 199: `<message_file …/>` placeholders after a `<message>` are skipped by `injected` and drawn
+    // as their own lines by `components/files.rs`; notice rows never reach a contact row.
     let text = text.trim();
     let (open, words) = if let Some(rest) = text.strip_prefix("<contact_message ") {
         let (open, body) = rest.strip_suffix("</contact_message>")?.split_once('>')?;
@@ -626,10 +686,19 @@ pub fn a2a_lines(s: &a2a::A2aStatus) -> Vec<String> {
     out
 }
 
+/// 200 (Contract): the line under a page whose contact machines did not all answer in time
+/// (the model reads the same); every page carries it, empty ones too. Machine names are remote.
+fn partial_line(partial: &[String]) -> Option<String> {
+    (!partial.is_empty()).then(|| format!(
+        "partial: no answer in time from {}; their sessions may be missing from this page (repeat this call to retry)",
+        partial.iter().map(|m| super::files::text(m)).collect::<Vec<_>>().join(", ")))
+}
+
 /// One row of the `/peers` menu.
 #[derive(Debug)]
 pub enum PeerRow<'a> {
-    /// A permitted peer; ⏎ opens a native one.
+    /// A permitted peer; ⏎ opens a native one. 200: a full-access contact's sessions
+    /// (`peer:<contact>/session:<uuid>`) are rows like any other and open nothing here.
     Peer(&'a PeerInfo),
     /// Blank line between the directory and the requests; the cursor skips it.
     Sep,
@@ -644,22 +713,31 @@ impl PeerRow<'_> {
     /// The row's text.
     pub fn line(&self) -> String {
         match self {
-            PeerRow::Peer(p) => format!(
-                "{} {:<20} {:<12} {:<10} {:<8} {}{}{}",
-                match p.state {
-                    agent::communication::PeerState::Running
-                    | agent::communication::PeerState::Awaiting => "●",
-                    agent::communication::PeerState::Idle => "○",
-                    _ => " ",
-                },
-                p.name.chars().take(20).collect::<String>(),
-                format!("{:?}", p.relationship).to_lowercase(),
-                format!("{:?}", p.state).to_lowercase(),
-                format!("{:?}", p.kind).to_lowercase(),
-                if p.send { "send " } else { "" },
-                if p.reply { "reply " } else { "" },
-                p.address
-            ),
+            PeerRow::Peer(p) => {
+                let mut line = format!(
+                    "{} {:<20} {:<12} {:<10} {:<8} {}{}{}",
+                    match p.state {
+                        agent::communication::PeerState::Running
+                        | agent::communication::PeerState::Awaiting => "●",
+                        agent::communication::PeerState::Idle => "○",
+                        _ => " ",
+                    },
+                    // A contact's session is titled by the contact's machine: remote text.
+                    super::files::text(&p.name).chars().take(20).collect::<String>(),
+                    format!("{:?}", p.relationship).to_lowercase(),
+                    format!("{:?}", p.state).to_lowercase(),
+                    format!("{:?}", p.kind).to_lowercase(),
+                    if p.send { "send " } else { "" },
+                    if p.reply { "reply " } else { "" },
+                    p.address
+                );
+                // A contact's own row carries the engine's hint: `full access · more: …`, `+N more: …`.
+                if let Some(title) = p.title.as_deref().filter(|_| agent::communication::is_contact_row(p) && !p.name.contains('/')) {
+                    line.push_str("  ");
+                    line.push_str(&super::files::text(title));
+                }
+                line
+            }
             PeerRow::Sep => String::new(),
             PeerRow::Request(r, resolve) => format!(
                 "{} {}  {:<44}  {}",
@@ -698,11 +776,48 @@ fn typed_peer_delivery_and_legacy_echo_share_one_card_above_streaming_assistant(
     model.apply(event(AgentEvent::TextDelta { session, turn, text: "before".into() }));
     model.apply(UiEvent::Wire(super::tests::topic("agent.peer-delivered", 1, serde_json::to_value(PeerDelivered {
         session, origin: agent::PeerOrigin { id: Uuid::nil(), from: "session:source".into(), reply_to: None, scope: None, contact_mode: None },
-        text: "PONG".into(), seq: 1, turn,
+        text: "PONG".into(), seq: 1, turn, files: Vec::new(),
     }).unwrap())));
     model.apply(event(AgentEvent::MessageDelivered { session, from: "session:source".into(), text: "PONG".into() }));
     model.apply(event(AgentEvent::TextDelta { session, turn, text: " after".into() }));
     assert!(matches!(model.entries.as_slice(),
         [Entry::Card { title, text, .. }, Entry::Assistant(tail)]
         if title == "session:source · 00000000" && text.raw() == "PONG" && tail.raw() == "before after" && !tail.is_done()));
+}
+
+#[cfg(test)]
+#[test]
+fn contact_session_rows_and_the_partial_line() {
+    use agent::communication::{PeerKind, PeerRelationship, PeerState};
+    let row = |address: &str, name: &str, state, send: bool, title: Option<&str>, tags: &[&str]| PeerInfo {
+        address: address.into(), name: name.into(), kind: PeerKind::A2a, relationship: PeerRelationship::Remote, state,
+        send, reply: send, stream: false, activity: None, title: title.map(Into::into),
+        tags: tags.iter().map(|t| (*t).into()).collect(), engine: Some("Maya's MacBook Air".into()), reachable: None,
+    };
+    let hint = "full access · more: discover_peers(kind=\"contact\", query=\"maya\") · did not answer: Maya's Mac mini";
+    let maya = row("peer:maya", "maya", PeerState::Idle, true, Some(hint), &["contact"]);
+    let share = row("peer:maya/handoff", "maya/Handoff review", PeerState::Idle, true, Some("Handoff review"), &["contact", "chat", "allowed"]);
+    // The title is the contact machine's: a line break and a bidi override never reach the terminal.
+    let running = row("peer:maya/session:0193f0a2-6b1c-7d3e-9f40-1a2b3c4d5e6f", "maya/Port\u{202E} layout v3\n", PeerState::Running, true,
+        Some("Port layout v3"), &["contact", "session", "native"]);
+    let observed = row("peer:maya/session:0193d4ca-11f0-7e2b-8a4c-6d7e8f9a0b1c", "maya/explore-assets", PeerState::Running, false,
+        Some("explore-assets"), &["contact", "session", "native"]);
+    assert_eq!(PeerRow::Peer(&maya).line(), format!("○ maya                 remote       idle       a2a      send reply peer:maya  {hint}"));
+    assert_eq!(PeerRow::Peer(&share).line(), "○ maya/Handoff review  remote       idle       a2a      send reply peer:maya/handoff");
+    assert_eq!(PeerRow::Peer(&running).line(), "● maya/Port layout v3  remote       running    a2a      send reply peer:maya/session:0193f0a2-6b1c-7d3e-9f40-1a2b3c4d5e6f");
+    assert_eq!(PeerRow::Peer(&observed).line(), "● maya/explore-assets  remote       running    a2a      peer:maya/session:0193d4ca-11f0-7e2b-8a4c-6d7e8f9a0b1c");
+    // ⏎ opens only a `session:` of our own mesh; a contact's session answers "no transcript here".
+    assert!(agent::communication::PeerAddress::local(&running.address).is_none());
+
+    let partial = "partial: no answer in time from maya/Maya's Mac mini; their sessions may be missing from this page (repeat this call to retry)";
+    let page = |peers: Vec<PeerInfo>| PeerPage { peers, cursor: None, partial: vec!["maya/Maya's Mac\u{1b} mini".into()] };
+    let lines = |page| {
+        let peers = Peers { menu: Some(Menu::Peers { session: SessionId::new(), peers: Some(Ok(page)), requests: None, cursor: 0 }), ..Peers::default() };
+        peers.peers_rows().iter().map(PeerRow::line).collect::<Vec<_>>()
+    };
+    let full = lines(page(vec![maya.clone(), running.clone()]));
+    assert_eq!(full[2..], [partial.to_owned(), String::new(), "loading pending requests…".to_owned()]);
+    // Every page carries it, an empty one too.
+    assert_eq!(lines(page(Vec::new()))[..2], ["no peers this session may address".to_owned(), partial.to_owned()]);
+    assert!(!lines(PeerPage { partial: Vec::new(), ..page(vec![maya]) }).iter().any(|l| l.starts_with("partial:")));
 }

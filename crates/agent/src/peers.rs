@@ -309,6 +309,11 @@ pub struct SendMessageArgs {
     /// Your idempotency key: repeating a call with the same request_id, addressee and body returns the original receipt instead of sending again.
     #[serde(default)]
     pub request_id: Option<String>,
+    /// Absolute paths of local files to send with this message, any type. To a contact: each
+    /// at most 5 GB, saved on the receiver's disk, not put into its context. To a remote A2A
+    /// agent: sent inline, only if the whole message stays within 64 KiB.
+    #[serde(default)]
+    pub files: Vec<PathBuf>,
 }
 
 /// Symmetric peer messaging.
@@ -439,7 +444,14 @@ impl Tool for SendMessageTool {
              per recipient (`structured.receipts`, always a list): `accepted` means committed to their intake, not read. \
              With await_reply=true you block until each answers with reply_to set to its message's id (or one shared \
              timeout passes; unanswered messages are not recalled). When answering a <message> with \
-             reply_expected=\"true\", set reply_to to its id. `peer_message()` (python) shows a message's current state."
+             reply_expected=\"true\", set reply_to to its id. `peer_message()` (python) shows a message's current state. \
+             `files`: absolute paths of local files, any type. To a contact: each at most 5 GB; the contact's \
+             theuth saves each on its disk (never into its agent's context) and its chat gets a notice once each \
+             is saved or fails. To a remote A2A agent (not a contact): sent inline inside the message, only when \
+             the whole message stays within 64 KiB; anything larger fails before sending (`<peer> takes files only \
+             inside the message, and <name> (<size> bytes) does not fit in 64 KiB`) and nothing is uploaded \
+             anywhere. `message` may be empty when files go. Theuth's own secret state is never sent. \
+             `structured.files` lists the offers; each lives 7 days."
         )
     }
 
@@ -494,9 +506,43 @@ impl Tool for SendMessageTool {
                 Err(e) => return Ok(ToolOutput::err(e)),
             }
         }
+        // 199: contacts, and (199-E3) HTTP peers when the files fit inline; every file
+        // through the egress gate once (its errors are the design's texts), cloned and hashed
+        // once, then offered per recipient. Nothing is sent when that fails.
+        #[cfg(unix)]
+        let staged = match args.files.is_empty() {
+            true => None,
+            false => match crate::communication::files::send::stage(
+                &agents,
+                cx.session,
+                &canonical,
+                &args.files,
+                args.request_id.as_deref(),
+                &args.message,
+            )
+            .await
+            {
+                Ok(s) => Some(s),
+                Err(e) => return Ok(ToolOutput::err(e)),
+            },
+        };
+        #[cfg(not(unix))]
+        if !args.files.is_empty() {
+            return Ok(ToolOutput::err(crate::communication::files::NOT_YET));
+        }
         let mut receipts = Vec::with_capacity(canonical.len());
         let mut waits = Vec::with_capacity(canonical.len());
-        for c in canonical {
+        for (n, c) in canonical.into_iter().enumerate() {
+            #[cfg(unix)]
+            let request_id = match &staged {
+                Some(s) => Some(s.request_ids[n].clone()),
+                None => args.request_id.clone(),
+            };
+            #[cfg(not(unix))]
+            let request_id = {
+                let _ = n;
+                args.request_id.clone()
+            };
             match agents
                 .ask(Deliver {
                     from: cx.session,
@@ -504,7 +550,7 @@ impl Tool for SendMessageTool {
                     text: args.message.clone(),
                     await_reply: args.await_reply,
                     reply_to: args.reply_to,
-                    request_id: args.request_id.clone(),
+                    request_id,
                     admitted: admitted.token().clone(),
                 })
                 .await
@@ -522,6 +568,10 @@ impl Tool for SendMessageTool {
                     waits.push(None);
                 }
             }
+        }
+        #[cfg(unix)]
+        if let Some(s) = &staged {
+            s.finish().await;
         }
         // 183 F7: a remote peer answers a send within a moment (held until its owner
         // presses Allow, refused, or taken as a task); this call says so instead of `accepted`.
@@ -590,7 +640,13 @@ impl Tool for SendMessageTool {
         if !awaited.is_empty() {
             journal.wait(None, cx.session, &cx.call_id).await;
         }
-        Ok(receipts_output(&receipts))
+        #[allow(unused_mut)]
+        let mut out = receipts_output(&receipts);
+        #[cfg(unix)]
+        if let Some(s) = &staged {
+            s.annotate(&receipts, &mut out);
+        }
+        Ok(out)
     }
 }
 
@@ -645,11 +701,16 @@ impl Tool for DiscoverPeersTool {
              `+N more: discover_peers(kind=\"contact\", query=\"<contact>\")`), then everything else; inside each, \
              working rows first, then most recently active. `active_only` keeps contacts and the peers with a \
              turn in flight or a running job/PTY (never a `remote` session); `kind` keeps one kind (`contact`: every \
-             contact row, uncapped). Default {DISCOVER_DEFAULT_LIMIT} rows, max {DISCOVER_MAX_LIMIT}; pass `cursor` for the \
+             contact row, uncapped). A contact that gave you full access lists its newest sessions under `peer:<contact>`; \
+             discover_peers(kind=\"contact\", query=\"<contact>\") walks all of them with `cursor`. Each is \
+             `peer:<contact>/session:<uuid>`; send_message reaches the ones with `send`. \
+             Default {DISCOVER_DEFAULT_LIMIT} rows, max {DISCOVER_MAX_LIMIT}; pass `cursor` for the \
              next page. Listing wakes nobody; it may refresh the contacts' shared lists in the background."
         )
     }
 
+    /// 200 (D8): one `partial:` line whenever some contact machine did not answer, on every
+    /// page (empty and final ones included).
     async fn call(&self, args: DiscoverPeersArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let agents = match supervisor() {
             Ok(a) => a,
@@ -704,7 +765,8 @@ impl Tool for DiscoverPeersTool {
                             s.push_str(&format!(" last_active={}", at.to_rfc3339()));
                         }
                     }
-                    if p.state == crate::communication::PeerState::Remote
+                    if (p.state == crate::communication::PeerState::Remote
+                        || crate::communication::network::access::is_session_row(p))
                         && let Some(e) = &p.engine
                     {
                         s.push_str(&format!(" engine={e}"));
@@ -722,6 +784,12 @@ impl Tool for DiscoverPeersTool {
         };
         if let Some(c) = &page.cursor {
             text.push_str(&format!("\nmore: cursor={c}"));
+        }
+        if !page.partial.is_empty() {
+            text.push_str(&format!(
+                "\npartial: no answer in time from {}; their sessions may be missing from this page (repeat this call to retry)",
+                page.partial.join(", ")
+            ));
         }
         let mut out = ToolOutput::ok(text);
         out.structured = serde_json::to_value(&page).ok();

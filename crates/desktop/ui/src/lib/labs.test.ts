@@ -55,7 +55,7 @@ test('shareState: Share is off and locked while Capture is off, and never shown 
 
 test('captureLine', () => {
   expect(captureLine(undefined)).toBe('…')
-  expect(captureLine(training({ examples_today: 3, examples_total: 41, bytes: 86016 }))).toBe('3 today · 41 total · 84 KB')
+  expect(captureLine(training({ examples_today: 3, examples_total: 41, bytes: 86016 }))).toBe('3 today · 41 total · 86 kB')
 })
 
 test('loadedText: none at idle; `default` reads as meeting; seconds under a minute, minutes after', () => {

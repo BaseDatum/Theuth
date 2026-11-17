@@ -2,7 +2,7 @@ import { afterEach, expect, test, vi } from 'vitest'
 import { LOCAL } from '@/link/engines'
 import type { Api } from '@/rpc/bindings/client'
 import { type ConnState, RpcError } from '@/rpc/client'
-import { forgetPrivate, readText, readTextOnline, resolveDocument, resolveFile } from './files'
+import { fmtBytes, forgetPrivate, readText, readTextOnline, resolveDocument, resolveFile } from './files'
 import { usePrivate } from './private'
 
 // A local desktop shell: the one configuration where `resolveFile` hands out `asset://` URLs.
@@ -127,4 +127,8 @@ test('private paths: get_attachment names the owning session and never asset://;
   expect(get_attachment).toHaveBeenCalledTimes(4)
   // No owned tree any more: a session-less scratch read is session-less, and the engine refuses it.
   await expect(readText(api, `${scratch}/artifacts/jkl.md`)).rejects.toThrow('not an attachment')
+})
+
+test('fmtBytes: decimal units, one decimal below 10 kB and for MB/GB', () => {
+  expect([999, 1500, 105924, 24100000, 1e9].map(fmtBytes)).toEqual(['999 B', '1.5 kB', '106 kB', '24.1 MB', '1.0 GB'])
 })

@@ -236,8 +236,17 @@ impl Agents {
                     ret: false,
                 }));
             }
-            // D12: an export no longer shared with the contact ends its conversations.
-            if !self
+            // 200 (D10): a contact's message to one of our sessions (full access): the answer
+            // needs my grant still on. D12: an export no longer shared with the contact ends
+            // its conversations.
+            if super::access::session_route(&t.export).is_some() {
+                if !self.network.grants_full_access(binding) {
+                    return Err(format!(
+                        "peer `{alias}`: {}; nothing was sent",
+                        super::access::OFF
+                    ));
+                }
+            } else if !self
                 .network
                 .peers
                 .get(&binding)
@@ -259,26 +268,40 @@ impl Agents {
                 ret: true,
             }));
         }
-        // The contact's gate maps a bare `peer:<contact>` to the first export it grants us.
-        let Some(offer) = self.network.offer_of(alias) else {
-            // Live failure 2026-11-13: no verified card of the contact this run (its refresh
-            // failed, or has not run), or one that does not list this export (its machines
-            // may disagree about a grant). Its card is asked for again, without waiting: this
-            // handler is the agent's only mailbox, and a card fetch can take seconds or ask
-            // the agent itself. The message leaves in the one shape every contact takes (no
-            // `contextId`: an older or cautious one refuses an unknown conversation), the
-            // export it addressed kept on it (`network_send`); if the contact shares that
-            // export in full it mints the conversation, which `remote_outcome` records from
-            // its task (and `full_return` adopts from `referenceTaskIds` when that never came
-            // back): its answer is admitted.
-            tracing::info!(contact = %alias, "a2a: contact's shared list unknown; sent without a conversation, card asked for");
-            self.rt.publish(super::ContactOffersStale).await;
-            return Ok(None);
+        // 200 (D10): `peer:<contact>/session:<uuid>` needs no offer: the latest verified card
+        // decides whether it leaves (an unknown one: it leaves, the card is asked for).
+        let export = if let Some((contact, session)) = super::access::contact_session(alias) {
+            let says = self.network.card_says(contact);
+            super::access::pre_check(says, alias, contact)?;
+            if says == super::access::CardSays::Unknown {
+                tracing::info!(%contact, "a2a: contact's card unknown; full-access send leaves, card asked for");
+                self.rt.publish(super::ContactOffersStale).await;
+                return Ok(None);
+            }
+            format!("{}{session}", super::access::SESSION_PREFIX)
+        } else {
+            // The contact's gate maps a bare `peer:<contact>` to the first export it grants us.
+            let Some(offer) = self.network.offer_of(alias) else {
+                // Live failure 2026-11-13: no verified card of the contact this run (its
+                // refresh failed, or has not run), or one that does not list this export (its
+                // machines may disagree about a grant). Its card is asked for again, without
+                // waiting: this handler is the agent's only mailbox, and a card fetch can take
+                // seconds or ask the agent itself. The message leaves in the one shape every
+                // contact takes (no `contextId`: an older or cautious one refuses an unknown
+                // conversation), the export it addressed kept on it (`network_send`); if the
+                // contact shares that export in full it mints the conversation, which
+                // `remote_outcome` records from its task (and `full_return` adopts from
+                // `referenceTaskIds` when that never came back): its answer is admitted.
+                tracing::info!(contact = %alias, "a2a: contact's shared list unknown; sent without a conversation, card asked for");
+                self.rt.publish(super::ContactOffersStale).await;
+                return Ok(None);
+            };
+            // A known older card (no mode tag: cautious) keeps the 183 shape (186 D10).
+            if offer.mode != ShareMode::Full {
+                return Ok(None);
+            }
+            offer.name.clone()
         };
-        // A known older card (no mode tag: cautious) keeps the 183 shape (186 D10).
-        if offer.mode != ShareMode::Full {
-            return Ok(None);
-        }
         // 186 review 1: lapsed conversations (and revoked bindings') go first; a send after
         // a lapse opens a new one.
         let stale = Utc::now().timestamp_millis() - THREAD_TTL.as_millis() as i64;
@@ -287,7 +310,7 @@ impl Agents {
         }
         let context = match self
             .store
-            .outbound_contact_thread(binding, from, &offer.name)
+            .outbound_contact_thread(binding, from, &export)
             .await
             .map_err(err)?
         {
@@ -295,11 +318,11 @@ impl Agents {
             None => a2a_types::new_context_id(),
         };
         self.store
-            .open_contact_thread(binding, &context, from, &offer.name, true)
+            .open_contact_thread(binding, &context, from, &export, true)
             .await
             .map_err(err)?;
         Ok(Some(FullShape {
-            export: offer.name.clone(),
+            export,
             context,
             wire: FullWire {
                 re: None,
@@ -334,6 +357,26 @@ impl Agents {
                 .await
                 .unwrap_or(task);
         };
+        // 199: one `in` row per file reference, beside the stored exchange and before its
+        // text is delivered (the record then carries the receiving placeholders); the
+        // downloads run from the `contact_files` queue.
+        let parts = snapshot(&task)
+            .history
+            .and_then(|h| h.into_iter().next())
+            .map(|m| m.parts)
+            .unwrap_or_default();
+        if let Err(e) = crate::communication::files::intake::admit(
+            &self.store,
+            task.session,
+            exchange,
+            &task.principal,
+            &parts,
+        )
+        .await
+        {
+            let why = format!("files not recorded: {e:#}");
+            return self.fail_task(&task, &why).await.unwrap_or(task);
+        }
         let mut record = match self.store.exchange_record(exchange).await {
             Ok(Some(r)) => r,
             Ok(None) => {
@@ -428,7 +471,11 @@ impl Agents {
         {
             self.peer_changed(&orig).await;
             orig.to = from.clone();
-            if self.settle_wait(&orig) {
+            // 199-E3: a waiting `send_message` sees the answer's receiving placeholders too.
+            let answer = self
+                .handed_answer(&orig, record.receipt.id, Some(&from))
+                .await;
+            if self.settle_wait(&answer) {
                 let revision = generation.revision() as i64;
                 match self
                     .store
@@ -682,6 +729,8 @@ impl Agents {
         &mut self,
         m: A2aReturn,
     ) -> Result<SendMessageResponse, A2AError> {
+        // 199 (D13): `~return` with files: the same `in` rows, so the answer's text arrives
+        // at once with its receiving placeholders.
         if m.route.is_cancelled() {
             return Err(gone());
         }
@@ -722,8 +771,9 @@ impl Agents {
         // roster lists its export (`""`: any export) not in full, or not at all. A machine
         // never verified this run, or whose last refresh failed, admits (live 2026-11-13: 333
         // listed nothing while xeus, which owns the chat, took the share in full). Unpairing,
-        // blocking or re-pinning ends the route itself (checked above).
-        if self.network.share_closed(&alias, &thread.export) {
+        // blocking or re-pinning ends the route itself (checked above). 200 (D10): a
+        // `session:<uuid>` conversation closes on the settled cards' `full-access/v1`.
+        if self.network.conversation_closed(&alias, &thread.export) {
             return Err(gone());
         }
         self.store
@@ -804,6 +854,15 @@ impl Agents {
                     .set_exchange_contact(receipt.id, ShareMode::Full, Some(&context))
                     .await
                     .map_err(|e| format!("{e:#}"))?;
+                crate::communication::files::intake::admit(
+                    &self.store,
+                    thread.session,
+                    receipt.id,
+                    &peer,
+                    &msg.parts,
+                )
+                .await
+                .map_err(|e| format!("files not recorded: {e:#}"))?;
                 let mut record = self
                     .store
                     .exchange_record(receipt.id)

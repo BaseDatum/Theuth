@@ -27,6 +27,9 @@ pub mod network;
 /// `theuth/rpc/1` and the engine-name lookup for `discover_peers`.
 pub mod mesh;
 
+/// 199 CONTACT-FILES: files between contacts (P0 contract: shapes and pure pieces).
+pub mod files;
+
 /// `tell` (runner → `Agents`): a peer exchange was linked into `session`'s
 /// history at `seq` inside `turn` (§7 consumption transaction). Sent after
 /// the runner's `InputConsumed` for the same ticket, which is what binds the
@@ -249,6 +252,9 @@ pub struct PeerRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub contact_mode: Option<ShareMode>,
+    /// 199: the files this exchange carries, in message order (`contact_files` rows).
+    #[serde(default)]
+    pub files: Vec<files::ContactFile>,
 }
 
 impl PeerRecord {
@@ -440,6 +446,10 @@ pub struct PeerPage {
     pub peers: Vec<PeerInfo>,
     /// Opaque cursor for the next page; `None` at the end.
     pub cursor: Option<String>,
+    /// 200 (D8): the contact machines that did not answer for this page, each
+    /// `<contact>/<machine name>`; their sessions may be missing from it.
+    #[serde(default)]
+    pub partial: Vec<String>,
 }
 
 /// Effective communication state for the global default or one session
@@ -853,6 +863,9 @@ pub struct PeerDelivered {
     pub seq: i64,
     /// The turn that consumed it.
     pub turn: TurnId,
+    /// 199: the files the message carries, for the live card's receiving placeholders.
+    #[serde(default)]
+    pub files: Vec<files::ContactFile>,
 }
 
 impl wire::WireEvent for PeerDelivered {
@@ -896,6 +909,14 @@ impl PeerAddress {
             return id.parse().ok().map(Self::Session);
         }
         if let Some(name) = s.strip_prefix("peer:") {
+            // 200 (Contract): `<contact>/session:<uuid>`: the contact alone is bounded by
+            // ALIAS_MAX, the suffix is a UUID.
+            if name
+                .split_once('/')
+                .is_some_and(|(_, e)| e.starts_with(network::access::SESSION_PREFIX))
+            {
+                return network::access::contact_session(name).map(|_| Self::Remote(name.into()));
+            }
             return (!name.is_empty() && name.chars().count() <= ALIAS_MAX)
                 .then(|| Self::Remote(name.to_owned()));
         }
@@ -1421,6 +1442,16 @@ impl Policy {
             }),
             None => Ok(()),
         }
+    }
+
+    /// 200 (D5, the live half): the `to` half of [`Self::route`] for a full-access contact:
+    /// not hidden, [`Self::enabled`], its root's scope `Owner`. No principal is invented.
+    pub fn reachable_from_owner(&self, to: SessionId) -> bool {
+        !self.hidden.contains(&to)
+            && self.enabled(to).is_ok()
+            && self
+                .root_of(to)
+                .is_ok_and(|r| self.roots[&r].scope == PeerScope::Owner)
     }
 
     /// `local_route(a, b)` (§2.1): both enabled, `a != b`, same tree or both
@@ -2016,6 +2047,19 @@ mod tests {
             PeerAddress::parse(&format!("peer:{}", "x".repeat(ALIAS_MAX + 1))),
             None
         );
+        // 200: a 64-character contact plus `/session:<uuid>` (longer than ALIAS_MAX whole).
+        let name = format!("{}/session:{id}", "x".repeat(ALIAS_MAX));
+        assert_eq!(
+            PeerAddress::parse(&format!("peer:{name}")),
+            Some(PeerAddress::Remote(name))
+        );
+        for bad in [
+            format!("peer:{}/session:{id}", "x".repeat(ALIAS_MAX + 1)),
+            "peer:maya/session:nope".to_owned(),
+            format!("peer:Maya/session:{id}"),
+        ] {
+            assert_eq!(PeerAddress::parse(&bad), None, "{bad}");
+        }
         assert_eq!(
             PeerAddress::parse("parent"),
             Some(PeerAddress::Relative("parent".into()))

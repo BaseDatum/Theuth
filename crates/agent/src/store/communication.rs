@@ -455,6 +455,8 @@ impl TryFrom<ExchangeRow> for PeerRecord {
                 Some(_) => Some(crate::communication::ShareMode::Cautious),
                 None => None,
             },
+            // 199: `Store::exchange_record` fills this from the exchange's `contact_files` rows.
+            files: Vec::new(),
         })
     }
 }
@@ -1058,6 +1060,35 @@ impl Store {
                 .map_err(|_| anyhow::anyhow!("bad scope {scope:?}"))?,
             alias: alias.clone(),
         })
+    }
+
+    /// 200 (D5, the row half): `id`'s replicated row exists and is no advisor, no session of
+    /// its ancestry carries a `contact_inbox` marker or an opt-out (`communication` other
+    /// than NULL or 1), and its root's scope is `owner`. An ancestry that reaches no root
+    /// within [`LINEAGE_MAX`] (a cycle, a missing parent) is `false`.
+    pub async fn full_access_row(&self, id: SessionId) -> anyhow::Result<bool> {
+        let rows: Vec<(Option<String>, String, bool, String)> = sqlx::query_as(
+            "WITH RECURSIVE up(id, parent, kind, hidden, scope, depth) AS ( \
+                 SELECT id, parent, kind, contact_inbox IS NOT NULL \
+                     OR COALESCE(communication, 1) IS NOT 1, scope, 0 \
+                 FROM sessions WHERE id = ?1 \
+                 UNION ALL \
+                 SELECT s.id, s.parent, s.kind, s.contact_inbox IS NOT NULL \
+                     OR COALESCE(s.communication, 1) IS NOT 1, s.scope, up.depth + 1 \
+                 FROM sessions s JOIN up ON s.id = up.parent WHERE up.depth < ?2) \
+             SELECT parent, kind, hidden, scope FROM up ORDER BY depth",
+        )
+        .bind(id.to_string())
+        .bind(LINEAGE_MAX)
+        .fetch_all(&self.read)
+        .await?;
+        let (Some(first), Some(root)) = (rows.first(), rows.last()) else {
+            return Ok(false);
+        };
+        Ok(first.1 != "advisor"
+            && rows.iter().all(|r| !r.2)
+            && root.0.is_none()
+            && root.3.parse::<PeerScope>().ok() == Some(PeerScope::Owner))
     }
 
     /// Owner-only: set a root's scope and alias (`None` clears the alias).
@@ -1879,11 +1910,17 @@ impl Store {
     /// The owner-side record of any exchange (harness-internal; not
     /// caller-scoped): both participants of a receipt for notification.
     pub async fn exchange_record(&self, id: Uuid) -> anyhow::Result<Option<PeerRecord>> {
-        let mut conn = self.read.acquire().await?;
-        exchange_in(&mut conn, &id.to_string())
-            .await?
-            .map(PeerRecord::try_from)
-            .transpose()
+        let row = {
+            let mut conn = self.read.acquire().await?;
+            exchange_in(&mut conn, &id.to_string()).await?
+        };
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let mut record = PeerRecord::try_from(row)?;
+        // 199: the files it carried (in) or offers (out), in message order.
+        record.files = self.exchange_cards(&id.to_string()).await?;
+        Ok(Some(record))
     }
 
     /// Consume `id` without a history row: the reply was returned to the
@@ -1943,7 +1980,12 @@ impl Store {
         .bind(caller.to_string())
         .fetch_optional(&self.read)
         .await?;
-        row.map(PeerRecord::try_from).transpose()
+        let Some(mut record) = row.map(PeerRecord::try_from).transpose()? else {
+            return Ok(None);
+        };
+        // 199: `files` as `exchange_record` gives it (the sender's card reads its offers).
+        record.files = self.exchange_cards(&id.to_string()).await?;
+        Ok(Some(record))
     }
 
     /// A participant's own records, newest first, at most `limit`; `after`
@@ -1969,7 +2011,14 @@ impl Store {
         .bind(i64::from(limit.clamp(1, TASK_PAGE_MAX)))
         .fetch_all(&self.read)
         .await?;
-        rows.into_iter().map(PeerRecord::try_from).collect()
+        let mut records = rows
+            .into_iter()
+            .map(PeerRecord::try_from)
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        for r in &mut records {
+            r.files = self.exchange_cards(&r.receipt.id.to_string()).await?;
+        }
+        Ok(records)
     }
 
     /// `accepted` intake for `recipient` in acceptance order, at most `limit`.

@@ -158,6 +158,12 @@ pub(crate) async fn serve(
     if !matches!(c.gate(&remote), IrohGate::Contact { .. }) {
         return refuse(&remote, stream).await;
     }
+    // 199 (D2): `GET`/`POST /a2a/files/<id>` is served here, before `serve_http`: outside its
+    // 60 s `HTTP_TIMEOUT`, `Route::of`, `forward::route` and the A2A rate limits, through the
+    // agent's offers under the caller's transfers token (`files::route`).
+    if super::files::is_route(&line) {
+        return super::files::route(&c, &remote, &line, stream).await;
+    }
     let shared = c.shared.clone();
     serve_http(
         shared,
@@ -249,12 +255,14 @@ pub(crate) async fn serve_http(
     Ok(())
 }
 
-/// 183 F1: the contact-only routes of [`serve_http`].
+/// 183 F1: the contact-only routes of [`serve_http`]. 200 (D7): `Sessions`, the full-access
+/// listing (`super::sessions`).
 #[derive(Clone, Copy, PartialEq)]
 enum Route {
     Card,
     Notice,
     Path,
+    Sessions,
 }
 
 impl Route {
@@ -263,6 +271,7 @@ impl Route {
             (&hyper::Method::GET, super::offers::CARD_PATH) => Some(Self::Card),
             (&hyper::Method::POST, super::offers::NOTICE_PATH) => Some(Self::Notice),
             (&hyper::Method::GET, super::rosters::ROSTER_PATH) => Some(Self::Path),
+            (&hyper::Method::GET, super::sessions::SESSIONS_PATH) => Some(Self::Sessions),
             _ => None,
         }
     }
@@ -338,6 +347,7 @@ async fn contact_route(
             Ok(answer) => axum::Json(answer).into_response(),
             Err((status, why)) => (status, why).into_response(),
         },
+        Route::Sessions => super::sessions::serve(c, remote, req.uri().query()).await,
     }
 }
 
