@@ -22061,6 +22061,68 @@
         "protocol": "openai_responses",
         "canonical": "openai/gpt-6.1-terra"
       },
+      "gpt-6.2-astra": {
+        "id": "gpt-6.2-astra",
+        "name": "GPT-6.2 Astra",
+        "limit": {
+          "context": 1050000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 8.0,
+          "output": 40.0,
+          "cache_read": 0.4,
+          "cache_write": 10.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_responses",
+        "canonical": "openai/gpt-6.2-astra"
+      },
+      "gpt-6.2-sol": {
+        "id": "gpt-6.2-sol",
+        "name": "GPT-6.2 Sol",
+        "limit": {
+          "context": 1050000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 2.0,
+          "output": 10.0,
+          "cache_read": 0.1,
+          "cache_write": 2.5
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_responses",
+        "canonical": "openai/gpt-6.2-sol"
+      },
       "gpt-daybreak-blue-latest": {
         "id": "gpt-daybreak-blue-latest",
         "name": "Daybreak Blue",
@@ -24601,6 +24663,68 @@
         ],
         "protocol": "openai_responses",
         "canonical": "openai/gpt-6.1-sol"
+      },
+      "gpt-6.2-astra": {
+        "id": "gpt-6.2-astra",
+        "name": "GPT-6.2 Astra",
+        "limit": {
+          "context": 1050000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 8.0,
+          "output": 40.0,
+          "cache_read": 0.4,
+          "cache_write": 10.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_responses",
+        "canonical": "openai/gpt-6.2-astra"
+      },
+      "gpt-6.2-sol": {
+        "id": "gpt-6.2-sol",
+        "name": "GPT-6.2 Sol",
+        "limit": {
+          "context": 1050000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 2.0,
+          "output": 10.0,
+          "cache_read": 0.1,
+          "cache_write": 2.5
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_responses",
+        "canonical": "openai/gpt-6.2-sol"
       },
       "grok-4.5": {
         "id": "grok-4.5",
@@ -28616,12 +28740,12 @@
         "name": "DeepSeek V4.1 Flash",
         "limit": {
           "context": 1048576,
-          "output": 393216
+          "output": 943718
         },
         "cost": {
-          "input": 0.14,
-          "output": 0.42,
-          "cache_read": 0.0042
+          "input": 0.3,
+          "output": 1.2,
+          "cache_read": 0.006
         },
         "reasoning": true,
         "tool_call": true,
@@ -28645,12 +28769,12 @@
         "name": "DeepSeek V4.1 Flash 1017",
         "limit": {
           "context": 1048576,
-          "output": 393216
+          "output": 943718
         },
         "cost": {
-          "input": 0.3,
-          "output": 1.2,
-          "cache_read": 0.006
+          "input": 0.036,
+          "output": 0.5,
+          "cache_read": 0.01
         },
         "reasoning": true,
         "tool_call": true,
@@ -30145,11 +30269,11 @@
         "name": "Muse Glimmer 30B",
         "limit": {
           "context": 131072,
-          "output": 16384
+          "output": 117964
         },
         "cost": {
-          "input": 0.3,
-          "output": 1.2,
+          "input": 0.35,
+          "output": 1.5,
           "cache_read": 0.04
         },
         "reasoning": true,
@@ -30464,9 +30588,9 @@
           "output": 524288
         },
         "cost": {
-          "input": 0.15,
-          "output": 0.6,
-          "cache_read": 0.015
+          "input": 0.075,
+          "output": 0.3,
+          "cache_read": 0.0075
         },
         "reasoning": true,
         "tool_call": true,
@@ -30674,9 +30798,9 @@
           "output": 104857
         },
         "cost": {
-          "input": 0.4,
-          "output": 2.0,
-          "cache_read": 0.04
+          "input": 0.44,
+          "output": 2.2,
+          "cache_read": 0.044
         },
         "reasoning": false,
         "tool_call": true,
@@ -30719,9 +30843,9 @@
           "output": 104857
         },
         "cost": {
-          "input": 0.4,
-          "output": 2.0,
-          "cache_read": 0.04
+          "input": 0.44,
+          "output": 2.2,
+          "cache_read": 0.044
         },
         "reasoning": false,
         "tool_call": true,
@@ -30835,12 +30959,11 @@
         "name": "Mistral Small 3.2 24B",
         "limit": {
           "context": 256000,
-          "output": 26214
+          "output": 16384
         },
         "cost": {
-          "input": 0.1,
-          "output": 0.3,
-          "cache_read": 0.01
+          "input": 0.075,
+          "output": 0.2
         },
         "reasoning": false,
         "tool_call": true,
@@ -31038,9 +31161,9 @@
           "output": 235929
         },
         "cost": {
-          "input": 0.6,
-          "output": 3.5,
-          "cache_read": 0.16
+          "input": 0.7,
+          "output": 3.75,
+          "cache_read": 0.17
         },
         "reasoning": true,
         "tool_call": true,
@@ -31353,12 +31476,12 @@
         "name": "Nemotron 3 Ultra 550B A55B",
         "limit": {
           "context": 262144,
-          "output": 182520
+          "output": 16384
         },
         "cost": {
-          "input": 0.6,
-          "output": 2.4,
-          "cache_read": 0.12
+          "input": 0.5,
+          "output": 2.2,
+          "cache_read": 0.1
         },
         "reasoning": true,
         "tool_call": true,
@@ -31437,7 +31560,7 @@
         "id": "nvidia/nemotron-3.5-lightning",
         "name": "Nemotron 3.5 Lightning 30B A3B",
         "limit": {
-          "context": 262144,
+          "context": 1048576,
           "output": 235929
         },
         "cost": {
@@ -32831,6 +32954,128 @@
         ],
         "protocol": "openai_chat"
       },
+      "openai/gpt-6.2-astra": {
+        "id": "openai/gpt-6.2-astra",
+        "name": "GPT-6.2 Astra",
+        "limit": {
+          "context": 1050000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 8.0,
+          "output": 40.0,
+          "cache_read": 0.4,
+          "cache_write": 10.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "openai/gpt-6.2-astra"
+      },
+      "openai/gpt-6.2-astra-pro": {
+        "id": "openai/gpt-6.2-astra-pro",
+        "name": "GPT-6.2 Astra Pro",
+        "limit": {
+          "context": 1050000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 8.0,
+          "output": 40.0,
+          "cache_read": 0.4,
+          "cache_write": 10.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat"
+      },
+      "openai/gpt-6.2-sol": {
+        "id": "openai/gpt-6.2-sol",
+        "name": "GPT-6.2 Sol",
+        "limit": {
+          "context": 1050000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 2.0,
+          "output": 10.0,
+          "cache_read": 0.1,
+          "cache_write": 2.5
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "openai/gpt-6.2-sol"
+      },
+      "openai/gpt-6.2-sol-pro": {
+        "id": "openai/gpt-6.2-sol-pro",
+        "name": "GPT-6.2 Sol Pro",
+        "limit": {
+          "context": 1050000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 2.0,
+          "output": 10.0,
+          "cache_read": 0.1,
+          "cache_write": 2.5
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat"
+      },
       "openai/gpt-audio": {
         "id": "openai/gpt-audio",
         "name": "GPT-Audio",
@@ -32918,12 +33163,12 @@
         "name": "GPT OSS 20B",
         "limit": {
           "context": 131072,
-          "output": 65536
+          "output": 117964
         },
         "cost": {
-          "input": 0.075,
-          "output": 0.3,
-          "cache_read": 0.0375
+          "input": 0.018,
+          "output": 0.09,
+          "cache_read": 0.009
         },
         "reasoning": true,
         "tool_call": true,
@@ -33778,9 +34023,9 @@
           "output": 40960
         },
         "cost": {
-          "input": 0.045,
-          "output": 0.066,
-          "cache_read": 0.04
+          "input": 0.17,
+          "output": 0.25,
+          "cache_read": 0.153
         },
         "reasoning": true,
         "tool_call": true,
@@ -34200,13 +34445,13 @@
         "name": "Qwen4 Max",
         "limit": {
           "context": 1000000,
-          "output": 393216
+          "output": 131072
         },
         "cost": {
-          "input": 1.5,
-          "output": 4.5,
-          "cache_read": 0.075,
-          "cache_write": 1.875
+          "input": 1.425,
+          "output": 4.275,
+          "cache_read": 0.07125,
+          "cache_write": 1.78125
         },
         "reasoning": true,
         "tool_call": true,
@@ -34665,9 +34910,9 @@
           "output": 128000
         },
         "cost": {
-          "input": 0.132,
-          "output": 0.528,
-          "cache_read": 0.033
+          "input": 0.0825,
+          "output": 0.33,
+          "cache_read": 0.020625
         },
         "reasoning": true,
         "tool_call": true,
@@ -34741,6 +34986,29 @@
         "protocol": "openai_chat",
         "canonical": "tencent/hy4"
       },
+      "tencent/hy4-flash": {
+        "id": "tencent/hy4-flash",
+        "name": "Hy4 flash",
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.035,
+          "output": 0.1405,
+          "cache_read": 0.0015
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "tencent/hy4-flash"
+      },
       "tencent/hy4-preview": {
         "id": "tencent/hy4-preview",
         "name": "Hy4 preview",
@@ -34749,9 +35017,9 @@
           "output": 64000
         },
         "cost": {
-          "input": 0.834,
-          "output": 2.501,
-          "cache_read": 0.042
+          "input": 0.7506,
+          "output": 2.2509,
+          "cache_read": 0.0378
         },
         "reasoning": true,
         "tool_call": true,
@@ -35690,11 +35958,11 @@
         "name": "GLM-5.3-Flash",
         "limit": {
           "context": 1048576,
-          "output": 131072
+          "output": 943717
         },
         "cost": {
-          "input": 0.0399,
-          "output": 0.0784,
+          "input": 0.15,
+          "output": 0.5,
           "cache_read": 0.03
         },
         "reasoning": true,
@@ -35775,9 +36043,9 @@
           "output": 131072
         },
         "cost": {
-          "input": 2.8,
-          "output": 8.8,
-          "cache_read": 0.56
+          "input": 1.68,
+          "output": 5.28,
+          "cache_read": 0.336
         },
         "reasoning": true,
         "tool_call": true,
