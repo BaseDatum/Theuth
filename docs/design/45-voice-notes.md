@@ -148,6 +148,11 @@ way one talks to a person on Signal — a voice note, then get on with the day
   line retired in favour of a MatMulNBits int8 build (macro WER 12.9 % vs
   14.8 %, same speed); same loader, same layout — swap the directory when
   someone downloads it.
+- Origin (sha256-matched 2026-11-17): `Olicorne/parakeet-tdt-0.6b-v3-optimized-onnx`
+  `istupakov_smoothquant/int8/{encoder,decoder_joint}-model.int8.onnx` (encoder @ c3638803),
+  `vocab.txt` from the repo root (identical to istupakov's). The decoder is the 06d54e30
+  rebuild (2026-10-06) that bans `<unk>` (joint bias −1e4); the earlier one wrote `στι<unk>`
+  for Greek "στις". `scripts/fetch-models.sh` `origin_of` maps the names.
 - Spike (`/tmp/stt-spike`, throwaway): M3 Max, 8.7 s of Pocket TTS speech
   (the 43 smoke WAV, 24 kHz): load 0.71–0.87 s, transcribe 235–240 ms
   (RTF 0.028), transcript byte-identical to the spoken text incl.

@@ -1099,7 +1099,7 @@ agent:
 #                            # voice notes in, spoken replies out on Signal/Slack (design doc 45); live dictation (design doc 54)
 #   enabled: true            # false: no actor, `speak` answers \"not running\", the desktop shows no button or mic
 #   voice: peter_yearsley    # one of the checkpoint's voices; `voice_status` lists them
-#   model_dir: ~             # a local Pocket TTS checkpoint directory; default <data_dir>/models/pocket-tts
+#   model_dir: ~             # a local Pocket TTS checkpoint directory; default <data_dir>/models/pocket-tts-en-2026-10
 #   stt_model_dir: ~         # Parakeet TDT ONNX checkpoint (encoder-model.onnx, decoder_joint-model.onnx, vocab.txt); default <data_dir>/models/parakeet-tdt.
 #                            # Every ONNX model (STT, dictation, diarisation, decision) shares one ONNX Runtime: the .app bundles it; otherwise
 #                            # <data_dir>/models/onnxruntime/libonnxruntime.{dylib,so} (fetched by the desktop app, or `$ORT_DYLIB_PATH`, or Homebrew)

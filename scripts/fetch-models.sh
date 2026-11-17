@@ -29,8 +29,9 @@
 #   hf:<owner>/<repo>/<path>   $HF_BASE/<owner>/<repo>/resolve/main/<path>;
 #                              HF_TOKEN (Authorization: Bearer) is sent when set — kyutai/pocket-tts is gated
 #   https://…                  verbatim (pyannote-rs GitHub release assets: wespeaker)
-#   none:<why>                 no documented download (parakeet-tdt's hub id was never recorded; the voice
-#                              is generated): only the bucket copy
+#   repo:<path>                a file committed to this repository (<path> from the repo root): copied when missing,
+#                              replaced when it differs from the checkout (our Pocket TTS config.json and voices, 43 §5)
+#   none:<why>                 no documented download (the voice is generated): only the bucket copy
 #
 # Env:
 #   THEUTH_MODELS_DIR / MODELS_DIR   destination (default: ${THEUTH_DATA_DIR:-~/.theuth}/models)
@@ -42,12 +43,17 @@ set -euo pipefail
 
 # The files each loader opens; nothing optional (config.json, nemo128.onnx, READMEs, HF caches).
 REQUIRED=(
-  pocket-tts/tts_b6369a24.safetensors              # voice/src/model.rs WEIGHTS
-  pocket-tts/tokenizer.model                       # voice/src/model.rs TOKENIZERS
-  pocket-tts/voices/peter_yearsley.safetensors     # voice/src/model.rs VOICES_DIR
-  parakeet-tdt/encoder-model.onnx                  # voice/src/stt.rs Engine::load
-  parakeet-tdt/decoder_joint-model.onnx
-  parakeet-tdt/vocab.txt
+  pocket-tts-en-2026-10/config.json                # voice/src/model.rs locate (ptts Checkpoint::open, voice::TTS_MODEL_SUBDIR): ours,
+  pocket-tts-en-2026-10/model.safetensors          # Kyutai's english_2026-10 weights + tokenizer from the ungated
+  pocket-tts-en-2026-10/tokenizer.json             # kyutai/pocket-tts-without-voice-cloning (CC BY 4.0, 2026-10-21 @ a7056f50)
+  pocket-tts-en-2026-10/voices/peter_yearsley.safetensors  # Kyutai's voice states as `emb` files
+  pocket-tts-en-2026-10/voices/alba.safetensors            # (crates/voice/build-voices/from_state.py); alba = notebooks' second host
+  pocket-tts/tts_b6369a24.safetensors              # remove after the next release: engines from earlier releases
+  pocket-tts/tokenizer.model                       # read pocket-tts/ (ptts git 5d50b52, english_2026-01)
+  pocket-tts/voices/peter_yearsley.safetensors     # remove after the next release
+  parakeet-tdt/encoder-model.onnx                  # voice/src/stt.rs Engine::load; Olicorne/parakeet-tdt-0.6b-v3-optimized-onnx
+  parakeet-tdt/decoder_joint-model.onnx            # istupakov_smoothquant/int8/*.int8.onnx: encoder @ c3638803, decoder @ 06d54e30
+  parakeet-tdt/vocab.txt                           # (the <unk> ban, joint bias -1e4; 2026-10-06); vocab.txt from the repo root
   nemotron-streaming-en/encoder.onnx               # voice/src/stt.rs Stream::open
   nemotron-streaming-en/decoder_joint.onnx
   nemotron-streaming-en/tokenizer.model
@@ -70,9 +76,13 @@ REQUIRED=(
 # Where each REQUIRED file comes from. Only origins a design doc records — never a guessed URL.
 origin_of() {
   case "$1" in
+    pocket-tts-en-2026-10/config.json | pocket-tts-en-2026-10/voices/*)
+                              echo "repo:crates/voice/data/$1" ;;
+    pocket-tts-en-2026-10/*)  echo "hf:kyutai/pocket-tts-without-voice-cloning/languages/english_2026-10/${1#*/}" ;;
     pocket-tts/voices/*)      echo "none:made locally — ptts create_voice from kyutai/tts-voices voice-zero/peter_yearsley.wav (43 §5)" ;;
     pocket-tts/*)             echo "hf:kyutai/pocket-tts/${1#pocket-tts/}" ;;
-    parakeet-tdt/*)           echo "none:parakeet-tdt-0.6b-v3-int8-smoothquant (Olicorne's requantisation of istupakov's export, files renamed to parakeet-rs names) — hub id not recorded (45 §STT)" ;;
+    parakeet-tdt/vocab.txt)   echo "hf:Olicorne/parakeet-tdt-0.6b-v3-optimized-onnx/vocab.txt" ;;
+    parakeet-tdt/*)           local f="${1#*/}"; echo "hf:Olicorne/parakeet-tdt-0.6b-v3-optimized-onnx/istupakov_smoothquant/int8/${f%.onnx}.int8.onnx" ;;   # upstream int8 names → parakeet-rs names
     nemotron-streaming-en/*)  echo "hf:lokkju/nemotron-speech-streaming-en-0.6b-int8/${1#*/}" ;;
     nemotron-diarization/*)   echo "hf:onnx-community/Nemotron-3-Diarization-ONNX/onnx/${1#*/}" ;;
     pyannote/*)               echo "https://github.com/thewh1teagle/pyannote-rs/releases/download/v0.1.0/${1#*/}" ;;
@@ -85,6 +95,7 @@ origin_of() {
 
 # shellcheck source=load-signing-env.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/load-signing-env.sh"   # THEUTH_S3_* overrides; no-op when already loaded
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # `repo:` origins
 MODELS_DIR="${THEUTH_MODELS_DIR:-${MODELS_DIR:-${THEUTH_DATA_DIR:-$HOME/.theuth}/models}}"
 DRY_RUN="${THEUTH_S3_DRY_RUN:-${MODELS_DRY_RUN:-${DRY_RUN:-0}}}"
 HF_BASE="${HF_BASE:-https://huggingface.co}"; HF_BASE="${HF_BASE%/}"
@@ -178,7 +189,7 @@ resolve_origin() {
   local rest
   ORIGIN="$(origin_of "$1")"; ORIGIN_URL=""; ORIGIN_REPO=""; ORIGIN_RPATH=""; ORIGIN_AUTH=()
   case "$ORIGIN" in
-    none:*) ;;
+    none:* | repo:*) ;;
     hf:*)   rest="${ORIGIN#hf:}"; ORIGIN_REPO="${rest%%/*}"; rest="${rest#*/}"; ORIGIN_REPO="$ORIGIN_REPO/${rest%%/*}"; ORIGIN_RPATH="${rest#*/}"
             ORIGIN_URL="$HF_BASE/$ORIGIN_REPO/resolve/main/$ORIGIN_RPATH"
             if [[ -n "${HF_TOKEN:-}" ]]; then ORIGIN_AUTH=(-H "Authorization: Bearer $HF_TOKEN"); fi ;;
@@ -239,6 +250,27 @@ fetch_one() {
   echo "    $f: new ($(size_of "$dst") bytes from the bucket; size + sha256 match models.json)"
 }
 
+# A `repo:` file: the checkout's copy is the truth. Missing → copied, different → replaced (counted
+# stale); --check only reports.
+sync_repo() {
+  local f="$1" dst="$MODELS_DIR/$1" rel="${ORIGIN#repo:}" what
+  [[ -f "$REPO_ROOT/$rel" ]] || { echo "error: $f: $rel is not in this checkout" >&2; return 1; }
+  if [[ ! -s "$dst" ]]; then
+    if [[ "$CHECK" == 1 ]]; then echo "    $f: MISSING"; MISSING=$((MISSING + 1)); return 0; fi
+    what=new
+  elif cmp -s "$REPO_ROOT/$rel" "$dst"; then
+    echo "    $f: up to date (repo)"; return 0
+  else
+    STALE=$((STALE + 1))
+    if [[ "$CHECK" == 1 ]]; then echo "    $f: STALE (differs from $rel)"; return 0; fi
+    what=updated
+  fi
+  if [[ "$DRY_RUN" == 1 ]]; then echo "    $f: DRY_RUN: $what ← $rel"; return 0; fi
+  mkdir -p "$(dirname "$dst")"
+  cp "$REPO_ROOT/$rel" "$dst.part" && mv "$dst.part" "$dst"
+  echo "    $f: $what ($(size_of "$dst") bytes from $rel)"
+}
+
 # $1 is on disk: HEAD its origin, compare with the record (or the file's own hash when there is
 # none) and replace it when the content changed. --check only reports; a failed HEAD keeps the file.
 refresh_one() {
@@ -290,6 +322,7 @@ fetch_models() {
   local f; STALE=0; UNVERIFIED=0; MISSING=0
   for f in "${REQUIRED[@]}"; do
     resolve_origin "$f"
+    if [[ "$ORIGIN" == repo:* ]]; then sync_repo "$f" || exit 1; continue; fi
     if [[ ! -s "$MODELS_DIR/$f" ]]; then
       if [[ "$CHECK" == 1 ]]; then echo "    $f: MISSING"; MISSING=$((MISSING + 1)); continue; fi
       fetch_one "$f" || exit 1

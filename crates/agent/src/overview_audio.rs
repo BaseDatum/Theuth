@@ -10,7 +10,8 @@ use kameo::actor::ActorRef;
 use runtime::{Runtime, SessionId};
 use serde::Deserialize;
 
-/// `notebooks.audio_voices` (144 §14): the host voices in order; default the one voice the checkpoint ships.
+/// `notebooks.audio_voices` (144 §14): the host voices in order; default the checkpoint's two voices
+/// (`peter_yearsley`, then Kyutai's `alba` for the second host).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct AudioConfig {
@@ -21,7 +22,7 @@ pub struct AudioConfig {
 impl Default for AudioConfig {
     fn default() -> Self {
         Self {
-            audio_voices: vec!["peter_yearsley".to_owned()],
+            audio_voices: vec!["peter_yearsley".to_owned(), "alba".to_owned()],
         }
     }
 }

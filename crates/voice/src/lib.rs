@@ -67,6 +67,10 @@ pub const STREAMING_MODEL_SUBDIR: &str = "nemotron-streaming-en";
 /// `Transcriber` default and the meeting plugin's transcript-of-record engine.
 pub const TDT_MODEL_SUBDIR: &str = "parakeet-tdt";
 
+/// The Pocket TTS checkpoint under `<data_dir>/models/` (43 §5): Kyutai's english_2026-10 with
+/// our `config.json` and voices (`data/pocket-tts-en-2026-10/`).
+pub const TTS_MODEL_SUBDIR: &str = "pocket-tts-en-2026-10";
+
 /// One dictation (mic open → mic closed). Time-ordered like [`SpeechId`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -645,7 +649,7 @@ pub struct VoiceConfig {
     pub enabled: bool,
     /// Voice name; `voice_status` lists the available ones.
     pub voice: String,
-    /// A local Pocket TTS checkpoint directory; `None` → `<data_dir>/models/pocket-tts`.
+    /// A local Pocket TTS checkpoint directory; `None` → `<data_dir>/models/pocket-tts-en-2026-10`.
     pub model_dir: Option<PathBuf>,
     /// A local Parakeet TDT ONNX checkpoint (encoder-model.onnx, decoder_joint-model.onnx,
     /// vocab.txt); `None` → `<data_dir>/models/parakeet-tdt` (45 §4.6).
@@ -971,7 +975,7 @@ impl Voice {
             .cfg
             .model_dir
             .clone()
-            .unwrap_or_else(|| self.rt.data_dir.join("models/pocket-tts"));
+            .unwrap_or_else(|| self.rt.data_dir.join("models").join(TTS_MODEL_SUBDIR));
         tokio::spawn(async move {
             let loaded = tokio::task::spawn_blocking(move || model::load(&model::locate(&dir)?))
                 .await

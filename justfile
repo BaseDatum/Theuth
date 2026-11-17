@@ -228,6 +228,9 @@ bump-version part:
 
 # Full macOS release (39 §5.1): package, notarize, update payloads, publish, tag.
 # Run `just build-remote <host> windows|linux` first so their artifacts are in dist/ (see build-remote).
+# Models are not part of it: when REQUIRED / an origin in scripts/fetch-models.sh or a pin in
+# scripts/ort-version.env changed since the last publish, run `just release-models` first
+# (docs/update-setup.md §6), so the files the new app loads are in the bucket before it goes live.
 release:
     just package-macos
     just notarize-macos
