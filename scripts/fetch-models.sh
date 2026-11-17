@@ -29,8 +29,7 @@
 #   hf:<owner>/<repo>/<path>   $HF_BASE/<owner>/<repo>/resolve/main/<path>;
 #                              HF_TOKEN (Authorization: Bearer) is sent when set — kyutai/pocket-tts is gated
 #   https://…                  verbatim (pyannote-rs GitHub release assets: wespeaker)
-#   none:<why>                 no documented download (parakeet-tdt's hub id was never recorded; the voice
-#                              is generated): only the bucket copy
+#   none:<why>                 no documented download (the voice is generated): only the bucket copy
 #
 # Env:
 #   THEUTH_MODELS_DIR / MODELS_DIR   destination (default: ${THEUTH_DATA_DIR:-~/.theuth}/models)
@@ -45,9 +44,9 @@ REQUIRED=(
   pocket-tts/tts_b6369a24.safetensors              # voice/src/model.rs WEIGHTS
   pocket-tts/tokenizer.model                       # voice/src/model.rs TOKENIZERS
   pocket-tts/voices/peter_yearsley.safetensors     # voice/src/model.rs VOICES_DIR
-  parakeet-tdt/encoder-model.onnx                  # voice/src/stt.rs Engine::load
-  parakeet-tdt/decoder_joint-model.onnx
-  parakeet-tdt/vocab.txt
+  parakeet-tdt/encoder-model.onnx                  # voice/src/stt.rs Engine::load; Olicorne/parakeet-tdt-0.6b-v3-optimized-onnx
+  parakeet-tdt/decoder_joint-model.onnx            # istupakov_smoothquant/int8/*.int8.onnx: encoder @ c3638803, decoder @ 06d54e30
+  parakeet-tdt/vocab.txt                           # (the <unk> ban, joint bias -1e4; 2026-10-06); vocab.txt from the repo root
   nemotron-streaming-en/encoder.onnx               # voice/src/stt.rs Stream::open
   nemotron-streaming-en/decoder_joint.onnx
   nemotron-streaming-en/tokenizer.model
@@ -72,7 +71,8 @@ origin_of() {
   case "$1" in
     pocket-tts/voices/*)      echo "none:made locally — ptts create_voice from kyutai/tts-voices voice-zero/peter_yearsley.wav (43 §5)" ;;
     pocket-tts/*)             echo "hf:kyutai/pocket-tts/${1#pocket-tts/}" ;;
-    parakeet-tdt/*)           echo "none:parakeet-tdt-0.6b-v3-int8-smoothquant (Olicorne's requantisation of istupakov's export, files renamed to parakeet-rs names) — hub id not recorded (45 §STT)" ;;
+    parakeet-tdt/vocab.txt)   echo "hf:Olicorne/parakeet-tdt-0.6b-v3-optimized-onnx/vocab.txt" ;;
+    parakeet-tdt/*)           local f="${1#*/}"; echo "hf:Olicorne/parakeet-tdt-0.6b-v3-optimized-onnx/istupakov_smoothquant/int8/${f%.onnx}.int8.onnx" ;;   # upstream int8 names → parakeet-rs names
     nemotron-streaming-en/*)  echo "hf:lokkju/nemotron-speech-streaming-en-0.6b-int8/${1#*/}" ;;
     nemotron-diarization/*)   echo "hf:onnx-community/Nemotron-3-Diarization-ONNX/onnx/${1#*/}" ;;
     pyannote/*)               echo "https://github.com/thewh1teagle/pyannote-rs/releases/download/v0.1.0/${1#*/}" ;;
