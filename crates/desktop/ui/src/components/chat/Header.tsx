@@ -22,13 +22,12 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { chatName } from '@/lib/attach'
 import { sharedLabel, useSharing } from '@/lib/contacts'
 import { previewText } from '@/lib/channel-origin'
-import { type HeaderId, type Mode, approvalsOff as pillOff, decideTier, headerOrder, layout, nativeLayout } from '@/lib/header'
+import { type HeaderId, type Mode, approvalsOff as pillOff, decideTier, headerOrder, layout } from '@/lib/header'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { canPopout, isPopout, openPopout, type PopoutTarget } from '@/lib/popout'
 import { ownerState, useEngineLabel, useOwnerOffline } from '@/lib/owner'
 import { useMesh } from '@/components/tasks/queries'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { mountBar, onNativeTap, setBarTitle, useNativeBar } from '@/lib/native-chrome'
 import { cn } from '@/lib/utils'
 import { sourceTag } from '@/lib/session-tree'
 import type { ObservedMeta } from "@/rpc/bindings/method.agent.output"
@@ -197,22 +196,18 @@ export function Header({
   first = true,
   onClose,
   popout,
-  under = false,
 }: {
   session: string | null
   first?: boolean
   onClose?(): void
   /** What "Open in new window" opens; the session's chat unless the host is another view of it (76: `talk`). */
   popout?: PopoutTarget
-  /** 198: the content below scrolls under the native glass bar, so this header takes no room when that bar stands in
-   * for it (the live chat's transcript); otherwise it keeps its 52 px, invisible. */
-  under?: boolean
 }) {
   const discovery = useConnection(s => s.discovery)
   const canQuery2 = useQuerySupport(["list_sessions"])
   const canQuery2_2 = useQuerySupport(["get_approvals"])
   const api = useApi()
-  const { open, isMobile, toggleSidebar } = useSidebar()
+  const { open, isMobile } = useSidebar()
   const info = useConnection((s) => s.info)
   const pending = useApprovals((s) => s.pending.length)
   const parent = useSessionField(session ?? '', 'parent')
@@ -261,18 +256,12 @@ export function Header({
   const nav = first && (!open || isMobile) && !popped
   /** The talk view (B3): the header carries the way back to the same session's chat; the talk keeps running. */
   const chat = popout?.kind === 'talk'
-  /** 198: the native glass bar stands in for this header (iOS 26 iPhone, the window's own chat header). The header
-   * stays mounted, invisible, as the anchor of the two menus the native taps open and the host of their dialogs. */
-  const native = useNativeBar(first && !popped && !chat)
-  const [more, setMore] = useState(false)
-  const [actions, setActions] = useState(false)
   /**
    * The one panel button the compact bar keeps: artifacts (the session's output surface, with its count) over the
    * live browser over terminals (a job detail); the others move behind the chevron.
    */
   const panel = artifacts?.size ? 'artifacts' : codemap ? 'codemap' : browser ? 'browser' : terminals ? 'terminals' : null
-  const items = headerOrder(panel, canPopout() && !popped, chat, !!observed).filter(item => !HEADER_REQUIREMENTS[item.id] || supports(discovery, HEADER_REQUIREMENTS[item.id]!))
-  const { bar, menu } = native ? nativeLayout(items) : layout(items, tier)
+  const { bar, menu } = layout(headerOrder(panel, canPopout() && !popped, chat, !!observed).filter(item => !HEADER_REQUIREMENTS[item.id] || supports(discovery, HEADER_REQUIREMENTS[item.id]!)), tier)
 
   const render: Record<HeaderId, (mode: Mode) => ReactNode> = {
     search: (mode) =>
@@ -371,7 +360,7 @@ export function Header({
       ),
     more: (mode) =>
       mode === 'full' ? null : (
-        <HeaderMenu header={ref} badge={pending > 0} open={more} onOpenChange={setMore}>
+        <HeaderMenu header={ref} badge={pending > 0}>
           {menu.map((i) => (
             <Fragment key={i.id}>{render[i.id]('row')}</Fragment>
           ))}
@@ -388,7 +377,7 @@ export function Header({
         </Button>
       )
     },
-    menu: () => <SessionMenu session={session ?? ''} open={actions} onOpenChange={setActions} />,
+    menu: () => <SessionMenu session={session ?? ''} />,
     close: () =>
       onClose ? (
         <Button variant="ghost" size="icon" className="rounded-lg text-fg-secondary" aria-label="Close pane" onClick={onClose}>
@@ -405,41 +394,15 @@ export function Header({
     window.addEventListener('theuth:open', on)
     return () => window.removeEventListener('theuth:open', on)
   }, [session])
-  // 198: the native bar shows the title; its taps do the jobs of the drawer toggle, the chevron and the ⋯ menu.
-  useEffect(() => (native ? mountBar(title) : undefined), [native]) // eslint-disable-line react-hooks/exhaustive-deps -- the next effect keeps the title current
-  useEffect(() => {
-    if (native) setBarTitle(title)
-  }, [native, title])
-  useEffect(() => {
-    if (!native) return
-    return onNativeTap((id) => {
-      if (id === 'drawer') {
-        setMore(false)
-        setActions(false)
-        toggleSidebar()
-      } else if (id === 'title') {
-        setActions(false)
-        setMore((o) => !o)
-      } else if (id === 'menu') {
-        setMore(false)
-        setActions((o) => !o)
-      }
-    })
-  }, [native, toggleSidebar])
   return (
-    <header
-      ref={ref}
-      data-header-tier={tier}
-      data-native-chrome={native || undefined}
-      className={cn('relative flex h-[52px] shrink-0 overflow-hidden', native && 'invisible', native && under && 'absolute inset-x-0 top-0')}
-    >
+    <header ref={ref} data-header-tier={tier} className="relative flex h-[52px] shrink-0 overflow-hidden">
       <div
         ref={rowRef}
         data-tauri-drag-region={mac || undefined}
         className={cn('flex h-full w-full min-w-max items-center', compact ? 'gap-1 px-2' : 'gap-2 px-3', nav && !open && mac && 'pl-20')}
       >
         {bar.map((i) => (
-          <Fragment key={i.id}>{render[i.id](compact || native ? 'bar' : 'full')}</Fragment>
+          <Fragment key={i.id}>{render[i.id](compact ? 'bar' : 'full')}</Fragment>
         ))}
       </div>
       <Capability required={approvalsRequirements} hide><ApprovalsSheet open={sheet} onOpenChange={setSheet} /></Capability>

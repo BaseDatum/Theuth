@@ -234,9 +234,8 @@ function PromptSheet({
 }
 
 
-/** The `…` menu of the open session; every action is the slash command the TUI would run. `open`/`onOpenChange`:
- * controlled (198: the native ⋯ opens it); uncontrolled when absent. */
-export function SessionMenu({ session, open: openProp, onOpenChange }: { session: string; open?: boolean; onOpenChange?(open: boolean): void }) {
+/** The `…` menu of the open session; every action is the slash command the TUI would run. */
+export function SessionMenu({ session }: { session: string }) {
   const canQuery3 = useQuerySupport(["list_sessions"])
   const canQuery3_2 = useQuerySupport(["list_jobs"])
   const canQuery3_3 = useQuerySupport(["get_approvals"])
@@ -256,14 +255,8 @@ export function SessionMenu({ session, open: openProp, onOpenChange }: { session
   const [rename, setRename] = useState(false)
   const [sheet, setSheet] = useState<Surface | null>(null)
   // 181 D1: the paired engines and this session's live jobs, read while the menu is open.
-  const [own, setOwn] = useState(false)
-  const open = openProp ?? own
-  const setOpen = onOpenChange ?? setOwn
+  const [open, setOpen] = useState(false)
   const mesh = useMesh()
-  const refetchMesh = mesh.refetch
-  useEffect(() => {
-    if (open) void refetchMesh()
-  }, [open, refetchMesh])
   const agents = useAgents()
   const jobs = useQuery({ queryKey: queryKeys.jobs(session), queryFn: () => api.list_jobs(session), enabled: canQuery3_2 && (open && here && !!session) })
   // 181 D1 / 183 §12.2: a session owned elsewhere moves from its owner (forwarded), so its own engine is no target.
@@ -353,7 +346,12 @@ export function SessionMenu({ session, open: openProp, onOpenChange }: { session
 
   return (
     <>
-      <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenu
+        onOpenChange={(o) => {
+          setOpen(o)
+          if (o) void mesh.refetch()
+        }}
+      >
         <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"

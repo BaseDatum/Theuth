@@ -8,7 +8,6 @@ import { bucket, counters, estimateRow, heights, MeasuredContext, persist, remem
 import { useNudges } from '@/lib/nudges'
 import { useApi } from '@/lib/rpc'
 import { useToolRuns } from '@/lib/tool-runs'
-import { BAR, onNativeTap, setScrollButton, trackScrollButton } from '@/lib/native-chrome'
 import { cn } from '@/lib/utils'
 import { type Prompt, useApprovals, useAsks, useSecretRequests } from '@/store/approvals'
 import { useScope } from '@/store/engine-scope'
@@ -152,10 +151,8 @@ function Ruler({ ticks, at, onJump }: { ticks: Tick[]; at: number; onJump(index:
 }
 
 /** The session's transcript: virtualized, pinned to the bottom until the user scrolls up, paged backwards from the top.
- * `compact` (59 §7.3, the panel under a note): no ruler, no centred column, tighter padding. `under` (198): the
- * native glass bar stands in for the header — the scroller reaches up to the screen's top edge and pads its content
- * below the bar, and the native scroll-to-bottom button replaces the web one. */
-export function Transcript({ session, compact = false, under = false }: { session: string; compact?: boolean; under?: boolean }) {
+ * `compact` (59 §7.3, the panel under a note): no ruler, no centred column, tighter padding. */
+export function Transcript({ session, compact = false }: { session: string; compact?: boolean }) {
   const api = useApi()
   const all = useEntries(session)
   const showNudges = useNudges((s) => s.show)
@@ -339,8 +336,7 @@ export function Transcript({ session, compact = false, under = false }: { sessio
     }
     const rowEl = slow ? v.elementsCache.get(item.key) : undefined
     const edge = rowEl ? el.getBoundingClientRect().top : 0
-    // The row at `scrollTop` starts at the content's top, below any top padding (under the glass bar): the reader's edge.
-    const node = rowEl ? anchorElement(rowEl, edge + (under ? parseFloat(getComputedStyle(el).paddingTop) || 0 : 0)) : null
+    const node = rowEl ? anchorElement(rowEl, edge) : null
     anchorEl.current = node
     anchor.current = { index: item.index, entry: rowEntry(row), offset: node ? node.getBoundingClientRect().top - edge : 0 }
   }
@@ -470,21 +466,6 @@ export function Transcript({ session, compact = false, under = false }: { sessio
     setUnstuck(true)
     v.scrollToIndex(index, { align: 'start' })
   }
-  const toBottom = () => {
-    stuck.current = true
-    setUnstuck(false)
-    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight
-  }
-  // 198: the native button mirrors the web one: shown while unstuck, 12 px above the scroller's bottom edge on screen.
-  useEffect(() => (under && ref.current ? trackScrollButton(ref.current, unstuck) : undefined), [under, unstuck])
-  useEffect(() => {
-    if (!under) return
-    const off = onNativeTap((id) => id === 'scroll_bottom' && toBottom())
-    return () => {
-      off()
-      setScrollButton(false, 0)
-    }
-  }, [under]) // eslint-disable-line react-hooks/exhaustive-deps -- `toBottom` touches refs and a state setter only
   // "jump to message" (SendCard → `useTranscriptJump`): this transcript's virtualiser brings the row into range, then
   // the card is centred and flashed once mounted. Nothing depends on the send card staying mounted; leaving the
   // session drops a request still pending for it.
@@ -539,9 +520,9 @@ export function Transcript({ session, compact = false, under = false }: { sessio
   )
   const measured = useMemo(() => (width ? { session, width } : null), [session, width])
   return (
-    <div className="relative min-h-0 flex-1" style={under ? { marginTop: 'calc(-1 * var(--safe-top))' } : undefined}>
+    <div className="relative min-h-0 flex-1">
       {/* Never a page-wide horizontal scroll: long words wrap (inherited; `pre` and `nowrap` cells keep scrolling inside their own boxes). */}
-      <div ref={ref} onScroll={onScroll} className="h-full overflow-x-hidden overflow-y-auto wrap-anywhere" style={under ? { paddingTop: `calc(var(--safe-top) + ${BAR}px)` } : undefined}>
+      <div ref={ref} onScroll={onScroll} className="h-full overflow-x-hidden overflow-y-auto wrap-anywhere">
         <div
           ref={column}
           className={cn('relative w-full', compact ? 'px-2' : 'mx-auto md:max-w-[768px] px-4')}
@@ -571,12 +552,16 @@ export function Transcript({ session, compact = false, under = false }: { sessio
         )}
       </div>
       {!compact && <Ruler ticks={ticks} at={pinned ? Number.POSITIVE_INFINITY : at} onJump={jump} />}
-      {unstuck && !under && (
+      {unstuck && (
         <Button
           variant="outline"
           className="absolute bottom-3 left-1/2 size-9 -translate-x-1/2 rounded-full shadow-sm"
           aria-label="Scroll to bottom"
-          onClick={toBottom}
+          onClick={() => {
+            stuck.current = true
+            setUnstuck(false)
+            if (ref.current) ref.current.scrollTop = ref.current.scrollHeight
+          }}
         >
           <ArrowDown />
         </Button>
