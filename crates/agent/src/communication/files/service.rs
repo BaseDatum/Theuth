@@ -144,6 +144,8 @@ pub struct FileService {
     pub fetcher: Option<Arc<dyn FileFetch>>,
     door: Arc<dyn NoticeDoor>,
     sched: parking_lot::Mutex<Sched>,
+    /// UI-3: each offer's last recorded byte count and when (at most two writes a second).
+    served: parking_lot::Mutex<HashMap<String, (u64, Instant)>>,
 }
 
 /// `rt`'s engine's running service (the send path reaches it through [`FileServiceOf`]).
@@ -183,6 +185,7 @@ impl FileService {
             fetcher: None,
             door,
             sched: parking_lot::Mutex::default(),
+            served: parking_lot::Mutex::default(),
         })
     }
 
@@ -656,12 +659,12 @@ impl FileService {
 
     /// The offer `id` as the route may serve it to `contact`.
     async fn offer(&self, contact: &str, id: &str) -> Result<FileRow, OfferError> {
+        // A failed read is no answer about the offer (SEC-A4): retryable, never `404`.
         let row = self
             .store
             .contact_file(id)
             .await
-            .ok()
-            .flatten()
+            .map_err(|_| OfferError::Unavailable)?
             .filter(|r| r.direction == "out" && !r.exchange.starts_with("pending:"))
             .ok_or(OfferError::Unknown)?;
         if !self.same_contact(&row, contact).await {
@@ -760,8 +763,14 @@ async fn publish_here(
             disk::abandon(&partial, Some((&target, dev, ino)))?;
             Ok(None)
         }
-        // Left `publishing`: the next start resolves it by inode.
-        Err(e) => Err(io(e)),
+        // SEC-A5: step 6 failed after the link: our target goes (by inode) with the partial
+        // before the caller records the failure, so no published file is left behind. If
+        // that record fails too, the row stays `publishing` and the next start, finding
+        // neither, downloads it again.
+        Err(e) => {
+            disk::abandon(&partial, Some((&target, dev, ino)))?;
+            Err(io(e))
+        }
     }
 }
 
@@ -915,11 +924,54 @@ impl FileOffers for FileService {
             Receipt::Received => None,
             Receipt::Failed { reason } => Some(reason.as_str()),
         };
-        if let Ok(Some(done)) = self.store.offer_settle(&row.id, why).await {
-            self.drop_clone(&done);
-            self.changed(&r, &done).await;
+        // SEC-A4: `200` only once the settlement is durable, or the offer was terminal
+        // already (a concurrent first receipt won); a failed write is retryable.
+        match self.store.offer_settle(&row.id, why).await {
+            Ok(Some(done)) => {
+                self.served.lock().remove(&done.id);
+                self.drop_clone(&done);
+                self.changed(&r, &done).await;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(id = %row.id, "199: receipt not recorded: {e:#}");
+                return Err(OfferError::Unavailable);
+            }
         }
         Ok(())
+    }
+
+    /// UI-3: the bytes the receiver has, recorded on the `sending` row (its `done`) and
+    /// announced, at most twice a second per offer; the last count is written by the receipt.
+    fn served(&self, _contact: &str, id: &str, at: u64) {
+        let now = Instant::now();
+        {
+            let mut served = self.served.lock();
+            let last = served.get(id).copied();
+            if last.is_some_and(|(n, t)| n == at || now.duration_since(t) < PROGRESS_EVERY) {
+                return;
+            }
+            served.insert(id.to_owned(), (at, now));
+        }
+        let (store, rt, id) = (self.store.clone(), self.rt.clone(), id.to_owned());
+        tokio::spawn(async move {
+            let Ok(Some(row)) = store.offer_done(&id, at).await else {
+                return;
+            };
+            let (Some(rt), Ok(session)) = (rt, row.session.parse::<SessionId>()) else {
+                return;
+            };
+            let r = render(&store).await;
+            let alias = store
+                .contact_alias(&row.contact_id)
+                .await
+                .unwrap_or_default();
+            rt.publish(AgentEvent::ContactFileChanged {
+                session,
+                file: row.card(&r, &alias),
+            })
+            .await;
+        });
     }
 }
 
@@ -1519,5 +1571,130 @@ mod tests {
             rig.row(&quiet).await.error.as_deref(),
             Some("expired without a receipt")
         );
+    }
+
+    /// 199-Z1 SEC-A4: a receipt whose write fails is not acknowledged (retryable
+    /// `Unavailable`, the offer still `sending`); the retry is. UI-3: what the route served
+    /// is the `sending` row's `done` (the card's progress), throttled, and gone after `sent`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn receipts_ack_only_durably_and_serving_records_progress() {
+        let rig = rig().await;
+        let store = &rig.svc.store;
+        let path = rig.svc.root.join("big.bin");
+        std::fs::write(&path, vec![1u8; 1000]).unwrap();
+        let e = disk::egress_open(&path, &rig.svc.root).unwrap();
+        let id = super::super::send::local_id();
+        store
+            .insert_contact_files(&[FileRow {
+                id: id.clone(),
+                direction: "out".into(),
+                session: rig.session.to_string(),
+                exchange: uuid::Uuid::new_v4().to_string(),
+                contact_id: "rec".into(),
+                name: "big.bin".into(),
+                media_type: "application/octet-stream".into(),
+                size: Some(1000),
+                blake3: Some(blake3::hash(&[1u8; 1000]).to_hex().to_string()),
+                source: path.to_string_lossy().into_owned(),
+                dev: Some(e.dev as i64),
+                inode: Some(e.inode as i64),
+                state: "queued".into(),
+                created_ms: now_ms(),
+                deadline_ms: now_ms() + 3_600_000,
+                ..Default::default()
+            }])
+            .await
+            .unwrap();
+        drop(rig.svc.open("rec", &id).await.unwrap());
+        rig.svc.served("rec", &id, 400);
+        rig.until("done 400", async |r| r.row(&id).await.done == 400)
+            .await;
+        rig.svc.served("rec", &id, 500);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            rig.row(&id).await.done,
+            400,
+            "throttled: at most two a second"
+        );
+        tokio::time::sleep(PROGRESS_EVERY).await;
+        rig.svc.served("rec", &id, 900);
+        rig.until("done 900", async |r| r.row(&id).await.done == 900)
+            .await;
+
+        store
+            .exec_for_test(
+                "CREATE TRIGGER z1_fail BEFORE UPDATE OF state ON contact_files \
+                 BEGIN SELECT RAISE(ABORT, 'injected'); END",
+            )
+            .await;
+        assert!(matches!(
+            rig.svc.receipt("rec", &id, Receipt::Received).await,
+            Err(OfferError::Unavailable)
+        ));
+        assert_eq!(rig.row(&id).await.state, "sending", "nothing acknowledged");
+        store.exec_for_test("DROP TRIGGER z1_fail").await;
+        rig.svc
+            .receipt("rec", &id, Receipt::Received)
+            .await
+            .unwrap();
+        let row = rig.row(&id).await;
+        assert_eq!((row.state.as_str(), row.done), ("sent", 1000));
+        rig.svc.served("rec", &id, 950);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            rig.row(&id).await.done,
+            1000,
+            "a late count never rewinds a sent offer"
+        );
+    }
+
+    /// 199-Z1 SEC-A5: step 6 (`file_published`) fails after the hard link: the published
+    /// target is removed by inode with the partial, the file fails with a failed receipt,
+    /// and nothing is left under `files/received/`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_commit_after_the_link_leaves_no_published_file() {
+        let rig = rig().await;
+        rig.svc
+            .store
+            .exec_for_test(
+                "CREATE TRIGGER z1_commit BEFORE UPDATE OF state ON contact_files \
+                 WHEN NEW.state IN ('saved', 'received') \
+                 BEGIN SELECT RAISE(ABORT, 'injected'); END",
+            )
+            .await;
+        let ex = rig.exchange().await;
+        let id = rig.file(ex, "m", "a5.txt", b"published then dropped").await;
+        rig.until("failed", async |r| r.row(&id).await.state == "failed")
+            .await;
+        let row = rig.row(&id).await;
+        assert!(
+            row.error
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("saving failed"),
+            "{row:?}"
+        );
+        let target = PathBuf::from(row.path.expect("the link was recorded"));
+        assert!(!target.exists(), "{} stranded", target.display());
+        assert!(!rig.svc.partial(&id).exists());
+        let left: Vec<_> = walk(&rig.svc.root.join("files/received"));
+        assert!(left.is_empty(), "{left:?}");
+        assert!(matches!(
+            rig.fake.receipts.lock().last().map(|r| r.1.clone()),
+            Some(Receipt::Failed { .. })
+        ));
+    }
+
+    fn walk(dir: &Path) -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .flat_map(|e| match e.path() {
+                p if p.is_dir() => walk(&p),
+                p => vec![p],
+            })
+            .collect()
     }
 }

@@ -352,6 +352,7 @@ impl Model {
                     || self.sent.take().as_deref() == Some(said);
                 if !shown {
                     self.entries.extend(user_entries(text, Some(turn_seq), &self.components));
+                    crate::components::files::fold_notices(&mut self.entries);
                 } else if let Some(at) = self
                     .entries
                     .iter()
@@ -530,6 +531,7 @@ impl Model {
                 self.compacting = false;
                 self.vision = None;
                 self.entries.push(crate::components::files::ended(&message).unwrap_or_else(|| Entry::Error(message)));
+                crate::components::files::fold_notices(&mut self.entries);
             }
             // 141 §10.1: handled in the roster match above (it returns before
             // the tail-finishing rules, which a detail-only update must skip).

@@ -213,38 +213,8 @@ pub async fn stage(
     let sender = format!("session:{session}");
     let now = Utc::now().timestamp_millis();
     let deadline = now + OFFER_TTL.as_millis() as i64;
-    let mut offers = Vec::with_capacity(to.len());
-    let mut rows = Vec::new();
+    let mut requests = Vec::with_capacity(to.len());
     for (rid, contact) in request_ids.iter().zip(&contacts) {
-        // A repeat of the key: the same files, or nothing is sent.
-        if request_id.is_some()
-            && let Some(ex) = svc
-                .store
-                .exchange_by_request_id(&sender, rid)
-                .await
-                .map_err(|e| format!("{e:#}"))?
-        {
-            let had = svc
-                .store
-                .exchange_files(&ex.to_string())
-                .await
-                .map_err(|e| format!("{e:#}"))?;
-            let same = had.len() == picked.len()
-                && had.iter().zip(&picked).all(|(h, p)| {
-                    h.blake3.as_deref() == Some(p.blake3.as_str())
-                        && h.size == Some(p.size as i64)
-                        && h.name == p.name
-                });
-            if !same {
-                drop_staging();
-                return Err(format!(
-                    "request_id {} was used with different files",
-                    request_id.unwrap_or_default()
-                ));
-            }
-            offers.push(had);
-            continue;
-        }
         let tag = staged_tag(&session.to_string(), rid);
         let mut mine = Vec::with_capacity(picked.len());
         for (seq, f) in picked.iter().enumerate() {
@@ -275,18 +245,34 @@ pub async fn stage(
                 ..Default::default()
             });
         }
-        rows.extend(mine.iter().cloned());
-        offers.push(mine);
+        requests.push((rid.clone(), tag, mine));
     }
     drop_staging();
-    if let Err(e) = svc.store.insert_contact_files(&rows).await {
-        for r in &rows {
-            if let Some(c) = &r.clone {
-                let _ = std::fs::remove_file(c);
-            }
+    // SEC-A3: the request id and its files are reserved together, atomically: a repeat (or
+    // a concurrent retry) of the key with the same files reuses the offers already staged
+    // or adopted, with other files nothing is sent.
+    let reserved = svc.store.reserve_offers(&sender, &requests).await;
+    let ours: std::collections::HashSet<String> = match &reserved {
+        Ok(Some(offers)) => offers.iter().flatten().map(|r| r.id.clone()).collect(),
+        _ => Default::default(),
+    };
+    for r in requests.iter().flat_map(|(_, _, rows)| rows) {
+        if !ours.contains(&r.id)
+            && let Some(c) = &r.clone
+        {
+            let _ = std::fs::remove_file(c);
         }
-        return Err(format!("files: {e:#}"));
     }
+    let offers = match reserved {
+        Ok(Some(offers)) => offers,
+        Ok(None) => {
+            return Err(format!(
+                "request_id {} was used with different files",
+                request_id.unwrap_or_default()
+            ));
+        }
+        Err(e) => return Err(format!("files: {e:#}")),
+    };
     Ok(Staged {
         store: svc.store.clone(),
         session,

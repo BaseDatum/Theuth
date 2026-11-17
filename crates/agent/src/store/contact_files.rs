@@ -212,6 +212,60 @@ impl Store {
         tx.commit().await
     }
 
+    /// 199-Z1 SEC-A3: stage each recipient's offers (`(request id, staged tag, rows)`, rows
+    /// in `seq` order) for `sender`, all or nothing, in one write transaction with the
+    /// request-id check: a request that already holds offers (staged under its tag by a
+    /// concurrent call, or adopted by its exchange) inserts nothing and answers those rows
+    /// when they carry the same `(blake3, size, name)` list; any other list, or an exchange
+    /// of that request without these files, is a conflict and nothing is written.
+    pub async fn reserve_offers(
+        &self,
+        sender: &str,
+        requests: &[(String, String, Vec<FileRow>)],
+    ) -> anyhow::Result<Option<Vec<Vec<FileRow>>>> {
+        let mut tx = self.begin_write().await?;
+        let mut out = Vec::with_capacity(requests.len());
+        for (rid, tag, rows) in requests {
+            let mut have: Vec<FileRow> = sqlx::query_as(select!("WHERE exchange = ? ORDER BY seq"))
+                .bind(tag)
+                .fetch_all(&mut *tx)
+                .await?;
+            let exchange: Option<String> = sqlx::query_scalar(
+                "SELECT id FROM peer_exchanges WHERE sender = ? AND request_id = ?",
+            )
+            .bind(sender)
+            .bind(rid)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if have.is_empty()
+                && let Some(ex) = &exchange
+            {
+                have = sqlx::query_as(select!("WHERE exchange = ? ORDER BY seq"))
+                    .bind(ex)
+                    .fetch_all(&mut *tx)
+                    .await?;
+            }
+            if have.is_empty() && exchange.is_none() {
+                for r in rows {
+                    insert_in(&mut tx, r).await?;
+                }
+                out.push(rows.clone());
+                continue;
+            }
+            let same = have.len() == rows.len()
+                && have
+                    .iter()
+                    .zip(rows)
+                    .all(|(h, r)| h.blake3 == r.blake3 && h.size == r.size && h.name == r.name);
+            if !same {
+                return Ok(None);
+            }
+            out.push(have);
+        }
+        tx.commit().await?;
+        Ok(Some(out))
+    }
+
     /// 199 admission: the `in` rows of `exchange`, written once (a redelivery of the same
     /// exchange keeps the first set). `true` when they were written now.
     pub async fn admit_in_files(&self, exchange: &str, rows: &[FileRow]) -> anyhow::Result<bool> {
@@ -406,6 +460,28 @@ impl Store {
         .rows_affected();
         tx.commit().await?;
         Ok(n == 1)
+    }
+
+    /// UI-3: a `sending` offer's bytes the receiver has (no state change); the row after,
+    /// `None` when it is not `sending` any more.
+    pub async fn offer_done(&self, id: &str, done: u64) -> anyhow::Result<Option<FileRow>> {
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query(
+            "UPDATE contact_files SET done = ? WHERE id = ? AND direction = 'out' \
+             AND state = 'sending'",
+        )
+        .bind(done as i64)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let row = if n == 1 {
+            row_in(&mut tx, id).await?
+        } else {
+            None
+        };
+        tx.commit().await?;
+        Ok(row)
     }
 
     /// Publication step 6, one transaction: the actual size and BLAKE3, and `received`
@@ -1099,6 +1175,76 @@ mod tests {
 
     async fn exec(store: &Store, sql: &'static str) {
         sqlx::query(sql).execute(&store.write).await.unwrap();
+    }
+
+    /// 199-Z1 SEC-A3: two concurrent stagings of one request id. Different file lists: one
+    /// wins, the other is refused and writes nothing. The same list: both answer the one
+    /// staged set, no offer twice. An exchange of that request with other files refuses.
+    #[tokio::test]
+    async fn a_request_id_is_reserved_with_its_files() {
+        let (store, s, _d) = fresh().await;
+        let offer = |name: &str, tag: &str| FileRow {
+            direction: "out".into(),
+            exchange: tag.into(),
+            name: name.into(),
+            ..in_row(
+                s,
+                uuid::Uuid::nil(),
+                &uuid::Uuid::new_v4().simple().to_string(),
+            )
+        };
+        let one = |rid: &str, name: &str| {
+            let tag = staged_tag(&s.to_string(), rid);
+            vec![(rid.to_owned(), tag.clone(), vec![offer(name, &tag)])]
+        };
+        let sender = format!("session:{s}");
+        let (a, b) = (one("r1", "a.txt"), one("r1", "b.txt"));
+        let (x, y) = tokio::join!(
+            store.reserve_offers(&sender, &a),
+            store.reserve_offers(&sender, &b)
+        );
+        let (x, y) = (x.unwrap(), y.unwrap());
+        assert!(x.is_some() != y.is_some(), "exactly one wins: {x:?} {y:?}");
+        let tag = staged_tag(&s.to_string(), "r1");
+        assert_eq!(store.exchange_files(&tag).await.unwrap().len(), 1);
+
+        let (c, d) = (one("r2", "c.txt"), one("r2", "c.txt"));
+        let (x, y) = tokio::join!(
+            store.reserve_offers(&sender, &c),
+            store.reserve_offers(&sender, &d)
+        );
+        let (x, y) = (x.unwrap().unwrap(), y.unwrap().unwrap());
+        assert_eq!(x[0][0].id, y[0][0].id, "the same staged offer answers both");
+        let tag = staged_tag(&s.to_string(), "r2");
+        assert_eq!(store.exchange_files(&tag).await.unwrap().len(), 1);
+
+        // The request already went out (its exchange adopted the offer): a repeat with the
+        // same file reuses it, with another file is refused.
+        let ex = inbound(&store, s).await;
+        sqlx::query("UPDATE peer_exchanges SET sender = ?, request_id = 'r2' WHERE id = ?")
+            .bind(&sender)
+            .bind(ex.to_string())
+            .execute(&store.write)
+            .await
+            .unwrap();
+        store.adopt_offers(&tag, &ex.to_string()).await.unwrap();
+        let again = store
+            .reserve_offers(&sender, &one("r2", "c.txt"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(again[0][0].id, x[0][0].id);
+        assert!(
+            store
+                .reserve_offers(&sender, &one("r2", "z.txt"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            store.exchange_files(&ex.to_string()).await.unwrap().len(),
+            1
+        );
     }
 
     /// D17 share re-check: a granted export of the chat (no member refusing), or a live

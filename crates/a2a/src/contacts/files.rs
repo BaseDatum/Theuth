@@ -577,6 +577,7 @@ fn head(status: u16, headers: &[(&str, String)]) -> String {
         404 => "Not Found",
         410 => "Gone",
         416 => "Range Not Satisfiable",
+        503 => "Service Unavailable",
         _ => "Bad Request",
     };
     let mut h = format!("HTTP/1.1 {status} {reason}\r\n");
@@ -587,21 +588,29 @@ fn head(status: u16, headers: &[(&str, String)]) -> String {
     h
 }
 
-/// A whole short answer (`text/plain` when it has a body), then the end of the stream.
+/// A whole short answer (`text/plain` when it has a body), then the end of the stream, all
+/// within [`READ_TIMEOUT`] (SEC-N2: a caller withholding stream credit never holds it longer).
 async fn reply(s: &mut (impl AsyncWrite + Unpin), status: u16, body: &str) -> io::Result<()> {
     let mut headers = vec![("content-length", body.len().to_string())];
     if !body.is_empty() {
         headers.push(("content-type", "text/plain".into()));
     }
-    s.write_all(head(status, &headers).as_bytes()).await?;
-    s.write_all(body.as_bytes()).await?;
-    s.shutdown().await
+    let write = async {
+        s.write_all(head(status, &headers).as_bytes()).await?;
+        s.write_all(body.as_bytes()).await?;
+        s.shutdown().await
+    };
+    tokio::time::timeout(READ_TIMEOUT, write)
+        .await
+        .unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::TimedOut, "reply not taken")))
 }
 
 fn refused(s: OfferError) -> (u16, &'static str) {
     match s {
         OfferError::Unknown => (404, ""),
         OfferError::Gone(g) => (410, g.as_str()),
+        // The sender could not record it now: the receiver retries (SEC-A4).
+        OfferError::Unavailable => (503, ""),
     }
 }
 
@@ -650,12 +659,20 @@ pub(crate) async fn serve(
         if let Serve::Unsatisfiable { .. } = answer {
             headers.push(("content-length", "0".into()));
         }
-        s.write_all(head(answer.status(), &headers).as_bytes())
-            .await?;
+        // SEC-N2: the head and the end of the stream are under the same timer as the body.
         let timer = Timer::until(instant_of(h.deadline));
+        step(
+            &timer,
+            Instant::now(),
+            cut,
+            s.write_all(head(answer.status(), &headers).as_bytes()),
+        )
+        .await??;
         let mut file = tokio::fs::File::from_std(h.file);
+        let mut at = 0;
         if let Serve::Partial { from, .. } = answer {
             file.seek(SeekFrom::Start(from)).await?;
+            at = from;
         }
         let (mut left, mut last, mut buf) = (answer.len(), Instant::now(), vec![0u8; CHUNK]);
         while left > 0 {
@@ -672,9 +689,12 @@ pub(crate) async fn serve(
                 break;
             }
             left -= sent as u64;
+            at += sent as u64;
             last = Instant::now();
+            // UI-3: the sender's card counts what the receiver has.
+            offers.served(contact, &id, at);
         }
-        s.shutdown().await?;
+        step(&timer, last, cut, s.shutdown()).await??;
         anyhow::Ok(())
     };
     tokio::select! {
@@ -972,9 +992,12 @@ async fn receipt_with<S: AsyncRead + AsyncWrite + Unpin>(
 }
 
 /// This crate's [`FileFetch`], registered when the plugin attaches to the mesh endpoint.
-/// Each call takes its contact's transfers token first, then checks that the member it
-/// dials is a machine of that contact right now (else [`TransferError::Cancelled`], with
-/// nothing dialled): a `cut` after the check ends the call.
+/// Before `contacts_ready` (the mesh latch and the first reconcile) every call is the
+/// retryable [`TransferError::NotYet`]: what staging shows then is display facts, not the
+/// synced admission (SEC-N1). Then each call takes its contact's transfers token first and
+/// requires the member to be admitted by the gate (`IrohGate::Contact`) as a machine of
+/// that exact record (else [`TransferError::Cancelled`], with nothing dialled): a `cut`
+/// after the check ends the call.
 pub(crate) struct ContactFetch(pub(crate) Weak<Ctx>);
 
 impl ContactFetch {
@@ -986,8 +1009,20 @@ impl ContactFetch {
         let off = || TransferError::Transport(super::OFF.into());
         let c = self.0.upgrade().ok_or_else(off)?;
         let net = c.net().ok_or_else(off)?;
+        if !c.ready.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(TransferError::NotYet);
+        }
         let cut = c.transfers.token(contact);
-        if record_of(&c.shared.read().staged, member).as_deref() != Some(contact) {
+        let crate::server::IrohGate::Contact { alias, .. } = c.gate(member) else {
+            return Err(TransferError::Cancelled);
+        };
+        let shared = c.shared.read();
+        let same = shared
+            .staged
+            .contacts
+            .get(&alias)
+            .is_some_and(|f| f.id == contact);
+        if !same || record_of(&shared.staged, member).as_deref() != Some(contact) {
             return Err(TransferError::Cancelled);
         }
         Ok((cut, net))
@@ -1955,6 +1990,70 @@ mod tests {
                 panic!("{got:?}")
             };
             assert_eq!(reason.len(), REASON_MAX);
+        }
+
+        /// 199-Z1 SEC-N2: a caller that sends its request and then never reads (withheld
+        /// stream credit) holds the route no longer than its bounds: the response head of a
+        /// known offer ends at D8's idle, a short `404` within the control timeout.
+        #[tokio::test(start_paused = true)]
+        async fn a_blocked_head_or_reply_write_ends_within_its_bound() {
+            let dir = tempfile::tempdir().unwrap();
+            let fake = Arc::new(Fake::default());
+            let src = dir.path().join("src");
+            std::fs::write(&src, bytes(100_000)).unwrap();
+            fake.offer(F1, &src, 100_000);
+            for (id, bound) in [
+                (F1, agent::communication::files::FILE_IDLE),
+                (F2, READ_TIMEOUT),
+            ] {
+                let (mut s, h) = route_to(&fake, ME, &CancellationToken::new(), 1);
+                let req = format!("GET {FILES_PATH}{id} HTTP/1.1\r\nhost: theuth\r\n\r\n");
+                s.write_all(req.as_bytes()).await.unwrap();
+                let started = tokio::time::Instant::now();
+                let served = tokio::time::timeout(bound + Duration::from_secs(1), h)
+                    .await
+                    .expect("the write is bounded")
+                    .unwrap();
+                assert!(served.is_err(), "{id}: nothing was taken, yet it succeeded");
+                assert!(started.elapsed() >= bound - Duration::from_secs(1), "{id}");
+                drop(s);
+            }
+        }
+
+        /// SEC-A4: a receipt the sender could not record answers `503`, which the receiver
+        /// takes as retryable (a transport error), never as the sender's acknowledgement.
+        #[tokio::test]
+        async fn an_unrecorded_receipt_is_retryable() {
+            struct Down;
+            #[async_trait::async_trait]
+            impl FileOffers for Down {
+                async fn open(&self, _: &str, _: &str) -> Result<OfferHandle, OfferError> {
+                    Err(OfferError::Unavailable)
+                }
+                async fn receipt(&self, _: &str, _: &str, _: Receipt) -> Result<(), OfferError> {
+                    Err(OfferError::Unavailable)
+                }
+            }
+            let (near, mut far) = tokio::io::duplex(1 << 16);
+            let cut = CancellationToken::new();
+            let route = {
+                let cut = cut.clone();
+                tokio::spawn(async move {
+                    let line = read_line(&mut far).await?;
+                    serve(far, &line, ME, &Down, &cut).await
+                })
+            };
+            let err = receipt_with(
+                async { Ok(near) },
+                &cut,
+                F1,
+                &Receipt::Received,
+                far_timer(),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, TransferError::Transport(_)), "{err}");
+            route.await.unwrap().unwrap();
         }
     }
 }

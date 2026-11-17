@@ -99,8 +99,11 @@ pub async fn thumbnail(
 }
 
 /// `contact_file_export(holder, id, dest)` on the holder: a copy of the saved file at
-/// `dest`, which must not exist (never replaced).
+/// `dest`, which must not exist (never replaced). SEC-A6: the copy is written beside `dest`
+/// as `0600` with the quarantine xattr set and read back, then linked into place without
+/// clobbering, so `dest` never shows a copy without either.
 pub async fn export(store: &Store, r: &Render, id: &str, dest: PathBuf) -> Result<PathBuf, String> {
+    use std::os::unix::fs::OpenOptionsExt as _;
     let row = row(store, r, id).await?;
     let src = local(&row)
         .filter(|_| row.direction == "in")
@@ -110,24 +113,35 @@ pub async fn export(store: &Store, r: &Render, id: &str, dest: PathBuf) -> Resul
     }
     let missing = no_such(r);
     tokio::task::spawn_blocking(move || {
+        let fail = |e: std::io::Error| format!("{}: {e}", dest.display());
+        if dest.symlink_metadata().is_ok() {
+            return Err(format!("{} exists", dest.display()));
+        }
         let mut from = std::fs::File::open(&src).map_err(|_| missing)?;
-        let mut to = match std::fs::OpenOptions::new()
+        let tmp = dest.with_file_name(format!(".theuth-export-{}", uuid::Uuid::new_v4().simple()));
+        let mut to = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&dest)
-        {
-            Ok(f) => f,
+            .mode(0o600)
+            .open(&tmp)
+            .map_err(fail)?;
+        let value = super::disk::quarantine_value(
+            chrono::Utc::now().timestamp().max(0) as u64,
+            uuid::Uuid::new_v4(),
+        );
+        let written = super::disk::quarantine(&to, &value)
+            .and_then(|()| std::io::copy(&mut from, &mut to))
+            .and_then(|_| to.sync_all())
+            .and_then(|()| std::fs::hard_link(&tmp, &dest));
+        drop(to);
+        let _ = std::fs::remove_file(&tmp);
+        match written {
+            Ok(()) => Ok(dest),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err(format!("{} exists", dest.display()));
+                Err(format!("{} exists", dest.display()))
             }
-            Err(e) => return Err(format!("{}: {e}", dest.display())),
-        };
-        if let Err(e) = std::io::copy(&mut from, &mut to).and_then(|_| to.sync_all()) {
-            drop(to);
-            let _ = std::fs::remove_file(&dest);
-            return Err(format!("{}: {e}", dest.display()));
+            Err(e) => Err(fail(e)),
         }
-        Ok(dest)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -214,9 +228,11 @@ mod tests {
         );
     }
 
-    /// Export copies the saved bytes and never replaces an existing file.
+    /// Export copies the saved bytes, `0600` and quarantined like the received file (SEC-A6),
+    /// leaves no temporary beside it, and never replaces an existing file.
     #[tokio::test]
     async fn export_never_clobbers() {
+        use std::os::unix::fs::PermissionsExt as _;
         let (store, d, r) = fixture().await;
         let src = d.0.join("report.pdf");
         std::fs::write(&src, b"ours").unwrap();
@@ -225,12 +241,33 @@ mod tests {
             .insert_contact_files(std::slice::from_ref(&row))
             .await
             .unwrap();
-        let dest = d.0.join("out.pdf");
+        let out = d.0.join("out");
+        std::fs::create_dir(&out).unwrap();
+        let dest = out.join("out.pdf");
         assert_eq!(
             export(&store, &r, &row.id, dest.clone()).await.unwrap(),
             dest
         );
         assert_eq!(std::fs::read(&dest).unwrap(), b"ours");
+        assert_eq!(
+            std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::read_dir(&out).unwrap().count(),
+            1,
+            "no temporary left"
+        );
+        #[cfg(target_os = "macos")]
+        {
+            let q = std::process::Command::new("/usr/bin/xattr")
+                .args(["-p", "com.apple.quarantine"])
+                .arg(&dest)
+                .output()
+                .unwrap();
+            let q = String::from_utf8(q.stdout).unwrap();
+            assert!(q.starts_with("0081;") && q.contains(";theuth;"), "{q:?}");
+        }
         std::fs::write(&dest, b"theirs").unwrap();
         let e = export(&store, &r, &row.id, dest.clone()).await.unwrap_err();
         assert_eq!(e, format!("{} exists", dest.display()));

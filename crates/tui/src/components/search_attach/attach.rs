@@ -35,14 +35,14 @@ fn date_secs(s: i64) -> String {
     DateTime::from_timestamp(s, 0).map(date).unwrap_or_default()
 }
 
-/// `KB`/`MB` with one decimal below 10.
+/// Decimal `kB`/`MB` (199 UI-2: one unit system), one decimal below 10.
 pub fn size(bytes: u64) -> String {
-    const K: f64 = 1024.0;
+    const K: f64 = 1000.0;
     let b = bytes as f64;
     let (n, unit) = if b < K {
         return format!("{bytes} B");
     } else if b < K * K {
-        (b / K, "KB")
+        (b / K, "kB")
     } else {
         (b / K / K, "MB")
     };

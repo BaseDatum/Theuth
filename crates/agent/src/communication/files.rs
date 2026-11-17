@@ -497,6 +497,8 @@ pub enum OfferError {
     Unknown,
     /// `410` with its text.
     Gone(Gone),
+    /// `503`: the sender could not record it now (a failed write); the receiver retries.
+    Unavailable,
 }
 
 /// An offer opened for serving: the clone, or the original reopened through
@@ -521,7 +523,11 @@ pub trait FileOffers: Send + Sync {
     /// `GET`: the offer `id` of `contact`, ready to serve.
     async fn open(&self, contact: &str, id: &str) -> Result<OfferHandle, OfferError>;
     /// `POST`: the receiver's terminal receipt; only the first one applies, a repeat is `Ok`.
+    /// `Ok` only once it is durable (or the offer was already terminal).
     async fn receipt(&self, contact: &str, id: &str, receipt: Receipt) -> Result<(), OfferError>;
+    /// The route served offer `id` of `contact` up to byte `at` (the receiver has that
+    /// much): the sender's progress, in memory. Default: ignored.
+    fn served(&self, _contact: &str, _id: &str, _at: u64) {}
 }
 
 /// No offers: every GET and receipt is `404`, until 199-E1b registers its own.

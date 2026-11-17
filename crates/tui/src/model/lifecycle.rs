@@ -79,6 +79,8 @@ impl Model {
             .into_iter()
             .flat_map(|h| from_history(h, &opts, &mut self.components))
             .collect();
+        // 199 UI-1: a notice of a file whose message line is loaded is one compact note.
+        crate::components::files::fold_notices(&mut self.entries);
         self.anchor = None;
         // An index into the old transcript is meaningless now.
         self.editing = None;

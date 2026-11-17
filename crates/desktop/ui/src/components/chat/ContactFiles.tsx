@@ -195,6 +195,9 @@ function Actions({ v, session, here, local }: { v: FileView; session?: string; h
   return buttons.length ? <div className="col-start-2 mt-1 flex flex-wrap gap-1.5">{buttons}</div> : null
 }
 
+/** The live card's DOM id, so a notice row can scroll to it. */
+const cardId = (holder: string, id: string) => `contact-file-${holder}-${id}`
+
 /** One file card: thumbnail or type icon, name, size · type · whom, the state (with progress while bytes move), the
  * path, the reason, then the actions this machine has. `ended`: an ended share's notice (D17), never given to the agent. */
 export function FileCard({ v, session, ended }: { v: FileView; session?: string; ended?: boolean }) {
@@ -207,6 +210,7 @@ export function FileCard({ v, session, ended }: { v: FileView; session?: string;
   const failed = v.state === 'failed'
   return (
     <div
+      id={v.holder ? cardId(v.holder, v.id) : undefined}
       className={cn(
         'grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-1 rounded-lg border p-2.5',
         failed ? 'border-danger-border bg-danger-bg/50' : 'border-border-subtle bg-layer-2/45',
@@ -269,8 +273,24 @@ export function PeerFiles({ files, session }: { files: readonly FileNote[]; sess
   )
 }
 
-/** A notice row from theuth (or an ended share's `errors` row): a file card under a `theuth` line, never a `you` bubble. */
+/** A notice row from theuth (or an ended share's `errors` row). With its message row loaded, one line pointing at that
+ * message's live card; otherwise (history paged out, a notice-only view) the full card under a `theuth` line. */
 export function FileNoticeCard({ note, session, at, ended }: { note: FileNote; session: string; at?: number; ended?: boolean }) {
+  const loaded = useSessions((s) => !!s.sessions[session]?.entries.some((x) => x.kind === 'peer' && x.files?.some((f) => f.holder === note.holder && f.id === note.id)))
+  if (loaded) {
+    const state = note.state === 'failed' ? `Failed${note.reason ? `: ${note.reason}` : ''}` : 'Received'
+    return (
+      <div className="my-1 flex flex-wrap items-center gap-x-1.5 text-[11px] text-fg-tertiary" role="note">
+        <span className="font-medium text-fg-secondary wrap-anywhere">{note.name}</span>
+        <span className={note.state === 'failed' ? 'text-danger' : undefined}>{state}</span>
+        <span>· {ended ? 'not given to the agent' : 'given to the agent'}</span>
+        <button type="button" className="underline" onClick={() => document.getElementById(cardId(note.holder, note.id))?.scrollIntoView({ block: 'center', behavior: 'smooth' })}>
+          Show
+        </button>
+        <Clock at={at} />
+      </div>
+    )
+  }
   return (
     <div className="my-2 flex flex-col gap-1.5" role="note">
       <div className="flex items-center gap-2 text-[11px] text-fg-tertiary">

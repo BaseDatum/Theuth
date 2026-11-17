@@ -3272,6 +3272,15 @@ impl Store {
             .unwrap();
     }
 
+    /// Tests: run one statement on the write pool.
+    #[cfg(test)]
+    pub(crate) async fn exec_for_test(&self, sql: &str) {
+        sqlx::query(sqlx::AssertSqlSafe(sql.to_owned()))
+            .execute(&self.write)
+            .await
+            .unwrap();
+    }
+
     /// Every session, pinned first, then most recently active first; advisor
     /// rows (125 §4.2) hidden.
     pub async fn list_sessions(&self) -> anyhow::Result<Vec<SessionSummary>> {

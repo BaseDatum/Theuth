@@ -3031,6 +3031,15 @@ async fn a_contact_file_streams_on_its_own_stream_and_a_block_cuts_it() {
         have: 0,
         timer: timer(),
     };
+    // SEC-N1: before B's contacts are ready (mesh latch, first reconcile) a resumed
+    // download waits (retryable, nothing dialled or written); once ready it proceeds.
+    b.ctx
+        .ready
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let err = fetch.download(&f, &mut |_| {}).await.unwrap_err();
+    assert!(matches!(err, TransferError::NotYet), "{err}");
+    assert!(!f.partial.exists(), "nothing written before ready");
+    b.ctx.ready.store(true, std::sync::atomic::Ordering::SeqCst);
     let got = fetch.download(&f, &mut |_| {}).await.unwrap();
     let want = blake3_of(&std::fs::File::open(&src).unwrap(), size).unwrap();
     assert_eq!((got.bytes, got.blake3), (size, want));
@@ -3104,6 +3113,16 @@ async fn a_contact_file_streams_on_its_own_stream_and_a_block_cuts_it() {
         .expect("the block ends the download long before its idle")
         .unwrap()
         .unwrap_err();
+    assert!(matches!(err, TransferError::Cancelled), "{err}");
+    // SEC-N1: the block (a revocation the latch would sync) refuses once ready; before it,
+    // still only the retryable wait.
+    b.ctx
+        .ready
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let err = fetch.download(&f, &mut |_| {}).await.unwrap_err();
+    assert!(matches!(err, TransferError::NotYet), "{err}");
+    b.ctx.ready.store(true, std::sync::atomic::Ordering::SeqCst);
+    let err = fetch.download(&f, &mut |_| {}).await.unwrap_err();
     assert!(matches!(err, TransferError::Cancelled), "{err}");
 
     // A blocks B: every transfer of B on A is cut.

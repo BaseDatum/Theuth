@@ -39,16 +39,20 @@ fn text(s: &str) -> String {
     s.chars().filter(|c| !c.is_control() && !matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')).collect()
 }
 
-/// Decimal sizes, as the mock writes them: `12 KB`, `24.1 MB`, `1.2 GB`.
+/// Decimal sizes (UI-2, as the desktop and the 5 GB limit): `12 kB`, `24.1 MB`, `1.2 GB`.
 fn size(n: u64) -> String {
     let f = n as f64;
     match n {
         0..1_000 => format!("{n} B"),
-        1_000..1_000_000 => format!("{:.0} KB", f / 1e3),
+        1_000..1_000_000 => format!("{:.0} kB", f / 1e3),
         1_000_000..1_000_000_000 => format!("{:.1} MB", f / 1e6),
         _ => format!("{:.1} GB", f / 1e9),
     }
 }
+
+/// The card group of a file line the engine's notice row (or ended-share row) drew; the
+/// message's own placeholder lines are `"file"` (UI-1: those are the live lines).
+const NOTICE_GROUP: &str = "file-notice";
 
 impl Line {
     /// One `<message_file …/>` element; `None` when it is malformed.
@@ -103,17 +107,17 @@ impl Line {
         lines.push(format!("holder {} · file {}", self.holder, self.id));
         lines.join("\n")
     }
-    fn kind(&self) -> CardKind {
+    fn kind(&self, group: &'static str) -> CardKind {
         let (glyph, color) = match self.state {
             FileState::In(InState::Failed) | FileState::Out(OutState::Failed) => ("✕", crate::ui::CARNELIAN),
             FileState::In(InState::Saved | InState::Received) | FileState::Out(OutState::Sent) => ("▤", crate::ui::MALACHITE),
             _ => ("▤", crate::ui::FAIENCE),
         };
-        CardKind::Component { group: "file", key: notice_id(&self.holder, &self.id), glyph, color, plain: true }
+        CardKind::Component { group, key: notice_id(&self.holder, &self.id), glyph, color, plain: true }
     }
     /// The keyed transcript card of this line.
-    pub(crate) fn card(&self, ended: bool) -> TranscriptCard {
-        let CardKind::Component { group, key, glyph, color, plain } = self.kind() else { unreachable!("a file line is a component card") };
+    pub(crate) fn card(&self, ended: bool, group: &'static str) -> TranscriptCard {
+        let CardKind::Component { group, key, glyph, color, plain } = self.kind(group) else { unreachable!("a file line is a component card") };
         TranscriptCard { entry_key: Some(self.key()), group, key, glyph, color, plain, title: self.title(ended),
             body: markdown::Text::complete(&self.body()), expanded: false }
     }
@@ -129,8 +133,32 @@ impl From<&ContactFile> for Line {
     }
 }
 
-fn entry(line: Option<Line>, ended: bool) -> Entry {
-    line.map_or_else(|| Entry::Error(UNREADABLE.into()), |line| line.card(ended).into())
+fn entry(line: Option<Line>, ended: bool, group: &'static str) -> Entry {
+    line.map_or_else(|| Entry::Error(UNREADABLE.into()), |line| line.card(ended, group).into())
+}
+
+/// UI-1: the message's placeholder line is the live line of its file. A notice line (or an
+/// ended-share line) of a file whose message line is above it in `entries` becomes one
+/// compact note (its title and whether the agent was given it), never a second card; with
+/// no message line loaded (paged out, or only the notice here) it stays the full line.
+pub(crate) fn fold_notices(entries: &mut [Entry]) {
+    let mut seen = std::collections::HashSet::new();
+    for e in entries.iter_mut() {
+        let compact = match e {
+            Entry::Card { entry_key: Some(k), kind: CardKind::Component { group: "file", .. }, .. } => {
+                seen.insert(k.clone());
+                None
+            }
+            Entry::Card { entry_key: Some(k), kind: CardKind::Component { group: NOTICE_GROUP, .. }, title, .. } if seen.contains(k.as_str()) => {
+                let given = if title.ends_with(ENDED) { "" } else { " · given to the agent" };
+                Some(format!("↳ file notice · {title}{given}"))
+            }
+            _ => None,
+        };
+        if let Some(line) = compact {
+            *e = Entry::Info(line);
+        }
+    }
 }
 
 /// The `<message_file …/>` lines and the receiving hint after a `</message>` close (D5), and the rest.
@@ -156,7 +184,7 @@ pub(crate) fn skip(text: &str) -> &str { tail(text).1 }
 
 /// The file lines of every message wrapper's placeholder tail in a stored row.
 pub(crate) fn placeholders(text: &str) -> Vec<Entry> {
-    text.match_indices("</message>").flat_map(|(at, close)| tail(&text[at + close.len()..]).0).map(|line| entry(line, false)).collect()
+    text.match_indices("</message>").flat_map(|(at, close)| tail(&text[at + close.len()..]).0).map(|line| entry(line, false, "file")).collect()
 }
 
 /// A notice row (one element, then its fixed hint line) as its file line; `None` for other text.
@@ -164,14 +192,14 @@ pub(crate) fn notice(text: &str) -> Option<Entry> {
     let text = text.trim();
     if !text.starts_with("<message_file ") { return None }
     let Some(end) = text.find("/>") else { return text.contains(NOTICE_HINT).then(|| Entry::Error(UNREADABLE.into())) };
-    text[end + 2..].trim_start().starts_with(NOTICE_HINT).then(|| entry(Line::parse(&text[..end + 2]), false))
+    text[end + 2..].trim_start().starts_with(NOTICE_HINT).then(|| entry(Line::parse(&text[..end + 2]), false, NOTICE_GROUP))
 }
 
 /// An `errors` row (history, or a live `AgentEvent::Error`) that opens with `<message_file`: the
 /// D17 ended-share notice as its labelled line, or [`UNREADABLE`]. `None` for any other error.
 pub(crate) fn ended(text: &str) -> Option<Entry> {
     let text = text.trim_start();
-    text.starts_with("<message_file").then(|| entry(text.find("/>").and_then(|end| Line::parse(&text[..end + 2])), true))
+    text.starts_with("<message_file").then(|| entry(text.find("/>").and_then(|end| Line::parse(&text[..end + 2])), true, NOTICE_GROUP))
 }
 
 /// A file entry as one plain line: its glyph and title, or [`UNREADABLE`].
@@ -208,7 +236,7 @@ pub(crate) fn plain(text: &str) -> std::borrow::Cow<'_, str> {
         let any = !files.is_empty();
         for f in files {
             out.push('\n');
-            out.push_str(&plain_line(entry(f, false)));
+            out.push_str(&plain_line(entry(f, false, "file")));
         }
         if any && !after.is_empty() {
             out.push('\n');
@@ -229,7 +257,8 @@ pub(crate) fn changed(entries: &mut Vec<Entry>, file: &ContactFile) {
     for entry in entries.iter_mut() {
         if let Entry::Card { entry_key: Some(k), kind, title, .. } = entry && *k == key {
             *title = line.title(title.ends_with(ENDED));
-            *kind = line.kind();
+            let group = match kind { CardKind::Component { group, .. } => *group, _ => "file" };
+            *kind = line.kind(group);
             found = true;
         }
     }
@@ -238,7 +267,7 @@ pub(crate) fn changed(entries: &mut Vec<Entry>, file: &ContactFile) {
     let Some(at) = entries.iter().rposition(|e| matches!(e, Entry::Tool { name, result: Some((output, _)), .. }
         if name.trim_start_matches("↳ ") == "send_message" && output.split_whitespace().any(|w| w == receipt))) else { return };
     let after = entries[at + 1..].iter().take_while(|e| e.key().is_some_and(|k| k.starts_with("file:"))).count();
-    entries.insert(at + 1 + after, line.card(false).into());
+    entries.insert(at + 1 + after, line.card(false, "file").into());
 }
 
 fn parse_key(key: &str) -> Option<(&str, &str)> { key.strip_prefix("file:")?.split_once(':') }
@@ -260,21 +289,27 @@ pub(crate) enum Act { Open, Reveal, Copy, Save, Fetch }
 
 /// One action, resolved through the holder (`contact_file`). The bytes stay where they are:
 /// open, reveal and save need them on this machine; another machine fetches them first (P2).
-async fn act(api: &Engine, session: Option<SessionId>, holder: String, id: String, act: Act) -> Result<String, String> {
+/// `open` launches the registered app: only `Open` and `Reveal` reach it (SEC-A2: a fetch
+/// only saves and reports the path; opening a contact's file is always its own action).
+async fn act(api: &Engine, session: Option<SessionId>, holder: String, id: String, act: Act,
+    open: &(dyn Fn(&Path) -> Result<(), String> + Send + Sync)) -> Result<String, String> {
     if act == Act::Fetch {
         let session = session.ok_or("no session")?;
         let path = api.contact_file_fetch(session, holder, id).await.map_err(crate::reason)?;
-        artifacts_apps::open_path(&path)?;
-        return Ok(format!("fetched → {}", path.display()));
+        return Ok(format!("fetched → {} · ⏎ opens it", path.display()));
     }
     let file = api.contact_file(holder.clone(), id.clone()).await.map_err(crate::reason)?;
     let name = text(&file.name);
-    let path = file.path.clone().ok_or_else(|| format!("{name}: no saved file"))?;
     let here = api.mesh_status().await.map_or(true, |mesh| mesh.self_id.0 == file.holder);
-    if !here && act != Act::Copy { return Err(format!("{name} is stored on {} · f fetches it here", text(&file.machine))) }
+    let path = match (here, act) {
+        (true, _) | (false, Act::Copy) => file.path.clone().ok_or_else(|| format!("{name}: no saved file"))?,
+        // Asked to open on another machine: its fetched copy (a verified cache hit once fetched).
+        (false, Act::Open) => api.contact_file_fetch(session.ok_or("no session")?, holder.clone(), id.clone()).await.map_err(crate::reason)?,
+        (false, _) => return Err(format!("{name} is stored on {} · f fetches it here", text(&file.machine))),
+    };
     match act {
-        Act::Open => artifacts_apps::open_path(&path).map(|()| format!("opened {}", path.display())),
-        Act::Reveal => artifacts_apps::open_path(path.parent().unwrap_or(&path)).map(|()| format!("revealed {}", path.display())),
+        Act::Open => open(&path).map(|()| format!("opened {}", path.display())),
+        Act::Reveal => open(path.parent().unwrap_or(&path)).map(|()| format!("revealed {}", path.display())),
         Act::Copy => arboard::Clipboard::new().and_then(|mut clip| clip.set_text(path.display().to_string()))
             .map(|()| format!("copied {}", path.display())).map_err(|e| format!("could not copy the path: {e}")),
         Act::Save => {
@@ -298,7 +333,7 @@ impl Files {
     fn run(key: &str, which: Act, cx: &mut Cx<'_, '_, Msg>) {
         let Some((holder, id)) = parse_key(key) else { return };
         let (holder, id, session) = (holder.to_owned(), id.to_owned(), cx.core.session);
-        cx.spawn(Lane::Concurrent, move |api| async move { Msg::Done(act(&api, session, holder, id, which).await) });
+        cx.spawn(Lane::Concurrent, move |api| async move { Msg::Done(act(&api, session, holder, id, which, &artifacts_apps::open_path).await) });
     }
 }
 impl Component for Files {
@@ -376,7 +411,7 @@ mod tests {
     /// `(key, glyph, title, body)` of a file line.
     fn line(entry: &Entry) -> (&str, &str, &str, &str) {
         match entry {
-            Entry::Card { entry_key: Some(key), kind: kind @ CardKind::Component { group: "file", plain: true, .. }, title, text, .. } => (key, kind.glyph(), title, text.raw()),
+            Entry::Card { entry_key: Some(key), kind: kind @ CardKind::Component { group: "file" | NOTICE_GROUP, plain: true, .. }, title, text, .. } => (key, kind.glyph(), title, text.raw()),
             other => panic!("not a file line: {other:?}"),
         }
     }
@@ -499,7 +534,7 @@ mod tests {
         notes.done = 456_000;
         changed(&mut model, notes.clone());
         assert!(matches!(&model.entries[2..], [Entry::Card { .. }, Entry::Card { .. }, Entry::Info(_)]), "{:?}", model.entries);
-        assert_eq!(titles(&model)[1..], ["drawings.pdf · 24.1 MB · application/pdf · offered", "notes.md · 1.2 MB · text/markdown · sending 38% · 456 KB"]);
+        assert_eq!(titles(&model)[1..], ["drawings.pdf · 24.1 MB · application/pdf · offered", "notes.md · 1.2 MB · text/markdown · sending 38% · 456 kB"]);
         notes.state = FileState::Out(OutState::Sent);
         changed(&mut model, notes);
         let mut lost = pdf(FileState::Out(OutState::Failed));
@@ -531,5 +566,53 @@ mod tests {
         assert_eq!(ended_line("<message_file broken"), Some(UNREADABLE.into()));
         assert_eq!(ended_line("some other error"), None);
         assert_eq!(notice_line("plain words"), None);
+    }
+
+    /// SEC-A2: `f` fetches and reports the path; it never launches an app on the contact's
+    /// file (only `Open`/`Reveal` call the opener).
+    #[tokio::test]
+    async fn fetching_here_never_opens_the_file() {
+        fn engine(s: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+            let mut m = jsonrpsee::RpcModule::new(s);
+            m.register_method("contact_file_fetch", |_, _, _| -> jsonrpsee::core::RpcResult<std::path::PathBuf> {
+                Ok("/cache/h/f/site-survey.zip".into())
+            }).unwrap();
+            m
+        }
+        let rt = runtime::Runtime::new(Default::default(), std::env::temp_dir());
+        let api = rpc::client::Engine::Local(rpc::client::Local::new(rt, engine));
+        let opened = std::sync::Mutex::new(Vec::new());
+        let open = |p: &Path| { opened.lock().unwrap().push(p.to_owned()); Ok(()) };
+        let got = act(&api, Some(SessionId::new()), HOLDER.into(), "9d0c".into(), Act::Fetch, &open).await;
+        assert_eq!(got.as_deref(), Ok("fetched → /cache/h/f/site-survey.zip · ⏎ opens it"));
+        assert!(opened.lock().unwrap().is_empty(), "a fetch opened {:?}", opened.lock().unwrap());
+    }
+
+    /// UI-1: the message's placeholder line is the file's live line; with it loaded, the
+    /// notice row and the ended-share row are one compact note each (given / not given to
+    /// the agent), never a second card. Without the message row, the notice stays a card.
+    #[test]
+    fn a_notice_beside_its_message_is_a_compact_note() {
+        let text = format!("<message from=\"peer:maya\" id=\"{EXCHANGE}\" at=\"14:31\">\nTwo files.\n</message>\n{}",
+            engine::placeholders("peer:maya", &[zip(FileState::In(InState::Receiving)), pdf(FileState::In(InState::Receiving))]));
+        let origin = PeerOrigin { id: EXCHANGE, from: "peer:maya".into(), reply_to: None, scope: None, contact_mode: Some(agent::ShareMode::Full) };
+        let mut received = zip(FileState::In(InState::Received));
+        received.path = Some("/r/site-survey.zip".into());
+        let ended_row = HistoryEntry::Error { text: engine::ended_notice("peer:maya", &pdf(FileState::In(InState::Received))).unwrap(), context: None };
+        let mut entries = history(user(text, Some(origin)));
+        entries.extend(history(user(engine::notice("peer:maya", &received).unwrap(), None)));
+        entries.extend(history(ended_row));
+        fold_notices(&mut entries);
+        let notes: Vec<&str> = entries.iter().filter_map(|e| match e { Entry::Info(t) => Some(t.as_str()), _ => None }).collect();
+        assert_eq!(notes, [
+            "↳ file notice · site-survey.zip · 1.2 GB · application/zip · saved · given to the agent",
+            "↳ file notice · drawings.pdf · 24.1 MB · application/pdf · saved · not given to the agent",
+        ]);
+        let cards = entries.iter().filter(|e| e.key().is_some_and(|k| k.starts_with("file:"))).count();
+        assert_eq!(cards, 2, "one live line per file: the message's");
+
+        let mut alone = history(user(engine::notice("peer:maya", &received).unwrap(), None));
+        fold_notices(&mut alone);
+        assert_eq!(line(&alone[0]).2, "site-survey.zip · 1.2 GB · application/zip · saved", "no message row: the full line");
     }
 }

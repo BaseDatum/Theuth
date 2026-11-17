@@ -246,16 +246,19 @@ async fn send_contact_file(
     held: Option<HeldFile>,
 ) -> anyhow::Result<()> {
     use std::os::unix::fs::FileExt as _;
-    let opened = held.and_then(|h| disk::egress_reopen(&h.path, root, h.dev, h.inode, h.size).ok());
-    let Some(e) = opened else {
-        framed.send(encode(&Reply::Missing)?).await?;
-        return Ok(());
-    };
     let idle = |_| {
         anyhow::anyhow!(
             "the fetcher took nothing for {} s",
             contact::FILE_IDLE.as_secs()
         )
+    };
+    let opened = held.and_then(|h| disk::egress_reopen(&h.path, root, h.dev, h.inode, h.size).ok());
+    let Some(e) = opened else {
+        // SEC-N2: even the short answer is bounded.
+        tokio::time::timeout(contact::FILE_IDLE, framed.send(encode(&Reply::Missing)?))
+            .await
+            .map_err(idle)??;
+        return Ok(());
     };
     let mut buf = vec![0u8; CHUNK];
     let mut at = 0u64;
@@ -584,9 +587,13 @@ async fn receive_contact_file(
         .await
         .map_err(idle)??;
     let mut framed = framed(stream);
-    framed
-        .send(encode(&Req::GetContactFile { id: id.to_owned() })?)
-        .await?;
+    // SEC-N2: the request write is bounded like every frame.
+    tokio::time::timeout(
+        contact::FILE_IDLE,
+        framed.send(encode(&Req::GetContactFile { id: id.to_owned() })?),
+    )
+    .await
+    .map_err(idle)??;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -602,6 +609,9 @@ async fn receive_contact_file(
         match postcard::from_bytes(&frame)? {
             Reply::Missing if done == 0 => return Ok(false),
             Reply::Chunk(bytes) => {
+                // SEC-N3: an empty frame is no progress; a holder sending them would
+                // keep the idle timer from ever firing.
+                anyhow::ensure!(!bytes.is_empty(), "{holder} sent an empty chunk");
                 done += bytes.len() as u64;
                 anyhow::ensure!(done <= notice.size, VERIFY_FAILED);
                 hasher.update(&bytes);
@@ -1293,6 +1303,103 @@ mod tests {
                     .is_err(),
                 "an id is never a path"
             );
+        }
+
+        /// 199-Z1 SEC-N3: a holder sending empty chunks forever is refused at the first one
+        /// (an empty frame is no progress), nothing kept.
+        #[tokio::test(start_paused = true)]
+        async fn empty_chunks_are_refused() {
+            let fetcher_dir = tempfile::tempdir().unwrap();
+            let (ht, ft) = pair();
+            tokio::spawn(async move {
+                while let Ok((_, stream)) = ht.accept(ALPN_ARTIFACTS).await {
+                    tokio::spawn(async move {
+                        let mut framed = framed(stream);
+                        let _ = framed.next().await;
+                        while framed
+                            .send(encode(&Reply::Chunk(Vec::new())).unwrap())
+                            .await
+                            .is_ok()
+                        {
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        }
+                    });
+                }
+            });
+            let h = HeldFile {
+                path: "/x".into(),
+                dev: 0,
+                inode: 0,
+                size: 10,
+                blake3: "0".repeat(64),
+            };
+            let root = fetcher_dir.path();
+            let err = tokio::time::timeout(
+                contact::FILE_IDLE,
+                fetch_contact_file_via(
+                    ft.as_ref(),
+                    root,
+                    &PeerId("owner".into()),
+                    ID,
+                    &notice_of(&h, "a"),
+                ),
+            )
+            .await
+            .expect("refused long before the idle timer")
+            .unwrap_err();
+            assert!(err.to_string().contains("empty chunk"), "{err}");
+            assert_eq!(entries(&root.join(contact::PARTIAL_DIR)), 0);
+        }
+
+        /// A link whose peer never reads: every write blocks once its small buffer is full.
+        struct Stuck(std::sync::Mutex<Vec<tokio::io::DuplexStream>>);
+
+        #[async_trait::async_trait]
+        impl Transport for Stuck {
+            fn peers(&self) -> Vec<PeerId> {
+                vec![PeerId("owner".into())]
+            }
+            async fn open(&self, _: &PeerId, _: &str) -> anyhow::Result<Box<dyn ByteStream>> {
+                let (mine, theirs) = tokio::io::duplex(1);
+                self.0.lock().unwrap().push(theirs);
+                Ok(Box::new(mine))
+            }
+            async fn accept(&self, _: &str) -> anyhow::Result<Inbound> {
+                std::future::pending().await
+            }
+            fn subscribe(&self) -> broadcast::Receiver<replica::PeerEvent> {
+                broadcast::channel(1).1
+            }
+        }
+
+        /// 199-Z1 SEC-N2: a peer withholding stream credit never holds either side past the
+        /// idle bound: the fetcher's request write and the holder's `Missing` answer both end.
+        #[tokio::test(start_paused = true)]
+        async fn blocked_control_writes_end_within_the_idle_bound() {
+            let dir = tempfile::tempdir().unwrap();
+            let bound = contact::FILE_IDLE + std::time::Duration::from_secs(1);
+            let stuck = Stuck(std::sync::Mutex::default());
+            let h = HeldFile {
+                path: "/x".into(),
+                dev: 0,
+                inode: 0,
+                size: 10,
+                blake3: "0".repeat(64),
+            };
+            let (owner, notice) = (PeerId("owner".into()), notice_of(&h, "a"));
+            let fetch = fetch_contact_file_via(&stuck, dir.path(), &owner, ID, &notice);
+            let got = tokio::time::timeout(bound, fetch)
+                .await
+                .expect("the request write is bounded");
+            assert!(got.is_err(), "{got:?}");
+
+            let (mine, _theirs) = tokio::io::duplex(1);
+            let mut framed = framed(Box::new(mine));
+            let sent =
+                tokio::time::timeout(bound, send_contact_file(&mut framed, dir.path(), None))
+                    .await
+                    .expect("the Missing answer is bounded");
+            assert!(sent.is_err());
         }
     }
 }

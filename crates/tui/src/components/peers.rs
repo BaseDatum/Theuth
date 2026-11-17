@@ -309,7 +309,7 @@ impl Peers {
                     self.peer_shown.push_back(event.text.clone());
                     cx.core(CoreAction::InterjectCard(peer_card(WrapperOrigin { id: event.origin.id, from: &event.origin.from, reply_to: event.origin.reply_to, full: event.origin.contact_mode == Some(agent::ShareMode::Full) }, event.text, "")));
                     // 199: the message's files follow it as their own lines (`ContactFileChanged` moves them on).
-                    for file in &event.files { cx.core(CoreAction::InterjectCard(super::files::Line::from(file).card(false))); }
+                    for file in &event.files { cx.core(CoreAction::InterjectCard(super::files::Line::from(file).card(false, "file"))); }
                 }
             }
             Msg::Agent => {

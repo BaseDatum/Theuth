@@ -330,7 +330,7 @@ pub struct Agents {
     /// short of producer reconciliation (not built) could prove it, so they
     /// never continue automatically in this process. Ordinary work, results
     /// and the todo card are unaffected; new sessions use fresh accounting.
-    ledger: Ledger,
+    pub(crate) ledger: Ledger,
     /// Open private root trees (51 §4), by root; kept through teardown so
     /// `PrivateTrees` and a late `Authorize` see `closing`.
     private: HashMap<SessionId, PrivateRoot>,
@@ -16450,7 +16450,7 @@ pub(crate) mod tests {
     }
 
     /// A certified root in turn `t` with its opener consumed.
-    async fn in_turn(a: &mut Agents) -> (SessionId, TurnId) {
+    pub(crate) async fn in_turn(a: &mut Agents) -> (SessionId, TurnId) {
         a.ledger.certify();
         let (p, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let t = TurnId::new();

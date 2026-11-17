@@ -227,6 +227,15 @@ impl Agents {
             ended(&self.store, &self.rt, m.session, None, m.id, &m.text).await?;
             return Ok(NoticeAdmission::Accepted);
         }
+        // D17 (199-Z1 SEC-A1): the chain bound peer input has; refused (nothing pending, no
+        // turn), the holder's outbox retries on its backoff and the notice is admitted once
+        // an external input opened a fresh chain.
+        if self.ledger.chain_exhausted(m.session) {
+            return Err(format!(
+                "chain limit: {} peer-triggered continuations since the last external input",
+                crate::communication::CHAIN_MAX
+            ));
+        }
         let (id, session, text) = (m.id, m.session, m.text.clone());
         hold(Pending {
             id,
@@ -380,5 +389,71 @@ mod tests {
                 .is_err()
         );
         assert!(a.store.errors(theirs).await.unwrap().is_empty());
+    }
+
+    /// 199-Z1 T-1 + SEC-A1: an admitted notice is `InputOrigin::Automatic`: consumed, it
+    /// continues the communication chain (one link) and keeps the reminder budget. After
+    /// `CHAIN_MAX` consumed notices the next one is refused (nothing pending, no row, no
+    /// turn); once an external input opened a fresh chain, the holder's re-send is admitted.
+    #[tokio::test]
+    async fn notices_are_automatic_and_stop_at_the_chain_limit() {
+        use crate::communication::CHAIN_MAX;
+        use crate::continuation::InputConsumed;
+        let (_d, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let (s, t) = crate::supervisor::tests::in_turn(&mut a).await;
+        for sql in [
+            "INSERT INTO contacts (id, alias, binding) VALUES ('rec', 'maya', 'peer:b1')".to_owned(),
+            format!("INSERT INTO a2a_exports (id, name, session) VALUES ('x1', 'ops', '{s}')"),
+            "INSERT INTO contact_grants (id, contact, export, granted) VALUES ('rec|x1', 'rec', 'x1', 1)"
+                .to_owned(),
+        ] {
+            a.store.exec_for_test(&sql).await;
+        }
+        a.ledger.request_for_test(s, Some((2, 0)));
+        let consume = |a: &mut crate::supervisor::Agents| {
+            let pending = a.ledger.pending_for_test(s);
+            assert_eq!(pending.len(), 1, "{pending:?}");
+            assert_eq!(pending[0].1, InputOrigin::Automatic);
+            a.ledger.consumed(InputConsumed {
+                session: s,
+                id: pending[0].0,
+                turn: t,
+            });
+        };
+        for n in 1..=CHAIN_MAX {
+            let id = Uuid::new_v4();
+            assert_eq!(
+                a.admit_notice(notice(s, id)).await,
+                Ok(NoticeAdmission::Accepted),
+                "notice {n}"
+            );
+            consume(&mut a);
+            clear(id);
+            assert_eq!(
+                a.ledger.request_for_test(s, None),
+                (2, n),
+                "reminders kept, chain +1"
+            );
+        }
+        let over = Uuid::new_v4();
+        let e = a.admit_notice(notice(s, over)).await.unwrap_err();
+        assert!(e.starts_with("chain limit"), "{e}");
+        assert!(!pending_has(over));
+        assert!(a.ledger.pending_for_test(s).is_empty(), "no input, no turn");
+        assert!(!a.store.notice_committed(s, over).await.unwrap());
+        assert!(a.store.errors(s).await.unwrap().is_empty());
+        let opener = a.ledger.admit(s, InputOrigin::External, None);
+        a.ledger.consumed(InputConsumed {
+            session: s,
+            id: opener.id,
+            turn: t,
+        });
+        assert_eq!(
+            a.admit_notice(notice(s, over)).await,
+            Ok(NoticeAdmission::Accepted)
+        );
+        consume(&mut a);
+        clear(over);
+        assert_eq!(a.ledger.request_for_test(s, None), (0, 1));
     }
 }
