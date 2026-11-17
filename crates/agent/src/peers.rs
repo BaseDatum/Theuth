@@ -702,6 +702,8 @@ impl Tool for DiscoverPeersTool {
         )
     }
 
+    // 200-E: the description's full-access sentence, and one `partial: no answer in time from
+    // …` line whenever `page.partial` is not empty (every page, empty and final ones too).
     async fn call(&self, args: DiscoverPeersArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let agents = match supervisor() {
             Ok(a) => a,

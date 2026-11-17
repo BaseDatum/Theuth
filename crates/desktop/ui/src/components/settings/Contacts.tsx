@@ -45,6 +45,7 @@ import type { FirstWaiting } from "@/rpc/bindings/method.a2a.output"
 import type { PairCeremony } from "@/rpc/bindings/method.a2a.output"
 import type { PeerPath } from "@/rpc/bindings/method.a2a.output"
 
+// 200-UI: `full_access: null` once the switch sends it.
 const NO_PATCH: ContactPatch = { name: null, blocked: null }
 const PATH: Record<PeerPath, [string, string]> = { lan: ['LAN', 'bg-success'], relay: ['Relay', 'bg-warning'], offline: ['offline', 'ring-1 ring-fg-tertiary ring-inset'] }
 const CHIP = 'inline-flex items-center gap-1 rounded-full border border-border-subtle px-2 py-0.5 text-xs text-fg-secondary'
@@ -841,6 +842,7 @@ export function ContactAccess({ focus = null }: { focus?: string | null }) {
   )
 }
 
+// 200-UI: the Full access switch (confirm on turning on, the off/on labels) and the their-side line from `c.full_access_from`.
 function Access({ c, exports, focused }: { c: Contact; exports: readonly Export[]; focused: boolean }) {
   const row = useRef<HTMLDivElement>(null)
   useEffect(() => {

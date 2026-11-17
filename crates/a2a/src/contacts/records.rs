@@ -63,6 +63,12 @@ pub fn answer_text(a: FirstContact) -> &'static str {
     }
 }
 
+/// 200 (D1): a group has full access only when every record of it reads 1. NULL, 0 or a
+/// mixed group (a merge or a replication in flight) reads off: fail closed.
+pub(crate) fn full_access(members: &[&ContactRow]) -> bool {
+    !members.is_empty() && members.iter().all(|m| m.full_access == Some(1))
+}
+
 /// Strictness: `block` > `ask` > `allow`.
 fn strictness(a: FirstContact) -> u8 {
     match a {
@@ -1081,6 +1087,7 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, expired: &BTreeSet<
                     allow_private: false,
                     eid: Some(eid.clone()),
                     record: Some((c.id.clone(), binding)),
+                    full_access: full_access(&g.members),
                 },
             );
         }
@@ -1800,6 +1807,38 @@ mod tests {
         let s = stage(&r);
         assert!(s.contacts["bob"].blocked && !s.peers.contains_key("bob"));
         assert!(s.deny.contains(&eid(1)) && s.deny.contains(&eid(2)));
+    }
+
+    /// 200 (D1): a merged group has full access only when every record reads 1; a change of
+    /// it is a new grant (`same_grant` false), so off rotates the epoch.
+    #[test]
+    fn full_access_needs_every_record_of_the_group_and_is_part_of_the_grant() {
+        let (a, b) = ("a".to_owned(), "b".to_owned());
+        let mut r = Records {
+            contacts: vec![contact(&a, "bob", 1), contact(&b, "bob", 2)],
+            endpoints: vec![anchor(&a, 1, 1), anchor(&b, 1, 2)],
+            ..Records::default()
+        };
+        let w = reconcile_writes(&r);
+        apply(&mut r, &w);
+        let on = |r: &Records| stage(r).peers["bob"].full_access;
+        let off = stage(&r);
+        assert!(!off.peers["bob"].full_access, "NULL on every record: off");
+        r.contacts[0].full_access = Some(1);
+        assert!(!on(&r), "one record NULL: off");
+        r.contacts[1].full_access = Some(0);
+        assert!(!on(&r), "one record 0: off");
+        assert!(
+            off.same_grant(&stage(&r), "bob"),
+            "still off: the same grant"
+        );
+        r.contacts[1].full_access = Some(1);
+        assert!(on(&r), "every record 1: on");
+        assert!(
+            !off.same_grant(&stage(&r), "bob"),
+            "a toggle is a new grant"
+        );
+        assert!(!stage(&r).same_grant(&off, "bob"));
     }
 
     /// 191 (D2): a merge chain that loops, or runs past [`CHAIN_MAX`], quarantines its group

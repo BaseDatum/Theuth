@@ -56,6 +56,8 @@ pub struct ContactRow {
     pub removed_ms: Option<i64>,
     /// The record this one merged into (always a lower key), or NULL.
     pub merged_into: Option<String>,
+    /// 200 (D1): this record's full access: 1 on; NULL or 0 off (fail closed).
+    pub full_access: Option<i64>,
 }
 
 /// One `contact_endpoints` row: `id` = `<contact>|<eid>`, an anchor a ceremony pinned.
@@ -301,6 +303,7 @@ impl RecordTable {
                 "blocked",
                 "removed_ms",
                 "merged_into",
+                "full_access",
             ],
             Self::Endpoints => &["contact", "eid", "paired_ms", "barred_ms", "pinned_by"],
             Self::Grants => &["contact", "export", "granted", "first_contact"],
@@ -362,7 +365,7 @@ impl Store {
         let mut tx = self.read.begin().await?;
         let contacts = sqlx::query_as(
             "SELECT id, alias, name, machine, binding, paired_ms, paired_on, blocked, removed_ms, \
-             merged_into FROM contacts ORDER BY id",
+             merged_into, full_access FROM contacts ORDER BY id",
         )
         .fetch_all(&mut *tx)
         .await?;
@@ -1155,5 +1158,28 @@ mod tests {
             b.contact_holds().await.unwrap().is_empty(),
             "deleted there too"
         );
+    }
+
+    /// 200 (Contract): `0068_contact_full_access` adds a record-replica column (written and
+    /// read like any contact column); the session log is untouched, so the wire schema stays 67.
+    #[tokio::test]
+    async fn full_access_is_a_record_column_and_the_wire_schema_stays() {
+        let (store, _, _dir) = fresh().await;
+        store
+            .write_contact_records(&[RecordWrite::new(
+                RecordTable::Contacts,
+                "c1",
+                vec![("full_access", Cell::Int(1))],
+            )])
+            .await
+            .unwrap();
+        let r = store.contact_records().await.unwrap();
+        assert_eq!(r.contacts[0].full_access, Some(1));
+        assert!(
+            !super::super::capture::ATTACHED
+                .iter()
+                .any(|(t, _)| *t == "contacts")
+        );
+        assert_eq!(crate::store::SESSIONS_WIRE_SCHEMA, 67);
     }
 }

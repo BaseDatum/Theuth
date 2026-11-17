@@ -11,6 +11,7 @@ export const CAP: Record<Risk, string> = { read_only: 'read only', mutating: 'ca
 /** 183 W-27: what each first-contact answer does, one sentence per button (the Attention screen and the HUD row). */
 export const FIRST_ANSWERS = 'Allow once lets this message through. Always lets every later message to this export through. Block blocks this contact entirely.'
 
+// 200-UI: SHARE_RULE gains "…unless you give them full access."
 /** What a contact reaches, in one line (Contacts): only what is shared, and how a share works (190: every share is full). */
 export const SHARE_RULE =
   'A contact reaches only what you share. Their agent and yours talk freely, with Markdown, links and images, and yours works with its normal tools and your usual approvals.'

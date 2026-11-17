@@ -258,6 +258,9 @@ pub struct Peer {
     pub eid: Option<String>,
     /// 191 (D2): a contact record's id and its replicated binding id.
     pub record: Option<(String, uuid::Uuid)>,
+    /// 200 (D1): this contact has full access (every record of its group reads 1). Part of
+    /// the grant: a change is a new epoch. Always false for a `peers.yaml` peer.
+    pub full_access: bool,
 }
 
 impl Peer {
@@ -667,6 +670,7 @@ fn stage_contact<'a>(
                 allow_private: false,
                 eid: Some(eid.to_owned()),
                 record: None,
+                full_access: false,
             },
         );
     }
@@ -874,6 +878,7 @@ pub fn stage_on(
                 allow_private: p.allow_private,
                 eid: None,
                 record: None,
+                full_access: false,
             },
         );
     }

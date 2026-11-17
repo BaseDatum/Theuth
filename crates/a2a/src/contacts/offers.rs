@@ -50,6 +50,10 @@ pub(crate) struct Cached {
     pub offers: Vec<ContactOffer>,
     /// 186 (D10): the last card advertised [`super::EXT_FULL`].
     pub full: bool,
+    /// 200 (D11): the last verified card's `full-access/v1` `granted`; `None` without the
+    /// extension.
+    // 200-E: set at refresh from `sessions::card_full_access`.
+    pub full_access: Option<bool>,
     /// 191 (D8): the `machine` of the last card that verified (`""` until one did).
     pub machine: String,
     /// 199 (D1): the last card that verified advertised [`super::EXT_FILES`].
@@ -111,8 +115,8 @@ impl Drop for Inflight<'_> {
 }
 
 /// 186 (D12): every one of `eids` (a contact's current roster) served a verified card at its
-/// last refresh: the exports any of them lists in full; `None` when one was never verified
-/// this run, or its last refresh failed.
+/// last refresh: the exports any of them lists in full, and (200 D10) whether any grants us
+/// full access; `None` when one was never verified this run, or its last refresh failed.
 pub(crate) fn settled(eids: &[String], all: &HashMap<String, Cached>) -> Option<SettledCards> {
     if eids.is_empty() {
         return None;
@@ -126,6 +130,7 @@ pub(crate) fn settled(eids: &[String], all: &HashMap<String, Cached>) -> Option<
                 .filter(|o| o.mode == ShareMode::Full)
                 .map(|o| o.name.clone()),
         );
+        s.full_access |= c.full_access == Some(true);
     }
     Some(s)
 }
@@ -292,6 +297,8 @@ impl Ctx {
     /// skills, the exports granted to that contact (a paused chat reads `unavailable`). 191
     /// (D1): plus the members/v1 extension with the caller's own chains, when one exists (the
     /// card's JWS covers it).
+    // 200-E: advertise `sessions::EXT_FULL_ACCESS` with `{"granted": <this reader's grant>}`
+    // (D11), before signing; `offers::changed` compares it.
     pub(crate) async fn contact_card(&self, eid: &str) -> Result<AgentCard, String> {
         let live = self.shared.read().clone();
         let alias = live
