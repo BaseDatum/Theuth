@@ -627,6 +627,7 @@ pub fn a2a_lines(s: &a2a::A2aStatus) -> Vec<String> {
     out
 }
 
+// 200-UI: contact session rows render through `PeerRow::line` unchanged; the `partial` line goes under the list.
 /// One row of the `/peers` menu.
 #[derive(Debug)]
 pub enum PeerRow<'a> {

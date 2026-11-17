@@ -253,6 +253,8 @@ pub(crate) async fn serve_http(
     Ok(())
 }
 
+// 200-E: a `Sessions` arm (`GET sessions::SESSIONS_PATH`), served by `contact_route` under
+// D7's epoch race (see `contacts/sessions.rs`).
 /// 183 F1: the contact-only routes of [`serve_http`].
 #[derive(Clone, Copy, PartialEq)]
 enum Route {

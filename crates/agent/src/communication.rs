@@ -446,6 +446,10 @@ pub struct PeerPage {
     pub peers: Vec<PeerInfo>,
     /// Opaque cursor for the next page; `None` at the end.
     pub cursor: Option<String>,
+    /// 200 (D8): the contact machines that did not answer for this page, each
+    /// `<contact>/<machine name>`; their sessions may be missing from it.
+    #[serde(default)]
+    pub partial: Vec<String>,
 }
 
 /// Effective communication state for the global default or one session
@@ -905,6 +909,14 @@ impl PeerAddress {
             return id.parse().ok().map(Self::Session);
         }
         if let Some(name) = s.strip_prefix("peer:") {
+            // 200 (Contract): `<contact>/session:<uuid>`: the contact alone is bounded by
+            // ALIAS_MAX, the suffix is a UUID.
+            if name
+                .split_once('/')
+                .is_some_and(|(_, e)| e.starts_with(network::access::SESSION_PREFIX))
+            {
+                return network::access::contact_session(name).map(|_| Self::Remote(name.into()));
+            }
             return (!name.is_empty() && name.chars().count() <= ALIAS_MAX)
                 .then(|| Self::Remote(name.to_owned()));
         }
@@ -1430,6 +1442,13 @@ impl Policy {
             }),
             None => Ok(()),
         }
+    }
+
+    /// 200 (D5, the live half): the `to` half of [`Self::route`] for a full-access contact:
+    /// not hidden, [`Self::enabled`], its root's scope `Owner`. No principal is invented.
+    // 200-E: the predicate; refuses everything until then.
+    pub fn reachable_from_owner(&self, _to: SessionId) -> bool {
+        false
     }
 
     /// `local_route(a, b)` (§2.1): both enabled, `a != b`, same tree or both
@@ -2025,6 +2044,19 @@ mod tests {
             PeerAddress::parse(&format!("peer:{}", "x".repeat(ALIAS_MAX + 1))),
             None
         );
+        // 200: a 64-character contact plus `/session:<uuid>` (longer than ALIAS_MAX whole).
+        let name = format!("{}/session:{id}", "x".repeat(ALIAS_MAX));
+        assert_eq!(
+            PeerAddress::parse(&format!("peer:{name}")),
+            Some(PeerAddress::Remote(name))
+        );
+        for bad in [
+            format!("peer:{}/session:{id}", "x".repeat(ALIAS_MAX + 1)),
+            "peer:maya/session:nope".to_owned(),
+            format!("peer:Maya/session:{id}"),
+        ] {
+            assert_eq!(PeerAddress::parse(&bad), None, "{bad}");
+        }
         assert_eq!(
             PeerAddress::parse("parent"),
             Some(PeerAddress::Relative("parent".into()))

@@ -6950,9 +6950,13 @@ impl Message<PeersRead> for Agents {
         };
         let end = (start + limit).min(rows.len());
         let cursor = (end < rows.len()).then(|| rows[end - 1].address.clone());
+        // 200-E: full-access previews and the walk (`access::parse_full_cursor`), `partial`
+        // from every `PeerSender::list_sessions` answer; `arrange`'s `+N more` gives way to the
+        // full-access title.
         Ok(PeerPage {
             peers: rows.drain(start..end).collect(),
             cursor,
+            partial: Vec::new(),
         })
     }
 }

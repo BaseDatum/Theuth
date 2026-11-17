@@ -147,6 +147,9 @@ pub(crate) struct Charged;
 struct ContactGrant {
     alias: String,
     facts: crate::config::ContactFacts,
+    /// 200 (D1): this contact has full access (`Peer.full_access`).
+    #[expect(dead_code, reason = "200-E: D4 (2) reads it")]
+    full_access: bool,
 }
 
 impl Live {
@@ -236,6 +239,7 @@ impl Live {
                         ContactGrant {
                             alias: p.peer.clone(),
                             facts,
+                            full_access: staged.peers.get(&p.peer).is_some_and(|x| x.full_access),
                         },
                     ))
                 })
@@ -379,6 +383,9 @@ async fn dispatch(State(shared): State<Shared>, mut req: Request) -> Response {
     let live = shared.read().clone();
     // Any inbound copy of the trusted seam is an attack or a bug; never forward it.
     req.headers_mut().remove(PRINCIPAL_HEADER);
+    // 200 (D3): so is any inbound copy of the session header. 200-E: the `session:<uuid>`
+    // branch (rewrite to `~session`, then set the header) follows.
+    crate::contacts::sessions::strip_session_header(req.headers_mut());
     let mut export = req
         .uri()
         .path()
@@ -605,6 +612,8 @@ fn accepts_text(mode: &str) -> bool {
     m == "*/*" || m == "text/*" || m.starts_with("text/plain") || m == "text"
 }
 
+// 200-E: `Target::Session` (the one `~session` handler; `Handler::admit` builds the principal
+// with `export = "session:<uuid>"` from the session header, D3).
 /// What one export route publishes.
 #[derive(Clone, Debug)]
 enum Target {

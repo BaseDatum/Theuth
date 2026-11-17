@@ -51,6 +51,7 @@ use crate::store::communication::{
 };
 use crate::supervisor::Agents;
 
+pub mod access;
 mod full;
 pub use full::{
     A2aReturn, FullWire, InboxPersonasChanged, META, RETURN_ROUTE, THREAD_TTL, is_receipt,
@@ -306,6 +307,16 @@ pub struct OutboundPeerMessage {
 pub trait PeerSender: Send + Sync {
     /// Send one message; `Ok` is the peer's typed response.
     async fn send(&self, outbound: OutboundPeerMessage) -> Result<RemoteReply, RemoteSendError>;
+
+    /// 200 (D7, D8): list a contact's sessions: every member of its roster asked at once with
+    /// `req`, the answers merged. Only a contact's sender lists.
+    // 200-E: the a2a contact sender implements it (fan-out + `sessions::merge`).
+    async fn list_sessions(
+        &self,
+        _req: access::ListRequest,
+    ) -> Result<access::ContactListing, String> {
+        Err("not a contact".to_owned())
+    }
 }
 
 /// 183 §7.3: a contact's `peer_bindings.endpoint` and card interface URL are this prefix
@@ -416,6 +427,9 @@ pub struct ContactOffers {
     /// 186 (D12): the contacts every machine of which served a verified card at its last
     /// refresh (re-sent when a card changes, a refresh fails or one recovers).
     pub settled: BTreeMap<String, SettledCards>,
+    /// 200 (D10): whether each contact's latest verified card grants us full access
+    /// (`full-access/v1` `granted`); absent = its card lacks the extension.
+    pub full_access: BTreeMap<String, bool>,
 }
 
 /// 186 (D12): every machine of a contact's current roster served a verified card at its last
@@ -424,6 +438,8 @@ pub struct ContactOffers {
 pub struct SettledCards {
     /// The exports some machine's last card lists in full.
     pub full: std::collections::BTreeSet<String>,
+    /// 200 (D10): some machine's verified card says `full-access/v1` `granted: true`.
+    pub full_access: bool,
 }
 
 /// Bus event (183 F1): `discover_peers` ran and the contacts' offers were last refreshed
@@ -530,6 +546,8 @@ pub struct PeerRoute {
     /// 186 (D1): our exports shared with this contact in full (its answers may come back
     /// over the return route of each one's conversations).
     pub full: Vec<String>,
+    /// 200 (D10): we gave this contact full access (my grant).
+    pub full_access: bool,
 }
 
 /// `ask` → `Result<Vec<PeerBinding>, String>` (same order as `routes`): one
@@ -612,6 +630,9 @@ struct RemotePeer {
     contact: bool,
     /// 186: our exports shared with this contact in full.
     full: Vec<String>,
+    /// 200 (D10): we gave this contact full access (my grant).
+    #[expect(dead_code, reason = "200-E: read by full_shape's session branch (D10)")]
+    full_access: bool,
 }
 
 /// One started exported task: what its native work is bound to.
@@ -865,6 +886,7 @@ impl NetworkState {
                 generation: CancellationToken::new(),
                 contact: true,
                 full: Vec::new(),
+                full_access: false,
             },
         );
     }
@@ -879,6 +901,7 @@ impl NetworkState {
     /// capabilities only; a card is not a heartbeat, so the state is `Idle`. 183 §7.7: a
     /// contact is a row for every root, tagged `contact` — except a contact's inbox, which
     /// sees no contact (Z3-R2, §7.5: a contact never learns our contact list).
+    // 200-E: a granting contact's `peer:<contact>` title and its preview rows (Contract).
     pub(crate) fn remote_peers(&self, root: SessionId) -> Vec<PeerInfo> {
         let inbox = self.inboxes.contains(&root);
         let row =
@@ -1023,15 +1046,17 @@ impl NetworkState {
     }
 
     /// The live route `name` names. 183 §7.7: a contact's `<name>/<export>` names the
-    /// contact's route (the export rides on the request, [`OutboundPeerMessage::export`]).
+    /// contact's route (the export rides on the request, [`OutboundPeerMessage::export`]);
+    /// 200 (D2): so does `<name>/session:<uuid>`.
     fn peer_by_name(&self, name: &str) -> Option<(Uuid, &RemotePeer)> {
         let contact = name
             .split_once('/')
             .filter(|(_, e)| {
-                !e.is_empty()
-                    && e.bytes().all(|b| {
-                        b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_'
-                    })
+                access::session_route(e).is_some()
+                    || (!e.is_empty()
+                        && e.bytes().all(|b| {
+                            b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_'
+                        }))
             })
             .map(|(c, _)| c);
         self.peers
@@ -1455,6 +1480,8 @@ pub(crate) struct Admitted {
 impl Agents {
     /// Authorize a principal for one operation: live binding, native export
     /// session, enabled route with the network on (§6.1, §8 item 4).
+    // 200-E: the session branch (`export = "session:<uuid>"`): binding and epoch as today,
+    // then `full_access_eligibility` instead of the native and `chat_paused` checks (D4).
     async fn admit_principal(&mut self, p: &A2aPrincipal) -> Result<Generation, A2AError> {
         let unavailable =
             |why: String| A2AError::unsupported_operation(format!("export unavailable: {why}"));
@@ -2898,6 +2925,7 @@ impl Message<RegisterPeerSender> for Agents {
                 generation: m.generation,
                 contact: false,
                 full: Vec::new(),
+                full_access: false,
             },
         );
     }
@@ -2989,6 +3017,7 @@ impl Message<CommitPeerConfig> for Agents {
                     contact: is_contact_endpoint(&route.endpoint),
                     generation: route.generation,
                     full: route.full,
+                    full_access: route.full_access,
                 },
             );
         }
@@ -4335,6 +4364,10 @@ impl Agents {
         reply_to: Option<Uuid>,
         await_reply: bool,
     ) -> Result<PeerReceipt, String> {
+        // 200-E: the session branch (D10, `full_shape`) replaces this refusal.
+        if access::contact_session(alias).is_some() {
+            return Err(format!("peer:{alias}: {}", access::NOT_YET));
+        }
         let ready = self.contacts_ready.load(Ordering::Relaxed);
         let (binding, sender, route, contact) = {
             let (binding, peer) = self.network.peer_by_name(alias).ok_or_else(|| {
@@ -5612,6 +5645,7 @@ mod tests {
                 generation: CancellationToken::new(),
                 contact: false,
                 full: Vec::new(),
+                full_access: false,
             },
         );
 
@@ -5983,6 +6017,7 @@ mod tests {
                 generation: CancellationToken::new(),
                 contact: true,
                 full: vec!["research".into()],
+                full_access: false,
             },
         );
         let origin = super::super::ContactOrigin {
@@ -6328,6 +6363,7 @@ mod tests {
                 generation: CancellationToken::new(),
                 contact: true,
                 full: vec!["research".into()],
+                full_access: false,
             },
         );
         let full_p = A2aPrincipal {
@@ -6593,6 +6629,7 @@ mod tests {
                 generation: CancellationToken::new(),
                 contact: true,
                 full: Vec::new(),
+                full_access: false,
             },
         );
         let inbox = a
@@ -6647,6 +6684,7 @@ mod tests {
                 generation: CancellationToken::new(),
                 contact: true,
                 full: Vec::new(),
+                full_access: false,
             },
         );
         let owner = a
@@ -6741,6 +6779,7 @@ mod tests {
                 generation: CancellationToken::new(),
                 contact: true,
                 full: Vec::new(),
+                full_access: false,
             },
         );
         let offer = |name: &str, mode| ContactOffer {
@@ -7020,6 +7059,7 @@ mod tests {
             generation: CancellationToken::new(),
             contact,
             full: Vec::new(),
+            full_access: false,
         };
         n.peers.insert(bob, peer("bob", true));
         n.peers.insert(lab, peer("lab", false));
@@ -7035,6 +7075,12 @@ mod tests {
         assert_eq!(by("bob/"), None);
         assert_eq!(by("bob/../x"), None);
         assert_eq!(by("bob/Research"), None);
+        // 200 (D2): a contact's session names its route too; never `~session` or a bad id.
+        let s = format!("session:{}", Uuid::now_v7());
+        assert_eq!(by(&format!("bob/{s}")), Some(bob));
+        assert_eq!(by(&format!("lab/{s}")), None);
+        assert_eq!(by("bob/~session"), None);
+        assert_eq!(by("bob/session:nope"), None);
     }
 
     /// 183 §7.6, W-25: an exported agent's inbox runs that agent: its identity block leads
@@ -7257,6 +7303,7 @@ mod tests {
                 generation: CancellationToken::new(),
                 contact: true,
                 full: vec!["research".into()],
+                full_access: false,
             },
         );
         let p = A2aPrincipal {
@@ -7376,6 +7423,7 @@ mod tests {
                 generation: CancellationToken::new(),
                 contact: true,
                 full: Vec::new(),
+                full_access: false,
             },
         );
         let offer = |mode| ContactOffer {
@@ -7462,6 +7510,7 @@ mod tests {
                 generation: CancellationToken::new(),
                 contact: true,
                 full: Vec::new(),
+                full_access: false,
             },
         );
         a.network.set_offers(BTreeMap::from([
@@ -7667,6 +7716,7 @@ mod tests {
                 generation: CancellationToken::new(),
                 contact: true,
                 full: Vec::new(),
+                full_access: false,
             },
         );
         let laptop = a
@@ -7706,6 +7756,7 @@ mod tests {
                 generation: CancellationToken::new(),
                 contact: true,
                 full: vec!["research".into()],
+                full_access: false,
             },
         );
         let p = A2aPrincipal {
@@ -7885,6 +7936,7 @@ mod tests {
                     generation: CancellationToken::new(),
                     contact: true,
                     full: Vec::new(),
+                    full_access: false,
                 },
             );
         }
@@ -8114,6 +8166,7 @@ mod tests {
                 generation: CancellationToken::new(),
                 contact: true,
                 full: Vec::new(),
+                full_access: false,
             },
         );
         a.network.set_offers(BTreeMap::from([(
@@ -8368,6 +8421,7 @@ mod full_inbox_tests {
                 generation: CancellationToken::new(),
                 contact: true,
                 full: vec!["research".into()],
+                full_access: false,
             },
         );
     }

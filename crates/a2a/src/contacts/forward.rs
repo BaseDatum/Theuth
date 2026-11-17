@@ -72,6 +72,7 @@ pub async fn serve(
     c.forwarded(caller, path, body).instrument(span).await
 }
 
+// 200-E: also a `session:<uuid>` segment (`access::session_route`), never `~session`.
 /// `path` and `method` are a unary call `a2a_forward` carries: an export's JSON-RPC route
 /// (`/agents/<export>/rpc`, the export a name of `[a-z0-9_-]`, or `~return`; never the bare
 /// `/rpc`, which the receiving machine resolves first) and one of [`CARRIED`].

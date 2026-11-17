@@ -759,6 +759,7 @@ impl Ctx {
                     } else {
                         Vec::new()
                     },
+                    full_access: p.full_access,
                 }
             })
             .collect();
@@ -1614,6 +1615,7 @@ mod tests {
                     allow_private: false,
                     eid: None,
                     record: None,
+                    full_access: false,
                 },
             );
         }
