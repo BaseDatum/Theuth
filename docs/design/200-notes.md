@@ -72,6 +72,7 @@ None on the wire (no bindings regenerated after the fold). One Rust signature: `
 2. New outside the two 200 modules: `Store::full_access_row` (`store/communication.rs`; the store's pool is private to `store`) and `Live::full_access_of` (`server.rs`; the listing's epoch and grant from one `Live`).
 3. `directory_from`'s kind and state code moved into `row_kind`/`row_state`, shared with the member listing. `arrange` returns the hidden counts and no longer reorders contact rows by activity (before 200 they had none).
 4. A D17 notice is re-checked twice: at admission (`admit_notice`, the live route) and at consumption in the session loop (`loop_.rs` `take_notice`, beside `share_live`: `Store::full_access_notice_live`, D1's group rule on the records plus the row half). The consumption check was missing in the first engine commit, so a full-access notice was recorded as an ended share when its turn took it. The follow-up's `ResumeTree` test found it (below).
+5. **Decided (orchestrator, 2026-11-17): one context id belongs to one session.** The P1 test row reads "a reused context id lands in each session's own context". As built, a contact that reuses another session's `contextId` is answered `invalid_params("unknown contextId")`, the same answer as any unknown context: it reveals nothing, never reaches the other chat, and matches A2A, where the server owns contexts. There is no per-session context key and no change to `contact_threads`' replicated `<binding>|<context>` key.
 
 ### Gates (P1)
 Logs in `/tmp/200-e/`, label `200-e`, crate-level `-p` only.
