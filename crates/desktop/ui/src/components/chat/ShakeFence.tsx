@@ -4,7 +4,7 @@
 // engine's rule): any disagreement means a fence index could name the wrong diagram, so there is none.
 import { Trash2 } from 'lucide-react'
 import { createContext, type ReactNode } from 'react'
-import type { ContextPiece } from '@/lib/context-197'
+import type { ContextPiece } from '@/rpc/bindings/method.agent.output'
 import { type SurfaceFence, surfaceFences } from '@/lib/surface-fences'
 import { useScopedDisclosure } from './disclosure'
 
@@ -20,10 +20,12 @@ export function shakeFences(session: string, active: boolean, text: string, piec
   return found.length === pieces.length ? { session, active, pieces, found } : null
 }
 
-/** The piece for the fence whose body is `code`; a body two fences share is ambiguous and gets none. */
+/** The piece for the fence whose body is `code`; a body two fences share is ambiguous and gets none. Line ends and trailing
+ * whitespace are not compared: the scanner keeps `\r\n` and the final line break, streamdown's `code` may not. */
 export function pieceOf(ctx: ShakeFences, language: string, code: string): ContextPiece | null {
-  const body = code.trimEnd()
-  const at = ctx.found.flatMap((f, i) => (f.language === language && f.body.trimEnd() === body ? [i] : []))
+  const norm = (s: string) => s.replace(/\r\n/g, '\n').trimEnd()
+  const body = norm(code)
+  const at = ctx.found.flatMap((f, i) => (f.language === language && norm(f.body) === body ? [i] : []))
   return at.length === 1 ? (ctx.pieces[at[0]!] ?? null) : null
 }
 

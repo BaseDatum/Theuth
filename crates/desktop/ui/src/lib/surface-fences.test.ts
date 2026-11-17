@@ -1,57 +1,36 @@
 import { expect, test } from 'vitest'
 import { surfaceFences } from './surface-fences'
 
-// 197 §3's rule; the engine's detector runs the same cases (desktop and engine must agree on every fence index).
+// Ported from the engine's `surface_fence_scanner_rule` (crates/agent/src/context.rs) and its `reply()` fixture: the
+// desktop and the engine must agree on every fence index.
 const langs = (text: string) => surfaceFences(text).map((f) => f.language)
 
-test('the three surface languages count, in order; every other fence is ignored', () => {
-  const text = [
-    'intro',
-    '```json-render',
-    '{"root":"a"}',
-    '```',
-    '```rust',
-    'fn main() {}',
-    '```',
-    '~~~mermaid',
-    'sequenceDiagram',
-    '~~~',
-    '```openui',
-    'root = Card()',
-    '```',
-    'outro',
-  ].join('\n')
-  expect(surfaceFences(text)).toEqual([
-    { language: 'json-render', body: '{"root":"a"}' },
-    { language: 'mermaid', body: 'sequenceDiagram' },
-    { language: 'openui', body: 'root = Card()' },
+test('surface_fence_scanner_rule', () => {
+  const t =
+    '```not``` a fence\n  ```mermaid\nindented: content\n``` mermaid\nspaced: other fence\n```\na\n~~~~mermaid\ngraph TD\n~~~\nstill inside\n~~~~~\nb\n```json-render \r\n{}\r\n```\r\nc\n```bash\n```openui\n```\n```openui\nroot = X()\n'
+  expect(surfaceFences(t)).toEqual([
+    // A shorter run of the same character is content.
+    { language: 'mermaid', body: 'graph TD\n~~~\nstill inside\n' },
+    // Trailing whitespace after the info string and `\r\n` line ends.
+    { language: 'json-render', body: '{}\r\n' },
+    // Unclosed: to the end of the text.
+    { language: 'openui', body: 'root = X()\n' },
   ])
 })
 
-test('the info string is exactly the language, trailing whitespace allowed; anything else is not a surface fence', () => {
-  expect(langs('```mermaid  \nx\n```')).toEqual(['mermaid'])
-  expect(langs('``` mermaid\nx\n```')).toEqual([])
-  expect(langs('```mermaid title\nx\n```')).toEqual([])
-  expect(langs('```json\n{}\n```')).toEqual([])
+test('two in one reply; none in plain text or inside other fences', () => {
+  const reply =
+    'The branch is in.\n```json-render\n{"root":"a"}\n```\nTwo things:\n```mermaid\nsequenceDiagram\n  A->>B: hi\n```\n````rust\n```mermaid\nnot a fence\n```\n````\nDone.'
+  expect(langs(reply)).toEqual(['json-render', 'mermaid'])
+  expect(surfaceFences('```rust\n```mermaid\n```\n')).toEqual([])
+  expect(surfaceFences('no fences')).toEqual([])
+})
+
+test('only the exact surface languages count; any other opener is tracked and skipped whole', () => {
+  expect(langs('```\n```mermaid\n```\n```mermaid\nx\n```')).toEqual(['mermaid'])
+  expect(langs('~~~~md\n```mermaid\nx\n```\n~~~~\n```openui\ny\n```')).toEqual(['openui'])
   expect(langs('```JSON-RENDER\n{}\n```')).toEqual([])
   expect(langs('``mermaid\nx\n``')).toEqual([])
-  // No indentation: a fence inside a list item is not counted (the transcript then offers no control).
-  expect(langs('- item\n  ```mermaid\n  x\n  ```')).toEqual([])
-})
-
-test('a fence closes only on a line of the same character, at least as long', () => {
-  const [f] = surfaceFences('````json-render\n```\n~~~~\n`````\nafter')
-  expect(f).toEqual({ language: 'json-render', body: '```\n~~~~' })
-  expect(surfaceFences('~~~mermaid\n```\n~~~ \n')).toEqual([{ language: 'mermaid', body: '```' }])
-  // A closer with text after it is body.
-  expect(surfaceFences('```mermaid\n``` x\n```')).toEqual([{ language: 'mermaid', body: '``` x' }])
-})
-
-test('an opener inside an open surface fence is body, and an unclosed fence runs to the end', () => {
-  expect(surfaceFences('```openui\n```mermaid\nx')).toEqual([{ language: 'openui', body: '```mermaid\nx' }])
-  expect(surfaceFences('text\n```json-render\n{"root":')).toEqual([{ language: 'json-render', body: '{"root":' }])
-})
-
-test('openers inside other fences still count (other fences are not tracked)', () => {
-  expect(langs('````markdown\n```mermaid\nx\n```\n````')).toEqual(['mermaid'])
+  // A closer with text after it is content.
+  expect(surfaceFences('```mermaid\n``` x\n```')).toEqual([{ language: 'mermaid', body: '``` x\n' }])
 })

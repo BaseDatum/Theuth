@@ -1,33 +1,46 @@
-// 197 §3: the surface-fence rule, shared with the engine's `Fence` targets (one rule, so a fence index the engine
-// issues names the fence the transcript draws). A surface fence opens on a line that is three or more backticks or
-// tildes followed immediately by `json-render`, `openui` or `mermaid` and nothing else but whitespace; it closes at the
-// next line made only of the same character, at least as long (trailing whitespace allowed); an unclosed fence runs to
-// the end of the text. Any other fence (```rust, ~~~ …) is ignored: not tracked, not counted. No indentation: a fence
-// streamdown finds inside a list item is not one here, so the counts differ and the transcript offers no control.
+// 197 §3: the engine's surface-fence scanner (`surface_fences`, `crates/agent/src/context.rs`), ported line for line so a
+// fence index the engine issues names the fence the transcript draws. A fence opens on a line that starts (no indent)
+// with three or more backticks or tildes immediately followed by its info string (a backtick opener's info holds no
+// backtick). It closes at the next line made of the same character, at least as many, then only whitespace; an unclosed
+// fence runs to the end of the text. Only info strings exactly `json-render`, `openui` or `mermaid` (trailing whitespace
+// aside) are surface fences and counted. Every other fence (```rust, a bare ```) is skipped whole: a surface-looking
+// line inside it is content. `\r\n` line ends are accepted.
 
 export type SurfaceLanguage = 'json-render' | 'openui' | 'mermaid'
 
-/** One surface fence: its language and its body (the lines between the opener and the closer, without either). */
+/** One surface fence: its language and its body (the text between the fence lines, as the engine slices it). */
 export type SurfaceFence = { language: SurfaceLanguage; body: string }
 
-const OPEN = /^(`{3,}|~{3,})(json-render|openui|mermaid)\s*$/
+const SURFACE: readonly string[] = ['json-render', 'openui', 'mermaid']
 
 /** The surface fences of one text, in order; `index` in a `fence` target is the position in this list. */
 export function surfaceFences(text: string): SurfaceFence[] {
   const out: SurfaceFence[] = []
-  let open: { fence: string; language: SurfaceLanguage; body: string[] } | null = null
-  for (const line of text.split('\n')) {
-    if (open) {
-      const t = line.trimEnd()
-      if (t.length >= open.fence.length && t === open.fence[0]!.repeat(t.length)) {
-        out.push({ language: open.language, body: open.body.join('\n') })
-        open = null
-      } else open.body.push(line)
+  let open: { c: string; run: number; info: string; body: number } | null = null
+  let at = 0
+  for (const line of text.split(/(?<=\n)/)) {
+    const start = at
+    at += line.length
+    const bare = line.replace(/[\r\n]+$/, '')
+    const lead = (c: string) => {
+      let n = 0
+      while (bare[n] === c) n++
+      return n
+    }
+    if (!open) {
+      const c = bare[0]
+      if (c !== '`' && c !== '~') continue
+      const run = lead(c)
+      const info = bare.slice(run).trimEnd()
+      if (run >= 3 && !(c === '`' && info.includes('`'))) open = { c, run, info, body: at }
       continue
     }
-    const m = OPEN.exec(line)
-    if (m) open = { fence: m[1]!, language: m[2] as SurfaceLanguage, body: [] }
+    const n = lead(open.c)
+    if (n >= open.run && bare.slice(n).trim() === '') {
+      if (SURFACE.includes(open.info)) out.push({ language: open.info as SurfaceLanguage, body: text.slice(open.body, start) })
+      open = null
+    }
   }
-  if (open) out.push({ language: open.language, body: open.body.join('\n') })
+  if (open && SURFACE.includes(open.info)) out.push({ language: open.info as SurfaceLanguage, body: text.slice(open.body) })
   return out
 }
