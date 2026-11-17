@@ -6829,6 +6829,17 @@ impl Turn {
                     self.persist(ChatMessage::user(msg)).await;
                 }
                 if corrects {
+                    // The note entered the context as a user message: say so, so a frontend
+                    // closes the streamed reply and the corrected block starts its own entry
+                    // instead of gluing onto the broken one (fence-skel D3). No queued input
+                    // carries this id; the salvage note below publishes nothing and its
+                    // continuation keeps appending to the cut-off reply.
+                    self.publish(AgentEvent::InputInjected {
+                        session: self.shared.id,
+                        id: InputId::new(),
+                        turn,
+                    })
+                    .await;
                     return Round::Tools;
                 }
             }
@@ -9388,6 +9399,10 @@ mod mcp_live_tests;
 /// REGEN-STAMP: a regenerated opener replays its `<time …/>` stamp to the model only.
 #[cfg(test)]
 mod regen_stamp_tests;
+
+/// fence-skel D3: a correction round's `InputInjected` separates the replies; salvage keeps appending.
+#[cfg(test)]
+mod fence_round_tests;
 
 /// 137 §14: the endless frame — fresh turns, the view before the input, D11 cut, `/endless off` head.
 #[cfg(test)]

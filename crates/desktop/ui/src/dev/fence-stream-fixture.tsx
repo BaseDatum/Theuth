@@ -1,5 +1,6 @@
 // fence-skel live proof, dev only: `bunx vite --port <p>` then open `/src/dev/fence-stream-fixture.html?scene=<s>`
-// (`&theme=dark`, `&speed=<ms per delta, default 30>`, `&shots=1` to pause at each first moment for a screenshot).
+// (`&theme=dark`, `&speed=<ms per delta, default 30>`, `&shots=1` to pause at each first moment for a screenshot,
+// `&engine=fix` for the engine's correction-round `InputInjected`, fence-skel D3).
 // The REAL store reducer (`applyEvents` → `route` → `apply`) fed scripted `AgentEvent`s, and the real rows (`Message` per
 // entry, so `MessageAssistant`, streamdown, `JsonRenderFence`, `FenceFallback`, mermaid and openui all run as in the
 // app), against no engine. A rAF sampler records every frame's skeletons, code cards, Suspense fallbacks, surfaces and
@@ -24,6 +25,7 @@ const query = new URLSearchParams(location.search)
 document.documentElement.classList.toggle('dark', query.get('theme') === 'dark')
 const SPEED = Number(query.get('speed') ?? 30)
 const SHOTS = query.get('shots') === '1'
+const ENGINE_FIX = query.get('engine') === 'fix'
 const S = 'fence-skel'
 
 // ------------------------------------------------------------------------------------------------- the bodies
@@ -36,19 +38,6 @@ const METRICS = `{
     "m2": {"type": "Metric", "props": {"label": "Error rate", "value": "0.4%", "trend": "down", "delta": "-0.2 pt"}},
     "m3": {"type": "Metric", "props": {"label": "p99", "value": "180 ms", "trend": "flat"}},
     "m4": {"type": "Metric", "props": {"label": "Hosts", "value": "12"}}
-  }
-}`
-// crates/surface/fixtures/json-render/valid-key-value.json, verbatim.
-const KEY_VALUE = `{
-  "root": "c",
-  "elements": {
-    "c": {"type": "Card", "props": {"title": "Session", "description": "sessions.sqlite · 3f9a"}, "children": ["kv"]},
-    "kv": {"type": "KeyValueList", "props": {"items": [
-      {"key": "Model", "value": "claude-sonnet-4"},
-      {"key": "Turns", "value": "14"},
-      {"key": "Tokens", "value": "38 210 in / 4 102 out"},
-      {"key": "Channel", "value": "tui"}
-    ]}}
   }
 }`
 // crates/surface/fixtures/json-render/broken-unknown-type.json, verbatim (`DataTable` is not in the catalog).
@@ -183,15 +172,19 @@ function scene(name: string): Step[] {
   const m = /^s3-(prose|nl|bare)-(none|reason|engine|tool)$/.exec(name)
   if (m) {
     const a = m[1] === 'prose' ? A_PROSE : m[1] === 'nl' ? A_NL : A_BARE
+    // `&engine=fix`: the engine after fence-skel D3 publishes `InputInjected` once the correction note is persisted,
+    // after the round end and before the next model call.
+    const note: Step[] = ENGINE_FIX ? [{ dt: SPEED, label: 'InputInjected (correction note)', events: [ev('InputInjected', { id: 'correction-note' })] }] : []
     const gap: Step[] =
       m[2] === 'none'
-        ? []
+        ? note
         : m[2] === 'reason'
-          ? [roundEnd(), { dt: SPEED, label: 'ReasoningDelta', events: [ev('ReasoningDelta', { text: 'The DataTable type is not in the catalog; KeyValueList fits.' })] }, { dt: 400, label: 'ReasoningDone', events: [ev('ReasoningDone', { ms: 400 })] }]
+          ? [roundEnd(), ...note, { dt: SPEED, label: 'ReasoningDelta', events: [ev('ReasoningDelta', { text: 'The DataTable type is not in the catalog; KeyValueList fits.' })] }, { dt: 400, label: 'ReasoningDone', events: [ev('ReasoningDone', { ms: 400 })] }]
           : m[2] === 'engine'
-            ? [roundEnd()]
+            ? [roundEnd(), ...note]
             : [
                 roundEnd(),
+                ...note,
                 { dt: SPEED, label: 'ToolCallPending', events: [ev('ToolCallPending', { call_id: 'c1', name: 'python' })] },
                 { dt: SPEED, label: 'ToolCallStarted', events: [ev('ToolCallStarted', { call_id: 'c1', name: 'python', args: { code: 'print("corrected block follows")' } })] },
                 { dt: 800, label: 'ToolCallFinished', events: [ev('ToolCallFinished', { call_id: 'c1', output: 'corrected block follows', is_error: false })] },
@@ -334,6 +327,9 @@ async function run(name: string) {
       seen.add(m)
       await shot(m)
     }
+    // Fixed steps, so base and fix pictures compare: reply A's fence just closed, mid-stream, S4's split opener.
+    const fixed = ({ 'A delta 9': 'a-closed', 'B delta 8': 'midstream', 'reply delta 8': 'midstream', 'reply delta 4': 'opener' } as Record<string, string>)[s.label]
+    if (fixed && (fixed !== 'opener' || name === 's4')) await shot(fixed)
     if (s.settle) {
       await sleep(400)
       await frame()
