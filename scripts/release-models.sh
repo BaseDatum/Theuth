@@ -21,9 +21,11 @@
 #               s3://…/models/onnxruntime/<rust target triple>/<lib>, plus VERSION
 #   plugins     the WebGPU plugin EP nupkg (Microsoft.ML.OnnxRuntime.EP.WebGpu, same cache and pin) →
 #               runtimes/<rid>/native/* → s3://…/models/onnxruntime/<triple>/plugins/<file>
-#               for win-x64 (two DLLs; 0.6.0 dropped dxil.dll, and its optional preview D3D12 Agility SDK
-#               under native/D3D12/ — Developer Mode only — is not shipped) and linux-*; macOS's runtime
-#               has WebGPU built in (no plugin); win-arm64 is in the nupkg but we ship no such build
+#               for win-x64 (the plugin DLL, dxcompiler.dll and the preview D3D12 Agility SDK as plugins/D3D12/,
+#               beside the plugin as the package's targets lay it out: on a Developer Mode box 0.6.0 activates
+#               the SDK and died with 0xC0000409 without it, build-B 2026-11-17; 0.6.0 has no dxil.dll) and
+#               linux-*; macOS's runtime has WebGPU built in (no plugin); win-arm64 is in the nupkg but we ship
+#               no such build
 #   verify      anonymous HEAD of every URL: 200 and Content-Length == local size
 #   models.json {files: [{path, size, sha256, revision?, origin?, platform?, key?}]} — written last.
 #               `revision` = the origin's commit (x-repo-commit) from the .origin record, `origin` =
@@ -75,7 +77,7 @@ ext_of()     { case "$1" in win-*) echo zip ;; *) echo tgz ;; esac; }
 member_of()  { case "$1" in osx-*) echo "onnxruntime-$1-${ORT_VERSION}/lib/libonnxruntime.${ORT_VERSION}.dylib" ;; linux-*) echo "onnxruntime-$1-${ORT_VERSION}/lib/libonnxruntime.so.${ORT_VERSION}" ;; win-*) echo "onnxruntime-$1-${ORT_VERSION}/lib/onnxruntime.dll" ;; esac; }
 sha_of()     { case "$1" in osx-arm64) echo "$ORT_SHA256_OSX_ARM64" ;; linux-x64) echo "$ORT_SHA256_LINUX_X64" ;; linux-aarch64) echo "$ORT_SHA256_LINUX_AARCH64" ;; win-x64) echo "$ORT_SHA256_WIN_X64" ;; esac; }
 plugin_rid_of()   { case "$1" in linux-x64) echo linux-x64 ;; linux-aarch64) echo linux-arm64 ;; win-x64) echo win-x64 ;; *) echo "" ;; esac; }
-plugin_files_of() { case "$1" in win-*) echo "onnxruntime_providers_webgpu.dll dxcompiler.dll" ;; linux-*) echo libonnxruntime_providers_webgpu.so ;; esac; }
+plugin_files_of() { case "$1" in win-*) echo "onnxruntime_providers_webgpu.dll dxcompiler.dll D3D12/D3D12Core.dll D3D12/d3d12SDKLayers.dll" ;; linux-*) echo libonnxruntime_providers_webgpu.so ;; esac; }
 ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}"
 NUPKG="microsoft.ml.onnxruntime.ep.webgpu.${WEBGPU_EP_VERSION}.nupkg"
 NUPKG_URL="https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.ep.webgpu/${WEBGPU_EP_VERSION}/${NUPKG}"
@@ -186,6 +188,7 @@ for plat in "${PLATFORMS[@]}"; do
   rid="$(plugin_rid_of "$plat")"
   [[ -n "$rid" ]] || continue
   for name in $(plugin_files_of "$plat"); do
+    mkdir -p "$(dirname "$WORK/$triple/plugins/$name")"
     [[ -n "$nupkg" ]] && unzip -p "$nupkg" "runtimes/$rid/native/$name" > "$WORK/$triple/plugins/$name"
     publish "$WORK/$triple/plugins/$name" "onnxruntime/$triple/plugins/$name" "onnxruntime/plugins/$name" "$triple"
   done

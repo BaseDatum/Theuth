@@ -35,8 +35,9 @@ pub const LIB: &str = platform::ort::ort_library_name();
 pub const PLUGIN_DIR: &str = "plugins";
 
 /// The WebGPU plugin EP library as the `Microsoft.ML.OnnxRuntime.EP.WebGpu` package ships it
-/// (`runtimes/<rid>/native/`). On Windows `dxcompiler.dll` from the same folder goes beside it
-/// (0.6.0 has no `dxil.dll`).
+/// (`runtimes/<rid>/native/`). On Windows `dxcompiler.dll` and the `D3D12\` Agility SDK folder
+/// from the same folder go beside it (0.6.0 has no `dxil.dll`; without `D3D12\` it died at load
+/// on a Developer Mode box, build-B 2026-11-17).
 pub const WEBGPU_LIB: &str = if cfg!(windows) {
     "onnxruntime_providers_webgpu.dll"
 } else if cfg!(target_os = "macos") {
@@ -52,11 +53,11 @@ pub const WEBGPU_MIN_ORT: [u32; 3] = [1, 24, 4];
 /// runtime ([`webgpu_concurrent`]): 0.5.0, with microsoft/onnxruntime #32587, #32874, #33082.
 pub const WEBGPU_CONCURRENT_PLUGIN: [u32; 3] = [0, 5, 0];
 
-/// Whether an eligible pair ([`webgpu_concurrent`]) actually drops [`WEBGPU_RUN`]. `false` until
-/// `crates/meeting/tests/webgpu_concurrency.rs` passes on a discrete GPU against the pinned pair
-/// (`ort-webgpu-test.ps1`): on build-B (2026-11-17) ORT 1.32.0 + plugin 0.6.0 died natively
-/// (0xC0000409) while loading, before any concurrent run (docs/design/fix-webgpu-run-lock.md).
-const WEBGPU_CONCURRENT_VERIFIED: bool = false;
+/// Whether an eligible pair ([`webgpu_concurrent`]) actually drops [`WEBGPU_RUN`]: the kill switch.
+/// `true` since `crates/meeting/tests/webgpu_concurrency.rs` passed on build-B (Quadro M2000M,
+/// 2026-11-17) against ORT 1.32.0 + plugin 0.6.0 with the shipped file set, first under the lock,
+/// then lock-free (docs/design/fix-webgpu-run-lock.md). `false` forces every pair serialised.
+const WEBGPU_CONCURRENT_VERIFIED: bool = true;
 
 /// The loaded runtime's own version (`OrtGetApiBase()->GetVersionString()`), read once by
 /// [`ort_lib`] ([`read_runtime_version`]).
@@ -86,7 +87,7 @@ static WEBGPU_ADAPTER: Mutex<Option<String>> = Mutex::new(None);
 /// runtime gives each Session its own command recording; anywhere else (older pairs, ORT
 /// 1.29.x, unknown versions, the built-in EP of the macOS runtime) the plugin's "serialized
 /// compatibility" leaves serialising every operation on the device to the caller — this lock.
-/// Today every pair takes it ([`WEBGPU_CONCURRENT_VERIFIED`]). CPU sessions never take it.
+/// CPU sessions never take it.
 static WEBGPU_RUN: Mutex<()> = Mutex::new(());
 
 /// Set once at WebGPU registration when [`webgpu_concurrent`] holds for the loaded runtime and
