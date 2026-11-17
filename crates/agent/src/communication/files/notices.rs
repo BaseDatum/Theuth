@@ -191,6 +191,14 @@ impl Message<AdmitNotice> for Agents {
     type Reply = Result<NoticeAdmission, String>;
 
     async fn handle(&mut self, m: AdmitNotice, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.admit_notice(m).await
+    }
+}
+
+impl Agents {
+    /// [`AdmitNotice`]: strict ownership, the dedup (pending or committed), the share
+    /// re-check (ended: the engine-state row, no turn), then automatic input.
+    pub(crate) async fn admit_notice(&mut self, m: AdmitNotice) -> Result<NoticeAdmission, String> {
         if !m.text.starts_with("<message_file ") {
             return Err("not a file notice".into());
         }
@@ -302,5 +310,74 @@ mod tests {
         assert!(claim(s, "<message_file b/>").is_none());
         clear(id);
         assert!(claim(s, "<message_file a/>").is_none());
+    }
+
+    const TEXT: &str = "<message_file from=\"peer:maya\" message=\"m\" name=\"a.pdf\" type=\"application/pdf\" state=\"failed\" reason=\"r\" holder=\"h\" file=\"f\"/>\nFile notice from theuth, not from peer:maya: no reply to the contact is needed.";
+
+    fn notice(session: SessionId, id: Uuid) -> AdmitNotice {
+        AdmitNotice {
+            session,
+            id,
+            contact: "rec".into(),
+            text: TEXT.into(),
+        }
+    }
+
+    /// The owner's admission: a share that ended is recorded once as the engine-state row
+    /// (no turn, nothing pending), and a repeat is `accepted` and adds nothing; a notice
+    /// already pending is `accepted` without a second input; a chat owned by another
+    /// machine is refused (`NOT_OWNER`).
+    #[tokio::test]
+    async fn admission_dedups_records_ended_shares_and_checks_the_owner() {
+        let d = crate::TestDir::new("notice");
+        let mut a = crate::supervisor::tests::agents_on(d.0.clone(), Some("A"), true).await;
+        let s = SessionId::new();
+        a.store
+            .create_session(s, "m", None, None, None)
+            .await
+            .unwrap();
+        let id = Uuid::new_v4();
+        for _ in 0..2 {
+            assert_eq!(
+                a.admit_notice(notice(s, id)).await,
+                Ok(NoticeAdmission::Accepted)
+            );
+        }
+        let errors = a.store.errors(s).await.unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].1, ended_text(TEXT));
+        assert!(!pending_has(id));
+        assert!(a.store.notice_committed(s, id).await.unwrap());
+        // Pending already: accepted, nothing written.
+        let held = Uuid::new_v4();
+        hold(Pending {
+            id: held,
+            session: s,
+            contact: "rec".into(),
+            text: TEXT.into(),
+        });
+        assert_eq!(
+            a.admit_notice(notice(s, held)).await,
+            Ok(NoticeAdmission::Accepted)
+        );
+        assert_eq!(a.store.errors(s).await.unwrap().len(), 1);
+        clear(held);
+        // A chat the other machine owns.
+        let b = crate::store::Store::open(
+            &d.0.join("sessions.sqlite"),
+            Some(mesh::EngineId("B".into())),
+        )
+        .await
+        .unwrap();
+        let theirs = SessionId::new();
+        b.create_session(theirs, "m", None, None, None)
+            .await
+            .unwrap();
+        assert!(
+            a.admit_notice(notice(theirs, Uuid::new_v4()))
+                .await
+                .is_err()
+        );
+        assert!(a.store.errors(theirs).await.unwrap().is_empty());
     }
 }

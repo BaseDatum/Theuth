@@ -547,14 +547,16 @@ impl Store {
         Ok(out)
     }
 
-    /// Non-terminal rows past their deadline at `now_ms`, not in `skip`.
+    /// Rows still moving bytes past their deadline at `now_ms`, not in `skip`: queued or
+    /// receiving downloads and unsettled offers. A file already on disk (`publishing`,
+    /// `saved`) only waits for its exchange.
     pub async fn expired_files(
         &self,
         now_ms: i64,
         skip: &HashSet<String>,
     ) -> anyhow::Result<Vec<FileRow>> {
         let rows: Vec<FileRow> = sqlx::query_as(select!(
-            "WHERE deadline_ms <= ? AND state NOT IN ('received', 'sent', 'failed') \
+            "WHERE deadline_ms <= ? AND state IN ('queued', 'receiving', 'sending') \
              AND exchange NOT LIKE 'pending:%'"
         ))
         .bind(now_ms)
@@ -1061,5 +1063,71 @@ mod tests {
             store.contact_file(&id).await.unwrap().unwrap().state,
             "sent"
         );
+    }
+
+    async fn exec(store: &Store, sql: &'static str) {
+        sqlx::query(sql).execute(&store.write).await.unwrap();
+    }
+
+    /// D17 share re-check: a granted export of the chat (no member refusing), or a live
+    /// return conversation into it; a blocked or removed contact shares nothing. A merged
+    /// record is followed to its root.
+    #[tokio::test]
+    async fn the_share_re_check() {
+        let (store, s, _d) = fresh().await;
+        let sid = s.to_string();
+        exec(
+            &store,
+            "INSERT INTO contacts (id, alias, binding) VALUES ('rec', 'maya', 'peer:b1'), \
+             ('old', 'maya', 'peer:b0')",
+        )
+        .await;
+        exec(
+            &store,
+            "UPDATE contacts SET merged_into = 'rec' WHERE id = 'old'",
+        )
+        .await;
+        assert!(!store.share_live(&sid, "rec").await.unwrap());
+        sqlx::query("INSERT INTO a2a_exports (id, name, session) VALUES ('x1', 'ops', ?)")
+            .bind(&sid)
+            .execute(&store.write)
+            .await
+            .unwrap();
+        exec(
+            &store,
+            "INSERT INTO contact_grants (id, contact, export, granted) \
+             VALUES ('rec|x1', 'rec', 'x1', 1)",
+        )
+        .await;
+        assert!(store.share_live(&sid, "rec").await.unwrap());
+        assert!(
+            store.share_live(&sid, "old").await.unwrap(),
+            "merged into rec"
+        );
+        let other = SessionId::new().to_string();
+        assert!(!store.share_live(&other, "rec").await.unwrap());
+        exec(&store, "UPDATE contacts SET blocked = 1 WHERE id = 'rec'").await;
+        assert!(!store.share_live(&sid, "rec").await.unwrap());
+        exec(&store, "UPDATE contacts SET blocked = 0 WHERE id = 'rec'").await;
+        exec(&store, "DELETE FROM contact_grants").await;
+        sqlx::query(
+            "INSERT INTO contact_threads (id, binding, context_id, session, export, outbound, \
+             last_ms) VALUES ('b1|c', 'b1', 'c', ?, '', 1, ?)",
+        )
+        .bind(&sid)
+        .bind(now_ms())
+        .execute(&store.write)
+        .await
+        .unwrap();
+        assert!(
+            store.share_live(&sid, "rec").await.unwrap(),
+            "a live return conversation"
+        );
+        exec(
+            &store,
+            "UPDATE contacts SET removed_ms = 1 WHERE id = 'rec'",
+        )
+        .await;
+        assert!(!store.share_live(&sid, "rec").await.unwrap());
     }
 }

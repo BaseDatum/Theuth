@@ -350,3 +350,97 @@ impl Staged {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every refusal comes before anything is staged: theuth's own secret state by
+    /// symlink, hardlink and (on a case-insensitive volume) case variant; a FIFO; a
+    /// 5,000,000,001-byte sparse file; a relative path. A plain file (a received store
+    /// too) is cloned where the volume can and hashed once.
+    #[test]
+    fn the_gate_refuses_before_anything_is_staged() {
+        let d = crate::TestDir::new("send");
+        let root = d.0.join("root");
+        std::fs::create_dir_all(root.join("mesh")).unwrap();
+        let identity = root.join("mesh/identity");
+        std::fs::write(&identity, b"secret").unwrap();
+        let link = d.0.join("link");
+        std::os::unix::fs::symlink(&identity, &link).unwrap();
+        let hard = d.0.join("hard");
+        std::fs::hard_link(&identity, &hard).unwrap();
+        let fifo = d.0.join("fifo");
+        {
+            use std::os::unix::ffi::OsStrExt as _;
+            let c = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+            // SAFETY: a valid NUL-terminated path.
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        }
+        let big = d.0.join("big.bin");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(FILE_MAX + 1)
+            .unwrap();
+        let err = |p: &Path| pick(p, &root).unwrap_err();
+        for p in [&identity, &link, &hard] {
+            assert_eq!(
+                err(p),
+                format!(
+                    "files: {} is theuth's own secret state and is never sent",
+                    p.display()
+                )
+            );
+        }
+        let upper = root.join("MESH/IDENTITY");
+        if upper.exists() {
+            assert!(err(&upper).contains("theuth's own secret state"));
+        }
+        assert_eq!(
+            err(&fifo),
+            format!("files: {}: not a regular file", fifo.display())
+        );
+        assert_eq!(
+            err(&big),
+            format!(
+                "files: {} is 5000000001 bytes (over the 5 GB limit per file)",
+                big.display()
+            )
+        );
+        assert_eq!(
+            err(Path::new("rel.txt")),
+            "files: rel.txt is not an absolute path"
+        );
+        let outgoing = root.join(OUTGOING_DIR);
+        let staged = || std::fs::read_dir(&outgoing).map_or(0, |d| d.count());
+        assert_eq!(staged(), 0, "nothing staged for a refusal");
+        let ok = d.0.join("research.sqlite");
+        std::fs::write(&ok, b"a received store").unwrap();
+        let p = pick(&ok, &root).unwrap();
+        assert_eq!((p.name.as_str(), p.size), ("research.sqlite", 16));
+        assert_eq!(
+            p.blake3,
+            blake3::hash(b"a received store").to_hex().to_string()
+        );
+        if let Some(c) = &p.clone {
+            assert_eq!(std::fs::read(c).unwrap(), b"a received store");
+        }
+    }
+
+    /// The envelope estimate: a handful of files fits, a few hundred do not.
+    #[test]
+    fn many_files_overflow_the_envelope() {
+        let f = |n: usize| Picked {
+            path: PathBuf::from(format!("/x/{n}")),
+            name: format!("file-{n:04}.pdf"),
+            media_type: "application/pdf".into(),
+            size: 1,
+            blake3: "0".repeat(64),
+            dev: 0,
+            inode: 0,
+            clone: None,
+        };
+        assert!(envelope("hi", &(0..10).map(f).collect::<Vec<_>>()) < ENVELOPE);
+        assert!(envelope("hi", &(0..200).map(f).collect::<Vec<_>>()) > ENVELOPE);
+    }
+}

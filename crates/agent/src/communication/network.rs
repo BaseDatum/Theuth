@@ -1276,6 +1276,11 @@ fn inbound_text(m: &A2aMessage, redact: impl Fn(&str) -> String) -> Result<Strin
     }
     let mut text = String::new();
     for p in &m.parts {
+        // 199: a file reference part (`iroh://…/a2a/files/<id>`; the a2a layer admitted it
+        // under the files extension) carries no text: its file is admitted as an `in` row.
+        if matches!(&p.content, a2a_types::PartContent::Url(u) if u.starts_with("iroh://")) {
+            continue;
+        }
         let Some(t) = p.as_text() else {
             return Err(A2AError::content_type_not_supported());
         };
@@ -7206,6 +7211,71 @@ mod tests {
             "{:?}",
             refused.error
         );
+    }
+
+    /// 199 (Text first): a full message with a file reference is admitted as today, its
+    /// text delivered at once; the reference is one `queued` row of the exchange, and the
+    /// record (so the delivered row and `PeerDelivered.files`) carries its placeholder.
+    #[tokio::test]
+    async fn a_full_message_with_a_file_arrives_with_its_placeholder() {
+        use crate::store::contacts::{Cell, RecordTable, RecordWrite};
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let principal = format!("peer:{}", binding.id);
+        a.store
+            .write_contact_records(&[RecordWrite::new(
+                RecordTable::Contacts,
+                "rec",
+                vec![
+                    ("alias", Cell::Text("bob".into())),
+                    ("binding", Cell::Text(principal.clone())),
+                ],
+            )])
+            .await
+            .unwrap();
+        let (session, _, _) = exported_task(&mut a, &principal).await;
+        let p = A2aPrincipal {
+            binding: binding.id,
+            export: "research".into(),
+            session,
+            route: CancellationToken::new(),
+            contact: Some(full_bob("research")),
+            ask_first: false,
+        };
+        let mut req = full_send("m-file", "bob-ctx", &FullWire::default());
+        let mut part = Part::url(format!("iroh://bobmachine/a2a/files/{}", "c".repeat(32)));
+        part.filename = Some("site plan.pdf".into());
+        part.media_type = Some("application/pdf".into());
+        part.metadata = Some(HashMap::from([(
+            "https://theuth.io/a2a/ext/files/v1".to_owned(),
+            serde_json::json!({
+                "size": 2516582.0,
+                "blake3": "a".repeat(64),
+                "expires": "2099-01-01T00:00:00Z",
+            }),
+        )]));
+        req.message.parts.push(part);
+        let task = a.admit_send(&p, &req).await.unwrap().task;
+        assert_eq!(task.status, A2aTaskStatus::Working, "{:?}", task.error);
+        let exchange = task.dedup_exchange.unwrap();
+        let record = a.store.exchange_record(exchange).await.unwrap().unwrap();
+        assert_eq!(record.files.len(), 1);
+        let f = &record.files[0];
+        assert_eq!((f.name.as_str(), f.size), ("site plan.pdf", Some(2516582)));
+        assert_eq!((f.contact_id.as_str(), f.contact.as_str()), ("rec", "bob"));
+        assert_eq!(
+            f.state,
+            crate::communication::files::FileState::In(
+                crate::communication::files::InState::Queued
+            )
+        );
+        let row = crate::loop_::peer_wrapper(&record, false, chrono::Local::now());
+        assert!(row.contains("name=\"site plan.pdf\""), "{row}");
+        assert!(row.ends_with("a notice follows when each one is saved or fails."));
     }
 
     /// 186 (D8): a contact's task whose turn the owner stopped reads "stopped by the owner",

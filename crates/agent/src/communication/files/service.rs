@@ -902,3 +902,602 @@ impl FileOffers for FileService {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicUsize;
+
+    use genai::chat::ChatMessage;
+    use tokio::sync::Semaphore;
+
+    use super::*;
+    use crate::communication::files::{Fetch, Fetched, NoticeAdmission};
+    use crate::store::communication::AcceptExchange;
+
+    const SENDER: &str = "peer:00000000-0000-0000-0000-000000000001";
+
+    /// The sender's side, faked: each member's bytes by sender id, an optional gate per
+    /// member (a slow sender), files answered `Idle` once after half their bytes.
+    #[derive(Default)]
+    struct Fake {
+        bytes: parking_lot::Mutex<HashMap<String, Vec<u8>>>,
+        gates: parking_lot::Mutex<HashMap<String, Arc<Semaphore>>>,
+        idle_once: parking_lot::Mutex<HashSet<String>>,
+        active: parking_lot::Mutex<HashMap<String, usize>>,
+        peak: parking_lot::Mutex<HashMap<String, usize>>,
+        calls: parking_lot::Mutex<Vec<(String, u64)>>,
+        receipts: parking_lot::Mutex<Vec<(String, Receipt)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl FileFetch for Fake {
+        async fn download(
+            &self,
+            fetch: &Fetch,
+            progress: &mut (dyn FnMut(u64) + Send),
+        ) -> Result<Fetched, TransferError> {
+            self.calls.lock().push((fetch.id.clone(), fetch.have));
+            {
+                let mut a = self.active.lock();
+                let n = a.entry(fetch.member.clone()).or_default();
+                *n += 1;
+                let mut p = self.peak.lock();
+                let m = p.entry(fetch.member.clone()).or_default();
+                *m = (*m).max(*n);
+            }
+            let gate = self.gates.lock().get(&fetch.member).cloned();
+            if let Some(g) = gate {
+                g.acquire().await.unwrap().forget();
+            }
+            let all = self
+                .bytes
+                .lock()
+                .get(&fetch.id)
+                .cloned()
+                .unwrap_or_default();
+            let idle = self.idle_once.lock().remove(&fetch.id);
+            let end = if idle { all.len() / 2 } else { all.len() };
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&fetch.partial)
+                .map_err(TransferError::Disk)?;
+            std::io::Write::write_all(&mut f, &all[fetch.have as usize..end])
+                .map_err(TransferError::Disk)?;
+            progress(end as u64);
+            *self.active.lock().get_mut(&fetch.member).unwrap() -= 1;
+            if idle {
+                return Err(TransferError::Idle);
+            }
+            let whole = std::fs::read(&fetch.partial).map_err(TransferError::Disk)?;
+            Ok(Fetched {
+                bytes: whole.len() as u64,
+                blake3: blake3::hash(&whole).to_hex().to_string(),
+            })
+        }
+
+        async fn send_receipt(
+            &self,
+            _: &str,
+            _: &str,
+            id: &str,
+            receipt: &Receipt,
+            _: Timer,
+        ) -> Result<(), TransferError> {
+            self.receipts.lock().push((id.to_owned(), receipt.clone()));
+            Ok(())
+        }
+    }
+
+    /// The chat's owner, faked: it accepts every notice and answers `unknown` to the first
+    /// `unknown` status asks; `old` answers method-not-found to everything.
+    #[derive(Default)]
+    struct Door {
+        notices: parking_lot::Mutex<Vec<uuid::Uuid>>,
+        unknown: AtomicUsize,
+        old: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl NoticeDoor for Door {
+        async fn notice(
+            &self,
+            _: SessionId,
+            id: uuid::Uuid,
+            _: &str,
+            _: &str,
+        ) -> Result<NoticeAdmission, String> {
+            if self.old.load(Ordering::SeqCst) {
+                return Err("Method not found (-32601)".into());
+            }
+            self.notices.lock().push(id);
+            Ok(NoticeAdmission::Accepted)
+        }
+
+        async fn status(&self, _: SessionId, _: uuid::Uuid) -> Result<NoticeStatus, String> {
+            if self.old.load(Ordering::SeqCst) {
+                return Err("Method not found (-32601)".into());
+            }
+            let left = self.unknown.load(Ordering::SeqCst);
+            if left > 0 {
+                self.unknown.store(left - 1, Ordering::SeqCst);
+                return Ok(NoticeStatus::Unknown);
+            }
+            Ok(NoticeStatus::Committed)
+        }
+    }
+
+    struct Rig {
+        svc: Arc<FileService>,
+        fake: Arc<Fake>,
+        door: Arc<Door>,
+        session: SessionId,
+        _dir: crate::TestDir,
+    }
+
+    async fn rig() -> Rig {
+        let dir = crate::TestDir::new("fsvc");
+        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let session = SessionId::new();
+        store
+            .create_session(session, "m", None, None, None)
+            .await
+            .unwrap();
+        let (fake, door) = (Arc::new(Fake::default()), Arc::new(Door::default()));
+        let mut svc = FileService::new(store, dir.0.clone(), None, door.clone());
+        let s = Arc::get_mut(&mut svc).unwrap();
+        s.fetcher = Some(fake.clone());
+        s.backoff = Duration::from_millis(20);
+        s.idle = Duration::from_millis(200);
+        Rig {
+            svc,
+            fake,
+            door,
+            session,
+            _dir: dir,
+        }
+    }
+
+    impl Rig {
+        async fn exchange(&self) -> uuid::Uuid {
+            self.svc
+                .store
+                .accept_exchange(&AcceptExchange {
+                    sender: SENDER,
+                    recipient: &format!("session:{}", self.session),
+                    sender_session: None,
+                    recipient_session: Some(self.session),
+                    request_id: None,
+                    reply_to: None,
+                    request_scope: None,
+                    generation: 1,
+                    body: "hi",
+                })
+                .await
+                .unwrap()
+                .id
+        }
+
+        async fn consume(&self, ex: uuid::Uuid) {
+            self.svc
+                .store
+                .consume_exchange(ex, self.session, 1, ChatMessage::user("hi"))
+                .await
+                .unwrap()
+                .unwrap();
+        }
+
+        /// One queued `in` file of `bytes` from `member`, named `name`.
+        async fn file(&self, ex: uuid::Uuid, member: &str, name: &str, bytes: &[u8]) -> String {
+            let sender = uuid::Uuid::new_v4().simple().to_string();
+            self.fake
+                .bytes
+                .lock()
+                .insert(sender.clone(), bytes.to_vec());
+            let id = uuid::Uuid::new_v4().simple().to_string();
+            let row = FileRow {
+                id: id.clone(),
+                direction: "in".into(),
+                session: self.session.to_string(),
+                exchange: ex.to_string(),
+                contact_id: "rec".into(),
+                name: name.into(),
+                media_type: "application/pdf".into(),
+                size: Some(bytes.len() as i64),
+                blake3: Some(blake3::hash(bytes).to_hex().to_string()),
+                source: format!("iroh://{member}/a2a/files/{sender}"),
+                state: "queued".into(),
+                created_ms: now_ms(),
+                deadline_ms: now_ms() + 3_600_000,
+                ..Default::default()
+            };
+            self.svc.store.insert_contact_files(&[row]).await.unwrap();
+            id
+        }
+
+        async fn row(&self, id: &str) -> FileRow {
+            self.svc.store.contact_file(id).await.unwrap().unwrap()
+        }
+
+        /// Passes until `done` holds (at most 5 s).
+        async fn until(&self, what: &str, mut done: impl AsyncFnMut(&Self) -> bool) {
+            for _ in 0..250 {
+                self.svc.tick().await.unwrap();
+                if done(self).await {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            panic!("timed out waiting for {what}");
+        }
+
+        fn dir(&self) -> PathBuf {
+            received_dir(&self.svc.root, "rec", chrono::Local::now().date_naive())
+        }
+    }
+
+    /// D7: at most two downloads per sending member, none engine-wide; a slow sender holds
+    /// only its own files, which finish once it moves.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_per_member_and_a_slow_sender_delays_only_its_own() {
+        let rig = rig().await;
+        rig.fake
+            .gates
+            .lock()
+            .insert("slow".into(), Arc::new(Semaphore::new(0)));
+        let ex = rig.exchange().await;
+        let mut slow = Vec::new();
+        for n in 0..4 {
+            slow.push(rig.file(ex, "slow", &format!("s{n}"), b"slow bytes").await);
+        }
+        let fast = rig.file(ex, "fast", "f", b"fast bytes").await;
+        rig.until("the fast file", async |r| {
+            r.row(&fast).await.state == "saved"
+        })
+        .await;
+        for id in &slow {
+            assert_ne!(rig.row(id).await.state, "saved");
+        }
+        assert_eq!(rig.fake.peak.lock().get("slow").copied(), Some(2));
+        let gate = rig.fake.gates.lock().get("slow").cloned().unwrap();
+        gate.add_permits(4);
+        rig.until("every slow file", async |r| {
+            for id in &slow {
+                if r.row(id).await.state != "saved" {
+                    return false;
+                }
+            }
+            true
+        })
+        .await;
+        assert_eq!(rig.fake.peak.lock().get("slow").copied(), Some(2));
+    }
+
+    /// D7: an idle download goes back to the end of the queue and resumes from its bytes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_idle_download_requeues_and_resumes() {
+        let rig = rig().await;
+        let ex = rig.exchange().await;
+        let id = rig.file(ex, "m", "big.bin", &[7u8; 1000]).await;
+        let sender = source_of(&rig.row(&id).await.source).unwrap().1;
+        rig.fake.idle_once.lock().insert(sender.clone());
+        rig.until("the file", async |r| r.row(&id).await.state == "saved")
+            .await;
+        let calls = rig.fake.calls.lock().clone();
+        assert_eq!(calls, vec![(sender.clone(), 0), (sender, 500)]);
+    }
+
+    /// Publication, then States: saved until the text is read, then exactly one notice
+    /// (delivered once committed, re-sent while unknown) and one received receipt. An
+    /// existing `report.pdf` with other bytes survives; ours is `report (2).pdf`, 0600.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn saved_then_received_with_one_notice_and_no_clobber() {
+        let rig = rig().await;
+        rig.door.unknown.store(1, Ordering::SeqCst);
+        mkdirs(&rig.dir()).unwrap();
+        std::fs::write(rig.dir().join("report.pdf"), b"theirs").unwrap();
+        let ex = rig.exchange().await;
+        let id = rig.file(ex, "m", "report.pdf", b"our report").await;
+        rig.until("saved", async |r| r.row(&id).await.state == "saved")
+            .await;
+        assert!(
+            rig.fake.receipts.lock().is_empty(),
+            "no receipt before received"
+        );
+        assert!(rig.door.notices.lock().is_empty());
+        rig.consume(ex).await;
+        rig.until("delivered", async |r| {
+            r.row(&id).await.notice_state.as_deref() == Some("delivered")
+        })
+        .await;
+        let row = rig.row(&id).await;
+        let ours = rig.dir().join("report (2).pdf");
+        assert_eq!(row.path.as_deref(), Some(ours.to_str().unwrap()));
+        assert_eq!(std::fs::read(&ours).unwrap(), b"our report");
+        assert_eq!(
+            std::fs::read(rig.dir().join("report.pdf")).unwrap(),
+            b"theirs"
+        );
+        use std::os::unix::fs::MetadataExt as _;
+        assert_eq!(std::fs::metadata(&ours).unwrap().mode() & 0o777, 0o600);
+        assert!(!rig.svc.partial(&id).exists());
+        // One notice id, sent twice (the status read `unknown` once): one row on the owner.
+        let sent = rig.door.notices.lock().clone();
+        assert_eq!(sent.len(), 2);
+        assert!(
+            sent.iter()
+                .all(|n| *n == notice_id(rig.svc.store.engine(), &id))
+        );
+        let notice = row.notice.unwrap();
+        assert!(notice.contains("state=\"received\""), "{notice}");
+        assert!(notice.contains(&format!("saved=\"{}\"", ours.display())));
+        let receipts = rig.fake.receipts.lock().clone();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].1, Receipt::Received);
+    }
+
+    /// An identical pre-existing file is never adopted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_identical_existing_file_is_not_adopted() {
+        let rig = rig().await;
+        mkdirs(&rig.dir()).unwrap();
+        std::fs::write(rig.dir().join("report.pdf"), b"same bytes").unwrap();
+        let ex = rig.exchange().await;
+        rig.consume(ex).await;
+        let id = rig.file(ex, "m", "report.pdf", b"same bytes").await;
+        rig.until("received", async |r| r.row(&id).await.state == "received")
+            .await;
+        let row = rig.row(&id).await;
+        assert!(row.path.unwrap().ends_with("report (2).pdf"));
+    }
+
+    /// HOLD_MOVED after a file was saved: the saved file is rolled back by inode, no
+    /// notice is written, and the sender gets a failed receipt with the reason.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_moved_chat_rolls_its_saved_files_back() {
+        let rig = rig().await;
+        let ex = rig.exchange().await;
+        let id = rig.file(ex, "m", "a.txt", b"bytes").await;
+        rig.until("saved", async |r| r.row(&id).await.state == "saved")
+            .await;
+        let saved = PathBuf::from(rig.row(&id).await.path.unwrap());
+        assert!(saved.exists());
+        rig.svc
+            .store
+            .fail_exchange(ex, crate::communication::network::HOLD_MOVED)
+            .await
+            .unwrap();
+        rig.until("failed", async |r| r.row(&id).await.state == "failed")
+            .await;
+        assert!(!saved.exists());
+        let row = rig.row(&id).await;
+        assert!(row.notice.is_none());
+        let receipts = rig.fake.receipts.lock().clone();
+        assert_eq!(
+            receipts.last().map(|r| r.1.clone()),
+            Some(Receipt::Failed {
+                reason: crate::communication::network::HOLD_MOVED.into()
+            })
+        );
+        assert!(rig.door.notices.lock().is_empty());
+    }
+
+    /// A digest mismatch fails the file at once (no retry), the partial goes, and its
+    /// failure notice waits for the text.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_changed_file_fails_without_retry() {
+        let rig = rig().await;
+        let ex = rig.exchange().await;
+        let id = rig.file(ex, "m", "a.txt", b"declared").await;
+        let sender = source_of(&rig.row(&id).await.source).unwrap().1;
+        rig.fake.bytes.lock().insert(sender, b"replaced".to_vec());
+        rig.until("failed", async |r| r.row(&id).await.state == "failed")
+            .await;
+        let row = rig.row(&id).await;
+        assert_eq!(
+            row.error.as_deref(),
+            Some("the file changed before it was fetched")
+        );
+        assert!(row.notice.is_none());
+        assert!(!rig.svc.partial(&id).exists());
+        rig.consume(ex).await;
+        rig.until("noticed", async |r| r.row(&id).await.notice.is_some())
+            .await;
+        assert_eq!(rig.fake.calls.lock().len(), 1);
+    }
+
+    /// An owner on an old build answers method-not-found: the outbox keeps the notice
+    /// queued and retries (the door is its only path; nothing falls back to send_input).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_old_owner_is_retried() {
+        let rig = rig().await;
+        rig.door.old.store(true, Ordering::SeqCst);
+        let ex = rig.exchange().await;
+        rig.consume(ex).await;
+        let id = rig.file(ex, "m", "a.txt", b"bytes").await;
+        rig.until("received", async |r| r.row(&id).await.state == "received")
+            .await;
+        for _ in 0..10 {
+            rig.svc.tick().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        assert_eq!(rig.row(&id).await.notice_state.as_deref(), Some("queued"));
+        rig.door.old.store(false, Ordering::SeqCst);
+        rig.until("delivered", async |r| {
+            r.row(&id).await.notice_state.as_deref() == Some("delivered")
+        })
+        .await;
+    }
+
+    /// Restart after the link, before the commit (a crash after saving, before the notice
+    /// was queued): the row is ours by inode, step 6 is finished, exactly one notice.
+    /// An unfinished download restarts from byte 0 and its partial goes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restart_finishes_ours_and_restarts_downloads() {
+        let rig = rig().await;
+        let ex = rig.exchange().await;
+        rig.consume(ex).await;
+        let (a, b) = (
+            rig.file(ex, "m", "a.txt", b"aaaa").await,
+            rig.file(ex, "m", "b.txt", b"bbbb").await,
+        );
+        let store = &rig.svc.store;
+        // `a` crashed between step 5 (linked) and step 6 (commit).
+        let partial = rig.svc.partial(&a);
+        mkdirs(partial.parent().unwrap()).unwrap();
+        std::fs::write(&partial, b"aaaa").unwrap();
+        mkdirs(&rig.dir()).unwrap();
+        let target = rig.dir().join("a.txt");
+        std::fs::hard_link(&partial, &target).unwrap();
+        let (dev, ino) = disk::inode_of(&partial).unwrap();
+        store.file_to(&a, &["queued"], "receiving").await.unwrap();
+        store
+            .file_publishing(&a, &target.to_string_lossy(), dev, ino)
+            .await
+            .unwrap();
+        // `b` was half way.
+        std::fs::write(rig.svc.partial(&b), b"bb").unwrap();
+        store.file_to(&b, &["queued"], "receiving").await.unwrap();
+        store.file_done(&b, 2).await.unwrap();
+        recover(store, &rig.svc.root).await;
+        let ra = rig.row(&a).await;
+        assert_eq!(ra.state, "received");
+        assert_eq!(ra.notice_state.as_deref(), Some("queued"));
+        assert!(!partial.exists() && target.exists());
+        let rb = rig.row(&b).await;
+        assert_eq!((rb.state.as_str(), rb.done), ("queued", 0));
+        assert!(!rig.svc.partial(&b).exists());
+        // A second start changes nothing: still one notice.
+        recover(store, &rig.svc.root).await;
+        rig.until("both done", async |r| {
+            r.row(&a).await.notice_state.as_deref() == Some("delivered")
+                && r.row(&b).await.state == "received"
+        })
+        .await;
+        let sent = rig.door.notices.lock().clone();
+        assert_eq!(
+            sent.iter()
+                .filter(|n| **n == notice_id(store.engine(), &a))
+                .count(),
+            1
+        );
+        let calls = rig.fake.calls.lock().clone();
+        assert!(calls.iter().all(|(_, have)| *have == 0), "{calls:?}");
+    }
+
+    /// A restart finding another file at the recorded target (not our inode) never
+    /// removes or adopts it: the row republishes from its partial under the next name.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restart_never_adopts_a_foreign_target() {
+        let rig = rig().await;
+        let ex = rig.exchange().await;
+        let a = rig.file(ex, "m", "report.pdf", b"ours").await;
+        let store = &rig.svc.store;
+        let partial = rig.svc.partial(&a);
+        mkdirs(partial.parent().unwrap()).unwrap();
+        std::fs::write(&partial, b"ours").unwrap();
+        mkdirs(&rig.dir()).unwrap();
+        let target = rig.dir().join("report.pdf");
+        std::fs::write(&target, b"theirs").unwrap();
+        let (dev, ino) = disk::inode_of(&partial).unwrap();
+        store.file_to(&a, &["queued"], "receiving").await.unwrap();
+        store
+            .file_publishing(&a, &target.to_string_lossy(), dev, ino)
+            .await
+            .unwrap();
+        recover(store, &rig.svc.root).await;
+        assert_eq!(std::fs::read(&target).unwrap(), b"theirs");
+        let row = rig.row(&a).await;
+        assert_eq!(row.state, "saved");
+        assert!(row.path.unwrap().ends_with("report (2).pdf"));
+    }
+
+    /// The sender's side: a GET serves the clone or the re-checked original; a replaced
+    /// or deleted source is `410 changed` / `missing` and fails the offer; another
+    /// contact gets `404`; the first terminal receipt wins; past the deadline, `410
+    /// expired` and "expired without a receipt".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn offers_recheck_and_settle_once() {
+        let rig = rig().await;
+        let store = &rig.svc.store;
+        let src = rig.svc.root.join("src.txt");
+        let offer = async |name: &str, bytes: &[u8], deadline: i64, state: &str| {
+            let path = rig.svc.root.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            let e = disk::egress_open(&path, &rig.svc.root).unwrap();
+            let id = super::super::send::local_id();
+            let row = FileRow {
+                id: id.clone(),
+                direction: "out".into(),
+                session: rig.session.to_string(),
+                exchange: uuid::Uuid::new_v4().to_string(),
+                contact_id: "rec".into(),
+                name: name.into(),
+                media_type: "text/plain".into(),
+                size: Some(bytes.len() as i64),
+                blake3: Some(blake3::hash(bytes).to_hex().to_string()),
+                source: path.to_string_lossy().into_owned(),
+                dev: Some(e.dev as i64),
+                inode: Some(e.inode as i64),
+                state: state.into(),
+                created_ms: now_ms(),
+                deadline_ms: deadline,
+                ..Default::default()
+            };
+            store.insert_contact_files(&[row]).await.unwrap();
+            (id, path)
+        };
+        let later = now_ms() + 3_600_000;
+        let (id, path) = offer("src.txt", b"twelve bytes", later, "queued").await;
+        assert_eq!(src, path);
+        assert!(matches!(
+            rig.svc.open("other", &id).await,
+            Err(OfferError::Unknown)
+        ));
+        let h = rig.svc.open("rec", &id).await.unwrap();
+        assert_eq!(h.len, 12);
+        assert_eq!(rig.row(&id).await.state, "sending");
+        // A replaced original is not served.
+        drop(h);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, b"twelve bytes").unwrap();
+        assert!(matches!(
+            rig.svc.open("rec", &id).await,
+            Err(OfferError::Gone(Gone::Changed))
+        ));
+        assert_eq!(rig.row(&id).await.state, "failed");
+        let (gone, path) = offer("gone.txt", b"x", later, "queued").await;
+        std::fs::remove_file(&path).unwrap();
+        assert!(matches!(
+            rig.svc.open("rec", &gone).await,
+            Err(OfferError::Gone(Gone::Missing))
+        ));
+        let (ok, _) = offer("ok.txt", b"y", later, "queued").await;
+        rig.svc
+            .receipt("rec", &ok, Receipt::Received)
+            .await
+            .unwrap();
+        let failed = Receipt::Failed {
+            reason: "late".into(),
+        };
+        rig.svc.receipt("rec", &ok, failed).await.unwrap();
+        assert_eq!(rig.row(&ok).await.state, "sent");
+        let (old, _) = offer("old.txt", b"z", now_ms() - 1, "queued").await;
+        assert!(matches!(
+            rig.svc.open("rec", &old).await,
+            Err(OfferError::Gone(Gone::Expired))
+        ));
+        assert_eq!(
+            rig.row(&old).await.error.as_deref(),
+            Some("expired before rec fetched it")
+        );
+        // Fetched, never confirmed, past the deadline.
+        let (quiet, _) = offer("quiet.txt", b"q", now_ms() - 1, "sending").await;
+        rig.svc.tick().await.unwrap();
+        assert_eq!(
+            rig.row(&quiet).await.error.as_deref(),
+            Some("expired without a receipt")
+        );
+    }
+}

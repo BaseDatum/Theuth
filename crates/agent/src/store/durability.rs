@@ -1956,6 +1956,47 @@ mod tests {
         assert!(!store.notice_committed(other, row).await.unwrap());
     }
 
+    /// 199 D17: two accepted copies of one notice consumed (a re-send after the owner lost
+    /// its pending set) give one row; an ended-share row of that id refuses it too. Other
+    /// sources are never deduplicated.
+    #[tokio::test]
+    async fn append_input_writes_one_row_per_notice() {
+        let (store, id, _dir) = fresh().await;
+        let (notice, ended) = (uuid::Uuid::now_v7(), uuid::Uuid::now_v7());
+        let n = notice.to_string();
+        let src = crate::communication::files::JOURNAL_SOURCE;
+        let msg = ChatMessage::user("<message_file …/>");
+        let (t1, t2) = (TurnId::new(), TurnId::new());
+        store
+            .append_input(id, t1, &msg, Some(&n), src, None)
+            .await
+            .unwrap();
+        let again = store.append_input(id, t2, &msg, Some(&n), src, None).await;
+        assert!(
+            again
+                .unwrap_err()
+                .is::<crate::communication::files::notices::NoticeCommitted>()
+        );
+        store.record_error_once(id, ended, "ended").await.unwrap();
+        let e = ended.to_string();
+        assert!(
+            store
+                .append_input(id, t2, &msg, Some(&e), src, None)
+                .await
+                .is_err()
+        );
+        store
+            .append_input(id, t2, &msg, Some(&n), "user", None)
+            .await
+            .unwrap();
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE session_id = ?")
+            .bind(id.to_string())
+            .fetch_one(&store.read)
+            .await
+            .unwrap();
+        assert_eq!(rows, 2);
+    }
+
     fn call(id: &str, name: &str) -> ToolCall {
         ToolCall {
             call_id: id.into(),
