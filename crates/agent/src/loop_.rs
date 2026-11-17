@@ -9212,9 +9212,7 @@ async fn set_turn_limits(
     tools: Option<Vec<String>>,
 ) -> Result<(), String> {
     // No registry in this process: no tool can run at all (tests without one).
-    let Some(reg) = kameo::actor::ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)
-        .map_err(|e| format!("tool registry: {e}"))?
-    else {
+    let Some(reg) = crate::communication::network::tool_registry()? else {
         return Ok(());
     };
     reg.ask(tools::SetAllowOnly {

@@ -3480,6 +3480,19 @@ const INBOX_FAIL_CLOSED: tools::Risk = tools::Risk::ReadOnly;
 /// one, or held for the owner's first-contact answer).
 const CONTACT_QUEUED: usize = 8;
 
+/// The process's tool registry, `None` when none runs. In a binary a dead ref stays, so the
+/// ask fails and the caller refuses. Under `cfg(test)` the name is process-wide while each
+/// test has its own: only a test inside [`crate::with_test_registry`] (its thread) sees a
+/// registry, and only a live one; another test's, live or dropped with its runtime, is none.
+pub(crate) fn tool_registry() -> Result<Option<kameo::actor::ActorRef<tools::ToolRegistry>>, String>
+{
+    let reg = kameo::actor::ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)
+        .map_err(|e| format!("tool registry: {e}"))?;
+    #[cfg(test)]
+    let reg = reg.filter(|r| r.is_alive() && crate::OWNS_REGISTRY.with(std::cell::Cell::get));
+    Ok(reg)
+}
+
 impl Agents {
     /// 183 §7.6, Z3-R2: a contact's inbox is default-deny: `cap` and the allowlist `tools`
     /// (the only tools that exist in it and its subagents), asked so both hold before the
@@ -3494,10 +3507,7 @@ impl Agents {
         self.caps.insert(id, cap);
         self.network.inbox_limits.insert(id, (cap, tools.clone()));
         self.network.inboxes.insert(id);
-        let Some(reg) =
-            kameo::actor::ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)
-                .map_err(|e| format!("a2a: inbox limits: tool registry: {e}"))?
-        else {
+        let Some(reg) = tool_registry().map_err(|e| format!("a2a: inbox limits: {e}"))? else {
             return Ok(());
         };
         reg.ask(tools::SetAllowOnly {
@@ -3606,10 +3616,7 @@ impl Agents {
         };
         self.network.inbox_limits.remove(&id);
         self.network.inboxes.insert(id);
-        let Some(reg) =
-            kameo::actor::ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)
-                .map_err(|e| format!("a2a: inbox limits: tool registry: {e}"))?
-        else {
+        let Some(reg) = tool_registry().map_err(|e| format!("a2a: inbox limits: {e}"))? else {
             return Ok(());
         };
         reg.ask(tools::SetAllowOnly {
