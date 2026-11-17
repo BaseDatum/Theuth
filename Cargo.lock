@@ -12682,6 +12682,7 @@ dependencies = [
 name = "models"
 version = "2.21.1"
 dependencies = [
+ "libloading 0.9.0",
  "ort",
  "platform",
  "schemars 1.2.3",

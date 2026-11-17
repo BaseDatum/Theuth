@@ -1140,7 +1140,7 @@ agent:
 #   accelerator: auto        # auto | cpu | webgpu | directml | cuda. auto = Metal on an Apple-silicon Mac (candle); for the ONNX sessions
 #                            # (STT, dictation, diarisation) the WebGPU plugin EP — Dawn on D3D12 / Vulkan / Metal, any GPU — when
 #                            # <data_dir>/models/onnxruntime/plugins/{onnxruntime_providers_webgpu.dll | lib….so | lib….dylib} exists
-#                            # (Windows: dxcompiler.dll + dxil.dll beside it); CUDA for the decision model when this binary was built
+#                            # (Windows: dxcompiler.dll + D3D12\\ beside it); CUDA for the decision model when this binary was built
 #                            # with `decision/cuda`; else CPU. auto takes WebGPU only on a discrete hardware GPU (NVIDIA/AMD); an
 #                            # integrated one (Intel, Apple, APU) or a software adapter (SwiftShader, llvmpipe, WARP — a GPU-less box)
 #                            # logs one WARN and stays on the CPU. webgpu forces the plugin on whatever adapter exists, discrete first

@@ -1,9 +1,13 @@
 //! The live-meeting race on the shared WebGPU context (149 ENGINE-DIAR): the mic STT, the
-//! system STT and the live diariser each run their ORT session on their own thread, and the
-//! WebGPU plugin EP 0.4.0 shares one command encoder between all sessions. Without
+//! system STT and the live diariser each run their ORT session on their own thread. WebGPU
+//! plugin EP ≤ 0.4.0 shares one command encoder between all sessions: without
 //! `models::onnx`'s run lock this returns "WebGPU validation failed. [CommandEncoder] is
 //! already finished" within seconds, or kills the test process in
-//! `onnxruntime_providers_webgpu.dll`. With it every run is `Ok` for the whole 20 s.
+//! `onnxruntime_providers_webgpu.dll`. Plugin ≥ 0.5.0 on an eligible runtime (we ship 0.6.0 on
+//! ORT 1.32) runs them lock-free (`models::onnx::gpu_lock_free`). Either way every run must be
+//! `Ok` for the whole 20 s; the output names
+//! the mode. `crates/desktop/companion-windows/ort-webgpu-test.ps1` runs it on Windows against
+//! the pinned pair.
 //!
 //! Needs the real models and a discrete GPU, so `#[ignore]`:
 //!
@@ -78,6 +82,11 @@ fn step_until(s: &mut Streamer, pcm: &[f32], until: Instant) -> anyhow::Result<u
 #[test]
 #[ignore = "needs the real models and a discrete GPU"]
 fn three_webgpu_sessions_run_concurrently_and_one_drops_mid_run() -> anyhow::Result<()> {
+    // `models::onnx`'s INFO lines (the run-lock mode, with core and plugin versions) on stderr.
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new("models=info"))
+        .with_writer(std::io::stderr)
+        .init();
     let data_dir = data_dir();
     let models_dir = data_dir.join("models");
     let stt_dir = models_dir.join(STREAMING_MODEL_SUBDIR);
@@ -94,17 +103,30 @@ fn three_webgpu_sessions_run_concurrently_and_one_drops_mid_run() -> anyhow::Res
     }
 
     let t = Instant::now();
+    // Progress on stderr (unbuffered): a native crash during load then shows which step died.
+    eprintln!("data dir {}; opening the diariser", data_dir.display());
     let mut diariser = diar::open(&models)?;
+    eprintln!(
+        "diariser open on {} (ONNX Runtime {}) in {:?}",
+        models::onnx::ep(),
+        models::onnx::runtime_version().unwrap_or("of unknown version"),
+        t.elapsed()
+    );
     let Some(gpu) = models::onnx::webgpu_device() else {
-        eprintln!(
-            "skip: no WebGPU device ({}); sessions are on the CPU, which cannot race",
-            models::onnx::ep()
-        );
+        eprintln!("skip: no WebGPU device; sessions are on the CPU, which cannot race");
         return Ok(());
     };
     let mut mic = Stream::open(&stt_dir, &data_dir)?;
     let mut system = Stream::open(&stt_dir, &data_dir)?;
     eprintln!("sessions on {gpu} loaded in {:?}", t.elapsed());
+    eprintln!(
+        "run lock {}",
+        if models::onnx::gpu_lock_free() {
+            "off: concurrent WebGPU sessions"
+        } else {
+            "on: serialised WebGPU sessions"
+        }
+    );
 
     let pcm = Arc::new(noise(30 * RATE as usize));
     let window: [f32; WINDOW] = pcm[..WINDOW].try_into().unwrap();

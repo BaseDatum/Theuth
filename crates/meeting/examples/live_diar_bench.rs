@@ -280,8 +280,7 @@ fn session(
         builder = builder.with_intra_threads(t).map_err(ort_err)?;
     }
     let (mut builder, on_gpu) = models::onnx::configure(builder);
-    let sess = builder
-        .commit_from_file(path)
+    let sess = models::onnx::gpu_serial(on_gpu, || builder.commit_from_file(path))
         .map_err(|e| anyhow::anyhow!("load {}: {e}", path.display()))?;
     Ok(Guarded::new(sess, on_gpu))
 }

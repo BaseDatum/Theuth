@@ -121,9 +121,10 @@ pub fn resample_block(r: &mut rubato::Fft<f32>, block: &[f32]) -> anyhow::Result
     Ok(r.process(&input, None)?.take_data())
 }
 
-/// `text` spoken by the Pocket TTS checkpoint at `tts_dir` (`<data_dir>/models/pocket-tts`) with
-/// `voice`, as 16 kHz mono PCM for [`Engine::transcribe`]: a real utterance for `t --bench-models`,
-/// where silence transcribing to `""` proves nothing about the execution provider (58 step 13).
+/// `text` spoken by the Pocket TTS checkpoint at `tts_dir`
+/// (`<data_dir>/models/pocket-tts-en-2026-10`) with `voice`, as 16 kHz mono PCM for
+/// [`Engine::transcribe`]: a real utterance for `t --bench-models`, where silence transcribing
+/// to `""` proves nothing about the execution provider (58 step 13).
 /// Blocking; loads the TTS model (seconds) — not for a request path.
 pub fn speech_sample(tts_dir: &Path, voice: &str, text: &str) -> anyhow::Result<Vec<f32>> {
     use ptts::synth::SpeechOptions;
@@ -170,12 +171,15 @@ fn exec_config(on_gpu: Arc<AtomicBool>) -> ExecutionConfig {
     })
 }
 
-/// Load a parakeet-rs model with [`exec_config`] and wrap it with its WebGPU flag.
+/// Load a parakeet-rs model with [`exec_config`] and wrap it with its WebGPU flag. parakeet-rs
+/// creates its sessions inside `load`, so on serialised WebGPU the whole load holds the run lock.
 fn guarded<M>(
     load: impl FnOnce(ExecutionConfig) -> Result<M, parakeet_rs::Error>,
 ) -> Result<Guarded<M>, parakeet_rs::Error> {
     let on_gpu = Arc::new(AtomicBool::new(false));
-    let m = load(exec_config(on_gpu.clone()))?;
+    let m = gpu_serial(models::onnx::ep() == models::onnx::WEBGPU_EP, || {
+        load(exec_config(on_gpu.clone()))
+    })?;
     Ok(Guarded::new(m, on_gpu.load(Ordering::Relaxed)))
 }
 

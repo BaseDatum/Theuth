@@ -157,12 +157,10 @@ queueing of one run.
 - **Windows crash dumps**: WER LocalDumps for `t.exe` (`HKLM\SOFTWARE\Microsoft\Windows\Windows Error
   Reporting\LocalDumps\t.exe`, `DumpType=1`) is an installer/registry change.
 - **Engine respawn by the desktop shell**: never designed (ENGINE-DIAR Q3); Sky rules on the design.
-- **Remove the lock** when the WebGPU plugin ships #32587 (+ #32874); it may also need explicit per-session
-  streams (`OrtEp CreateSyncStreamForDevice`). The comment on `WEBGPU_RUN` says the same.
-- **Session construction is not serialised.** Meeting sessions are built before the live tasks start, but a
-  dictation/talk `Stream` can be built while a meeting runs (and vice versa). The GPU test built a second
-  diariser while two STT threads ran and every run stayed `Ok` (one observation on one GPU) — no evidence yet
-  that `commit_from_file` needs the lock.
+- **Remove the lock** when the WebGPU plugin ships #32587 (+ #32874): done for eligible pairs (plugin 0.5.0+ on a
+  concurrent-capable runtime), verified on build-B. See "The lock made conditional" below.
+- ~~**Session construction is not serialised.**~~ — where the lock stays, WebGPU session creation now takes
+  it too (below): the plugin's serialized-compatibility contract requires it.
 - **Exit-time fail-fast.** With the WebGPU plugin loaded the test process dies with `0xC0000409` at process exit,
   after every session is gone. `t.exe` loads the same plugin and quits through the same path, so the engine's
   exit code on quit may read as a crash to a future supervisor (ENGINE-DIAR Fix C) — check before treating
@@ -173,3 +171,108 @@ queueing of one run.
   change, so Sky's call; not made here.
 - The macOS built-in WebGPU EP (explicit `models.accelerator: webgpu`) and Linux/Vulkan take the same lock
   (same `configure` branch); not run.
+
+## The lock made conditional (ORT 1.32.0 + plugin 0.6.0, branch `chore/ort-1.32-webgpu-0.6`, 2026-11-17)
+
+**Status:** an eligible pair runs lock-free (`WEBGPU_CONCURRENT_VERIFIED = true`, the kill switch). On build-B the
+pinned pair first crashed at load: our shipped file set lacked 0.6.0's `D3D12\` Agility SDK folder. With that folder
+shipped it passed, first under the lock and then lock-free (below).
+
+Pins (`scripts/ort-version.env`): ORT 1.27.0 → **1.32.0** (all four archives re-hashed), `EP.WebGpu` 0.4.0 →
+**0.6.0** ("matched with ONNX Runtime 1.32.0": same contrib-op schemas, bump both together). `ort` stays
+`=2.0.0-rc.13` with `api-22`. 0.6.0's `runtimes/win-x64/native/` has no `dxil.dll` and adds the preview D3D12
+Agility SDK (`D3D12/D3D12Core.dll`, `D3D12/d3d12SDKLayers.dll`). `release-models.sh` now publishes
+`onnxruntime_providers_webgpu.dll`, `dxcompiler.dll` and both SDK DLLs under `plugins/D3D12/`. That is the layout
+the package's `buildTransitive` targets produce: a `D3D12\` folder next to the provider DLL, i.e. relative to the
+module, not the exe. The plugin's strings show Dawn activates the SDK only with Developer Mode on ("[AgilitySDK]
+Developer Mode is not enabled; skipping Agility SDK device factory creation."). The desktop downloader already
+creates parent directories for nested manifest paths (`crates/desktop/src/models.rs`).
+
+**The rule** (plugin 0.5.0 release notes, "Runtime Compatibility", restated in 0.6.0): concurrent independent
+Sessions need plugin ≥ 0.5.0 (#32587, #32874, #33082) on ORT ≥ 1.31, 1.30.1+ in 1.30 or 1.28.3+ in 1.28; anything
+else (1.29.x included) is "serialized compatibility", where the caller must serialise every WebGPU operation on the
+device, Session creation/destruction included. `models::onnx::webgpu_concurrent(core, plugin)` is that rule;
+unknown or unparseable versions are `false`.
+
+**Detection**, once, in `register_webgpu`:
+- core: `runtime_version()` — `OrtGetApiBase()->GetVersionString()` of the library `ort_lib` loaded (rc.13 keeps its
+  handle private, so `read_runtime_version` reopens the same file with `libloading`); replaces the old `VERSION`-file
+  read, so bundled runtimes (`.app`, Windows package) report too. Also gates `WEBGPU_MIN_ORT`.
+- plugin: the chosen device's EP metadata `version` key (`kOrtEpDevice_EpMetadataKey_Version`, "available for all
+  plugin EPs"; `ort` rc.13 has no wrapper, so raw `EpDevice_EpMetadata` as for adapter classification).
+- the built-in EP (a runtime that already offers a `WebGpuExecutionProvider` device: macOS) is never concurrent. Its
+  metadata `version` is the core's (`GPU Apple 1.32.0` on this Mac), which would pass a naive plugin check. The
+  1.31.0 core notes name #32587 for the in-tree WebGPU EP and 1.32.0 "synchronized per-session command
+  recording", but neither names #32874 or #33082, so the macOS EP keeps the lock.
+
+`WEBGPU_CONCURRENT` (= eligible `&& WEBGPU_CONCURRENT_VERIFIED`) is stored before `WEBGPU_STATE` turns 1, so no
+session reaches the GPU before the mode is fixed. `gpu_guard(on_gpu)` takes `WEBGPU_RUN` only when
+`on_gpu && !gpu_lock_free()`; `gpu_wait_stats` counts only real acquisitions (0 in concurrent mode). One INFO line:
+`onnxruntime: WebGPU sessions run concurrently, no run lock (ONNX Runtime 1.32.0, WebGPU plugin 0.6.0)`, or `…
+serialised under one run lock (ONNX Runtime …, …); concurrent needs …` (`…: eligible for concurrent sessions, held
+until verified on a GPU` when the kill switch is off).
+
+**Session creation under the lock (serialised mode).** `diarize::session` and `live_diar_bench::session` wrap
+`commit_from_file` in `gpu_serial(on_gpu, …)`. parakeet-rs creates its two sessions inside `from_pretrained`, so
+`stt::guarded` holds `gpu_serial(onnx::ep() == WEBGPU_EP, …)` across the whole load (`configure` inside it takes no
+lock, so no re-entry).
+
+**Same-Session overlap (concurrent mode's remaining rule).** No caller uses I/O binding (no `IoBinding` /
+`create_binding` in `crates/`). Each Session is driven by one thread at a time, which the types enforce:
+`ort` rc.13's `Session::run` takes `&mut self`; `Streamer::step`, `Embedder::embed_frames` and `Stream::feed` take
+`&mut self` (`Stream` is `Send`, not `Sync`, one owner task); `Engine` keeps its model behind a `Mutex`.
+
+### Mac (M3 Max, CPU, debug) against Microsoft's `onnxruntime-osx-arm64-1.32.0.tgz`
+
+Scratch data dir `/tmp/ort132/home/.theuth` (the 1.32.0 dylib as `models/onnxruntime/libonnxruntime.dylib`, model
+dirs symlinked read-only from `~/.theuth/models`); test binaries run with `HOME` and `THEUTH_DATA_DIR` pointing
+there. A throwaway test (not committed) asserted `runtime_version() == Some("1.32.0")`, created a session with
+`ort::ep::CoreML` `error_on_failure()` (pyannote segmentation), then with explicit `webgpu` registered the
+built-in EP (`GPU Apple 1.32.0`), `gpu_lock_free() == false`, and a WebGPU session created under the lock (1
+acquisition). Suites: models lib 28 + `ort_load_failure` 1; voice lib 74 (3 ignored), then `stt:: live:: vad::
+transcribe` with `--include-ignored` 10/11 — `live::tests::utterer_returns_the_spoken_sentence_punctuated` drops the
+final `.` and gives the identical text on the production 1.27.0 runtime (the known flake above); meeting lib 173
+(2 ignored) + `enroll_segments_on_a_real_meeting_copy` (wespeaker on a copied meeting, cosine 0.976) + `note` 1 +
+`oracle` 1; `webgpu_concurrency --ignored` loads the diariser on the CPU and skips (no discrete GPU). `calendar`'s
+`fastmail_floating_time_is_local_and_unknown_hosts_are_not_links` fails with the real `HOME` too (no ORT).
+
+### build-B (Quadro M2000M, D3D12, Windows 11 25H2 26200.9974, Developer Mode on, driver 32.0.15.8241, debug)
+
+`crates/desktop/companion-windows/ort-webgpu-test.ps1` (kept as the dev tool for the next pin bump): downloads
+Microsoft's win-x64 zip and the nupkg into `%TEMP%\theuth-ort-verify\`, checks them against `ort-version.env`, lays
+out a scratch data dir with exactly what `release-models.sh` ships (`onnxruntime.dll`, `VERSION`, the plugin files)
+plus junctions to the real model dirs, prints every file's sha256, sets `THEUTH_DATA_DIR` and runs the test once as
+its own process. `-NoPlugin` leaves `plugins\` out (CPU control, the plugin never loads). The test logs
+`models::onnx`'s INFO lines (the mode) to stderr.
+
+- `20261117T101056-1` cargo-test `-p meeting --test webgpu_concurrency --no-run` at `60853a7ff`: exit 0, 1110 s.
+- `20261117T102934-2` the script at `60853a7ff`, set = runtime + `onnxruntime_providers_webgpu.dll` +
+  `dxcompiler.dll`: `running 1 test` → `(exit code: 0xc0000409, STATUS_STACK_BUFFER_OVERRUN)`, exit -1073740791.
+  The test ran ≈ 1 s and printed nothing: it died in `diar::open`, before any concurrent run. Not retried.
+- `20261117T104725-3` read-only facts: `System32\D3D12Core.dll` present, Developer Mode = 1; no Application Error
+  or WER record for the crash.
+- `20261117T104858-4` `-NoPlugin` at `bed237f8e`: `diariser open on CPUExecutionProvider (ONNX Runtime 1.32.0)
+  in 256.9734ms`, skip, exit 0. So rc.13 loads 1.32.0 on Windows and the crash was in the WebGPU plugin path.
+- **Run 1** (Sky's go 11:03), `20261117T110610-5` at `38642ae1d`, set = the above + `plugins\D3D12\D3D12Core.dll`
+  (sha256 `97e081df…4f9a`) + `plugins\D3D12\d3d12SDKLayers.dll` (`67d4065b…ee39`), each identical to the nupkg's
+  entry. Lock **on**: `…serialised under one run lock (ONNX Runtime 1.32.0, WebGPU plugin 0.6.0): eligible for
+  concurrent sessions, held until verified on a GPU`, `[AgilitySDK] active: SDK version = 721`, sessions loaded in
+  9.54 s, warm-up 3.52 s, mic STT 43 windows, system STT 13, diariser dropped after 2 steps at 12.56 s and reopened,
+  2 steps in all; `run lock: 63 acquisitions in 21.1471415s, waited 40.0245102s total, mean 635.309685ms, max
+  8.1767369s`; exit 0. Run 2 (0.4.0's `dxil.dll`, sha256 `0a0d059a…c27f`) was not needed.
+- **Lock-free**, `20261117T110949-6` at `0bbecd239` (`release-models.sh` ships exactly run 1's set;
+  `WEBGPU_CONCURRENT_VERIFIED = true`), same file hashes: `onnxruntime: WebGPU sessions run concurrently, no run
+  lock (ONNX Runtime 1.32.0, WebGPU plugin 0.6.0)`, sessions loaded in 8.14 s, warm-up 2.55 s, diariser dropped
+  after 8 steps at 11.22 s and reopened, 15 steps in all; system STT 25 windows, mic STT 25; `run lock: 0
+  acquisitions in 21.1826191s, waited 0ns total`; exit 0 (script 99.0 s, 66 s of it compiling).
+
+Against the lock (21 s concurrent phase, debug):
+
+| | 0.4.0, lock (2026-10-09) | 0.6.0, lock (run 1) | 0.6.0, lock-free |
+|---|---|---|---|
+| mic / system STT windows | 11 / 14 | 43 / 13 | 25 / 25 |
+| diariser steps | 1 | 2 | 15 |
+| lock waits | 30, 41.6 s total, max 19.4 s | 63, 40.0 s total, max 8.18 s | 0 |
+
+Lock-free, the diariser no longer stalls both STT tracks: the two tracks progress evenly, and the diariser made
+7× the steps of the locked run.
