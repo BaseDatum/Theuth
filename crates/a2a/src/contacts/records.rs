@@ -2422,6 +2422,50 @@ mod tests {
         assert_eq!(s.contact_by_eid(&eid(1)), Some("alice"));
     }
 
+    /// 200 (D4 (1)-(2)): an endpoint R that two contacts' rosters list reaches only the full
+    /// access of the contact 191's attribution admits it for (its principal's `Peer`, as
+    /// `Live::full_access_of` reads it); admitted for none, it reaches no grant at all.
+    #[test]
+    fn an_endpoint_in_two_rosters_inherits_only_its_own_contacts_full_access() {
+        let mut r = Records {
+            contacts: vec![contact("a", "alice", 1), contact("b", "bob", 2)],
+            endpoints: vec![anchor("a", 1, 1), anchor("b", 5, 2)],
+            ..Records::default()
+        };
+        let w = reconcile_writes(&r);
+        apply(&mut r, &w);
+        // Alice has full access, bob has not; R (`eid(9)`) is on both rosters.
+        r.contacts[0].full_access = Some(1);
+        r.local = vec![
+            local("a", 1, &[eid(1), eid(9)], &[]),
+            local("b", 1, &[eid(5), eid(9)], &[]),
+        ];
+        let r_eid = eid(9);
+        let grant = |s: &Staged| -> Option<(String, bool)> {
+            let holders: Vec<&String> = s
+                .contacts
+                .iter()
+                .filter(|(_, f)| f.eids.contains(&r_eid))
+                .map(|(a, _)| a)
+                .collect();
+            assert!(holders.len() <= 1, "one principal at most: {holders:?}");
+            let alias = holders.first()?;
+            Some(((*alias).clone(), s.peers[alias.as_str()].full_access))
+        };
+        let s = stage(&r);
+        assert!(s.peers["alice"].full_access && !s.peers["bob"].full_access);
+        assert_eq!(grant(&s), None, "admitted for none: no grant");
+        r.local[1] = local("b", 1, &[eid(5), eid(9)], &[eid(9)]);
+        assert_eq!(
+            grant(&stage(&r)),
+            Some(("bob".to_owned(), false)),
+            "bob's machine: bob's grant, never alice's"
+        );
+        r.local[1] = local("b", 1, &[eid(5), eid(9)], &[]);
+        r.local[0] = local("a", 1, &[eid(1), eid(9)], &[eid(9)]);
+        assert_eq!(grant(&stage(&r)), Some(("alice".to_owned(), true)));
+    }
+
     /// 191 (D1 merge proof): two records whose rosters each list the other's pin merge (two
     /// pairings of one mesh); a roster listing another contact's pin merges nothing.
     #[test]

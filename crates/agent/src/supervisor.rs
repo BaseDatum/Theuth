@@ -6941,10 +6941,7 @@ impl Message<PeersRead> for Agents {
 struct PeerPlan {
     m: ListPeers,
     rows: Vec<PeerInfo>,
-    granting: Vec<(
-        String,
-        Arc<dyn crate::communication::network::PeerSender>,
-    )>,
+    granting: Vec<(String, Arc<dyn crate::communication::network::PeerSender>)>,
 }
 
 /// 200: the `peer:<contact>` row's title while the contact gives us full access.
@@ -7388,8 +7385,8 @@ impl Agents {
         };
         let inbox = |s: SessionId| self.network.contact_inbox(s);
         let visible = visible && !inbox(row.id) && root.is_some_and(|r| !inbox(r));
-        let paused = self.paused.contains_key(&row.id)
-            || root.is_some_and(|r| self.paused.contains_key(&r));
+        let paused =
+            self.paused.contains_key(&row.id) || root.is_some_and(|r| self.paused.contains_key(&r));
         let observed = row.kind == SessionKind::Observed || row.observed.is_some();
         crate::communication::network::access::Eligibility {
             visible,
@@ -16465,7 +16462,11 @@ pub(crate) mod tests {
         };
         let no = Eligibility::default();
         for (s, want, what) in [
-            (SessionId::new(), no, "no durable row (a private chat, a random id)"),
+            (
+                SessionId::new(),
+                no,
+                "no durable row (a private chat, a random id)",
+            ),
             (root, yes, "an Owner root"),
             (child, yes, "its native child"),
             (ask, yes, "an ask root"),
@@ -16489,7 +16490,11 @@ pub(crate) mod tests {
         a.communication.0.write().set_global(true, "test");
         // Another machine's row.
         a.store.owned_elsewhere(child, "another-engine").await;
-        assert_eq!(a.full_access_eligibility(child).await, no, "owned elsewhere");
+        assert_eq!(
+            a.full_access_eligibility(child).await,
+            no,
+            "owned elsewhere"
+        );
 
         // An opted-out grandparent: the row half reads it from the replicated rows, the live
         // half from the policy; each alone hides the grandchild.
@@ -16622,10 +16627,7 @@ pub(crate) mod tests {
             rows: std::iter::once(contact_row("peer:maya".into(), None))
                 .chain((0..exports).map(|i| contact_row(format!("peer:maya/e{i}"), None)))
                 .collect(),
-            granting: vec![(
-                "maya".into(),
-                members.clone() as Arc<dyn PeerSender>,
-            )],
+            granting: vec![("maya".into(), members.clone() as Arc<dyn PeerSender>)],
         };
         let id = |n: u128| SessionId(Uuid::from_u128(n));
         let sessions = |p: &PeerPage| -> Vec<String> {
@@ -16642,13 +16644,19 @@ pub(crate) mod tests {
         assert_eq!(p1.cursor, Some(full_cursor("maya", id(90))));
         assert!(p1.partial.is_empty());
         members.down.lock().push("B");
-        let p2 = plan(p1.cursor.clone(), "maya", 2, 0).finish().await.unwrap();
+        let p2 = plan(p1.cursor.clone(), "maya", 2, 0)
+            .finish()
+            .await
+            .unwrap();
         assert_eq!(sessions(&p2), [at(80)], "no prefix on a later page");
         assert_eq!(p2.peers.len(), 1);
         assert_eq!(p2.cursor, None);
         assert_eq!(p2.partial, ["maya/B"]);
         members.down.lock().clear();
-        let again = plan(p1.cursor.clone(), "peer:maya", 2, 0).finish().await.unwrap();
+        let again = plan(p1.cursor.clone(), "peer:maya", 2, 0)
+            .finish()
+            .await
+            .unwrap();
         assert_eq!(sessions(&again), [at(80), at(70)]);
         assert_eq!(again.cursor, None);
         assert!(again.partial.is_empty());
@@ -16689,10 +16697,39 @@ pub(crate) mod tests {
         assert_eq!(page.cursor, None, "no cursor for a preview");
     }
 
+    /// 200 (D4 (3)): a live private chat answers a full-access contact exactly as an unknown
+    /// id (no durable row: the row half finds nothing), with the same error.
+    #[tokio::test]
+    async fn a_private_chat_answers_like_an_unknown_id() {
+        use crate::communication::network::access::FullAccessRow;
+        let (_scratch, a) = agents_with(true).await;
+        let agents = Agents::spawn(a);
+        let private = agents
+            .ask(CreateSession {
+                options: CreateSessionOptions {
+                    retention: tools::Retention::Private,
+                    view: Some("v1".into()),
+                    ..Default::default()
+                },
+                peer: Some((7, CancellationToken::new())),
+            })
+            .await
+            .unwrap()
+            .session;
+        let refused = |r: Result<(), SendError<FullAccessRow, a2a_types::A2AError>>| match r {
+            Err(SendError::HandlerError(e)) => (e.code, e.message),
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        let unknown = refused(agents.ask(FullAccessRow(SessionId::new())).await);
+        assert_eq!(unknown.1, crate::communication::network::NOT_OWNER_TEXT);
+        assert_eq!(refused(agents.ask(FullAccessRow(private)).await), unknown);
+    }
+
     /// 200 (Interplay with 199): a file notice from a contact we gave full access passes D17's
     /// re-check for a visible chat it was never shared; while the tree is paused it is
     /// `accepted` and held (no turn, no row: status unknown), and a resend stays one
-    /// pending notice. Without full access the same notice is an ended share.
+    /// pending notice; `ResumeTree` consumes it: one turn, one committed row, and a later
+    /// resend adds nothing. Without full access the same notice is an ended share.
     #[tokio::test]
     async fn a_full_access_notice_for_a_paused_tree_waits_for_the_resume() {
         use crate::communication::PeerScope;
@@ -16733,8 +16770,17 @@ pub(crate) mod tests {
             Ok(NoticeAdmission::Accepted)
         );
         assert_eq!(a.store.errors(root).await.unwrap().len(), 1, "ended");
-        // Full access, the tree paused: held for the resume.
+        // Full access (the route and the record, as a staged grant has both), the tree
+        // paused: held for the resume.
         a.network.insert_full_access_for_test(binding, "maya");
+        a.store
+            .write_contact_records(&[RecordWrite::new(
+                RecordTable::Contacts,
+                "rec",
+                vec![("full_access", Cell::Int(1))],
+            )])
+            .await
+            .unwrap();
         a.paused.insert(root, Vec::new());
         let id = Uuid::new_v4();
         for _ in 0..2 {
@@ -16748,6 +16794,46 @@ pub(crate) mod tests {
         assert!(!a.store.notice_committed(root, id).await.unwrap(), "no row");
         assert_eq!(a.store.errors(root).await.unwrap().len(), 1, "no new row");
         assert!(a.live(root).is_none(), "no actor, no turn");
+
+        // `ResumeTree`: the held notice is consumed like any automatic input, then committed
+        // once: one turn on its text, one row; a resend after that adds nothing.
+        let store = a.store.clone();
+        let mut rx = tap(&a.rt).await;
+        let agents = Agents::spawn(a);
+        let report = agents.ask(ResumeTree { desk: root }).await.unwrap();
+        assert_eq!(report.replayed, 1, "the one held notice");
+        let mut seen = Vec::new();
+        let started = tokio::time::timeout(Duration::from_secs(60), async {
+            loop {
+                match rx.recv().await.expect("bus open") {
+                    AgentEvent::TurnStarted {
+                        session: s, text, ..
+                    } if s == root => return text,
+                    e => seen.push(format!("{e:?}").chars().take(300).collect::<String>()),
+                }
+            }
+        })
+        .await;
+        assert_eq!(started.as_deref(), Ok(TEXT), "events: {seen:#?}");
+        let committed = tokio::time::timeout(Duration::from_secs(60), async {
+            while !store.notice_committed(root, id).await.unwrap() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert!(committed.is_ok(), "committed after the resume");
+        assert_eq!(
+            agents.ask(notice(id)).await.unwrap(),
+            NoticeAdmission::Accepted,
+            "a resend after the commit"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        while let Ok(e) = rx.try_recv() {
+            assert!(
+                !matches!(&e, AgentEvent::TurnStarted { session, .. } if *session == root),
+                "one turn only: {e:?}"
+            );
+        }
         crate::communication::files::notices::clear(id);
     }
 

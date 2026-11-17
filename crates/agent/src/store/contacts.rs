@@ -498,6 +498,32 @@ impl Store {
         Ok(())
     }
 
+    /// 200 (199 D17 at consumption): we still give the contact of record `contact` full access
+    /// (every live record of its group reads 1, none blocked: D1's group rule on the records
+    /// staging reads), and `session` passes D5's row half. The session loop's re-check beside
+    /// `share_live`.
+    pub async fn full_access_notice_live(
+        &self,
+        session: SessionId,
+        contact: &str,
+    ) -> anyhow::Result<bool> {
+        let rows: Vec<(String, Option<i64>, Option<i64>)> = sqlx::query_as(
+            "SELECT id, full_access, blocked FROM contacts WHERE removed_ms IS NULL",
+        )
+        .fetch_all(&self.read)
+        .await?;
+        let mut group = false;
+        for (id, full_access, blocked) in rows {
+            if self.share_root_eq(&id, contact).await? {
+                if full_access != Some(1) || blocked.unwrap_or(0) != 0 {
+                    return Ok(false);
+                }
+                group = true;
+            }
+        }
+        Ok(group && self.full_access_row(session).await?)
+    }
+
     /// 191 (D3, S4): whose `session` is, strictly: this engine's when its row exists and reads
     /// here and this engine owns it; another machine's when the row names one; else unknown
     /// (no row, or an empty owner on a mesh engine), unlike [`super::Store`]'s `here`, which

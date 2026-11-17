@@ -152,6 +152,22 @@ impl Message<OwnedElsewhereForTest> for Agents {
     }
 }
 
+/// Tests (`test-support`): every store read `Store::set_read_delay` covers (`session`,
+/// `list_sessions`, `descendants`) takes this much longer (zero turns it off), so a
+/// dependent crate's test holds a member listing in flight.
+#[cfg(feature = "test-support")]
+#[derive(Clone, Copy, Debug)]
+pub struct ReadDelayForTest(pub Duration);
+
+#[cfg(feature = "test-support")]
+impl Message<ReadDelayForTest> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: ReadDelayForTest, _: &mut Context<Self, ()>) {
+        self.store.set_read_delay(m.0);
+    }
+}
+
 /// `ask` → `Result<SessionId, A2AError>` (183 §7.6): the capped inbox of (contact
 /// `binding`, `origin.export`), an agent export: created on the first send (an isolated
 /// root titled `<contact> · <export>`, recorded in `a2a_contexts`), reused after, and its
@@ -1717,10 +1733,19 @@ impl Agents {
                     if !full || ctx.is_empty() || ctx.len() > EXTERNAL_ID_MAX {
                         return Err(A2AError::invalid_params("unknown contextId"));
                     }
+                    // 200 (D2): an id another scope holds (the contact reused one conversation's
+                    // id for another session, or another principal has it) is refused as an
+                    // unknown one: never its chat, and nothing said of whose it is.
                     self.store
                         .create_a2a_context(scope, &ctx, p.session)
                         .await
-                        .map_err(internal)?;
+                        .map_err(|e| {
+                            if comm_error(&e) == Some(&CommError::Conflict) {
+                                A2AError::invalid_params("unknown contextId")
+                            } else {
+                                internal(e)
+                            }
+                        })?;
                 }
                 ctx
             }
