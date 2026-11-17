@@ -72,14 +72,21 @@ export function HeaderMenu({
   header,
   badge,
   children,
+  open: openProp,
+  onOpenChange,
 }: {
   /** The `<header>`: the panel hangs under it; its parent, the pane, bounds the panel. */
   header: RefObject<HTMLElement | null>
   /** A warning dot on the chevron (pending approvals live behind it when the bar is compact). */
   badge?: boolean
   children: ReactNode
+  /** Controlled open state (198: the native title pill opens the panel); uncontrolled when absent. */
+  open?: boolean
+  onOpenChange?(open: boolean): void
 }) {
-  const [open, setOpen] = useState(false)
+  const [own, setOwn] = useState(false)
+  const open = openProp ?? own
+  const setOpen = onOpenChange ?? setOwn
   const button = useRef<HTMLButtonElement>(null)
   // The header's box is the anchor. A virtual ref, not `PopoverTrigger`: Radix would register the trigger as anchor
   // first and drop it a render later, by which time that button node has been replaced (0 × 0 rect, panel at the
@@ -108,7 +115,7 @@ export function HeaderMenu({
         aria-label={open ? 'Hide header controls' : 'More header controls'}
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => setOpen(!open)}
       >
         <ChevronDown className={cn('size-5 transition-transform duration-200', open && 'rotate-180')} />
         {badge && <span className="absolute top-1.5 right-1.5 size-2 rounded-full bg-warning" />}

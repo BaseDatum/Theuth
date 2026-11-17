@@ -37,6 +37,7 @@ import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { freshness, on, useSessionField, useSessions } from '@/store/sessions'
 import { ContactAllowStrip } from '@/components/chat/ContactAllowStrip'
 import { KernelStrip } from '@/components/cells/KernelStrip'
+import { BAR, useNativeBar } from '@/lib/native-chrome'
 
 /** `seq`: a search hit's stored message seq (49 §7); anything but a safe non-negative integer is dropped.
  * `cell` (171 §14.3): `theuth://c/<session>?cell=<name|ordinal>` — the cell to scroll to and focus.
@@ -149,6 +150,8 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
   // 125 §8.2: the pill joins the strip's row only while an advisor exists, so the row stays absent when all is quiet.
   const advisorState = useAdvisor(session)?.state
   const advised = advisorState !== undefined && advisorState !== 'off'
+  // 198: the native glass bar stands in for the header and the transcript scrolls under it.
+  const under = useNativeBar(first)
 
   // ⇧⌘C / ⇧⌘; address the focused pane only.
   useEffect(() => {
@@ -179,17 +182,20 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
   // Keyed so refs/drafts reset per session; the keys must differ between siblings.
   return (
     <>
-      <Header session={session} first={first} onClose={split ? close : undefined} />
-      <LinkBanner />
-      <PrivateStrip session={session} />
-      <OrphansBanner session={session} />
-      <ResumeBanner session={session} />
-      {fromSearch && (
-        <div className="mx-auto flex w-full shrink-0 justify-end md:max-w-[768px] px-4">
-          <SearchReturn />
-        </div>
-      )}
-      <Transcript key={`t:${session}`} session={session} />
+      <Header session={session} first={first} onClose={split ? close : undefined} under={under} />
+      {/* 198: under the native bar these strips float just below it, over the transcript's top, instead of pushing it down. */}
+      <div className={under ? 'absolute inset-x-0 z-10 flex flex-col' : 'contents'} style={under ? { top: BAR } : undefined}>
+        <LinkBanner />
+        <PrivateStrip session={session} />
+        <OrphansBanner session={session} />
+        <ResumeBanner session={session} />
+        {fromSearch && (
+          <div className="mx-auto flex w-full shrink-0 justify-end md:max-w-[768px] px-4">
+            <SearchReturn />
+          </div>
+        )}
+      </div>
+      <Transcript key={`t:${session}`} session={session} under={under} />
       {lost && <UnreachableCard session={session} machine={lost} />}
       <SubagentStrip session={session} trailing={advised ? <AdvisorPill session={session} /> : undefined} />
       <BackgroundArea key={`d:${session}`} session={session} />

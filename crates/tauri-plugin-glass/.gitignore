@@ -1,0 +1,2 @@
+# tauri-plugin's build copies the tauri-api Swift package here on an iOS build.
+/.tauri
