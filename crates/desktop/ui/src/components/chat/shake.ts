@@ -71,28 +71,50 @@ export const CATEGORIES: readonly { kind: ContextKind; section: Section; name: s
   { kind: 'summary', section: 'conversation', name: 'Summary', color: 'var(--fg-primary)' },
 ]
 
-/** §1 group keys in display order with their names; a key the engine adds later sorts after these under its own name. */
-const GROUPS: Partial<Record<ContextKind, [string, string][]>> = {
-  image: [['screenshot', 'Screenshots'], ['attachment', 'Attachments'], ['tool', 'From tools'], ['summary', 'Summary images']],
-  surface: [['diagram', 'Diagrams in replies'], ['page', 'Pages'], ['app', 'Apps'], ['file', 'Files shown']],
-  note: [['knowledge', 'Knowledge hints'], ['todo', 'Todo snapshots'], ['time', 'Time stamps'], ['notice', 'Child, job and reminder notices']],
+/** §1 group keys in display order with their singular and plural nouns; a key the engine adds later sorts after these
+ * under its raw string. A group row and a review line show the capitalized noun, the category's breakdown line
+ * `N <noun>`, both agreeing with the group's count. */
+const GROUPS: Partial<Record<ContextKind, [key: string, one: string, many: string][]>> = {
+  image: [
+    ['screenshot', 'screenshot', 'screenshots'],
+    ['attachment', 'attachment', 'attachments'],
+    ['tool', 'from tools', 'from tools'],
+    ['summary', 'summary image', 'summary images'],
+  ],
+  surface: [
+    ['diagram', 'diagram in a reply', 'diagrams in replies'],
+    ['page', 'page', 'pages'],
+    ['app', 'app', 'apps'],
+    ['file', 'file shown', 'files shown'],
+  ],
+  note: [
+    ['knowledge', 'knowledge hint', 'knowledge hints'],
+    ['todo', 'todo snapshot', 'todo snapshots'],
+    ['time', 'time stamp', 'time stamps'],
+    ['notice', 'notice', 'notices'],
+  ],
 }
 
 /** Tool output shows its six largest tools by tokens; the rest fold into one group. */
 export const TOOL_GROUPS = 6
-export const OTHER_TOOLS = 'Other tools'
 
-export type Group = { id: string; name: string; items: ContextItem[]; keys: string[]; tokens: number }
+/** `name`: the row and review title; `noun`: the breakdown line's word after the count. */
+export type Group = { id: string; name: string; noun: string; items: ContextItem[]; keys: string[]; tokens: number }
 export type Category = (typeof CATEGORIES)[number] & { groups: Group[]; keys: string[]; tokens: number; count: number }
 
 const sum = (items: ContextItem[]) => items.reduce((s, i) => s + i.tokens, 0)
-const group = (kind: ContextKind, id: string, name: string, items: ContextItem[]): Group => ({
-  id: `${kind}/${id}`,
-  name,
-  items,
-  keys: items.map((i) => key(i.target)),
-  tokens: sum(items),
-})
+/** A group whose title is `name`, or the singular/plural noun pair agreeing with its item count. */
+const group = (kind: ContextKind, id: string, name: string | [one: string, many: string], items: ContextItem[]): Group => {
+  const noun = typeof name === 'string' ? name : items.length === 1 ? name[0] : name[1]
+  return {
+    id: `${kind}/${id}`,
+    name: typeof name === 'string' ? name : noun[0]!.toUpperCase() + noun.slice(1),
+    noun,
+    items,
+    keys: items.map((i) => key(i.target)),
+    tokens: sum(items),
+  }
+}
 
 /** The inventory by section → category → group, categories without items left out; items keep snapshot order. */
 export function catalog(items: ContextItem[]): Category[] {
@@ -117,7 +139,7 @@ export function catalog(items: ContextItem[]): Category[] {
       const ranked = [...found].map(([id, list]) => group(c.kind, id, id, list)).sort((a, b) => b.tokens - a.tokens)
       groups = ranked.slice(0, TOOL_GROUPS)
       const rest = new Set(ranked.slice(TOOL_GROUPS).flatMap((g) => g.items))
-      if (rest.size > 0) groups.push(group(c.kind, '', OTHER_TOOLS, items.filter((i) => rest.has(i))))
+      if (rest.size > 0) groups.push(group(c.kind, '', ['other tool', 'other tools'], items.filter((i) => rest.has(i))))
     } else {
       const named = GROUPS[c.kind] ?? []
       const rank = (id: string) => {
@@ -126,7 +148,10 @@ export function catalog(items: ContextItem[]): Category[] {
       }
       groups = [...found]
         .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
-        .map(([id, list]) => group(c.kind, id, named.find(([k]) => k === id)?.[1] ?? (named.length ? id : c.name), list))
+        .map(([id, list]) => {
+          const n = named.find(([k]) => k === id)
+          return group(c.kind, id, n ? [n[1], n[2]] : named.length ? id : c.name, list)
+        })
     }
     const keys = groups.flatMap((g) => g.keys)
     out.push({ ...c, groups, keys, tokens: sum(groups.flatMap((g) => g.items)), count: keys.length })

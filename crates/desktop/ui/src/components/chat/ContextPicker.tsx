@@ -377,7 +377,7 @@ export function Pick({
               <span className="size-2.5 rounded-[3px]" style={{ background: c.color }} />
               <span className="min-w-0">
                 <span className="block truncate font-medium">{c.name}</span>
-                {c.groups.length > 1 && <span className="block truncate text-xs text-fg-tertiary">{c.groups.map((g) => `${g.items.length} ${g.name.toLowerCase()}`).join(' · ')}</span>}
+                {c.groups.length > 1 && <span className="block truncate text-xs text-fg-tertiary">{c.groups.map((g) => `${g.items.length} ${g.noun}`).join(' · ')}</span>}
               </span>
               <Count keys={c.keys} selected={selected} />
               <Tokens value={c.tokens} max={max} color={c.color} />

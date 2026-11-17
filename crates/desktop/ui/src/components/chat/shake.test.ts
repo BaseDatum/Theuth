@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { ContextItem, ContextKind, ContextTarget } from '@/rpc/bindings/method.agent.output'
-import { OTHER_TOOLS, SHAKE_WORDS, catalog, expand, key, preselect, review, toggle, tokens, tri } from './shake'
+import { SHAKE_WORDS, catalog, expand, key, preselect, review, toggle, tokens, tri } from './shake'
 
 const m = (seq: number): ContextTarget => ({ kind: 'message', seq })
 const head = (epoch: number): ContextTarget => ({ kind: 'head', epoch })
@@ -67,10 +67,40 @@ test('kinds land in their section, categories in contract order, groups in their
     ['conversation', 'assistant'],
     ['conversation', 'summary'],
   ])
-  expect(cats[0]!.groups.map((g) => g.name)).toEqual(['Screenshots', 'Attachments', 'Summary images'])
-  expect(cats[1]!.groups.map((g) => g.name)).toEqual(['Diagrams in replies', 'Pages'])
-  expect(cats[2]!.groups.map((g) => g.name)).toEqual(['Knowledge hints', 'Time stamps'])
+  // One item each: singular titles.
+  expect(cats[0]!.groups.map((g) => g.name)).toEqual(['Screenshot', 'Attachment', 'Summary image'])
+  expect(cats[1]!.groups.map((g) => g.name)).toEqual(['Diagram in a reply', 'Page'])
+  expect(cats[2]!.groups.map((g) => g.name)).toEqual(['Knowledge hint', 'Time stamp'])
   expect(cats[5]!.groups.map((g) => g.name)).toEqual(['Your messages'])
+})
+
+test('group titles and breakdown nouns agree with a count of 1 and of 2', () => {
+  const groups = [
+    ['image', 'screenshot', 'screenshot', 'screenshots'],
+    ['image', 'attachment', 'attachment', 'attachments'],
+    ['image', 'summary', 'summary image', 'summary images'],
+    ['surface', 'diagram', 'diagram in a reply', 'diagrams in replies'],
+    ['surface', 'page', 'page', 'pages'],
+    ['surface', 'app', 'app', 'apps'],
+    ['surface', 'file', 'file shown', 'files shown'],
+    ['note', 'knowledge', 'knowledge hint', 'knowledge hints'],
+    ['note', 'todo', 'todo snapshot', 'todo snapshots'],
+    ['note', 'time', 'time stamp', 'time stamps'],
+    ['note', 'notice', 'notice', 'notices'],
+  ] as const
+  for (const n of [1, 2]) {
+    let seq = 0
+    const items = groups.flatMap(([kind, group]) => Array.from({ length: n }, () => item(m(seq++), kind, group)))
+    const got = catalog(items).flatMap((c) => c.groups.map((g) => [g.noun, g.name]))
+    expect(got).toEqual(groups.map(([, , one, many]) => {
+      const noun = n === 1 ? one : many
+      return [noun, noun[0]!.toUpperCase() + noun.slice(1)]
+    }))
+  }
+  // Other tools folds the seventh and later tools: one is "other tool".
+  const tools = Array.from({ length: 7 }, (_, i) => item(m(100 + i), 'tool', `t${i}`, 100 - i))
+  expect(catalog(tools)[0]!.groups.at(-1)).toMatchObject({ name: 'Other tool', noun: 'other tool' })
+  expect(catalog([...tools, item(m(200), 'tool', 't7', 1)])[0]!.groups.at(-1)).toMatchObject({ name: 'Other tools', noun: 'other tools' })
 })
 
 test('the legacy message kind is "Message" in Conversation; a kind the UI does not know shows its raw string', () => {
@@ -95,7 +125,7 @@ test('tool output keeps its six largest tools by tokens and folds the rest into 
     item(m(4), 'tool', 'x', 9000),
   ]
   const tools = catalog(items)[0]!
-  expect(tools.groups.map((g) => g.name)).toEqual(['x', 'h', 'g', 'f', 'e', 'd', OTHER_TOOLS])
+  expect(tools.groups.map((g) => g.name)).toEqual(['x', 'h', 'g', 'f', 'e', 'd', 'Other tools'])
   const other = tools.groups.at(-1)!
   expect(other.items.map((i) => i.target)).toEqual([m(1), m(2), m(10), m(3)])
   expect(other.tokens).toBe(10 + 20 + 100 + 5)
@@ -177,7 +207,7 @@ test('review: a line per category, per group when partly selected, companions ap
   expect(r.lines).toEqual([
     { label: 'All 4 · Images', tokens: 2900 },
     { label: 'Surfaces & diagrams › Diagrams in replies (1 of 2)', tokens: 300 },
-    { label: 'Surfaces & diagrams › Pages (all 1)', tokens: 6000 },
+    { label: 'Surfaces & diagrams › Page (all 1)', tokens: 6000 },
     // A partly selected single-group category stays one line.
     { label: '1 of 2 · Tool output', tokens: 700 },
     { label: '1 of 2 · Your messages', tokens: 60 },
