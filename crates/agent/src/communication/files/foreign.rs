@@ -76,6 +76,11 @@ pub fn release(notice: Uuid) {
     AUTHORITY.lock().remove(&notice);
 }
 
+/// Whether this process holds any foreign file's authority.
+pub fn registered() -> bool {
+    !AUTHORITY.lock().is_empty()
+}
+
 /// The holder's `contact` for `contact_file_notice` of notice `notice`: a foreign file's
 /// binding, marked [`ENDED`] unless its authority is live here; a contact's record id.
 pub fn notice_contact(contact: &str, notice: Uuid) -> String {
@@ -85,10 +90,13 @@ pub fn notice_contact(contact: &str, notice: Uuid) -> String {
     }
 }
 
-/// D17's share re-check on the chat's owner of notice `notice` from `contact` (as the
-/// holder sent it) into `session`: a holder's [`ENDED`] mark ends it; a foreign file whose
-/// authority this engine holds needs it live (a live binding alone may reach other
-/// sessions); otherwise [`Store::share_live`] (for a foreign file: its binding).
+/// D17's share re-check on the chat's owner when it ADMITS notice `notice` from `contact`
+/// (as the holder sent it, a moment ago) into `session`: a holder's [`ENDED`] mark ends
+/// it; a foreign file whose authority this engine holds needs it live; an unmarked one
+/// held elsewhere stands on its holder's word (it judged the authority as it sent); then
+/// [`Store::share_live`] (for a foreign file: its binding). Runs inside the supervisor's
+/// mailbox, so it never waits on another engine; consumption asks the holder again
+/// ([`consumption_live`]).
 ///
 /// # Errors
 /// The store's.
@@ -102,6 +110,111 @@ pub async fn share_live(
         return Ok(false);
     }
     store.share_live(session, contact).await
+}
+
+/// SEC-P3 (round 3): the same re-check when the chat's owner CONSUMES notice `notice`
+/// (text `text`): a foreign file's authority is judged where it is held, now. Held here:
+/// the local entry. Held elsewhere: its holder (the `holder`/`file` the notice names, which
+/// must give `notice` again) is asked within [`ASK_HOLDER`]; ended, unknown, unreachable or
+/// late all end it (fail closed, never the binding alone). A contact's notice is
+/// [`Store::share_live`].
+///
+/// # Errors
+/// The store's.
+pub async fn consumption_live(
+    store: &Store,
+    rt: &runtime::Runtime,
+    session: &str,
+    contact: &str,
+    notice: Uuid,
+    text: &str,
+) -> anyhow::Result<bool> {
+    if contact.starts_with(ENDED) {
+        return Ok(false);
+    }
+    if !is_foreign(contact) {
+        return store.share_live(session, contact).await;
+    }
+    let live = match standing(notice) {
+        Some(live) => live,
+        None => match named_file(text) {
+            Some((holder, id)) if notice_id(&holder, &id) == notice => {
+                let asker = holder_authority(rt);
+                let ask = asker.live(&holder, &id);
+                match tokio::time::timeout(ASK_HOLDER, ask).await {
+                    Ok(Ok(live)) => live,
+                    Ok(Err(e)) => {
+                        tracing::info!(%notice, "199: holder authority: {e}");
+                        false
+                    }
+                    Err(_) => false,
+                }
+            }
+            _ => false,
+        },
+    };
+    Ok(live && store.share_live(session, contact).await?)
+}
+
+/// `(holder, file)` of a notice's element (engine-written, attribute-escaped hex).
+fn named_file(text: &str) -> Option<(String, String)> {
+    let attr = |name: &str| {
+        let start = text.find(&format!(" {name}=\""))? + name.len() + 3;
+        let end = start + text[start..].find('"')?;
+        Some(text[start..end].to_owned())
+    };
+    Some((attr("holder")?, attr("file")?))
+}
+
+/// How long the chat's owner waits for a foreign file's holder at consumption.
+pub const ASK_HOLDER: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// SEC-P3 (round 3): how the chat's owner asks a foreign file's holder (another engine of
+/// the mesh) whether the file's authority still lives.
+#[async_trait::async_trait]
+pub trait HolderAuthority: Send + Sync {
+    /// `contact_file_authority(holder, id)` on `holder`.
+    async fn live(&self, holder: &str, id: &str) -> Result<bool, String>;
+}
+
+/// Production: `contact_file_authority` over `theuth/rpc/1` to the holder.
+pub struct RpcHolder;
+
+#[async_trait::async_trait]
+impl HolderAuthority for RpcHolder {
+    async fn live(&self, holder: &str, id: &str) -> Result<bool, String> {
+        let ext = jsonrpsee::Extensions::new();
+        let peer = replica::PeerId(holder.to_owned());
+        let call = crate::rpc_forward::to_peer_within(
+            &ext,
+            &peer,
+            "contact_file_authority",
+            (holder, id),
+            ASK_HOLDER,
+        );
+        match call.await {
+            Ok(Some(live)) => Ok(live),
+            Ok(None) => Err(format!("{holder} is not connected")),
+            Err(e) => Err(e.message().to_owned()),
+        }
+    }
+}
+
+/// Replace `rt`'s engine's way of asking holders (tests).
+pub fn set_holder_authority(rt: &runtime::Runtime, ask: std::sync::Arc<dyn HolderAuthority>) {
+    super::Slot::of(rt).set(ask);
+}
+
+fn holder_authority(rt: &runtime::Runtime) -> std::sync::Arc<dyn HolderAuthority> {
+    super::Slot::<dyn HolderAuthority>::of(rt)
+        .get()
+        .unwrap_or_else(|| std::sync::Arc::new(RpcHolder))
+}
+
+/// The holder's answer to `contact_file_authority` for its own file `id`: its authority
+/// is live here.
+pub fn held_live(store: &Store, id: &str) -> bool {
+    authority(notice_id(store.engine(), id)).is_some()
 }
 
 /// BLAKE3 of `bytes`, lowercase hex.
@@ -1112,6 +1225,39 @@ mod queue {
             rig.svc.tick().await.unwrap();
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        assert!(!AUTHORITY.lock().contains_key(&notice), "released");
+        assert!(rig.row(&id).await.notice.is_none());
+    }
+
+    /// Round 3 (SHOULD): a foreign file that failed while its message was still unread (a
+    /// refused address) waits for its exchange; when the exchange then fails, no notice will
+    /// ever come, and the file's authority is released.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_file_failed_before_its_exchange_failed_releases_its_authority() {
+        let rig = rig(None, Duration::from_secs(5)).await;
+        let ex = rig
+            .accepted(&[Part::url("https://127.0.0.1:1/refused.bin")])
+            .await;
+        let id = rig.svc.store.exchange_files(&ex.to_string()).await.unwrap()[0]
+            .id
+            .clone();
+        let notice = notice_id(rig.svc.store.engine(), &id);
+        let until = Instant::now() + Duration::from_secs(5);
+        while rig.row(&id).await.state != "failed" {
+            assert!(Instant::now() < until, "never failed");
+            rig.svc.tick().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            AUTHORITY.lock().contains_key(&notice),
+            "its notice may still come"
+        );
+        rig.svc
+            .store
+            .fail_exchange(ex, crate::communication::network::HOLD_MOVED)
+            .await
+            .unwrap();
+        rig.svc.tick().await.unwrap();
         assert!(!AUTHORITY.lock().contains_key(&notice), "released");
         assert!(rig.row(&id).await.notice.is_none());
     }

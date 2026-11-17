@@ -572,6 +572,18 @@ impl Store {
         Ok(out)
     }
 
+    /// 199-E3: foreign `in` files that failed before their exchange ended without being
+    /// read (States: such a file never gets a notice), by id.
+    pub async fn foreign_files_noticeless(&self) -> anyhow::Result<Vec<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT f.id FROM contact_files f JOIN peer_exchanges e ON e.id = f.exchange \
+             WHERE f.direction = 'in' AND f.contact_id LIKE 'peer:%' AND f.state = 'failed' \
+             AND f.notice IS NULL AND e.state IN ('failed', 'suppressed', 'unknown')",
+        )
+        .fetch_all(&self.read)
+        .await?)
+    }
+
     /// Rows still moving bytes past their deadline at `now_ms`, not in `skip`: queued or
     /// receiving downloads and unsettled offers. A file already on disk (`publishing`,
     /// `saved`) only waits for its exchange.

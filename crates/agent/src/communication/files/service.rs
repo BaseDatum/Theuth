@@ -283,6 +283,14 @@ impl FileService {
                 (Settled::Failed, _) => self.drop_clone(&row),
             }
         }
+        // Round 3: a foreign file that failed before its exchange ended unread never gets a
+        // notice either; its authority goes. ponytail: re-scanned each pass while any
+        // authority is held; mark released rows if the table grows large.
+        if foreign::registered() {
+            for id in self.store.foreign_files_noticeless().await? {
+                foreign::release(notice_id(self.store.engine(), &id));
+            }
+        }
         for row in self.store.expired_files(now_ms(), &skip).await? {
             self.expire(&r, row).await?;
         }

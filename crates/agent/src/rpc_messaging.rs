@@ -141,6 +141,11 @@ pub trait AgentMessagingApi {
         session: SessionId,
         notice_id: Uuid,
     ) -> RpcResult<NoticeStatus>;
+    /// 199-E3 (internal: a paired machine's forwarded call): whether the foreign file `id`
+    /// held by `holder` still has the authority (grant) it arrived under; the chat's owner
+    /// asks before it gives the file's notice to the agent. `false` for an unknown file.
+    #[method(name = "contact_file_authority", with_extensions)]
+    async fn contact_file_authority(&self, holder: String, id: String) -> RpcResult<bool>;
 }
 
 #[async_trait]
@@ -447,6 +452,25 @@ impl AgentMessagingApiServer for Server {
             return Ok(r);
         }
         notices::status(session, notice_id).await
+    }
+
+    // 199-E3 (SEC-P3): internal only, answered by the holder from its own authority.
+    async fn contact_file_authority(
+        &self,
+        ext: &Extensions,
+        holder: String,
+        id: String,
+    ) -> RpcResult<bool> {
+        if ext.get::<forward::Forwarded>().is_none() {
+            return Err(rpc_core::failed(
+                "contact_file_authority is internal: only a paired machine calls it",
+            ));
+        }
+        let store = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+        if holder != store.engine() {
+            return Err(rpc_core::failed(format!("not the holder of {id}")));
+        }
+        Ok(files::foreign::held_live(&store, &id))
     }
 }
 

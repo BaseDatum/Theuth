@@ -120297,6 +120297,40 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "contact_file_authority",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "holder",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "boolean"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "boolean"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "contact_file_export",
       "paramStructure": "by-position",
       "params": [
