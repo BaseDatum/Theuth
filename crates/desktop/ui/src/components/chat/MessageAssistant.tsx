@@ -1,10 +1,10 @@
 import { code } from '@streamdown/code'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Check, Copy, FilePlus, GitFork, type LucideIcon, RefreshCw, Square, StickyNote, Trash2, Volume2 } from 'lucide-react'
-import { type ComponentProps, memo, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Check, Copy, FilePlus, GitFork, type LucideIcon, RefreshCw, Square, StickyNote, Trash2, Volume2, X } from 'lucide-react'
+import { type ComponentProps, type ComponentType, memo, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { type Components, type PluginConfig, Streamdown, defaultRehypePlugins } from 'streamdown'
+import { type Components, type CustomRendererProps, type PluginConfig, Streamdown, defaultRehypePlugins } from 'streamdown'
 import type { PluggableList } from 'unified'
 import { useNotebookChat, type NotebookChat } from '@/components/notebooks/NotebookContext'
 import { Button } from '@/components/ui/button'
@@ -23,6 +23,7 @@ import { CitationLink, CitationsProvider, References } from './Citations'
 import { openContextPicker } from './ContextPicker'
 import { MermaidFence } from './Mermaid'
 import { Reserve } from './Reserve'
+import { RemovedFence, ShakeFenceContext, pieceOf, shakeFences } from './ShakeFence'
 import { FenceContext, JsonRenderFence } from './surface/JsonRenderFence'
 import { OpenUIFence } from './surface/OpenUIFence'
 import { MarkdownTd } from './surface/registry'
@@ -42,8 +43,36 @@ export const plugins: PluginConfig = {
     { language: 'openui', component: OpenUIFence },
   ],
 }
-/** 171 §4.1: assistant replies only add `CellFence` for shell and python fences; every other surface keeps `plugins`. */
-const assistantPlugins: PluginConfig = { ...plugins, renderers: [...(plugins.renderers ?? []), { language: CELL_LANGUAGES, component: CellFence }] }
+/** 171 §4.1: assistant replies only add `CellFence` for shell and python fences; every other surface keeps `plugins`.
+ * 197 §8: a reply's surface fences also carry their removal control (`shakeable`). */
+const assistantPlugins: PluginConfig = {
+  ...plugins,
+  renderers: [...(plugins.renderers ?? []).map((r) => ({ ...r, component: shakeable(r.component) })), { language: CELL_LANGUAGES, component: CellFence }],
+}
+
+/** `Inner` with its corner `Remove from context` or, once removed, the collapsed marker (197 §8); a reply without
+ * matching fence metadata (`ShakeFenceContext` null) renders `Inner` alone. */
+function shakeable(Inner: ComponentType<CustomRendererProps>): ComponentType<CustomRendererProps> {
+  return function ShakeableFence(props: CustomRendererProps) {
+    const ctx = useContext(ShakeFenceContext)
+    const piece = ctx && !props.isIncomplete ? pieceOf(ctx, props.language, props.code) : null
+    if (!ctx || !piece) return <Inner {...props} />
+    if (piece.removed) return <RemovedFence piece={piece} index={ctx.pieces.indexOf(piece)} inner={<Inner {...props} />} />
+    return (
+      <div className="group/fence relative">
+        <Inner {...props} />
+        <RemoveButton
+          session={ctx.session}
+          target={piece.target}
+          active={ctx.active}
+          icon={X}
+          label={`Remove from context: ${piece.label}`}
+          className="absolute right-0 bottom-0 rounded-xl text-fg-primary opacity-0 transition-opacity group-hover/fence:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 [&_svg]:size-6 [&_svg]:rounded-full [&_svg]:bg-layer-1/90 [&_svg]:p-1 [&_svg]:shadow-sm"
+        />
+      </div>
+    )
+  }
+}
 /** 135 §2: a markdown image has no intrinsic size until it loads; `Reserve` holds its last height meanwhile. */
 function Img({ node: _node, src, alt, ...rest }: ComponentProps<'img'> & { node?: unknown }) {
   const { entry } = useContext(FenceContext)
@@ -310,6 +339,11 @@ export const MessageAssistant = memo(function MessageAssistant({
     () => ({ running, hasLaterAssistant, session: readOnly ? undefined : session, entry: id }),
     [running, hasLaterAssistant, readOnly, session, id],
   )
+  // 197 §8: the stored row's fences, offered only once settled and when their count matches the fences in `text`.
+  const shake = useMemo(
+    () => (readOnly || open || !context || context.removed ? null : shakeFences(session, context.active, text, context.fences)),
+    [readOnly, open, context, session, text],
+  )
   // 171 §3.4: a chat cell is `(session, stored message seq, ordinal)`; `turnRunning` holds cells of the reply whose turn runs.
   const turnSeq = useSessionField(session, 'turnSeq')
   const stored = context?.target.kind === 'message' ? String(context.target.seq) : null
@@ -341,17 +375,19 @@ export const MessageAssistant = memo(function MessageAssistant({
         <FenceContext value={fence}>
           <FenceText value={text}>
             <CellOrdinals value={ordinals}>
-              <Streamdown
-                mode={mode}
-                isAnimating={open}
-                plugins={assistantPlugins}
-                rehypePlugins={rehypePlugins}
-                components={markdownComponents}
-                shikiTheme={shikiTheme}
-                className="[&_h1]:mb-2 [&_h1]:text-2xl [&_h1]:leading-8 [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold [&_p]:my-1 [&_p]:leading-[26px] [&_li]:pt-3 [&_li]:leading-[26px] [&_a]:underline [&_a]:underline-offset-2 [&_pre]:rounded-2xl [&_table]:w-max [&_table]:min-w-full [&_table_th]:font-semibold [&_table_th]:wrap-normal"
-              >
-                {text}
-              </Streamdown>
+              <ShakeFenceContext value={shake}>
+                <Streamdown
+                  mode={mode}
+                  isAnimating={open}
+                  plugins={assistantPlugins}
+                  rehypePlugins={rehypePlugins}
+                  components={markdownComponents}
+                  shikiTheme={shikiTheme}
+                  className="[&_h1]:mb-2 [&_h1]:text-2xl [&_h1]:leading-8 [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold [&_p]:my-1 [&_p]:leading-[26px] [&_li]:pt-3 [&_li]:leading-[26px] [&_a]:underline [&_a]:underline-offset-2 [&_pre]:rounded-2xl [&_table]:w-max [&_table]:min-w-full [&_table_th]:font-semibold [&_table_th]:wrap-normal"
+                >
+                  {text}
+                </Streamdown>
+              </ShakeFenceContext>
             </CellOrdinals>
           </FenceText>
         </FenceContext>

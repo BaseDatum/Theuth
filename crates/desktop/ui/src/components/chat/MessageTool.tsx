@@ -7,7 +7,7 @@ import { toolDiff } from '@/lib/editDiff'
 import { DiffStats, DiffView } from './DiffView'
 import { cn } from '@/lib/utils'
 import { type Entry, useSessions } from '@/store/sessions'
-import { ArtifactCard, Progress } from './ArtifactCard'
+import { ArtifactCard, Progress, SourceControl } from './ArtifactCard'
 import { AnsweredAskCard, askQuestions } from './AskCard'
 import { BoardCard, isBoardCreate } from './BoardCard'
 import { ScrapeCard } from './ScrapeCard'
@@ -89,7 +89,7 @@ export const MessageTool = memo(function MessageTool({ tool, session, readOnly }
   if (roster.length > 0) return <RosterCard tool={tool} rows={roster} />
   const card =
     tool.name === 'show' || tool.name === 'app' || tool.name === 'task_draft' || tool.name === 'agent_draft' || tool.name === 'routine_draft' || tool.name === 'autoresearch_draft' ? (
-      <ArtifactCard tool={tool} session={session} />
+      <ArtifactCard tool={tool} session={session} readOnly={readOnly} />
     ) : tool.name === 'crawl' || tool.name === 'map_site' || tool.name === 'scrape_url' || tool.name === 'search_web' ? (
       <ScrapeCard tool={tool} session={session} />
     ) : tool.name === 'remind_me_in' ? (
@@ -116,8 +116,8 @@ function PlainTool({ tool, session, readOnly }: { tool: Tool; session: string; r
   const running = !tool.interrupted && (tool.pending || !result)
   const edit = useMemo(() => toolDiff(tool.name, tool.args, result), [tool.name, tool.args, result])
   const expandable = !!(source || edit || result || tool.job)
-  return (
-    <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
+  // 197 §5.1: a `page_preview` card carries its call's source piece; its header keeps the control beside the fold button.
+  const header = (
       <button
         type="button"
         className="flex w-full min-w-0 flex-col gap-1 text-left"
@@ -150,6 +150,18 @@ function PlainTool({ tool, session, readOnly }: { tool: Tool; session: string; r
           </div>
         )}
       </button>
+  )
+  return (
+    <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
+      {tool.name === 'page_preview' ? (
+        // Below `sm` the tag or control wraps under the header, so the argument and result lines keep the card's width.
+        <div className="flex min-w-0 flex-col items-start gap-2 sm:flex-row max-sm:[&>:last-child]:my-0 max-sm:[&>:last-child]:ml-0">
+          {header}
+          <SourceControl tool={tool} session={session} readOnly={readOnly} />
+        </div>
+      ) : (
+        header
+      )}
       {expanded && !tool.job && source && !edit && <Source code={source.code} language={source.language} />}
       {expanded && !tool.job && edit && <DiffView model={edit} disclosure={toolKey(tool.callId)} />}
       {expanded && !tool.job && result && (!edit || result.isError) && (

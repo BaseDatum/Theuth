@@ -18,7 +18,8 @@ import { active } from '@/store/engine-scope'
 import { useSessions } from '@/store/sessions'
 import { EMPTY, openDraftSession, useDrafts, useSkillDraft } from '@/lib/drafts'
 import { notebookKeys } from '@/lib/notebooks-rpc'
-import { openContextPicker, type ShakeCategory } from './ContextPicker'
+import { openContextPicker } from './ContextPicker'
+import { SHAKE_USAGE, SHAKE_WORDS } from './shake'
 import { openBroadcastDialog } from './BroadcastDialog'
 import { useToolsSheet } from './tools-sheet'
 
@@ -142,8 +143,8 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
   { name: '/regen', hint: '', desc: 'regenerate the reply to the last turn' },
   {
     name: '/shake',
-    hint: '[images|documents|messages|tools|summary]',
-    desc: 'remove exact messages/attachments from the active context (picker)',
+    hint: `[${SHAKE_WORDS.join('|')}]`,
+    desc: 'remove context by category, group or item (picker)',
   },
   {
     name: '/fork',
@@ -277,7 +278,6 @@ function providersChanged() {
 
 const STYLES: readonly CompactStyle[] = ['summary', 'cut', 'snap', 'clear']
 const style = (s: string) => STYLES.find((x) => x === s)
-const CATEGORIES: readonly ShakeCategory[] = ['images', 'documents', 'messages', 'tools', 'summary']
 
 const need = (session: string | null): string => {
   if (!session) throw new Error('no session')
@@ -736,13 +736,13 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       })
       return
     }
-    // Literal categories only (48 §2.1): an unknown word is usage, never a skill or chat input.
+    // Literal categories only (48 §2.1, 197 §7): an unknown word is usage, never a skill or chat input.
     case '/shake': {
       const id = need(session)
       if (!arg) return openContextPicker(id)
-      const c = CATEGORIES.find((x) => x === arg)
-      if (!c) throw new Error('usage: /shake [images|documents|messages|tools|summary]')
-      return openContextPicker(id, c)
+      const w = SHAKE_WORDS.find((x) => x === arg)
+      if (!w) throw new Error(SHAKE_USAGE)
+      return openContextPicker(id, w)
     }
     case '/fork': {
       const nid = await api.fork_session(need(session), null, null)

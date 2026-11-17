@@ -50,8 +50,8 @@ use crate::communication::{
 use crate::CostService;
 use crate::acp_child::{AcpChild, CancelObserved};
 use crate::context::{
-    ContextBreakdown, ContextEntry, ContextHistory, ContextOwner, ContextRemoval, ContextSnapshot,
-    ContextTarget, save_blob,
+    ContextBreakdown, ContextEntry, ContextHistory, ContextOwner, ContextPiece, ContextRemoval,
+    ContextSnapshot, ContextTarget, save_blob,
 };
 use crate::continuation::{
     DecideYield, InputConsumed, InputDropped, InputOrigin, InputTicket, Ledger, SessionUnknown,
@@ -11067,7 +11067,8 @@ pub(crate) fn render_with(
 ) -> Vec<(i64, HistoryEntry)> {
     let mut out = Vec::new();
     // ponytail: linear scan; one round's calls, never more than a handful.
-    let mut pending: Vec<(i64, &genai::chat::ToolCall)> = Vec::new();
+    // (call row seq, call part index, call)
+    let mut pending: Vec<(i64, u32, &genai::chat::ToolCall)> = Vec::new();
     let mut current_turn: Option<i64> = None;
     // 52 §6: a typed vision note neither opens a turn nor hides the next
     // real user message's handle; the store decides from the metadata.
@@ -11132,11 +11133,19 @@ pub(crate) fn render_with(
                         HistoryEntry::Assistant {
                             text,
                             turn: current_turn,
-                            context: context.cloned(),
+                            // 197 §5.1: sources ride on the cards, fences here.
+                            context: context.map(|c| ContextEntry {
+                                sources: Vec::new(),
+                                ..c.clone()
+                            }),
                         },
                     ));
                 }
-                pending.extend(m.content.tool_calls().into_iter().map(|c| (*seq, c)));
+                pending.extend(
+                    m.content.iter().enumerate().filter_map(|(i, p)| {
+                        Some((*seq, u32::try_from(i).ok()?, p.as_tool_call()?))
+                    }),
+                );
             }
             ChatRole::Tool => {
                 let responses = m
@@ -11147,11 +11156,24 @@ pub(crate) fn render_with(
                 for (part, r) in responses {
                     let call = pending
                         .iter()
-                        .position(|(_, c)| c.call_id == r.call_id)
-                        .map(|i| pending.remove(i).1);
-                    let (name, args) = call.map_or(("?", &serde_json::Value::Null), |c| {
+                        .position(|(_, _, c)| c.call_id == r.call_id)
+                        .map(|i| pending.remove(i));
+                    let (name, args) = call.map_or(("?", &serde_json::Value::Null), |(_, _, c)| {
                         (c.fn_name.as_str(), &c.fn_arguments)
                     });
+                    // 197 §5/§8: a `show`/`app`/`page_preview` card's source
+                    // piece lives on its call row, which renders no entry of
+                    // its own; the card carries it.
+                    let sources: Vec<ContextPiece> = call
+                        .and_then(|(s, at, _)| Some((entries.get(&s)?, at)))
+                        .map(|(e, at)| {
+                            e.sources
+                                .iter()
+                                .filter(|p| matches!(p.target, ContextTarget::Source { part, .. } if part == at))
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     // 23 §5: same `[image: …]` lines the live `ToolCallFinished` showed;
                     // a part named by full path is a file the tool produced.
                     let mut text = r.content.clone();
@@ -11176,6 +11198,7 @@ pub(crate) fn render_with(
                             })
                             .cloned()
                             .collect(),
+                        sources,
                         ..c.clone()
                     });
                     out.push((
@@ -11194,7 +11217,7 @@ pub(crate) fn render_with(
             ChatRole::System => {}
         }
     }
-    out.extend(pending.into_iter().map(|(seq, c)| {
+    out.extend(pending.into_iter().map(|(seq, _, c)| {
         (
             seq,
             HistoryEntry::Tool {
@@ -13278,6 +13301,8 @@ pub(crate) mod tests {
                     observations: Vec::new(),
                 }),
                 at: None,
+                fences: Vec::new(),
+                sources: Vec::new(),
             },
         );
         let turns: Vec<Option<i64>> = render(&messages, &entries, &BTreeMap::new())
@@ -13333,6 +13358,108 @@ pub(crate) mod tests {
         ));
     }
 
+    /// 197 §5.1: each show/app/page_preview card carries its own call's
+    /// source piece, whether the call sits in a calls-only row or beside text;
+    /// the reply keeps its fences and no sources; a pending card has no context.
+    #[test]
+    fn render_puts_each_call_source_on_its_card() {
+        use genai::chat::{ContentPart, MessageContent, ToolCall, ToolResponse};
+        let call = |id: &str, name: &str, args: serde_json::Value| {
+            ContentPart::ToolCall(ToolCall {
+                thought_signatures: None,
+                call_id: id.into(),
+                fn_name: name.into(),
+                fn_arguments: args,
+            })
+        };
+        let assistant = |parts| ChatMessage::assistant(MessageContent::from_parts(parts));
+        let messages = vec![
+            (0, ChatMessage::user("go")),
+            (
+                1,
+                assistant(vec![call(
+                    "s1",
+                    "show",
+                    serde_json::json!({"name": "mock.html", "content": "<p>x</p>"}),
+                )]),
+            ),
+            (2, ChatMessage::from(vec![ToolResponse::new("s1", "shown")])),
+            (
+                3,
+                assistant(vec![
+                    ContentPart::Text("Here:\n```mermaid\ngraph TD\n```\n".into()),
+                    call(
+                        "a1",
+                        "app",
+                        serde_json::json!({"name": "counter", "source": "root = Stack([])"}),
+                    ),
+                    call("x1", "shell", serde_json::json!({"command": "ls"})),
+                ]),
+            ),
+            (
+                4,
+                ChatMessage::from(vec![
+                    ToolResponse::new("a1", "ok"),
+                    ToolResponse::new("x1", "ok"),
+                ]),
+            ),
+            (
+                5,
+                assistant(vec![call(
+                    "s9",
+                    "show",
+                    serde_json::json!({"name": "b.md", "content": "b"}),
+                )]),
+            ),
+        ];
+        let entries: BTreeMap<i64, ContextEntry> = messages
+            .iter()
+            .map(|(seq, m)| {
+                let owner = ContextOwner::Message { seq: *seq };
+                (
+                    *seq,
+                    crate::context::entry(
+                        owner,
+                        m,
+                        &crate::context::Mask::default(),
+                        true,
+                        Vec::new(),
+                    ),
+                )
+            })
+            .collect();
+        let got = render(&messages, &entries, &BTreeMap::new());
+        let card = |id: &str| {
+            got.iter()
+                .find_map(|(_, e)| match e {
+                    HistoryEntry::Tool {
+                        call_id, context, ..
+                    } if call_id == id => Some(context.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let source = |seq, part| ContextTarget::Source {
+            owner: ContextOwner::Message { seq },
+            part,
+        };
+        let targets = |c: Option<ContextEntry>| -> Vec<ContextTarget> {
+            c.unwrap().sources.iter().map(|p| p.target).collect()
+        };
+        assert_eq!(targets(card("s1")), [source(1, 0)], "calls-only row");
+        assert_eq!(targets(card("a1")), [source(3, 1)], "text-plus-calls row");
+        assert!(targets(card("x1")).is_empty(), "a shell card has no source");
+        assert!(card("s9").is_none(), "a pending card keeps no context");
+        let reply = got
+            .iter()
+            .find_map(|(_, e)| match e {
+                HistoryEntry::Assistant { context, .. } => context.clone(),
+                _ => None,
+            })
+            .unwrap();
+        assert!(reply.sources.is_empty() && reply.fences.len() == 1);
+    }
+
     /// Two responses in one stored Tool row become two cards that share the
     /// row's target (48 §3.3) but each lists only its own response's images,
     /// addressed by original part/image index; a call still running has none.
@@ -13376,6 +13503,29 @@ pub(crate) mod tests {
             removed: false,
         };
         let mut entries = BTreeMap::new();
+        // 197: the calls-only row renders no entry; c2's source piece rides on its card.
+        let piece = ContextPiece {
+            target: ContextTarget::Source {
+                owner: ContextOwner::Message { seq: 0 },
+                part: 1,
+            },
+            label: "mock.html".into(),
+            removed: true,
+        };
+        entries.insert(
+            0,
+            ContextEntry {
+                target: ContextTarget::Message { seq: 0 },
+                active: true,
+                removed: false,
+                remove_with: vec![ContextTarget::Message { seq: 1 }],
+                attachments: Vec::new(),
+                vision: None,
+                at: None,
+                fences: Vec::new(),
+                sources: vec![piece.clone()],
+            },
+        );
         entries.insert(
             1,
             ContextEntry {
@@ -13386,6 +13536,8 @@ pub(crate) mod tests {
                 attachments: vec![attachment(0, "a.png"), attachment(1, "b.png")],
                 vision: None,
                 at: None,
+                fences: Vec::new(),
+                sources: Vec::new(),
             },
         );
         let got = render(&messages, &entries, &BTreeMap::new());
@@ -13400,6 +13552,7 @@ pub(crate) mod tests {
             assert_eq!(c.attachments.len(), 1);
             assert_eq!(c.attachments[0].name, name);
             assert_eq!(c.attachments[0].target, binary(i as u32, 0));
+            assert_eq!(c.sources, if i == 1 { vec![piece.clone()] } else { vec![] });
         }
         assert!(
             matches!(&got[2].1, HistoryEntry::Tool { call_id, result: None, .. } if call_id == "c3")
@@ -13466,6 +13619,8 @@ pub(crate) mod tests {
                 attachments,
                 vision: None,
                 at: None,
+                fences: Vec::new(),
+                sources: Vec::new(),
             })
         };
         let mut history = vec![
