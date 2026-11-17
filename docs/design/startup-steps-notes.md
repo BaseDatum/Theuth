@@ -59,10 +59,12 @@ Branch `feat/startup-matches-shutdown`, cut from `887e5f5f3`.
 - Quit snapshot recorded on the base code first (commit `ac10fa931`, before any refactor), then passed unchanged after
   the refactor (vitest runs with `CI=true`, so a mismatch fails instead of rewriting).
 - `bunx tsc -b --noEmit`: baseline 0 `error TS`, after 0 `error TS`.
-- `bunx vitest run src/components/launch/ src/lib/quit-progress.test.ts src/lib/no-emoji.test.ts`: 4 files, 31 tests
+- `bunx vitest run src/components/launch/ src/lib/quit-progress.test.ts src/lib/no-emoji.test.ts src/components/disclosure.test.ts`
+  (gate corrected to add the disclosure ratchet): 5 files, 61 tests passed.
+- Full suite at the end (`BUILD_SLOTS=1 … bunx vitest run src`, per the gate correction): 359 files, 2528 tests passed,
+  0 failed (`/tmp/startup-steps/vitest-full.txt`).
+- Earlier, one accidental full run on the base code (`vitest run -u <file>` took the path as `-u`'s argument): 2508
   passed.
-- Mistake on my side: one accidental full vitest run. `vitest run -u <file>` took the path as `-u`'s argument. It ran
-  the whole suite on the base code: 2508 passed. After that I used `--update` after the path.
 
 ## Proof
 
