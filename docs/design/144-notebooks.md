@@ -809,7 +809,7 @@ notebooks:
   ask_max_branches: 5
   ask_hits_per_branch: 10
   ask_context_tokens: 40000       # 157 D8: all branches' passages together, split by branch count
-  audio_voices: [peter_yearsley]   # W3; a second name once the checkpoint ships one
+  audio_voices: [peter_yearsley, alba]   # W3; alba (Kyutai, female) since the english_2026-10 checkpoint (2026-11-17)
 ```
 
 Section `notebooks`, read by the document plugin (`rt.section::<NotebooksConfig>("notebooks")`, the `voice` pattern,
