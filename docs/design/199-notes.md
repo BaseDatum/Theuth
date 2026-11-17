@@ -88,8 +88,8 @@ Branch `feat/199-uid`, from the fold `c5d0895af`. Only `crates/desktop/ui/src`; 
 4. **The answer's `files` parameter is not in the contract.** `answer_peer_request` is `(session, reply_to, text)` in the frozen bindings; only a `// 199-E1` comment promises `files`. `answerPeer` sends `(session, reply_to, text, files)` as a 4th positional param through one cast, only when files were picked, so today's engines are unaffected. E1 must add it as an optional trailing `files: Option<Vec<PathBuf>>` (or tell UID the shape).
 5. **`PeerDelivered` without `files`** (an engine from before 199) is tolerated (`?? []`), though the bindings mark it required.
 
-### Contract changes after C (UID)
-None. Expected from E1: `answer_peer_request(session, reply_to, text, files?)` (deviation 4); once its bindings are regenerated, `answerPeer`'s cast can go.
+### Contract changes after C (199-UID)
+- **`answer_peer_request(session, reply_to, text, files)`** (decided by the orchestrator, 2026-11-17): `files` is an optional 4th positional parameter, Rust `files: Option<Vec<PathBuf>>`, wire `string[]` of absolute paths, sent only when non-empty, so older callers and engines are unchanged. E1b implements it in Rust and regenerates the bindings; UID changed neither. Until then the desktop passes it through the one typed cast in `ContactFiles.tsx` `answerPeer` (deviation 4); drop the cast once the regenerated `Api` has the parameter.
 
 ### Gates (UID)
 Logs in `/tmp/199-uid/`. Fresh tree: `bun install --frozen-lockfile` in `crates/desktop/ui` and `packages/apps` (2 s, 1 s).
