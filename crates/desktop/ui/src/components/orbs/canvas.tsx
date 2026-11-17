@@ -44,6 +44,8 @@ export interface ShaderOrbProps {
   className?: string;
   style?: CSSProperties;
   ariaLabel?: string;
+  /** The renderer failed to start or stopped painting (see `OrbRendererOptions.onError`). */
+  onError?: (error: unknown) => void;
 }
 
 /**
@@ -67,10 +69,13 @@ export const ShaderOrb = ({
   className,
   style,
   ariaLabel,
+  onError,
 }: ShaderOrbProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [paintedKey, setPaintedKey] = useState<string | null>(null);
   const drive = useRef<OrbDrive>({ state });
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
 
   drive.current.state = state;
   drive.current.params = params;
@@ -91,6 +96,7 @@ export const ShaderOrb = ({
       canvas,
       drive: () => drive.current,
       maxDpr,
+      onError: (error) => onErrorRef.current?.(error),
       onFirstFrame: () => setPaintedKey(variant.key),
       pauseOffscreen,
       variant,
@@ -101,6 +107,7 @@ export const ShaderOrb = ({
         await renderer.ready;
       } catch (error: unknown) {
         console.error(`[orbkit] ${variant.key} failed to start:`, error);
+        onErrorRef.current?.(error);
       }
     };
     void start();
