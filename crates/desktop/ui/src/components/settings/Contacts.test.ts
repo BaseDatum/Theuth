@@ -212,7 +212,7 @@ test('188 ?focus=access:<contact>: the contact it names, colons and all; any oth
 test('§12.7 Contacts: each row has name, machine, fingerprint, path and the exports it may reach (paused named), no mode or cap', async () => {
   await mount(createElement(Contacts))
   const t = body()
-  expect(t).toContain('A contact reaches only what you share. Their agent and yours talk freely')
+  expect(t).toContain('A contact reaches only what you share, unless you give them full access. Their agent and yours talk freely')
   expect(t).toContain("Bob's MacBook")
   expect(t).toContain('K3J9 Q2M4 X7P1 R8T5 W6Y0')
   expect(t).toContain('Relay')
@@ -220,7 +220,7 @@ test('§12.7 Contacts: each row has name, machine, fingerprint, path and the exp
   expect(t).toContain('research@studio')
   expect(t).toContain('Ops chat · Paused (chat archived)')
   // 190: a share chip is a plain share: no mode suffix, no cap beside the machine.
-  for (const gone of ['read only', 'can change things', 'cautious', 'Cautious', 'full', 'Full collaboration']) expect(t).not.toContain(gone)
+  for (const gone of ['read only', 'can change things', 'cautious', 'Cautious', 'Full collaboration']) expect(t).not.toContain(gone)
 })
 
 test('§12.7 Contacts: empty', async () => {
@@ -236,7 +236,7 @@ test('⋯ Rename → contact_update(name), Block… and Remove… confirm → co
   const input = document.querySelector<HTMLInputElement>('input[aria-label="Contact name"]')!
   input.value = 'robert'
   await run(() => input.blur())
-  expect(api.contact_update).toHaveBeenCalledWith('bob', { name: 'robert', blocked: null })
+  expect(api.contact_update).toHaveBeenCalledWith('bob', { name: 'robert', blocked: null, full_access: null })
   await click('Block…')
   expect(document.querySelector('[role=alertdialog]')?.textContent).toContain('Block bob?')
   expect(api.contact_remove).not.toHaveBeenCalled()
@@ -247,7 +247,7 @@ test('⋯ Rename → contact_update(name), Block… and Remove… confirm → co
   await click('Remove')
   await vi.waitFor(() => expect(api.contact_remove).toHaveBeenCalledWith('bob', false))
   await click('Unblock')
-  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('alice', { name: null, blocked: false }))
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('alice', { name: null, blocked: false, full_access: null }))
   await click('Choose what bob may reach…')
   expect(navigate).toHaveBeenCalledWith({ to: '/settings/$tab', params: { tab: 'contacts' }, search: { focus: 'access:bob' } })
 })
@@ -329,7 +329,7 @@ test('191 Access and Share… list a held contact with its state and its mesh-wi
   expect(waiting.textContent).not.toContain('reaches nothing yet')
   await run(() => [...waiting.querySelectorAll('button')].find((b) => b.textContent?.includes('Share with bob'))!.click())
   await run(() => [...rowOf('Waiting on this machine').querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Share Launch plan with bob')!.click())
-  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('r-bob-2', { name: null, blocked: null, grant: ['launch-plan'] }))
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('r-bob-2', { name: null, blocked: null, full_access: null, grant: ['launch-plan'] }))
   await reset()
   await mount(createElement(ShareDialog, { session: 's-ops', title: 'Ops chat', onClose: vi.fn() }))
   const labels = [...document.querySelectorAll('button[aria-label]')].map((b) => b.getAttribute('aria-label') ?? '')
@@ -337,7 +337,7 @@ test('191 Access and Share… list a held contact with its state and its mesh-wi
   expect(body()).toContain('Refused on this machine: cannot verify')
   expect(body()).toContain('Waiting on this machine: its name is taken')
   await click('Stop sharing with dave')
-  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('r-dave', { name: null, blocked: null, revoke: ['ops-chat'] }))
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('r-dave', { name: null, blocked: null, full_access: null, revoke: ['ops-chat'] }))
 })
 
 test('191 Contacts and Access: a share of a chat on another machine reads "on <machine>"', async () => {
@@ -616,11 +616,11 @@ test('190 export picker: agents and chats (not archived, with their machine); a 
   expect(body()).toContain('yours works with its normal tools and your usual approvals')
   await click('Share Launch plan with bob')
   // A new export is put, then granted alone: the existing grant (ops-chat) is never sent (191); the patch names no mode.
-  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, blocked: null, grant: ['launch-plan'] }))
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, blocked: null, full_access: null, grant: ['launch-plan'] }))
   expect(api.a2a_export_put).toHaveBeenCalledWith({ name: 'launch-plan', target: { kind: 'chat', session: 's-plan' }, description: 'Launch plan', paused: null })
   vi.clearAllMocks()
   await click('Share research@studio with bob')
-  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, blocked: null, grant: ['research'] }))
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, blocked: null, full_access: null, grant: ['research'] }))
   expect(api.a2a_export_put).not.toHaveBeenCalled()
 })
 
@@ -633,9 +633,9 @@ test('190: Share… is on for every paired contact, whatever its card says (`ful
 test('§12.10 unset: taking an export back is one revoke; the export stays for the next share (never removed from this list)', async () => {
   await mount(createElement(ContactAccess))
   await click('Stop sharing research@studio with bob')
-  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, blocked: null, revoke: ['research'] }))
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, blocked: null, full_access: null, revoke: ['research'] }))
   await click('Stop sharing Ops chat with bob')
-  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, blocked: null, revoke: ['ops-chat'] }))
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, blocked: null, full_access: null, revoke: ['ops-chat'] }))
   expect(api.a2a_export_remove).not.toHaveBeenCalled()
 })
 
@@ -654,10 +654,10 @@ test('⋯ Share with contact…: one Share per contact grants this chat, Shared 
   await mount(createElement(ShareDialog, { session: 's-ops', title: 'Ops chat', onClose: vi.fn() }))
   expect(body()).toContain("They see only what this chat's agent sends back")
   expect(body()).toContain('You can stop sharing at any time.')
-  expect(body()).toContain('A contact reaches only what you share. Their agent and yours talk freely, with Markdown, links and images, and yours works with its normal tools and your usual approvals.')
+  expect(body()).toContain('A contact reaches only what you share, unless you give them full access. Their agent and yours talk freely, with Markdown, links and images, and yours works with its normal tools and your usual approvals.')
   for (const gone of ['Cautious', 'Full collaboration', 'read only', 'can change things']) expect(body()).not.toContain(gone)
   await click('Stop sharing with bob')
-  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, blocked: null, revoke: ['ops-chat'] }))
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, blocked: null, full_access: null, revoke: ['ops-chat'] }))
   await reset()
   api.contact_list.mockImplementation(async () => [{ ...BOB, exports: ['research'] }, { ...ALICE, exports: [] }])
   await mount(createElement(ShareDialog, { session: 's-new', title: 'New chat', onClose: vi.fn() }))
@@ -669,7 +669,7 @@ test('⋯ Share with contact…: one Share per contact grants this chat, Shared 
   expect(body()).not.toContain('to share')
   await click('Share this chat with bob')
   await vi.waitFor(() => expect(api.a2a_export_put).toHaveBeenCalledWith({ name: 'new-chat', target: { kind: 'chat', session: 's-new' }, description: 'New chat', paused: null }))
-  expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, blocked: null, grant: ['new-chat'] })
+  expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, blocked: null, full_access: null, grant: ['new-chat'] })
   await reset()
   api.contact_list.mockImplementation(async () => [BOB, ALICE])
   const onShare = vi.fn()
@@ -678,8 +678,8 @@ test('⋯ Share with contact…: one Share per contact grants this chat, Shared 
   expect(onShare).toHaveBeenCalled()
   vi.clearAllMocks()
   await click('Stop sharing with bob and alice')
-  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('alice', { name: null, blocked: null, revoke: ['ops-chat'] }))
-  expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, blocked: null, revoke: ['ops-chat'] })
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('alice', { name: null, blocked: null, full_access: null, revoke: ['ops-chat'] }))
+  expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, blocked: null, full_access: null, revoke: ['ops-chat'] })
   expect(api.a2a_export_remove).not.toHaveBeenCalled()
 })
 
@@ -885,5 +885,57 @@ test('183 F2: after Share… the engine stores Always allow and the row shows it
   api.contact_list.mockImplementation(async () => [{ ...BOB, exports: ['research'], first_contact: {} }])
   await mount(createElement(ContactAccess))
   expect(document.querySelector('[aria-label="First contact from bob to research"]')?.getAttribute('data-value')).toBe('ask')
+})
+
+test('200 Full access: on asks first, then sends full_access: true; off is immediate; each consequence and their-side line; held and blocked have no switch', async () => {
+  api.contact_list.mockImplementation(async () => [
+    { ...BOB, full_access: false, full_access_from: false },
+    { ...ALICE, full_access: true, full_access_from: true },
+    { ...ALICE, name: 'carol', full_access: false, full_access_from: null },
+    { ...ALICE, name: 'eve', blocked: true, full_access: false, full_access_from: true },
+    ROWS[2]!,
+  ])
+  // The engine answers the contact as the patch leaves it.
+  api.contact_update.mockImplementation(async (name: string, p: { grant?: string[] | null; revoke?: string[] | null; full_access?: boolean | null }) => ({ ...BOB, name, full_access: p.full_access ?? false }))
+  await mount(createElement(ContactAccess))
+  const bob = rowOf('bob reaches only the chats you share')
+  expect(bob.textContent).toContain('Full access is off. bob reaches only the chats you share.')
+  expect(bob.textContent).toContain('bob has not given you full access.')
+  const alice = rowOf('alice has given you full access')
+  expect(alice.textContent).toContain("Full access: any of alice's sessions can message your sessions and see their list (titles, running or idle). Private chats and your other contacts' conversations stay hidden. Nothing is synced.")
+  expect(alice.textContent).toContain('alice has given you full access: your sessions can list and message theirs.')
+  expect(body()).toContain("carol's theuth does not support full access yet.")
+  expect(button('Full access for eve')).toBeUndefined()
+  expect(button('Full access for dave')).toBeUndefined()
+  // A 44 px target on a phone: the label around the switch is the touch area.
+  expect(button('Full access for bob')!.parentElement!.className).toContain('pointer-coarse:min-h-11')
+
+  const dialog = () => document.querySelector('[role=alertdialog]')?.textContent ?? ''
+  await click('Full access for bob')
+  expect(dialog()).toContain('Give bob full access?')
+  expect(dialog()).toContain("Full access: any of bob's sessions can message your sessions")
+  expect(dialog()).toContain('It applies on all your machines as each receives it, normally within seconds. You can turn it off here at any time.')
+  await click('Cancel')
+  expect(api.contact_update).not.toHaveBeenCalled()
+  await click('Full access for bob')
+  await click('Give full access')
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, blocked: null, full_access: true }))
+  await vi.waitFor(() => expect(rowOf('bob reaches only').querySelector('[role=status]')?.textContent).toBe('bob has full access on this machine now, and on your other machines as each receives it (normally seconds).'))
+
+  vi.clearAllMocks()
+  await click('Full access for alice')
+  expect(dialog()).toBe('')
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('alice', { name: null, blocked: null, full_access: false }))
+  await vi.waitFor(() =>
+    expect(rowOf('alice has given you').querySelector('[role=status]')?.textContent).toBe(
+      'Full access for alice is off: refused on this machine now, and on your other machines as each receives the change (normally seconds; a machine offline catches up when it reconnects).',
+    ),
+  )
+
+  // An engine older than 200 ignores the field: never a silent success.
+  api.contact_update.mockImplementation(echoUpdate)
+  await click('Full access for carol')
+  await click('Give full access')
+  await vi.waitFor(() => expect(toast.error).toHaveBeenCalledWith(OLD_ENGINE))
 })
 

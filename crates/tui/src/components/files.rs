@@ -35,7 +35,7 @@ pub(crate) struct Line {
 }
 
 /// Remote text on one line: no control characters (line breaks included) and no bidi controls.
-fn text(s: &str) -> String {
+pub(crate) fn text(s: &str) -> String {
     s.chars().filter(|c| !c.is_control() && !matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')).collect()
 }
 

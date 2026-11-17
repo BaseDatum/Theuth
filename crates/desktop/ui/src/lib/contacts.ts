@@ -11,10 +11,24 @@ export const CAP: Record<Risk, string> = { read_only: 'read only', mutating: 'ca
 /** 183 W-27: what each first-contact answer does, one sentence per button (the Attention screen and the HUD row). */
 export const FIRST_ANSWERS = 'Allow once lets this message through. Always lets every later message to this export through. Block blocks this contact entirely.'
 
-// 200-UI: SHARE_RULE gains "…unless you give them full access."
-/** What a contact reaches, in one line (Contacts): only what is shared, and how a share works (190: every share is full). */
+/** What a contact reaches, in one line (Contacts): only what is shared, and how a share works (190: every share is full);
+ * 200: full access is the exception. */
 export const SHARE_RULE =
-  'A contact reaches only what you share. Their agent and yours talk freely, with Markdown, links and images, and yours works with its normal tools and your usual approvals.'
+  'A contact reaches only what you share, unless you give them full access. Their agent and yours talk freely, with Markdown, links and images, and yours works with its normal tools and your usual approvals.'
+
+/** 200 (Contract, Labels): the Access row's consequence line, on and off; the On text is the confirm's body too. */
+export const fullAccessOn = (c: string) =>
+  `Full access: any of ${c}'s sessions can message your sessions and see their list (titles, running or idle). Private chats and your other contacts' conversations stay hidden. Nothing is synced.`
+export const fullAccessOff = (c: string) => `Full access is off. ${c} reaches only the chats you share.`
+/** 200 (D11): what `c`'s card says about us; `null` is a card without the extension (an engine without 200). */
+export const fullAccessFrom = (c: string, from: boolean | null | undefined) =>
+  from == null ? `${c}'s theuth does not support full access yet.` : from ? `${c} has given you full access: your sessions can list and message theirs.` : `${c} has not given you full access.`
+/** 200 (Revocation): how far a change has reached — at once here, on the other machines as each receives it. */
+export const FULL_ACCESS_SPREAD = 'It applies on all your machines as each receives it, normally within seconds. You can turn it off here at any time.'
+export const fullAccessSaid = (c: string, on: boolean) =>
+  on
+    ? `${c} has full access on this machine now, and on your other machines as each receives it (normally seconds).`
+    : `Full access for ${c} is off: refused on this machine now, and on your other machines as each receives the change (normally seconds; a machine offline catches up when it reconnects).`
 
 /** 186: the pairing dialog's line: pairing alone shares nothing. */
 export const PAIRED_RULE = 'A paired contact reaches nothing until you share an agent or chat with them.'
