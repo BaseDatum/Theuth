@@ -1,7 +1,7 @@
 import '../settings/test-dom'
 import { afterEach, expect, test, vi } from 'vitest'
 import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
-import { act, createElement } from 'react'
+import { act, createElement, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { contextLabel, type Effort, favoriteTarget, ModelPicker, type ModelPickerProps, type View, viewFor, withExtra } from './ModelPicker'
@@ -128,14 +128,14 @@ test('177 U4: local models and their providers carry the "local" tag; 194 D5: on
   // An `extra` (stale on-file) id is never local.
   expect(withExtra([], ['x/gone'])[0]!.local).toBe(false)
   const tags = (html: string) => html.match(/>local</g)?.length ?? 0
-  const providers = renderToStaticMarkup(createElement(ModelPicker, { models: local, model: undefined, onSelect() {} }))
+  const providers = renderToStaticMarkup(createElement(ModelPicker, { models: local, model: undefined, onSelect() {}, onClose() {} }))
   expect(tags(providers)).toBe(2)
   expect(providers).toMatch(/>mlx<\/span><span[^>]*>local</)
   // One provider opens on its models: each local row is tagged, a cloud one is not.
-  expect(tags(renderToStaticMarkup(createElement(ModelPicker, { models: local.filter((m) => m.provider === 'mlx'), model: undefined, onSelect() {} })))).toBe(1)
-  expect(tags(renderToStaticMarkup(createElement(ModelPicker, { models: models.filter((m) => m.provider === 'openai'), model: undefined, onSelect() {} })))).toBe(0)
+  expect(tags(renderToStaticMarkup(createElement(ModelPicker, { models: local.filter((m) => m.provider === 'mlx'), model: undefined, onSelect() {}, onClose() {} })))).toBe(1)
+  expect(tags(renderToStaticMarkup(createElement(ModelPicker, { models: models.filter((m) => m.provider === 'openai'), model: undefined, onSelect() {}, onClose() {} })))).toBe(0)
   // R1-10: the Current row and a favourite row tag a local model too (plus the two local provider rows).
-  const lead = renderToStaticMarkup(createElement(ModelPicker, { models: local, model: 'mlx/LFM3-1.7B-MLX-bf16', favorites: ['ollama/gpt-oss:20b'], onToggleFavorite() {}, onSelect() {} }))
+  const lead = renderToStaticMarkup(createElement(ModelPicker, { models: local, model: 'mlx/LFM3-1.7B-MLX-bf16', favorites: ['ollama/gpt-oss:20b'], onToggleFavorite() {}, onSelect() {}, onClose() {} }))
   expect(lead).toMatch(/>LFM3 1\.7B<\/span><span[^>]*>local</)
   expect(lead).toMatch(/>gpt-oss 20B<\/span><span[^>]*>local</)
   expect(tags(lead)).toBe(4)
@@ -155,7 +155,8 @@ async function mount(props: Partial<ModelPickerProps>) {
   const host = document.createElement('div')
   document.body.append(host)
   const onSelect = vi.fn()
-  await act(async () => createRoot(host).render(createElement(ModelPicker, { models: withEfforts, model: 'openai/gpt-5.4', onSelect, ...props })))
+  const onClose = vi.fn()
+  await act(async () => createRoot(host).render(createElement(ModelPicker, { models: withEfforts, model: 'openai/gpt-5.4', onSelect, onClose, ...props })))
   const item = (value: string) => host.querySelector<HTMLElement>(`[cmdk-item][data-value="${value}"]`)
   /** The chip row directly under `row` (its next sibling) as labels, the active one starred; `null` when none follows. */
   const chipsAfter = (row: Element | null | undefined) => {
@@ -174,7 +175,7 @@ async function mount(props: Partial<ModelPickerProps>) {
       input.dispatchEvent(new Event('input', { bubbles: true }))
     })
   const click = (el: HTMLElement) => act(async () => void el.click())
-  return { host, onSelect, item, chipsAfter, chip, lead, values, selected, key, type, click }
+  return { host, onSelect, onClose, item, chipsAfter, chip, lead, values, selected, key, type, click }
 }
 
 test('chips: one row directly under the Current row (plain buttons), Default first, the active level marked; no bottom Effort group; the highlight still starts on the first provider', async () => {
@@ -191,6 +192,7 @@ test('chips: one row directly under the Current row (plain buttons), Default fir
   await p.click(p.chip('Default'))
   expect(effort.onSelect.mock.calls).toEqual([['medium'], [null]])
   expect(p.onSelect).not.toHaveBeenCalled()
+  expect(p.onClose).toHaveBeenCalledTimes(2)
 })
 
 test('chips under a favorite row are cmdk items in DOM order right after it: ↓ reaches them, Enter applies', async () => {
@@ -243,4 +245,92 @@ test('no chips without levels; `required` drops Default and `labels` name the le
   expect(harness.chipsAfter(harness.lead('GPT-5.4openai'))).toEqual(['Off', 'High*', 'Extra high'])
   const none = await mount({ model: undefined, none: { value: '__none__', label: 'Node default' }, effort: effortOn('high') })
   expect(none.chipsAfter(none.lead('Node default'))).toEqual(['Default', 'low', 'medium', 'high*'])
+})
+
+// ── 2026-11-17 (Sky): a model with levels keeps the picker open on its chips ─────────────────────────────────────────
+
+/** A caller over `withEfforts` that starts on GPT-5.4 mini (no levels) and shows a pick as its model: at once (a draft,
+ * a form's local state) or on `catchUp()` (a round trip). `effort: false` is a form without an effort setting. */
+async function caller(o: { deferred?: boolean; effort?: boolean } = {}) {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onSelect = vi.fn()
+  const onClose = vi.fn()
+  const onLevel = vi.fn()
+  let catchUp = () => {}
+  function Caller() {
+    const [model, setModel] = useState('openai/gpt-5.4-mini')
+    const [picked, setPicked] = useState<string | null>(null)
+    catchUp = () => picked && setModel(picked)
+    const levels = withEfforts.find((m) => m.id === model)?.efforts ?? []
+    return createElement(ModelPicker, {
+      models: withEfforts,
+      model,
+      onClose,
+      onSelect: (id) => (onSelect(id), o.deferred ? setPicked(id) : setModel(id)),
+      effort: o.effort === false || levels.length === 0 ? undefined : { levels, current: null, onSelect: onLevel },
+    })
+  }
+  await act(async () => createRoot(host).render(createElement(Caller)))
+  const el = (sel: string) => host.querySelector<HTMLElement>(sel)!
+  const click = (sel: string) => act(async () => void el(sel).click())
+  const press = (key: string, target = document.activeElement!) => act(async () => void target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })))
+  const chips = () => [...host.querySelectorAll('[aria-label="Effort"] > *')].map((c) => c.textContent)
+  return { host, onSelect, onClose, onLevel, el, click, press, chips, catchUp: () => act(async () => catchUp()) }
+}
+
+test('a model with levels keeps the picker open: its chips at once (plain buttons), the active one focused; arrows step, Enter stays the chip’s, a chip completes the choice', async () => {
+  const p = await caller()
+  await p.click('[data-value="provider:openai"]')
+  await p.click('[data-value="model:openai/gpt-5.4"]')
+  expect(p.onSelect.mock.calls).toEqual([['openai/gpt-5.4']])
+  expect(p.onClose).not.toHaveBeenCalled()
+  expect(p.el('[data-value="model:openai/gpt-5.4"]').nextElementSibling?.getAttribute('aria-label')).toBe('Effort')
+  expect(p.chips()).toEqual(['Default', 'low', 'medium', 'high'])
+  expect(p.host.querySelector('[aria-label="Effort"] [cmdk-item]')).toBeNull()
+  expect(document.activeElement?.textContent).toBe('Default')
+  await p.press('ArrowRight')
+  await p.press('ArrowDown')
+  expect(document.activeElement?.textContent).toBe('medium')
+  await p.press('ArrowLeft')
+  expect(document.activeElement?.textContent).toBe('low')
+  // cmdk's root selects its highlighted row on any Enter that reaches it; the chip's own Enter must not.
+  await p.press('Enter')
+  expect(p.onSelect).toHaveBeenCalledTimes(1)
+  await act(async () => void (document.activeElement as HTMLElement).click())
+  expect(p.onLevel.mock.calls).toEqual([['low']])
+  expect(p.onClose).toHaveBeenCalledTimes(1)
+})
+
+test('a model without levels completes the choice at once; Tab off the chips of a pick completes it with the model kept', async () => {
+  const plain = await caller()
+  await plain.click('[data-value="provider:anthropic"]')
+  await plain.click('[data-value="model:anthropic/claude-opus-4-1"]')
+  expect(plain.onSelect.mock.calls).toEqual([['anthropic/claude-opus-4-1']])
+  expect(plain.onClose).toHaveBeenCalledTimes(1)
+  const tab = await caller()
+  await tab.click('[data-value="provider:openai"]')
+  await tab.click('[data-value="model:openai/gpt-5.4"]')
+  await tab.press('Tab')
+  expect(tab.onClose).toHaveBeenCalledTimes(1)
+  expect(tab.onLevel).not.toHaveBeenCalled()
+  expect(tab.onSelect).toHaveBeenCalledTimes(1)
+})
+
+test('a caller that round-trips: no chips until it shows the pick, then the new model’s take focus; one with no effort setting completes then', async () => {
+  const p = await caller({ deferred: true })
+  await p.click('[data-value="provider:openai"]')
+  await p.click('[data-value="model:openai/gpt-5.4"]')
+  expect(p.chips()).toEqual([])
+  expect(p.onClose).not.toHaveBeenCalled()
+  await p.catchUp()
+  expect(p.chips()).toEqual(['Default', 'low', 'medium', 'high'])
+  expect(document.activeElement?.textContent).toBe('Default')
+  expect(p.onClose).not.toHaveBeenCalled()
+  const bare = await caller({ deferred: true, effort: false })
+  await bare.click('[data-value="provider:openai"]')
+  await bare.click('[data-value="model:openai/gpt-5.4"]')
+  expect(bare.onClose).not.toHaveBeenCalled()
+  await bare.catchUp()
+  expect(bare.onClose).toHaveBeenCalledTimes(1)
 })

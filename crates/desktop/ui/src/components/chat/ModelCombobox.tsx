@@ -67,16 +67,14 @@ export function ModelCombobox({
       models={models}
       model={value ?? undefined}
       extra={value && !current ? [value] : undefined}
-      effort={effort && { ...effort, onSelect: (level) => (setOpen(false), effort.onSelect(level)) }}
+      effort={effort}
       none={none && { value: NONE, label: none.label }}
       favorites={favorites}
       onToggleFavorite={(id) => void toggleFavorite(id)}
       className={className}
       listClassName={listClassName}
-      onSelect={(id) => {
-        setOpen(false)
-        onChange(id === NONE ? null : id)
-      }}
+      onSelect={(id) => onChange(id === NONE ? null : id)}
+      onClose={() => setOpen(false)}
     />
   )
   if (pickerSurface(touch()) === 'dialog') {

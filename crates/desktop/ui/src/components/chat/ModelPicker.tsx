@@ -1,10 +1,12 @@
 // 124 §3: the cmdk body every model picker shares — providers level → a provider's models, with the
 // §2 word search over every model whenever the input is non-empty. Ranking is ours (`shouldFilter={false}`).
 // 2026-11-11 (Sky): the selected model's effort levels are a chip row directly under its row, wherever it shows.
+// 2026-11-17 (Sky): picking a model with effort levels keeps the picker open on its chips, focused; a chip, or a model
+// without levels, completes the choice (`onClose`). Outside click, Escape or Tab-away close it with the model kept.
 
 import { Check, ChevronLeft, ChevronRight, Star } from 'lucide-react'
 import { useCommandState } from 'cmdk'
-import { Fragment, useState } from 'react'
+import { Fragment, type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { cn } from '@/lib/utils'
 import { modelsOfProvider, providersOf, rankModels, searchTerms } from '@/lib/model-search'
@@ -109,6 +111,8 @@ export type ModelPickerProps = {
   /** The current id (session, draft, or form value); `undefined` → no Current row. */
   model: string | undefined
   onSelect(id: string): void
+  /** The choice is complete: an effort chip, or a model without effort levels (one with levels keeps the picker open on its chips). */
+  onClose(): void
   /** The current model's effort levels, as chips under its row (no levels → no chips). */
   effort?: Effort
   /** A first row ("Engine default", "Off") that selects `none.value` — forms. */
@@ -153,8 +157,8 @@ function SearchInput({ query, setQuery, canGoBack, back, onToggleFavorite }: { q
 /** The `CommandItem` look for the rows cmdk does not own (`leadRow`). */
 const LEAD_ROW = 'flex w-full cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg:not([class*=text-])]:text-muted-foreground'
 
-/** An effort chip; wraps and grows to a finger's size on phones and coarse pointers. A cmdk chip shows the highlight as a ring. */
-const CHIP = 'inline-flex h-7 items-center gap-1 rounded-full border border-border px-2.5 py-0 text-xs data-[selected=true]:ring-2 data-[selected=true]:ring-ring max-md:h-9 max-md:px-3 max-md:text-sm pointer-coarse:h-9 pointer-coarse:px-3 pointer-coarse:text-sm'
+/** An effort chip; wraps and grows to a finger's size (44 px) on phones and coarse pointers. A cmdk chip shows the highlight as a ring. */
+const CHIP = 'inline-flex h-7 items-center gap-1 rounded-full border border-border px-2.5 py-0 text-xs data-[selected=true]:ring-2 data-[selected=true]:ring-ring max-md:h-11 max-md:px-3.5 max-md:text-sm pointer-coarse:h-11 pointer-coarse:px-3.5 pointer-coarse:text-sm'
 /** The plain-button chip (under the Current lead row). */
 const CHIP_BUTTON = 'cursor-default outline-hidden select-none hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring'
 /** The active level. */
@@ -165,9 +169,45 @@ export function LocalTag() {
   return <span className="shrink-0 rounded-sm border border-fg-tertiary/40 px-1 text-[10px] leading-4 text-fg-secondary">local</span>
 }
 
-export function ModelPicker({ models, model, onSelect, effort, none, extra, favorites, onToggleFavorite, className, listClassName }: ModelPickerProps) {
+export function ModelPicker({ models, model, onSelect, onClose, effort, none, extra, favorites, onToggleFavorite, className, listClassName }: ModelPickerProps) {
   const [query, setQuery] = useState('')
   const [provider, setProvider] = useState<string | null>(null)
+  // A model with levels just picked: its chips get focus once the caller shows it as the model (a form may round-trip
+  // first). Meanwhile the old model's chips hide, so a level always goes to the model just picked.
+  const [chosen, setChosen] = useState<string | null>(null)
+  const chipsRef = useRef<HTMLDivElement>(null)
+  const awaiting = chosen !== null && chosen !== model
+  useEffect(() => {
+    if (chosen === null || chosen !== model) return
+    const group = chipsRef.current
+    // The caller offers no levels for it (a form without an effort setting): the pick alone was the choice.
+    if (!group) return onClose()
+    ;(group.querySelector<HTMLElement>('[aria-pressed="true"]') ?? group.querySelector<HTMLElement>('button'))?.focus()
+  }, [chosen, model])
+  const pick = (id: string) => {
+    onSelect(id)
+    if (models.find((m) => m.id === id)?.efforts.length) setChosen(id)
+    else onClose()
+  }
+  const pickLevel = (lvl: string | null) => {
+    effort!.onSelect(lvl)
+    onClose()
+  }
+  // The plain-button chips: arrows step between them, Enter/Space stay theirs (cmdk's root would select its highlighted
+  // row on Enter), Tab after a pick leaves = done. Escape reaches the popover/dialog, which closes.
+  const chipKeys = (e: KeyboardEvent<HTMLDivElement>) => {
+    const all = [...e.currentTarget.querySelectorAll<HTMLElement>('button')]
+    const step = ({ ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 } as Record<string, number>)[e.key]
+    if (step && all.length) {
+      e.preventDefault()
+      e.stopPropagation()
+      all[(all.indexOf(document.activeElement as HTMLElement) + step + all.length) % all.length]!.focus()
+    } else if (e.key === 'Enter' || e.key === ' ') e.stopPropagation()
+    else if (e.key === 'Tab' && chosen !== null) {
+      e.preventDefault()
+      onClose()
+    }
+  }
   const view = viewFor({ models, model, provider, query, none, extra, favorites })
   const local = localProviders(models)
   const canGoBack = view.rows.some((r) => r.kind === 'back')
@@ -178,38 +218,43 @@ export function ModelPicker({ models, model, onSelect, effort, none, extra, favo
   // clickable and Tab-reachable, outside ↑/↓/Enter. Picking Current is a no-op anyway; back has Backspace.
   // The effort chips follow the row they sit under: plain buttons under Current (Tab, then Enter/Space), cmdk
   // items under a favorite or provider-list row (↑/↓ step through them, Enter applies), never the first cmdk item.
-  const levels: (string | null)[] = effort && effort.levels.length > 0 ? [...(effort.required ? [] : [null]), ...effort.levels] : []
-  const chips = (asItems: boolean) =>
-    effort &&
-    levels.length > 0 && (
-      <div role="group" aria-label="Effort" className="flex flex-wrap gap-1 pt-0.5 pr-2 pb-1.5 pl-4">
-        {levels.map((lvl) => {
-          const on = lvl === null ? !effort.current : lvl === effort.current
-          const value = lvl === null ? 'effort-default' : `effort:${lvl}`
-          const body = (
-            <>
-              {on && <Check className="size-3.5 text-current" />}
-              {lvl === null ? 'Default' : (effort.labels?.[lvl] ?? lvl)}
-            </>
-          )
-          return asItems ? (
-            <CommandItem key={value} value={value} className={cn(CHIP, on && CHIP_ON)} onSelect={() => effort.onSelect(lvl)}>
-              {body}
-            </CommandItem>
-          ) : (
-            <button key={value} type="button" data-value={value} aria-pressed={on} className={cn(CHIP, CHIP_BUTTON, on && CHIP_ON)} onClick={() => effort.onSelect(lvl)}>
-              {body}
-            </button>
-          )
-        })}
-      </div>
+  // Right after a pick they are plain buttons wherever they sit, so the focus can sit on one (arrows, Enter/Space).
+  const levels: (string | null)[] = effort && effort.levels.length > 0 && !awaiting ? [...(effort.required ? [] : [null]), ...effort.levels] : []
+  const chips = (cmdk: boolean) => {
+    const asItems = cmdk && chosen === null
+    return (
+      effort &&
+      levels.length > 0 && (
+        <div ref={chipsRef} role="group" aria-label="Effort" className="flex flex-wrap gap-1 pt-0.5 pr-2 pb-1.5 pl-4" onKeyDown={asItems ? undefined : chipKeys}>
+          {levels.map((lvl) => {
+            const on = lvl === null ? !effort.current : lvl === effort.current
+            const value = lvl === null ? 'effort-default' : `effort:${lvl}`
+            const body = (
+              <>
+                {on && <Check className="size-3.5 text-current" />}
+                {lvl === null ? 'Default' : (effort.labels?.[lvl] ?? lvl)}
+              </>
+            )
+            return asItems ? (
+              <CommandItem key={value} value={value} className={cn(CHIP, on && CHIP_ON)} onSelect={() => pickLevel(lvl)}>
+                {body}
+              </CommandItem>
+            ) : (
+              <button key={value} type="button" data-value={value} aria-pressed={on} className={cn(CHIP, CHIP_BUTTON, on && CHIP_ON)} onClick={() => pickLevel(lvl)}>
+                {body}
+              </button>
+            )
+          })}
+        </div>
+      )
     )
+  }
   const leadRow = (row: Row) => {
     switch (row.kind) {
       case 'current':
         return (
           <Fragment key={row.value}>
-            <button type="button" className={LEAD_ROW} onClick={() => onSelect(row.id)}>
+            <button type="button" className={LEAD_ROW} onClick={() => pick(row.id)}>
               <span className="truncate">{row.name}</span>
               {row.provider && local.has(row.provider) && <LocalTag />}
               {row.provider && <span className="ml-auto shrink-0 text-xs text-fg-tertiary">{row.provider}</span>}
@@ -222,7 +267,7 @@ export function ModelPicker({ models, model, onSelect, effort, none, extra, favo
       case 'none':
         return (
           <Fragment key={row.value}>
-            <button type="button" className={LEAD_ROW} onClick={() => onSelect(none!.value)}>
+            <button type="button" className={LEAD_ROW} onClick={() => pick(none!.value)}>
               <span className="truncate">{row.label}</span>
               {row.current && <Check className="ml-auto" />}
             </button>
@@ -271,7 +316,7 @@ export function ModelPicker({ models, model, onSelect, effort, none, extra, favo
       case 'favorite':
         return (
           <Fragment key={row.value}>
-            <CommandItem value={row.value} onSelect={() => onSelect(row.m.id)}>
+            <CommandItem value={row.value} onSelect={() => pick(row.m.id)}>
               <span className="truncate">{row.m.name}</span>
               {row.m.local && <LocalTag />}
               <span className="ml-auto shrink-0 text-xs text-fg-tertiary">{[row.m.provider, contextLabel(row.m.context)].filter(Boolean).join(' · ')}</span>
@@ -284,7 +329,7 @@ export function ModelPicker({ models, model, onSelect, effort, none, extra, favo
       case 'model':
         return (
           <Fragment key={row.value}>
-            <CommandItem value={row.value} onSelect={() => onSelect(row.m.id)}>
+            <CommandItem value={row.value} onSelect={() => pick(row.m.id)}>
               <span className="truncate">{row.m.name}</span>
               {row.m.local && <LocalTag />}
               <span className="ml-auto shrink-0 text-xs text-fg-tertiary">

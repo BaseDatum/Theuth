@@ -1,11 +1,18 @@
 import '../settings/test-dom'
-import { act, createElement, type ReactElement } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { act, createElement, type ReactElement, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, expect, type Mock, test, vi } from 'vitest'
+import type * as Rpc from '@/lib/rpc'
 import type { ConfigOption } from "@/rpc/bindings/method.agent.output"
 import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
-import { AdvisorCommand, dialogPlacement, HarnessPicker, harnessCurrent, harnessGroups, type Model, slashTarget } from './ModelMenu'
+import { useConnection } from '@/store/connection'
+import { useSessions } from '@/store/sessions'
+import { AdvisorCommand, dialogPlacement, HarnessPicker, harnessCurrent, harnessGroups, type Model, ModelMenu, slashTarget } from './ModelMenu'
 import { useDrafts } from '@/lib/drafts'
+
+const rpc = vi.hoisted(() => ({ api: {} as Record<string, unknown> }))
+vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => rpc.api }))
 
 const advisor = vi.hoisted(() => ({ status: undefined as unknown, mutate: (() => {}) as (v: unknown) => void }))
 vi.mock('./advisor', () => ({ useAdvisor: () => advisor.status, useSetAdvisor: () => ({ mutate: (v: unknown) => advisor.mutate(v) }) }))
@@ -137,4 +144,65 @@ test('the draft advisor picker holds model and effort for creation instead of ca
   expect(useDrafts.getState().settings.create?.advisor).toEqual(['openai/gpt-5.4', 'high'])
   expect(advisor.mutate).not.toHaveBeenCalled()
   useDrafts.setState({ settings: {} })
+})
+
+// ── 2026-11-17 (Sky): picking a model with levels keeps the picker open on its chips, in every wrapper ───────────────
+
+test('harness picker: a model pick keeps it open on the thought_level chips, focused, even queued for the turn’s end; a chip completes it', async () => {
+  const setHarnessOption = vi.fn()
+  const done = vi.fn()
+  function Harness() {
+    // set_harness_option answers `pending`: the model is queued, `current` stays.
+    const [pending, setPending] = useState<Record<string, string>>({})
+    const m = { ...harnessM(omp, pending), done, setHarnessOption: async (id: string, v: string) => (setHarnessOption(id, v), setPending((p) => ({ ...p, [id]: v }))) }
+    return createElement(HarnessPicker, { m: m as unknown as Model })
+  }
+  const p = await mount(createElement(Harness))
+  await p.click(p.host.querySelector('[data-value="provider:openai"]')!)
+  await p.click(p.host.querySelector('[data-value="model:openai/gpt-5.4"]')!)
+  expect(setHarnessOption.mock.calls).toEqual([['model', 'openai/gpt-5.4']])
+  expect(done).not.toHaveBeenCalled()
+  expect(p.chipsAfter(p.host.querySelector('[data-value="model:openai/gpt-5.4"]'))).toEqual(['Off', 'High*', 'Extra high'])
+  expect(document.activeElement?.textContent).toBe('High')
+  await p.click(p.chip('Off'))
+  expect(setHarnessOption).toHaveBeenLastCalledWith('thinking', 'off')
+  expect(done).toHaveBeenCalledTimes(1)
+})
+
+test('chat header (ModelMenu): a model with levels is set once and the popover stays on its chips, focused; Escape keeps it; a chip sets the effort once and closes; a model without levels closes at once', async () => {
+  useConnection.setState({ discovery: { ...useConnection.getState().discovery, phase: 'legacy' }, info: { favorite_models: [] } as never })
+  const slice = (patch: object) => useSessions.setState((s) => ({ sessions: { ...s.sessions, s1: { ...s.sessions.s1, ...patch } as never } }))
+  slice({ model: 'anthropic/claude-opus-4-1', effort: null })
+  const calls: unknown[][] = []
+  rpc.api = {
+    list_sessions: async () => [],
+    list_models: async () => catalog,
+    // The engine's ModelChanged / EffortChanged land in the session's slice.
+    set_model: async (s: string, id: string) => (calls.push(['set_model', s, id]), slice({ model: id })),
+    set_effort: async (s: string, level: string | null) => (calls.push(['set_effort', s, level]), slice({ effort: level })),
+  }
+  const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+  const p = await mount(createElement(QueryClientProvider, { client: qc }, createElement(ModelMenu, { session: 's1' })))
+  const trigger = p.host.querySelector('button')!
+  await vi.waitFor(() => expect(trigger.textContent).toBe('Claude Opus 4.1'))
+  const isOpen = () => document.querySelector('[cmdk-root]') !== null
+  const at = (sel: string) => document.querySelector<HTMLElement>(sel)!
+  await p.click(trigger)
+  await p.click(at('[data-value="provider:openai"]'))
+  await p.click(at('[data-value="model:openai/gpt-5.4"]'))
+  await vi.waitFor(() => expect(document.activeElement?.textContent).toBe('Default'))
+  expect(calls).toEqual([['set_model', 's1', 'openai/gpt-5.4']])
+  expect(isOpen()).toBe(true)
+  await act(async () => void document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+  expect([isOpen(), calls.length, trigger.textContent]).toEqual([false, 1, 'GPT-5.4'])
+  await p.click(trigger)
+  await p.click(at('[aria-label="Effort"] [data-value="effort:high"]'))
+  expect(calls).toEqual([['set_model', 's1', 'openai/gpt-5.4'], ['set_effort', 's1', 'high']])
+  expect(isOpen()).toBe(false)
+  await p.click(trigger)
+  await p.click(at('[data-value="provider:anthropic"]'))
+  await p.click(at('[data-value="model:anthropic/claude-opus-4-1"]'))
+  expect(calls.at(-1)).toEqual(['set_model', 's1', 'anthropic/claude-opus-4-1'])
+  expect(calls).toHaveLength(3)
+  expect(isOpen()).toBe(false)
 })

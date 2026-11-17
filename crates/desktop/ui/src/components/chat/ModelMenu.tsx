@@ -118,11 +118,11 @@ export type Model = {
   setHarnessOption(configId: string, value: string): Promise<void>
   /** `resume_child` (75 §10): set on an idle ACP child; restarts its harness in the stored session context. */
   resume: (() => Promise<void>) | null
-  /** Closes whichever surface showed the picker (the `useModel` argument), for picks made outside `setModel`/`setEffort`. */
+  /** Closes whichever surface showed the picker: the picker's `onClose` (an effort chip, or a model without levels). */
   done(): void
 }
 
-/** `done` runs after a choice (closes whichever surface showed the picker). */
+/** `done` closes whichever surface showed the picker; the picker calls it once the choice is complete. */
 function useModel({ session }: Props, done: () => void): Model {
   const canQuery2 = useQuerySupport(["harness_options"])
   const api = useApi()
@@ -161,7 +161,6 @@ function useModel({ session }: Props, done: () => void): Model {
   // 148 R1: a pick applies to this chat only. In a session the engine switches that session (`set_model` with a
   // session never touches the default); in the draft it is kept locally until the first send creates the session.
   const setModel = async (id: string) => {
-    done()
     if (!session) {
       // An effort the new model does not offer would reject the create: fall back to the default.
       const effort = pick.effort && models.find((m) => m.id === id)?.efforts.includes(pick.effort) ? pick.effort : null
@@ -175,7 +174,6 @@ function useModel({ session }: Props, done: () => void): Model {
     }
   }
   const setEffort = async (level: string | null) => {
-    done()
     if (!session) return useDrafts.getState().setPick({ effort: level })
     try {
       await routed(session, () => api.set_effort(session, level, true))
@@ -184,7 +182,6 @@ function useModel({ session }: Props, done: () => void): Model {
     }
   }
   const setHarnessOption = async (configId: string, value: string) => {
-    done()
     if (!session) return
     try {
       const r = await api.set_harness_option(session, configId, value)
@@ -234,21 +231,24 @@ function useModel({ session }: Props, done: () => void): Model {
  * 75 §8 through the standard picker: the harness's model options are the rows (provider = the value's `provider/`
  * prefix, else the harness) and its thought_level option the chips under the current one — every value verbatim, no
  * Default chip. A value queued for the turn's end reads `<name> · after this turn`. A harness with no model select gets
- * one row for whatever it runs, so its chips still have a home.
+ * one row for whatever it runs, so its chips still have a home. Every row carries the thought_level values as its levels,
+ * so a pick keeps the picker open on the chips (a queued model counts as the picked one).
  */
 export function HarnessPicker({ m, className, listClassName }: { m: Model; className?: string; listClassName?: string }) {
   const { model, effort } = harnessGroups(m.harness ?? [])
   const agent = m.agent ?? 'harness'
   const named = (option: ConfigOption, v: { name: string; value: string }) => (v.value === m.pending[option.id] ? `${v.name} · after this turn` : v.name)
-  const models = model ? model.options.map((v) => stubModel(v.value, named(model, v), v.value.includes('/') ? v.value.split('/')[0]! : agent)) : [stubModel(agent, m.harnessModel ?? agent, agent)]
+  const levels = effort ? effort.options.map((v) => v.value) : []
+  const models = (model ? model.options.map((v) => stubModel(v.value, named(model, v), v.value.includes('/') ? v.value.split('/')[0]! : agent)) : [stubModel(agent, m.harnessModel ?? agent, agent)]).map((r) => ({ ...r, efforts: levels }))
   return (
     <ModelPicker
       models={models}
-      model={model ? model.current : agent}
-      onSelect={(v) => (model ? void m.setHarnessOption(model.id, v) : m.done())}
+      model={model ? (m.pending[model.id] ?? model.current) : agent}
+      onSelect={(v) => model && void m.setHarnessOption(model.id, v)}
+      onClose={m.done}
       effort={
         effort && {
-          levels: effort.options.map((v) => v.value),
+          levels,
           labels: Object.fromEntries(effort.options.map((v) => [v.value, named(effort, v)])),
           current: effort.current,
           required: true,
@@ -316,7 +316,6 @@ export function AdvisorCommand({ session, m, onBack, className, listClassName }:
   const model = session ? (status && status.state !== 'off' ? (status.model ?? undefined) : undefined) : pending?.[0]
   const current = m.models.find((x) => x.id === model)
   const pick = (vars: { model: string | null; effort: string | null }) => {
-    m.done()
     if (!session) useDrafts.getState().setCreate({ advisor: vars.model ? [vars.model, vars.effort] : null })
     else set.mutate(vars)
   }
@@ -333,6 +332,7 @@ export function AdvisorCommand({ session, m, onBack, className, listClassName }:
         none={{ value: 'off', label: 'Off' }}
         extra={model && !current ? [model] : undefined}
         onSelect={(id) => pick({ model: id === 'off' ? null : id, effort: id === model ? effort ?? null : null })}
+        onClose={m.done}
         effort={current && current.efforts.length > 0 ? { levels: current.efforts, current: effort, onSelect: (lvl) => pick({ model: model ?? null, effort: lvl }) } : undefined}
         favorites={m.favorites}
         onToggleFavorite={(id) => void m.toggleFavorite(id)}
@@ -370,6 +370,7 @@ function ModelCommand({ m, session, advisor, className, listClassName, footerCla
         models={m.models}
         model={m.model}
         onSelect={(id) => void m.setModel(id)}
+        onClose={m.done}
         effort={m.current && m.current.efforts.length > 0 ? { levels: m.current.efforts, current: m.effort, onSelect: (lvl) => void m.setEffort(lvl) } : undefined}
         favorites={m.favorites}
         onToggleFavorite={(id) => void m.toggleFavorite(id)}

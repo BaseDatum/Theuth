@@ -123,3 +123,27 @@ test('194: picking another subagent model refetches the subagent effort (the eng
   await vi.waitFor(() => expect(api.subagent_effort.mock.calls.length).toBeGreaterThan(reads))
   expect(api.set_subagent_model).toHaveBeenLastCalledWith(opus.id)
 })
+
+test('2026-11-17: picking a subagent model with levels sets it once and keeps the picker open; its chips show, focused, once it lands; a chip sets the effort and closes', async () => {
+  api.subagent_model.mockImplementation(async () => haiku)
+  api.subagent_effort.mockImplementation(async () => null)
+  api.set_subagent_model.mockImplementation(async (id) => {
+    const m = [sonnet, haiku, opus].find((x) => x.id === id) ?? null
+    api.subagent_model.mockImplementation(async () => m)
+    return m
+  })
+  api.set_subagent_model.mockClear()
+  api.set_subagent_effort.mockClear()
+  await mount('Subagent model', 'Claude Haiku 4.5')
+  await open('Subagent model')
+  await act(async () => void document.querySelector<HTMLElement>(`[cmdk-item][data-value="model:${sonnet.id}"]`)!.click())
+  // The pick round-trips (set_subagent_model, then the refetch); the chips wait for it, then take the focus.
+  await vi.waitFor(() => expect(document.activeElement?.textContent).toBe('Default'))
+  expect(chips().map((c) => c.textContent)).toEqual(['Default', 'low', 'high'])
+  expect(api.set_subagent_model.mock.calls).toEqual([[sonnet.id]])
+  expect(api.set_subagent_effort).not.toHaveBeenCalled()
+  await act(async () => void chips()[2]!.click())
+  expect(document.querySelector('[cmdk-root]')).toBeNull()
+  expect(api.set_subagent_effort.mock.calls).toEqual([['high']])
+  expect(api.set_subagent_model).toHaveBeenCalledTimes(1)
+})
