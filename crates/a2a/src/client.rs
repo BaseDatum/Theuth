@@ -343,6 +343,8 @@ enum Link {
         display: String,
         members: parking_lot::Mutex<Vec<String>>,
         answered: Arc<parking_lot::Mutex<Option<String>>>,
+        /// 199 (D1): every contact machine's last card (whether it takes files).
+        cards: crate::contacts::offers::Cards,
     },
 }
 
@@ -389,12 +391,14 @@ impl PeerClient {
     }
 
     /// 183 §7.7: the client of a contact (`peer.eid` set), over `net`; 191: `members` are
-    /// every machine of it that is admitted.
-    pub fn contact(
+    /// every machine of it that is admitted. 199: `cards` are their last cards.
+    #[allow(clippy::too_many_arguments)] // one call site (the reconcile)
+    pub(crate) fn contact(
         peer: &Peer,
         display: &str,
         members: Vec<String>,
         net: Arc<mesh::net::Net>,
+        cards: crate::contacts::offers::Cards,
         agents: ActorRef<Agents>,
         vault: Option<Arc<Vault>>,
         generation: CancellationToken,
@@ -411,6 +415,7 @@ impl PeerClient {
                 display: display.to_owned(),
                 members: parking_lot::Mutex::new(members),
                 answered: Arc::default(),
+                cards,
             },
             agents,
             vault,
@@ -525,6 +530,24 @@ impl PeerClient {
         }
     }
 
+    /// 199 (D1): the contact's last card (the one that verified most recently among its
+    /// machines) advertises files; an HTTP peer takes none.
+    fn takes_files(&self) -> bool {
+        match &self.link {
+            Link::Http { .. } => false,
+            Link::Iroh {
+                eid,
+                members,
+                cards,
+                ..
+            } => {
+                let mut eids = members.lock().clone();
+                eids.push(eid.clone());
+                crate::contacts::offers::files_of(&cards.lock(), &eids)
+            }
+        }
+    }
+
     /// Resolve the card and negotiate the client once per generation (§4). 183 §7.7: a
     /// contact's client is built per send (each call opens its own stream, nothing to
     /// negotiate), aimed at `export` (`peer:<contact>/<export>`) or the contact's first.
@@ -542,6 +565,7 @@ impl PeerClient {
                 display,
                 members,
                 answered,
+                ..
             } => {
                 let transport: Box<dyn Transport> =
                     Box::new(crate::contacts::reach::IrohTransport {
@@ -785,6 +809,13 @@ impl PeerClient {
                 "communication route revoked".into(),
             ));
         }
+        let files = &outbound.record.files;
+        let mut message = contact_message(
+            &self.name,
+            self.redact(&outbound.record.text),
+            files,
+            self.takes_files(),
+        )?;
         let connected = self
             .connect(outbound.export.as_deref())
             .await
@@ -795,12 +826,6 @@ impl PeerClient {
                     self.remote_text(&e.to_string())
                 ))
             })?;
-        // 199-E1a: one reference part per file after the text (omitted when empty), and
-        // `extensions: [EXT_FILES]`. 199-E3: inline `raw` toward peers without the extension.
-        let mut message = Message::new(
-            Role::User,
-            vec![Part::text(self.redact(&outbound.record.text))],
-        );
         message.message_id = outbound.request_id.clone();
         message.task_id = outbound.task_id.clone();
         message.context_id = outbound.context_id.clone();
@@ -862,6 +887,14 @@ impl PeerClient {
                     "peer {} refused: {} on every machine of it",
                     self.name,
                     agent::communication::network::NOT_OWNER_TEXT
+                )))
+            }
+            // 199 (D1): a machine of the contact behind the one whose card we read (its owner
+            // of that chat) predates files.
+            Ok(Err(e)) if !files.is_empty() && e.code == error_code::EXTENSION_SUPPORT_REQUIRED => {
+                Err(RemoteSendError::Refused(format!(
+                    "{} cannot receive files: their machine for that chat needs updating",
+                    self.name
                 )))
             }
             // 191 (D3): the contact's gate refused this machine on every member that answered:
@@ -1117,6 +1150,34 @@ fn apply(task: &mut Task, ev: StreamResponse, kept: &mut Retained) -> Result<(),
     Ok(())
 }
 
+/// 199 (D1): the message to the contact `name` (its redacted `text` and its outgoing
+/// `files`): the text (omitted when it is empty and files go), then one reference part per
+/// file and `extensions: [EXT_FILES]` only then. Files toward a contact whose last card does
+/// not take them (`takes_files`) are refused here, before anything is sent. 199-E3: inline
+/// `raw` toward peers without the extension.
+fn contact_message(
+    name: &str,
+    text: String,
+    files: &[agent::communication::files::ContactFile],
+    takes_files: bool,
+) -> Result<Message, RemoteSendError> {
+    if !files.is_empty() && !takes_files {
+        return Err(RemoteSendError::Refused(format!(
+            "{name} cannot receive files: their theuth does not support them yet"
+        )));
+    }
+    let mut parts = Vec::with_capacity(files.len() + 1);
+    if files.is_empty() || !text.is_empty() {
+        parts.push(Part::text(text));
+    }
+    parts.extend(files.iter().map(crate::contacts::files::reference_part));
+    let mut message = Message::new(Role::User, parts);
+    if !files.is_empty() {
+        message.extensions = Some(vec![crate::contacts::EXT_FILES.to_owned()]);
+    }
+    Ok(message)
+}
+
 /// Did the SDK fail before any byte left (request serialization, no
 /// transport)? Only then is a local error a definite refusal; every other
 /// local `INTERNAL_ERROR` (HTTP, body bound, malformed or missing result)
@@ -1128,6 +1189,63 @@ fn refused_before_send(e: &A2AError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 199 (D1): a file send toward a contact whose card lacks the extension is refused with
+    /// the design's text; otherwise the text (omitted when empty), then one reference part
+    /// per file, under `extensions: [EXT_FILES]`. Plain text carries no extension.
+    #[test]
+    fn file_sends_carry_reference_parts_only_toward_a_card_that_takes_them() {
+        use agent::communication::files::{ContactFile, FileState, OutState};
+        let file = |id: &str| ContactFile {
+            id: id.into(),
+            holder: "5b2f".into(),
+            state: FileState::Out(OutState::Queued),
+            exchange: Uuid::nil(),
+            contact_id: "rec-maya".into(),
+            contact: "maya".into(),
+            name: format!("{id}.png"),
+            media_type: "image/png".into(),
+            size: Some(3),
+            blake3: Some("ab".repeat(32)),
+            done: 0,
+            error: None,
+            path: None,
+            machine: "xeus".into(),
+            deadline: chrono::Utc::now(),
+        };
+        let two = [file(&"1".repeat(32)), file(&"2".repeat(32))];
+        let Err(RemoteSendError::Refused(why)) = contact_message("maya", "hi".into(), &two, false)
+        else {
+            panic!("a card without files took them");
+        };
+        assert_eq!(
+            why,
+            "maya cannot receive files: their theuth does not support them yet"
+        );
+
+        let m = contact_message("maya", "see".into(), &two, true).unwrap();
+        assert_eq!(m.parts.len(), 3);
+        assert_eq!(m.parts[0].as_text(), Some("see"));
+        assert_eq!(
+            m.parts[2].content,
+            PartContent::Url(crate::contacts::files::file_url("5b2f", &"2".repeat(32)))
+        );
+        assert_eq!(
+            m.parts[2].filename.as_deref(),
+            Some("22222222222222222222222222222222.png")
+        );
+        assert_eq!(
+            m.extensions,
+            Some(vec![crate::contacts::EXT_FILES.to_owned()])
+        );
+        let only = contact_message("maya", String::new(), &two[..1], true).unwrap();
+        assert_eq!(only.parts.len(), 1, "no empty text part beside a file");
+
+        for takes in [false, true] {
+            let text = contact_message("maya", "hi".into(), &[], takes).unwrap();
+            assert_eq!((text.parts.len(), text.extensions), (1, None));
+        }
+    }
 
     /// 183 review 2: a held task keeps its follower past FOLLOW_MAX, sliding with the wait,
     /// but never past start + HOLD_TTL + FOLLOW_MAX; a task not waiting keeps its deadline.

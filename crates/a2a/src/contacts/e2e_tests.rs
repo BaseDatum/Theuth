@@ -2914,6 +2914,194 @@ async fn a_hold_fails_on_a_block_wherever_it_is_written() {
     );
 }
 
+/// 199: the agent's offers as A's file route reaches them: one process-wide registration
+/// (the slot is global), each offer under its contact's record id and the sender's id.
+#[cfg(unix)]
+#[derive(Default)]
+struct FileOffers(
+    parking_lot::Mutex<std::collections::HashMap<(String, String), (std::fs::File, u64)>>,
+    parking_lot::Mutex<Vec<(String, String, agent::communication::files::Receipt)>>,
+);
+
+#[cfg(unix)]
+impl FileOffers {
+    fn get() -> Arc<Self> {
+        static ONE: std::sync::LazyLock<Arc<FileOffers>> = std::sync::LazyLock::new(|| {
+            let o = Arc::new(FileOffers::default());
+            agent::communication::files::set_offers(o.clone());
+            o
+        });
+        ONE.clone()
+    }
+
+    /// Offer `file` (served once: a pipe cannot be reopened) of `len` bytes to `contact`.
+    fn offer(&self, contact: &str, id: &str, file: std::fs::File, len: u64) {
+        self.0
+            .lock()
+            .insert((contact.into(), id.into()), (file, len));
+    }
+}
+
+#[cfg(unix)]
+#[async_trait::async_trait]
+impl agent::communication::files::FileOffers for FileOffers {
+    async fn open(
+        &self,
+        contact: &str,
+        id: &str,
+    ) -> Result<agent::communication::files::OfferHandle, agent::communication::files::OfferError>
+    {
+        let (file, len) = self
+            .0
+            .lock()
+            .remove(&(contact.to_owned(), id.to_owned()))
+            .ok_or(agent::communication::files::OfferError::Unknown)?;
+        Ok(agent::communication::files::OfferHandle {
+            file,
+            len,
+            blake3: String::new(),
+            deadline: chrono::Utc::now() + chrono::Duration::days(7),
+        })
+    }
+
+    async fn receipt(
+        &self,
+        contact: &str,
+        id: &str,
+        receipt: agent::communication::files::Receipt,
+    ) -> Result<(), agent::communication::files::OfferError> {
+        self.1.lock().push((contact.into(), id.into(), receipt));
+        Ok(())
+    }
+}
+
+/// 199 (D2, D10) over real iroh: B downloads A's offer on a stream of its own (A's route
+/// authorises B by B's record id on A) and posts its receipt; a URL host that is no machine
+/// of A is refused with nothing dialled; B blocking A mid-transfer cuts B's download, and A
+/// blocking B cuts A's transfers of B.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_contact_file_streams_on_its_own_stream_and_a_block_cuts_it() {
+    use agent::communication::files::{
+        Fetch, FileFetch as _, Receipt, Timer, TransferError, disk::blake3_of,
+    };
+    use std::io::Write as _;
+    let lan = Lan::default();
+    let a = engine("a", &lan, true, cfg(600)).await;
+    let b = engine("b", &lan, true, cfg(600)).await;
+    let (b_on_a, a_on_b) = paired(&a, &b).await;
+    let rec_b = a.ctx.shared.read().staged.contacts[&b_on_a].id.clone();
+    let rec_a = b.ctx.shared.read().staged.contacts[&a_on_b].id.clone();
+    let offers = FileOffers::get();
+    let dir = tempfile::tempdir().unwrap();
+    let size = 300_000u64;
+    let src = dir.path().join("src");
+    std::fs::write(&src, (0..size).map(|i| (i % 251) as u8).collect::<Vec<_>>()).unwrap();
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    offers.offer(&rec_b, &id, std::fs::File::open(&src).unwrap(), size);
+
+    let timer = || Timer::until(tokio::time::Instant::now() + Duration::from_secs(600));
+    let fetch = files::ContactFetch(Arc::downgrade(&b.ctx));
+    let f = Fetch {
+        contact: rec_a.clone(),
+        member: a.eid(),
+        id: id.clone(),
+        size,
+        partial: dir.path().join("partial"),
+        have: 0,
+        timer: timer(),
+    };
+    let got = fetch.download(&f, &mut |_| {}).await.unwrap();
+    let want = blake3_of(&std::fs::File::open(&src).unwrap(), size).unwrap();
+    assert_eq!((got.bytes, got.blake3), (size, want));
+    fetch
+        .send_receipt(&rec_a, &a.eid(), &id, &Receipt::Received, timer())
+        .await
+        .unwrap();
+    assert!(
+        offers
+            .1
+            .lock()
+            .contains(&(rec_b.clone(), id.clone(), Receipt::Received)),
+        "the receipt reached A's offer of B"
+    );
+
+    let stranger = iroh::SecretKey::generate().public().to_string();
+    for refused in [
+        Fetch {
+            member: stranger,
+            ..f.clone()
+        },
+        Fetch {
+            contact: "rec-other".into(),
+            ..f.clone()
+        },
+    ] {
+        let err = fetch.download(&refused, &mut |_| {}).await.unwrap_err();
+        assert!(matches!(err, TransferError::Cancelled), "{err}");
+    }
+
+    // B blocks A mid-download: B's own pass cuts it.
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    let piped = uuid::Uuid::new_v4().simple().to_string();
+    offers.offer(
+        &rec_b,
+        &piped,
+        std::os::fd::OwnedFd::from(reader).into(),
+        1_000_000,
+    );
+    let moved = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let task = {
+        let (w, moved) = (Arc::downgrade(&b.ctx), moved.clone());
+        let f = Fetch {
+            id: piped,
+            size: 1_000_000,
+            partial: dir.path().join("piped"),
+            ..f.clone()
+        };
+        tokio::spawn(async move {
+            files::ContactFetch(w)
+                .download(&f, &mut |n| {
+                    moved.store(n, std::sync::atomic::Ordering::SeqCst)
+                })
+                .await
+        })
+    };
+    writer.write_all(&[7; 1000]).unwrap();
+    until("bytes arriving", || {
+        (moved.load(std::sync::atomic::Ordering::SeqCst) == 1000).then_some(())
+    })
+    .await;
+    b.ctx
+        .remove_contact(ContactRemove {
+            name: a_on_b.clone(),
+            block: true,
+        })
+        .await
+        .unwrap();
+    let err = tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .expect("the block ends the download long before its idle")
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(err, TransferError::Cancelled), "{err}");
+
+    // A blocks B: every transfer of B on A is cut.
+    let serving = a.ctx.transfers.token(&rec_b);
+    a.ctx
+        .remove_contact(ContactRemove {
+            name: b_on_a.clone(),
+            block: true,
+        })
+        .await
+        .unwrap();
+    until("A cut B's transfers", || {
+        serving.is_cancelled().then_some(())
+    })
+    .await;
+    drop(writer);
+}
+
 mod forward;
 mod owners;
 mod rosters;

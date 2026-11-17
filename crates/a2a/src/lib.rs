@@ -211,8 +211,9 @@ struct Ctx {
     mdns: Arc<dyn contacts::discovery::Mdns>,
     /// 183 §7.4: the window and the ceremonies.
     contacts: Mutex<contacts::Contacts>,
-    /// 183 F1: each contact's last fetched offers, by endpoint id.
-    offers: Mutex<std::collections::HashMap<String, contacts::offers::Cached>>,
+    /// 183 F1: each contact's last fetched offers, by endpoint id. 199: shared with the
+    /// contact clients (a file send reads whether the card advertises files).
+    offers: contacts::offers::Cards,
     /// 191 (D2): `contacts_ready`, shared with the agent (which only reads it): set once the
     /// mesh latch is done and the first contact reconcile finished.
     ready: Arc<std::sync::atomic::AtomicBool>,
@@ -725,6 +726,7 @@ impl Ctx {
                         display,
                         members,
                         net.clone(),
+                        self.offers.clone(),
                         agents.clone(),
                         vault.clone(),
                         CancellationToken::new(),
@@ -888,9 +890,14 @@ impl Ctx {
             }
         }
         let joined = !live.staged.contacts.is_empty();
+        // 199 (D10): a contact whose admitted machines or block state changed loses its
+        // active file transfers on this side (route GETs and receipts, downloads and receipt
+        // POSTs end `Cancelled`); the next one re-checks against this snapshot.
+        let cut = contacts::files::changed_members(&prev.staged, &live.staged);
         *self.shared.write() = live;
-        // 199-E1a: `self.transfers.cut(<record id>)` for every contact whose members or
-        // block state changed in this pass (a GET, resume or receipt then ends `Cancelled`).
+        for id in &cut {
+            self.transfers.cut(id);
+        }
         for (alias, eids) in ended {
             if let Err(e) = agents
                 .ask(agent::communication::network::ContactRelease {
@@ -1420,7 +1427,7 @@ impl runtime::Plugin for A2aPlugin {
             contacts: Mutex::new(contacts::Contacts::new(
                 cfg!(debug_assertions) && std::env::var_os("THEUTH_DEV_CONTACTS_DIR").is_some(),
             )),
-            offers: Mutex::default(),
+            offers: Arc::default(),
             ready: agent::communication::network::CONTACTS_READY.clone(),
             latched: Arc::new(mesh::synced),
             rosters: Mutex::default(),
@@ -1481,7 +1488,7 @@ async fn test_ctx(
         net: std::sync::OnceLock::new(),
         mdns,
         contacts: Mutex::new(contacts::Contacts::new(true)),
-        offers: Mutex::default(),
+        offers: Arc::default(),
         ready,
         latched,
         rosters: Mutex::default(),
