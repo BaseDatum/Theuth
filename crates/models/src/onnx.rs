@@ -52,6 +52,12 @@ pub const WEBGPU_MIN_ORT: [u32; 3] = [1, 24, 4];
 /// runtime ([`webgpu_concurrent`]): 0.5.0, with microsoft/onnxruntime #32587, #32874, #33082.
 pub const WEBGPU_CONCURRENT_PLUGIN: [u32; 3] = [0, 5, 0];
 
+/// Whether an eligible pair ([`webgpu_concurrent`]) actually drops [`WEBGPU_RUN`]. `false` until
+/// `crates/meeting/tests/webgpu_concurrency.rs` passes on a discrete GPU against the pinned pair
+/// (`ort-webgpu-test.ps1`): on build-B (2026-11-17) ORT 1.32.0 + plugin 0.6.0 died natively
+/// (0xC0000409) while loading, before any concurrent run (docs/design/fix-webgpu-run-lock.md).
+const WEBGPU_CONCURRENT_VERIFIED: bool = false;
+
 /// The loaded runtime's own version (`OrtGetApiBase()->GetVersionString()`), read once by
 /// [`ort_lib`] ([`read_runtime_version`]).
 static ORT_VERSION: OnceLock<String> = OnceLock::new();
@@ -80,11 +86,12 @@ static WEBGPU_ADAPTER: Mutex<Option<String>> = Mutex::new(None);
 /// runtime gives each Session its own command recording; anywhere else (older pairs, ORT
 /// 1.29.x, unknown versions, the built-in EP of the macOS runtime) the plugin's "serialized
 /// compatibility" leaves serialising every operation on the device to the caller — this lock.
-/// CPU sessions never take it.
+/// Today every pair takes it ([`WEBGPU_CONCURRENT_VERIFIED`]). CPU sessions never take it.
 static WEBGPU_RUN: Mutex<()> = Mutex::new(());
 
 /// Set once at WebGPU registration when [`webgpu_concurrent`] holds for the loaded runtime and
-/// the chosen device's EP: [`gpu_guard`] then never takes [`WEBGPU_RUN`].
+/// the chosen device's EP, and [`WEBGPU_CONCURRENT_VERIFIED`]: [`gpu_guard`] then never takes
+/// [`WEBGPU_RUN`].
 static WEBGPU_CONCURRENT: AtomicBool = AtomicBool::new(false);
 
 /// Time spent waiting for [`WEBGPU_RUN`]: (acquisitions, total ns, max ns). The queueing
@@ -616,7 +623,8 @@ fn register_webgpu(plugin: Option<&Path>) -> Result<(), String> {
         ep_version(&env, *index)
     };
     let core = runtime_version();
-    let concurrent = webgpu_concurrent(core, plugin_version.as_deref());
+    let eligible = webgpu_concurrent(core, plugin_version.as_deref());
+    let concurrent = WEBGPU_CONCURRENT_VERIFIED && eligible;
     WEBGPU_CONCURRENT.store(concurrent, Ordering::Relaxed);
     let ep = match (builtin, plugin_version.as_deref()) {
         (true, _) => "its built-in WebGPU EP".to_owned(),
@@ -627,6 +635,10 @@ fn register_webgpu(plugin: Option<&Path>) -> Result<(), String> {
     if concurrent {
         tracing::info!(
             "onnxruntime: WebGPU sessions run concurrently, no run lock (ONNX Runtime {core}, {ep})"
+        );
+    } else if eligible {
+        tracing::info!(
+            "onnxruntime: WebGPU sessions serialised under one run lock (ONNX Runtime {core}, {ep}): eligible for concurrent sessions, held until verified on a GPU"
         );
     } else {
         tracing::info!(
