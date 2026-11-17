@@ -53,8 +53,11 @@
 ## Gates (crates/desktop/ui, under build-lock)
 
 - `bunx tsc -b --noEmit`: 0 `error TS` (baseline before the change: 0, `/tmp/broadcast-top/tsc-base.txt`).
-- `bunx vitest run src/components/chat/BroadcastDialog.test.ts src/lib/no-emoji.test.ts`: 2 files, 11 tests passed.
-  New test: textarea, the single Send button and the preview line come before the first target checkbox.
+- `bunx vitest run src/components/chat/BroadcastDialog.test.ts src/lib/no-emoji.test.ts src/components/disclosure.test.ts`:
+  3 files, 41 tests passed. New test: textarea, the single Send button and the preview line come before the first
+  target checkbox.
+- Full suite `BUILD_SLOTS=1 … bunx vitest run src`: 357 files, 2508 tests passed, 0 failed
+  (`/tmp/broadcast-top/vitest-full.txt`).
 
 ## Proof
 
