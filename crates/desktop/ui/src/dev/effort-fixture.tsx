@@ -115,7 +115,8 @@ const api = new Proxy(base as unknown as Api, {
       throw new Error(`fixture: ${name} not answered`)
     }),
 })
-active().connection.setState({ api, client: {} as RpcClient, info: info as never })
+// `legacy` discovery: no engine to probe, so every capability-gated query runs against `base`.
+active().connection.setState({ api, client: {} as RpcClient, info: info as never, discovery: { ...active().connection.getState().discovery, phase: 'legacy' } })
 // The driver reads failed queries here (a method `base` lacks fails as "not a function" inside a wrapper).
 Object.assign(window, { qc: active().qc })
 // Rows 11 and 19 start on a model with levels (their fixtures default to "Same as …", which has no chips). Each fixture
