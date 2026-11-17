@@ -170,12 +170,15 @@ fn exec_config(on_gpu: Arc<AtomicBool>) -> ExecutionConfig {
     })
 }
 
-/// Load a parakeet-rs model with [`exec_config`] and wrap it with its WebGPU flag.
+/// Load a parakeet-rs model with [`exec_config`] and wrap it with its WebGPU flag. parakeet-rs
+/// creates its sessions inside `load`, so on serialised WebGPU the whole load holds the run lock.
 fn guarded<M>(
     load: impl FnOnce(ExecutionConfig) -> Result<M, parakeet_rs::Error>,
 ) -> Result<Guarded<M>, parakeet_rs::Error> {
     let on_gpu = Arc::new(AtomicBool::new(false));
-    let m = load(exec_config(on_gpu.clone()))?;
+    let m = gpu_serial(models::onnx::ep() == models::onnx::WEBGPU_EP, || {
+        load(exec_config(on_gpu.clone()))
+    })?;
     Ok(Guarded::new(m, on_gpu.load(Ordering::Relaxed)))
 }
 

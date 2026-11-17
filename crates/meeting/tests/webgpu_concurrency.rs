@@ -1,9 +1,11 @@
 //! The live-meeting race on the shared WebGPU context (149 ENGINE-DIAR): the mic STT, the
-//! system STT and the live diariser each run their ORT session on their own thread, and the
-//! WebGPU plugin EP 0.4.0 shares one command encoder between all sessions. Without
+//! system STT and the live diariser each run their ORT session on their own thread. WebGPU
+//! plugin EP ≤ 0.4.0 shares one command encoder between all sessions: without
 //! `models::onnx`'s run lock this returns "WebGPU validation failed. [CommandEncoder] is
 //! already finished" within seconds, or kills the test process in
-//! `onnxruntime_providers_webgpu.dll`. With it every run is `Ok` for the whole 20 s.
+//! `onnxruntime_providers_webgpu.dll`. Plugin ≥ 0.5.0 on an eligible runtime (we ship 0.6.0 on
+//! ORT 1.32) runs them lock-free (`models::onnx::gpu_lock_free`). Either way every run must be
+//! `Ok` for the whole 20 s; the output names the mode.
 //!
 //! Needs the real models and a discrete GPU, so `#[ignore]`:
 //!
@@ -105,6 +107,15 @@ fn three_webgpu_sessions_run_concurrently_and_one_drops_mid_run() -> anyhow::Res
     let mut mic = Stream::open(&stt_dir, &data_dir)?;
     let mut system = Stream::open(&stt_dir, &data_dir)?;
     eprintln!("sessions on {gpu} loaded in {:?}", t.elapsed());
+    eprintln!(
+        "ONNX Runtime {}; run lock {}",
+        models::onnx::runtime_version().unwrap_or("of unknown version"),
+        if models::onnx::gpu_lock_free() {
+            "off: concurrent WebGPU sessions"
+        } else {
+            "on: serialised WebGPU sessions"
+        }
+    );
 
     let pcm = Arc::new(noise(30 * RATE as usize));
     let window: [f32; WINDOW] = pcm[..WINDOW].try_into().unwrap();

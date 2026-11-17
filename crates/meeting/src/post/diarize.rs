@@ -166,7 +166,8 @@ fn ort_err<R>(e: ort::Error<R>) -> anyhow::Error {
 
 /// `intra_threads`: ORT's default (the physical cores) when `None`; the live diariser
 /// caps it so the STT tasks and capture threads keep theirs (07 §2). The session comes
-/// back [`Guarded`]: on WebGPU every run and the drop take `models::onnx`'s run lock.
+/// back [`Guarded`]: on serialised WebGPU its creation, every run and the drop take
+/// `models::onnx`'s run lock (none of them do on a concurrent-capable plugin).
 fn session(
     path: &Path,
     data_dir: &Path,
@@ -181,8 +182,8 @@ fn session(
         builder = builder.with_intra_threads(n).map_err(ort_err)?;
     }
     let (mut builder, on_gpu) = models::onnx::configure(builder);
-    let sess = builder
-        .commit_from_file(path)
+    // Serialised WebGPU mode: creation takes the run lock too (plugin "serialized compatibility").
+    let sess = models::onnx::gpu_serial(on_gpu, || builder.commit_from_file(path))
         .map_err(|e| anyhow::anyhow!("load {}: {e}", path.display()))?;
     Ok(Guarded::new(sess, on_gpu))
 }

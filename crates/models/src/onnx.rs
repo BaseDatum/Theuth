@@ -35,8 +35,8 @@ pub const LIB: &str = platform::ort::ort_library_name();
 pub const PLUGIN_DIR: &str = "plugins";
 
 /// The WebGPU plugin EP library as the `Microsoft.ML.OnnxRuntime.EP.WebGpu` package ships it
-/// (`runtimes/<rid>/native/`). On Windows `dxcompiler.dll` and `dxil.dll` from the same folder
-/// go beside it.
+/// (`runtimes/<rid>/native/`). On Windows `dxcompiler.dll` from the same folder goes beside it
+/// (0.6.0 has no `dxil.dll`).
 pub const WEBGPU_LIB: &str = if cfg!(windows) {
     "onnxruntime_providers_webgpu.dll"
 } else if cfg!(target_os = "macos") {
@@ -45,8 +45,16 @@ pub const WEBGPU_LIB: &str = if cfg!(windows) {
     "libonnxruntime_providers_webgpu.so"
 };
 
-/// The oldest runtime the WebGPU plugin (0.4.0) accepts; older ones fail at registration.
+/// The oldest runtime the WebGPU plugin (0.4.0–0.6.0) accepts; older ones fail at registration.
 pub const WEBGPU_MIN_ORT: [u32; 3] = [1, 24, 4];
+
+/// The oldest WebGPU plugin that runs independent sessions concurrently on an eligible
+/// runtime ([`webgpu_concurrent`]): 0.5.0, with microsoft/onnxruntime #32587, #32874, #33082.
+pub const WEBGPU_CONCURRENT_PLUGIN: [u32; 3] = [0, 5, 0];
+
+/// The loaded runtime's own version (`OrtGetApiBase()->GetVersionString()`), read once by
+/// [`ort_lib`] ([`read_runtime_version`]).
+static ORT_VERSION: OnceLock<String> = OnceLock::new();
 
 /// The runtime `ort::init_from(..).commit()` loaded, or why the one attempt to load it failed.
 /// A failed *search* is not cached (the downloader may land the file while the daemon runs);
@@ -62,16 +70,22 @@ static WEBGPU_PLUGIN: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// device choice ([`pick_adapter`]); `None` = discrete over integrated over first.
 static WEBGPU_ADAPTER: Mutex<Option<String>> = Mutex::new(None);
 
-/// Serialises every `Session::run` on, and every drop of, a session [`configure`] put on
-/// WebGPU. The plugin EP we ship (0.4.0) shares ONE `WebGpuContext` with ONE unlocked command
-/// encoder between all sessions: a run ending on one thread `Finish()`es the encoder another
-/// thread is still recording into ("WebGPU validation failed. [CommandEncoder] is already
-/// finished"), then a native fault in `onnxruntime_providers_webgpu.dll` takes the engine
-/// down. Upstream fixed it in microsoft/onnxruntime #32587 ("Support concurrent use with
-/// explicit Session streams") and #32874 ("Each Session owns its command recording"), neither
-/// in a released plugin. Remove when the WebGPU plugin ships #32587; it may also need
-/// explicit per-session streams (`OrtEp CreateSyncStreamForDevice`). CPU sessions never take it.
+/// Serialises every WebGPU `Session::run`, drop and session creation when the runtime + EP
+/// pair cannot run independent sessions concurrently ([`webgpu_concurrent`]; the mode is fixed
+/// at registration, [`WEBGPU_CONCURRENT`]). Plugin ≤ 0.4.0 shares ONE `WebGpuContext` with ONE
+/// unlocked command encoder between all sessions: a run ending on one thread `Finish()`es the
+/// encoder another thread is still recording into ("WebGPU validation failed.
+/// [CommandEncoder] is already finished"), then a native fault in
+/// `onnxruntime_providers_webgpu.dll` takes the engine down. Plugin 0.5.0+ on an eligible
+/// runtime gives each Session its own command recording; anywhere else (older pairs, ORT
+/// 1.29.x, unknown versions, the built-in EP of the macOS runtime) the plugin's "serialized
+/// compatibility" leaves serialising every operation on the device to the caller — this lock.
+/// CPU sessions never take it.
 static WEBGPU_RUN: Mutex<()> = Mutex::new(());
+
+/// Set once at WebGPU registration when [`webgpu_concurrent`] holds for the loaded runtime and
+/// the chosen device's EP: [`gpu_guard`] then never takes [`WEBGPU_RUN`].
+static WEBGPU_CONCURRENT: AtomicBool = AtomicBool::new(false);
 
 /// Time spent waiting for [`WEBGPU_RUN`]: (acquisitions, total ns, max ns). The queueing
 /// is the lock's whole latency cost; the GPU concurrency test reports it.
@@ -87,10 +101,11 @@ pub fn gpu_wait_stats() -> (u64, std::time::Duration, std::time::Duration) {
     )
 }
 
-/// The [`WEBGPU_RUN`] guard when `on_gpu`, `None` otherwise. A poisoned lock (a panic inside a
-/// run) is recovered: the lock protects no data of ours.
+/// The [`WEBGPU_RUN`] guard when `on_gpu` and the WebGPU EP runs serialised, `None` otherwise
+/// (CPU, or [`gpu_lock_free`]). A poisoned lock (a panic inside a run) is recovered: the lock
+/// protects no data of ours.
 pub fn gpu_guard(on_gpu: bool) -> Option<MutexGuard<'static, ()>> {
-    on_gpu.then(|| {
+    (on_gpu && !gpu_lock_free()).then(|| {
         let t = std::time::Instant::now();
         let guard = WEBGPU_RUN.lock().unwrap_or_else(PoisonError::into_inner);
         let waited = t.elapsed().as_nanos() as u64;
@@ -109,10 +124,15 @@ pub fn gpu_serial<T>(on_gpu: bool, f: impl FnOnce() -> T) -> T {
     f()
 }
 
+/// Whether WebGPU sessions run concurrently, without [`WEBGPU_RUN`] (decided at registration).
+pub fn gpu_lock_free() -> bool {
+    WEBGPU_CONCURRENT.load(Ordering::Relaxed)
+}
+
 /// A model (an `ort::Session` or a parakeet-rs model owning several) with the flag
 /// [`configure`] returned for it. Derefs to the model; callers hold [`Guarded::guard`] (or use
 /// [`gpu_serial`] with [`Guarded::on_gpu`]) around each run, and the drop — which releases GPU
-/// resources on the shared context — happens under the lock here.
+/// resources on the device — happens under the lock here (when the lock applies).
 pub struct Guarded<T> {
     inner: ManuallyDrop<T>,
     on_gpu: bool,
@@ -215,7 +235,16 @@ pub fn ort_lib(data_dir: &Path) -> Result<PathBuf, String> {
     let r = match loaded {
         Ok(builder) => {
             builder.commit();
-            tracing::debug!("onnxruntime: loaded {}", lib.display());
+            match read_runtime_version(&lib) {
+                Ok(v) => {
+                    tracing::debug!("onnxruntime: loaded {} (ONNX Runtime {v})", lib.display());
+                    let _ = ORT_VERSION.set(v);
+                }
+                Err(e) => tracing::debug!(
+                    "onnxruntime: loaded {}; version unknown ({e})",
+                    lib.display()
+                ),
+            }
             // `ort`'s tracing logger creates the environment at VERBOSE, so ORT formats every
             // INFO line ("Reserving memory in BFCArena", ~840k a day) before the filter drops
             // it (176 R4). Set before any session exists; `ORT_LOG=<level>` keeps VERBOSE
@@ -532,7 +561,7 @@ fn has_webgpu_device(env: &ort::environment::Environment) -> bool {
 }
 
 /// Make a WebGPU device available in the process-wide environment and choose the one sessions
-/// use. A runtime with the EP built in (Microsoft's osx-arm64 1.27.0 has it; the win-x64 and
+/// use. A runtime with the EP built in (Microsoft's osx-arm64 1.32.0 has it; the win-x64 and
 /// linux-x64 CPU builds do not) already has one, and loading the plugin beside it would add a
 /// second `WebGpuExecutionProvider` from another factory that `with_devices` refuses to mix —
 /// so the plugin is only registered (`RegisterExecutionProviderLibrary` + `GetEpDevices`
@@ -541,14 +570,15 @@ fn has_webgpu_device(env: &ort::environment::Environment) -> bool {
 /// GPU-less box makes one) is a failure for `auto` and a WARN for explicit `webgpu`.
 fn register_webgpu(plugin: Option<&Path>) -> Result<(), String> {
     let env = ort::environment::Environment::current().map_err(|e| e.to_string())?;
-    if has_webgpu_device(&env) {
+    let builtin = has_webgpu_device(&env);
+    if builtin {
         tracing::debug!("onnxruntime: {WEBGPU_EP} is built into the runtime; plugin not loaded");
     } else {
         let plugin = plugin.ok_or_else(|| {
             format!("the runtime has no {WEBGPU_EP} and there is no {WEBGPU_LIB} under <data_dir>/models/{DIR}/{PLUGIN_DIR}/ (Microsoft.ML.OnnxRuntime.EP.WebGpu, runtimes/<rid>/native/)")
         })?;
         if let Some(v) = runtime_version()
-            && !webgpu_accepts(&v)
+            && !webgpu_accepts(v)
         {
             return Err(format!(
                 "ONNX Runtime {v} is older than {}.{}.{}, the plugin's minimum",
@@ -578,7 +608,42 @@ fn register_webgpu(plugin: Option<&Path>) -> Result<(), String> {
     *WEBGPU_CHOICE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((*index, label.clone()));
+    // The built-in EP (macOS) keeps the lock: the core release notes (1.31, 1.32) name #32587
+    // but neither #32874 nor #33082, which the plugin's concurrent mode needs.
+    let plugin_version = if builtin {
+        None
+    } else {
+        ep_version(&env, *index)
+    };
+    let core = runtime_version();
+    let concurrent = webgpu_concurrent(core, plugin_version.as_deref());
+    WEBGPU_CONCURRENT.store(concurrent, Ordering::Relaxed);
+    let ep = match (builtin, plugin_version.as_deref()) {
+        (true, _) => "its built-in WebGPU EP".to_owned(),
+        (false, Some(v)) => format!("WebGPU plugin {v}"),
+        (false, None) => "a WebGPU plugin of unknown version".to_owned(),
+    };
+    let core = core.unwrap_or("of unknown version");
+    if concurrent {
+        tracing::info!(
+            "onnxruntime: WebGPU sessions run concurrently, no run lock (ONNX Runtime {core}, {ep})"
+        );
+    } else {
+        tracing::info!(
+            "onnxruntime: WebGPU sessions serialised under one run lock (ONNX Runtime {core}, {ep}); concurrent needs plugin ≥ 0.5.0 on ONNX Runtime ≥ 1.31, 1.30.1+ or 1.28.3+"
+        );
+    }
     Ok(())
+}
+
+/// The `version` entry (`kOrtEpDevice_EpMetadataKey_Version`, "available for all plugin EPs")
+/// of the EP metadata of device `index` in `env.devices()`.
+fn ep_version(env: &ort::environment::Environment, index: usize) -> Option<String> {
+    let d = env.devices().nth(index)?;
+    // SAFETY: as in `describe`.
+    key_values(unsafe { (ort::api().EpDevice_EpMetadata)(d.ptr()) })
+        .into_iter()
+        .find_map(|(k, v)| (k == "version").then_some(v))
 }
 
 /// Run `register(plugin)` at most once per `cell` (concurrent callers wait for the first) and
@@ -607,32 +672,55 @@ fn register_once(
     result.clone()
 }
 
-/// The loaded runtime's version from the `VERSION` file beside it (the models-dir layout);
-/// `None` for a bundled, `$ORT_DYLIB_PATH` or Homebrew runtime, whose version `ort` already
-/// checked against its API level at load.
-fn runtime_version() -> Option<String> {
-    let lib = ORT
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()?
-        .ok()?;
-    std::fs::read_to_string(lib.parent()?.join("VERSION"))
-        .ok()
-        .map(|s| s.trim().to_string())
+/// The loaded runtime's own version ("1.32.0"), once [`ort_lib`] has loaded it; `None` before,
+/// or when the library would not say.
+pub fn runtime_version() -> Option<&'static str> {
+    ORT_VERSION.get().map(String::as_str)
 }
 
-/// Whether an ORT `version` ("1.27.0") is at least [`WEBGPU_MIN_ORT`]. Unparseable → `false`.
-pub fn webgpu_accepts(version: &str) -> bool {
+/// `OrtGetApiBase()->GetVersionString()` of `lib`, the runtime `ort` just loaded: `ort` rc.13
+/// keeps its handle private, so this opens the same file again (the loader hands back the
+/// image already mapped; dropping ours leaves `ort`'s reference).
+fn read_runtime_version(lib: &Path) -> Result<String, String> {
+    // SAFETY: `lib` is the image `ort` loaded and resolved `OrtGetApiBase` from; the C API
+    // returns a non-null base whose version string is static and NUL-terminated.
+    unsafe {
+        let l = libloading::Library::new(lib).map_err(|e| e.to_string())?;
+        let base: libloading::Symbol<unsafe extern "C" fn() -> *const ort::sys::OrtApiBase> =
+            l.get(b"OrtGetApiBase").map_err(|e| e.to_string())?;
+        let base = base();
+        if base.is_null() {
+            return Err("OrtGetApiBase returned null".into());
+        }
+        let v = ((*base).GetVersionString)();
+        Ok(std::ffi::CStr::from_ptr(v).to_string_lossy().into_owned())
+    }
+}
+
+/// `major.minor.patch` of a version string; anything after a third numeric part is ignored,
+/// a missing or non-numeric part is `None`.
+fn parse_version(version: &str) -> Option<[u32; 3]> {
     let mut parts = version.trim().split('.').map(|p| p.parse::<u32>().ok());
-    let v = [
-        parts.next().flatten(),
-        parts.next().flatten(),
-        parts.next().flatten(),
-    ];
-    let [Some(a), Some(b), Some(c)] = v else {
+    Some([parts.next()??, parts.next()??, parts.next()??])
+}
+
+/// Whether an ORT `version` ("1.32.0") is at least [`WEBGPU_MIN_ORT`]. Unparseable → `false`.
+pub fn webgpu_accepts(version: &str) -> bool {
+    parse_version(version).is_some_and(|v| v >= WEBGPU_MIN_ORT)
+}
+
+/// Whether a WebGPU plugin of version `plugin` runs independent sessions concurrently on ORT
+/// `core` — the plugin's "Runtime Compatibility" rule (0.5.0, restated in 0.6.0): plugin ≥
+/// [`WEBGPU_CONCURRENT_PLUGIN`] on ORT ≥ 1.31, or 1.30.1+ in 1.30, or 1.28.3+ in 1.28; every
+/// other runtime (1.29.x included) gets serialised compatibility. Unknown or unparseable → `false`.
+pub fn webgpu_concurrent(core: Option<&str>, plugin: Option<&str>) -> bool {
+    let (Some(c), Some(p)) = (core.and_then(parse_version), plugin.and_then(parse_version)) else {
         return false;
     };
-    [a, b, c] >= WEBGPU_MIN_ORT
+    let [major, minor, patch] = c;
+    let core_ok = c >= [1, 31, 0]
+        || (major == 1 && ((minor == 30 && patch >= 1) || (minor == 28 && patch >= 3)));
+    core_ok && p >= WEBGPU_CONCURRENT_PLUGIN
 }
 
 /// The execution provider sessions built by [`configure`] run on, for status replies:
@@ -666,7 +754,7 @@ pub fn devices() -> Vec<String> {
 /// ORT's default and needs nothing; WebGPU or DirectML that fails to register logs one WARN
 /// and leaves this and every later session on the CPU. Never fails: the builder comes back
 /// untouched in the worst case. The flag is `true` when WebGPU was appended: the session's
-/// runs and drop must then go through [`WEBGPU_RUN`] ([`Guarded`]).
+/// creation, runs and drop must then go through [`gpu_guard`] ([`Guarded`], [`gpu_serial`]).
 pub fn configure(builder: SessionBuilder) -> (SessionBuilder, bool) {
     if !ort_ready() {
         // A builder exists, so `ort` found a runtime by itself (`$ORT_DYLIB_PATH`, a library on
@@ -792,13 +880,35 @@ mod tests {
 
     #[test]
     fn version_gate_is_the_plugins_minimum() {
-        assert!(webgpu_accepts("1.27.0"));
+        assert!(webgpu_accepts("1.32.0"));
         assert!(webgpu_accepts("1.24.4\n"));
         assert!(webgpu_accepts("2.0.0"));
         assert!(!webgpu_accepts("1.24.3"));
         assert!(!webgpu_accepts("1.22.0"));
         assert!(!webgpu_accepts("1.24"));
         assert!(!webgpu_accepts("onnxruntime"));
+    }
+
+    #[test]
+    fn only_a_known_eligible_pair_runs_without_the_lock() {
+        let c = |core, plugin| webgpu_concurrent(Some(core), Some(plugin));
+        // What we ship, and the plugin's eligible runtime lines.
+        assert!(c("1.32.0", "0.6.0"));
+        assert!(c("1.31.0", "0.5.0"));
+        assert!(c("1.30.1", "0.5.0"));
+        assert!(c("1.28.3", "0.5.0"));
+        assert!(c("2.0.0", "1.0.0"));
+        // Serialised compatibility: ineligible runtimes, 1.29.x included.
+        for core in ["1.30.0", "1.29.9", "1.28.2", "1.27.0", "1.24.4"] {
+            assert!(!c(core, "0.6.0"), "{core}");
+        }
+        // A plugin without the fix, on any runtime.
+        assert!(!c("1.32.0", "0.4.0"));
+        // Unknown or unparseable: keep the lock.
+        assert!(!webgpu_concurrent(None, Some("0.6.0")));
+        assert!(!webgpu_concurrent(Some("1.32.0"), None));
+        assert!(!c("1.32.0", "0.6"));
+        assert!(!c("1.32", "0.6.0"));
     }
 
     #[test]
