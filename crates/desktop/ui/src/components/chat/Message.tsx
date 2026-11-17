@@ -2,7 +2,7 @@ import { Link } from '@tanstack/react-router'
 import { AppWindow, BellRing, Bot, ChevronRight, Trash2, UserRound } from 'lucide-react'
 import { memo, type ReactNode } from 'react'
 import { type AppInput, parseAppInput } from '@/components/apps/lifecycle'
-import { ENGINE_NOTICES, parseBroadcast } from '@/lib/injected'
+import { ENGINE_NOTICES, parseBroadcast, parseFileNotice } from '@/lib/injected'
 import { parseMeetingLine } from '@/lib/meeting-line'
 import type { AgentInfo } from '@/store/ui-events'
 import type { Prompt } from '@/store/approvals'
@@ -11,6 +11,7 @@ import { AdvisorNoteCard } from './AdvisorNoteCard'
 import { ApprovalCard } from './ApprovalCard'
 import { AskCard } from './AskCard'
 import { AutoresearchCard, BroadcastCard, ChildLostCard, ChildStateCard, ContactInboxCard, ContactMessageCard, DeskCard, EngineRestartCard, MovedCard, ParentViewCard, ResumeCard, WakeCard, childLine } from './HarnessCards'
+import { FileNoticeCard } from './ContactFiles'
 import { MessageAssistant, RemoveButton } from './MessageAssistant'
 import { MessageCompacted } from './MessageCompacted'
 import { MessageError, MessageInfo, MessageInterrupted } from './MessageInfo'
@@ -79,7 +80,7 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
           className="-my-1.5 -mr-2 size-8 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:size-11 pointer-coarse:opacity-100"
         />
       ) : undefined
-      return <MessagePeer from={entry.from} text={entry.text} origin={entry.origin} seq={entry.seq} session={session} at={entry.at} remove={remove} contact={entry.contact} />
+      return <MessagePeer from={entry.from} text={entry.text} origin={entry.origin} seq={entry.seq} session={session} at={entry.at} remove={remove} contact={entry.contact} files={entry.files} />
     }
     case 'engine':
       return <EngineNotice notice={entry.notice} text={entry.text} />
@@ -103,6 +104,9 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       return <ContactInboxCard {...entry} />
     case 'contact_message':
       return <ContactMessageCard {...entry} />
+    // 199: a file notice row from theuth is a file card.
+    case 'file':
+      return <FileNoticeCard note={entry.file} session={session} at={entry.at} ended={entry.ended} />
     case 'cell_result': // 171:U1-ADD
       return <ResultCard run={entry.run} name={entry.name} label={entry.label} cell={entry.cell} exit={entry.exit} secs={entry.secs} />
     case 'parentView':
@@ -112,7 +116,7 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
     case 'info':
       return <MessageInfo text={entry.text} />
     case 'error':
-      return <MessageError text={entry.text} />
+      return <ErrorRow text={entry.text} session={session} at={entry.at} />
     case 'compacted':
       return <MessageCompacted epoch={entry.epoch} style={entry.style} summary={entry.summary} />
     case 'interrupted':
@@ -120,6 +124,14 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
     case 'advisory':
       return <AdvisorNoteCard notes={entry.notes} at={entry.at} question={entry.question} />
   }
+}
+
+/** An `errors` row. 199 D17: one that is an ended share's file notice is its file card, "not given to the agent"; the raw
+ * `<message_file>` markup never shows, even when it does not parse. */
+function ErrorRow({ text, session, at }: { text: string; session: string; at?: number }) {
+  if (!text.trimStart().startsWith('<message_file')) return <MessageError text={text} />
+  const note = parseFileNotice(text)
+  return note ? <FileNoticeCard note={note} session={session} at={at} ended /> : <MessageError text="File notice (unreadable)" />
 }
 
 /** An engine notice, not a user request or a model tool call. Its body stays literal. */
@@ -191,6 +203,8 @@ function describe(entry: Entry): string {
       return `tool ${entry.name}`
     case 'peer':
       return `message from ${entry.from}`
+    case 'file':
+      return `file ${entry.file.name}`
     case 'engine':
       return ENGINE_NOTICES[entry.notice].title;
     case 'desk':
@@ -347,7 +361,7 @@ export const Message = memo(function Message({
   const card =
     entry.context?.removed && entry.kind !== 'moved' ? (
       <Tombstone entry={entry} session={session} readOnly={readOnly} reveal={reveal} />
-    ) : !readOnly && (entry.kind === 'tool' || entry.kind === 'peer' || entry.kind === 'engine' || entry.kind === 'vision' || entry.kind === 'desk' || entry.kind === 'wake' || entry.kind === 'advisory' || entry.kind === 'resume' || entry.kind === 'lost' || entry.kind === 'child' || entry.kind === 'autoresearch' || entry.kind === 'parentView') ? (
+    ) : !readOnly && (entry.kind === 'tool' || entry.kind === 'peer' || entry.kind === 'engine' || entry.kind === 'vision' || entry.kind === 'desk' || entry.kind === 'wake' || entry.kind === 'advisory' || entry.kind === 'resume' || entry.kind === 'lost' || entry.kind === 'child' || entry.kind === 'autoresearch' || entry.kind === 'parentView' || entry.kind === 'file') ? (
       <Card entry={entry} session={session}>
         {body(entry, session)}
       </Card>

@@ -66,6 +66,26 @@ export type Injected =
   /** 183 §11.6: `<contact_message …>` — a contact's message opening its capped turn in an exported chat. `text` is the
    * contact's words, `note` the harness line the model read first, `tag` the opener. Never a "you" bubble. */
   | ({ kind: 'contact_message'; note: string; tag: string; text: string } & ContactNote)
+  /** 199: a `<message_file …/>` notice row (`received` / `failed`), or an ended share's `errors` row (`ended`, D17): one
+   * file card, never a `you` bubble. The hint line the model read is dropped. */
+  | { kind: 'file'; file: FileNote; ended?: true }
+
+/** 199 "What the model sees": one `<message_file …/>` element as the card reads it. `holder` + `id` (the tag's `file`)
+ * name the file on its holder; `bytes` is declared in a placeholder, actual in a `received` notice. */
+export type FileNote = {
+  from: string
+  message: string
+  name: string
+  type: string
+  state: 'receiving' | 'received' | 'failed'
+  holder: string
+  id: string
+  bytes?: number
+  saved?: string
+  blake3?: string
+  machine?: string
+  reason?: string
+}
 
 /** 183 §11.5 / §11.6: who a contact note is from and the cap it runs under (`read_only` | `mutating`). */
 export type ContactNote = { contact: string; machine: string; export: string; cap: string }
@@ -125,11 +145,43 @@ const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)
 const unescape = (s: string) => s.replaceAll('&quot;', '"').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&')
 
 /** 183: the self-closing notes `classify` cards (`<session_moved …/>`, `<engine_restart …/>`, `<contact_inbox …/>`); `<time/>` is `splitTime`'s. */
-const SELF: Record<string, true> = { session_moved: true, engine_restart: true, contact_inbox: true }
+const SELF: Record<string, true> = { session_moved: true, engine_restart: true, contact_inbox: true, message_file: true }
 
 /** Every `key="value"` of a self-closing tag (`<name …/>`), unescaped, in order. */
 export function tagAttrs(tag: string): [string, string][] {
-  return [...tag.matchAll(/([a-z_]+)="([^"]*)"/g)].map((m) => [m[1] as string, unescape(m[2] as string)])
+  return [...tag.matchAll(/([a-z0-9_]+)="([^"]*)"/g)].map((m) => [m[1] as string, unescape(m[2] as string)])
+}
+
+/** `<message_file …/>` as its fields; `null` without a holder, a file id, a name or a known state. */
+export function parseFileTag(tag: string): FileNote | null {
+  const a = Object.fromEntries(tagAttrs(tag))
+  const state = a.state
+  if (!a.holder || !a.file || !a.name || (state !== 'receiving' && state !== 'received' && state !== 'failed')) return null
+  const opt = (k: 'saved' | 'blake3' | 'machine' | 'reason') => (a[k] ? { [k]: a[k] } : {})
+  return {
+    from: a.from ?? '',
+    message: a.message ?? '',
+    name: a.name,
+    type: a.type ?? '',
+    state,
+    holder: a.holder,
+    id: a.file,
+    ...(a.bytes && /^\d+$/.test(a.bytes) ? { bytes: Number(a.bytes) } : {}),
+    ...opt('saved'),
+    ...opt('blake3'),
+    ...opt('machine'),
+    ...opt('reason'),
+  }
+}
+
+/** `files::placeholders`' receiving hint and `files::notice` / `ended_notice`'s; `ENDED` is the ended share's. */
+const FILE_HINT = /^(?:Files from [^\n]* are arriving; a notice follows when each one is saved or fails\.|File notice from theuth[,:][^\n]*)(?:\n|$)/
+const ENDED = /^File notice from theuth: the share with [^\n]* has ended, so this was not given to the agent\./
+
+/** D17: an ended share's `errors` row as its file; `null` unless it is exactly one `<message_file/>` (and its hint). */
+export function parseFileNotice(text: string): FileNote | null {
+  const cls = classify(text)
+  return cls?.length === 1 && cls[0]?.kind === 'file' ? cls[0].file : null
 }
 
 const int = (v: string | undefined) => (v && /^\d+$/.test(v) ? Number(v) : 0)
@@ -372,7 +424,7 @@ export function splitParentView(text: string): { lines: ParentViewLine[]; bytes:
  * `null` for human text (or anything not entirely made of wrappers).
  */
 export function classify(text: string): Injected[] | null {
-  // 199-UID: a notice row (`<message_file …/>` plus its hint line) parses as a self-closing note.
+  // 199: a `<message_file …/>` (a message row's placeholders, a notice row, an ended share's row) is a self-closing note.
   let rest = text.trimStart()
   if (rest.startsWith('<skill name="')) {
     // `indexOf`, not `split(sep, 2)`: JS's limit drops the remainder, and a body with `">` in it (`<input type="date">`) is common.
@@ -391,13 +443,19 @@ export function classify(text: string): Injected[] | null {
       break
     }
     // 183 §11: a self-closing note is a card of its own, ended by `/>` (a bare `>` may sit in a `cwd` value).
-    const self = /^<(session_moved|engine_restart|contact_inbox) /.exec(rest)?.[1]
+    const self = /^<(session_moved|engine_restart|contact_inbox|message_file) /.exec(rest)?.[1]
     if (self !== undefined) {
       const end = rest.indexOf('/>')
       if (end < 0) return null
       const tag = rest.slice(0, end + 2)
       rest = rest.slice(end + 2).trimStart()
-      if (self === 'contact_inbox') {
+      if (self === 'message_file') {
+        const file = parseFileTag(tag)
+        if (file === null) return null
+        const hint = FILE_HINT.exec(rest)?.[0] ?? ''
+        out.push({ kind: 'file', file, ...(ENDED.test(hint) ? { ended: true as const } : {}) })
+        rest = rest.slice(hint.length).trimStart()
+      } else if (self === 'contact_inbox') {
         // §11.5: the notice the model read follows on its own line; the card says it, never a bubble. Plain text after
         // it (the contact's first words, if the engine joins them into this row) stays on the card as untrusted input.
         const line = INBOX_NOTE.exec(rest)?.[0] ?? ''

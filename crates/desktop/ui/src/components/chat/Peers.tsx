@@ -14,6 +14,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { PeerRecord } from "@/rpc/bindings/method.agent.output"
+import { AttachFiles, answerPeer } from './ContactFiles'
+import { isOutside } from './peer-identity'
 
 const TOUCH = 'pointer-coarse:min-h-11'
 
@@ -246,14 +248,19 @@ function Request({
     enabled: canQuery4 && (open),
   })
   const [text, setText] = useState('')
-  const send = useAction((t: string) => routed(session, () => api.answer_peer_request(session, id, t)), {
+  // 199 D15: an answer to a contact may carry files, picked on the chat's machine only.
+  const [files, setFiles] = useState<string[]>([])
+  const attach = side === 'answer' && isOutside(r.from)
+  const send = useAction((t: string) => routed(session, () => answerPeer(api, session, id, t, attach ? files : [])), {
     keys: [['peer-messages', session], queryKeys.peerMessage(session, id)],
     onSuccess: (receipt) => {
       if (!receipt) return // parked behind the chat's OwnerOfflineCard: nothing was answered
       setText('')
+      setFiles([])
       toast(`Answered ${id.slice(0, 8)} · ${receipt.state}`)
     },
   })
+  const ready = !!text.trim() || (attach && files.length > 0)
   const d = detail.data ?? r
   const terminal = d.receipt.state === 'replied' || d.receipt.state === 'suppressed' || d.receipt.state === 'failed'
 
@@ -344,8 +351,7 @@ function Request({
           className="mt-2 flex flex-col gap-2"
           onSubmit={(e) => {
             e.preventDefault()
-            const t = text.trim()
-            if (t) send.mutate(t)
+            if (ready) send.mutate(text.trim())
           }}
         >
           <Textarea
@@ -362,8 +368,13 @@ function Request({
               if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) e.currentTarget.form?.requestSubmit()
             }}
           />
-          <div className="flex justify-end">
-            <Button type="submit" size="sm" className={TOUCH} disabled={send.isPending || !text.trim()} aria-busy={send.isPending || undefined}>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {attach ? (
+              <div className="mr-auto min-w-0">
+                <AttachFiles session={session} files={files} onChange={setFiles} disabled={send.isPending} />
+              </div>
+            ) : null}
+            <Button type="submit" size="sm" className={TOUCH} disabled={send.isPending || !ready} aria-busy={send.isPending || undefined}>
               {side === 'answer' ? 'Answer as this chat' : 'Resolve wait'}
             </Button>
           </div>

@@ -2,7 +2,7 @@ import { receiveComponent } from '@/rpc/bindings/receive'
 import { jsonrepair } from "jsonrepair";
 import { resultLine } from "@/lib/describe";
 import { codeEdited, codeToolRan, emptyCodemap } from "@/lib/codemap/slice";
-import { classify, type CellResultInput, type ContactNote, humanSecs, type Injected, movedFromRecord, splitLeading, splitParentView } from "@/lib/injected";
+import { classify, type CellResultInput, type ContactNote, type FileNote, humanSecs, type Injected, movedFromRecord, splitLeading, splitParentView } from "@/lib/injected";
 import { pushChunk } from "@/lib/jobTail";
 import { splitRestart, splitTime } from "@/lib/time";
 import { live, observedState } from "@/lib/session-tree";
@@ -10,7 +10,7 @@ import type { Advisory as AdvisoryRow } from "@/rpc/bindings/method.agent.output
 import type { AdvisoryNote } from "@/rpc/bindings/method.agent.output"
 import type { ChannelOrigin } from "@/rpc/bindings/method.agent.output"
 import type { ContextEntry } from "@/rpc/bindings/method.agent.output"
-import type { PeerOrigin } from "@/rpc/bindings/method.agent.output"
+import type { ContactFile, PeerOrigin } from "@/rpc/bindings/method.agent.output"
 import type { TodoSnapshot } from "@/rpc/bindings/method.agent.output"
 import type { UiEvent as WireEvent } from '@/store/ui-events'
 import type { AgentInfo } from '@/store/ui-events'
@@ -27,6 +27,22 @@ let ids = 0;
 export function nextId(): string {
   return `e${++ids}`;
 }
+
+/** 199: a contact file's key, `holder/id` (D11: every file-specific read names both). */
+export const fileKey = (holder: string, id: string): string => `${holder}/${id}`;
+
+/** 199: a `PeerDelivered.files` record as the placeholder note its stored row carries (`files::placeholders`), so the
+ * live card and the reloaded one start from the same note. */
+export const placeholderOf = (from: string, f: ContactFile): FileNote => ({
+  from,
+  message: f.exchange,
+  name: f.name,
+  type: f.media_type,
+  state: "receiving",
+  holder: f.holder,
+  id: f.id,
+  ...(f.size == null ? {} : { bytes: f.size }),
+});
 
 /** A session we know nothing about yet. */
 export function empty(id: string): SessionSlice {
@@ -56,6 +72,7 @@ export function empty(id: string): SessionSlice {
     jobBeats: {},
     artifacts: new Map(),
     progress: new Map(),
+    files: new Map(),
     scrape: new Map(),
     sandbox: new Map(),
     appDrafts: new Map(),
@@ -321,6 +338,8 @@ function userEntries(
           text: c.text,
           context,
         };
+      // 199: a file notice row (or an ended share's) is a file card.
+      case "file":
       case "engine":
       case "desk":
       case "wake":
@@ -393,16 +412,19 @@ function stampUser(entries: Entry[], turn: number, cells: CellResultInput[] = []
 /** The body of a stored peer row (50 §9 stores the provider-visible form): the words inside the one `<message>`
  * wrapper, the one `<contact_message>` (183 §11.6) or an inbox's `<contact_inbox/>` notice plus its `<message>`
  * (§11.5); the raw text otherwise. A contact wrapper also gives the contact facts and the harness note the model read
- * (Details lists them, never the tag). Display only; identity comes from the typed `PeerOrigin`. */
-function peerBody(text: string): { text: string; contact?: ContactNote & { note: string } } {
-  // 199-UID: `<message_file …/>` placeholders after `</message>` (and their hint line) become file cards.
-  const [head, next, more] = classify(text) ?? []
-  if (more) return { text }
-  if (head?.kind === 'peer' && !next) return { text: head.text }
+ * (Details lists them, never the tag). 199: the `<message_file …/>` placeholders after the wrapper (and their hint
+ * line) come back as `files`. Display only; identity comes from the typed `PeerOrigin`. */
+function peerBody(text: string): { text: string; contact?: ContactNote & { note: string }; files?: FileNote[] } {
+  const cls = classify(text) ?? []
+  const notes = cls.flatMap((c) => (c.kind === 'file' ? [c.file] : []))
+  const files = notes.length ? { files: notes } : {}
+  const [head, next, more] = cls.filter((c) => c.kind !== 'file')
+  if (more) return { text, ...files }
+  if (head?.kind === 'peer' && !next) return { text: head.text, ...files }
   // The contact's words: the lone `<contact_message>`'s, or the `<message>` after an inbox's notice.
   const words = head?.kind === 'contact_message' && !next ? head.text : head?.kind === 'contact_inbox' && !head.message && next?.kind === 'peer' ? next.text : undefined
-  if (words === undefined || (head?.kind !== 'contact_message' && head?.kind !== 'contact_inbox')) return { text }
-  return { text: words, contact: { contact: head.contact, machine: head.machine, export: head.export, cap: head.cap, note: head.note } }
+  if (words === undefined || (head?.kind !== 'contact_message' && head?.kind !== 'contact_inbox')) return { text, ...files }
+  return { text: words, contact: { contact: head.contact, machine: head.machine, export: head.export, cap: head.cap, note: head.note }, ...files }
 }
 
 /** The card a peer exchange renders as, from its authenticated provenance; never from the wrapper's attributes. */
@@ -476,8 +498,8 @@ function historyEntries(h: HistoryEntry): Entry[] {
           },
         ];
       if (h.peer) {
-        const { text: words, contact } = peerBody(text)
-        return [{ ...peerEntry(h.peer, words, undefined, context), ...(contact ? { contact } : {}) }];
+        const { text: words, contact, files } = peerBody(text)
+        return [{ ...peerEntry(h.peer, words, undefined, context), ...(contact ? { contact } : {}), ...(files ? { files } : {}) }];
       }
       const rows = userEntries(
         text,
@@ -640,6 +662,8 @@ function signature(e: Entry): string {
       return `${e.kind[0]}${e.turn ?? ""}\n${e.text}`;
     case "advisory":
       return e.seq === undefined ? `a${notesKey(e.notes)}` : `a${e.seq}`;
+    case "file":
+      return `f${e.file.holder}/${e.file.id}\n${e.file.state}`;
     default:
       return `${e.kind}\n${e.text}`;
   }
@@ -866,23 +890,32 @@ export function apply(
       );
     // The consumed exchange as a typed card (50 §10). Its row is already stored, so a settled reload lands the same
     // card: one shows once, whichever arrives first (matched by exchange id, the wrapper echo on `TurnStarted` is skipped).
-    case "PeerDelivered":
-      // 199-UID: `e.files` (ContactFile[]) are the live card's receiving placeholders.
+    // 199: `e.files` are the card's receiving placeholders (the same notes the stored row replays as) and seed the live
+    // file states, never over a newer `ContactFileChanged`. An engine from before 199 sends no `files`.
+    case "PeerDelivered": {
+      const offered = e.files ?? [];
+      const known = offered.filter((f) => !slice.files.has(fileKey(f.holder, f.id)));
+      const files = known.length ? new Map([...slice.files, ...known.map((f): [string, ContactFile] => [fileKey(f.holder, f.id), f])]) : slice.files;
       if (
         slice.entries.some(
           (x) => x.kind === "peer" && x.origin?.id === e.origin.id,
         )
       )
-        return slice;
+        return files === slice.files ? slice : { ...slice, files };
       return interject(
         {
           ...slice,
+          files,
           live: slice.live + 1,
           // 186: the row that opened the running turn (`TurnStarted` came first) is a full contact's message.
           ...(slice.running && e.seq === slice.turnSeq && e.origin.contact_mode === "full" ? { turnBy: e.origin.from } : {}),
         },
-        peerEntry(e.origin, e.text, e.seq),
+        { ...peerEntry(e.origin, e.text, e.seq), ...(offered.length ? { files: offered.map((f) => placeholderOf(e.origin.from, f)) } : {}) },
       );
+    }
+    // 199: a contact file moved (state or bytes); its cards read it from here, in either direction.
+    case "ContactFileChanged":
+      return { ...slice, files: new Map(slice.files).set(fileKey(e.file.holder, e.file.id), e.file) };
     // 125 §8.3: one Advisory card per stored row, whichever of the event, the wrapper echo or the reload lands first.
     case "AdvisoryAdded":
       return addAdvisory(slice, { id: nextId(), kind: "advisory", notes: e.advisory.notes, seq: e.seq, at: e.advisory.at_ms, question: questionOf(e.advisory) });
@@ -1144,10 +1177,13 @@ function turn(
       const own =
         !wrapped && (s.lastInjected === e.turn || ctx.sent.delete(text));
       const now = Date.now();
+      // 199: a file notice is automatic input with no delivery event of its own: its card is echoed here (a message
+      // row's `receiving` placeholders ride on its `PeerDelivered` card instead).
+      const notices: Entry[] = wrapped ? (cls ?? []).flatMap((c): Entry[] => (c.kind === "file" && c.file.state !== "receiving" ? [{ id: nextId(), ...c, at: now }] : [])) : [];
       const entries = own
         ? stampUser(s.entries, e.turn_seq, cells)
         : wrapped
-          ? cells.length ? [...s.entries, ...cells.map((c): Entry => ({ id: nextId(), ...c, at: now }))] : s.entries
+          ? cells.length || notices.length ? [...s.entries, ...cells.map((c): Entry => ({ id: nextId(), ...c, at: now })), ...notices] : s.entries
           : [
               ...s.entries,
               ...(view ? [view] : []),
@@ -1183,7 +1219,7 @@ function turn(
       return {
         ...s,
         queued: s.queued.toSpliced(at, 1),
-        entries: [...s.entries, ...(view ? [view] : []), ...rows.map((x, i) => ({ ...x, at: Date.now(), ...(i === you ? { files: q.files } : {}) }))],
+        entries: [...s.entries, ...(view ? [view] : []), ...rows.map((x, i): Entry => (i === you && x.kind === "user" ? { ...x, at: Date.now(), files: q.files } : { ...x, at: Date.now() }))],
         lastInjected: e.turn,
       };
     }
