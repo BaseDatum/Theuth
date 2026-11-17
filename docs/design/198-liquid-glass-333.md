@@ -1,5 +1,7 @@
 # 198 phase 1 — build and test sheet for the release Mac 333
 
+Status: phase 1 signed off on 333 at `67cd0230a` (2026-11-17 08:41): every check below passed, no defects.
+
 Design: `198-liquid-glass.md`. Branch `feat/198-liquid-glass`; test the exact sha the report names (`$SHA`).
 Host: Xcode 26.0 with the iOS 26 simulator runtime, tauri-cli 2.11.4, checkout
 `/Users/sky/Develop/skymoore/theuth` (remote `origin` = github skymoore/wth). Logs go to `/tmp/glass333/`.
@@ -22,6 +24,9 @@ git log -1 --format=%H   # expect: $SHA
 ```sh
 cd /Users/sky/Develop/skymoore/theuth-glass
 (cd packages/apps && bun install --frozen-lockfile)
+# A fresh worktree needs the UI's node_modules before `cargo tauri ios build`: its `beforeBuildCommand` runs tsc and
+# fails with TS2688 ("Cannot find type definition file for 'node'" / 'vite/client') without them.
+(cd crates/desktop/ui && bun install --frozen-lockfile)
 just ts-desktop 2>&1 | tee /tmp/glass333/ts.log
 # = cargo test -p theuth --bin t --quiet export_bindings; bun install; bun run wire:generate; copy into ui/src/rpc/bindings
 (cd crates/desktop/ui && bunx tsc -b --noEmit) 2>&1 | tee /tmp/glass333/tsc.log
@@ -32,15 +37,18 @@ Expect: `test result: ok. 1 passed` in ts.log, `Generated … methods`; tsc prin
 
 ## 2. Build for the iOS 26 simulator
 
-The rebuild is warm after the first round (fix round 1: minutes, not the cold build). Put the real cargo first on
-PATH for every `cargo tauri ios …` here: through 333's mbx cargo shim the Xcode "Build Rust Code" step fails with
-"could not verify Cargo build storage".
+The rebuild is warm after the first round (fix round 1: minutes, not the cold build). Bypass 333's mbx cargo shim
+for every `cargo tauri ios …` here: through it the Xcode "Build Rust Code" step fails with "could not verify Cargo
+build storage". Putting `~/.cargo/bin` first on PATH is not always enough in a fresh worktree: the repo's
+`mise.toml` (mr_boxington) puts the shim back, and its mbx probe fails for the tauri CLI. Pin cargo to the rustup
+toolchain, put that toolchain's bin first, and call the tauri CLI binary directly:
 
 ```sh
 cd /Users/sky/Develop/skymoore/theuth-glass/crates/desktop
-export PATH=/Users/sky/.cargo/bin:$PATH
+export CARGO="$(/Users/sky/.cargo/bin/rustup which cargo)"
+export PATH="$(dirname "$CARGO"):/Users/sky/.cargo/bin:$PATH"
 rustup target add aarch64-apple-ios-sim
-TAURI_FRONTEND_PATH=ui cargo tauri ios build --debug --target aarch64-sim --config tauri.ios.conf.json \
+TAURI_FRONTEND_PATH=ui /Users/sky/.cargo/bin/cargo-tauri ios build --debug --target aarch64-sim --config tauri.ios.conf.json \
   2>&1 | tee /tmp/glass333/build.log
 find gen/apple/build -name '*.app' -maxdepth 4 -print
 ```
@@ -63,6 +71,8 @@ was not linked (check the `cargo:rustc-link-lib` lines of the plugin's build out
 xcrun simctl list runtimes | grep -i 'iOS 26'          # expect one iOS 26.x runtime
 UDID=$(xcrun simctl create glass-198 "iPhone 16 Pro" "$(xcrun simctl list runtimes | awk '/iOS 26/{print $NF; exit}')")
 xcrun simctl boot "$UDID"; open -a Simulator
+# Headless runs (idb, no Simulator window focus): show the software keyboard instead of assuming a hardware one.
+xcrun simctl spawn "$UDID" defaults write com.apple.keyboard.preferences HardwareKeyboardLastSeen -bool false
 xcrun simctl install "$UDID" "$(find gen/apple/build -name '*.app' -maxdepth 4 | head -1)"
 xcrun simctl spawn "$UDID" log stream --level debug --predicate 'process == "theuth"' > /tmp/glass333/sim.log 2>&1 &
 LOGPID=$!
@@ -109,10 +119,12 @@ Expect (the phase-1 checks):
    bar hides; cancel → it returns.
 6. **Scroll-to-bottom:** scroll up more than 80 px → a round glass `arrow.down` fades in, centred, about 12 px above
    the composer; tap → the transcript jumps to the bottom and the button fades out. No web (outline) button ever.
-7. **Keyboard:** tap the composer → keyboard up; scroll up → the button sits just above the composer, above the
+7. **Keyboard:** tap the composer → keyboard up → the button (once shown) sits just above the composer, above the
    keyboard; dismiss the keyboard → it follows the composer down and never overlaps it, including the frames where
    the composer is still raised after the keyboard has gone (fix round 1: the button is now placed from the screen's
-   top at the composer's measured top edge). Repeat with a three-line draft (taller composer): same.
+   top at the composer's measured top edge). Repeat with a three-line draft (taller composer): same. A transcript
+   scroll dismisses the keyboard (expected), so "keyboard up and scrolled" cannot be held at once: scroll up first to
+   show the button, then tap the composer.
 8. **Sheets:** open a full-screen surface (artifacts, terminal viewer, search) → bar and button hidden while open.
 9. **Other pages:** Settings (from the drawer) → no glass bar (it hides once the chat header unmounts); back to a
    chat → it returns with that chat's title.

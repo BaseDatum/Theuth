@@ -1,7 +1,7 @@
 # 198 — Liquid Glass: native glass chrome over the web chat
 
-Status: phase 1 (iPhone) first pass on `feat/198-liquid-glass`, built and tested on the release Mac 333
-(`198-liquid-glass-333.md`). Phases 2 and 3 are designed here, not built.
+Status: phase 1 (iPhone) signed off on the release Mac 333 at `67cd0230a` (2026-11-17 08:41;
+`198-liquid-glass-333.md`), on `feat/198-liquid-glass`. Phases 2 and 3 are designed here, not built.
 
 ## 0. Ask and rulings (Sky, 2026-11-17 01:45–02:04)
 
