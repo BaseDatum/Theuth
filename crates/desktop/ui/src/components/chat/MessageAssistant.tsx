@@ -26,6 +26,8 @@ import { Reserve } from './Reserve'
 import { RemovedFence, ShakeFenceContext, pieceOf, shakeFences } from './ShakeFence'
 import { FenceContext, JsonRenderFence } from './surface/JsonRenderFence'
 import { OpenUIFence } from './surface/OpenUIFence'
+import { hasLaterAssistant, ownTurnRunning } from './surface/fence-turn'
+import { holdFenceOpener } from './surface/streaming'
 import { MarkdownTd } from './surface/registry'
 import { Stamp, useStampToggle } from './Stamp'
 import { CELL_LANGUAGES, CellFence, CellOrdinals, cellOrdinals } from '@/components/cells/CellFence'
@@ -324,20 +326,16 @@ export const MessageAssistant = memo(function MessageAssistant({
 }) {
   const api = useApi()
   const running = useSessionField(session, 'running') ?? false
-  // 30 §8: a later reply before the next human message carries the fix for any fence broken here.
-  // ponytail: a forward scan per mounted reply per store change; index entries by id if transcripts grow past thousands.
-  const hasLaterAssistant = useSessions((s) => {
-    const entries = s.sessions[session]?.entries ?? []
-    for (let i = entries.findIndex((e) => e.id === id) + 1; i > 0 && i < entries.length; i++) {
-      const kind = entries[i]?.kind
-      if (kind === 'assistant') return true
-      if (kind === 'user') return false
-    }
-    return false
+  // fence-skel D2: a fence's state follows the turn that wrote it, never a later one.
+  const ownRunning = useSessions((s) => {
+    const slice = s.sessions[session]
+    return !!slice && ownTurnRunning(slice.entries, id, slice.running, slice.turnSeq)
   })
+  // ponytail: a forward scan per mounted reply per store change; index entries by id if transcripts grow past thousands.
+  const laterAssistant = useSessions((s) => hasLaterAssistant(s.sessions[session]?.entries ?? [], id))
   const fence = useMemo<FenceContext>(
-    () => ({ running, hasLaterAssistant, session: readOnly ? undefined : session, entry: id }),
-    [running, hasLaterAssistant, readOnly, session, id],
+    () => ({ running: ownRunning, hasLaterAssistant: laterAssistant, session: readOnly ? undefined : session, entry: id }),
+    [ownRunning, laterAssistant, readOnly, session, id],
   )
   // 197 §8: the stored row's fences, offered only once settled and when their count matches the fences in `text`.
   const shake = useMemo(
@@ -385,7 +383,7 @@ export const MessageAssistant = memo(function MessageAssistant({
                   shikiTheme={shikiTheme}
                   className="[&_h1]:mb-2 [&_h1]:text-2xl [&_h1]:leading-8 [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold [&_p]:my-1 [&_p]:leading-[26px] [&_li]:pt-3 [&_li]:leading-[26px] [&_a]:underline [&_a]:underline-offset-2 [&_pre]:rounded-2xl [&_table]:w-max [&_table]:min-w-full [&_table_th]:font-semibold [&_table_th]:wrap-normal"
                 >
-                  {text}
+                  {open ? holdFenceOpener(text) : text}
                 </Streamdown>
               </ShakeFenceContext>
             </CellOrdinals>

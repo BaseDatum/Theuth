@@ -76,6 +76,39 @@ test('deltas append to one open assistant entry; a tool event closes it', () => 
   expect(s.waiting).toBe(false)
 })
 
+// fence-skel D3: between the broken reply and the corrected block the engine publishes the round end (`ModelUsageChanged`,
+// `ContextUsed`) and, for a correction round only, an `InputInjected` whose id no queued steer has. The salvage
+// continuation of a length-capped reply gets the same round end and nothing else, and must keep appending.
+const ROUND_END: WireEvent[] = [
+  { type: 'ModelUsageChanged', session: S, revision: 7 },
+  { type: 'ContextUsed', session: S, turn: T, context: 4200 },
+]
+test('a correction round starts the corrected block as its own reply', () => {
+  const broken = 'Checks:\n```json-render\n{"root":"r"}\n```'
+  const fixed = '```json-render\n{"root":"r","elements":{}}\n```'
+  const s = run([
+    { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 },
+    { type: 'TextDelta', session: S, turn: T, text: broken },
+    ...ROUND_END,
+    { type: 'InputInjected', session: S, id: 'correction-note', turn: T },
+    { type: 'TextDelta', session: S, turn: T, text: fixed },
+  ])
+  expect(s.entries.map((e) => e.kind)).toEqual(['user', 'assistant', 'assistant'])
+  expect(s.entries[1]).toMatchObject({ text: broken, open: false, turn: 1 })
+  expect(s.entries[2]).toMatchObject({ text: fixed, open: true, turn: 1 })
+  expect(s.lastInjected).toBeUndefined()
+})
+test('a salvage continuation still appends to the cut-off reply', () => {
+  const s = run([
+    { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 },
+    { type: 'TextDelta', session: S, turn: T, text: 'The checks ran on' },
+    ...ROUND_END,
+    { type: 'TextDelta', session: S, turn: T, text: ' the branch.' },
+  ])
+  expect(s.entries.map((e) => e.kind)).toEqual(['user', 'assistant'])
+  expect(s.entries[1]).toMatchObject({ text: 'The checks ran on the branch.', open: true })
+})
+
 test('reasoning deltas stream into one entry that closes when the answer starts', () => {
   const s = run([
     { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 },

@@ -6,20 +6,16 @@ import { ErrorCard, FenceContext, FenceFallback } from './JsonRenderFence'
 const render = (ctx: FenceContext) =>
   renderToStaticMarkup(createElement(FenceContext, { value: ctx }, createElement(FenceFallback, { error: 'bad arrow', source: 'graph TD', title: 'Diagram unavailable' })))
 
-test('turn running: a skeleton, no red card, no alert', () => {
-  const html = render({ running: true, hasLaterAssistant: false })
-  expect(html).toContain('animate-pulse')
-  expect(html).toContain('aria-busy')
-  expect(html).not.toContain('role="alert"')
-  expect(html).not.toContain('bad arrow')
+// fence-skel D1: no placeholder in any state — the fix streams in below while the turn runs.
+test.each([
+  ['the turn that wrote it still runs', { running: true, hasLaterAssistant: false }],
+  ['a later reply of that turn carries the fix', { running: false, hasLaterAssistant: true }],
+  ['both', { running: true, hasLaterAssistant: true }],
+])('%s: nothing at all', (_, ctx) => {
+  expect(render(ctx)).toBe('')
 })
 
-test('a later reply carries the fix: nothing', () => {
-  expect(render({ running: false, hasLaterAssistant: true })).toBe('')
-  expect(render({ running: true, hasLaterAssistant: true })).toBe('')
-})
-
-test('last reply of the turn: one dim line with the source behind a disclosure and the message as tooltip', () => {
+test('last reply of a turn that ended: one dim line with the source behind a disclosure and the message as tooltip', () => {
   const html = render({ running: false, hasLaterAssistant: false })
   expect(html).toContain('◌ diagram omitted ·')
   // Closed until the reader opens it (171F B13: the open state lives in the disclosure store), so no source yet.
@@ -28,6 +24,8 @@ test('last reply of the turn: one dim line with the source behind a disclosure a
   expect(html).toContain('title="Diagram unavailable · bad arrow"')
   expect(html).not.toContain('danger')
   expect(html).not.toContain('role="alert"')
+  expect(html).not.toContain('animate-pulse')
+  expect(html).not.toContain('aria-busy')
 })
 
 test('the default context (artifact viewer, tool cards) is the settled case; ErrorCard is the same component', () => {
