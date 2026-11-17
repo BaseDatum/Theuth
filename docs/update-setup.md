@@ -215,15 +215,21 @@ its two `SHASUMS256` sums — bump all three together). No host needs Bun.
    ls "$(dirname "$(readlink -f "$(which theuth)")")"/theuth-app-parser-"$(t --app-parser-hash)"   # the helper the formula installed beside it
    brew install --cask basedatum/tap/theuth && ls /Applications/theuth.app/Contents/MacOS/theuth-app-parser-*
    ```
-6. Speech models, once (and again only when a checkpoint changes): with the
-   checkpoints in `~/.theuth/models/` (pocket-tts, parakeet-tdt,
-   nemotron-streaming-en, nemotron-diarization, pyannote), `just release-models` uploads the files
-   each loader opens to `releases/models/<model>/<file>` and writes
-   `releases/models/models.json` (`{files: [{path, size, sha256}]}`) last.
-   The desktop app reads that manifest at start and fetches whatever is
-   missing under `<data_dir>/models/` (`crates/desktop/src/models.rs`;
-   `THEUTH_MODELS_URL` points at a scratch manifest). Check:
-   `curl -s https://s3.rwx.dev/theuth/releases/models/models.json | jq '.files|length'` → 11.
+6. Models: whenever `REQUIRED` or an origin in `scripts/fetch-models.sh` (or a pin in
+   `scripts/ort-version.env`) changed since the last publish, run `just release-models` from a
+   checkout of the release commit before `just release-s3` makes the new app live; `just release`
+   does not run it. It fetches every missing or stale REQUIRED file into `~/.theuth/models/`
+   from its origin (`hf:` HEAD-checked against `main`, `repo:` copied from the checkout, else the
+   bucket copy), uploads what changed to `releases/models/<model>/<file>` together with ONNX
+   Runtime and its WebGPU plugin for every platform, and writes `releases/models/models.json`
+   (`{files: [{path, size, sha256, revision?, origin?, platform?, key?}]}`) last.
+   `MODELS_DRY_RUN=1 just release-models` prints the plan without uploading (it still wants
+   `AWS_*` set). The desktop app reads that manifest at start and fetches whatever is missing
+   or changed under `<data_dir>/models/` (`crates/desktop/src/models.rs`; `THEUTH_MODELS_URL`
+   points at a scratch manifest). Check:
+   `curl -s https://s3.rwx.dev/theuth/releases/models/models.json | jq '.files|length'` → one
+   row per REQUIRED file plus the 13 ONNX Runtime rows (41 after the 2026-11-17 publish of
+   `pocket-tts-en-2026-10/`).
 
 ## 7. Verification checklist (39 §12)
 
