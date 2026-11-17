@@ -810,12 +810,13 @@ impl PeerClient {
             ));
         }
         let files = &outbound.record.files;
-        let mut message = contact_message(
-            &self.name,
-            self.redact(&outbound.record.text),
-            files,
-            self.takes_files(),
-        )?;
+        // 199-E3 (D16): an HTTP peer has no files extension: its files go inline.
+        let inline = !files.is_empty() && matches!(self.link, Link::Http { .. });
+        let text = self.redact(&outbound.record.text);
+        let mut message = match inline {
+            true => inline_message(&self.agents, &self.name, text, files).await?,
+            false => contact_message(&self.name, text, files, self.takes_files())?,
+        };
         let connected = self
             .connect(outbound.export.as_deref())
             .await
@@ -838,7 +839,8 @@ impl PeerClient {
         let request = SendMessageRequest {
             message,
             configuration: Some(SendMessageConfiguration {
-                accepted_output_modes: Some(vec!["text/plain".into()]),
+                // 199-E3 (P3): answers may carry files (inline or at an `https` URL).
+                accepted_output_modes: Some(vec!["text/plain".into(), "*/*".into()]),
                 task_push_notification_config: None,
                 history_length: Some(0),
                 // §6.2: outbound work is asynchronous; the follower reports the rest.
@@ -858,7 +860,7 @@ impl PeerClient {
             }
             r = tokio::time::timeout(REQUEST_TIMEOUT, connected.client.send_message(&request)) => r,
         };
-        match sent {
+        let out = match sent {
             Err(_) => Err(RemoteSendError::Unknown(format!(
                 "no response from peer {} within {}s; the message may have arrived",
                 self.name,
@@ -938,9 +940,98 @@ impl PeerClient {
                 }
                 Ok(SendMessageResponse::Task(task))
             }
+        };
+        // Accepted by the peer: the inline files are delivered (their cards read sent).
+        if inline && out.is_ok() {
+            inline_sent(&self.agents, files).await;
+        }
+        out
+    }
+}
+
+/// 199-E3 (D16): the message to an HTTP peer `name` with `files`: the text (omitted when it
+/// is empty), then each file as an inline `raw` part, read through this engine's offers (the
+/// egress gate's re-checks apply) and checked against the offered BLAKE3. Only when the whole
+/// request fits the 64 KiB envelope; nothing is ever uploaded elsewhere.
+#[cfg(unix)]
+async fn inline_message(
+    agents: &ActorRef<Agents>,
+    name: &str,
+    text: String,
+    files: &[agent::communication::files::ContactFile],
+) -> Result<Message, RemoteSendError> {
+    use agent::communication::files::{FileOffers as _, disk, foreign, service::FileServiceOf};
+    use std::os::unix::fs::FileExt as _;
+    let sizes = files.iter().map(|f| {
+        (
+            f.name.as_str(),
+            f.media_type.as_str(),
+            f.size.unwrap_or(u64::MAX),
+        )
+    });
+    foreign::inline_fit(name, &text, sizes).map_err(RemoteSendError::Refused)?;
+    let svc = agents
+        .ask(FileServiceOf)
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| RemoteSendError::Refused(agent::communication::files::NOT_YET.into()))?;
+    let mut parts = Vec::with_capacity(files.len() + 1);
+    if !text.is_empty() {
+        parts.push(Part::text(text));
+    }
+    for f in files {
+        let gone = || RemoteSendError::Refused(format!("files: {} is no longer available", f.name));
+        let h = svc.open(&f.contact_id, &f.id).await.map_err(|_| gone())?;
+        let len = usize::try_from(h.len).map_err(|_| gone())?;
+        let mut bytes = vec![0; len];
+        h.file.read_exact_at(&mut bytes, 0).map_err(|_| gone())?;
+        if disk::blake3_of(&h.file, h.len).map_err(|_| gone())? != h.blake3 {
+            return Err(RemoteSendError::Refused(format!(
+                "files: {} changed since it was offered",
+                f.name
+            )));
+        }
+        parts.push(
+            Part::raw(bytes)
+                .with_filename(f.name.clone())
+                .with_media_type(f.media_type.clone()),
+        );
+    }
+    Ok(Message::new(Role::User, parts))
+}
+
+#[cfg(not(unix))]
+async fn inline_message(
+    _: &ActorRef<Agents>,
+    name: &str,
+    _: String,
+    _: &[agent::communication::files::ContactFile],
+) -> Result<Message, RemoteSendError> {
+    Err(RemoteSendError::Refused(format!(
+        "{name} cannot receive files from this engine"
+    )))
+}
+
+/// The peer accepted a message with inline `files`: each offer settles as sent.
+#[cfg(unix)]
+async fn inline_sent(
+    agents: &ActorRef<Agents>,
+    files: &[agent::communication::files::ContactFile],
+) {
+    use agent::communication::files::{FileOffers as _, Receipt, service::FileServiceOf};
+    let Some(svc) = agents.ask(FileServiceOf).await.ok().flatten() else {
+        return;
+    };
+    for f in files {
+        if let Err(e) = svc.receipt(&f.contact_id, &f.id, Receipt::Received).await {
+            tracing::warn!(file = %f.id, "199: inline file not settled: {e:?}");
         }
     }
 }
+
+#[cfg(not(unix))]
+async fn inline_sent(_: &ActorRef<Agents>, _: &[agent::communication::files::ContactFile]) {}
 
 /// The `Arc<dyn PeerSender>` the agent registers: a handle to the client, so
 /// followers spawned by a send own the client for as long as they run.
@@ -1003,17 +1094,29 @@ struct Retained {
     bytes: usize,
 }
 
+/// 199-E3 (D13, P3): an artifact keeps text and files (inline `raw`, or an `https` URL the
+/// agent fetches into the same storage, placeholders and notices); a `data` part, or any
+/// other URL, is refused. Accounting is unchanged: the serialized bytes count what the
+/// snapshot holds (inline bytes included), never a URL's file.
+fn artifact_parts_ok(parts: &[Part]) -> Result<(), String> {
+    for p in parts {
+        match &p.content {
+            PartContent::Text(_) | PartContent::Raw(_) => {}
+            PartContent::Url(u) => {
+                agent::communication::files::foreign::https_url(u)
+                    .map_err(|why| format!("remote artifact file: {why}"))?;
+            }
+            _ => return Err("remote artifact carries a data part".into()),
+        }
+    }
+    Ok(())
+}
+
 impl Retained {
     /// Measure a whole snapshot against every bound.
     fn of(task: &Task) -> Result<Self, String> {
-        // 199-E3: artifact file parts go to the same storage, placeholders and notices.
-        if task
-            .artifacts
-            .iter()
-            .flatten()
-            .any(|a| a.parts.iter().any(|p| p.as_text().is_none()))
-        {
-            return Err("remote artifact carries a non-text part".into());
+        for a in task.artifacts.iter().flatten() {
+            artifact_parts_ok(&a.parts)?;
         }
         status_text_ok(task.status.message.as_ref())?;
         let kept = Self {
@@ -1070,6 +1173,9 @@ fn fingerprint(task: &Task) -> String {
         s.push_str(&a.artifact_id);
         s.push(':');
         s.push_str(&text_bytes(&a.parts).to_string());
+        // 199-E3: a file part adds no text.
+        s.push(':');
+        s.push_str(&a.parts.len().to_string());
     }
     s
 }
@@ -1100,9 +1206,7 @@ fn apply(task: &mut Task, ev: StreamResponse, kept: &mut Retained) -> Result<(),
             }
         }
         StreamResponse::ArtifactUpdate(u) => {
-            if u.artifact.parts.iter().any(|p| p.as_text().is_none()) {
-                return Err("remote artifact carries a non-text part".into());
-            }
+            artifact_parts_ok(&u.artifact.parts)?;
             let list = task.artifacts.as_deref().unwrap_or_default();
             let existing = list
                 .iter()
@@ -1153,8 +1257,8 @@ fn apply(task: &mut Task, ev: StreamResponse, kept: &mut Retained) -> Result<(),
 /// 199 (D1): the message to the contact `name` (its redacted `text` and its outgoing
 /// `files`): the text (omitted when it is empty and files go), then one reference part per
 /// file and `extensions: [EXT_FILES]` only then. Files toward a contact whose last card does
-/// not take them (`takes_files`) are refused here, before anything is sent. 199-E3: inline
-/// `raw` toward peers without the extension.
+/// not take them (`takes_files`) are refused here, before anything is sent. An HTTP peer's
+/// files go inline instead ([`inline_message`], 199-E3).
 fn contact_message(
     name: &str,
     text: String,
@@ -1503,18 +1607,53 @@ mod tests {
         assert_eq!(Retained::of(&t).unwrap().text, ARTIFACT_BYTES_MAX);
     }
 
+    /// 199-E3 (D13, P3): an answer's artifact keeps inline `raw` and `https` file parts (in a
+    /// stream event and in a whole snapshot, the inline bytes counted in the serialized
+    /// bound, never in the text bound); `data`, `http:` and userinfo URLs are refused and
+    /// leave the snapshot unchanged, as does an oversized status.
     #[test]
-    fn apply_refuses_binary_and_oversized_status() {
+    fn apply_keeps_file_parts_and_refuses_data_and_oversized_status() {
         let mut t = task(TaskState::Working);
-        let mut bytes = Retained::default();
-        let mut bin = artifact("a", "");
-        bin.artifact.parts = vec![Part {
-            content: PartContent::Raw(vec![0, 1, 2]),
-            filename: None,
-            media_type: Some("application/octet-stream".into()),
-            metadata: None,
-        }];
-        assert!(apply(&mut t, StreamResponse::ArtifactUpdate(bin), &mut bytes).is_err());
+        let mut bytes = Retained::of(&t).unwrap();
+        let mut files = artifact("a", "see");
+        files.artifact.parts.push(
+            Part::raw(vec![0, 1, 2])
+                .with_filename("x.bin")
+                .with_media_type("application/octet-stream"),
+        );
+        files
+            .artifact
+            .parts
+            .push(Part::url("https://files.example/report.pdf"));
+        let before = fingerprint(&t);
+        apply(&mut t, StreamResponse::ArtifactUpdate(files), &mut bytes).unwrap();
+        assert_eq!(bytes.text, 3);
+        assert_eq!(t.artifacts.as_ref().unwrap()[0].parts.len(), 3);
+        assert_ne!(fingerprint(&t), before);
+        assert_eq!(Retained::of(&t).unwrap().text, 3);
+        for refused in [
+            Part::data(serde_json::json!({"k": 1})),
+            Part::url("http://files.example/report.pdf"),
+            Part::url("https://user:pw@files.example/f"),
+        ] {
+            let mut bad = artifact("b", "");
+            bad.artifact.parts = vec![refused];
+            assert!(
+                apply(
+                    &mut t,
+                    StreamResponse::ArtifactUpdate(bad.clone()),
+                    &mut bytes
+                )
+                .is_err()
+            );
+            let mut whole = t.clone();
+            whole
+                .artifacts
+                .get_or_insert_with(Vec::new)
+                .push(bad.artifact);
+            assert!(Retained::of(&whole).is_err());
+        }
+        assert_eq!(t.artifacts.as_ref().unwrap().len(), 1);
         let status = TaskStatusUpdateEvent {
             task_id: "t".into(),
             context_id: "c".into(),

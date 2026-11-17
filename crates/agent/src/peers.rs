@@ -502,9 +502,9 @@ impl Tool for SendMessageTool {
                 Err(e) => return Ok(ToolOutput::err(e)),
             }
         }
-        // 199: contacts only; every file through the egress gate once (its errors are the
-        // design's texts), cloned and hashed once, then offered per recipient. Nothing is
-        // sent when that fails.
+        // 199: contacts, and (199-E3) HTTP peers when the files fit inline; every file
+        // through the egress gate once (its errors are the design's texts), cloned and hashed
+        // once, then offered per recipient. Nothing is sent when that fails.
         #[cfg(unix)]
         let staged = match args.files.is_empty() {
             true => None,

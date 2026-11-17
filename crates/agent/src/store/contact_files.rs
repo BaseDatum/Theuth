@@ -157,8 +157,16 @@ impl FileRow {
     }
 }
 
-/// The contact's display alias by record id (the record itself when it has none).
+/// The contact's display alias by record id (the record itself when it has none). 199-E3:
+/// a foreign peer's file is keyed by its binding (`peer:<uuid>`): that binding's alias.
 async fn alias_in(conn: &mut SqliteConnection, contact: &str) -> anyhow::Result<String> {
+    if let Some(binding) = contact.strip_prefix("peer:") {
+        let row: Option<(String,)> = sqlx::query_as("SELECT alias FROM peer_bindings WHERE id = ?")
+            .bind(binding)
+            .fetch_optional(conn)
+            .await?;
+        return Ok(row.map_or_else(|| binding.get(..8).unwrap_or(binding).to_owned(), |(a,)| a));
+    }
     let row: Option<(Option<String>,)> = sqlx::query_as("SELECT alias FROM contacts WHERE id = ?")
         .bind(contact)
         .fetch_optional(conn)
@@ -364,6 +372,23 @@ impl Store {
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        tx.commit().await
+    }
+
+    /// 199-E3: a foreign download's measured size and BLAKE3, before publication (so a
+    /// restart resolves its `publishing` row by inode like a contact's).
+    pub async fn file_measured(&self, id: &str, size: u64, blake3: &str) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "UPDATE contact_files SET size = ?, blake3 = ?, done = ? WHERE id = ? \
+             AND state = 'receiving'",
+        )
+        .bind(size as i64)
+        .bind(blake3)
+        .bind(size as i64)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await
     }
 
@@ -748,8 +773,17 @@ impl Store {
 
     /// D17 share re-check: `contact` (a record id, merges followed) is neither removed nor
     /// blocked, and still shares `session` with us: an export of it granted to the
-    /// contact (no member refusing), or a live `~return` conversation into it.
+    /// contact (no member refusing), or a live `~return` conversation into it. 199-E3: a
+    /// foreign peer's (`peer:<binding>`) lives while its binding does.
     pub async fn share_live(&self, session: &str, contact: &str) -> anyhow::Result<bool> {
+        if let Some(binding) = contact.strip_prefix("peer:") {
+            return Ok(sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM peer_bindings WHERE id = ? AND revoked_at IS NULL)",
+            )
+            .bind(binding)
+            .fetch_one(&self.read)
+            .await?);
+        }
         let root = self.contact_root(contact).await?;
         let live: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM contacts WHERE id = ?1 AND removed_ms IS NULL \

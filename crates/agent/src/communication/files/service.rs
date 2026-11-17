@@ -19,6 +19,7 @@ use tokio::sync::Notify;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use super::foreign::{self, Failure};
 use super::holder::render;
 use super::intake::source_of;
 use super::notices::NoticeDoor;
@@ -95,6 +96,11 @@ fn fatal(e: &TransferError, machine: &str) -> Option<String> {
     }
 }
 
+/// The queue slot a row takes (D7): its sending member, or, for a foreign file, its sender.
+fn member(row: &FileRow) -> String {
+    source_of(&row.source).map_or_else(|| row.contact_id.clone(), |(m, _)| m)
+}
+
 /// In-memory scheduling state; never held across an await.
 #[derive(Default)]
 struct Sched {
@@ -142,6 +148,9 @@ pub struct FileService {
     pub backoff: Duration,
     /// A fetcher in place of the registered one (tests).
     pub fetcher: Option<Arc<dyn FileFetch>>,
+    /// 199-E3: the template of every foreign download (tests: the loopback allowlist and
+    /// root; the limits and the timer are set per download).
+    pub web: web::fetch::DownloadOpts,
     door: Arc<dyn NoticeDoor>,
     sched: parking_lot::Mutex<Sched>,
 }
@@ -181,6 +190,7 @@ impl FileService {
             idle: super::FILE_IDLE,
             backoff: BACKOFF,
             fetcher: None,
+            web: web::fetch::DownloadOpts::default(),
             door,
             sched: parking_lot::Mutex::default(),
         })
@@ -292,10 +302,11 @@ impl FileService {
             }
             done
         } else {
-            let done = self
-                .store
-                .file_fail(r, &row.id, "the offer expired")
-                .await?;
+            let why = match foreign::is_foreign(&row.contact_id) {
+                true => foreign::NO_RESPONSE,
+                false => "the offer expired",
+            };
+            let done = self.store.file_fail(r, &row.id, why).await?;
             remove(&self.partial(&row.id));
             done
         };
@@ -323,7 +334,7 @@ impl FileService {
                 if s.running.contains(&row.id) || !s.due(&row.id, now) {
                     continue;
                 }
-                let member = source_of(&row.source).map_or_else(String::new, |(m, _)| m);
+                let member = member(&row);
                 let n = s.members.entry(member).or_default();
                 if *n >= PER_MEMBER {
                     continue;
@@ -336,7 +347,7 @@ impl FileService {
         for row in start {
             let me = self.clone();
             tokio::spawn(async move {
-                let member = source_of(&row.source).map_or_else(String::new, |(m, _)| m);
+                let member = member(&row);
                 let id = row.id.clone();
                 let requeue = me.download(row).await;
                 {
@@ -376,6 +387,9 @@ impl FileService {
             }
         };
         self.changed(&r, &row).await;
+        if foreign::is_source(&row.source) {
+            return self.foreign(&r, &row).await;
+        }
         let (Some((member, sender)), Some(size)) = (source_of(&row.source), row.size) else {
             self.fail(&r, &row, "malformed file reference").await;
             return Requeue::Done;
@@ -447,6 +461,52 @@ impl FileService {
         }
         self.publish(&r, &row, size, &got.blake3).await;
         Requeue::Done
+    }
+
+    /// 199-E3 (D16): one attempt at a foreign file, from byte 0 (never resumed): fetched
+    /// from its `https` URL or decoded from its inline bytes, measured, then published.
+    async fn foreign(self: &Arc<Self>, r: &Render, row: &FileRow) -> Requeue {
+        let partial = self.partial(&row.id);
+        if let Err(e) = mkdirs(partial.parent().unwrap_or(&self.root)) {
+            self.fail(r, row, &format!("saving failed: {e}")).await;
+            return Requeue::Done;
+        }
+        remove(&partial);
+        let opts = web::fetch::DownloadOpts {
+            max_bytes: super::FILE_MAX,
+            idle_timeout: self.idle,
+            deadline: Some(instant_at(row.deadline_ms).into_std()),
+            ..self.web.clone()
+        };
+        match foreign::fetch(&row.source, &partial, &opts, &r.machine).await {
+            Ok(got) => {
+                if let Err(e) = self
+                    .store
+                    .file_measured(&row.id, got.bytes, &got.blake3)
+                    .await
+                {
+                    tracing::warn!(file = %row.id, "199: measured: {e:#}");
+                }
+                self.publish(r, row, got.bytes, &got.blake3).await;
+                Requeue::Done
+            }
+            Err(Failure::Fatal(why)) => {
+                self.fail(r, row, &why).await;
+                Requeue::Done
+            }
+            Err(Failure::Retry { idle }) => {
+                remove(&partial);
+                if let Ok(true) = self.store.file_requeue(&row.id, 0).await
+                    && let Ok(Some(row)) = self.store.contact_file(&row.id).await
+                {
+                    self.changed(r, &row).await;
+                }
+                match idle {
+                    true => Requeue::Back,
+                    false => Requeue::Later,
+                }
+            }
+        }
     }
 
     /// The partial at `p`, created 0600 when missing: the bytes already in it (a partial

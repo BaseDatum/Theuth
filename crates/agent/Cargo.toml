@@ -83,6 +83,8 @@ aws-types = { workspace = true }
 wiremock = { workspace = true }
 tempfile = "3"
 image = { workspace = true }
+# 199-E3: the loopback HTTPS server of the foreign-download tests (web's fixtures).
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs"] }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "knowledge/ts", "secrets/ts", "search/ts", "acp/ts", "models/ts"]

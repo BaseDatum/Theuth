@@ -1278,7 +1278,10 @@ fn inbound_text(m: &A2aMessage, redact: impl Fn(&str) -> String) -> Result<Strin
     for p in &m.parts {
         // 199: a file reference part (`iroh://…/a2a/files/<id>`; the a2a layer admitted it
         // under the files extension) carries no text: its file is admitted as an `in` row.
-        if matches!(&p.content, a2a_types::PartContent::Url(u) if u.starts_with("iroh://")) {
+        // 199-E3 (P3): so does a foreign peer's inline `raw` or `https` URL part.
+        if matches!(&p.content, a2a_types::PartContent::Url(u) if u.starts_with("iroh://"))
+            || crate::communication::files::foreign::is_file(p)
+        {
             continue;
         }
         let Some(t) = p.as_text() else {
@@ -1852,6 +1855,26 @@ impl Agents {
                 .await
                 .unwrap_or(task);
         };
+        // 199-E3 (P3): a foreign peer's inline and `https` files, one `in` row each beside
+        // the stored exchange, before its text is delivered (the record then carries the
+        // receiving placeholders).
+        let parts = snapshot(&task)
+            .history
+            .and_then(|h| h.into_iter().next())
+            .map(|m| m.parts)
+            .unwrap_or_default();
+        if let Err(e) = crate::communication::files::foreign::admit(
+            &self.store,
+            task.session,
+            exchange,
+            &task.principal,
+            &parts,
+        )
+        .await
+        {
+            let why = format!("files not recorded: {e:#}");
+            return self.fail_task(&task, &why).await.unwrap_or(task);
+        }
         let record = match self.store.exchange_record(exchange).await {
             Ok(Some(r)) => r,
             Ok(None) => {
@@ -1933,6 +1956,16 @@ impl Agents {
         generation: &Generation,
         route: &CancellationToken,
     ) -> Result<A2aTask, A2AError> {
+        // 199-E3 (P3): the answer's foreign files, as for a new task.
+        crate::communication::files::foreign::admit(
+            &self.store,
+            task.session,
+            receipt.id,
+            &task.principal,
+            &message.parts,
+        )
+        .await
+        .map_err(internal)?;
         let mut snap = snapshot(&task);
         snap.history.get_or_insert_with(Vec::new).push(message);
         let task = self
@@ -4657,7 +4690,7 @@ impl Agents {
                 let text = self
                     .redact(&parts_text(&m.parts).unwrap_or_default())
                     .into_owned();
-                self.import_reply(exchange, &text).await;
+                self.import_reply(exchange, &text, &m.parts).await;
                 return;
             }
             Ok(SendMessageResponse::Task(t)) => {
@@ -4696,7 +4729,15 @@ impl Agents {
         match t.status.state {
             // 186 (D4): a full contact consumed it; its answers come on their own.
             TaskState::Completed if full::task_is_receipt(t) => self.full_read(exchange).await,
-            TaskState::Completed => self.import_reply(exchange, &text).await,
+            TaskState::Completed => {
+                let parts: Vec<Part> = t
+                    .artifacts
+                    .iter()
+                    .flatten()
+                    .flat_map(|a| a.parts.iter().filter(|p| p.as_text().is_none()).cloned())
+                    .collect();
+                self.import_reply(exchange, &text, &parts).await;
+            }
             TaskState::Failed | TaskState::Canceled | TaskState::Rejected => {
                 self.network.outbound.remove(&exchange);
                 let why = format!("remote task {:?}: {}", t.status.state, cut(&text, 512));
@@ -4777,7 +4818,9 @@ impl Agents {
 
     /// The remote's final answer to `exchange`: persisted as a reply, then
     /// handed to the awaiting `send_message` call or delivered once as input.
-    async fn import_reply(&mut self, exchange: Uuid, text: &str) {
+    /// 199-E3 (D13, P3): the file parts among `parts` (an answer's artifacts, or its
+    /// message) become `in` rows of the reply, as a foreign peer's message's do.
+    async fn import_reply(&mut self, exchange: Uuid, text: &str, parts: &[Part]) {
         let Some(o) = self.network.outbound.remove(&exchange) else {
             // Already settled (a Completed snapshot after the first).
             return;
@@ -4805,6 +4848,17 @@ impl Agents {
                 return;
             }
         };
+        if let Err(e) = crate::communication::files::foreign::admit(
+            &self.store,
+            o.session,
+            reply.id,
+            &peer,
+            parts,
+        )
+        .await
+        {
+            tracing::warn!(exchange = %reply.id, "a2a: reply files not recorded: {e:#}");
+        }
         let Ok(Some(mut orig)) = self.store.exchange_receipt(exchange).await else {
             return;
         };
@@ -4934,7 +4988,7 @@ impl Message<RemoteTaskUpdate> for Agents {
                 let text = self
                     .redact(&parts_text(&msg.parts).unwrap_or_default())
                     .into_owned();
-                self.import_reply(m.exchange, &text).await;
+                self.import_reply(m.exchange, &text, &msg.parts).await;
             }
             RemoteUpdate::Failed(why) => {
                 self.network.outbound.remove(&m.exchange);
@@ -5020,10 +5074,14 @@ mod tests {
             id(inbound_text(&empty_task, str::to_owned)),
             a2a_types::error_code::INVALID_PARAMS
         );
+        // 199-E3: an inline file carries no text (it becomes an `in` row); `data` is refused.
         let mut binary = user("hi");
         binary.parts.push(Part::raw(vec![1, 2, 3]));
+        assert_eq!(inbound_text(&binary, str::to_owned).unwrap(), "hi");
+        let mut data = user("hi");
+        data.parts.push(Part::data(serde_json::json!({"k": 1})));
         assert_eq!(
-            id(inbound_text(&binary, str::to_owned)),
+            id(inbound_text(&data, str::to_owned)),
             a2a_types::error_code::CONTENT_TYPE_NOT_SUPPORTED
         );
         let mut big = user("x");
@@ -6810,6 +6868,96 @@ mod tests {
             .expect("it leaves")
             .unwrap();
         assert!(wire.full.is_some() && wire.context_id.is_some(), "full");
+    }
+
+    /// 199-E3 (D13, P3): an HTTP peer's answer with file parts in its artifacts (inline and
+    /// at an `https` URL) becomes the reply's `in` rows, keyed by the peer's binding, and the
+    /// delivered reply carries their receiving placeholders beside its text.
+    #[tokio::test]
+    async fn an_answers_artifact_files_become_the_replys_in_rows() {
+        struct Record(tokio::sync::mpsc::UnboundedSender<OutboundPeerMessage>);
+        #[async_trait]
+        impl PeerSender for Record {
+            async fn send(&self, o: OutboundPeerMessage) -> Result<RemoteReply, RemoteSendError> {
+                let _ = self.0.send(o);
+                Err(RemoteSendError::Unknown("recorded".into()))
+            }
+        }
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        a.communication.0.write().set_network(true, true);
+        let binding = a
+            .store
+            .bind_peer("lab", "https://lab.example/")
+            .await
+            .unwrap();
+        let owner = a
+            .new_root(None, super::super::PeerScope::Owner, None, None)
+            .await
+            .unwrap();
+        let (tx, mut out) = tokio::sync::mpsc::unbounded_channel();
+        a.network.peers.insert(
+            binding.id,
+            RemotePeer {
+                name: "lab".into(),
+                roots: vec![owner],
+                sender: Some(Arc::new(Record(tx))),
+                generation: CancellationToken::new(),
+                contact: false,
+                full: Vec::new(),
+            },
+        );
+        let sent = a
+            .network_send(owner, "lab", "the survey please", None, None, false)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), out.recv())
+            .await
+            .expect("it leaves")
+            .unwrap();
+        let mut answer = text_artifact("here it is");
+        answer.parts.push(
+            Part::raw(b"tiny".to_vec())
+                .with_filename("tiny.txt")
+                .with_media_type("text/plain"),
+        );
+        answer
+            .parts
+            .push(Part::url("https://files.example/survey.zip"));
+        let t = Task {
+            id: "t-1".into(),
+            context_id: "c-1".into(),
+            status: TaskStatus {
+                state: TaskState::Completed,
+                message: None,
+                timestamp: None,
+            },
+            artifacts: Some(vec![answer]),
+            history: None,
+            metadata: None,
+        };
+        a.apply_remote_task(sent.id, &t).await;
+        let peer = format!("peer:{}", binding.id);
+        let reply = a
+            .store
+            .exchange_by_request_id(&peer, &format!("reply:{}", sent.id))
+            .await
+            .unwrap()
+            .expect("the reply");
+        let rows = a.store.exchange_files(&reply.to_string()).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows.iter()
+                .all(|r| r.contact_id == peer && r.direction == "in")
+        );
+        assert_eq!((rows[0].name.as_str(), rows[0].size), ("tiny.txt", Some(4)));
+        assert_eq!(rows[1].source, "https://files.example/survey.zip");
+        let record = a.store.exchange_record(reply).await.unwrap().unwrap();
+        assert_eq!(record.text, "here it is");
+        assert_eq!(record.files.len(), 2);
+        assert_eq!(record.files[1].contact, "lab");
+        let shown = crate::communication::files::placeholders(&record.from, &record.files);
+        assert!(shown.contains("name=\"survey.zip\""), "{shown}");
+        assert!(shown.contains("state=\"receiving\""), "{shown}");
     }
 
     /// 183 F4: a grant change keeps a held first message whose export is unchanged: it moves
