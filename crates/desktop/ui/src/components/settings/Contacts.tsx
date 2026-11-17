@@ -27,6 +27,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { chatName } from '@/lib/attach'
 import { PAIRED_RULE, SHARE_RULE, type Sharing, accessFocus, exportName, fingerprint, focusedContact, names, rogueLine, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
+import { hasLocal } from '@/link/engines'
 import { engineLabel } from '@/lib/owner'
 import { putPair, queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
@@ -243,9 +244,12 @@ export function Contacts({ adding: initial = false }: { adding?: boolean }) {
     <Section
       title="Contacts"
       actions={
-        <Button variant="outline" size="sm" onClick={() => setAdding(true)}>
-          <Plus /> Add contact…
-        </Button>
+        // 183 §12.8: the code check needs the machine's own screen, and Nearby browses its network, not a phone's.
+        hasLocal() && (
+          <Button variant="outline" size="sm" onClick={() => setAdding(true)}>
+            <Plus /> Add contact…
+          </Button>
+        )
       }
     >
       <p className="text-[13px] text-fg-secondary">Other people's machines. {SHARE_RULE}</p>
@@ -976,8 +980,10 @@ export function SharingItems({ session, onShare }: { session: string; onShare: (
 /**
  * 183 §12.10: ⋯ Share with contact… — the open chat shared with (or taken back from) each contact. Sharing creates the
  * chat's export on first use; the contact's agents can then send into it and see only what this chat's agent sends back.
+ * 191: the export and grant rows are the mesh's, so any machine (or a phone through it) can write them and the chat's
+ * `owner` publishes it; when the connected engine refuses, the line names that machine.
  */
-export function ShareDialog({ session, title, onClose }: { session: string; title: string; onClose: () => void }) {
+export function ShareDialog({ session, title, owner, onClose }: { session: string; title: string; owner?: string; onClose: () => void }) {
   const navigate = useNavigate()
   const contacts = useContacts()
   const exports = useExports()
@@ -985,18 +991,19 @@ export function ShareDialog({ session, title, onClose }: { session: string; titl
   const ungrant = useUngrant()
   const exp = exports.data?.find((x) => x.target.kind === 'chat' && x.target.session === session)
   const busy = grant.isPending || ungrant.isPending
+  const failed = grant.error ?? ungrant.error
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       {/* 186: no share button takes focus on open, so Enter never shares by accident. */}
       <DialogContent
-        className="sm:max-w-md"
+        className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-md"
         onOpenAutoFocus={(e) => {
           e.preventDefault()
           ;(e.currentTarget as HTMLElement).focus()
         }}
       >
         <div className="flex flex-col gap-4">
-          <div>
+          <div className="pr-6">
             <DialogTitle className="text-lg font-semibold">Share this chat with a contact</DialogTitle>
             <p className="text-[13px] text-fg-secondary">Their agents can send messages into “{title}”. They see only what this chat's agent sends back: no transcript, no live view, no typing.</p>
             <p className="mt-1 text-[13px] text-fg-secondary">{SHARE_RULE}</p>
@@ -1042,10 +1049,16 @@ export function ShareDialog({ session, title, onClose }: { session: string; titl
                 )
               })}
           </div>
+          {failed && (
+            <p role="alert" className="break-words text-[13px] text-danger">
+              {owner ? `This machine could not share it (${errorText(failed)}). Open this chat on ${owner}, the machine that runs it, to share it.` : `Not shared: ${errorText(failed)}`}
+            </p>
+          )}
           <Limited>You can stop sharing at any time.</Limited>
           <div className="flex flex-wrap justify-end gap-2">
             <Button
               variant="ghost"
+              className="pointer-coarse:min-h-11"
               onClick={() => {
                 onClose()
                 void navigate(toContacts())
@@ -1053,7 +1066,7 @@ export function ShareDialog({ session, title, onClose }: { session: string; titl
             >
               Contacts…
             </Button>
-            <Button variant="outline" onClick={onClose}>
+            <Button variant="outline" className="pointer-coarse:min-h-11" onClick={onClose}>
               Done
             </Button>
           </div>

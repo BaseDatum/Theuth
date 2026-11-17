@@ -1477,4 +1477,85 @@ mod tests {
         );
         assert!(out.recv().await.is_none(), "conn task ended");
     }
+
+    /// 183 §12.10, lifted 2026-11-17: over the transport itself, a paired phone (a known static,
+    /// `IK` → session) reaches every share RPC as its owner peer (remote, not a guest, not
+    /// internal); an unknown static (a share-link guest) is refused each with `-32601` by the
+    /// gate, and the dispatch never sees it.
+    #[tokio::test]
+    async fn a_paired_device_reaches_the_share_rpcs_and_a_guest_is_refused_them() {
+        use crate::mesh_uplink::testing;
+        const SHARE: [&str; 6] = [
+            "contact_list",
+            "contact_update",
+            "contact_remove",
+            "a2a_exports",
+            "a2a_export_put",
+            "a2a_export_remove",
+        ];
+        let mesh = testing::identity();
+        let ctx = testing::ctx("ws://x", None, Some(mesh.clone()));
+        let mut module = jsonrpsee::RpcModule::new(());
+        for m in SHARE {
+            module
+                .register_method(m, |_, _, ext| {
+                    let p = ext.get::<RpcPeer>().expect("conn peer");
+                    assert!(p.guest().is_none(), "a guest reached the dispatch");
+                    p.remote() && !p.is_internal()
+                })
+                .unwrap();
+        }
+        ctx.set_dispatch(crate::types::SetDispatch {
+            methods: module.into(),
+            acp: Arc::new(|_, _| Box::pin(async {})),
+        });
+        let (dpriv, dpub) = keypair();
+        ctx.lock().devices.insert(crate::devices::Row {
+            id: device_id(&dpub),
+            key: dpub,
+            name: "iPhone".into(),
+            platform: "ios".into(),
+            paired_at_ms: 1,
+            last_seen_ms: 0,
+            revoked_ms: None,
+        });
+        let mut msg1 = vec![0u8; MAX_MSG];
+        let mut buf = vec![0u8; MAX_MSG];
+
+        // The paired phone: a session; each call is dispatched with its owner peer.
+        let mut out = mesh_conn(&ctx, 1);
+        let mut hs = initiator("IK", &dpriv, &mesh, None);
+        let n = hs.write_message(&[], &mut msg1).unwrap();
+        data(&ctx, 1, &msg1[..n]).await;
+        let (op, _, msg2) = frame(&mut out).await;
+        assert_eq!(op, uplink::OP_DATA);
+        hs.read_message(&msg2, &mut buf).unwrap();
+        let mut t = hs.into_transport_mode().unwrap();
+        for (i, m) in SHARE.iter().enumerate() {
+            let req = format!(r#"{{"jsonrpc":"2.0","id":{i},"method":"{m}","params":[]}}"#);
+            device_send(&ctx, 1, &mut t, &req).await;
+            assert_eq!(device_recv(&mut t, &mut out).await["result"], true, "{m}");
+        }
+        ctx.lock().mesh_conns.remove(&1);
+
+        // An unknown static: a guest, refused every share RPC before dispatch.
+        let (gpriv, _) = keypair();
+        let mut out = mesh_conn(&ctx, 2);
+        let mut g = initiator("IK", &gpriv, &mesh, None);
+        let n = g.write_message(&[2], &mut msg1).unwrap();
+        data(&ctx, 2, &msg1[..n]).await;
+        let (op, _, msg2) = frame(&mut out).await;
+        assert_eq!(op, uplink::OP_DATA);
+        g.read_message(&msg2, &mut buf).unwrap();
+        let mut g = g.into_transport_mode().unwrap();
+        for (i, m) in SHARE.iter().enumerate() {
+            let req = format!(r#"{{"jsonrpc":"2.0","id":{i},"method":"{m}","params":[]}}"#);
+            device_send(&ctx, 2, &mut g, &req).await;
+            assert_eq!(
+                device_recv(&mut g, &mut out).await["error"]["code"],
+                -32601,
+                "{m}"
+            );
+        }
+    }
 }
