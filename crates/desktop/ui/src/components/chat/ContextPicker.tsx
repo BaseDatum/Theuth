@@ -3,7 +3,8 @@ import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useState } from
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { type Api, type ContextItem, type ContextSnapshot, type ContextTarget, contextItems, removeContext } from '@/lib/context-197'
+import type { Api } from '@/rpc/bindings/client'
+import type { ContextItem, ContextSnapshot, ContextTarget } from '@/rpc/bindings/method.agent.output'
 import { routed } from '@/lib/owner'
 import { privateOwner } from '@/lib/private'
 import { cn } from '@/lib/utils'
@@ -79,7 +80,7 @@ export function ContextPicker({ session }: { session: string }) {
     if (!req) return
     let live = true
     setPhase({ at: 'loading' })
-    contextItems(req.api, req.session).then(
+    req.api.context_items(req.session).then(
       (snap) => {
         if (!live) return
         if (!snap.editable) return setPhase({ at: 'error', message: snap.reason ?? BUSY, retry: true })
@@ -122,7 +123,7 @@ export function ContextPicker({ session }: { session: string }) {
     setPhase({ at: 'pending', snap, selected })
     try {
       // 183 §4.4: the owner's call; unreachable, it waits behind the chat's card and the picker closes.
-      const r = await routed(req.session, () => removeContext(req.api, req.session, snap.revision, targets))
+      const r = await routed(req.session, () => req.api.remove_context(req.session, snap.revision, targets))
       if (!r) return setReq(null)
       const parts = [
         r.messages > 0 && `${r.messages} message${r.messages === 1 ? '' : 's'}`,

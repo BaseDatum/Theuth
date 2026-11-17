@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
-import type { ContextItem, ContextKind, ContextTarget } from '@/lib/context-197'
+import type { ContextItem, ContextKind, ContextTarget } from '@/rpc/bindings/method.agent.output'
 import type * as Rpc from '@/lib/rpc'
 import type * as Conn from '@/store/connection'
 import { empty } from '@/store/reduce'

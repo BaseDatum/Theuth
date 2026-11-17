@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import type { ContextItem, ContextKind, ContextTarget } from '@/lib/context-197'
+import type { ContextItem, ContextKind, ContextTarget } from '@/rpc/bindings/method.agent.output'
 import { OTHER_TOOLS, SHAKE_WORDS, catalog, expand, key, preselect, review, toggle, tokens, tri } from './shake'
 
 const m = (seq: number): ContextTarget => ({ kind: 'message', seq })
@@ -71,6 +71,17 @@ test('kinds land in their section, categories in contract order, groups in their
   expect(cats[1]!.groups.map((g) => g.name)).toEqual(['Diagrams in replies', 'Pages'])
   expect(cats[2]!.groups.map((g) => g.name)).toEqual(['Knowledge hints', 'Time stamps'])
   expect(cats[5]!.groups.map((g) => g.name)).toEqual(['Your messages'])
+})
+
+test('the legacy message kind is "Message" in Conversation; a kind the UI does not know shows its raw string', () => {
+  const items = [item(m(1), 'message', 'message'), item(m(2), 'widget' as ContextKind, 'widget'), item(m(3), 'tool', 'shell')]
+  const cats = catalog(items)
+  expect(cats.map((c) => [c.section, c.name, c.groups.map((g) => g.name)])).toEqual([
+    ['output', 'Tool output', ['shell']],
+    ['conversation', 'Message', ['Message']],
+    ['conversation', 'widget', ['widget']],
+  ])
+  expect(cats.every((c) => typeof c.name === 'string' && c.name !== 'undefined')).toBe(true)
 })
 
 test('tool output keeps its six largest tools by tokens and folds the rest into Other tools, in snapshot order', () => {

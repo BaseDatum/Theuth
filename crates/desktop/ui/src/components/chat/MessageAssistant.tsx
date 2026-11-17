@@ -10,13 +10,13 @@ import { useNotebookChat, type NotebookChat } from '@/components/notebooks/Noteb
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { type ContextTarget, pieces } from '@/lib/context-197'
 import { useNotebooksApi } from '@/lib/notebooks-rpc'
 import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import * as speech from '@/lib/speech'
 import { cn } from '@/lib/utils'
 import type { ContextEntry } from "@/rpc/bindings/method.agent.output"
+import type { ContextTarget } from "@/rpc/bindings/method.agent.output"
 import type { DocSummary } from "@/rpc/bindings/method.agent.output"
 import { useSessionField, useSessions } from '@/store/sessions'
 import { CitationLink, CitationsProvider, References } from './Citations'
@@ -341,7 +341,7 @@ export const MessageAssistant = memo(function MessageAssistant({
   )
   // 197 §8: the stored row's fences, offered only once settled and when their count matches the fences in `text`.
   const shake = useMemo(
-    () => (readOnly || open || !context || context.removed ? null : shakeFences(session, context.active, text, pieces(context)?.fences)),
+    () => (readOnly || open || !context || context.removed ? null : shakeFences(session, context.active, text, context.fences)),
     [readOnly, open, context, session, text],
   )
   // 171 §3.4: a chat cell is `(session, stored message seq, ordinal)`; `turnRunning` holds cells of the reply whose turn runs.

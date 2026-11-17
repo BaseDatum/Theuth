@@ -1,6 +1,6 @@
 // 197 SHAKE-BY-CATEGORY: the picker's model, pure so it is tested without a DOM. Targets, closure and subsumption are
 // 48 §3.2's; categories, groups, token sums, `/shake` words and the review lines are 197 §7–§8.
-import type { ContextItem, ContextKind, ContextTarget } from '@/lib/context-197'
+import type { ContextItem, ContextKind, ContextTarget } from '@/rpc/bindings/method.agent.output'
 
 /** `/shake <word>` (197 §7): literal categories, not a selector language. */
 export const SHAKE_WORDS = ['images', 'documents', 'surfaces', 'tools', 'notes', 'agents', 'messages', 'summary'] as const
@@ -56,7 +56,8 @@ export function expand(items: ContextItem[], selected: Set<string>): { targets: 
 
 export type Section = 'output' | 'conversation'
 
-/** 197 §8: Attachments & output in this order, then Conversation. `color` is a theme token. */
+/** 197 §8: Attachments & output in this order, then Conversation. `color` is a theme token. `message` is the legacy
+ * pre-197 kind (never emitted since, kept on the wire); a kind this list lacks shows under its raw string (`catalog`). */
 export const CATEGORIES: readonly { kind: ContextKind; section: Section; name: string; color: string }[] = [
   { kind: 'image', section: 'output', name: 'Images', color: 'var(--chart-1)' },
   { kind: 'surface', section: 'output', name: 'Surfaces & diagrams', color: 'var(--chart-2)' },
@@ -66,6 +67,7 @@ export const CATEGORIES: readonly { kind: ContextKind; section: Section; name: s
   { kind: 'document', section: 'output', name: 'Documents', color: 'var(--chart-6)' },
   { kind: 'user', section: 'conversation', name: 'Your messages', color: 'var(--fg-primary)' },
   { kind: 'assistant', section: 'conversation', name: 'My replies', color: 'var(--fg-primary)' },
+  { kind: 'message', section: 'conversation', name: 'Message', color: 'var(--fg-primary)' },
   { kind: 'summary', section: 'conversation', name: 'Summary', color: 'var(--fg-primary)' },
 ]
 
@@ -103,7 +105,11 @@ export function catalog(items: ContextItem[]): Category[] {
     else groups.set(i.group, [i])
   }
   const out: Category[] = []
-  for (const c of CATEGORIES) {
+  // A kind from a newer engine: its raw string as the name, items picked one by one (no select-all).
+  const unknown = [...byKind.keys()]
+    .filter((k) => !CATEGORIES.some((c) => c.kind === k))
+    .map((kind) => ({ kind, section: 'conversation' as const, name: String(kind), color: 'var(--fg-tertiary)' }))
+  for (const c of [...CATEGORIES, ...unknown]) {
     const found = byKind.get(c.kind)
     if (!found) continue
     let groups: Group[]
@@ -157,7 +163,7 @@ export function preselect(word: ShakeWord, items: ContextItem[]): Set<string> {
 }
 
 /** The category a word opens. */
-export const wordKinds = (word: ShakeWord): ContextKind[] => (word === 'messages' ? ['user', 'assistant'] : [WORD_KIND[word]])
+export const wordKinds = (word: ShakeWord): ContextKind[] => (word === 'messages' ? ['user', 'assistant', 'message'] : [WORD_KIND[word]])
 
 export type ReviewLine = { label: string; tokens: number }
 export type Review = {

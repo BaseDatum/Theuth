@@ -11,7 +11,7 @@ import { ContextPicker, openContextPicker } from '@/components/chat/ContextPicke
 import { Message } from '@/components/chat/Message'
 import { SHAKE_WORDS } from '@/components/chat/shake'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import type { ContextEntry, ContextItem, ContextKind, ContextSnapshot, ContextTarget } from '@/lib/context-197'
+import type { ContextEntry, ContextItem, ContextKind, ContextSnapshot, ContextTarget } from '@/rpc/bindings/method.agent.output'
 import type { Api } from '@/rpc/bindings/client'
 import type { RpcClient } from '@/rpc/client'
 import { active } from '@/store/engine-scope'

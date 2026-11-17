@@ -45,7 +45,6 @@ import {
 import { fmtBytes, isLocal, readText, readTextOnline, resolveFile } from "@/lib/files";
 import { resultLine } from "@/lib/describe";
 import { canPopout, openPopout } from "@/lib/popout";
-import { pieces } from "@/lib/context-197";
 import { isPrivate, privateOwner } from "@/lib/private";
 import { useApi } from "@/lib/rpc";
 import { cn } from "@/lib/utils";
@@ -407,7 +406,8 @@ function Header({ name, busy, extra }: { name: string; busy?: boolean; extra?: R
  * small tag; the card itself stays either way. A whole row already removed, or a read-only page, shows no control.
  * show/app cards draw it in their header here; a `page_preview` card in `MessageTool`'s plain card. */
 export function SourceControl({ tool, session, readOnly }: { tool: Tool; session: string; readOnly?: boolean }) {
-  const context = pieces(tool.context);
+  // The piece's own target: its owner is the CALL row, never `context.target` (the response row) (197 §5.1).
+  const context = tool.context;
   const piece = context?.sources?.[0];
   if (!context || !piece) return null;
   if (piece.removed)
