@@ -33,6 +33,10 @@ pub(super) fn user_entries(text: String, turn: Option<i64>, registry: &Registry)
         }
         return out;
     }
+    // 199: a contact file's notice row (automatic input) is its file line.
+    if let Some(entry) = crate::components::files::notice(&text) {
+        return vec![entry];
+    }
     // 137G: a bare `<memory>` harness note is a muted info line (a tag with
     // attributes stays the user's message).
     if let Some(body) = agent::endless_ext::memory_note(&text) {
@@ -153,6 +157,8 @@ pub(crate) fn from_history(h: HistoryEntry, opts: &markdown::Options, registry: 
             // authenticated sender, the wrapper is only unwrapped for the
             // body. A wrapper without `peer` stays the untrusted card
             // `user_entries` always drew: no id, no controls.
+            // 199: a message's receiving placeholders follow its card as file lines.
+            let files = crate::components::files::placeholders(&text);
             let projection = registry.wrapper(Wrapper { tag: "user", open: "", body: &text, sender: None,
                 origin: peer.as_ref().map(|origin| WrapperOrigin { id: origin.id, from: &origin.from, reply_to: origin.reply_to, full: origin.contact_mode == Some(agent::ShareMode::Full) }), live: false });
             let mut out = match projection {
@@ -160,6 +166,7 @@ pub(crate) fn from_history(h: HistoryEntry, opts: &markdown::Options, registry: 
                 Some(WrapperView::Hidden) => Vec::new(),
                 Some(WrapperView::Fallback) | None => user_entries(text, turn, registry),
             };
+            out.extend(files);
             // One row each: `Entry::height` counts an `Info` as one line.
             out.extend(attachment_labels(&context).into_iter().map(Entry::Info));
             out
@@ -235,7 +242,8 @@ pub(crate) fn from_history(h: HistoryEntry, opts: &markdown::Options, registry: 
             }]
         }
         // Never model content: shown, never reasoned over (48 §3.3 has nothing to remove).
-        HistoryEntry::Error { text, .. } => vec![Entry::Error(text)],
+        // 199 D17: an ended share's file notice is its labelled file line, never the markup.
+        HistoryEntry::Error { text, .. } => vec![crate::components::files::ended(&text).unwrap_or_else(|| Entry::Error(text))],
         // 109 §8.2: the dropped partial, greyed as an info line under its divider.
         HistoryEntry::Interrupted { text, .. } => vec![
             Entry::Divider("interrupted — resuming".to_owned()),
