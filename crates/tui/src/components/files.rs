@@ -138,26 +138,32 @@ fn entry(line: Option<Line>, ended: bool, group: &'static str) -> Entry {
 }
 
 /// UI-1: the message's placeholder line is the live line of its file. A notice line (or an
-/// ended-share line) of a file whose message line is above it in `entries` becomes one
-/// compact note (its title and whether the agent was given it), never a second card; with
-/// no message line loaded (paged out, or only the notice here) it stays the full line.
+/// ended-share line) of a file whose message line is above it in `entries` moves that line to
+/// the notice's state (in history the placeholder still says receiving) and becomes one
+/// compact note (its title and whether the agent was given it), never a second card; with no
+/// message line loaded (paged out, or only the notice here) it stays the full line.
 pub(crate) fn fold_notices(entries: &mut [Entry]) {
-    let mut seen = std::collections::HashSet::new();
-    for e in entries.iter_mut() {
-        let compact = match e {
-            Entry::Card { entry_key: Some(k), kind: CardKind::Component { group: "file", .. }, .. } => {
-                seen.insert(k.clone());
-                None
-            }
-            Entry::Card { entry_key: Some(k), kind: CardKind::Component { group: NOTICE_GROUP, .. }, title, .. } if seen.contains(k.as_str()) => {
-                let given = if title.ends_with(ENDED) { "" } else { " · given to the agent" };
-                Some(format!("↳ file notice · {title}{given}"))
-            }
-            _ => None,
+    let mut lines = std::collections::HashMap::new();
+    for j in 0..entries.len() {
+        let (key, group) = match &entries[j] {
+            Entry::Card { entry_key: Some(k), kind: CardKind::Component { group, .. }, .. } => (k.clone(), *group),
+            _ => continue,
         };
-        if let Some(line) = compact {
-            *e = Entry::Info(line);
+        if group == "file" {
+            lines.insert(key, j);
+            continue;
         }
+        let (true, Some(&i)) = (group == NOTICE_GROUP, lines.get(&key)) else { continue };
+        let Entry::Card { kind: notice_kind, title, text, .. } = std::mem::replace(&mut entries[j], Entry::Info(String::new())) else { continue };
+        if let Entry::Card { kind, title: live, text: body, .. } = &mut entries[i] {
+            *live = title.strip_suffix(ENDED).unwrap_or(&title).to_owned();
+            *body = text;
+            if let (CardKind::Component { glyph, color, .. }, CardKind::Component { glyph: g, color: c, .. }) = (notice_kind, kind) {
+                (*g, *c) = (glyph, color);
+            }
+        }
+        let given = if title.ends_with(ENDED) { "" } else { " · given to the agent" };
+        entries[j] = Entry::Info(format!("↳ file notice · {title}{given}"));
     }
 }
 
@@ -608,8 +614,11 @@ mod tests {
             "↳ file notice · site-survey.zip · 1.2 GB · application/zip · saved · given to the agent",
             "↳ file notice · drawings.pdf · 24.1 MB · application/pdf · saved · not given to the agent",
         ]);
-        let cards = entries.iter().filter(|e| e.key().is_some_and(|k| k.starts_with("file:"))).count();
-        assert_eq!(cards, 2, "one live line per file: the message's");
+        let live: Vec<&str> = entries.iter().filter(|e| e.key().is_some_and(|k| k.starts_with("file:"))).map(|e| line(e).2).collect();
+        assert_eq!(live, [
+            "site-survey.zip · 1.2 GB · application/zip · saved",
+            "drawings.pdf · 24.1 MB · application/pdf · saved",
+        ], "one live line per file, the message's, at the notice's state");
 
         let mut alone = history(user(engine::notice("peer:maya", &received).unwrap(), None));
         fold_notices(&mut alone);
