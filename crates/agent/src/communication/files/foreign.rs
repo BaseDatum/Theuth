@@ -12,14 +12,18 @@
 //! - **Out.** Toward such a peer a file goes inline as `raw`, only when the whole request
 //!   fits the 64 KiB envelope ([`inline_fit`]); nothing is ever uploaded anywhere.
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::LazyLock;
 
 use a2a_types::{Part, PartContent};
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 use web::fetch::{DownloadError, DownloadOpts};
 
-use super::{OFFER_TTL, sanitise};
+use super::{OFFER_TTL, notice_id, sanitise};
 use crate::store::Store;
 use crate::store::contact_files::FileRow;
 
@@ -31,6 +35,71 @@ pub const ENVELOPE: usize = 64 * 1024;
 pub const NOT_PUBLIC: &str = "not a public HTTPS address";
 /// The failure of a foreign download that never finished before its deadline.
 pub const NO_RESPONSE: &str = "no response";
+/// The failure of a foreign file whose authority ended (grant changed or gone, restart).
+pub const SHARE_ENDED: &str = "share ended";
+
+/// What each foreign file arrived under, by its notice id: the grant epoch of the HTTP
+/// peer's route (credentials, exports and roots as admitted; for an answer, the route's
+/// generation). In memory only, like a task's admission: once cancelled, or after a
+/// restart, the file's share has ended (its download fails, its notice is recorded
+/// without a turn). Entries go when their notice is delivered or found ended.
+static AUTHORITY: LazyLock<parking_lot::Mutex<HashMap<Uuid, CancellationToken>>> =
+    LazyLock::new(Default::default);
+
+/// Record `token` as the authority of notice `notice`'s file.
+pub fn authorize(notice: Uuid, token: CancellationToken) {
+    AUTHORITY.lock().insert(notice, token);
+}
+
+/// The live authority of notice `notice`'s file; `None` once it ended (a cancelled entry
+/// is dropped).
+pub fn authority(notice: Uuid) -> Option<CancellationToken> {
+    let mut map = AUTHORITY.lock();
+    match map.get(&notice) {
+        Some(t) if !t.is_cancelled() => Some(t.clone()),
+        Some(_) => {
+            map.remove(&notice);
+            None
+        }
+        None => None,
+    }
+}
+
+/// Forget notice `notice`'s authority (its notice is delivered).
+pub fn release(notice: Uuid) {
+    AUTHORITY.lock().remove(&notice);
+}
+
+/// D17's share re-check of notice `notice` from `contact` into `session`: a foreign
+/// file's needs its own live authority as well (a live binding alone may reach other
+/// sessions); a contact's is [`Store::share_live`].
+///
+/// # Errors
+/// The store's.
+pub async fn share_live(
+    store: &Store,
+    session: &str,
+    contact: &str,
+    notice: Uuid,
+) -> anyhow::Result<bool> {
+    if is_foreign(contact) && authority(notice).is_none() {
+        return Ok(false);
+    }
+    store.share_live(session, contact).await
+}
+
+/// BLAKE3 of `bytes`, lowercase hex.
+pub fn blake3_hex(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
+}
+
+/// The design's refusal of a file too large to go inline to `peer`.
+pub fn inline_too_large(peer: &str, name: &str, size: u64) -> String {
+    format!(
+        "{peer} takes files only inside the message, and {name} ({size} bytes) does not fit in \
+         64 KiB"
+    )
+}
 
 /// A foreign file URL: absolute `https`, with a host and no userinfo. Every redirect hop
 /// is checked again (and the address resolved public-only) by the download itself.
@@ -113,7 +182,8 @@ pub fn in_rows(
                 ),
                 Some(b.len() as i64),
             )),
-            PartContent::Url(u) if https_url(u).is_ok() => Some((p, u.clone(), None)),
+            // SEC-P5: the parsed URL's canonical form (`HTTPS://X/` is `https://x/`).
+            PartContent::Url(u) => https_url(u).ok().map(|u| (p, u.to_string(), None)),
             _ => None,
         })
         .enumerate()
@@ -150,7 +220,9 @@ pub fn in_rows(
 }
 
 /// Write the `in` rows of a foreign sender's (`peer:<binding>`) file parts into exchange
-/// `exchange` of `session`, once, before its text is delivered.
+/// `exchange` of `session`, once, before its text is delivered. `authority` is what they
+/// arrived under (SEC-P3/P4): the route's grant epoch; each file's download and notice
+/// live only while it does.
 ///
 /// # Errors
 /// The store's.
@@ -160,6 +232,7 @@ pub async fn admit(
     exchange: uuid::Uuid,
     sender: &str,
     parts: &[Part],
+    authority: &CancellationToken,
 ) -> anyhow::Result<()> {
     let rows = in_rows(
         &session.to_string(),
@@ -169,6 +242,9 @@ pub async fn admit(
         Utc::now(),
     );
     if store.admit_in_files(&exchange.to_string(), &rows).await? {
+        for r in &rows {
+            authorize(notice_id(store.engine(), &r.id), authority.clone());
+        }
         #[cfg(unix)]
         super::service::kick();
     }
@@ -254,8 +330,9 @@ fn disk(e: &std::io::Error, machine: &str) -> Failure {
 }
 
 /// A download error as the file's outcome: the address refusals are [`NOT_PUBLIC`]; a
-/// stall, a transport error, a 429 or a 5xx go back to the queue; the rest are terminal
-/// with the error's own (card-sized) text.
+/// stall, a transport error, a 429 or a 5xx go back to the queue; its authority ending
+/// (the cancellation) is [`SHARE_ENDED`], never requeued; the rest are terminal with the
+/// error's own (card-sized) text.
 fn failure(e: &DownloadError, machine: &str) -> Failure {
     match e {
         DownloadError::NotHttps
@@ -263,17 +340,19 @@ fn failure(e: &DownloadError, machine: &str) -> Failure {
         | DownloadError::Userinfo
         | DownloadError::InvalidUrl => Failure::Fatal(NOT_PUBLIC.into()),
         DownloadError::IdleTimeout(_) => Failure::Retry { idle: true },
-        DownloadError::Transport(_) | DownloadError::Cancelled => Failure::Retry { idle: false },
+        DownloadError::Cancelled => Failure::Fatal(SHARE_ENDED.into()),
+        DownloadError::Transport(_) => Failure::Retry { idle: false },
         DownloadError::HttpStatus(s) if *s == 429 || *s >= 500 => Failure::Retry { idle: false },
         DownloadError::Io(io) => disk(io, machine),
         other => Failure::Fatal(other.to_string()),
     }
 }
 
-/// D16 toward a peer without the files extension: `files` (`(name, media type, size)`)
-/// go inline as `raw` beside `text` only when the whole request stays within
-/// [`ENVELOPE`]. The estimate is generous (base64, the escaped text, the part keys and a
-/// 1 KiB request envelope), so what passes here fits on the wire.
+/// D16 toward a peer without the files extension, before anything is staged: `files`
+/// (`(name, media type, size)`) go inline as `raw` beside `text` only when the request
+/// stays within [`ENVELOPE`]. Text and names are measured JSON-escaped (SEC-P1), plus
+/// base64, the part keys and a 1 KiB request envelope. The client measures the final
+/// encoded request again before it sends.
 ///
 /// # Errors
 /// The design's text, naming the first file that does not fit.
@@ -282,17 +361,17 @@ pub fn inline_fit<'a>(
     text: &str,
     files: impl IntoIterator<Item = (&'a str, &'a str, u64)>,
 ) -> Result<(), String> {
-    let mut used = 1024 + text.len() + text.len() / 4 + 16;
+    let escaped = |s: &str| serde_json::to_string(s).map_or(usize::MAX, |j| j.len());
+    let mut used = 1024usize.saturating_add(escaped(text));
     for (name, media_type, size) in files {
         let b64 = usize::try_from(size.div_ceil(3).saturating_mul(4)).unwrap_or(usize::MAX);
         used = used
             .saturating_add(b64)
-            .saturating_add(2 * name.len() + media_type.len() + 64);
+            .saturating_add(escaped(name))
+            .saturating_add(escaped(media_type))
+            .saturating_add(64);
         if used > ENVELOPE {
-            return Err(format!(
-                "{peer} takes files only inside the message, and {name} ({size} bytes) does not \
-                 fit in 64 KiB"
-            ));
+            return Err(inline_too_large(peer, name, size));
         }
     }
     Ok(())
@@ -373,6 +452,35 @@ mod tests {
              in 64 KiB"
         );
         assert!(inline_fit("acme", "", [("f", "x/y", 5_000_000_000)]).is_err());
+    }
+
+    /// SEC-P1: text is measured as JSON writes it. 12,000 U+0001 are 12,000 bytes raw but
+    /// 72,000 escaped (`\u0001`): a one-byte file beside them does not fit.
+    #[test]
+    fn escaped_text_counts_toward_the_inline_envelope() {
+        let control = "\u{1}".repeat(12_000);
+        assert_eq!(
+            inline_fit("acme", &control, [("dot.png", "image/png", 1)]).unwrap_err(),
+            inline_too_large("acme", "dot.png", 1)
+        );
+        assert!(inline_fit("acme", &"x".repeat(12_000), [("dot.png", "image/png", 1)]).is_ok());
+    }
+
+    /// SEC-P5: an admitted `HTTPS://` URL is stored in its canonical form, so the queue
+    /// dispatches it as a foreign source.
+    #[test]
+    fn admitted_urls_are_stored_canonical() {
+        let now: DateTime<Utc> = "2026-11-17T00:00:00Z".parse().unwrap();
+        let rows = in_rows(
+            "s",
+            "e",
+            "peer:b",
+            &[Part::url("HTTPS://Files.Example/a/Report.pdf")],
+            now,
+        );
+        assert_eq!(rows[0].source, "https://files.example/a/Report.pdf");
+        assert!(is_source(&rows[0].source));
+        assert_eq!(rows[0].name, "Report.pdf");
     }
 }
 
@@ -486,6 +594,8 @@ mod queue {
         session: SessionId,
         /// `peer:<binding>` of the foreign peer `acme`.
         sender: String,
+        /// The route's grant epoch the files arrive under (SEC-P3/P4).
+        authority: CancellationToken,
         _dir: crate::TestDir,
     }
 
@@ -516,6 +626,7 @@ mod queue {
             door,
             session,
             sender: format!("peer:{}", binding.id),
+            authority: CancellationToken::new(),
             _dir: dir,
         }
     }
@@ -539,9 +650,16 @@ mod queue {
                 .await
                 .unwrap()
                 .id;
-            admit(store, self.session, ex, &self.sender, parts)
-                .await
-                .unwrap();
+            admit(
+                store,
+                self.session,
+                ex,
+                &self.sender,
+                parts,
+                &self.authority,
+            )
+            .await
+            .unwrap();
             store
                 .consume_exchange(ex, self.session, 1, ChatMessage::user("see attached"))
                 .await
@@ -796,5 +914,77 @@ mod queue {
             notice.contains(&format!("reason=\"{NOT_PUBLIC}\"")),
             "{notice}"
         );
+    }
+
+    /// SEC-P4: the authority a file arrived under bounds its download. Ended before the
+    /// queue starts it: it fails `share ended` and nothing is requested; ended mid-transfer
+    /// (a server still dripping bytes): the download stops at once and fails the same way,
+    /// never requeued; a file whose authority is unknown (after a restart) fails too.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_ended_authority_stops_queued_and_active_downloads() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let addr = {
+            let calls = calls.clone();
+            serve(move |_, mut tls| {
+                let calls = calls.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    send(
+                        &mut tls,
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+                    for _ in 0..1000 {
+                        send(&mut tls, &[b'x'; 100]).await;
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                }
+            })
+            .await
+        };
+        let url = format!("https://{addr}/drip.bin");
+
+        // Ended before it starts.
+        let early = rig(Some(addr), Duration::from_secs(5)).await;
+        early.authority.cancel();
+        let rows = early.message(&[Part::url(url.clone())]).await;
+        let row = early.settled(&rows[0].id, 5).await;
+        assert_eq!(
+            (row.state.as_str(), row.error.as_deref()),
+            ("failed", Some(SHARE_ENDED))
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing requested");
+
+        // Ended mid-transfer.
+        let active = rig(Some(addr), Duration::from_secs(5)).await;
+        let rows = active.message(&[Part::url(url.clone())]).await;
+        let until = Instant::now() + Duration::from_secs(5);
+        while calls.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < until, "the download never started");
+            active.svc.tick().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let cut = Instant::now();
+        active.authority.cancel();
+        let row = active.settled(&rows[0].id, 5).await;
+        assert!(
+            cut.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            cut.elapsed()
+        );
+        assert_eq!(
+            (row.state.as_str(), row.error.as_deref()),
+            ("failed", Some(SHARE_ENDED))
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "never requeued");
+        assert!(!active.svc.partial(&row.id).exists());
+
+        // Unknown authority (a restart forgets it).
+        let restarted = rig(None, Duration::from_secs(5)).await;
+        let rows = restarted.message(&[Part::raw(b"tiny".to_vec())]).await;
+        release(notice_id(restarted.svc.store.engine(), &rows[0].id));
+        let row = restarted.settled(&rows[0].id, 5).await;
+        assert_eq!(row.error.as_deref(), Some(SHARE_ENDED));
     }
 }

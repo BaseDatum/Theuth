@@ -218,11 +218,11 @@ impl Agents {
         {
             return Ok(NoticeAdmission::Accepted);
         }
-        let live = self
-            .store
-            .share_live(&m.session.to_string(), &m.contact)
-            .await
-            .map_err(|e| format!("{e:#}"))?;
+        // 199-E3 (SEC-P3): a foreign file's own authority, not only its binding.
+        let live =
+            super::foreign::share_live(&self.store, &m.session.to_string(), &m.contact, m.id)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
         if !live {
             ended(&self.store, &self.rt, m.session, None, m.id, &m.text).await?;
             return Ok(NoticeAdmission::Accepted);
@@ -380,5 +380,45 @@ mod tests {
                 .is_err()
         );
         assert!(a.store.errors(theirs).await.unwrap().is_empty());
+    }
+
+    /// SEC-P3: a foreign file's notice needs the authority it arrived under, not only a live
+    /// binding: with the grant epoch ended (an export removed, the binding kept) or unknown
+    /// (a restart), the notice is the engine-state row and no input is opened.
+    #[tokio::test]
+    async fn a_foreign_notice_whose_authority_ended_starts_no_turn() {
+        let d = crate::TestDir::new("notice-foreign");
+        let mut a = crate::supervisor::tests::agents_on(d.0.clone(), Some("A"), true).await;
+        let s = SessionId::new();
+        a.store
+            .create_session(s, "m", None, None, None)
+            .await
+            .unwrap();
+        let binding = a
+            .store
+            .bind_peer("lab", "https://lab.example/")
+            .await
+            .unwrap();
+        let contact = format!("peer:{}", binding.id);
+        assert!(
+            a.store.share_live(&s.to_string(), &contact).await.unwrap(),
+            "binding live"
+        );
+        let ended = tokio_util::sync::CancellationToken::new();
+        let (revoked, forgotten) = (Uuid::new_v4(), Uuid::new_v4());
+        super::super::foreign::authorize(revoked, ended.clone());
+        ended.cancel();
+        for id in [revoked, forgotten] {
+            let m = AdmitNotice {
+                session: s,
+                id,
+                contact: contact.clone(),
+                text: TEXT.into(),
+            };
+            assert_eq!(a.admit_notice(m).await, Ok(NoticeAdmission::Accepted));
+            assert!(!pending_has(id), "no input opened");
+            assert!(a.store.notice_committed(s, id).await.unwrap(), "recorded");
+        }
+        assert_eq!(a.store.errors(s).await.unwrap().len(), 2);
     }
 }

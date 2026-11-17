@@ -465,7 +465,14 @@ impl FileService {
 
     /// 199-E3 (D16): one attempt at a foreign file, from byte 0 (never resumed): fetched
     /// from its `https` URL or decoded from its inline bytes, measured, then published.
+    /// SEC-P4: only while the authority it arrived under lives; the download runs under
+    /// that cancellation, and an ended one fails the file (`share ended`), never requeued.
     async fn foreign(self: &Arc<Self>, r: &Render, row: &FileRow) -> Requeue {
+        let notice = notice_id(self.store.engine(), &row.id);
+        let Some(cancel) = foreign::authority(notice) else {
+            self.fail(r, row, foreign::SHARE_ENDED).await;
+            return Requeue::Done;
+        };
         let partial = self.partial(&row.id);
         if let Err(e) = mkdirs(partial.parent().unwrap_or(&self.root)) {
             self.fail(r, row, &format!("saving failed: {e}")).await;
@@ -476,9 +483,15 @@ impl FileService {
             max_bytes: super::FILE_MAX,
             idle_timeout: self.idle,
             deadline: Some(instant_at(row.deadline_ms).into_std()),
+            cancel,
             ..self.web.clone()
         };
         match foreign::fetch(&row.source, &partial, &opts, &r.machine).await {
+            Ok(_) if foreign::authority(notice).is_none() => {
+                remove(&partial);
+                self.fail(r, row, foreign::SHARE_ENDED).await;
+                Requeue::Done
+            }
             Ok(got) => {
                 if let Err(e) = self
                     .store
@@ -672,6 +685,7 @@ impl FileService {
             Some("sent") => match self.door.status(session, id).await {
                 Ok(NoticeStatus::Committed) => {
                     let _ = self.store.notice_to(&row.id, "sent", "delivered").await;
+                    foreign::release(id);
                     true
                 }
                 Ok(NoticeStatus::Unknown) => {

@@ -5681,10 +5681,15 @@ impl Turn {
             }
         };
         let store = self.shared.store.clone();
-        let live = store
-            .share_live(&session.to_string(), &n.contact)
-            .await
-            .unwrap_or(false);
+        // 199-E3 (SEC-P3): a foreign file's own authority, not only its binding.
+        let live = crate::communication::files::foreign::share_live(
+            &store,
+            &session.to_string(),
+            &n.contact,
+            n.id,
+        )
+        .await
+        .unwrap_or(false);
         if !live {
             if let Err(e) =
                 notices::ended(&store, &self.shared.rt, session, Some(turn), n.id, &n.text).await
@@ -9231,7 +9236,7 @@ async fn set_turn_limits(
 /// tag start whose name begins with `message` (`<message`, `</message`,
 /// `<messages`), in any case and with any whitespace after `<` or `/`, loses
 /// its `<`. Everything else (code, other tags) is left as the sender wrote it.
-fn neutralise_delimiters(body: &str) -> String {
+pub(crate) fn neutralise_delimiters(body: &str) -> String {
     neutralise(body, "message")
 }
 

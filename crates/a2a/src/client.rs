@@ -836,19 +836,12 @@ impl PeerClient {
             f.metadata()
         });
         message.metadata = metadata;
-        let request = SendMessageRequest {
-            message,
-            configuration: Some(SendMessageConfiguration {
-                // 199-E3 (P3): answers may carry files (inline or at an `https` URL).
-                accepted_output_modes: Some(vec!["text/plain".into(), "*/*".into()]),
-                task_push_notification_config: None,
-                history_length: Some(0),
-                // §6.2: outbound work is asynchronous; the follower reports the rest.
-                return_immediately: Some(true),
-            }),
-            metadata: None,
-            tenant: None,
-        };
+        let request = outbound_request(message);
+        // SEC-P1: what goes inline is measured as the transport encodes it (ProtoJSON in the
+        // JSON-RPC envelope), ids and configuration included, before anything is sent.
+        if inline {
+            wire_fit(&self.name, &request, files)?;
+        }
         if !outbound.generation.live() {
             return Err(RemoteSendError::Refused(
                 "communication route revoked".into(),
@@ -960,7 +953,7 @@ async fn inline_message(
     text: String,
     files: &[agent::communication::files::ContactFile],
 ) -> Result<Message, RemoteSendError> {
-    use agent::communication::files::{FileOffers as _, disk, foreign, service::FileServiceOf};
+    use agent::communication::files::{FileOffers as _, foreign, service::FileServiceOf};
     use std::os::unix::fs::FileExt as _;
     let sizes = files.iter().map(|f| {
         (
@@ -986,19 +979,90 @@ async fn inline_message(
         let len = usize::try_from(h.len).map_err(|_| gone())?;
         let mut bytes = vec![0; len];
         h.file.read_exact_at(&mut bytes, 0).map_err(|_| gone())?;
-        if disk::blake3_of(&h.file, h.len).map_err(|_| gone())? != h.blake3 {
-            return Err(RemoteSendError::Refused(format!(
-                "files: {} changed since it was offered",
-                f.name
-            )));
-        }
-        parts.push(
-            Part::raw(bytes)
-                .with_filename(f.name.clone())
-                .with_media_type(f.media_type.clone()),
-        );
+        parts.push(inline_part(f, bytes, &h.blake3)?);
     }
     Ok(Message::new(Role::User, parts))
+}
+
+/// One inline file as sent: its `raw` part, only when the bytes read are the bytes offered
+/// (SEC-P6: the very buffer is hashed, so a source changed between read and check cannot
+/// slip through).
+fn inline_part(
+    f: &agent::communication::files::ContactFile,
+    bytes: Vec<u8>,
+    offered: &str,
+) -> Result<Part, RemoteSendError> {
+    if agent::communication::files::foreign::blake3_hex(&bytes) != offered {
+        return Err(RemoteSendError::Refused(format!(
+            "files: {} changed since it was offered",
+            f.name
+        )));
+    }
+    Ok(Part::raw(bytes)
+        .with_filename(f.name.clone())
+        .with_media_type(f.media_type.clone()))
+}
+
+/// Our `SendMessage` request for `message`: text and files accepted back, history off,
+/// answered at once (§6.2: the follower reports the rest).
+fn outbound_request(message: Message) -> SendMessageRequest {
+    SendMessageRequest {
+        message,
+        configuration: Some(SendMessageConfiguration {
+            // 199-E3 (P3): answers may carry files (inline or at an `https` URL).
+            accepted_output_modes: Some(vec!["text/plain".into(), "*/*".into()]),
+            task_push_notification_config: None,
+            history_length: Some(0),
+            return_immediately: Some(true),
+        }),
+        metadata: None,
+        tenant: None,
+    }
+}
+
+/// The bytes `request` takes on the wire: its ProtoJSON as the params of the JSON-RPC
+/// `SendMessage` request, with a v7 id as the transport writes it.
+fn wire_len(request: &SendMessageRequest) -> usize {
+    let Ok(params) = a2a_pb::protojson_conv::to_value(request) else {
+        return usize::MAX;
+    };
+    let id = a2a_types::JsonRpcId::String(Uuid::now_v7().to_string());
+    json_len(&a2a_types::JsonRpcRequest::new(
+        id,
+        a2a_types::methods::SEND_MESSAGE,
+        Some(params),
+    ))
+}
+
+/// SEC-P1: `request` carries `files` inline (its last parts) within
+/// [`crate::server::BODY_LIMIT`] as encoded; else the design's text, naming the first file
+/// whose part takes it over.
+fn wire_fit(
+    name: &str,
+    request: &SendMessageRequest,
+    files: &[agent::communication::files::ContactFile],
+) -> Result<(), RemoteSendError> {
+    let limit = crate::server::BODY_LIMIT;
+    if wire_len(request) <= limit {
+        return Ok(());
+    }
+    let parts = &request.message.parts;
+    let first = parts.len().saturating_sub(files.len());
+    let mut probe = request.clone();
+    let culprit = files
+        .iter()
+        .enumerate()
+        .find(|(k, _)| {
+            probe.message.parts = parts[..first + k + 1].to_vec();
+            wire_len(&probe) > limit
+        })
+        .map_or(files.last(), |(_, f)| Some(f));
+    let (file, size) = culprit.map_or(("the message", 0), |f| {
+        (f.name.as_str(), f.size.unwrap_or_default())
+    });
+    Err(RemoteSendError::Refused(
+        agent::communication::files::foreign::inline_too_large(name, file, size),
+    ))
 }
 
 #[cfg(not(unix))]
@@ -1349,6 +1413,77 @@ mod tests {
             let text = contact_message("maya", "hi".into(), &[], takes).unwrap();
             assert_eq!((text.parts.len(), text.extensions), (1, None));
         }
+    }
+
+    fn inline_file(name: &str, bytes: &[u8]) -> agent::communication::files::ContactFile {
+        use agent::communication::files::{ContactFile, FileState, OutState, foreign};
+        ContactFile {
+            id: "1".repeat(32),
+            holder: "5b2f".into(),
+            state: FileState::Out(OutState::Sending),
+            exchange: Uuid::nil(),
+            contact_id: "peer:b".into(),
+            contact: "lab".into(),
+            name: name.into(),
+            media_type: "image/png".into(),
+            size: Some(bytes.len() as u64),
+            blake3: Some(foreign::blake3_hex(bytes)),
+            done: 0,
+            error: None,
+            path: None,
+            machine: "xeus".into(),
+            deadline: chrono::Utc::now(),
+        }
+    }
+
+    /// SEC-P1: the inline bound is the encoded request. 12,000 U+0001 are 72,000 bytes once
+    /// JSON-escaped, so they and a one-byte file are refused with the design's text naming
+    /// the file; the same request with plain text fits.
+    #[test]
+    fn inline_sends_are_measured_as_encoded() {
+        let f = inline_file("dot.png", b"x");
+        let request = |text: String| {
+            let part = inline_part(&f, b"x".to_vec(), f.blake3.as_deref().unwrap()).unwrap();
+            let mut m = Message::new(Role::User, vec![Part::text(text), part]);
+            m.message_id = Uuid::now_v7().to_string();
+            outbound_request(m)
+        };
+        let Err(RemoteSendError::Refused(why)) = wire_fit(
+            "lab",
+            &request("\u{1}".repeat(12_000)),
+            std::slice::from_ref(&f),
+        ) else {
+            panic!("an escaped-text overflow was sent");
+        };
+        assert_eq!(
+            why,
+            "lab takes files only inside the message, and dot.png (1 bytes) does not fit in 64 KiB"
+        );
+        assert!(
+            wire_fit(
+                "lab",
+                &request("x".repeat(12_000)),
+                std::slice::from_ref(&f)
+            )
+            .is_ok()
+        );
+        assert!(wire_len(&request("x".repeat(12_000))) > 12_000);
+    }
+
+    /// SEC-P6: the buffer that goes out is the one hashed: other bytes than those offered
+    /// are refused, whatever the source reads now.
+    #[test]
+    fn an_inline_part_carries_only_the_offered_bytes() {
+        let f = inline_file("a.png", b"version A");
+        let offered = f.blake3.clone().unwrap();
+        let Err(RemoteSendError::Refused(why)) = inline_part(&f, b"version B".to_vec(), &offered)
+        else {
+            panic!("other bytes went out");
+        };
+        assert_eq!(why, "files: a.png changed since it was offered");
+        let part = inline_part(&f, b"version A".to_vec(), &offered).unwrap();
+        assert_eq!(part.content, PartContent::Raw(b"version A".to_vec()));
+        assert_eq!(part.filename.as_deref(), Some("a.png"));
     }
 
     /// 183 review 2: a held task keeps its follower past FOLLOW_MAX, sliding with the wait,
