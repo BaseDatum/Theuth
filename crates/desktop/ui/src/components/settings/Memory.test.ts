@@ -11,6 +11,7 @@ import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { tokenEstimate } from '@/lib/endless'
 import { bounded } from './shared'
 import { Memory } from './Memory'
+import { agent } from './categories/agent'
 
 // R1-10: what each picker was given (the closed popover renders no list to read the order from).
 const pickers = vi.hoisted(() => [] as { 'aria-label'?: string; effort?: Effort }[])
@@ -42,9 +43,13 @@ test('token estimate: bytes ÷ 3, in thousands', () => {
 
 test('the page reads agent.endless: switches, sliders and the settle count show the stored values; the compactor row offers "Same as the session"', async () => {
   const html = await render()
-  expect(html).toMatch(/aria-checked="true"[^>]*aria-label="New chats start endless"/)
-  expect(html).toMatch(/aria-checked="true"[^>]*aria-label="Desks start endless"/)
-  expect(html).toMatch(/aria-checked="false"[^>]*aria-label="Meetings start endless"/)
+  expect(html).toMatch(/aria-checked="true"[^>]*aria-label="New chats use fractal context"/)
+  expect(html).toMatch(/aria-checked="true"[^>]*aria-label="Desks use fractal context"/)
+  expect(html).toMatch(/aria-checked="false"[^>]*aria-label="Meetings use fractal context"/)
+  expect(html).toContain('>New chats use fractal context<')
+  expect(html).not.toMatch(/endless|autocontext|compressed memory/i)
+  // The tab is labelled Context; its id and URL stay `memory` so links keep working.
+  expect(agent.tabs.find((t) => t.id === 'memory')?.label).toBe('Context')
   expect(html).toContain('View size · <span class="tabular-nums">128 KB</span>')
   expect(html).toContain('≈ 43 k tokens')
   expect(html).toMatch(/<input type="range" aria-label="View size in KB"[^>]*min="16" max="256" step="8" value="128"/)

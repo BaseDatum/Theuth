@@ -37,7 +37,7 @@ export const lineKey = (l: ViewLine, prefix = ''): string => `${prefix}${l.id}+$
 /** Bytes of the view as rendered (`id+n|text\n` per line, 137 §7.2). */
 export const viewBytes = (view: readonly ViewLine[]): number => view.reduce((n, l) => n + new TextEncoder().encode(l.text).length + lineKey(l).length + 2, 0)
 
-/** The badge's tooltip (137 §11.3): `Endless memory · view 61 KB · 71 lines · up to date` / `… settling 3 lines` / `… backfill 12/80` / `… summaries failing` (137F) / `… settling paused` (137G). */
+/** The badge's tooltip (137 §11.3): `Fractal context · view 61 KB · 71 lines · up to date` / `… settling 3 lines` / `… backfill 12/80` / `… summaries failing` (137F) / `… settling paused` (137G). */
 export function badgeTip(m: SessionMemory): string {
   const waiting = m.backlog?.lines ?? m.unbuilt
   const state = m.stalled
@@ -49,7 +49,7 @@ export function badgeTip(m: SessionMemory): string {
         : m.settling
           ? `settling ${waiting.toLocaleString('en-US')} line${waiting === 1 ? '' : 's'}`
           : 'up to date'
-  return `Endless memory · view ${fmtBytes(viewBytes(m.view))} · ${m.view.length} line${m.view.length === 1 ? '' : 's'} · ${state}`
+  return `Fractal context · view ${fmtBytes(viewBytes(m.view))} · ${m.view.length} line${m.view.length === 1 ? '' : 's'} · ${state}`
 }
 
 export const guardTotal = (g: GuardTrips): number => g.copy + g.grounding + g.status + g.format + g.empty + g.size
@@ -142,7 +142,7 @@ export function MemoryBadge({ session, summary, row, open, onToggle }: { session
     return (
       <MenuRow
         icon={<span className={cn('size-4 shrink-0 text-center text-sm leading-4', failing ? 'text-warning' : 'text-fg-secondary')}>∞</span>}
-        label="Endless memory"
+        label="Fractal context"
         detail={m ? (failing ? <span className="text-warning">summaries failing</span> : busy ? 'settling' : `${m.view.length} lines`) : undefined}
         onSelect={onToggle}
       />
@@ -152,7 +152,7 @@ export function MemoryBadge({ session, summary, row, open, onToggle }: { session
       <TooltipTrigger asChild>
         <button
           type="button"
-          aria-label="Endless memory"
+          aria-label="Fractal context"
           aria-expanded={open}
           className={cn(
             'shrink-0 rounded-full border border-border-subtle px-2.5 py-0.5 text-sm leading-4 text-fg-secondary hover:text-foreground',
@@ -164,7 +164,7 @@ export function MemoryBadge({ session, summary, row, open, onToggle }: { session
           ∞
         </button>
       </TooltipTrigger>
-      <TooltipContent side="bottom">{m ? badgeTip(m) : memory.error ? `Endless memory · ${memory.error.message}` : 'Endless memory'}</TooltipContent>
+      <TooltipContent side="bottom">{m ? badgeTip(m) : memory.error ? `Fractal context · ${memory.error.message}` : 'Fractal context'}</TooltipContent>
     </Tooltip>
   )
 }
@@ -253,13 +253,13 @@ export function DraftMemory({ open, onOpenChange }: { open: boolean; onOpenChang
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full sm:w-[560px] sm:max-w-[560px]">
         <SheetHeader>
-          <SheetTitle>Memory</SheetTitle>
+          <SheetTitle>Context</SheetTitle>
           <SheetDescription>These choices apply before the first message.</SheetDescription>
         </SheetHeader>
         <div className="flex flex-col items-start gap-4 px-4">
           <Select value={mode} onValueChange={(memory) => useDrafts.getState().setCreate({ memory: memory as 'endless' | 'epochs' })}>
-            <SelectTrigger aria-label="Memory mode"><SelectValue /></SelectTrigger>
-            <SelectContent><SelectItem value="epochs">Epochs</SelectItem><SelectItem value="endless">Endless memory</SelectItem></SelectContent>
+            <SelectTrigger aria-label="Context mode"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="epochs">Epochs</SelectItem><SelectItem value="endless">Fractal context</SelectItem></SelectContent>
           </Select>
           <SummaryModel session="" m={{ model: pending.compactorModel ?? defaults.data?.model ?? '', model_override: pending.compactorModel ?? null, model_source: pending.compactorModel ? 'chat' : 'settings', effort_override: pending.compactorEffort ?? null }} />
           {bytes !== undefined && <ViewSize bytes={bytes} onChange={(viewBytes) => set({ viewBytes })} />}
@@ -470,7 +470,7 @@ function Bar({ label, detail, pct, strong }: { label: string; detail: string; pc
 function Progress({ m }: { m: SessionMemory }) {
   const b = m.backfill
   const [label, done, total] = b
-    ? [`Building memory · ${b.done}/${b.total}${b.eta_secs !== null ? ` · ${eta(b.eta_secs)}` : ''} · ≈ $${b.usd_estimate < 1 ? b.usd_estimate.toFixed(3) : b.usd_estimate.toFixed(2)}`, b.done, b.total]
+    ? [`Building the view · ${b.done}/${b.total}${b.eta_secs !== null ? ` · ${eta(b.eta_secs)}` : ''} · ≈ $${b.usd_estimate < 1 ? b.usd_estimate.toFixed(3) : b.usd_estimate.toFixed(2)}`, b.done, b.total]
     : [`Settling ${m.unbuilt} line${m.unbuilt === 1 ? '' : 's'}`, m.view.length - m.unbuilt, m.view.length]
   const pct = total > 0 ? Math.round((done / total) * 100) : 0
   return <Bar label={label} detail={`${pct}%`} pct={pct} />
@@ -702,7 +702,7 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
         }}
       >
         <SheetHeader className="pb-3">
-          <SheetTitle>Memory</SheetTitle>
+          <SheetTitle>Context</SheetTitle>
           <SheetDescription className="sr-only">The session's view by band; open a line to see what it summarises.</SheetDescription>
           {m && m.mode === 'endless' && <Stats session={session} m={m} />}
         </SheetHeader>
@@ -723,7 +723,7 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
             }}
           />
         </div>
-        <div ref={treeEl} role="tree" aria-label="Memory view" tabIndex={0} className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 outline-none focus-visible:ring-1 focus-visible:ring-ring/40 focus-visible:ring-inset" onKeyDown={onTreeKey}>
+        <div ref={treeEl} role="tree" aria-label="Context view" tabIndex={0} className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 outline-none focus-visible:ring-1 focus-visible:ring-ring/40 focus-visible:ring-inset" onKeyDown={onTreeKey}>
           {memory.isPending && (
             <div className="flex flex-col gap-2 px-2 pt-1">
               {[0, 1, 2, 3, 4, 5].map((i) => (
@@ -731,8 +731,8 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
               ))}
             </div>
           )}
-          {memory.isError && <p className="px-2 py-4 text-sm text-fg-tertiary">Memory details unavailable: {memory.error.message}</p>}
-          {m && m.mode !== 'endless' && <p className="px-2 py-4 text-sm text-fg-tertiary">This session keeps its memory in epochs; `/endless on` switches it when idle.</p>}
+          {memory.isError && <p className="px-2 py-4 text-sm text-fg-tertiary">Context details unavailable: {memory.error.message}</p>}
+          {m && m.mode !== 'endless' && <p className="px-2 py-4 text-sm text-fg-tertiary">This session keeps its context in epochs; `/fractal on` switches it when idle.</p>}
           {hits && (
             <section aria-label="Recall hits" className="mb-3">
               <div className="mt-1 mb-0.5 px-2 text-[10px] font-medium tracking-wide text-fg-tertiary uppercase">

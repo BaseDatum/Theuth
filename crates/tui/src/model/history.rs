@@ -16,7 +16,7 @@ pub(super) fn user_entries(text: String, turn: Option<i64>, registry: &Registry)
     if let Some((lines, body, rest)) = parent_view(&text) {
         let mut out = vec![card(
             CardKind::Memory,
-            format!("parent's memory · {lines} lines"),
+            format!("parent's context · {lines} lines"),
             &body,
         )];
         out.extend(user_entries(rest.trim_start().to_owned(), turn, registry));

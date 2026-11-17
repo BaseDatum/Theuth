@@ -27,13 +27,13 @@ test('137G: the memory summary model shows the file value, writes memory_model, 
     d = { ...d, [k]: v }
   }
   const html = renderToStaticMarkup(createElement(RuntimeFields, { d, set }))
-  expect(html).toContain('Memory summary model')
-  expect(html).toContain('<span aria-label="Memory summary model">anthropic/claude-haiku-4-5</span>')
-  pick['Memory summary model']?.('ollama/qwen3:8b')
+  expect(html).toContain('Context summary model')
+  expect(html).toContain('<span aria-label="Context summary model">anthropic/claude-haiku-4-5</span>')
+  pick['Context summary model']?.('ollama/qwen3:8b')
   expect(JSON.parse(JSON.stringify(toFile(d, false))).memory_model).toBe('ollama/qwen3:8b')
-  pick['Memory summary model']?.(null)
+  pick['Context summary model']?.(null)
   expect(JSON.parse(JSON.stringify(toFile(d, false)))).not.toHaveProperty('memory_model')
-  expect(renderToStaticMarkup(createElement(RuntimeFields, { d, set }))).toContain('<span aria-label="Memory summary model">Use default</span>')
+  expect(renderToStaticMarkup(createElement(RuntimeFields, { d, set }))).toContain('<span aria-label="Context summary model">Use default</span>')
 })
 
 test('194: the memory summary model carries its effort chips, writes memory_effort, and a model without that effort (or "Use default") drops it', () => {
@@ -46,18 +46,18 @@ test('194: the memory summary model carries its effort chips, writes memory_effo
     d = { ...d, [k]: v }
   }
   renderToStaticMarkup(createElement(RuntimeFields, { d, set }))
-  expect(chips['Memory summary model']?.levels).toEqual(['low', 'high'])
-  chips['Memory summary model']?.onSelect('high')
+  expect(chips['Context summary model']?.levels).toEqual(['low', 'high'])
+  chips['Context summary model']?.onSelect('high')
   expect(JSON.parse(JSON.stringify(toFile(d, false))).memory_effort).toBe('high')
   renderToStaticMarkup(createElement(RuntimeFields, { d, set }))
-  expect(chips['Memory summary model']?.current).toBe('high')
-  pick['Memory summary model']?.('ollama/qwen3:8b')
+  expect(chips['Context summary model']?.current).toBe('high')
+  pick['Context summary model']?.('ollama/qwen3:8b')
   expect(JSON.parse(JSON.stringify(toFile(d, false)))).not.toHaveProperty('memory_effort')
   renderToStaticMarkup(createElement(RuntimeFields, { d, set }))
-  expect(chips['Memory summary model']).toBeUndefined()
+  expect(chips['Context summary model']).toBeUndefined()
   d = { ...d, memory_model: 'anthropic/claude-haiku-5-5', memory_effort: 'low' }
   renderToStaticMarkup(createElement(RuntimeFields, { d, set }))
-  pick['Memory summary model']?.(null)
+  pick['Context summary model']?.(null)
   expect(JSON.parse(JSON.stringify(toFile(d, false)))).not.toHaveProperty('memory_effort')
   models.data = []
 })

@@ -363,7 +363,7 @@ impl Model {
         }
     }
 
-    /// `/endless [on|off|fold|pause|resume]` (137 §8.6, 137G): switch the
+    /// `/fractal [on|off|fold|pause|resume]` (`/endless`, the hidden alias; 137 §8.6, 137G): switch the
     /// session's memory mode, fold the backlog, pause or resume settling, or show it.
     pub(super) fn endless_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
         let Some(session) = self.session else {
@@ -402,7 +402,7 @@ impl Model {
             },
             _ => {
                 self.entries.push(Entry::Error(
-                    "usage: /endless [on|off|fold|pause|resume|model <id>|model clear]".into(),
+                    "usage: /fractal [on|off|fold|pause|resume|model <id>|model clear]".into(),
                 ));
                 return;
             }
