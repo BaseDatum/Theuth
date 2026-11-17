@@ -3144,5 +3144,6 @@ async fn a_contact_file_streams_on_its_own_stream_and_a_block_cuts_it() {
 #[cfg(unix)]
 mod file_transfers;
 mod forward;
+mod full_access;
 mod owners;
 mod rosters;

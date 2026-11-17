@@ -218,11 +218,15 @@ impl Agents {
         {
             return Ok(NoticeAdmission::Accepted);
         }
-        // 199-E3 (SEC-P3): a foreign file's own authority, not only its binding.
+        // 199-E3 (SEC-P3): a foreign file's own authority, not only its binding. 200
+        // (Interplay with 199): or full access on for that contact and the chat visible to
+        // it; a paused tree's notice is held by `input` (no actor, no turn, no row) until
+        // `ResumeTree`.
         let live =
             super::foreign::share_live(&self.store, &m.session.to_string(), &m.contact, m.id)
                 .await
-                .map_err(|e| format!("{e:#}"))?;
+                .map_err(|e| format!("{e:#}"))?
+                || self.full_access_notice(m.session, &m.contact).await;
         if !live {
             ended(&self.store, &self.rt, m.session, None, m.id, &m.text).await?;
             return Ok(NoticeAdmission::Accepted);

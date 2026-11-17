@@ -1106,6 +1106,53 @@ impl PeerSender for Sender {
     async fn send(&self, outbound: OutboundPeerMessage) -> Result<RemoteReply, RemoteSendError> {
         self.0.clone().send_outbound(outbound).await
     }
+
+    /// 200 (D7, D8): every member of the contact's roster asked at once (`sessions::list`).
+    /// The fan-out races this route's generation: a local block, removal or reload during it
+    /// is the refusal, never the rows some members already gave.
+    async fn list_sessions(
+        &self,
+        req: agent::communication::network::access::ListRequest,
+    ) -> Result<agent::communication::network::access::ContactListing, String> {
+        let Link::Iroh {
+            net,
+            eid,
+            members,
+            cards,
+            ..
+        } = &self.0.link
+        else {
+            return Err("not a contact".to_owned());
+        };
+        let generation = &self.0.generation;
+        let revoked = || format!("peer `{}`: route revoked", self.0.name);
+        if generation.is_cancelled() {
+            return Err(revoked());
+        }
+        let mut eids = vec![eid.clone()];
+        for m in members.lock().iter() {
+            if !eids.contains(m) {
+                eids.push(m.clone());
+            }
+        }
+        let name_of = |e: &str| {
+            cards
+                .lock()
+                .get(e)
+                .map(|c| c.machine.clone())
+                .filter(|m| !m.is_empty())
+                .unwrap_or_else(|| e.get(..8).unwrap_or(e).to_owned())
+        };
+        let listed = tokio::select! {
+            biased;
+            () = generation.cancelled() => return Err(revoked()),
+            r = crate::contacts::sessions::list(net, &self.0.name, &eids, &name_of, &req) => r,
+        };
+        if generation.is_cancelled() {
+            return Err(revoked());
+        }
+        listed
+    }
 }
 
 // ---------------------------------------------------------------------------

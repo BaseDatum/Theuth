@@ -701,11 +701,16 @@ impl Tool for DiscoverPeersTool {
              `+N more: discover_peers(kind=\"contact\", query=\"<contact>\")`), then everything else; inside each, \
              working rows first, then most recently active. `active_only` keeps contacts and the peers with a \
              turn in flight or a running job/PTY (never a `remote` session); `kind` keeps one kind (`contact`: every \
-             contact row, uncapped). Default {DISCOVER_DEFAULT_LIMIT} rows, max {DISCOVER_MAX_LIMIT}; pass `cursor` for the \
+             contact row, uncapped). A contact that gave you full access lists its newest sessions under `peer:<contact>`; \
+             discover_peers(kind=\"contact\", query=\"<contact>\") walks all of them with `cursor`. Each is \
+             `peer:<contact>/session:<uuid>`; send_message reaches the ones with `send`. \
+             Default {DISCOVER_DEFAULT_LIMIT} rows, max {DISCOVER_MAX_LIMIT}; pass `cursor` for the \
              next page. Listing wakes nobody; it may refresh the contacts' shared lists in the background."
         )
     }
 
+    /// 200 (D8): one `partial:` line whenever some contact machine did not answer, on every
+    /// page (empty and final ones included).
     async fn call(&self, args: DiscoverPeersArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let agents = match supervisor() {
             Ok(a) => a,
@@ -760,7 +765,8 @@ impl Tool for DiscoverPeersTool {
                             s.push_str(&format!(" last_active={}", at.to_rfc3339()));
                         }
                     }
-                    if p.state == crate::communication::PeerState::Remote
+                    if (p.state == crate::communication::PeerState::Remote
+                        || crate::communication::network::access::is_session_row(p))
                         && let Some(e) = &p.engine
                     {
                         s.push_str(&format!(" engine={e}"));
@@ -778,6 +784,12 @@ impl Tool for DiscoverPeersTool {
         };
         if let Some(c) = &page.cursor {
             text.push_str(&format!("\nmore: cursor={c}"));
+        }
+        if !page.partial.is_empty() {
+            text.push_str(&format!(
+                "\npartial: no answer in time from {}; their sessions may be missing from this page (repeat this call to retry)",
+                page.partial.join(", ")
+            ));
         }
         let mut out = ToolOutput::ok(text);
         out.structured = serde_json::to_value(&page).ok();

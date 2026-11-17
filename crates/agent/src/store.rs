@@ -101,7 +101,7 @@ pub struct Store {
     read: SqlitePool,
     /// 176 E5: test-only stall (ms) before `session`, `list_sessions` and
     /// `descendants`, so a test can hold a read in flight.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     read_delay: Arc<std::sync::atomic::AtomicU64>,
 }
 
@@ -834,7 +834,7 @@ impl Store {
             harness_tx: Arc::new(tokio::sync::watch::Sender::new(0)),
             write,
             read,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             read_delay: Arc::default(),
         };
         // 0065: provenance of rows consumed before `messages.peer`, captured
@@ -882,7 +882,7 @@ impl Store {
             clock: Arc::new(replica::Clock::new(hlc_origin(""), (0, 0))),
             write: pool.clone(),
             read: pool,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             read_delay: Arc::default(),
         })
     }
@@ -899,8 +899,9 @@ impl Store {
     }
 
     /// 176 E5: make `session`, `list_sessions` and `descendants` take `d`
-    /// longer on every clone of this store (zero turns it off).
-    #[cfg(test)]
+    /// longer on every clone of this store (zero turns it off). 200: also under
+    /// `test-support`, for a dependent crate's test.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn set_read_delay(&self, d: Duration) {
         self.read_delay
             .store(d.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
@@ -908,7 +909,7 @@ impl Store {
 
     /// The [`Self::set_read_delay`] stall; nothing outside tests.
     async fn stall(&self) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             let ms = self.read_delay.load(std::sync::atomic::Ordering::Relaxed);
             if ms > 0 {

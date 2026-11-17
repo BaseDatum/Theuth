@@ -1062,6 +1062,35 @@ impl Store {
         })
     }
 
+    /// 200 (D5, the row half): `id`'s replicated row exists and is no advisor, no session of
+    /// its ancestry carries a `contact_inbox` marker or an opt-out (`communication` other
+    /// than NULL or 1), and its root's scope is `owner`. An ancestry that reaches no root
+    /// within [`LINEAGE_MAX`] (a cycle, a missing parent) is `false`.
+    pub async fn full_access_row(&self, id: SessionId) -> anyhow::Result<bool> {
+        let rows: Vec<(Option<String>, String, bool, String)> = sqlx::query_as(
+            "WITH RECURSIVE up(id, parent, kind, hidden, scope, depth) AS ( \
+                 SELECT id, parent, kind, contact_inbox IS NOT NULL \
+                     OR COALESCE(communication, 1) IS NOT 1, scope, 0 \
+                 FROM sessions WHERE id = ?1 \
+                 UNION ALL \
+                 SELECT s.id, s.parent, s.kind, s.contact_inbox IS NOT NULL \
+                     OR COALESCE(s.communication, 1) IS NOT 1, s.scope, up.depth + 1 \
+                 FROM sessions s JOIN up ON s.id = up.parent WHERE up.depth < ?2) \
+             SELECT parent, kind, hidden, scope FROM up ORDER BY depth",
+        )
+        .bind(id.to_string())
+        .bind(LINEAGE_MAX)
+        .fetch_all(&self.read)
+        .await?;
+        let (Some(first), Some(root)) = (rows.first(), rows.last()) else {
+            return Ok(false);
+        };
+        Ok(first.1 != "advisor"
+            && rows.iter().all(|r| !r.2)
+            && root.0.is_none()
+            && root.3.parse::<PeerScope>().ok() == Some(PeerScope::Owner))
+    }
+
     /// Owner-only: set a root's scope and alias (`None` clears the alias).
     /// `Invalid` for a non-root, `NotFound` for an unknown session.
     pub async fn set_root_scope(

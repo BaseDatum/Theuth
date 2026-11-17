@@ -34,6 +34,7 @@ export function Peers({ session, focus }: { session: string; focus: string | nul
   )
 }
 
+// 200-UI: contact session rows (`peer:<contact>/session:<uuid>`, never Open) and the `partial` line under the list.
 function Directory({ session }: { session: string }) {
   const canQuery1 = useQuerySupport(["list_peers"])
   const api = useApi()

@@ -5681,7 +5681,8 @@ impl Turn {
             }
         };
         let store = self.shared.store.clone();
-        // 199-E3 (SEC-P3): a foreign file's own authority, judged by its holder now.
+        // 199-E3 (SEC-P3): a foreign file's own authority, judged by its holder now. 200
+        // (Interplay with 199): or full access still on for that contact (no share needed).
         let live = crate::communication::files::foreign::consumption_live(
             &store,
             &self.shared.rt,
@@ -5691,7 +5692,11 @@ impl Turn {
             &n.text,
         )
         .await
-        .unwrap_or(false);
+        .unwrap_or(false)
+            || store
+                .full_access_notice_live(session, &n.contact)
+                .await
+                .unwrap_or(false);
         if !live {
             if let Err(e) =
                 notices::ended(&store, &self.shared.rt, session, Some(turn), n.id, &n.text).await

@@ -30,6 +30,7 @@ pub mod offers;
 pub mod reach;
 pub mod records;
 pub mod rosters;
+pub mod sessions;
 pub mod store;
 
 /// 183 §7.2 (W-21): the contact ALPN, one HTTP/1.1 request (or one ceremony) per bi stream.
@@ -128,6 +129,15 @@ pub struct Contact {
     /// but the roster no longer does (`left`); the pins while no roster is based here.
     #[serde(default)]
     pub machines: Vec<ContactMachine>,
+    /// 200 (D1): we gave it full access: any of its sessions may list and message ours.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub full_access: bool,
+    /// 200 (D11): whether it gave us full access, from its last verified card; `None` when
+    /// its card lacks the `full-access/v1` extension (an engine without 200).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub full_access_from: Option<bool>,
 }
 
 /// 191 (D8): what a contact row with a `problem` offers.
@@ -213,6 +223,8 @@ pub struct ContactPatch {
     pub grant: Option<Vec<String>>,
     /// Export names (or ids) to take back; every other grant stays.
     pub revoke: Option<Vec<String>>,
+    /// 200 (D1): give or take back full access (every record of the group).
+    pub full_access: Option<bool>,
 }
 
 /// `contact_pair`: whom to start the ceremony with.
@@ -1780,6 +1792,9 @@ fn contact_view(
         problem_kind: None,
         paired_on: shown.and_then(|s| s.paired_on.clone()),
         machines: machines(shown, &c.eids, name_of),
+        full_access: staged.peers.get(alias).is_some_and(|p| p.full_access),
+        // 200: `contact_list` fills it from the cached card.
+        full_access_from: None,
     })
 }
 
@@ -1812,6 +1827,8 @@ fn quarantined_view(
         problem_kind: Some(q.kind),
         paired_on: shown.and_then(|s| s.paired_on.clone()),
         machines: machines(shown, &first, name_of),
+        full_access: false,
+        full_access_from: None,
     }
 }
 
@@ -1856,6 +1873,9 @@ impl crate::Ctx {
                     },
                     &name_of,
                 )?;
+                // 200 (D11): what the card that counts says of full access for us.
+                let eid = self.offers_eid(&c.endpoint);
+                c.full_access_from = self.offers.lock().get(&eid).and_then(|k| k.full_access);
                 c.problem = alerts.get(&c.id).map(|(_, text, _)| text.clone());
                 c.problem_kind = c.problem.as_ref().map(|_| ProblemKind::Alert);
                 Some(c)
@@ -2091,6 +2111,17 @@ impl crate::Ctx {
         let root = members[0];
         let live = self.shared.read().clone();
         let mut w = grant_patch(&r, &live.staged, &members, &patch)?;
+        // 200 (D1): one single-column write on every record of the group (on only when all of
+        // them read 1); the staged `Peer` changes, so the grant epoch rotates.
+        if let Some(on) = patch.full_access {
+            for m in &members {
+                w.push(RecordWrite::new(
+                    RecordTable::Contacts,
+                    m.id.clone(),
+                    vec![("full_access", Cell::Int(i64::from(on)))],
+                ));
+            }
+        }
         if let Some(blocked) = patch.blocked {
             let was = members.iter().any(|m| m.blocked.is_some_and(|b| b != 0));
             for m in &members {
@@ -3432,6 +3463,7 @@ mod tests {
                 allow_private: false,
                 eid: None,
                 record: None,
+                full_access: false,
             },
         );
         staged.contacts.insert(
