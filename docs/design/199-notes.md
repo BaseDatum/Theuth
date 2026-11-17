@@ -25,6 +25,34 @@ Built on `feat/199-build` from main `ce19b614c`, against the design at docs comm
 - **Publication ↔ store**: `disk::publish` takes an async `record(target, dev, inode)` callback (`AsyncFnMut`), so E1 persists `state='publishing'`, the target and the partial's inode in its own write before each `hard_link`. Step 6 (the commit) stays E1's; `finish` drops the partial after it.
 - **Commit-time dedup**: `notice_committed_in(&mut conn, …)` takes the write transaction's connection.
 
+### a2a ↔ agent seams (E1a ↔ E1b, commit "199-C: E1 split seams")
+`crates/a2a` depends on `crates/agent`, never the reverse, so every trait both builders share lives in `agent::communication::files` (a2a re-exports `Gone`, `Receipt`, `REASON_MAX` from `a2a::contacts::files`). Each side registers its implementation in a process-wide slot; an unregistered slot answers a no-op.
+- **Sender side, E1b implements, E1a calls** (`a2a` route → agent):
+  ```rust
+  #[async_trait] pub trait FileOffers: Send + Sync {
+      async fn open(&self, contact: &str, id: &str) -> Result<OfferHandle, OfferError>;
+      async fn receipt(&self, contact: &str, id: &str, receipt: Receipt) -> Result<(), OfferError>;
+  }
+  pub struct OfferHandle { pub file: std::fs::File, pub len: u64, pub blake3: String, pub deadline: DateTime<Utc> }
+  pub enum OfferError { Unknown /* 404 */, Gone(Gone) /* 410 expired|missing|changed */ }
+  pub fn set_offers(Arc<dyn FileOffers>);  pub fn offers() -> Arc<dyn FileOffers>;  // default NoOffers: 404
+  ```
+  `contact` is the caller's immutable record id (`ContactFacts.id`), `id` the sender's local id from the path. The `(dev, inode, size)` re-check (`disk::egress_reopen`) happens inside `open`. Registered at agent start (`supervisor::start`, now `NoOffers`, marked `199-E1b`).
+- **Receiver side, E1a implements, E1b calls** (agent queue → a2a client):
+  ```rust
+  #[async_trait] pub trait FileFetch: Send + Sync {
+      async fn download(&self, fetch: &Fetch, progress: &mut (dyn FnMut(u64) + Send)) -> Result<Fetched, TransferError>;
+      async fn send_receipt(&self, contact: &str, member: &str, id: &str, receipt: &Receipt, timer: Timer) -> Result<(), TransferError>;
+  }
+  pub struct Fetch { pub contact: String, pub member: String, pub id: String, pub size: u64, pub partial: PathBuf, pub have: u64, pub timer: Timer }
+  pub struct Fetched { pub bytes: u64, pub blake3: String }  // the whole partial; the caller verifies
+  pub enum TransferError { Unknown, Gone(Gone), Changed, Idle, Deadline, Cancelled, Transport(String), Disk(io::Error), NotYet }
+  pub struct Timer { pub deadline: tokio::time::Instant, pub idle: Duration }  // Timer::until(d) = FILE_IDLE; at(last) -> (Instant, Expiry::{Idle, Deadline})
+  pub fn set_fetch(Arc<dyn FileFetch>);  pub fn fetch() -> Arc<dyn FileFetch>;  // default NoFetch: NotYet
+  ```
+  a2a's implementation is `a2a::contacts::files::ContactFetch(Weak<Ctx>)`, registered in `Ctx::attach` beside `reach::Gate`; it calls the free functions `download(net, cut, fetch, progress)` and `send_receipt(net, cut, member, id, receipt, timer)` (both `NotYet`, marked `199-E1a`). `Changed` covers every Range or length mismatch and a `416` (`check_answer`); `Idle` requeues and resumes, `Deadline` fails the file; `progress` gets the partial's size.
+- **Cancellation**: `a2a::contacts::files::Transfers` (field `Ctx.transfers`): `token(contact) -> CancellationToken` for every route GET/receipt and every download/receipt POST of that record id; `cut(contact)` cancels them all and the next transfer starts with a fresh token. `ContactFetch` takes the token itself; the cut goes in `Ctx::pass` right after the live snapshot swap (marker `199-E1a`), for every contact whose members or block state changed.
+
 ### Deviations from the design (and the brief)
 1. **Type names follow the design, not the brief's list.** The brief named `FileState, FileDirection, IntakeState`; the design (rounds 3–5) has `InState`, `OutState`, `FileDirection`, `NoticeState`, and `FileState` = "`InState` or `OutState`, tagged by `direction`". `IntakeState` went with the held intake (round 3). The brief's `contact_files` RPC is the design's `contact_file`.
 2. **`ContactFile.direction` and `.state` are one flattened field** `state: FileState` (`#[serde(flatten)]`, adjacently tagged): the wire still carries `"direction": "in", "state": "saved"`, and an `out` state under `in` cannot be expressed. `FileState::direction()` reads the tag.
@@ -43,14 +71,15 @@ New modules belong to one builder; shared hot files list the exact functions eac
 
 | Owner | Owns outright | May touch in shared files |
 |---|---|---|
-| **E1** (engine P1) | new `crates/agent/src/store/contact_files.rs` (queue rows, transitions, outbox), new modules under `crates/agent/src/communication/files/` (queue, intake, receipts, outbox); the route server and download client in `crates/a2a/src/contacts/files.rs` (add below the P0 helpers) | `agent/src/peers.rs` `SendMessageTool::call` (the `files` stub) and `description`; `agent/src/rpc_messaging.rs` `contact_file`, `contact_file_thumbnail`, `contact_file_export`, `contact_file_notice`, `contact_file_notice_status`, `answer_peer_request` (D15 `files`); `agent/src/store/communication.rs` `TryFrom<ExchangeRow> for PeerRecord` / `Store::exchange_record` (`files`); `agent/src/loop_.rs` `peer_wrapper` (placeholders) and the `append_input` call (input id, `JOURNAL_SOURCE`); `agent/src/store/durability.rs` `append_input` (commit-time check via `notice_committed_in`); `agent/src/communication/network/full.rs` `deliver_full`, `full_return`; `agent/src/supervisor/pause.rs` startup (resolve `publishing`, clear `files/partial/`, fail interrupted files); `a2a/src/contacts/reach.rs` `serve` (route match); `a2a/src/server.rs` `validate_send` and the body layer (`check_part_content`); `a2a/src/client.rs` message construction (reference parts, `extensions`); `a2a/src/contacts.rs` card builder (`EXT_FILES` advertisement) |
+| **E1a** (P1, `crates/a2a`) | the file route (GET/POST, `Serve`, `410` texts, 60 s-free timers) and the receiver's `download` / `send_receipt` in `crates/a2a/src/contacts/files.rs`, `ContactFetch`, `Transfers` | `a2a/src/contacts/reach.rs` `serve` (route match, serving through `offers()` under `transfers.token`); `a2a/src/lib.rs` the reconcile after the snapshot swap (`transfers.cut`); `a2a/src/server.rs` `validate_send` and the body layer (`check_part_content`); `a2a/src/client.rs` message construction (reference parts, `extensions`); `a2a/src/contacts.rs` card builder (`EXT_FILES` advertisement) |
+| **E1b** (P1, `crates/agent`) | new `crates/agent/src/store/contact_files.rs` (queue rows, transitions, outbox), new modules under `crates/agent/src/communication/files/` (send path and offers, the `FileOffers` impl, the receive queue calling `fetch().download`, publication, notices) | `agent/src/peers.rs` `SendMessageTool::call` (the `files` stub) and `description`; `agent/src/supervisor.rs` `start` (`set_offers`); `agent/src/rpc_messaging.rs` `contact_file`, `contact_file_thumbnail`, `contact_file_export`, `contact_file_notice`, `contact_file_notice_status`, `answer_peer_request` (D15 `files`); `agent/src/store/communication.rs` `TryFrom<ExchangeRow> for PeerRecord` / `Store::exchange_record` (`files`); `agent/src/loop_.rs` `peer_wrapper` (placeholders) and the `append_input` call (input id, `JOURNAL_SOURCE`); `agent/src/store/durability.rs` `append_input` (commit-time check via `notice_committed_in`); `agent/src/communication/network/full.rs` `deliver_full`, `full_return`; `agent/src/supervisor/pause.rs` startup (resolve `publishing`, clear `files/partial/`, fail interrupted files) |
 | **E2** (P2) | `files/cache/`; the fetch function in `crates/artifact/src/mesh.rs` (new, beside `fetch_attachment`) | `artifact/src/mesh.rs` `answer` (`Req::GetContactFile` arm); `agent/src/communication/files.rs` `impl Message<HeldContactFile> for Agents`; `agent/src/rpc_messaging.rs` `contact_file_fetch` |
 | **W** | `crates/web/src/fetch/download.rs` and its `mod`/re-export line | — |
 | **E3** (P3) | a new `crates/agent/src/communication/files/foreign.rs` (calls `web::fetch::download`) | `a2a/src/server.rs` `validate_send` (`raw`/`https` admission); `a2a/src/client.rs` `Retained::of`, the stream-update path, inline `raw` sends, `accepted_output_modes` |
 | **UID** (desktop) | a new file-card component | `ui/src/store/reduce.ts` `peerBody`, the `PeerDelivered` case, a new `ContactFileChanged` case; `ui/src/lib/injected.ts` `classify`; `ui/src/components/chat/SendCard.tsx` `SendCard`; the error renderer (ended-share rows) |
 | **UIT** (TUI) | new file-card rendering | `tui/src/components/peers.rs` `contact_row`; `tui/src/model/agents.rs` the `ContactFileChanged` arm; the error renderer |
 
-E1 and E3 both edit `validate_send` and the message construction in `a2a/src/client.rs`: E3 builds on E1's version of those two functions. UID and UIT read `ContactFile` from the generated bindings; `files` on `PeerDelivered` is always present (possibly empty).
+E1a and E1b meet only at the seams above: a change to a seam signature is a contract change for both. E1a and E3 both edit `validate_send` and the message construction in `a2a/src/client.rs`: E3 builds on E1a's version of those two functions. UID and UIT read `ContactFile` from the generated bindings; `files` on `PeerDelivered` is always present (possibly empty).
 
 ### Gates (P0)
 Logs in `/tmp/199c/`. Crate-level `-p` only, through `build-lock` (label `199-c`).

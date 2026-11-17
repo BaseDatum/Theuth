@@ -1,19 +1,29 @@
 //! 199 CONTACT-FILES on `theuth/a2a/1` (P0 contract): the file reference part, the
-//! `/a2a/files/<id>` route's request and answer shapes, and the pure checks both sides
-//! run. Nothing is wired yet: [`super::EXT_FILES`] is not advertised, no route matches
-//! [`FILES_PATH`], and [`check_part_content`] is not called by admission.
+//! `/a2a/files/<id>` route's request and answer shapes, the pure checks both sides run,
+//! and this crate's half of the agent seams: the route serves through
+//! [`agent::communication::files::offers`], and [`ContactFetch`] (registered with
+//! `agent::communication::files::set_fetch`) is the receiver's client over
+//! `Net::a2a_stream`. [`Transfers`] cuts a contact's active transfers on both sides.
+//! Nothing is wired yet: [`super::EXT_FILES`] is not advertised, no route matches
+//! [`FILES_PATH`], [`check_part_content`] is not called by admission, and the client
+//! answers `NotYet`.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Weak};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
-use agent::communication::files::FILE_MAX;
+use agent::communication::files::{FILE_MAX, Fetch, Fetched, FileFetch, Timer, TransferError};
+pub use agent::communication::files::{Gone, REASON_MAX, Receipt};
 
-/// The route prefix `reach::serve` matches before `serve_http` (199-E1).
+use crate::Ctx;
+
+/// The route prefix `reach::serve` matches before `serve_http` (199-E1a).
 pub const FILES_PATH: &str = "/a2a/files/";
 /// Largest receipt body (`POST /a2a/files/<id>`).
 pub const RECEIPT_MAX: usize = 1024;
-/// Longest failure reason in a receipt, in bytes.
-pub const REASON_MAX: usize = 200;
 
 /// A 32-lowercase-hex local file id.
 pub fn is_file_id(s: &str) -> bool {
@@ -112,19 +122,8 @@ pub fn check_part_content(body: &serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 
-/// A receipt (`POST /a2a/files/<sender-id>`): the receiver's terminal outcome. On the
-/// wire `{"state":"received"}` or `{"state":"failed","reason":"…"}`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "state", rename_all = "lowercase")]
-pub enum Receipt {
-    /// Saved, and its notice durably queued.
-    Received,
-    /// Failed on the receiver.
-    Failed {
-        /// Why, at most [`REASON_MAX`] bytes.
-        reason: String,
-    },
-}
+// `Receipt`, `Gone` and `REASON_MAX` live in `agent::communication::files`, beside the
+// `FileOffers` / `FileFetch` seams that carry them.
 
 /// A receipt body, or `None` for a 400: over [`RECEIPT_MAX`], any other key or state, a
 /// `received` with a reason, a `failed` without one, or a reason over [`REASON_MAX`].
@@ -144,28 +143,6 @@ pub fn parse_receipt(body: &[u8]) -> Option<Receipt> {
         ("received", None) => Some(Receipt::Received),
         ("failed", Some(reason)) if reason.len() <= REASON_MAX => Some(Receipt::Failed { reason }),
         _ => None,
-    }
-}
-
-/// The `410` text: why an offer can no longer be served.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Gone {
-    /// Past its deadline.
-    Expired,
-    /// The source (and any clone) is gone.
-    Missing,
-    /// The source is another file, or another size, than the one offered.
-    Changed,
-}
-
-impl Gone {
-    /// The `text/plain` body.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Expired => "expired",
-            Self::Missing => "missing",
-            Self::Changed => "changed",
-        }
     }
 }
 
@@ -332,9 +309,113 @@ pub fn check_answer(
     }
 }
 
+/// Each contact's active file transfers, by record id (`ContactFacts.id`): the route's GETs
+/// and receipts and this machine's downloads and receipt POSTs all run under the contact's
+/// token, and a membership or block change [`Self::cut`]s them on both sides.
+#[derive(Default)]
+pub struct Transfers(parking_lot::Mutex<HashMap<String, CancellationToken>>);
+
+impl Transfers {
+    /// The token a transfer of `contact` runs under.
+    pub fn token(&self, contact: &str) -> CancellationToken {
+        self.0.lock().entry(contact.to_owned()).or_default().clone()
+    }
+
+    /// Cancel every active transfer of `contact`; later ones get a fresh token (and
+    /// re-check membership when they start).
+    pub fn cut(&self, contact: &str) {
+        if let Some(t) = self.0.lock().remove(contact) {
+            t.cancel();
+        }
+    }
+}
+
+/// The receiver's GET: stream `fetch` from its member over `Net::a2a_stream` into its
+/// partial from `have` ([`Next::of`], [`check_answer`]), under `fetch.timer` and `cut`,
+/// calling `progress` with the partial's size; then the whole partial's size and BLAKE3.
+pub async fn download(
+    _net: &mesh::net::Net,
+    _cut: &CancellationToken,
+    _fetch: &Fetch,
+    _progress: &mut (dyn FnMut(u64) + Send),
+) -> Result<Fetched, TransferError> {
+    // 199-E1a: dial only a member of `fetch.contact`; headers within `reach::READ_TIMEOUT`,
+    // then the timer; body frames straight into the partial, never a `Limited` collect.
+    Err(TransferError::NotYet)
+}
+
+/// The receiver's `POST /a2a/files/<id>` to `member` of `contact`: `Ok` on 200,
+/// [`TransferError::Unknown`] on 404, [`TransferError::Gone`] on 410.
+pub async fn send_receipt(
+    _net: &mesh::net::Net,
+    _cut: &CancellationToken,
+    _member: &str,
+    _id: &str,
+    _receipt: &Receipt,
+    _timer: Timer,
+) -> Result<(), TransferError> {
+    // 199-E1a: body `serde_json::to_vec(receipt)` (at most `RECEIPT_MAX`).
+    Err(TransferError::NotYet)
+}
+
+/// This crate's [`FileFetch`], registered when the plugin attaches to the mesh endpoint.
+pub(crate) struct ContactFetch(pub(crate) Weak<Ctx>);
+
+impl ContactFetch {
+    fn live(&self) -> Result<(Arc<Ctx>, Arc<mesh::net::Net>), TransferError> {
+        let c = self
+            .0
+            .upgrade()
+            .ok_or_else(|| TransferError::Transport(super::OFF.into()))?;
+        let net = c
+            .net()
+            .ok_or_else(|| TransferError::Transport(super::OFF.into()))?;
+        Ok((c, net))
+    }
+}
+
+#[async_trait::async_trait]
+impl FileFetch for ContactFetch {
+    async fn download(
+        &self,
+        fetch: &Fetch,
+        progress: &mut (dyn FnMut(u64) + Send),
+    ) -> Result<Fetched, TransferError> {
+        let (c, net) = self.live()?;
+        let cut = c.transfers.token(&fetch.contact);
+        download(&net, &cut, fetch, progress).await
+    }
+
+    async fn send_receipt(
+        &self,
+        contact: &str,
+        member: &str,
+        id: &str,
+        receipt: &Receipt,
+        timer: Timer,
+    ) -> Result<(), TransferError> {
+        let (c, net) = self.live()?;
+        let cut = c.transfers.token(contact);
+        send_receipt(&net, &cut, member, id, receipt, timer).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cutting_a_contact_cancels_its_transfers_only() {
+        let t = Transfers::default();
+        let (a, a2, b) = (t.token("rec-a"), t.token("rec-a"), t.token("rec-b"));
+        t.cut("rec-a");
+        assert!(a.is_cancelled() && a2.is_cancelled() && !b.is_cancelled());
+        assert!(
+            !t.token("rec-a").is_cancelled(),
+            "a later transfer starts afresh"
+        );
+        t.cut("never-seen");
+    }
 
     const ID: &str = "0f8e2d4c6a1b3957e0d2c4b6a8f01357";
     const HOLDER: &str = "5b2f0c8e9d41a7b3c6e05f1d2a9b8c7e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c";

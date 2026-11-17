@@ -455,7 +455,7 @@ impl TryFrom<ExchangeRow> for PeerRecord {
                 Some(_) => Some(crate::communication::ShareMode::Cautious),
                 None => None,
             },
-            // 199-E1: `Store::exchange_record` fills this from the exchange's `contact_files` rows.
+            // 199-E1b: `Store::exchange_record` fills this from the exchange's `contact_files` rows.
             files: Vec::new(),
         })
     }

@@ -579,7 +579,7 @@ pub fn validate_send(req: &SendMessageRequest) -> Result<(), A2AError> {
             "extensions are not supported",
         ));
     }
-    // 199-E1: reference parts (`contacts::files::parse_file_url`, `FileMeta::check`) with
+    // 199-E1a: reference parts (`contacts::files::parse_file_url`, `FileMeta::check`) with
     // `extensions == [EXT_FILES]`, after `contacts::files::check_part_content` on the raw body.
     // 199-E3: P3 admits `raw` and `https` URL parts from foreign peers.
     if m.parts.iter().any(|p| p.as_text().is_none()) {

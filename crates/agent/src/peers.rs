@@ -457,7 +457,7 @@ impl Tool for SendMessageTool {
         if !admitted.live() {
             return Ok(refused(Self::NAME, Disabled::Revoked));
         }
-        // 199-E1: contacts only; every path through `files::disk::egress_open` (its errors are
+        // 199-E1b: contacts only; every path through `files::disk::egress_open` (its errors are
         // the design's texts), each opened and hashed once, then offered per recipient.
         if !args.files.is_empty() {
             return Ok(ToolOutput::err(crate::communication::files::SEND_NOT_YET));

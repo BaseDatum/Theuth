@@ -9073,7 +9073,7 @@ pub(crate) fn peer_wrapper(
     if age >= Duration::from_secs(60) {
         head.push_str(&format!(" after=\"{}\"", clock::humanise(age)));
     }
-    // 199-E1: `files::placeholders(&record.from, &record.files)` after `</message>`.
+    // 199-E1b: `files::placeholders(&record.from, &record.files)` after `</message>`.
     format!(
         "{head}>\n{}\n</message>",
         neutralise_delimiters(&record.text)

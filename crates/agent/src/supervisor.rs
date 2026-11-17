@@ -11696,6 +11696,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         cfg.acp = rt.section("acp")?;
     }
     let cfg = Arc::new(cfg);
+    // 199-E1b: register this engine's offers (the a2a file route serves through them).
+    crate::communication::files::set_offers(Arc::new(crate::communication::files::NoOffers));
     // 68 §2: `sessions.owner` is this engine's mesh id. The mesh plugin
     // starts after us, so read (or create) the identity file directly.
     let engine = match mesh::identity::Identity::load_or_create(&rt.data_dir.join(mesh::DIR)) {

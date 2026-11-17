@@ -266,7 +266,7 @@ impl AgentMessagingApiServer for Server {
         .await
     }
 
-    // 199-E1: D15 human answers gain a `files` parameter (attach on the chat's machine only).
+    // 199-E1b: D15 human answers gain a `files` parameter (attach on the chat's machine only).
     async fn answer_peer_request(
         &self,
         ext: &Extensions,
@@ -320,12 +320,12 @@ impl AgentMessagingApiServer for Server {
         Ok(d.receipt)
     }
 
-    // 199-E1: holder RPCs carried to `holder` over `theuth/rpc/1`.
+    // 199-E1b: holder RPCs carried to `holder` over `theuth/rpc/1`.
     async fn contact_file(&self, _: &Extensions, _: String, _: String) -> RpcResult<ContactFile> {
         Err(rpc_core::failed(NOT_YET))
     }
 
-    // 199-E1: runs `tools::images::fit(bytes, 512)` on the holder (at most 64 MB read).
+    // 199-E1b: runs `tools::images::fit(bytes, 512)` on the holder (at most 64 MB read).
     async fn contact_file_thumbnail(
         &self,
         _: &Extensions,
@@ -335,7 +335,7 @@ impl AgentMessagingApiServer for Server {
         Err(rpc_core::failed(NOT_YET))
     }
 
-    // 199-E1: no-clobber copy on the holder.
+    // 199-E1b: no-clobber copy on the holder.
     async fn contact_file_export(
         &self,
         _: &Extensions,
@@ -357,7 +357,7 @@ impl AgentMessagingApiServer for Server {
         Err(rpc_core::failed(NOT_YET))
     }
 
-    // 199-E1: internal-only auth, `forward::route` to the owner, share re-check, automatic
+    // 199-E1b: internal-only auth, `forward::route` to the owner, share re-check, automatic
     // input with journal source `files::JOURNAL_SOURCE`, or `Store::record_error_once`.
     async fn contact_file_notice(
         &self,
@@ -370,7 +370,7 @@ impl AgentMessagingApiServer for Server {
         Err(rpc_core::failed(NOT_YET))
     }
 
-    // 199-E1: through the same front door; reads the journal and `errors`.
+    // 199-E1b: through the same front door; reads the journal and `errors`.
     async fn contact_file_notice_status(
         &self,
         _: &Extensions,

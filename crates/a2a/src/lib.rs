@@ -224,6 +224,8 @@ struct Ctx {
     roster_lock: tokio::sync::Mutex<()>,
     /// 191 (P2): push generation per contact endpoint (a newer push supersedes a retry).
     pushes: Arc<Mutex<std::collections::HashMap<String, u64>>>,
+    /// 199: each contact's active file transfers, cut on a membership or block change.
+    transfers: contacts::files::Transfers,
     /// Tests: awaited once by the next pass right after it staged its snapshot (a write
     /// landing mid-pass).
     #[cfg(test)]
@@ -887,6 +889,8 @@ impl Ctx {
         }
         let joined = !live.staged.contacts.is_empty();
         *self.shared.write() = live;
+        // 199-E1a: `self.transfers.cut(<record id>)` for every contact whose members or
+        // block state changed in this pass (a GET, resume or receipt then ends `Cancelled`).
         for (alias, eids) in ended {
             if let Err(e) = agents
                 .ask(agent::communication::network::ContactRelease {
@@ -1251,6 +1255,10 @@ impl Ctx {
     /// Serve `theuth/a2a/1` on `net` (the mesh's endpoint; a test's own).
     async fn attach(self: &Arc<Self>, net: Arc<mesh::net::Net>) {
         net.set_contacts(Arc::new(contacts::reach::Gate(Arc::downgrade(self))));
+        // 199: the receiver's client rides the same endpoint.
+        agent::communication::files::set_fetch(Arc::new(contacts::files::ContactFetch(
+            Arc::downgrade(self),
+        )));
         let _ = self.net.set(net.clone());
         if !self.shared.read().staged.contacts.is_empty() {
             net.join_network().await;
@@ -1418,6 +1426,7 @@ impl runtime::Plugin for A2aPlugin {
             rosters: Mutex::default(),
             roster_lock: tokio::sync::Mutex::new(()),
             pushes: Arc::default(),
+            transfers: contacts::files::Transfers::default(),
             #[cfg(test)]
             mid_pass: Mutex::default(),
         });
@@ -1478,6 +1487,7 @@ async fn test_ctx(
         rosters: Mutex::default(),
         roster_lock: tokio::sync::Mutex::new(()),
         pushes: Arc::default(),
+        transfers: contacts::files::Transfers::default(),
         mid_pass: Mutex::default(),
     });
     if let Some(agents) = agents {

@@ -8,6 +8,10 @@
 //! - [`disk`] (unix): the egress gate, the protected set, BLAKE3 from a handle, the
 //!   macOS quarantine and no-clobber publication by inode.
 //! - [`HeldContactFile`]: the seam the artifact mesh (P2) asks for a held file.
+//! - [`FileOffers`] (this crate implements, a2a's file route calls) and [`FileFetch`] (a2a
+//!   implements over the contact connection, this crate's receive queue calls): the seams
+//!   between `crates/agent` and `crates/a2a`, which depends on this crate and not the
+//!   other way round. Each is a process-wide registration with a no-op default.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -34,7 +38,7 @@ pub const FILE_IDLE: Duration = Duration::from_secs(60);
 pub const JOURNAL_SOURCE: &str = "contact_file";
 /// What every entry point answers until its owner builds it.
 pub const NOT_YET: &str = "contact files are not available yet";
-/// What `send_message` answers for `files` until 199-E1 builds sending.
+/// What `send_message` answers for `files` until 199-E1b builds sending.
 pub const SEND_NOT_YET: &str = "sending files is not available yet";
 
 /// Received files: `<root>/files/received/<contact>/<YYYY-MM-DD>/<name>`.
@@ -430,6 +434,288 @@ pub fn ended_notice(from: &str, f: &ContactFile) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// The a2a ↔ agent seams (E1a ↔ E1b)
+// ---------------------------------------------------------------------------
+
+/// Longest failure reason in a receipt, in bytes.
+pub const REASON_MAX: usize = 200;
+
+/// A receipt (`POST /a2a/files/<sender-id>`): the receiver's terminal outcome. On the
+/// wire `{"state":"received"}` or `{"state":"failed","reason":"…"}` (a2a parses it,
+/// `contacts::files::parse_receipt`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "lowercase")]
+pub enum Receipt {
+    /// Saved, and its notice durably queued.
+    Received,
+    /// Failed on the receiver.
+    Failed {
+        /// Why, at most [`REASON_MAX`] bytes.
+        reason: String,
+    },
+}
+
+/// The `410` text: why an offer can no longer be served.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gone {
+    /// Past its deadline.
+    Expired,
+    /// The source (and any clone) is gone.
+    Missing,
+    /// The source is another file, or another size, than the one offered.
+    Changed,
+}
+
+impl Gone {
+    /// The `text/plain` body.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Expired => "expired",
+            Self::Missing => "missing",
+            Self::Changed => "changed",
+        }
+    }
+}
+
+/// Why the sender's side refuses a GET or a receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OfferError {
+    /// `404`: no such offer, or the caller's contact is not the offer's (one answer for both).
+    Unknown,
+    /// `410` with its text.
+    Gone(Gone),
+}
+
+/// An offer opened for serving: the clone, or the original reopened through
+/// `disk::egress_reopen` (its `(dev, inode)` and size re-checked by the implementation).
+#[derive(Debug)]
+pub struct OfferHandle {
+    /// Read-only; serve at most `len` bytes of it.
+    pub file: std::fs::File,
+    /// The declared size.
+    pub len: u64,
+    /// The declared BLAKE3, 64 lowercase hex.
+    pub blake3: String,
+    /// The offer's local deadline (D8).
+    pub deadline: DateTime<Utc>,
+}
+
+/// The sender's offers, as a2a's `/a2a/files/<id>` route reaches them (199-E1b implements).
+/// `contact` is the caller's immutable record id (`ContactFacts.id`), never an alias; `id`
+/// is the sender's local file id from the path.
+#[async_trait::async_trait]
+pub trait FileOffers: Send + Sync {
+    /// `GET`: the offer `id` of `contact`, ready to serve.
+    async fn open(&self, contact: &str, id: &str) -> Result<OfferHandle, OfferError>;
+    /// `POST`: the receiver's terminal receipt; only the first one applies, a repeat is `Ok`.
+    async fn receipt(&self, contact: &str, id: &str, receipt: Receipt) -> Result<(), OfferError>;
+}
+
+/// No offers: every GET and receipt is `404`, until 199-E1b registers its own.
+pub struct NoOffers;
+
+#[async_trait::async_trait]
+impl FileOffers for NoOffers {
+    async fn open(&self, _: &str, _: &str) -> Result<OfferHandle, OfferError> {
+        Err(OfferError::Unknown)
+    }
+
+    async fn receipt(&self, _: &str, _: &str, _: Receipt) -> Result<(), OfferError> {
+        Err(OfferError::Unknown)
+    }
+}
+
+static OFFERS: parking_lot::RwLock<Option<std::sync::Arc<dyn FileOffers>>> =
+    parking_lot::const_rwlock(None);
+
+/// Register this engine's offers (the agent plugin, at start; a restart replaces them).
+pub fn set_offers(offers: std::sync::Arc<dyn FileOffers>) {
+    *OFFERS.write() = Some(offers);
+}
+
+/// The registered offers, else [`NoOffers`].
+pub fn offers() -> std::sync::Arc<dyn FileOffers> {
+    OFFERS
+        .read()
+        .clone()
+        .unwrap_or_else(|| std::sync::Arc::new(NoOffers))
+}
+
+/// D8's one timer for an active transfer: it ends at `min(deadline, last progress + idle)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Timer {
+    /// The local deadline: fails the file.
+    pub deadline: tokio::time::Instant,
+    /// No progress this long releases the slot ([`FILE_IDLE`]; shorter in tests).
+    pub idle: Duration,
+}
+
+/// Which bound ended a transfer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Expiry {
+    /// No progress for `idle`: back to the queue, resumed with `Range`.
+    Idle,
+    /// The local deadline: the file fails.
+    Deadline,
+}
+
+impl Timer {
+    /// [`FILE_IDLE`] under `deadline`.
+    pub fn until(deadline: tokio::time::Instant) -> Self {
+        Self {
+            deadline,
+            idle: FILE_IDLE,
+        }
+    }
+
+    /// When the transfer ends if nothing moves after `last`, and why.
+    pub fn at(&self, last: tokio::time::Instant) -> (tokio::time::Instant, Expiry) {
+        let idle = last + self.idle;
+        if self.deadline <= idle {
+            (self.deadline, Expiry::Deadline)
+        } else {
+            (idle, Expiry::Idle)
+        }
+    }
+}
+
+/// One download: file `id` (the sender's, from the reference URL) of `contact` (its record
+/// id) from roster member `member` (the URL's host, which must map to `contact`).
+#[derive(Clone, Debug)]
+pub struct Fetch {
+    /// The contact's record id.
+    pub contact: String,
+    /// The endpoint dialled.
+    pub member: String,
+    /// The sender's local id.
+    pub id: String,
+    /// The declared size.
+    pub size: u64,
+    /// `files/partial/<local-id>`, written from `have`.
+    pub partial: PathBuf,
+    /// Bytes already in the partial (`Range: bytes=<have>-` when `0 < have < size`).
+    pub have: u64,
+    /// The transfer's timer.
+    pub timer: Timer,
+}
+
+/// A finished download: the partial holds `bytes`, whose BLAKE3 is `blake3` (the caller
+/// compares both with the declared values).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fetched {
+    /// Size of the whole partial.
+    pub bytes: u64,
+    /// BLAKE3 of the whole partial, 64 lowercase hex.
+    pub blake3: String,
+}
+
+/// Why a download or a receipt POST ended without success.
+#[derive(Debug)]
+pub enum TransferError {
+    /// `404`: the sender does not offer it (to us).
+    Unknown,
+    /// `410` with the sender's reason.
+    Gone(Gone),
+    /// Another status, offset, total or length, a `200` to a `Range` request, or a `416`.
+    Changed,
+    /// No progress for the timer's `idle`: requeue, resume with `Range`.
+    Idle,
+    /// The local deadline passed.
+    Deadline,
+    /// The contact's membership or block state changed ([`FileFetch`]'s cancellation).
+    Cancelled,
+    /// Dial, stream reset, stream limit, or EOF before `content-length`: retry with backoff.
+    Transport(String),
+    /// Writing the partial failed (disk full …).
+    Disk(std::io::Error),
+    /// No fetcher is registered (199-E1a builds it).
+    NotYet,
+}
+
+impl std::fmt::Display for TransferError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unknown => f.write_str("the sender no longer offers it"),
+            Self::Gone(Gone::Expired) => f.write_str("the offer expired"),
+            Self::Gone(Gone::Missing) => f.write_str("the sender's file is gone"),
+            Self::Gone(Gone::Changed) | Self::Changed => f.write_str("the sender's file changed"),
+            Self::Idle => f.write_str("no progress"),
+            Self::Deadline => f.write_str("the offer expired"),
+            Self::Cancelled => f.write_str("the contact changed"),
+            Self::Transport(e) => write!(f, "transfer failed: {e}"),
+            Self::Disk(e) => write!(f, "saving failed: {e}"),
+            Self::NotYet => f.write_str(NOT_YET),
+        }
+    }
+}
+
+impl std::error::Error for TransferError {}
+
+/// The receiver's side of the contact connection (199-E1a implements it in a2a over
+/// `Net::a2a_stream`; 199-E1b's queue calls it). Both calls run under the a2a side's
+/// per-contact cancellation, so a membership or block change cuts them.
+#[async_trait::async_trait]
+pub trait FileFetch: Send + Sync {
+    /// Stream `fetch` into its partial from `have`, calling `progress` with the partial's
+    /// size as bytes land.
+    async fn download(
+        &self,
+        fetch: &Fetch,
+        progress: &mut (dyn FnMut(u64) + Send),
+    ) -> Result<Fetched, TransferError>;
+    /// `POST /a2a/files/<id>` to `member` of `contact`, under `timer`.
+    async fn send_receipt(
+        &self,
+        contact: &str,
+        member: &str,
+        id: &str,
+        receipt: &Receipt,
+        timer: Timer,
+    ) -> Result<(), TransferError>;
+}
+
+/// No fetcher: every call is [`TransferError::NotYet`].
+pub struct NoFetch;
+
+#[async_trait::async_trait]
+impl FileFetch for NoFetch {
+    async fn download(
+        &self,
+        _: &Fetch,
+        _: &mut (dyn FnMut(u64) + Send),
+    ) -> Result<Fetched, TransferError> {
+        Err(TransferError::NotYet)
+    }
+
+    async fn send_receipt(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &Receipt,
+        _: Timer,
+    ) -> Result<(), TransferError> {
+        Err(TransferError::NotYet)
+    }
+}
+
+static FETCH: parking_lot::RwLock<Option<std::sync::Arc<dyn FileFetch>>> =
+    parking_lot::const_rwlock(None);
+
+/// Register the contact fetcher (the a2a plugin, once it serves `theuth/a2a/1`).
+pub fn set_fetch(fetch: std::sync::Arc<dyn FileFetch>) {
+    *FETCH.write() = Some(fetch);
+}
+
+/// The registered fetcher, else [`NoFetch`].
+pub fn fetch() -> std::sync::Arc<dyn FileFetch> {
+    FETCH
+        .read()
+        .clone()
+        .unwrap_or_else(|| std::sync::Arc::new(NoFetch))
+}
+
+// ---------------------------------------------------------------------------
 // The P2 seam
 // ---------------------------------------------------------------------------
 
@@ -465,7 +751,7 @@ impl Message<HeldContactFile> for Agents {
         _: HeldContactFile,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        // 199-E2: look up a `received` `in` row of `contact_files`; none exist before 199-E1.
+        // 199-E2: look up a `received` `in` row of `contact_files`; none exist before 199-E1b.
         None
     }
 }
@@ -516,6 +802,20 @@ mod tests {
         // The cut cannot leave a trailing dot or space.
         let dotty = sanitise(&format!("{} .{}", "b".repeat(198), "y".repeat(30)));
         assert!(!dotty.ends_with(['.', ' ']), "{dotty}");
+    }
+
+    #[test]
+    fn the_timer_ends_at_the_nearer_bound() {
+        let now = tokio::time::Instant::now();
+        let far = Timer::until(now + Duration::from_secs(3600));
+        assert_eq!(far.at(now), (now + FILE_IDLE, Expiry::Idle));
+        let near = Timer::until(now + Duration::from_secs(5));
+        assert_eq!(
+            near.at(now),
+            (now + Duration::from_secs(5), Expiry::Deadline)
+        );
+        // A drip keeps resetting `idle`, never the deadline.
+        assert_eq!(near.at(now + Duration::from_secs(4)).1, Expiry::Deadline);
     }
 
     #[test]
