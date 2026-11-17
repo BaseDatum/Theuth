@@ -8369,9 +8369,17 @@ impl Message<LoadSession> for Agents {
         let root = self.resources_for(session).root.clone();
         let retention = self.retention_of(session);
         let known = self.communication.0.read().root_of(session).is_ok();
+        let endless = self.endless.clone();
         let me = ctx.actor_ref().clone();
         ctx.spawn(async move {
             let mut loaded = load_session(m, &store, &durable, live, &root, retention).await;
+            // The store's estimate prices the epochs frame: the whole raw
+            // history of an endless session that never compacted.
+            if loaded.context_estimate.is_some()
+                && let Some(view) = endless_view_tokens(&endless, session).await
+            {
+                loaded.context_estimate = Some(view);
+            }
             let lineage = if known {
                 None
             } else {
@@ -8381,6 +8389,20 @@ impl Message<LoadSession> for Agents {
             loaded
         })
     }
+}
+
+/// 137 §8.1 (D4): what an active endless session's next turn opens with
+/// besides system prompt and tools — its view blocks, no head, no carried
+/// rows — priced as [`crate::loop_`]'s `system_tokens` prices them (bytes/4).
+/// `None` when the session is not active in endless mode or the render
+/// fails: its turns then run the epochs frame, which the store prices.
+async fn endless_view_tokens(endless: &Endless, session: SessionId) -> Option<u32> {
+    if !endless.active(session) {
+        return None;
+    }
+    let blocks = endless.render_snapshot(session).await.ok()?;
+    let bytes: usize = blocks.iter().map(|b| b.text.len()).sum();
+    Some(u32::try_from(bytes / 4).unwrap_or(u32::MAX))
 }
 
 /// `ask` (internal, 176 E1) → `Option<CommunicationState>`: apply a lineage
@@ -8855,6 +8877,7 @@ impl Message<SessionContextBreakdown> for Agents {
     ) -> Self::Reply {
         let store = self.store_for(m.session).clone();
         let live = self.live(m.session).and_then(|a| a.native().ok()).cloned();
+        let endless = self.endless.clone();
         ctx.spawn(async move {
             store
                 .session(m.session)
@@ -8865,6 +8888,18 @@ impl Message<SessionContextBreakdown> for Agents {
                 && let Ok(Some(b)) = a.ask(ContextBreakdownNow).await
             {
                 return Ok(b);
+            }
+            // An active endless session's frame is its view (the live actor
+            // answered above once an endless turn ran), counted with the
+            // system share as the loop counts it.
+            if let Some(view) = endless_view_tokens(&endless, m.session).await {
+                return Ok(ContextBreakdown::build(
+                    view,
+                    None,
+                    std::iter::empty::<&ChatMessage>(),
+                    None,
+                    None,
+                ));
             }
             // Busy or not running: the stored frame, without the live turn's
             // system prompt, calibration and provider bill.
@@ -17160,6 +17195,67 @@ pub(crate) mod tests {
             tools::seat::cwd(gone).unwrap(),
             std::env::current_dir().unwrap()
         );
+    }
+
+    /// The 1760 % desk: an endless session that never compacted priced its
+    /// whole raw history as the frame. `load_session` and the breakdown now
+    /// report the view the next turn opens with, not the transcript.
+    #[tokio::test]
+    async fn an_endless_session_reports_its_view_not_its_raw_history() {
+        let (_scratch, a) = agents_with(false).await;
+        let store = a.store.clone();
+        let endless = a.endless.clone();
+        let agents = Agents::spawn(a);
+        let session = agents
+            .ask(CreateSession {
+                options: crate::CreateSessionOptions {
+                    memory: Some(MemoryMode::Endless),
+                    ..Default::default()
+                },
+                peer: None,
+            })
+            .await
+            .unwrap()
+            .session;
+        agents
+            .ask(EndlessPause {
+                session,
+                paused: true,
+            })
+            .await
+            .unwrap();
+        let mut raw = 0u32;
+        for k in 0..60 {
+            let m = ChatMessage::user(format!("row {k}: {}", "word ".repeat(4_000)));
+            raw += crate::compact::est(&m);
+            store.append(session, &m).await.unwrap();
+        }
+        // Mechanical lines for every unit, as `/compact` makes them (no model).
+        agents
+            .ask(Compact {
+                session,
+                style: None,
+                head: None,
+            })
+            .await
+            .unwrap();
+        let view = endless_view_tokens(&endless, session).await.unwrap();
+        assert!(view > 0 && view < raw / 2, "view {view} vs raw {raw}");
+        let loaded = agents
+            .ask(LoadSession {
+                session,
+                before: None,
+                limit: None,
+                settled_only: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(loaded.context_estimate, Some(view));
+        let b = agents
+            .ask(SessionContextBreakdown { session })
+            .await
+            .unwrap();
+        assert_eq!(b.total_estimate, view);
     }
 
     /// 137G G9: `/compact` in an endless session is `endless_fold` — every
