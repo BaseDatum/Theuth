@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { liveRows } from '@/components/agents/sessions'
+import { liveRows, modelLabel } from '@/components/agents/sessions'
 import { backgroundColors } from '@/lib/background-colors'
 import { usePanes } from '@/lib/panes'
 import { fmtThought } from '@/lib/time'
@@ -84,7 +84,7 @@ export function BackgroundArea({ session }: { session: string }) {
                   <li key={row.id}>
                     <SubagentLink row={row} className="flex min-h-8 items-center gap-2 rounded py-1 outline-none hover:bg-layer-2 focus-visible:ring-2 focus-visible:ring-ring">
                       <ActivityDot color={backgroundColors[row.state.state === 'approval' ? 'approval' : 'subagents'].bg} />
-                      <span className="min-w-0 flex-1"><span className="block truncate font-medium">{row.name}</span><span className="block truncate text-fg-tertiary">{row.model || row.agent || 'model unavailable'}</span></span>
+                      <span className="min-w-0 flex-1"><span className="block truncate font-medium">{row.name}</span><span className="block truncate text-fg-tertiary">{modelLabel(row)}</span></span>
                       <span className="text-fg-secondary">{row.state.state === 'approval' ? 'waiting on approval' : row.state.state === 'awaiting' ? 'waiting on peer' : 'running'}</span>
                       <span className="shrink-0 text-fg-tertiary tabular-nums">{row.started_at ? fmtThought(Math.max(0, now - Date.parse(row.started_at))) ?? '0s' : '—'}</span>
                     </SubagentLink>

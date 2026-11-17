@@ -37,7 +37,7 @@
             let (child, grandchild) = (SessionId::new(), SessionId::new());
             for (parent, child) in [(root, child), (child, grandchild)] {
                 m.apply(wire_event("agent.events", AgentEvent::SubagentSpawned {
-                    parent, child, name: "worker".into(), cap: None,
+                    parent, child, name: "worker".into(), cap: None, agent: None, model: None,
                 }));
             }
             assert_eq!(m.agents[&grandchild].depth, 2);
@@ -75,7 +75,7 @@
         let turn = TurnId::new();
         m.session = Some(root);
         m.apply(wire_event("agent.events", AgentEvent::SubagentSpawned {
-            parent: root, child, name: "worker".into(), cap: None,
+            parent: root, child, name: "worker".into(), cap: None, agent: None, model: None,
         }));
         m.apply(wire_event("agent.events", AgentEvent::ToolCallStarted {
             session: child, turn, call_id: "c".into(), name: "read_file".into(), args: serde_json::json!({"path":"kept"}),
@@ -87,7 +87,7 @@
         status.advisor = Some(child);
         m.apply(wire_event("agent.events", AgentEvent::AdvisorChanged { session: root, status }));
         m.apply(wire_event("agent.events", AgentEvent::SubagentSpawned {
-            parent: root, child, name: "ignored".into(), cap: None,
+            parent: root, child, name: "ignored".into(), cap: None, agent: None, model: None,
         }));
         assert_eq!(m.agents[&child].name, "worker");
         assert_eq!(agents_board(&m).rows[&child].error.as_deref(), Some("kept"));
@@ -193,7 +193,7 @@
         status.advisor = Some(linked);
         m.apply(wire_event("agent.events", AgentEvent::AdvisorChanged { session, status }));
         m.apply(wire_event("agent.events", AgentEvent::SubagentSpawned {
-            parent: session, child: linked, name: "advisor".into(), cap: None,
+            parent: session, child: linked, name: "advisor".into(), cap: None, agent: None, model: None,
         }));
         m.apply(wire_event("agent.events", AgentEvent::AdvisoryAdded {
             session, seq: 7, advisory: advisory(linked, vec![note(AdvisorSeverity::Concern, "check")]),
@@ -2142,6 +2142,8 @@
                 child,
                 name: name.into(),
                 cap: None,
+                agent: None,
+                model: None,
             }));
         }
         assert!(m.animating() && board_rows(&m).len() == 2 && !m.status().contains("agents:"));
@@ -2366,6 +2368,8 @@
             child: native,
             name: "worker".into(),
             cap: None,
+            agent: None,
+            model: None,
         }));
         let now = chrono::Utc::now();
         for id in [child, native] {
@@ -7886,6 +7890,8 @@
             child,
             name: "worker".into(),
             cap: None,
+            agent: None,
+            model: None,
         }));
         while rx.try_recv().is_ok() {}
         // Root → child → parent: no leave.
@@ -9334,6 +9340,8 @@
             child: advisor,
             name: "advisor".into(),
             cap: None,
+            agent: None,
+            model: None,
         }));
         assert!(m.agents.is_empty() && board_rows(&m).is_empty());
         assert!(!info_lines(&m).iter().any(|l| l.starts_with("↳ spawned")));

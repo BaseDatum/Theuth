@@ -1473,6 +1473,10 @@ function trackRow(
           text: `↳ ${name} error: ${e.message}`,
         }),
       };
+    // Subagents card: the model the harness reports (or a native switch) lands on every ancestor's row, no reload.
+    case "HarnessModelChanged":
+    case "ModelChanged":
+      return { patch: (row) => (row.model === e.model ? row : { ...row, model: e.model }) };
     default:
       return null;
   }
@@ -1550,8 +1554,9 @@ export function route(
         name: e.name,
         parent: e.parent,
         depth,
-        agent: null,
-        model: "",
+        agent: e.agent ?? null,
+        // The engine's effective model; a `HarnessModelChanged` that beat this event fills it.
+        model: e.model || child.harnessModel || "",
         state: { state: "running" },
         started_at: new Date().toISOString(),
         finished_at: null,

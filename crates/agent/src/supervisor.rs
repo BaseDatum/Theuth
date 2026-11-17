@@ -286,6 +286,9 @@ pub struct Agents {
     /// Children spawned with a `tools` ceiling ([`SpawnChild::cap`]), for
     /// the board row; the registry enforces it ([`SetCap`]).
     pub(crate) caps: HashMap<SessionId, Risk>,
+    /// The `model` a harness child's spawn asked for, its roster model until
+    /// the harness reports `harness_model` (this process only, like `caps`).
+    pub(crate) requested_models: HashMap<SessionId, String>,
     /// Roots a theuth on another engine opened over the node conn (67 §8):
     /// the parent's session id and engine id from `session/new` `_meta`.
     /// `parent` for such a root is that session, reached by [`PeerUplink`].
@@ -5522,6 +5525,9 @@ impl Message<SpawnChild> for Agents {
         )
         .await
         .map_err(|e| format!("{e:#}"))?;
+        if let (Some(_), Some(model)) = (&agent_name, &m.model) {
+            self.requested_models.insert(id, model.clone());
+        }
         // 139 §7.4 (W3): the parent's `waits(child_result)` row.
         child_waits::child_spawned(self, m.parent, id, &m.call_id, agent_name.as_deref()).await;
         // Next to `inherit_approvals` in spirit: the ceiling is on the
@@ -5529,12 +5535,20 @@ impl Message<SpawnChild> for Agents {
         if let Some(cap) = m.cap {
             self.install_cap(id, cap).await;
         }
+        // The roster's model (and harness) at once, so the parent's row needs no reload.
+        let model = match self.store_for(m.parent).session(id).await {
+            Ok(Some(row)) => Some(view::effective_model(&row, self.requested_models.get(&id)))
+                .filter(|m| !m.is_empty()),
+            _ => None,
+        };
         self.rt
             .publish(AgentEvent::SubagentSpawned {
                 parent: m.parent,
                 child: id,
                 name: name.clone(),
                 cap: m.cap,
+                agent: agent_name.clone(),
+                model,
             })
             .await;
         // Spawned by a turn an A2A request scope owns (50 §6.3): the child
@@ -9602,6 +9616,7 @@ impl Message<DeleteSession> for Agents {
             self.child_errors.retain(|(s, _), _| s != id);
             self.owned_children.remove(id);
             self.caps.remove(id);
+            self.requested_models.remove(id);
             self.remote_parent.remove(id);
             self.desk_models.remove(id);
             self.desk_efforts.remove(id);
@@ -11985,6 +12000,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             arms: 0,
             child_errors: HashMap::new(),
             caps: HashMap::new(),
+            requested_models: HashMap::new(),
             remote_parent: HashMap::new(),
             owned_children: HashMap::new(),
             last_stop: HashMap::new(),
@@ -12533,6 +12549,7 @@ impl Agents {
             self.last_input.remove(&id);
             self.owned_children.remove(&id);
             self.caps.remove(&id);
+            self.requested_models.remove(&id);
             self.remote_parent.remove(&id);
             self.bound.retain(|(s, _), _| *s != id);
             self.delivered.retain(|(s, _), _| *s != id);
@@ -13117,6 +13134,7 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         arms: 0,
         child_errors: HashMap::new(),
         caps: HashMap::new(),
+        requested_models: HashMap::new(),
         remote_parent: HashMap::new(),
         owned_children: HashMap::new(),
         last_stop: HashMap::new(),
@@ -21333,6 +21351,164 @@ done
             .lines()
             .filter(|l| *l == "session/prompt")
             .count()
+    }
+
+    /// The roster rows of `p` as `(name, agent, model)`, by name.
+    async fn model_rows(a: &Agents, p: SessionId) -> Vec<(String, Option<String>, String)> {
+        let mut rows: Vec<_> = a
+            .view()
+            .agents(p)
+            .await
+            .into_iter()
+            .map(|r| (r.name, r.agent, r.model))
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    /// Subagents card (2026-11-17): a roster row's `model` is the child's
+    /// effective model, never the harness name its `model` column holds. An
+    /// ACP child has none, then the model its spawn asked for, then
+    /// `harness_model`; a native child has its session model; a reopened
+    /// store (a restart: the ask is forgotten) still shows `harness_model`.
+    #[tokio::test]
+    async fn roster_rows_carry_the_effective_model() {
+        let (scratch, mut a) = agents_with(false).await;
+        let p = a
+            .create_durable(None, None, None, None, None, None)
+            .await
+            .unwrap();
+        let (acp, native) = (SessionId::new(), SessionId::new());
+        a.store
+            .create_session(acp, "omp", Some(p), Some("worker"), None)
+            .await
+            .unwrap();
+        a.store.set_acp(acp, "omp", None, &[]).await.unwrap();
+        a.store
+            .create_session(
+                native,
+                "anthropic/claude-native",
+                Some(p),
+                Some("scout"),
+                None,
+            )
+            .await
+            .unwrap();
+        let scout = (
+            "scout".to_owned(),
+            None,
+            "anthropic/claude-native".to_owned(),
+        );
+        let rows = |m: &str| {
+            vec![
+                scout.clone(),
+                ("worker".to_owned(), Some("omp".to_owned()), m.to_owned()),
+            ]
+        };
+        assert_eq!(model_rows(&a, p).await, rows(""));
+        a.requested_models.insert(acp, "openai/gpt-asked".into());
+        assert_eq!(model_rows(&a, p).await, rows("openai/gpt-asked"));
+        a.store
+            .set_harness_model(acp, "openai/gpt-6.1-sol")
+            .await
+            .unwrap();
+        assert_eq!(model_rows(&a, p).await, rows("openai/gpt-6.1-sol"));
+        drop(a);
+        let a = agents_on(scratch.0.clone(), None, false).await;
+        assert!(a.requested_models.is_empty());
+        assert_eq!(model_rows(&a, p).await, rows("openai/gpt-6.1-sol"));
+    }
+
+    /// Subagents card (2026-11-17): `SubagentSpawned` carries the harness and
+    /// the roster's model, so the parent's row needs no reload; the model
+    /// the harness reports reaches the parent's subtree as
+    /// `HarnessModelChanged` on the child, and the roster shows it. A
+    /// native spawn carries its session model.
+    #[tokio::test]
+    async fn spawned_children_announce_their_model() {
+        let (scratch, a) = agents().await;
+        let dir = scratch.0.clone();
+        let script = dir.join("model-acp.sh");
+        let options = r#""configOptions":[{"id":"model","name":"Model","category":"model","type":"select","currentValue":"fake/m1","options":[{"value":"fake/m1","name":"M1"}]}]"#;
+        std::fs::write(
+            &script,
+            HANGING_ACP
+                .replace("$DIR", &dir.display().to_string())
+                .replace("$HANG", "0")
+                .replace(
+                    r#""sessionId":"fake-1"}}"#,
+                    &format!(r#""sessionId":"fake-1",{options}}}}}"#),
+                ),
+        )
+        .unwrap();
+        let yaml = format!(
+            "fake:\n  command: /bin/sh\n  args: [\"{}\"]\n  mcp: false\n  skills: false\n",
+            script.display()
+        );
+        acp::save(&a.rt.data_dir, &serde_yaml::from_str(&yaml).unwrap()).unwrap();
+        let (rt, store) = (a.rt.clone(), a.store.clone());
+        let (agents, p) = rooted(a).await;
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let mut rx = tap(&rt).await;
+        let (_, c, _) = agents
+            .ask(SpawnChild {
+                agent: Some("fake".into()),
+                cwd: Some(dir.clone()),
+                ..spawn(p, "c", "ping")
+            })
+            .await
+            .unwrap();
+        // The connect may report before or after the spawn is announced.
+        let (mut spawned, mut reported) = (None, false);
+        tokio::time::timeout(Duration::from_secs(60), async {
+            while spawned.is_none() || !reported {
+                match rx.recv().await.expect("bus open") {
+                    AgentEvent::SubagentSpawned {
+                        child,
+                        agent,
+                        model,
+                        ..
+                    } if child == c => spawned = Some((agent, model)),
+                    AgentEvent::HarnessModelChanged { session, model } if session == c => {
+                        assert_eq!(model, "fake/m1");
+                        reported = true;
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("spawn and harness model announced");
+        let (agent, model) = spawned.unwrap();
+        assert_eq!(agent.as_deref(), Some("fake"));
+        assert!(
+            matches!(model.as_deref(), None | Some("fake/m1")),
+            "never the harness name: {model:?}"
+        );
+        let row = agents
+            .ask(ListAgents { session: p })
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == c)
+            .unwrap();
+        assert_eq!(
+            (row.agent.as_deref(), row.model.as_str()),
+            (Some("fake"), "fake/m1")
+        );
+
+        let (_, n, _) = agents.ask(spawn(p, "n", "ping")).await.unwrap();
+        let AgentEvent::SubagentSpawned { agent, model, .. } = next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::SubagentSpawned { child, .. } if *child == n),
+        )
+        .await
+        else {
+            unreachable!()
+        };
+        let native = store.session(n).await.unwrap().unwrap().model;
+        assert!(!native.is_empty());
+        assert_eq!((agent, model), (None, Some(native)));
     }
 
     /// 179 SHOULD-FIX 7: an ACP child cut by the pause keeps its journal

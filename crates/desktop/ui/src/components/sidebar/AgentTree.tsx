@@ -8,6 +8,7 @@ import { EyeMark, SourceTag, WatchCostCell, WatchDot } from '@/components/chat/O
 import { useSessionDrag } from '@/components/chat/Panes'
 import { costShort, costTitle } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { modelLabel } from '@/components/agents/sessions'
 import { cappedTree, childrenOf, live, observedLabel, withAncestors } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
 import type { CostBucket } from "@/rpc/bindings/method.agent.output"
@@ -71,7 +72,7 @@ export const SubagentRow = memo(function SubagentRow({
       style={{ paddingLeft: 8 + row.depth * 12 }}
       title={
         observed
-          ? `${row.name} · watching · ${observedLabel[observed.state]}${row.model ? ` · ${row.model}` : ''}`
+          ? `${row.name} · watching · ${observedLabel[observed.state]} · ${modelLabel(row)}`
           : row.state.state === 'awaiting'
             ? `awaiting ${row.state.from}`
             : row.state.state === 'approval'

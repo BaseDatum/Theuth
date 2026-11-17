@@ -4403,6 +4403,8 @@ pub(crate) mod tests {
                 child,
                 name: "grep-logs".into(),
                 cap: None,
+                agent: None,
+                model: None,
             }))
             .await;
         child
