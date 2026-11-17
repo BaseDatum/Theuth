@@ -472,8 +472,11 @@ impl Store {
 
     /// The States rules for every row whose exchange moved (one transaction): `saved` →
     /// `received` with its notice, a failed file's waiting notice, and every non-terminal
-    /// file of a `failed`/`suppressed` exchange failed with its reason (no notice). Rows
-    /// in `skip` (a transfer holds them) wait for the next pass.
+    /// file of a `failed`/`suppressed` exchange failed with its reason (no notice); an `in`
+    /// file of an `unknown` one too. An offer of an `unknown` exchange stays: its text may
+    /// have arrived (a restart while it was out) and the receiver may be fetching it; its
+    /// receipt or its deadline settles it. Rows in `skip` (a transfer holds them) wait for
+    /// the next pass.
     pub async fn settle_files(
         &self,
         r: &Render,
@@ -481,7 +484,7 @@ impl Store {
     ) -> anyhow::Result<Vec<(FileRow, Settled)>> {
         let mut tx = self.begin_write().await?;
         // Exchange states: `consumed`/`replied` read a saved file (and a failed one's
-        // notice); `failed`/`suppressed`/`unknown` end every non-terminal one.
+        // notice); `failed`/`suppressed` end every non-terminal one, `unknown` the `in` ones.
         let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
             "SELECT f.id, f.direction, f.state, e.error FROM contact_files f \
              JOIN peer_exchanges e ON e.id = f.exchange WHERE \
@@ -489,7 +492,8 @@ impl Store {
              OR (f.direction = 'in' AND f.state = 'failed' AND f.notice IS NULL \
                  AND e.state IN ('consumed', 'replied')) \
              OR (f.state NOT IN ('received', 'sent', 'failed') \
-                 AND e.state IN ('failed', 'suppressed', 'unknown'))",
+                 AND (e.state IN ('failed', 'suppressed') \
+                      OR (f.direction = 'in' AND e.state = 'unknown')))",
         )
         .fetch_all(&mut *tx)
         .await?;
@@ -1063,6 +1067,31 @@ mod tests {
             store.contact_file(&id).await.unwrap().unwrap().state,
             "sent"
         );
+    }
+
+    /// 199-Z1 (found live): the sender restarts while its message is out, so the exchange
+    /// reads `unknown` ("interrupted_by_restart") though the contact has its text and is
+    /// fetching. Its offers stay (the receiver resumes; a receipt or the deadline settles
+    /// them); an offer of a `failed` exchange fails with its reason.
+    #[tokio::test]
+    async fn an_unknown_exchange_keeps_its_offers_and_a_failed_one_ends_them() {
+        let (store, s, _d) = fresh().await;
+        let r = render();
+        for (end, kept) in [("unknown", true), ("failed", false)] {
+            let ex = inbound(&store, s).await;
+            let id = uuid::Uuid::new_v4().simple().to_string();
+            let row = FileRow {
+                direction: "out".into(),
+                ..in_row(s, ex, &id)
+            };
+            store.insert_contact_files(&[row]).await.unwrap();
+            store.file_to(&id, &["queued"], "sending").await.unwrap();
+            set_exchange(&store, ex, end).await;
+            let done = store.settle_files(&r, &HashSet::new()).await.unwrap();
+            assert_eq!(done.is_empty(), kept, "{end}");
+            let now = store.contact_file(&id).await.unwrap().unwrap();
+            assert_eq!(now.state, if kept { "sending" } else { "failed" }, "{end}");
+        }
     }
 
     async fn exec(store: &Store, sql: &'static str) {
