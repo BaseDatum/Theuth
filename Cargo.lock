@@ -24959,6 +24959,7 @@ version = "2.21.1"
 dependencies = [
  "anyhow",
  "async-trait",
+ "blake3",
  "bytes",
  "chrono",
  "encoding_rs",
@@ -24978,8 +24979,10 @@ dependencies = [
  "secrets",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-rustls",
  "tools",
  "tracing",
  "ts-rs",
