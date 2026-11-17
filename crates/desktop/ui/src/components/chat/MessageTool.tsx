@@ -154,7 +154,8 @@ function PlainTool({ tool, session, readOnly }: { tool: Tool; session: string; r
   return (
     <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
       {tool.name === 'page_preview' ? (
-        <div className="flex min-w-0 items-start gap-2">
+        // Below `sm` the tag or control wraps under the header, so the argument and result lines keep the card's width.
+        <div className="flex min-w-0 flex-col items-start gap-2 sm:flex-row max-sm:[&>:last-child]:my-0 max-sm:[&>:last-child]:ml-0">
           {header}
           <SourceControl tool={tool} session={session} readOnly={readOnly} />
         </div>
