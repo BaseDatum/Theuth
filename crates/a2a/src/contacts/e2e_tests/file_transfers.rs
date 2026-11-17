@@ -576,7 +576,7 @@ async fn protected_oversize_and_extensionless_sends_are_refused_before_the_netwo
         (&hard, "is theuth's own secret state and is never sent"),
         (&sparse, "5000000001 bytes (over the 5 GB limit per file)"),
     ] {
-        let err = send(&b_agents, s.origin, &to, "nope", &[path.clone()], None)
+        let err = send(&b_agents, s.origin, &to, "nope", std::slice::from_ref(path), None)
             .await
             .unwrap_err();
         assert!(err.starts_with("files: ") && err.contains(why), "{err}");
@@ -620,9 +620,9 @@ async fn protected_oversize_and_extensionless_sends_are_refused_before_the_netwo
     }
     let r = r.unwrap();
     assert_eq!(r.receipt.state, agent::PeerMessageState::Failed, "{r:?}");
-    assert!(r.receipt.error.as_deref().unwrap_or_default().contains(&want), "{:?}", r.receipt);
+    assert!(r.receipt.error.as_deref().unwrap_or_default().contains(want), "{:?}", r.receipt);
     assert_eq!(r.files.len(), 1);
-    assert!(r.files[0].error.as_deref().unwrap_or_default().contains(&want), "{:?}", r.files);
+    assert!(r.files[0].error.as_deref().unwrap_or_default().contains(want), "{:?}", r.files);
     for (_, stop) in &s.services {
         stop.cancel();
     }
