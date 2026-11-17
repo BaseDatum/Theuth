@@ -90,6 +90,8 @@ objc2 = "0.6"
 block2 = "0.6"
 objc2-foundation = { workspace = true }
 objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "UIScreen", "UITraitCollection", "UIInterface", "UIScene", "UISceneConfiguration", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UISceneWindowingControlStyle", "block2"] }
+# 198: native iOS 26 Liquid Glass chrome (top bar, scroll-to-bottom) over the webview; iPhone only at runtime.
+tauri-plugin-glass = { workspace = true }
 
 [build-dependencies]
 tauri-build = { workspace = true }

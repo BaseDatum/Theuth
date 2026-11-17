@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { HYSTERESIS, approvalsOff, PANEL_GAP, PANEL_MAX, TIERS, decideTier, headerOrder, layout, panelGeometry } from './header'
+import { HYSTERESIS, approvalsOff, PANEL_GAP, PANEL_MAX, TIERS, decideTier, headerOrder, layout, nativeLayout, panelGeometry } from './header'
 
 test('the full bar holds until it overflows, then the compact bar; a tier never measured is never entered', () => {
   expect(decideTier(0, 900, [700])).toBe(0)
@@ -148,4 +148,15 @@ test('183 §4.5: the approvals pill follows the session\'s effective value on it
   expect(approvalsOff(undefined, { global: false, session: true })).toBe(true)
   expect(approvalsOff(undefined, own)).toBe(false)
   expect(approvalsOff(undefined, null)).toBe(false)
+})
+
+test('198 native bar: the web bar keeps only the two menus; the chevron lists every item the glass does not replace', () => {
+  const items = headerOrder('artifacts', false)
+  const { bar, menu } = nativeLayout(items)
+  expect(bar.map((i) => i.id)).toEqual(['more', 'menu'])
+  const ids = menu.map((i) => i.id)
+  for (const gone of ['sidebar', 'title', 'more', 'menu']) expect(ids).not.toContain(gone)
+  // The context %, the panel button and the model picker the compact bar shows inline move behind the chevron too.
+  for (const kept of ['search', 'model', 'context', 'cost', 'artifacts', 'pending']) expect(ids).toContain(kept)
+  expect(bar.length + menu.length + 2).toBe(items.length)
 })
