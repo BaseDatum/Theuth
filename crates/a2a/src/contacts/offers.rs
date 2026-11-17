@@ -52,7 +52,6 @@ pub(crate) struct Cached {
     pub full: bool,
     /// 200 (D11): the last verified card's `full-access/v1` `granted`; `None` without the
     /// extension.
-    // 200-E: set at refresh from `sessions::card_full_access`.
     pub full_access: Option<bool>,
     /// 191 (D8): the `machine` of the last card that verified (`""` until one did).
     pub machine: String,
@@ -296,9 +295,7 @@ impl Ctx {
     /// The card served to the contact pinned to `eid`: this engine's public card plus, as
     /// skills, the exports granted to that contact (a paused chat reads `unavailable`). 191
     /// (D1): plus the members/v1 extension with the caller's own chains, when one exists (the
-    /// card's JWS covers it).
-    // 200-E: advertise `sessions::EXT_FULL_ACCESS` with `{"granted": <this reader's grant>}`
-    // (D11), before signing; `offers::changed` compares it.
+    /// card's JWS covers it). 200 (D11): plus `full-access/v1` with this reader's grant.
     pub(crate) async fn contact_card(&self, eid: &str) -> Result<AgentCard, String> {
         let live = self.shared.read().clone();
         let alias = live
@@ -324,6 +321,24 @@ impl Ctx {
         let mut facts = self.card_facts(&net);
         facts.skills = offers;
         let mut card = super::card(&facts);
+        card.capabilities
+            .extensions
+            .get_or_insert_with(Vec::new)
+            .push(a2a_types::AgentExtension {
+                uri: super::sessions::EXT_FULL_ACCESS.to_owned(),
+                description: None,
+                required: Some(false),
+                params: Some(
+                    [(
+                        "granted".to_owned(),
+                        serde_json::Value::Bool(
+                            live.staged.peers.get(&alias).is_some_and(|p| p.full_access),
+                        ),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+            });
         let mut carried = self.carried_to(eid).await?;
         // Within the card cap a reader enforces: the card's own bytes, a margin for the
         // extension's wrapper and the JWS, and the rest for the chains ([`rosters::trim`]).
@@ -405,6 +420,7 @@ impl Ctx {
                             super::card_full(&card),
                             super::card_machine(&card).0,
                             super::card_files(&card),
+                            super::sessions::card_full_access(&card),
                         ))
                     }),
                 Ok((s, _)) => Err(format!("card: HTTP {s}")),
@@ -427,16 +443,20 @@ impl Ctx {
                 c.refreshes += 1;
             }
             match outcome {
-                Ok((offers, full, machine, files)) => {
+                Ok((offers, full, machine, files, full_access)) => {
                     // A card after a failure settles the contact again (D12).
                     let recovered = c.error.take().is_some();
                     c.fetched = true;
                     c.files = files;
                     let was = std::mem::replace(&mut c.full, full);
                     let named = std::mem::replace(&mut c.machine, machine) != c.machine;
+                    // 200 (D11): a grant change is a change (the agent and the UI hear it).
+                    let granted =
+                        std::mem::replace(&mut c.full_access, full_access) != c.full_access;
                     let changed = (std::mem::replace(&mut c.offers, offers) != c.offers)
                         || was != full
-                        || named;
+                        || named
+                        || granted;
                     (changed, recovered)
                 }
                 Err(e) => {
@@ -576,8 +596,13 @@ impl Ctx {
                 if let Some(s) = settled(&eids, &all) {
                     m.settled.insert(alias.clone(), s);
                 }
-                if let Some(c) = all.get(&eid) {
-                    m.offers.insert(alias, c.offers.clone());
+                // 200 (D10): only a verified card's offers and grant (an unknown card is no
+                // entry: the sender's "card unknown").
+                if let Some(c) = all.get(&eid).filter(|c| c.fetched) {
+                    m.offers.insert(alias.clone(), c.offers.clone());
+                    if let Some(g) = c.full_access {
+                        m.full_access.insert(alias, g);
+                    }
                 }
             }
         }
@@ -612,21 +637,22 @@ pub(crate) fn files_of(all: &HashMap<String, Cached>, eids: &[String]) -> bool {
         .is_some_and(|(_, files)| files)
 }
 
-/// The contacts (191: every machine of each, by endpoint id) whose granted offers differ
-/// between `prev` and `next`; a contact new in `next` is left out (it fetches our card at
-/// pairing).
+/// The contacts (191: every machine of each, by endpoint id) whose granted offers (200: or
+/// full access) differ between `prev` and `next`; a contact new in `next` is left out (it
+/// fetches our card at pairing).
 pub(crate) fn changed(prev: &Staged, next: &Staged) -> Vec<String> {
-    let before: HashMap<&str, (&str, Vec<ContactOffer>)> = prev
+    let full = |s: &Staged, alias: &str| s.peers.get(alias).is_some_and(|p| p.full_access);
+    let before: HashMap<&str, (bool, Vec<ContactOffer>)> = prev
         .contacts
         .iter()
-        .map(|(alias, f)| (f.eid.as_str(), (alias.as_str(), granted(prev, alias))))
+        .map(|(alias, f)| (f.eid.as_str(), (full(prev, alias), granted(prev, alias))))
         .collect();
     next.contacts
         .iter()
         .filter(|(_, f)| !f.blocked)
         .filter_map(|(alias, f)| {
-            let (_, old) = before.get(f.eid.as_str())?;
-            (*old != granted(next, alias)).then(|| f.eids.clone())
+            let (was, old) = before.get(f.eid.as_str())?;
+            (*old != granted(next, alias) || *was != full(next, alias)).then(|| f.eids.clone())
         })
         .flatten()
         .collect()
@@ -671,6 +697,31 @@ mod tests {
         all.insert("xeus".into(), card(vec![proj]));
         let s = settled(&eids, &all).expect("both served a card");
         assert!(s.full.contains("proj"), "one lists it in full");
+    }
+
+    /// 200 (D10): settled, a verified card without `full-access/v1` and one with `granted:
+    /// false` both read not granted; one card granting is enough; a machine never verified
+    /// or whose refresh failed leaves the contact unsettled (nothing closes).
+    #[test]
+    fn the_settled_cards_say_whether_any_grants_full_access() {
+        let card = |full_access: Option<bool>| Cached {
+            fetched: true,
+            at: Some(Instant::now()),
+            full_access,
+            ..Cached::default()
+        };
+        let eids = ["m333".to_owned(), "xeus".to_owned()];
+        let mut all = HashMap::from([
+            ("m333".to_owned(), card(None)),
+            ("xeus".to_owned(), card(Some(false))),
+        ]);
+        assert!(!settled(&eids, &all).expect("settled").full_access);
+        all.insert("xeus".into(), card(Some(true)));
+        assert!(settled(&eids, &all).expect("settled").full_access);
+        all.get_mut("xeus").unwrap().error = Some("dial failed".into());
+        assert_eq!(settled(&eids, &all), None, "a failed refresh");
+        all.insert("xeus".into(), Cached::default());
+        assert_eq!(settled(&eids, &all), None, "never verified");
     }
 
     /// 199 (D1): a file send reads the contact's last card: none verified this run, or the

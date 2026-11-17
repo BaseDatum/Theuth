@@ -1,36 +1,33 @@
 //! 200 CONTACT-FULL-ACCESS, the a2a side: the `full-access/v1` card extension (D11), the
-//! trusted session header (D3), the contact-only session listing route's request (D7) and the
-//! asking side's merge (D8).
+//! trusted session header (D3), the contact-only session listing route (D7, [`serve`]) and
+//! the asking side's fan-out and merge (D8, [`list`], [`merge`]).
 //!
-//! P0 (200-C): shapes and pure functions only; nothing is advertised, served or fanned out.
-//! The hooks still to build, each marked `200-E` where it lands:
-//! - `reach.rs` `Route::of` / `contact_route`: a `Sessions` arm for `GET` [`SESSIONS_PATH`],
-//!   served beside Card and Notice under `admit_contact`'s permit and D7's epoch race, never
-//!   carried; `403 full access is off`, `503` before `contacts_ready`, `400 bad request`
-//!   ([`parse_request`]);
-//! - the fan-out: every current roster member asked at once with one [`ListRequest`], answers
-//!   within [`LIST_DEADLINE`] merged by [`merge`], the rest named in `partial`
-//!   (`PeerSender::list_sessions` on the contact sender, `client.rs`);
-//! - `server.rs` `dispatch` (the `session:<uuid>` branch: rewrite to `~session`, set
-//!   [`SESSION_HEADER`]), `Live::build` (mount `~session`, `ContactGrant.full_access`),
-//!   `Target::Session`, `Handler::admit` (`export = "session:<uuid>"`);
-//! - `offers.rs` `Ctx::contact_card` (advertise [`EXT_FULL_ACCESS`] per reader), the card
-//!   refresh (`Cached.full_access` from [`card_full_access`]), `offers::changed`;
-//! - `forward.rs` `carried`: a `session:<uuid>` segment, never `~session`.
+//! The other hooks: `reach.rs` `Route::Sessions`; `server.rs` `dispatch` (the
+//! `session:<uuid>` branch: rewrite to `~session`, set [`SESSION_HEADER`]), `Live::build`
+//! (mount `~session`), `Target::Session`, `Handler::admit_session`; `offers.rs`
+//! `Ctx::contact_card` (advertise [`EXT_FULL_ACCESS`] per reader), the card refresh
+//! (`Cached.full_access` from [`card_full_access`]), `offers::changed`; `forward.rs`
+//! `carried` (a `session:<uuid>` segment, never `~session`); `client.rs`
+//! `PeerSender::list_sessions`.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use a2a_types::AgentCard;
 use agent::communication::DirectoryKind;
 use agent::communication::network::access::{
-    ContactListing, ListRequest, ListedRow, MemberListing,
+    self, ContactListing, FullAccessList, ListRequest, ListedRow, MemberListing,
 };
 use axum::http::HeaderMap;
+use axum::response::{IntoResponse as _, Response};
+use hyper::StatusCode;
 use serde::Deserialize as _;
 use serde::de::IntoDeserializer as _;
 
+use crate::Ctx;
+
 /// D11: the card extension a reader's own card carries, `params: {"granted": bool}`: present =
-/// supported, `granted` = this reader has full access. Defined, not advertised until 200-E.
+/// supported, `granted` = this reader has full access (`offers::Ctx::contact_card`).
 pub const EXT_FULL_ACCESS: &str = "https://theuth.io/a2a/ext/full-access/v1";
 /// D7: the contact-only listing route (beside Card and Notice; never carried).
 pub const SESSIONS_PATH: &str = "/theuth/sessions";
@@ -131,6 +128,150 @@ pub fn merge(answers: Vec<MemberListing>, partial: Vec<String>, limit: u16) -> C
         partial,
         cursor,
     }
+}
+
+/// The query string of `req` as [`parse_request`] reads it.
+fn query_of(req: &ListRequest) -> String {
+    let mut q = url::form_urlencoded::Serializer::new(String::new());
+    q.append_pair("limit", &req.limit.to_string());
+    if let Some(a) = req.after {
+        q.append_pair("after", &a.to_string());
+    }
+    if let Some(t) = &req.query {
+        q.append_pair("query", t);
+    }
+    if let Some(k) = req.kind
+        && let Ok(serde_json::Value::String(k)) = serde_json::to_value(k)
+    {
+        q.append_pair("kind", &k);
+    }
+    if req.active_only {
+        q.append_pair("active_only", "1");
+    }
+    q.finish()
+}
+
+/// Longest machine name kept from a member's answer (the card's text limit).
+const MACHINE_MAX: usize = 64;
+
+/// D7, one member: `GET` [`SESSIONS_PATH`] from the contact pinned to `remote` (its permit
+/// held by `contact_route`): `503` before `contacts_ready`, `403 full access is off`, `400
+/// bad request`, else this machine's [`MemberListing`]. The answer races the grant epoch it
+/// was admitted under: full access turned off (any grant change) mid-listing is `401`, and no
+/// title leaves after it.
+pub(crate) async fn serve(c: &Arc<Ctx>, remote: &str, query: Option<&str>) -> Response {
+    if !c.ready.load(std::sync::atomic::Ordering::SeqCst) {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    let Some((epoch, on)) = c.shared.read().full_access_of(remote) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if !on {
+        return (StatusCode::FORBIDDEN, access::OFF).into_response();
+    }
+    let Some(req) = parse_request(query) else {
+        return (StatusCode::BAD_REQUEST, "bad request").into_response();
+    };
+    let Ok(agents) = c.agents() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let machine = c.my_names().1;
+    let listed = agents.ask(FullAccessList {
+        req,
+        machine: machine.clone(),
+    });
+    let answer = tokio::select! {
+        biased;
+        () = epoch.cancelled() => {
+            tracing::info!(%remote, "200: listing ended: the grant changed");
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        r = listed => r,
+    };
+    match answer {
+        Ok(mut sessions) => {
+            for s in &mut sessions {
+                s.title = s
+                    .title
+                    .as_deref()
+                    .and_then(|t| access::clean_title(t, TITLE_MAX));
+            }
+            if epoch.is_cancelled() {
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+            axum::Json(MemberListing { machine, sessions }).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(%remote, "200: listing failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// D8, the asking side: `req` to every member of `contact` (`eids`) at once over
+/// `theuth/a2a/1`; answers within [`LIST_DEADLINE`] merged ([`merge`]), the rest named in
+/// `partial` by `name_of`. A member's page is re-cut to the request (below `after`, at most
+/// `limit`, titles cleaned): an answer never moves the cursor. `Err` only when every member
+/// that answered refused (`403`) and none was missing.
+pub(crate) async fn list(
+    net: &mesh::net::Net,
+    contact: &str,
+    eids: &[String],
+    name_of: &(dyn Fn(&str) -> String + Sync),
+    req: &ListRequest,
+) -> Result<ContactListing, String> {
+    let path = format!("{SESSIONS_PATH}?{}", query_of(req));
+    let answers = futures::future::join_all(eids.iter().map(|eid| {
+        let path = path.as_str();
+        async move {
+            let r = tokio::time::timeout(
+                LIST_DEADLINE,
+                super::offers::call_with(net, eid, hyper::Method::GET, path, None),
+            )
+            .await;
+            (eid, r)
+        }
+    }))
+    .await;
+    let (mut got, mut partial, mut refused) = (Vec::new(), Vec::new(), 0usize);
+    for (eid, r) in answers {
+        match r {
+            Ok(Ok((s, body))) if s == StatusCode::OK => {
+                match serde_json::from_slice::<MemberListing>(&body) {
+                    Ok(mut m) => {
+                        m.sessions = access::member_page(m.sessions, req.after, req.limit);
+                        for s in &mut m.sessions {
+                            s.title = s
+                                .title
+                                .as_deref()
+                                .and_then(|t| access::clean_title(t, TITLE_MAX));
+                        }
+                        m.machine = access::clean_title(&m.machine, MACHINE_MAX)
+                            .unwrap_or_else(|| name_of(eid));
+                        got.push(m);
+                    }
+                    Err(e) => {
+                        tracing::info!(%eid, "200: listing answer not read: {e}");
+                        partial.push(name_of(eid));
+                    }
+                }
+            }
+            Ok(Ok((s, _))) if s == StatusCode::FORBIDDEN => refused += 1,
+            Ok(Ok((s, _))) => {
+                tracing::info!(%eid, "200: listing answered HTTP {s}");
+                partial.push(name_of(eid));
+            }
+            Ok(Err(e)) => {
+                tracing::info!(%eid, "200: listing: {e}");
+                partial.push(name_of(eid));
+            }
+            Err(_) => partial.push(name_of(eid)),
+        }
+    }
+    if got.is_empty() && partial.is_empty() && refused > 0 {
+        return Err(format!("{contact} has not given you full access"));
+    }
+    Ok(merge(got, partial, req.limit))
 }
 
 #[cfg(test)]

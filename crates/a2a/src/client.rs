@@ -951,6 +951,41 @@ impl PeerSender for Sender {
     async fn send(&self, outbound: OutboundPeerMessage) -> Result<RemoteReply, RemoteSendError> {
         self.0.clone().send_outbound(outbound).await
     }
+
+    /// 200 (D7, D8): every member of the contact's roster asked at once (`sessions::list`).
+    async fn list_sessions(
+        &self,
+        req: agent::communication::network::access::ListRequest,
+    ) -> Result<agent::communication::network::access::ContactListing, String> {
+        let Link::Iroh {
+            net,
+            eid,
+            members,
+            cards,
+            ..
+        } = &self.0.link
+        else {
+            return Err("not a contact".to_owned());
+        };
+        if self.0.generation.is_cancelled() {
+            return Err(format!("peer `{}`: route revoked", self.0.name));
+        }
+        let mut eids = vec![eid.clone()];
+        for m in members.lock().iter() {
+            if !eids.contains(m) {
+                eids.push(m.clone());
+            }
+        }
+        let name_of = |e: &str| {
+            cards
+                .lock()
+                .get(e)
+                .map(|c| c.machine.clone())
+                .filter(|m| !m.is_empty())
+                .unwrap_or_else(|| e.get(..8).unwrap_or(e).to_owned())
+        };
+        crate::contacts::sessions::list(net, &self.0.name, &eids, &name_of, &req).await
+    }
 }
 
 // ---------------------------------------------------------------------------

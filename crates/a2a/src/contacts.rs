@@ -1793,7 +1793,7 @@ fn contact_view(
         paired_on: shown.and_then(|s| s.paired_on.clone()),
         machines: machines(shown, &c.eids, name_of),
         full_access: staged.peers.get(alias).is_some_and(|p| p.full_access),
-        // 200-E: from the cached card (`Cached.full_access`).
+        // 200: `contact_list` fills it from the cached card.
         full_access_from: None,
     })
 }
@@ -1873,6 +1873,9 @@ impl crate::Ctx {
                     },
                     &name_of,
                 )?;
+                // 200 (D11): what the card that counts says of full access for us.
+                let eid = self.offers_eid(&c.endpoint);
+                c.full_access_from = self.offers.lock().get(&eid).and_then(|k| k.full_access);
                 c.problem = alerts.get(&c.id).map(|(_, text, _)| text.clone());
                 c.problem_kind = c.problem.as_ref().map(|_| ProblemKind::Alert);
                 Some(c)
@@ -2102,16 +2105,23 @@ impl crate::Ctx {
     pub(crate) async fn update_contact(&self, m: ContactUpdate) -> Result<Contact, String> {
         use agent::store::contacts::{Cell, RecordTable, RecordWrite};
         let ContactUpdate { name, patch } = m;
-        // 200-E: one single-column `full_access` write on every record of the group.
-        if patch.full_access.is_some() {
-            return Err(agent::communication::network::access::NOT_YET.to_owned());
-        }
         let r = self.records().await?;
         let a = records::analyze(&r);
         let members = Self::targets(&a, &r, &name, true)?;
         let root = members[0];
         let live = self.shared.read().clone();
         let mut w = grant_patch(&r, &live.staged, &members, &patch)?;
+        // 200 (D1): one single-column write on every record of the group (on only when all of
+        // them read 1); the staged `Peer` changes, so the grant epoch rotates.
+        if let Some(on) = patch.full_access {
+            for m in &members {
+                w.push(RecordWrite::new(
+                    RecordTable::Contacts,
+                    m.id.clone(),
+                    vec![("full_access", Cell::Int(i64::from(on)))],
+                ));
+            }
+        }
         if let Some(blocked) = patch.blocked {
             let was = members.iter().any(|m| m.blocked.is_some_and(|b| b != 0));
             for m in &members {

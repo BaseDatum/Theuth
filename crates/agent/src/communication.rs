@@ -1446,9 +1446,12 @@ impl Policy {
 
     /// 200 (D5, the live half): the `to` half of [`Self::route`] for a full-access contact:
     /// not hidden, [`Self::enabled`], its root's scope `Owner`. No principal is invented.
-    // 200-E: the predicate; refuses everything until then.
-    pub fn reachable_from_owner(&self, _to: SessionId) -> bool {
-        false
+    pub fn reachable_from_owner(&self, to: SessionId) -> bool {
+        !self.hidden.contains(&to)
+            && self.enabled(to).is_ok()
+            && self
+                .root_of(to)
+                .is_ok_and(|r| self.roots[&r].scope == PeerScope::Owner)
     }
 
     /// `local_route(a, b)` (§2.1): both enabled, `a != b`, same tree or both

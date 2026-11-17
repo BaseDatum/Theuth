@@ -218,11 +218,15 @@ impl Agents {
         {
             return Ok(NoticeAdmission::Accepted);
         }
+        // 200 (Interplay with 199): or full access on for that contact and the chat visible to
+        // it; a paused tree's notice is held by `input` (no actor, no turn, no row) until
+        // `ResumeTree`.
         let live = self
             .store
             .share_live(&m.session.to_string(), &m.contact)
             .await
-            .map_err(|e| format!("{e:#}"))?;
+            .map_err(|e| format!("{e:#}"))?
+            || self.full_access_notice(m.session, &m.contact).await;
         if !live {
             ended(&self.store, &self.rt, m.session, None, m.id, &m.text).await?;
             return Ok(NoticeAdmission::Accepted);

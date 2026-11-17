@@ -309,8 +309,7 @@ pub trait PeerSender: Send + Sync {
     async fn send(&self, outbound: OutboundPeerMessage) -> Result<RemoteReply, RemoteSendError>;
 
     /// 200 (D7, D8): list a contact's sessions: every member of its roster asked at once with
-    /// `req`, the answers merged. Only a contact's sender lists.
-    // 200-E: the a2a contact sender implements it (fan-out + `sessions::merge`).
+    /// `req`, the answers merged. Only a contact's sender lists (the a2a sender).
     async fn list_sessions(
         &self,
         _req: access::ListRequest,
@@ -631,7 +630,6 @@ struct RemotePeer {
     /// 186: our exports shared with this contact in full.
     full: Vec<String>,
     /// 200 (D10): we gave this contact full access (my grant).
-    #[expect(dead_code, reason = "200-E: read by full_shape's session branch (D10)")]
     full_access: bool,
 }
 
@@ -747,6 +745,9 @@ pub struct NetworkState {
     /// 186 (D12): each contact whose machines all served a verified card at their last
     /// refresh (see [`Self::share_closed`]).
     settled: BTreeMap<String, SettledCards>,
+    /// 200 (D10): each contact's latest verified card's `full-access/v1` `granted` (absent:
+    /// the card lacks the extension; see `access::CardSays`).
+    full_access: BTreeMap<String, bool>,
     /// 183 F1: when `discover_peers` last asked for a refresh (unix ms; 0 = never).
     offers_asked_ms: std::sync::atomic::AtomicU64,
     /// 183 §7.6, W-25: inbox session → the exported agent's persona, recorded on every
@@ -901,7 +902,6 @@ impl NetworkState {
     /// capabilities only; a card is not a heartbeat, so the state is `Idle`. 183 §7.7: a
     /// contact is a row for every root, tagged `contact` — except a contact's inbox, which
     /// sees no contact (Z3-R2, §7.5: a contact never learns our contact list).
-    // 200-E: a granting contact's `peer:<contact>` title and its preview rows (Contract).
     pub(crate) fn remote_peers(&self, root: SessionId) -> Vec<PeerInfo> {
         let inbox = self.inboxes.contains(&root);
         let row =
@@ -1484,9 +1484,9 @@ pub(crate) struct Admitted {
 
 impl Agents {
     /// Authorize a principal for one operation: live binding, native export
-    /// session, enabled route with the network on (§6.1, §8 item 4).
-    // 200-E: the session branch (`export = "session:<uuid>"`): binding and epoch as today,
-    // then `full_access_eligibility` instead of the native and `chat_paused` checks (D4).
+    /// session, enabled route with the network on (§6.1, §8 item 4). 200 (D4): a contact's
+    /// `session:<uuid>` keeps the binding and epoch checks, then D5's live half replaces the
+    /// native and `chat_paused` checks (an ACP session and an archived chat are per policy).
     async fn admit_principal(&mut self, p: &A2aPrincipal) -> Result<Generation, A2AError> {
         let unavailable =
             |why: String| A2AError::unsupported_operation(format!("export unavailable: {why}"));
@@ -1503,6 +1503,18 @@ impl Agents {
                 .is_some_and(|r| r.generation.is_cancelled())
         {
             return Err(unavailable("peer route revoked".into()));
+        }
+        if p.contact.is_some() && access::session_route(&p.export).is_some() {
+            if !self.full_access_eligibility(p.session).await.visible {
+                tracing::info!(session = %p.session, "200: full access: not visible on the owner");
+                return Err(full::not_owner());
+            }
+            return self
+                .communication
+                .0
+                .write()
+                .contact(p.session)
+                .map_err(|e| unavailable(e.to_string()));
         }
         match self.store.session(p.session).await {
             Ok(Some(s)) if s.agent.is_none() => {}
@@ -1554,6 +1566,13 @@ impl Agents {
         // accepted here: the contact's client tries its next member.
         if p.contact.is_some() {
             self.contact_owned(p.session).await?;
+        }
+        // 200 (D4 (5)): a visible session that ordinary intake would refuse takes no message.
+        if p.contact.is_some()
+            && access::session_route(&p.export).is_some()
+            && !self.full_access_eligibility(p.session).await.sendable
+        {
+            return Err(A2AError::unsupported_operation(access::NO_MESSAGES));
         }
         if req
             .configuration
@@ -4165,6 +4184,7 @@ impl Message<ContactOffers> for Agents {
     async fn handle(&mut self, m: ContactOffers, _: &mut Context<Self, Self::Reply>) {
         self.network.set_offers(m.offers);
         self.network.set_settled(m.settled);
+        self.network.full_access = m.full_access;
     }
 }
 
@@ -4376,10 +4396,6 @@ impl Agents {
         reply_to: Option<Uuid>,
         await_reply: bool,
     ) -> Result<PeerReceipt, String> {
-        // 200-E: the session branch (D10, `full_shape`) replaces this refusal.
-        if access::contact_session(alias).is_some() {
-            return Err(format!("peer:{alias}: {}", access::NOT_YET));
-        }
         let ready = self.contacts_ready.load(Ordering::Relaxed);
         let (binding, sender, route, contact) = {
             let (binding, peer) = self.network.peer_by_name(alias).ok_or_else(|| {
@@ -4648,6 +4664,8 @@ impl Agents {
             Err(RemoteSendError::Refused(why)) => {
                 self.network.outbound.remove(&exchange);
                 let why = self.redact(&why).into_owned();
+                // 200 (D4): the owner's refusal of a contact session, in the sender's words.
+                let why = access::map_refusal(&alias, &why).unwrap_or(why);
                 // 186 (D10): an older contact has no return route.
                 let why = match ret {
                     true if why.contains("grants no export") => format!(

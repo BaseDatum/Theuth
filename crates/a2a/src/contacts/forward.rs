@@ -72,15 +72,19 @@ pub async fn serve(
     c.forwarded(caller, path, body).instrument(span).await
 }
 
-// 200-E: also a `session:<uuid>` segment (`access::session_route`), never `~session`.
 /// `path` and `method` are a unary call `a2a_forward` carries: an export's JSON-RPC route
 /// (`/agents/<export>/rpc`, the export a name of `[a-z0-9_-]`, or `~return`; never the bare
-/// `/rpc`, which the receiving machine resolves first) and one of [`CARRIED`].
+/// `/rpc`, which the receiving machine resolves first), 200 (D3): or a contact's
+/// `/agents/session:<uuid>/rpc` (never `~session`), and one of [`CARRIED`].
 fn carried(path: &str, method: &str) -> bool {
     let route = path
         .strip_prefix("/agents/")
         .and_then(|r| r.strip_suffix("/rpc"))
-        .is_some_and(|e| e == RETURN_ROUTE || crate::config::check_alias(e).is_ok());
+        .is_some_and(|e| {
+            e == RETURN_ROUTE
+                || crate::config::check_alias(e).is_ok()
+                || agent::communication::network::access::session_route(e).is_some()
+        });
     route && CARRIED.contains(&method)
 }
 
@@ -415,6 +419,14 @@ mod tests {
         for m in CARRIED {
             assert!(carried("/agents/proj/rpc", m), "{m}");
             assert!(carried("/agents/~return/rpc", m), "{m}");
+            // 200 (D3): a contact's session path, by its canonical id only.
+            assert!(
+                carried(
+                    "/agents/session:0193f0a2-6b1c-7d3e-9f40-1a2b3c4d5e6f/rpc",
+                    m
+                ),
+                "{m}"
+            );
         }
         for m in [
             "SendStreamingMessage",
@@ -438,6 +450,9 @@ mod tests {
             "/agents/pro%6a/rpc",
             "/agents/Proj/rpc",
             "/agents/../rpc",
+            "/agents/~session/rpc",
+            "/agents/session:0193F0A2-6B1C-7D3E-9F40-1A2B3C4D5E6F/rpc",
+            "/agents/session:nope/rpc",
         ] {
             assert!(!carried(p, "SendMessage"), "{p}");
         }

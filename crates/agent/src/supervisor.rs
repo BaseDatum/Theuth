@@ -2018,7 +2018,11 @@ impl Agents {
     /// conveniences, `peer:<name>` is a configured remote. Unknown and
     /// malformed are one answer, so a guessed UUID learns nothing.
     async fn resolve(&mut self, from: SessionId, to: &str) -> Result<Target, String> {
-        let unknown = || format!("unknown peer `{to}`");
+        // 200 (Contract): `peer:<contact>/session:<x>` with no UUID says so.
+        let unknown = || {
+            crate::communication::network::access::bad_session_id(to)
+                .unwrap_or_else(|| format!("unknown peer `{to}`"))
+        };
         match PeerAddress::parse(to).ok_or_else(unknown)? {
             PeerAddress::Remote(name) => Ok(Target::Remote(name)),
             PeerAddress::Session(id) => {
@@ -6881,17 +6885,19 @@ impl Message<ListPeers> for Agents {
     type Reply = kameo::reply::DelegatedReply<Result<PeerPage, String>>;
 
     /// 176 E1: the session list, lineages, mesh names and job counts are
-    /// read off the mailbox ([`PeerRead`]); the policy walk and paging come
-    /// back to it ([`PeersRead`]), where every policy mutation happens.
+    /// read off the mailbox ([`PeerRead`]); the policy walk comes back to it
+    /// ([`PeersRead`]), where every policy mutation happens. 200 (D7): the
+    /// full-access listings and the paging run off it again ([`PeerPlan::finish`]).
     async fn handle(&mut self, m: ListPeers, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (store, policy) = (self.store.clone(), self.communication.clone());
         let me = ctx.actor_ref().clone();
         ctx.spawn(async move {
             let read = PeerRead::fetch(&store, &policy, m.session).await?;
-            me.ask(PeersRead { m, read }).await.map_err(|e| match e {
+            let plan = me.ask(PeersRead { m, read }).await.map_err(|e| match e {
                 SendError::HandlerError(e) => e,
                 e => e.to_string(),
-            })
+            })?;
+            plan.finish().await
         })
     }
 }
@@ -6903,24 +6909,14 @@ struct PeersRead {
 }
 
 impl Message<PeersRead> for Agents {
-    type Reply = Result<PeerPage, String>;
+    type Reply = Result<PeerPlan, String>;
 
     async fn handle(
         &mut self,
         PeersRead { m, read }: PeersRead,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        let limit = m
-            .limit
-            .filter(|l| *l > 0)
-            .unwrap_or(DISCOVER_DEFAULT_LIMIT)
-            .min(DISCOVER_MAX_LIMIT) as usize;
-        let query = m
-            .query
-            .as_deref()
-            .map(str::to_lowercase)
-            .filter(|q| !q.is_empty());
-        let mut rows = self.directory_from(m.session, read)?;
+        let rows = self.directory_from(m.session, read)?;
         // 183 F1: contacts' offers older than the TTL are refetched (the next listing shows
         // them); this one answers from what is cached.
         if self.network.offers_due() {
@@ -6928,16 +6924,178 @@ impl Message<PeersRead> for Agents {
                 .publish(crate::communication::network::ContactOffersStale)
                 .await;
         }
-        arrange(
+        // 200 (Contract): the contacts whose cards grant us full access; none for an inbox
+        // root (`directory_from` checked the session's own communication).
+        let root = self
+            .communication
+            .0
+            .read()
+            .root_of(m.session)
+            .map_err(|e| e.to_string())?;
+        let granting = self.network.granting(root);
+        Ok(PeerPlan { m, rows, granting })
+    }
+}
+
+/// [`ListPeers`] after the policy walk: the directory rows and the contacts to list.
+struct PeerPlan {
+    m: ListPeers,
+    rows: Vec<PeerInfo>,
+    granting: Vec<(
+        String,
+        Arc<dyn crate::communication::network::PeerSender>,
+    )>,
+}
+
+/// 200: the `peer:<contact>` row's title while the contact gives us full access.
+const FULL_TITLE: &str = "full access";
+
+impl PeerPlan {
+    /// The page: 200's walk when the query names one granting contact (or the cursor is
+    /// `full:`), else the directory with each granting contact's preview (D8, Contract).
+    async fn finish(self) -> Result<PeerPage, String> {
+        use crate::communication::network::access;
+        use crate::communication::{DirectoryKind, is_contact_row};
+        let PeerPlan {
+            m,
+            mut rows,
+            granting,
+        } = self;
+        let limit = m
+            .limit
+            .filter(|l| *l > 0)
+            .unwrap_or(DISCOVER_DEFAULT_LIMIT)
+            .min(DISCOVER_MAX_LIMIT);
+        let query = m
+            .query
+            .as_deref()
+            .map(str::to_lowercase)
+            .filter(|q| !q.is_empty());
+        let names: Vec<&str> = granting.iter().map(|(n, _)| n.as_str()).collect();
+        let walks = matches!(m.kind, None | Some(DirectoryKind::Contact));
+        let named = query
+            .as_deref()
+            .filter(|_| walks)
+            .and_then(|q| access::names_contact(q, &names));
+        let full_cursor = m
+            .cursor
+            .as_deref()
+            .filter(|c| c.starts_with(access::CURSOR_PREFIX));
+        // The walk: page 1 when the query names the contact, later pages by its cursor (the
+        // query must still name that contact; an inbox has no granting contact to name).
+        if full_cursor.is_some() || named.is_some() {
+            let after = match full_cursor {
+                Some(c) => Some(
+                    access::parse_full_cursor(c)
+                        .filter(|(c, _)| named.as_ref().is_some_and(|(n, _)| n == c))
+                        .ok_or("unknown cursor")?
+                        .1,
+                ),
+                None => None,
+            };
+            let (contact, rest) = named.ok_or("unknown cursor")?;
+            let sender = &granting
+                .iter()
+                .find(|(n, _)| *n == contact)
+                .ok_or("unknown cursor")?
+                .1;
+            let req = access::ListRequest {
+                after,
+                limit,
+                query: rest.map(str::to_owned),
+                kind: m.kind,
+                active_only: m.active_only,
+            };
+            let (listing, refused) = match sender.list_sessions(req).await {
+                Ok(l) => (l, None),
+                Err(e) => (access::ContactListing::default(), Some(e)),
+            };
+            let mut peers = Vec::new();
+            if after.is_none() {
+                // Page 1's bounded prefix: the contact's row and its export rows.
+                let head = format!("peer:{contact}");
+                let prefix = format!("{head}/");
+                peers.extend(rows.into_iter().filter(|p| {
+                    is_contact_row(p) && (p.address == head || p.address.starts_with(&prefix))
+                }));
+                if let Some(p) = peers.iter_mut().find(|p| p.address == head) {
+                    p.title = Some(full_title(refused.as_deref(), &listing.partial, None));
+                }
+            }
+            peers.extend(
+                listing
+                    .rows
+                    .iter()
+                    .map(|r| access::session_row(&contact, r)),
+            );
+            return Ok(PeerPage {
+                peers,
+                cursor: listing.cursor.map(|c| access::full_cursor(&contact, c)),
+                partial: partial_of(&contact, &listing),
+            });
+        }
+        // Default: every granting contact's preview, all asked at once.
+        let previews = match m.kind {
+            None | Some(DirectoryKind::A2a | DirectoryKind::Contact) => {
+                let req = access::ListRequest {
+                    after: None,
+                    limit: CONTACT_ROWS as u16,
+                    query: query.clone(),
+                    kind: m.kind,
+                    active_only: m.active_only,
+                };
+                futures::future::join_all(granting.iter().map(|(n, s)| {
+                    let req = req.clone();
+                    async move { (n.clone(), s.list_sessions(req).await) }
+                }))
+                .await
+            }
+            Some(_) => Vec::new(),
+        };
+        let mut partial = Vec::new();
+        let mut titles = HashMap::new();
+        for (contact, answer) in previews {
+            let (listing, refused) = match answer {
+                Ok(l) => (l, None),
+                Err(e) => (access::ContactListing::default(), Some(e)),
+            };
+            partial.extend(partial_of(&contact, &listing));
+            // Under the contact's row and its export rows (`arrange` keeps that order).
+            let head = format!("peer:{contact}");
+            let prefix = format!("{head}/");
+            let at = rows
+                .iter()
+                .rposition(|p| {
+                    is_contact_row(p) && (p.address == head || p.address.starts_with(&prefix))
+                })
+                .map_or(rows.len(), |i| i + 1);
+            rows.splice(
+                at..at,
+                listing
+                    .rows
+                    .iter()
+                    .map(|r| access::session_row(&contact, r)),
+            );
+            titles.insert(contact, (refused, listing));
+        }
+        let hidden = arrange(
             &mut rows,
             m.active_only,
-            m.kind == Some(crate::communication::DirectoryKind::Contact),
+            m.kind == Some(DirectoryKind::Contact),
         );
+        for p in rows.iter_mut().filter(|p| is_contact_row(p)) {
+            if let Some((refused, listing)) = titles.get(&p.name) {
+                let more = hidden.contains_key(&p.name) || listing.cursor.is_some();
+                let walk = more.then_some(p.name.as_str());
+                p.title = Some(full_title(refused.as_deref(), &listing.partial, walk));
+            }
+        }
         if let Some(k) = m.kind {
             rows.retain(|p| k.admits(p));
         }
+        // A listed row was filtered by its member (`query` included).
         if let Some(q) = &query {
-            rows.retain(|p| peer_matches(p, q));
+            rows.retain(|p| access::is_session_row(p) || peer_matches(p, q));
         }
         // The cursor is the last address of the previous page (stable order).
         let start = match &m.cursor {
@@ -6948,17 +7106,45 @@ impl Message<PeersRead> for Agents {
                 .ok_or_else(|| "unknown cursor".to_string())?,
             None => 0,
         };
-        let end = (start + limit).min(rows.len());
+        let end = (start + usize::from(limit)).min(rows.len());
         let cursor = (end < rows.len()).then(|| rows[end - 1].address.clone());
-        // 200-E: full-access previews and the walk (`access::parse_full_cursor`), `partial`
-        // from every `PeerSender::list_sessions` answer; `arrange`'s `+N more` gives way to the
-        // full-access title.
         Ok(PeerPage {
             peers: rows.drain(start..end).collect(),
             cursor,
-            partial: Vec::new(),
+            partial,
         })
     }
+}
+
+/// Contract: a granting contact's `peer:<contact>` title: `full access`, with the walk's call
+/// for `more` (the contact whose preview is not its whole list), then the machines that did
+/// not answer. A refused listing says why (`… has not given you full access`).
+fn full_title(refused: Option<&str>, partial: &[String], more: Option<&str>) -> String {
+    if let Some(why) = refused {
+        return why.to_owned();
+    }
+    let mut t = FULL_TITLE.to_owned();
+    if let Some(contact) = more {
+        t.push_str(&format!(
+            " · more: discover_peers(kind=\"contact\", query=\"{contact}\")"
+        ));
+    }
+    if !partial.is_empty() {
+        t.push_str(&format!(" · did not answer: {}", partial.join(", ")));
+    }
+    t
+}
+
+/// `PeerPage.partial` of one contact's listing: `<contact>/<machine>`.
+fn partial_of(
+    contact: &str,
+    listing: &crate::communication::network::access::ContactListing,
+) -> Vec<String> {
+    listing
+        .partial
+        .iter()
+        .map(|m| format!("{contact}/{m}"))
+        .collect()
 }
 
 /// `discover_peers(query)`: `q` (lowercase) in the name or the address, and (183 §6.6) in a
@@ -7086,31 +7272,12 @@ impl Agents {
                         .filter(|_| r.id == their_root)
                         .unwrap_or_else(|| short(r.id))
                 };
-                let kind = match &r.agent {
-                    None => PeerKind::Native,
-                    // `"<node>"` is a theuth there and answers back over its
-                    // conn (67 §8); `"<harness>@<node>"` is that harness, which
-                    // has no peer tools, like a local one.
-                    Some(a)
-                        if crate::peers::parse_agent(a).is_ok_and(|(h, e)| {
-                            h.is_none() && self.nodes.read().is_ok_and(|n| n.contains_key(e))
-                        }) =>
-                    {
-                        PeerKind::Node
-                    }
-                    Some(_) => PeerKind::Acp,
-                };
+                let kind = self.row_kind(r);
                 let remote = !r.here && !r.owner.is_empty();
                 let state = if remote {
                     PeerState::Remote
-                } else if self.approvals.contains_key(&r.id) || self.running.contains(&r.id) {
-                    PeerState::Running
-                } else if self.waits.values().any(|w| w.session == r.id) {
-                    PeerState::Awaiting
-                } else if self.live(r.id).is_some() {
-                    PeerState::Idle
                 } else {
-                    PeerState::Stored
+                    self.row_state(r.id)
                 };
                 // The title is the caller's own tree's business only (62 §0.7);
                 // the tags cross roots so a model can tell related work apart
@@ -7173,6 +7340,173 @@ impl Agents {
         }
         out.extend(self.network.remote_peers(root));
         Ok(out)
+    }
+
+    /// A row's backend as a directory shows it.
+    fn row_kind(&self, r: &SessionSummary) -> PeerKind {
+        match &r.agent {
+            None => PeerKind::Native,
+            // `"<node>"` is a theuth there and answers back over its
+            // conn (67 §8); `"<harness>@<node>"` is that harness, which
+            // has no peer tools, like a local one.
+            Some(a)
+                if crate::peers::parse_agent(a).is_ok_and(|(h, e)| {
+                    h.is_none() && self.nodes.read().is_ok_and(|n| n.contains_key(e))
+                }) =>
+            {
+                PeerKind::Node
+            }
+            Some(_) => PeerKind::Acp,
+        }
+    }
+
+    /// The coarse liveness of a session this engine owns.
+    fn row_state(&self, id: SessionId) -> PeerState {
+        if self.approvals.contains_key(&id) || self.running.contains(&id) {
+            PeerState::Running
+        } else if self.waits.values().any(|w| w.session == id) {
+            PeerState::Awaiting
+        } else if self.live(id).is_some() {
+            PeerState::Idle
+        } else {
+            PeerState::Stored
+        }
+    }
+
+    /// 200 (D5, the live half) of `row`, a session this engine owns whose lineage is
+    /// mirrored: `Policy::reachable_from_owner` and no contact's inbox on it or its root;
+    /// `sendable` when ordinary unscoped peer intake takes it (not observed, its tree not
+    /// paused). The row half is the caller's.
+    pub(crate) fn full_access_live(
+        &self,
+        row: &SessionSummary,
+    ) -> crate::communication::network::access::Eligibility {
+        let (visible, root) = {
+            let p = self.communication.0.read();
+            let root = p.root_of(row.id).ok();
+            (p.reachable_from_owner(row.id), root)
+        };
+        let inbox = |s: SessionId| self.network.contact_inbox(s);
+        let visible = visible && !inbox(row.id) && root.is_some_and(|r| !inbox(r));
+        let paused = self.paused.contains_key(&row.id)
+            || root.is_some_and(|r| self.paused.contains_key(&r));
+        let observed = row.kind == SessionKind::Observed || row.observed.is_some();
+        crate::communication::network::access::Eligibility {
+            visible,
+            sendable: visible && !observed && !paused,
+        }
+    }
+}
+
+impl Message<crate::communication::network::access::FullAccessList> for Agents {
+    type Reply = kameo::reply::DelegatedReply<
+        Result<Vec<crate::communication::network::access::ListedSession>, String>,
+    >;
+
+    /// 200 (D7): the rows, their row half, owners, lineages and job counts are read off the
+    /// mailbox; the live half and the activity come back to it ([`FullAccessRead`]).
+    async fn handle(
+        &mut self,
+        m: crate::communication::network::access::FullAccessList,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (store, policy) = (self.store.clone(), self.communication.clone());
+        let me = ctx.actor_ref().clone();
+        ctx.spawn(async move {
+            let read = FullAccessRead::fetch(&store, &policy).await?;
+            me.ask(FullAccessListed { m, read })
+                .await
+                .map_err(|e| match e {
+                    SendError::HandlerError(e) => e,
+                    e => e.to_string(),
+                })
+        })
+    }
+}
+
+/// 200 (D7): the I/O of one member listing, off the mailbox: this engine's own rows that
+/// pass the row half, the lineages the policy lacks, their job counts.
+struct FullAccessRead {
+    rows: Vec<SessionSummary>,
+    lineages: Vec<(SessionId, anyhow::Result<store::communication::Lineage>)>,
+    counts: HashMap<SessionId, (u16, u16)>,
+}
+
+impl FullAccessRead {
+    async fn fetch(store: &Store, policy: &SharedPolicy) -> Result<Self, String> {
+        use crate::communication::network::access::row_eligibility;
+        use crate::store::contacts::Owner;
+        let mut rows = Vec::new();
+        for r in store.list_sessions().await.map_err(|e| e.to_string())? {
+            if matches!(store.owner_strict(r.id).await, Ok(Owner::Here))
+                && row_eligibility(store, r.id).await
+            {
+                rows.push(r);
+            }
+        }
+        let mut lineages = Vec::new();
+        for r in &rows {
+            if policy.0.read().root_of(r.id).is_err() {
+                lineages.push((r.id, store.lineage(r.id).await));
+            }
+        }
+        let ids: Vec<SessionId> = rows.iter().map(|r| r.id).collect();
+        Ok(Self {
+            counts: view::job_counts(&ids).await,
+            rows,
+            lineages,
+        })
+    }
+}
+
+/// `ask` (internal): [`FullAccessList`] once its [`FullAccessRead`] is in.
+struct FullAccessListed {
+    m: crate::communication::network::access::FullAccessList,
+    read: FullAccessRead,
+}
+
+impl Message<FullAccessListed> for Agents {
+    type Reply = Result<Vec<crate::communication::network::access::ListedSession>, String>;
+
+    async fn handle(
+        &mut self,
+        FullAccessListed { m, read }: FullAccessListed,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        use crate::communication::network::access::{self, ListedSession};
+        let FullAccessRead {
+            rows,
+            lineages,
+            counts,
+        } = read;
+        for (id, lineage) in lineages {
+            self.apply_lineage(id, lineage);
+        }
+        let mut activity = self.view().activity_of_rows(rows.iter(), &counts);
+        let now = Instant::now();
+        let listed = rows
+            .iter()
+            .filter_map(|r| {
+                let e = self.full_access_live(r);
+                if !e.visible {
+                    return None;
+                }
+                let kind = self.row_kind(r);
+                Some(ListedSession {
+                    session: r.id,
+                    title: Some(r.title.clone()).filter(|t| !t.is_empty()),
+                    kind,
+                    state: self.row_state(r.id),
+                    send: e.sendable,
+                    reply: kind != PeerKind::Acp && r.observed.is_none(),
+                    activity: activity
+                        .remove(&r.id)
+                        .map(|a| peer_activity(a, self.activity.stalled_secs(r.id, now))),
+                })
+            })
+            .filter(|s| access::member_admits(&m.req, s, &m.machine))
+            .collect();
+        Ok(access::member_page(listed, m.req.after, m.req.limit))
     }
 }
 
@@ -7237,8 +7571,14 @@ const CONTACT_ROWS: usize = 8;
 /// contacts with their export rows (at most [`CONTACT_ROWS`] each unless `all_contact_rows`;
 /// the contact's row then says how to list the rest), then everything else (other roots,
 /// stored sessions, remote agents); inside each, working rows first, then most recently
-/// active, ties in [`Agents::directory`]'s order. `active_only` keeps contacts.
-fn arrange(rows: &mut Vec<PeerInfo>, active_only: bool, all_contact_rows: bool) {
+/// active, ties in [`Agents::directory`]'s order. `active_only` keeps contacts. Contact rows
+/// keep their order (200: a contact's listed sessions stay under its row); answers each
+/// contact's hidden row count.
+fn arrange(
+    rows: &mut Vec<PeerInfo>,
+    active_only: bool,
+    all_contact_rows: bool,
+) -> HashMap<String, usize> {
     use crate::communication::is_contact_row;
     if active_only {
         rows.retain(|p| is_contact_row(p) || p.activity.as_ref().is_some_and(PeerActivity::active));
@@ -7260,7 +7600,7 @@ fn arrange(rows: &mut Vec<PeerInfo>, active_only: bool, all_contact_rows: bool) 
         }
     };
     rows.sort_by_key(|p| {
-        let a = p.activity.as_ref();
+        let a = p.activity.as_ref().filter(|_| !is_contact_row(p));
         (
             group(p),
             std::cmp::Reverse((
@@ -7269,11 +7609,11 @@ fn arrange(rows: &mut Vec<PeerInfo>, active_only: bool, all_contact_rows: bool) 
             )),
         )
     });
+    let mut hidden: HashMap<String, usize> = HashMap::new();
     if all_contact_rows {
-        return;
+        return hidden;
     }
     let mut listed: HashMap<String, usize> = HashMap::new();
-    let mut hidden: HashMap<String, usize> = HashMap::new();
     rows.retain(|p| {
         let Some((contact, _)) = p.name.split_once('/').filter(|_| is_contact_row(p)) else {
             return true;
@@ -7294,6 +7634,7 @@ fn arrange(rows: &mut Vec<PeerInfo>, active_only: bool, all_contact_rows: bool) 
             ));
         }
     }
+    hidden
 }
 
 /// `s` is a strict descendant of `ancestor` among `rows`.
@@ -16070,6 +16411,344 @@ pub(crate) mod tests {
                 .count(),
             10
         );
+    }
+
+    /// 200 (D5): the kind matrix row by row through `full_access_eligibility`, and an
+    /// opted-out grandparent hiding its grandchild on both halves.
+    #[tokio::test]
+    async fn full_access_eligibility_follows_the_kind_matrix() {
+        use crate::communication::PeerScope;
+        use crate::communication::network::access::{Eligibility, row_eligibility};
+        let (_scratch, mut a) = agents_with(true).await;
+        async fn row(a: &Agents, parent: Option<SessionId>, kind: SessionKind) -> SessionId {
+            let id = SessionId::new();
+            a.store
+                .create_session_kind(id, "m", parent, None, None, kind)
+                .await
+                .unwrap();
+            id
+        }
+        let owner = |a: &Agents, id: SessionId| {
+            let store = a.store.clone();
+            async move {
+                store
+                    .set_root_scope(id, PeerScope::Owner, None)
+                    .await
+                    .unwrap()
+            }
+        };
+        let root = row(&a, None, SessionKind::Chat).await;
+        owner(&a, root).await;
+        let child = row(&a, Some(root), SessionKind::Chat).await;
+        let ask = row(&a, None, SessionKind::Ask).await;
+        owner(&a, ask).await;
+        let advisor = row(&a, Some(root), SessionKind::Advisor).await;
+        let observed = row(&a, Some(root), SessionKind::Observed).await;
+        let acp = row(&a, Some(root), SessionKind::Chat).await;
+        a.store.set_acp(acp, "claude", None, &[]).await.unwrap();
+        let isolated = row(&a, None, SessionKind::Chat).await;
+        let isolated_child = row(&a, Some(isolated), SessionKind::Chat).await;
+        let inbox = row(&a, None, SessionKind::Chat).await;
+        owner(&a, inbox).await;
+        a.store
+            .set_contact_inbox(inbox, "peer:x|export-1")
+            .await
+            .unwrap();
+        let in_inbox = row(&a, Some(inbox), SessionKind::Chat).await;
+        let yes = Eligibility {
+            visible: true,
+            sendable: true,
+        };
+        let listed = Eligibility {
+            visible: true,
+            sendable: false,
+        };
+        let no = Eligibility::default();
+        for (s, want, what) in [
+            (SessionId::new(), no, "no durable row (a private chat, a random id)"),
+            (root, yes, "an Owner root"),
+            (child, yes, "its native child"),
+            (ask, yes, "an ask root"),
+            (advisor, no, "an advisor"),
+            (observed, listed, "an observed child"),
+            (acp, yes, "an ACP session: unscoped intake takes it"),
+            (isolated, no, "an Isolated root"),
+            (isolated_child, no, "its tree"),
+            (inbox, no, "another contact's inbox"),
+            (in_inbox, no, "a session under it"),
+        ] {
+            assert_eq!(a.full_access_eligibility(s).await, want, "{what}");
+        }
+        // A paused tree: listed, takes nothing; resumed, as before.
+        a.paused.insert(root, Vec::new());
+        assert_eq!(a.full_access_eligibility(child).await, listed, "paused");
+        a.paused.remove(&root);
+        // The global ceiling.
+        a.communication.0.write().set_global(false, "test");
+        assert_eq!(a.full_access_eligibility(child).await, no, "ceiling off");
+        a.communication.0.write().set_global(true, "test");
+        // Another machine's row.
+        a.store.owned_elsewhere(child, "another-engine").await;
+        assert_eq!(a.full_access_eligibility(child).await, no, "owned elsewhere");
+
+        // An opted-out grandparent: the row half reads it from the replicated rows, the live
+        // half from the policy; each alone hides the grandchild.
+        let top = row(&a, None, SessionKind::Chat).await;
+        owner(&a, top).await;
+        let mid = row(&a, Some(top), SessionKind::Chat).await;
+        let leaf = row(&a, Some(mid), SessionKind::Chat).await;
+        assert_eq!(a.full_access_eligibility(leaf).await, yes);
+        a.store
+            .set_session_communication(top, Some(false))
+            .await
+            .unwrap();
+        assert!(!row_eligibility(&a.store, leaf).await, "row half");
+        a.store.set_session_communication(top, None).await.unwrap();
+        assert!(row_eligibility(&a.store, leaf).await);
+        a.communication.0.write().set_session(top, false).unwrap();
+        let r = a.store.session(leaf).await.unwrap().unwrap();
+        assert_eq!(a.full_access_live(&r), no, "live half");
+    }
+
+    /// A contact of three machines for [`PeerPlan::finish`]: each answers its own ids (as
+    /// sort keys) below `after`, up to `limit`; a machine in `down` answers nothing.
+    struct Members {
+        rows: Vec<(&'static str, Vec<u128>)>,
+        down: parking_lot::Mutex<Vec<&'static str>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::communication::network::PeerSender for Members {
+        async fn send(
+            &self,
+            _: crate::communication::network::OutboundPeerMessage,
+        ) -> Result<
+            crate::communication::network::RemoteReply,
+            crate::communication::network::RemoteSendError,
+        > {
+            Err(crate::communication::network::RemoteSendError::Refused(
+                "no".into(),
+            ))
+        }
+
+        async fn list_sessions(
+            &self,
+            req: crate::communication::network::access::ListRequest,
+        ) -> Result<crate::communication::network::access::ContactListing, String> {
+            use crate::communication::network::access::{
+                ContactListing, ListedRow, ListedSession, member_page,
+            };
+            let down = self.down.lock().clone();
+            let limit = usize::from(req.limit);
+            let (mut rows, mut partial, mut full) = (Vec::new(), Vec::new(), false);
+            for (m, ids) in &self.rows {
+                if down.contains(m) {
+                    partial.push((*m).to_owned());
+                    continue;
+                }
+                let mine = ids
+                    .iter()
+                    .map(|n| ListedSession {
+                        session: SessionId(Uuid::from_u128(*n)),
+                        title: Some(format!("s{n}")),
+                        kind: PeerKind::Native,
+                        state: PeerState::Idle,
+                        send: true,
+                        reply: true,
+                        activity: None,
+                    })
+                    .collect();
+                let page = member_page(mine, req.after, req.limit);
+                full |= page.len() >= limit;
+                rows.extend(page.into_iter().map(|s| ListedRow {
+                    machine: (*m).to_owned(),
+                    session: s,
+                }));
+            }
+            rows.sort_by_key(|r| std::cmp::Reverse(r.session.session.0));
+            rows.dedup_by_key(|r| r.session.session);
+            let trimmed = rows.len() > limit;
+            rows.truncate(limit);
+            let cursor = (full || trimmed)
+                .then(|| rows.last().map(|r| r.session.session))
+                .flatten();
+            Ok(ContactListing {
+                rows,
+                partial,
+                cursor,
+            })
+        }
+    }
+
+    /// 200 (Contract): `discover_peers` for a contact that gives us full access. The walk
+    /// pages by the global cursor, a machine that timed out on a later page is in `partial`
+    /// and answers on the repeat; the default preview is 8 rows under the contact's row
+    /// with the walk's call, no cursor; page 1's prefix (64 export rows) never trims the
+    /// session page; a `full:` cursor no granting contact names (an inbox has none) is
+    /// unknown.
+    #[tokio::test]
+    async fn the_full_access_walk_and_preview() {
+        use crate::communication::DirectoryKind;
+        use crate::communication::network::PeerSender;
+        use crate::communication::network::access::full_cursor;
+        let contact_row = |address: String, title: Option<String>| PeerInfo {
+            name: address.trim_start_matches("peer:").into(),
+            address,
+            kind: PeerKind::A2a,
+            relationship: PeerRelationship::Remote,
+            state: PeerState::Idle,
+            send: true,
+            reply: true,
+            stream: false,
+            activity: None,
+            title,
+            tags: vec!["contact".into()],
+            engine: None,
+            reachable: None,
+        };
+        let members = Arc::new(Members {
+            rows: vec![("A", vec![100, 80]), ("B", vec![90, 70])],
+            down: parking_lot::Mutex::new(Vec::new()),
+        });
+        let plan = |cursor: Option<String>, query: &str, limit: u16, exports: usize| PeerPlan {
+            m: ListPeers {
+                session: SessionId::new(),
+                query: Some(query.into()),
+                cursor,
+                limit: Some(limit),
+                active_only: false,
+                kind: Some(DirectoryKind::Contact),
+            },
+            rows: std::iter::once(contact_row("peer:maya".into(), None))
+                .chain((0..exports).map(|i| contact_row(format!("peer:maya/e{i}"), None)))
+                .collect(),
+            granting: vec![(
+                "maya".into(),
+                members.clone() as Arc<dyn PeerSender>,
+            )],
+        };
+        let id = |n: u128| SessionId(Uuid::from_u128(n));
+        let sessions = |p: &PeerPage| -> Vec<String> {
+            p.peers
+                .iter()
+                .filter(|r| r.address.contains("/session:"))
+                .map(|r| r.address.clone())
+                .collect()
+        };
+        let at = |n: u128| format!("peer:maya/session:{}", id(n));
+        let p1 = plan(None, "maya", 2, 0).finish().await.unwrap();
+        assert_eq!(sessions(&p1), [at(100), at(90)]);
+        assert_eq!(p1.peers[0].title.as_deref(), Some("full access"));
+        assert_eq!(p1.cursor, Some(full_cursor("maya", id(90))));
+        assert!(p1.partial.is_empty());
+        members.down.lock().push("B");
+        let p2 = plan(p1.cursor.clone(), "maya", 2, 0).finish().await.unwrap();
+        assert_eq!(sessions(&p2), [at(80)], "no prefix on a later page");
+        assert_eq!(p2.peers.len(), 1);
+        assert_eq!(p2.cursor, None);
+        assert_eq!(p2.partial, ["maya/B"]);
+        members.down.lock().clear();
+        let again = plan(p1.cursor.clone(), "peer:maya", 2, 0).finish().await.unwrap();
+        assert_eq!(sessions(&again), [at(80), at(70)]);
+        assert_eq!(again.cursor, None);
+        assert!(again.partial.is_empty());
+        // Page 1's prefix is bounded apart from the session page.
+        let wide = plan(None, "maya", 3, 64).finish().await.unwrap();
+        assert_eq!(wide.peers.len(), 1 + 64 + 3);
+        assert_eq!(sessions(&wide).len(), 3);
+        // A cursor the query does not name, and one no granting contact has.
+        for (cursor, query) in [
+            (full_cursor("maya", id(90)), "sky"),
+            (full_cursor("sky", id(90)), "maya"),
+        ] {
+            let mut p = plan(Some(cursor), query, 2, 0);
+            p.granting.retain(|(n, _)| n == "maya");
+            assert_eq!(p.finish().await.unwrap_err(), "unknown cursor");
+        }
+        let mut inbox = plan(Some(full_cursor("maya", id(90))), "maya", 2, 0);
+        inbox.granting.clear();
+        assert_eq!(inbox.finish().await.unwrap_err(), "unknown cursor");
+
+        // The default listing: the preview of 8 under the contact's row, the walk named.
+        let many = Arc::new(Members {
+            rows: vec![("A", (1..=12).collect())],
+            down: parking_lot::Mutex::new(Vec::new()),
+        });
+        let mut p = plan(None, "", 25, 0);
+        p.m.query = None;
+        p.m.kind = None;
+        p.granting = vec![("maya".into(), many as Arc<dyn PeerSender>)];
+        let page = p.finish().await.unwrap();
+        assert_eq!(page.peers[0].address, "peer:maya");
+        assert_eq!(
+            page.peers[0].title.as_deref(),
+            Some("full access · more: discover_peers(kind=\"contact\", query=\"maya\")")
+        );
+        assert_eq!(sessions(&page).len(), 8);
+        assert_eq!(sessions(&page)[0], at(12), "newest first");
+        assert_eq!(page.cursor, None, "no cursor for a preview");
+    }
+
+    /// 200 (Interplay with 199): a file notice from a contact we gave full access passes D17's
+    /// re-check for a visible chat it was never shared; while the tree is paused it is
+    /// `accepted` and held (no turn, no row: status unknown), and a resend stays one
+    /// pending notice. Without full access the same notice is an ended share.
+    #[tokio::test]
+    async fn a_full_access_notice_for_a_paused_tree_waits_for_the_resume() {
+        use crate::communication::PeerScope;
+        use crate::communication::files::NoticeAdmission;
+        use crate::communication::files::notices::{AdmitNotice, claim};
+        use crate::store::contacts::{Cell, RecordTable, RecordWrite};
+        let d = crate::TestDir::new("notice-full");
+        let mut a = agents_on(d.0.clone(), Some("A"), true).await;
+        let root = SessionId::new();
+        a.store
+            .create_session(root, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store
+            .set_root_scope(root, PeerScope::Owner, None)
+            .await
+            .unwrap();
+        let binding = Uuid::now_v7();
+        a.store
+            .write_contact_records(&[RecordWrite::new(
+                RecordTable::Contacts,
+                "rec",
+                vec![("binding", Cell::Text(format!("peer:{binding}")))],
+            )])
+            .await
+            .unwrap();
+        const TEXT: &str = "<message_file from=\"peer:maya\" message=\"m\" name=\"a.pdf\" type=\"application/pdf\" state=\"failed\" reason=\"r\" holder=\"h\" file=\"f\"/>\nFile notice from theuth, not from peer:maya: no reply to the contact is needed.";
+        let notice = |id| AdmitNotice {
+            session: root,
+            id,
+            contact: "rec".into(),
+            text: TEXT.into(),
+        };
+        // No full access: the share ended.
+        let ended = Uuid::new_v4();
+        assert_eq!(
+            a.admit_notice(notice(ended)).await,
+            Ok(NoticeAdmission::Accepted)
+        );
+        assert_eq!(a.store.errors(root).await.unwrap().len(), 1, "ended");
+        // Full access, the tree paused: held for the resume.
+        a.network.insert_full_access_for_test(binding, "maya");
+        a.paused.insert(root, Vec::new());
+        let id = Uuid::new_v4();
+        for _ in 0..2 {
+            assert_eq!(
+                a.admit_notice(notice(id)).await,
+                Ok(NoticeAdmission::Accepted)
+            );
+        }
+        assert_eq!(a.paused[&root].len(), 1, "held once, for the resume");
+        assert!(claim(root, TEXT).is_some_and(|p| p.id == id), "pending");
+        assert!(!a.store.notice_committed(root, id).await.unwrap(), "no row");
+        assert_eq!(a.store.errors(root).await.unwrap().len(), 1, "no new row");
+        assert!(a.live(root).is_none(), "no actor, no turn");
+        crate::communication::files::notices::clear(id);
     }
 
     /// 183 §4.5 (D4): the row's messaging opt-out is applied when the actor

@@ -255,14 +255,14 @@ pub(crate) async fn serve_http(
     Ok(())
 }
 
-// 200-E: a `Sessions` arm (`GET sessions::SESSIONS_PATH`), served by `contact_route` under
-// D7's epoch race (see `contacts/sessions.rs`).
-/// 183 F1: the contact-only routes of [`serve_http`].
+/// 183 F1: the contact-only routes of [`serve_http`]. 200 (D7): `Sessions`, the full-access
+/// listing (`super::sessions`).
 #[derive(Clone, Copy, PartialEq)]
 enum Route {
     Card,
     Notice,
     Path,
+    Sessions,
 }
 
 impl Route {
@@ -271,6 +271,7 @@ impl Route {
             (&hyper::Method::GET, super::offers::CARD_PATH) => Some(Self::Card),
             (&hyper::Method::POST, super::offers::NOTICE_PATH) => Some(Self::Notice),
             (&hyper::Method::GET, super::rosters::ROSTER_PATH) => Some(Self::Path),
+            (&hyper::Method::GET, super::sessions::SESSIONS_PATH) => Some(Self::Sessions),
             _ => None,
         }
     }
@@ -346,6 +347,7 @@ async fn contact_route(
             Ok(answer) => axum::Json(answer).into_response(),
             Err((status, why)) => (status, why).into_response(),
         },
+        Route::Sessions => super::sessions::serve(c, remote, req.uri().query()).await,
     }
 }
 

@@ -13,6 +13,7 @@ use a2a_server::jsonrpc::jsonrpc_router;
 use a2a_server::{RequestHandler, ServiceParams};
 use a2a_types::*;
 use agent::Agents;
+use agent::communication::network::access::{SESSION_ROUTE, session_route};
 use agent::communication::network::{
     A2aCancel, A2aGet, A2aList, A2aPrincipal, A2aReturn, A2aSend, A2aStream, A2aSubscribe,
     RETURN_ROUTE, TaskStream,
@@ -147,8 +148,7 @@ pub(crate) struct Charged;
 struct ContactGrant {
     alias: String,
     facts: crate::config::ContactFacts,
-    /// 200 (D1): this contact has full access (`Peer.full_access`).
-    #[expect(dead_code, reason = "200-E: D4 (2) reads it")]
+    /// 200 (D1): this contact has full access (`Peer.full_access`), D4 (2).
     full_access: bool,
 }
 
@@ -304,6 +304,26 @@ impl Live {
                     )
                     .layer(RequestBodyLimitLayer::new(BODY_LIMIT)),
             );
+            // 200 (D3): the one `~session` handler every contact's `session:<uuid>` path is
+            // rewritten to; never reached by its own name.
+            let handler = Arc::new(Handler {
+                export: SESSION_ROUTE.to_owned(),
+                export_id: None,
+                target: Target::Session,
+                agents: agents.clone(),
+                subscribers: subscribers.clone(),
+                epochs: epochs.clone(),
+                grants: grants.clone(),
+            });
+            router = router.nest(
+                &format!("/agents/{SESSION_ROUTE}"),
+                Router::new()
+                    .nest_service(
+                        "/rpc",
+                        jsonrpc_router(handler).layer(middleware::from_fn(exactly_one)),
+                    )
+                    .layer(RequestBodyLimitLayer::new(BODY_LIMIT)),
+            );
         }
         Self {
             router,
@@ -348,6 +368,18 @@ impl Live {
         self.contacts.get(eid)?.exports.iter().min().cloned()
     }
 
+    /// 200 (D7): the grant epoch of the contact pinned to `eid` and whether it has full
+    /// access, from this one configuration (the listing runs inside that epoch).
+    pub(crate) fn full_access_of(&self, eid: &str) -> Option<(CancellationToken, bool)> {
+        let p = self.contacts.get(eid)?;
+        let on = self
+            .staged
+            .peers
+            .get(&p.peer)
+            .is_some_and(|x| x.full_access);
+        Some((p.epoch.clone(), on))
+    }
+
     /// The export exists and its session is effectively enabled right now; an agent export
     /// while agent communication is on (its inbox is checked at admission).
     fn open(&self, export: &str) -> bool {
@@ -389,8 +421,7 @@ async fn dispatch(State(shared): State<Shared>, mut req: Request) -> Response {
     let live = shared.read().clone();
     // Any inbound copy of the trusted seam is an attack or a bug; never forward it.
     req.headers_mut().remove(PRINCIPAL_HEADER);
-    // 200 (D3): so is any inbound copy of the session header. 200-E: the `session:<uuid>`
-    // branch (rewrite to `~session`, then set the header) follows.
+    // 200 (D3): so is any inbound copy of the session header.
     crate::contacts::sessions::strip_session_header(req.headers_mut());
     let mut export = req
         .uri()
@@ -433,8 +464,33 @@ async fn dispatch(State(shared): State<Shared>, mut req: Request) -> Response {
     // disabled export is not disclosed and its cached routes never answer. 186 (D5): the
     // return route is every contact's, on its own stream only.
     let contact = req.extensions().get::<ContactCaller>().is_some();
+    // 200 (D3): a contact's `session:<uuid>` is the one `~session` handler, the session in the
+    // trusted header; `~session` by name, or a bearer on a `session:` path, is not found.
+    let mut session = false;
+    if let Some(e) = export.as_deref() {
+        if e == SESSION_ROUTE {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        if let Some(id) = session_route(e) {
+            if !contact {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+            let rest = &req.uri().path()[format!("/agents/{e}").len()..];
+            let Ok(uri) = format!("/agents/{SESSION_ROUTE}{rest}").parse() else {
+                return StatusCode::NOT_FOUND.into_response();
+            };
+            *req.uri_mut() = uri;
+            let Ok(v) = HeaderValue::from_str(&id.to_string()) else {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            };
+            req.headers_mut()
+                .insert(crate::contacts::sessions::SESSION_HEADER, v);
+            session = true;
+        }
+    }
     let Some(export) = export.filter(|e| {
-        (contact && e == RETURN_ROUTE) || (principal.exports.contains(e) && live.open(e))
+        (contact && (session || e == RETURN_ROUTE))
+            || (principal.exports.contains(e) && live.open(e))
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -662,8 +718,6 @@ async fn exactly_one(req: Request, next: middleware::Next) -> Response {
         .await
 }
 
-// 200-E: `Target::Session` (the one `~session` handler; `Handler::admit` builds the principal
-// with `export = "session:<uuid>"` from the session header, D3).
 /// What one export route publishes.
 #[derive(Clone, Debug)]
 enum Target {
@@ -674,6 +728,9 @@ enum Target {
     Agent(String, agent::communication::network::InboxHome),
     /// 186 (D5): the return route: a contact's answers in conversations this engine opened.
     Return,
+    /// 200 (D3): the one `~session` handler: the session a full-access contact named, from
+    /// the trusted header `dispatch` set; `SendMessage`, `GetTask` and `CancelTask` only.
+    Session,
 }
 
 /// Application seam per export: typed requests → agent commands (§4).
@@ -715,6 +772,9 @@ impl Handler {
 
     /// `send`: a `SendMessage` or the streaming send (191 S4: a read never opens an inbox).
     async fn admit(&self, params: &ServiceParams, send: bool) -> Result<A2aPrincipal, A2AError> {
+        if matches!(self.target, Target::Session) {
+            return self.admit_session(params).await;
+        }
         let (binding, route) = self.caller(params)?;
         // 183 §7.6: a contact's origin rides with every admission (the first-contact hold).
         // 190 (D1): every share is full.
@@ -759,6 +819,7 @@ impl Handler {
                     "the return route takes answers (SendMessage) only",
                 ));
             }
+            (Target::Session, _) => return Err(A2AError::internal("admit_session serves it")),
         };
         Ok(A2aPrincipal {
             binding,
@@ -768,6 +829,50 @@ impl Handler {
             contact,
             ask_first,
         })
+    }
+
+    /// 200 (D3, D4 (1)-(3)): a contact's `session:<uuid>` (the gate ran): full access, else
+    /// `full access is off`; the row half on this machine, else the plain `not owner`. The
+    /// principal's export is `session:<uuid>` (never the mounted name); no first-contact hold.
+    async fn admit_session(&self, params: &ServiceParams) -> Result<A2aPrincipal, A2AError> {
+        use agent::communication::network::access;
+        let (binding, route) = self.caller(params)?;
+        let session = params
+            .get(crate::contacts::sessions::SESSION_HEADER)
+            .and_then(|v| v.first())
+            .and_then(|v| v.parse::<SessionId>().ok())
+            .ok_or_else(|| A2AError::internal("session layer did not run"))?;
+        let grant = self.grants.get(&binding).ok_or_else(|| {
+            A2AError::unsupported_operation("export unavailable: only contacts reach sessions")
+        })?;
+        if !grant.full_access {
+            return Err(A2AError::unsupported_operation(access::OFF));
+        }
+        self.ask(access::FullAccessRow(session)).await?;
+        let export = format!("{}{session}", access::SESSION_PREFIX);
+        Ok(A2aPrincipal {
+            binding,
+            export: export.clone(),
+            session,
+            route: route.clone(),
+            contact: Some(agent::communication::ContactOrigin {
+                contact: grant.alias.clone(),
+                machine: grant.facts.machine.clone(),
+                export,
+                mode: agent::ShareMode::Full,
+            }),
+            ask_first: false,
+        })
+    }
+
+    /// 200 (D3): a method `~session` does not serve.
+    fn session_only(&self) -> Result<(), A2AError> {
+        if matches!(self.target, Target::Session) {
+            return Err(A2AError::unsupported_operation(
+                "a contact's session takes SendMessage, GetTask and CancelTask only",
+            ));
+        }
+        Ok(())
     }
 
     /// 191 (D3, S4): the strict session resolve of a contact's message, before any task
@@ -893,6 +998,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: SendMessageRequest,
     ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
+        self.session_only()?;
         let principal = self.admit(params, true).await?;
         self.owned(&principal).await?;
         validate_send(&req, self.facts(&principal))?;
@@ -927,6 +1033,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: ListTasksRequest,
     ) -> Result<ListTasksResponse, A2AError> {
+        self.session_only()?;
         let principal = self.admit(params, false).await?;
         let history_length = req.history_length;
         let include_artifacts = req.include_artifacts == Some(true);
@@ -963,6 +1070,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: SubscribeToTaskRequest,
     ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
+        self.session_only()?;
         let principal = self.admit(params, false).await?;
         let stream = self
             .ask(A2aSubscribe {
@@ -1316,6 +1424,94 @@ mod tests {
                 .status(),
             StatusCode::OK
         );
+    }
+
+    /// 200 (D3): only a contact's `session:<uuid>` path reaches the one `~session` handler,
+    /// with the session in the trusted header `dispatch` set; `~session` by name, a bearer on
+    /// a `session:` path and a non-canonical id are 404; a forged header on a share path is
+    /// stripped, never seen.
+    #[tokio::test]
+    async fn only_a_contacts_session_path_reaches_the_session_handler() {
+        use crate::contacts::sessions::SESSION_HEADER;
+        use agent::communication::{PeerScope, Policy};
+        use axum::http::HeaderMap;
+        use axum::routing::post;
+        async fn echo(headers: HeaderMap) -> Response {
+            let seen = headers
+                .get(SESSION_HEADER)
+                .cloned()
+                .unwrap_or_else(|| HeaderValue::from_static("none"));
+            (StatusCode::OK, [("x-seen-session", seen)]).into_response()
+        }
+        let research = SessionId::new();
+        let mut policy = Policy::new(true, "test");
+        policy.record_root(research, PeerScope::Owner).unwrap();
+        let router = Router::new()
+            .nest(
+                "/agents/research",
+                Router::new().nest_service("/rpc", post(echo)),
+            )
+            .nest(
+                &format!("/agents/{SESSION_ROUTE}"),
+                Router::new().nest_service("/rpc", post(echo)),
+            );
+        let principal = |id: u128| {
+            Arc::new(Principal::new(
+                Uuid::from_u128(id),
+                "maya".into(),
+                HashSet::from(["research".to_owned()]),
+                CancellationToken::new(),
+            ))
+        };
+        let shared: Shared = Arc::new(RwLock::new(Arc::new(Live {
+            router,
+            principals: vec![(Token::for_test("tok-a"), principal(1))],
+            contacts: HashMap::from([("maya-eid".to_owned(), principal(2))]),
+            exports: HashMap::from([("research".to_owned(), research)]),
+            agents: HashSet::new(),
+            policy: Some(SharedPolicy::new(policy)),
+            staged: Staged::default(),
+            bindings: BTreeMap::new(),
+        })));
+        let id = SessionId::new();
+        let send = |path: String, contact: bool, forged: bool| {
+            let shared = shared.clone();
+            async move {
+                let mut req = Request::builder().method("POST").uri(path);
+                if !contact {
+                    req = req.header(header::AUTHORIZATION, "Bearer tok-a");
+                }
+                if forged {
+                    req = req.header(SESSION_HEADER, SessionId::new().to_string());
+                }
+                let mut req = req.body(axum::body::Body::empty()).unwrap();
+                if contact {
+                    req.extensions_mut()
+                        .insert(ContactCaller("maya-eid".into()));
+                }
+                app(shared).oneshot(req).await.unwrap()
+            }
+        };
+        let r = send(format!("/agents/session:{id}/rpc"), true, true).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()["x-seen-session"], id.to_string().as_str());
+        let r = send("/agents/research/rpc".into(), true, true).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()["x-seen-session"], "none", "a forged header");
+        for (path, contact) in [
+            (format!("/agents/{SESSION_ROUTE}/rpc"), true),
+            (format!("/agents/session:{id}/rpc"), false),
+            (
+                format!("/agents/session:{}/rpc", id.to_string().to_uppercase()),
+                true,
+            ),
+        ] {
+            assert_eq!(
+                send(path.clone(), contact, false).await.status(),
+                StatusCode::NOT_FOUND,
+                "{path} (contact: {contact})"
+            );
+        }
     }
 
     #[tokio::test]
