@@ -36,6 +36,7 @@ schemars = { workspace = true }
 tracing = { workspace = true }
 sqlx = { workspace = true }
 sha2 = { workspace = true }
+blake3 = { workspace = true }  # 199 P2: contact-file digests while streaming
 hex = { workspace = true }
 base64 = { workspace = true }
 mime_guess = { workspace = true }

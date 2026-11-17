@@ -892,8 +892,8 @@ impl Store {
         self.private
     }
 
-    /// The read pool, for crate-internal probes (tests of pragmas and the like).
-    #[cfg(test)]
+    /// The read pool, for crate-internal probes (tests of pragmas and the like) and
+    /// 199 P2's reads of `contact_files` and the notice rows.
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.read
     }

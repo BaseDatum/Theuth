@@ -25,6 +25,11 @@ use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncReadExt as _;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
+#[cfg(unix)]
+use agent::communication::files::disk;
+use agent::communication::files::{self as contact, HeldContactFile, HeldFile, ReceivedNotice};
+use kameo::actor::ActorRef;
+
 use crate::store::Stores;
 
 /// Largest frame either side accepts.
@@ -187,9 +192,13 @@ pub async fn answer(rt: &Runtime, stores: &Stores, mut framed: Stream) -> anyhow
             anyhow::ensure!(plain_name(&name), "bad attachment name");
             send_file(&mut framed, &attachments_dir(&rt.data_dir).join(name)).await
         }
-        // 199-E2: ask `Agents` `agent::communication::files::HeldContactFile { id }`, reopen
-        // the path and require its recorded `(dev, inode)` and size, stream under D8's idle
-        // timer instead of `TIMEOUT`. Until then no engine holds one.
+        // 199 P2: only a `received` `in` row, through `Agents`. The mesh transport carries
+        // paired machines only (a stream of an unpaired one fails, `mesh::net`).
+        #[cfg(unix)]
+        Req::GetContactFile { id } => {
+            send_contact_file(&mut framed, &rt.data_dir, held(id).await).await
+        }
+        #[cfg(not(unix))]
         Req::GetContactFile { .. } => {
             framed.send(encode(&Reply::Missing)?).await?;
             Ok(())
@@ -214,6 +223,55 @@ async fn send_file(framed: &mut Stream, path: &Path) -> anyhow::Result<()> {
             .await?;
     }
     framed.send(encode(&Reply::End)?).await?;
+    Ok(())
+}
+
+/// 199 P2: the holder's `received` row `id`; `None` without the supervisor.
+#[cfg(unix)]
+async fn held(id: String) -> Option<HeldFile> {
+    let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+        .ok()
+        .flatten()?;
+    agents.ask(HeldContactFile { id }).await.ok().flatten()
+}
+
+/// 199 P2: a held file as `Chunk`… `End`, exactly its recorded size, or `Missing` when
+/// there is none or its path no longer opens through the gate as the recorded
+/// `(dev, inode)` and size. D8: each frame must leave within [`contact::FILE_IDLE`];
+/// there is no whole-transfer budget.
+#[cfg(unix)]
+async fn send_contact_file(
+    framed: &mut Stream,
+    root: &Path,
+    held: Option<HeldFile>,
+) -> anyhow::Result<()> {
+    use std::os::unix::fs::FileExt as _;
+    let opened = held.and_then(|h| disk::egress_reopen(&h.path, root, h.dev, h.inode, h.size).ok());
+    let Some(e) = opened else {
+        framed.send(encode(&Reply::Missing)?).await?;
+        return Ok(());
+    };
+    let idle = |_| {
+        anyhow::anyhow!(
+            "the fetcher took nothing for {} s",
+            contact::FILE_IDLE.as_secs()
+        )
+    };
+    let mut buf = vec![0u8; CHUNK];
+    let mut at = 0u64;
+    while at < e.size {
+        let want = usize::try_from(e.size - at).map_or(CHUNK, |left| left.min(CHUNK));
+        let n = e.file.read_at(&mut buf[..want], at)?;
+        anyhow::ensure!(n > 0, "the held file shrank while it was served");
+        let chunk = encode(&Reply::Chunk(buf[..n].to_vec()))?;
+        tokio::time::timeout(contact::FILE_IDLE, framed.send(chunk))
+            .await
+            .map_err(idle)??;
+        at += n as u64;
+    }
+    tokio::time::timeout(contact::FILE_IDLE, framed.send(encode(&Reply::End)?))
+        .await
+        .map_err(idle)??;
     Ok(())
 }
 
@@ -446,6 +504,147 @@ fn nobody() -> anyhow::Error {
     anyhow::anyhow!("unavailable: no peer has it")
 }
 
+/// 199 P2 (D11): `(holder, id)` as `<data_dir>/files/cache/<holder>/<id>/<name>`, asked of
+/// the holder alone. The expected size and BLAKE3 are `notice`'s, from this engine's own
+/// copy of the session, never the holder's answer. A cached copy is returned only once it
+/// verifies again (never the cache-hit shortcut of the fetches above); otherwise the
+/// bytes stream into a partial under D8's idle timer, with no whole-fetch budget, are
+/// checked, and are published no-clobber. `Ok(None)`: the holder answered `Missing`.
+pub async fn fetch_contact_file_via(
+    t: &dyn Transport,
+    data_dir: &Path,
+    holder: &PeerId,
+    id: &str,
+    notice: &ReceivedNotice,
+) -> anyhow::Result<Option<PathBuf>> {
+    #[cfg(not(unix))]
+    {
+        let _ = (t, data_dir, holder, id, notice);
+        anyhow::bail!("contact files need a unix engine");
+    }
+    #[cfg(unix)]
+    {
+        anyhow::ensure!(
+            plain_name(&holder.0) && plain_name(id),
+            "{holder}/{id}: not a contact file"
+        );
+        let dir = data_dir.join(contact::CACHE_DIR).join(&holder.0).join(id);
+        let (d, size, want) = (dir.clone(), notice.size, notice.blake3.clone());
+        if let Some(hit) = tokio::task::spawn_blocking(move || verified(&d, size, &want)).await? {
+            return Ok(Some(hit));
+        }
+        let partials = data_dir.join(contact::PARTIAL_DIR);
+        private_dir(&dir)?;
+        private_dir(&partials)?;
+        let partial = partials.join(format!("cache-{}", uuid::Uuid::new_v4().simple()));
+        let published = match receive_contact_file(t, holder, id, &partial, notice).await {
+            Ok(true) => {
+                let secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs());
+                let value = disk::quarantine_value(secs, uuid::Uuid::new_v4());
+                let name = contact::sanitise(&notice.name);
+                // No row to record: the cache is keyed by its path alone.
+                disk::publish(&partial, &dir, &name, &value, async |_: &Path, _, _| Ok(()))
+                    .await
+                    .map(Some)
+                    .map_err(anyhow::Error::from)
+            }
+            Ok(false) => Ok(None),
+            Err(e) => Err(e),
+        };
+        // A published target keeps its own link.
+        disk::finish(&partial)?;
+        published
+    }
+}
+
+/// The bytes of a contact file differ from its notice's.
+#[cfg(unix)]
+const VERIFY_FAILED: &str = "verification failed";
+
+/// One stream to `holder` into `partial` (created 0600), sized and hashed as frames
+/// arrive. D8: each frame must come within [`contact::FILE_IDLE`]. `Ok(false)`: `Missing`.
+#[cfg(unix)]
+async fn receive_contact_file(
+    t: &dyn Transport,
+    holder: &PeerId,
+    id: &str,
+    partial: &Path,
+    notice: &ReceivedNotice,
+) -> anyhow::Result<bool> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let idle = |_| {
+        anyhow::anyhow!(
+            "{holder} sent nothing for {} s",
+            contact::FILE_IDLE.as_secs()
+        )
+    };
+    let stream = tokio::time::timeout(contact::FILE_IDLE, t.open(holder, ALPN_ARTIFACTS))
+        .await
+        .map_err(idle)??;
+    let mut framed = framed(stream);
+    framed
+        .send(encode(&Req::GetContactFile { id: id.to_owned() })?)
+        .await?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(partial)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut done = 0u64;
+    loop {
+        let frame = tokio::time::timeout(contact::FILE_IDLE, framed.next())
+            .await
+            .map_err(idle)?
+            .ok_or_else(|| anyhow::anyhow!("{holder} closed mid-answer"))??;
+        match postcard::from_bytes(&frame)? {
+            Reply::Missing if done == 0 => return Ok(false),
+            Reply::Chunk(bytes) => {
+                done += bytes.len() as u64;
+                anyhow::ensure!(done <= notice.size, VERIFY_FAILED);
+                hasher.update(&bytes);
+                std::io::Write::write_all(&mut file, &bytes)?;
+            }
+            Reply::End => {
+                anyhow::ensure!(
+                    done == notice.size && hasher.finalize().to_hex().as_str() == notice.blake3,
+                    VERIFY_FAILED
+                );
+                file.sync_all()?;
+                return Ok(true);
+            }
+            other => anyhow::bail!("unexpected {other:?} for a contact file"),
+        }
+    }
+}
+
+/// A regular file in `dir` of exactly `size` bytes whose BLAKE3 is `blake3`. Every hit is
+/// hashed again, so a tampered or truncated entry is skipped, never served.
+#[cfg(unix)]
+fn verified(dir: &Path, size: u64, blake3: &str) -> Option<PathBuf> {
+    std::fs::read_dir(dir).ok()?.flatten().find_map(|entry| {
+        // `file_type` does not follow a symlink.
+        if !entry.file_type().ok()?.is_file() {
+            return None;
+        }
+        let file = std::fs::File::open(entry.path()).ok()?;
+        let meta = file.metadata().ok()?;
+        (meta.is_file() && meta.len() == size && disk::blake3_of(&file, size).ok()? == blake3)
+            .then(|| entry.path())
+    })
+}
+
+/// `dir` and its missing parents, created 0700 (Storage).
+#[cfg(unix)]
+fn private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut b = std::fs::DirBuilder::new();
+    b.recursive(true);
+    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+    b.create(dir)
+}
+
 /// The artifact record of `call_id` from a peer (`prefer` first), its
 /// `path`/`source`/`preview` rewritten to this engine's `artifacts/` (the
 /// bytes come later through [`fetch_blob`]). Not cached: the index is engine-local.
@@ -493,6 +692,8 @@ mod tests {
         events: broadcast::Sender<replica::PeerEvent>,
         /// Streams accepted here.
         hits: std::sync::atomic::AtomicUsize,
+        /// 199 P2: a slow link, pausing this long after every MiB its opened streams read.
+        pace: Mutex<Option<std::time::Duration>>,
     }
 
     fn nodes(names: &[&str]) -> Vec<Arc<Loop>> {
@@ -509,6 +710,7 @@ mod tests {
                     inbox: tokio::sync::Mutex::new(rx),
                     events: broadcast::channel(8).0,
                     hits: Default::default(),
+                    pace: Mutex::new(None),
                 })
             })
             .collect()
@@ -541,7 +743,15 @@ mod tests {
                 .ok_or_else(|| anyhow::anyhow!("no such peer"))?;
             to.send((self.me.clone(), Box::new(theirs)))
                 .map_err(|_| anyhow::anyhow!("peer gone"))?;
-            Ok(Box::new(mine))
+            Ok(match *self.pace.lock() {
+                Some(pace) => Box::new(Slow {
+                    inner: mine,
+                    pace,
+                    read: 0,
+                    sleep: None,
+                }),
+                None => Box::new(mine),
+            })
         }
 
         async fn accept(&self, _alpn: &str) -> anyhow::Result<Inbound> {
@@ -780,5 +990,309 @@ mod tests {
             "other was never asked"
         );
         assert_eq!(owner_t.hits.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    /// A stream whose reads pause `pace` after every MiB (a duplex read is at most 1 MiB).
+    struct Slow {
+        inner: tokio::io::DuplexStream,
+        pace: std::time::Duration,
+        read: usize,
+        sleep: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+    }
+
+    impl tokio::io::AsyncRead for Slow {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if let Some(s) = self.sleep.as_mut() {
+                std::task::ready!(s.as_mut().poll(cx));
+                self.sleep = None;
+            }
+            let before = buf.filled().len();
+            std::task::ready!(std::pin::Pin::new(&mut self.inner).poll_read(cx, buf))?;
+            let read = self.read + buf.filled().len() - before;
+            if read >> 20 > self.read >> 20 {
+                self.sleep = Some(Box::pin(tokio::time::sleep(self.pace)));
+            }
+            self.read = read;
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    impl tokio::io::AsyncWrite for Slow {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+        }
+
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+        }
+
+        fn poll_shutdown(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
+
+    /// 199 P2 (the holder's serving and the cache use the unix-only `disk`).
+    #[cfg(unix)]
+    mod contact_files {
+        use super::*;
+
+        const ID: &str = "9d0c4b7e21a35f6880e1c2d3b4a59687";
+
+        /// `bytes` written to `dir/name` as a holder records a received file.
+        fn hold(dir: &Path, name: &str, bytes: &[u8]) -> HeldFile {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            let (dev, inode) = disk::inode_of(&path).unwrap();
+            HeldFile {
+                path,
+                dev,
+                inode,
+                size: bytes.len() as u64,
+                blake3: blake3::hash(bytes).to_hex().to_string(),
+            }
+        }
+
+        /// What the fetcher's own notice of `h` says.
+        fn notice_of(h: &HeldFile, name: &str) -> ReceivedNotice {
+            ReceivedNotice {
+                name: name.into(),
+                size: h.size,
+                blake3: h.blake3.clone(),
+                machine: "Sky's MacBook Pro".into(),
+            }
+        }
+
+        /// A holder's accept loop: `answer`'s `GetContactFile` arm once `Agents` answered
+        /// from `held` (local id → row).
+        fn holder(t: Arc<Loop>, root: PathBuf, held: HashMap<String, HeldFile>) {
+            tokio::spawn(async move {
+                while let Ok((_, stream)) = t.accept(ALPN_ARTIFACTS).await {
+                    let (root, held) = (root.clone(), held.clone());
+                    tokio::spawn(async move {
+                        let mut framed = framed(stream);
+                        let Some(Ok(first)) = framed.next().await else {
+                            return;
+                        };
+                        if let Ok(Req::GetContactFile { id }) = postcard::from_bytes(&first) {
+                            let _ =
+                                send_contact_file(&mut framed, &root, held.get(&id).cloned()).await;
+                        }
+                    });
+                }
+            });
+        }
+
+        fn hits(t: &Loop) -> usize {
+            t.hits.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        fn entries(dir: &Path) -> usize {
+            std::fs::read_dir(dir).map_or(0, |d| d.count())
+        }
+
+        /// 199 P2: a transfer far longer than 60 s completes under the idle timer (paused
+        /// clock), lands verified in the cache, and every later hit is hashed again: a
+        /// tampered entry is never served. A holder silent for over 60 s is cut.
+        #[tokio::test(start_paused = true)]
+        async fn a_contact_file_slower_than_60_s_arrives_and_every_cache_hit_is_rehashed() {
+            let (holder_dir, fetcher_dir) =
+                (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let (ht, ft) = pair();
+            let bytes = (0..(3 * CHUNK + 5))
+                .map(|i| (i % 251) as u8)
+                .collect::<Vec<_>>();
+            let h = hold(holder_dir.path(), "survey.zip", &bytes);
+            let stalled = hold(holder_dir.path(), "stalled.bin", &bytes[..2 << 20]);
+            let stalled_id = "41b8d2f0c7e65a1394b2a8d0e3f1c5a7";
+            holder(
+                ht.clone(),
+                holder_dir.path().into(),
+                HashMap::from([(ID.into(), h.clone()), (stalled_id.into(), stalled.clone())]),
+            );
+            let notice = notice_of(&h, "site survey.zip");
+            let root = fetcher_dir.path();
+
+            // 12 MiB at a MiB every 6 s: about 72 s in all, never 60 s without a byte.
+            *ft.pace.lock() = Some(std::time::Duration::from_secs(6));
+            let start = tokio::time::Instant::now();
+            let got = fetch_contact_file_via(ft.as_ref(), root, &ht.me, ID, &notice)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                start.elapsed() > std::time::Duration::from_secs(60),
+                "{:?}",
+                start.elapsed()
+            );
+            let cache = root.join("files/cache/owner").join(ID);
+            assert_eq!(got, cache.join("site survey.zip"));
+            assert_eq!(std::fs::read(&got).unwrap(), bytes);
+            assert_eq!(
+                entries(&root.join(contact::PARTIAL_DIR)),
+                0,
+                "partial dropped"
+            );
+            assert_eq!(hits(&ht), 2);
+            *ft.pace.lock() = None;
+
+            // A repeat is a verified hit: the holder is not asked.
+            let again = fetch_contact_file_via(ft.as_ref(), root, &ht.me, ID, &notice)
+                .await
+                .unwrap();
+            assert_eq!(again.as_deref(), Some(got.as_path()));
+            assert_eq!(hits(&ht), 2, "served from the cache");
+
+            // A tampered entry (same size) is skipped and fetched afresh beside it, no clobber.
+            let mut bad = bytes.clone();
+            bad[CHUNK] ^= 1;
+            std::fs::write(&got, &bad).unwrap();
+            let fresh = fetch_contact_file_via(ft.as_ref(), root, &ht.me, ID, &notice)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(fresh, cache.join("site survey (2).zip"));
+            assert_eq!(std::fs::read(&fresh).unwrap(), bytes);
+            assert_eq!(std::fs::read(&got).unwrap(), bad, "never replaced");
+            assert_eq!(hits(&ht), 3, "the holder was asked again");
+            let hit = fetch_contact_file_via(ft.as_ref(), root, &ht.me, ID, &notice)
+                .await
+                .unwrap();
+            assert_eq!(
+                hit.as_deref(),
+                Some(fresh.as_path()),
+                "only the verified entry is a hit"
+            );
+            assert_eq!(hits(&ht), 3);
+
+            // No byte for over 60 s: cut at idle, nothing cached.
+            *ft.pace.lock() = Some(std::time::Duration::from_secs(61));
+            let err = fetch_contact_file_via(
+                ft.as_ref(),
+                root,
+                &ht.me,
+                stalled_id,
+                &notice_of(&stalled, "stalled.bin"),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(err.to_string(), "owner sent nothing for 60 s");
+            assert_eq!(entries(&root.join("files/cache/owner").join(stalled_id)), 0);
+            assert_eq!(entries(&root.join(contact::PARTIAL_DIR)), 0);
+        }
+
+        /// 199 P2: bytes that are not the notice's (another BLAKE3, or more than its size)
+        /// are refused and leave nothing behind.
+        #[tokio::test]
+        async fn a_holder_answering_other_bytes_is_refused() {
+            let (holder_dir, fetcher_dir) =
+                (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let (ht, ft) = pair();
+            let h = hold(holder_dir.path(), "a.pdf", b"what the holder has now");
+            holder(
+                ht.clone(),
+                holder_dir.path().into(),
+                HashMap::from([(ID.into(), h.clone())]),
+            );
+            let root = fetcher_dir.path();
+            let other = ReceivedNotice {
+                blake3: blake3::hash(b"what the notice promised")
+                    .to_hex()
+                    .to_string(),
+                ..notice_of(&h, "a.pdf")
+            };
+            let shorter = ReceivedNotice {
+                size: h.size - 1,
+                ..notice_of(&h, "a.pdf")
+            };
+            for notice in [other, shorter] {
+                let err = fetch_contact_file_via(ft.as_ref(), root, &ht.me, ID, &notice)
+                    .await
+                    .unwrap_err();
+                assert_eq!(err.to_string(), "verification failed");
+            }
+            assert_eq!(entries(&root.join("files/cache/owner").join(ID)), 0);
+            assert_eq!(entries(&root.join(contact::PARTIAL_DIR)), 0);
+        }
+
+        /// 199 P2: only the holder named is asked, whoever owns the chat now (it moved to
+        /// `node3`); an unknown id, a file replaced since it was recorded, and the engine's
+        /// own arm without a `received` row (no supervisor here) all answer `Missing`.
+        #[tokio::test]
+        async fn only_the_holder_is_asked_and_anything_but_its_received_file_is_missing() {
+            let mut v = nodes(&["fetcher", "holder", "node3"]);
+            let (ft, ht, node3) = (v.remove(0), v.remove(0), v.remove(0));
+            let (holder_dir, node3_dir, fetcher_dir) = (
+                tempfile::tempdir().unwrap(),
+                tempfile::tempdir().unwrap(),
+                tempfile::tempdir().unwrap(),
+            );
+            owner(node3.clone(), node3_dir.path().to_path_buf()).await;
+            let h = hold(holder_dir.path(), "a.png", b"held bytes");
+            let replaced = hold(holder_dir.path(), "b.png", b"old bytes");
+            let replaced_id = "0123456789abcdef0123456789abcdef";
+            holder(
+                ht.clone(),
+                holder_dir.path().into(),
+                HashMap::from([
+                    (ID.into(), h.clone()),
+                    (replaced_id.into(), replaced.clone()),
+                ]),
+            );
+            let root = fetcher_dir.path();
+
+            let got =
+                fetch_contact_file_via(ft.as_ref(), root, &ht.me, ID, &notice_of(&h, "a.png"))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(std::fs::read(got).unwrap(), b"held bytes");
+            assert_eq!(hits(&node3), 1, "the chat's new owner was never asked");
+
+            let unknown = "ffffffffffffffffffffffffffffffff";
+            let n = notice_of(&h, "a.png");
+            assert_eq!(
+                fetch_contact_file_via(ft.as_ref(), root, &ht.me, unknown, &n)
+                    .await
+                    .unwrap(),
+                None
+            );
+            // Same path, new inode: not the file that was recorded.
+            std::fs::remove_file(&replaced.path).unwrap();
+            std::fs::write(&replaced.path, b"old bytes").unwrap();
+            let n = notice_of(&replaced, "b.png");
+            assert_eq!(
+                fetch_contact_file_via(ft.as_ref(), root, &ht.me, replaced_id, &n)
+                    .await
+                    .unwrap(),
+                None
+            );
+            // `answer` itself: no `Agents`, so no `received` row.
+            assert_eq!(
+                fetch_contact_file_via(ft.as_ref(), root, &node3.me, ID, &n)
+                    .await
+                    .unwrap(),
+                None
+            );
+            assert!(
+                fetch_contact_file_via(ft.as_ref(), root, &ht.me, "../x", &n)
+                    .await
+                    .is_err(),
+                "an id is never a path"
+            );
+        }
     }
 }
