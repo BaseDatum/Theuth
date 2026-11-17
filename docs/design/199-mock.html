@@ -85,9 +85,10 @@ section { min-width:0; }
 .track { display:flex; align-items:center; gap:7px; font-size:11px; margin-top:12px; flex-wrap:wrap; color:var(--fg-tertiary); }
 .track .current { color:var(--success); }
 .track-line { width:20px; height:1px; background:var(--border,var(--line)); }
-/* The live "receiving" card while intake waits for the files (D3). */
-.pending { border:1px dashed var(--border,var(--line)); border-radius:calc(var(--radius,10px) + 2px); padding:11px 16px 14px; background:var(--card,var(--card-fallback)); }
-.pending .files { padding:10px 0 0; }
+/* A file notice row from theuth: a compact card, never a user bubble. */
+.notice-row { margin-top:10px; border:1px solid var(--border,var(--line)); border-left:3px solid var(--success); border-radius:var(--radius,10px); padding:8px 12px; background:var(--card,var(--card-fallback)); font-size:12.5px; display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
+.notice-row.failed { border-left-color:var(--danger); }
+.notice-row .who { font-size:11px; color:var(--fg-tertiary); }
 .elsewhere { margin-top:12px; }
 pre.code,pre.tui { margin:0; padding:14px 16px; background:var(--card,var(--card-fallback)); border:1px solid var(--border,var(--line)); border-radius:var(--radius,10px); font-size:11.5px; line-height:1.75; white-space:pre-wrap; overflow-wrap:anywhere; }
 pre .tag { color:var(--lapis); }
@@ -140,7 +141,7 @@ html.dark .dialog-caption { color:var(--fg-fallback); }
 <main>
 <section aria-labelledby="received-title">
   <div class="section-title"><span class="index">a</span><h2 id="received-title">Received · desktop</h2></div>
-  <p class="section-note">Sky’s chat “Handoff review” · the row commits once both files settle</p>
+  <p class="section-note">Sky’s chat “Handoff review” · the text arrived at once; each card turned Received when its notice came</p>
   <article class="peer-card" aria-label="Contact message from Maya with two files">
     <header class="sender-head">
       <span class="avatar" aria-hidden="true">M</span>
@@ -217,23 +218,38 @@ html.dark .dialog-caption { color:var(--fg-fallback); }
 </section>
 
 <section aria-labelledby="pending-title">
-  <div class="section-title"><span class="index">c</span><h2 id="pending-title">Receiving · while intake waits</h2></div>
-  <p class="section-note">Sky’s chat · live card from the transfer rows; the model sees nothing yet</p>
-  <div class="pending" aria-label="Maya is sending three files">
-    <header class="send-head"><span class="avatar" aria-hidden="true" style="width:22px;height:22px;font-size:10px">M</span><strong>Maya is sending 3 files</strong><time class="clock" datetime="2026-11-17T14:31:00Z">14:31</time></header>
+  <div class="section-title"><span class="index">c</span><h2 id="pending-title">Receiving · text first, notices later</h2></div>
+  <p class="section-note">Sky’s chat · the message is already in the chat; each file reports when it is saved or fails</p>
+  <article class="peer-card" aria-label="Contact message from Maya with files still arriving">
+    <header class="sender-head">
+      <span class="avatar" aria-hidden="true">M</span>
+      <div class="sender-copy"><div class="sender-name">Maya <span class="chip contact">Contact</span></div><span class="sender-sub">Studio mesh · design assistant</span></div>
+      <time class="clock" datetime="2026-11-17T14:31:00Z">14:31</time>
+    </header>
+    <p class="body-text">Site survey and the old drawings, as promised.</p>
     <div class="files">
       <div class="file">
         <span class="file-icon" aria-hidden="true"><svg><use href="#zip-icon"/></svg></span>
         <div class="file-main">
           <span class="file-name">site-survey.zip</span>
-          <span class="file-meta"><span>1.2 GB</span><span>·</span><span>application/zip</span></span>
+          <span class="file-meta"><span>1.2 GB</span><span>·</span><span>application/zip</span><span>·</span><span>from Maya</span></span>
           <span class="state receiving"><span class="dot"></span>Receiving · 38%</span>
           <div class="progress" role="progressbar" aria-label="site-survey.zip received" aria-valuemin="0" aria-valuemax="100" aria-valuenow="38"><span style="width:38%"></span></div>
         </div>
       </div>
+      <div class="file failed">
+        <span class="file-icon" aria-hidden="true"><svg><use href="#file-icon"/></svg></span>
+        <div class="file-main">
+          <span class="file-name">drawings.pdf</span>
+          <span class="file-meta"><span>24.1 MB</span><span>·</span><span>application/pdf</span><span>·</span><span>from Maya</span></span>
+          <span class="state failed"><span class="dot"></span>Failed</span>
+          <span class="reason">The sender’s file changed before it was fetched.</span>
+        </div>
+      </div>
     </div>
-    <p class="note">Also in this message: notes.md is received and drawings.pdf failed. The message enters the chat once the last file settles.</p>
-  </div>
+  </article>
+  <div class="notice-row failed" role="note"><span class="who">theuth · 14:33</span><span>drawings.pdf from Maya failed: the sender’s file changed.</span></div>
+  <p class="note">The failed notice arrived as its own row. site-survey.zip gets its notice when it is saved. The notice goes to whichever machine owns the chat at that moment.</p>
   <div class="peer-card elsewhere" aria-label="The same received file seen from another machine">
     <div class="files">
       <div class="file">
@@ -253,25 +269,29 @@ html.dark .dialog-caption { color:var(--fg-fallback); }
 
 <section aria-labelledby="model-title">
   <div class="section-title"><span class="index">d</span><h2 id="model-title">What the model sees</h2></div>
-  <p class="section-note">The committed row in Sky’s chat · names and sizes only, never bytes</p>
-<pre class="code"><span class="tag">&lt;message</span> <span class="attr">from=</span>"peer:maya" <span class="attr">id=</span>"0193f0a2-…-5e6f" <span class="attr">at=</span>"14:32"<span class="tag">&gt;</span>
-The revised handoff is ready. Layout attached; the PDF has the dimensions.
+  <p class="section-note">The message row at once, then one notice row per file · names and sizes only, never bytes</p>
+<pre class="code"><span class="tag">&lt;message</span> <span class="attr">from=</span>"peer:maya" <span class="attr">id=</span>"0193f0a2-…-5e6f" <span class="attr">at=</span>"14:31"<span class="tag">&gt;</span>
+Site survey and the old drawings, as promised.
 <span class="tag">&lt;/message&gt;</span>
-<span class="tag">&lt;message_file</span> <span class="attr">from=</span>"peer:maya" <span class="attr">message=</span>"0193f0a2-…-5e6f" <span class="attr">name=</span>"layout.png" <span class="attr">type=</span>"image/png" <span class="attr">bytes=</span>"864211" <span class="attr">blake3=</span>"7c1e…" <span class="attr">saved=</span>"/Users/sky/.theuth/files/received/maya/2026-11-17/layout.png" <span class="attr">machine=</span>"Sky's MacBook Pro" <span class="attr">holder=</span>"5f3a…" <span class="attr">file=</span>"9d0c…"<span class="tag">/&gt;</span>
-<span class="tag">&lt;message_file</span> <span class="attr">from=</span>"peer:maya" <span class="attr">message=</span>"0193f0a2-…-5e6f" <span class="attr">name=</span>"handoff.pdf" <span class="attr">type=</span>"application/pdf" <span class="attr">bytes=</span>"2516582" <span class="attr">blake3=</span>"a3f1…" <span class="attr">saved=</span>"/Users/sky/.theuth/files/received/maya/2026-11-17/handoff.pdf" <span class="attr">machine=</span>"Sky's MacBook Pro" <span class="attr">holder=</span>"5f3a…" <span class="attr">file=</span>"41b8…"<span class="tag">/&gt;</span>
-Files are saved on disk, not shown to you; open one with read_file if you need it.</pre>
-  <p class="note">Hashes and ids are shortened here; the real values are 64 and 32 hex characters. A failed file has <span class="mono">failed="…"</span> in place of <span class="mono">blake3</span>, <span class="mono">saved</span>, <span class="mono">machine</span>, <span class="mono">holder</span> and <span class="mono">file</span>. The desktop and TUI turn each element into a card, never a raw tag.</p>
+<span class="tag">&lt;message_file</span> <span class="attr">from=</span>"peer:maya" <span class="attr">message=</span>"0193f0a2-…-5e6f" <span class="attr">name=</span>"site-survey.zip" <span class="attr">type=</span>"application/zip" <span class="attr">bytes=</span>"1200000000" <span class="attr">holder=</span>"5f3a…" <span class="attr">file=</span>"9d0c…" <span class="attr">state=</span>"receiving"<span class="tag">/&gt;</span>
+<span class="tag">&lt;message_file</span> <span class="attr">from=</span>"peer:maya" <span class="attr">message=</span>"0193f0a2-…-5e6f" <span class="attr">name=</span>"drawings.pdf" <span class="attr">type=</span>"application/pdf" <span class="attr">bytes=</span>"24100000" <span class="attr">holder=</span>"5f3a…" <span class="attr">file=</span>"41b8…" <span class="attr">state=</span>"receiving"<span class="tag">/&gt;</span>
+Files from peer:maya are arriving; a notice follows when each one is saved or fails.
+<span class="muted">— later, a notice row —</span>
+<span class="tag">&lt;message_file</span> <span class="attr">from=</span>"peer:maya" <span class="attr">message=</span>"0193f0a2-…-5e6f" <span class="attr">name=</span>"site-survey.zip" <span class="attr">type=</span>"application/zip" <span class="attr">state=</span>"received" <span class="attr">saved=</span>"/Users/sky/.theuth/files/received/maya/2026-11-17/site-survey.zip" <span class="attr">bytes=</span>"1200000000" <span class="attr">blake3=</span>"7c1e…" <span class="attr">holder=</span>"5f3a…" <span class="attr">file=</span>"9d0c…" <span class="attr">machine=</span>"Sky's MacBook Pro"<span class="tag">/&gt;</span>
+File notice from theuth, not from peer:maya: no reply to the contact is needed. The file is saved on disk, not shown to you; open it with read_file if you need it.</pre>
+  <p class="note">Hashes and ids are shortened here; the real values are 64 and 32 hex characters. A failed notice has <span class="mono">state="failed" reason="…"</span>, and no <span class="mono">saved</span>, <span class="mono">blake3</span> or <span class="mono">machine</span>. The desktop and TUI turn each element into a card, never a raw tag.</p>
 </section>
 
 <section class="full-width" aria-labelledby="tui-title">
   <div class="section-title"><span class="index">e</span><h2 id="tui-title">TUI</h2></div>
   <p class="section-note">Same states as glyph lines; Enter opens, r reveals, y copies the path, s saves to ~/Downloads</p>
-<pre class="tui"><span class="name">⟵ Maya</span> <span class="meta">· Studio mesh · contact · 14:32</span>
-The revised handoff is ready. Layout attached; the PDF has the dimensions.
-  <span class="ok">▧</span> layout.png      864 KB   image/png         <span class="ok">received</span>
-    <span class="meta">~/.theuth/files/received/maya/2026-11-17/layout.png</span>
-  <span class="ok">▤</span> handoff.pdf     2.5 MB   application/pdf   <span class="ok">received</span>
-    <span class="meta">~/.theuth/files/received/maya/2026-11-17/handoff.pdf</span>
+<pre class="tui"><span class="name">⟵ Maya</span> <span class="meta">· Studio mesh · contact · 14:31</span>
+Site survey and the old drawings, as promised.
+  <span class="run">▤</span> site-survey.zip 1.2 GB   application/zip   <span class="run">receiving 38%</span>
+  <span class="run">▤</span> drawings.pdf    24.1 MB  application/pdf   <span class="run">receiving</span>
+<span class="meta">theuth · 14:33</span>  <span class="bad">✕</span> drawings.pdf from Maya failed · the sender’s file changed
+<span class="meta">theuth · 14:52</span>  <span class="ok">▤</span> site-survey.zip from Maya saved
+    <span class="meta">~/.theuth/files/received/maya/2026-11-17/site-survey.zip</span>
 
 <span class="name">⟶ You → Sky</span> <span class="meta">· Handoff review · 14:31</span>
 Site survey and the old drawings, as promised.
