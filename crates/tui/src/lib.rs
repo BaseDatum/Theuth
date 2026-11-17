@@ -718,9 +718,11 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded, registry: &compon
         agent::HistoryEntry::Compacted { epoch, context, .. } if removed(context) => {
             writeln!(out, "⊘ removed from context: summary (epoch {epoch})")
         }
-        agent::HistoryEntry::User { text, context, .. } => {
-            writeln!(out, "> {}{}", attach::display(text), labels(context))
-        }
+        // 199: a notice row is its file line; a message row's placeholders are file lines.
+        agent::HistoryEntry::User { text, context, .. } => match components::files::notice_line(text) {
+            Some(line) => writeln!(out, "{line}"),
+            None => writeln!(out, "> {}{}", attach::display(&components::files::plain(text)), labels(context)),
+        },
         agent::HistoryEntry::Assistant { text, .. } => writeln!(out, "{text}"),
         agent::HistoryEntry::Reasoning { text, .. } => writeln!(out, "\x1b[2m┆ {text}\x1b[0m"),
         agent::HistoryEntry::Tool {
@@ -754,7 +756,10 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded, registry: &compon
                 "── context compacted (epoch {epoch} · {style}) ──\n{summary}"
             )
         }
-        agent::HistoryEntry::Error { text, .. } => writeln!(out, "error: {text}"),
+        agent::HistoryEntry::Error { text, .. } => match components::files::ended_line(text) {
+            Some(line) => writeln!(out, "{line}"),
+            None => writeln!(out, "error: {text}"),
+        },
         agent::HistoryEntry::Interrupted { text, .. } => {
             writeln!(out, "── interrupted — resuming ──\n{text}")
         }
@@ -867,9 +872,10 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             interrupted.len(),
             lost_jobs.len()
         ),
-        UiEvent::Agent(AgentEvent::Error { message, .. }) | UiEvent::Error(message) => {
-            writeln!(out, "error: {message}")
-        }
+        UiEvent::Agent(AgentEvent::Error { message, .. }) | UiEvent::Error(message) => match components::files::ended_line(message) {
+            Some(line) => writeln!(out, "{line}"),
+            None => writeln!(out, "error: {message}"),
+        },
         UiEvent::Agent(AgentEvent::ContextChanged { reason, .. }) => {
             writeln!(out, "context changed ({reason})")
         }

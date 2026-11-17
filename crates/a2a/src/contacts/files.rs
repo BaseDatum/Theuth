@@ -716,7 +716,7 @@ pub(crate) async fn route(
         stream,
         line,
         &contact,
-        &*agent::communication::files::offers(),
+        &*agent::communication::files::offers(&c.rt),
         &cut,
     )
     .await

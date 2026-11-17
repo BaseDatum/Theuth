@@ -1262,10 +1262,11 @@ impl Ctx {
     /// Serve `theuth/a2a/1` on `net` (the mesh's endpoint; a test's own).
     async fn attach(self: &Arc<Self>, net: Arc<mesh::net::Net>) {
         net.set_contacts(Arc::new(contacts::reach::Gate(Arc::downgrade(self))));
-        // 199: the receiver's client rides the same endpoint.
-        agent::communication::files::set_fetch(Arc::new(contacts::files::ContactFetch(
-            Arc::downgrade(self),
-        )));
+        // 199: the receiver's client rides the same endpoint (this engine's, in its runtime).
+        agent::communication::files::set_fetch(
+            &self.rt,
+            Arc::new(contacts::files::ContactFetch(Arc::downgrade(self))),
+        );
         let _ = self.net.set(net.clone());
         if !self.shared.read().staged.contacts.is_empty() {
             net.join_network().await;
@@ -1458,12 +1459,13 @@ impl runtime::Plugin for A2aPlugin {
     }
 }
 
-/// 183 tests: one engine's A2A context over `dir`, its mesh endpoint `net`, a fake LAN and,
-/// when given, its live agent (then `peers.yaml` reloads and the ceremony pins). 191: with
-/// that engine's own `contacts_ready` (its agent holds the same one) and mesh latch.
+/// 183 tests: one engine's A2A context in `rt` (its data dir; its agent's, when given, so
+/// both reach the same 199 seams), its mesh endpoint `net`, a fake LAN and, when given, its
+/// live agent (then `peers.yaml` reloads and the ceremony pins). 191: with that engine's own
+/// `contacts_ready` (its agent holds the same one) and mesh latch.
 #[cfg(test)]
 async fn test_ctx(
-    dir: &std::path::Path,
+    rt: Runtime,
     net: Arc<mesh::net::Net>,
     mdns: Arc<dyn contacts::discovery::Mdns>,
     cfg: A2aConfig,
@@ -1471,7 +1473,6 @@ async fn test_ctx(
     ready: Arc<std::sync::atomic::AtomicBool>,
     latched: Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> Arc<Ctx> {
-    let rt = Runtime::new(figment::Figment::new(), dir.to_path_buf());
     let listener = cfg.listener();
     let ctx = Arc::new(Ctx {
         rt,

@@ -142,7 +142,12 @@ pub async fn stage(
     request_id: Option<&str>,
     text: &str,
 ) -> Result<Staged, String> {
-    let svc: Arc<FileService> = super::service::service().ok_or(NOT_YET)?;
+    let svc: Arc<FileService> = agents
+        .ask(super::service::FileServiceOf)
+        .await
+        .ok()
+        .flatten()
+        .ok_or(NOT_YET)?;
     let mut contacts = Vec::with_capacity(to.len());
     for c in to {
         let alias = c.strip_prefix("peer:").unwrap_or_default();

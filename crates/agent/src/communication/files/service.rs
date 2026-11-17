@@ -146,11 +146,24 @@ pub struct FileService {
     sched: parking_lot::Mutex<Sched>,
 }
 
-static SERVICE: parking_lot::RwLock<Option<Arc<FileService>>> = parking_lot::const_rwlock(None);
+/// `rt`'s engine's running service (the send path reaches it through [`FileServiceOf`]).
+pub fn service(rt: &Runtime) -> Option<Arc<FileService>> {
+    super::Slot::<FileService>::of(rt).get()
+}
 
-/// The running service (the send path and the RPCs reach it here).
-pub fn service() -> Option<Arc<FileService>> {
-    SERVICE.read().clone()
+/// `ask` → this engine's running file service (its `Runtime`'s), if one started.
+pub struct FileServiceOf;
+
+impl kameo::message::Message<FileServiceOf> for crate::supervisor::Agents {
+    type Reply = Option<Arc<FileService>>;
+
+    async fn handle(
+        &mut self,
+        _: FileServiceOf,
+        _: &mut kameo::message::Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        service(&self.rt)
+    }
 }
 
 impl FileService {
@@ -173,10 +186,13 @@ impl FileService {
         })
     }
 
-    /// Register as this engine's offers and service, then drive the queue until shutdown.
+    /// Register as this engine's offers and service (in its `rt`; a service without one, a
+    /// unit test's, registers nothing), then drive the queue until shutdown.
     pub fn start(self: &Arc<Self>, shutdown: CancellationToken) {
-        super::set_offers(self.clone());
-        *SERVICE.write() = Some(self.clone());
+        if let Some(rt) = &self.rt {
+            super::set_offers(rt, self.clone());
+            super::Slot::of(rt).set(self.clone());
+        }
         let me = self.clone();
         tokio::spawn(async move {
             me.resend_receipts().await;
@@ -194,7 +210,11 @@ impl FileService {
     }
 
     fn fetcher(&self) -> Arc<dyn FileFetch> {
-        self.fetcher.clone().unwrap_or_else(super::fetch)
+        match (&self.fetcher, &self.rt) {
+            (Some(f), _) => f.clone(),
+            (None, Some(rt)) => super::fetch(rt),
+            (None, None) => Arc::new(super::NoFetch),
+        }
     }
 
     /// The partial of local id `id`.

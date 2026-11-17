@@ -68,14 +68,14 @@ async fn engine(name: &str, lan: &Lan, live: bool, cfg: A2aConfig) -> Engine {
     let dir = tempfile::tempdir().unwrap();
     let net = node(name, dir.path()).await;
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(!live));
+    let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
     let agents = if live {
-        let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
-        Some(agent::spawn_engine_agents(rt, ready.clone()).await)
+        Some(agent::spawn_engine_agents(rt.clone(), ready.clone()).await)
     } else {
         None
     };
     let ctx = crate::test_ctx(
-        dir.path(),
+        rt,
         net.clone(),
         Arc::new(lan.clone()),
         cfg,
@@ -2043,10 +2043,10 @@ async fn contacts_are_refused_until_the_latch_and_the_first_reconcile() {
         Arc::new(AtomicBool::new(false)),
         Arc::new(AtomicBool::new(false)),
     );
-    let agents = agent::spawn_engine_agents(rt, ready.clone()).await;
+    let agents = agent::spawn_engine_agents(rt.clone(), ready.clone()).await;
     let l = latch.clone();
     let ctx = crate::test_ctx(
-        dir.path(),
+        rt,
         net.clone(),
         Arc::new(lan.clone()),
         cfg(600),
@@ -2299,7 +2299,7 @@ async fn only_a_deleted_chat_tombstones_its_exports_never_a_listing() {
     let agents = agent::spawn_engine_agents(rt.clone(), ready.clone()).await;
     let l = latch.clone();
     let ctx = crate::test_ctx(
-        dir.path(),
+        rt.clone(),
         net.clone(),
         Arc::new(lan.clone()),
         cfg(600),
@@ -2914,8 +2914,8 @@ async fn a_hold_fails_on_a_block_wherever_it_is_written() {
     );
 }
 
-/// 199: the agent's offers as A's file route reaches them: one process-wide registration
-/// (the slot is global), each offer under its contact's record id and the sender's id.
+/// 199: the agent's offers as A's file route reaches them, registered in A's runtime, each
+/// offer under its contact's record id and the sender's id.
 #[cfg(unix)]
 #[derive(Default)]
 struct FileOffers(
@@ -2925,13 +2925,10 @@ struct FileOffers(
 
 #[cfg(unix)]
 impl FileOffers {
-    fn get() -> Arc<Self> {
-        static ONE: std::sync::LazyLock<Arc<FileOffers>> = std::sync::LazyLock::new(|| {
-            let o = Arc::new(FileOffers::default());
-            agent::communication::files::set_offers(o.clone());
-            o
-        });
-        ONE.clone()
+    fn on(e: &Engine) -> Arc<Self> {
+        let o = Arc::new(FileOffers::default());
+        agent::communication::files::set_offers(&e.ctx.rt, o.clone());
+        o
     }
 
     /// Offer `file` (served once: a pipe cannot be reopened) of `len` bytes to `contact`.
@@ -2992,7 +2989,7 @@ async fn a_contact_file_streams_on_its_own_stream_and_a_block_cuts_it() {
     let (b_on_a, a_on_b) = paired(&a, &b).await;
     let rec_b = a.ctx.shared.read().staged.contacts[&b_on_a].id.clone();
     let rec_a = b.ctx.shared.read().staged.contacts[&a_on_b].id.clone();
-    let offers = FileOffers::get();
+    let offers = FileOffers::on(&a);
     let dir = tempfile::tempdir().unwrap();
     let size = 300_000u64;
     let src = dir.path().join("src");

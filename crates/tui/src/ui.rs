@@ -942,7 +942,7 @@ fn queued_text(text: &str) -> String {
     match agent::skills::injected(text) {
         Some((name, _, "")) => format!("◇ {name}"),
         Some((name, _, rest)) => format!("◇ {name}  {rest}"),
-        None => crate::components::files::queued(text).unwrap_or_else(|| text.to_owned()),
+        None => crate::components::files::notice_line(text).unwrap_or_else(|| text.to_owned()),
     }
 }
 

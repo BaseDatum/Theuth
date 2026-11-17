@@ -538,19 +538,41 @@ impl FileOffers for NoOffers {
     }
 }
 
-static OFFERS: parking_lot::RwLock<Option<std::sync::Arc<dyn FileOffers>>> =
-    parking_lot::const_rwlock(None);
+/// 199-Z1: one seam's registration in one engine's [`runtime::Runtime`] (every plugin of
+/// the engine holds a clone of it), so two engines in one process (the a2a e2e tests) never
+/// serve or fetch through each other's.
+pub(crate) struct Slot<T: ?Sized>(std::sync::Arc<parking_lot::RwLock<Option<std::sync::Arc<T>>>>);
 
-/// Register this engine's offers (the agent plugin, at start; a restart replaces them).
-pub fn set_offers(offers: std::sync::Arc<dyn FileOffers>) {
-    *OFFERS.write() = Some(offers);
+impl<T: ?Sized> Clone for Slot<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
 }
 
-/// The registered offers, else [`NoOffers`].
-pub fn offers() -> std::sync::Arc<dyn FileOffers> {
-    OFFERS
-        .read()
-        .clone()
+impl<T: ?Sized + Send + Sync + 'static> Slot<T> {
+    /// `rt`'s slot of this type.
+    pub(crate) fn of(rt: &runtime::Runtime) -> Self {
+        rt.extension(|| Self(std::sync::Arc::default()))
+    }
+
+    pub(crate) fn get(&self) -> Option<std::sync::Arc<T>> {
+        self.0.read().clone()
+    }
+
+    pub(crate) fn set(&self, value: std::sync::Arc<T>) {
+        *self.0.write() = Some(value);
+    }
+}
+
+/// Register `rt`'s engine's offers (the agent plugin, at start; a restart replaces them).
+pub fn set_offers(rt: &runtime::Runtime, offers: std::sync::Arc<dyn FileOffers>) {
+    Slot::of(rt).set(offers);
+}
+
+/// `rt`'s engine's registered offers, else [`NoOffers`].
+pub fn offers(rt: &runtime::Runtime) -> std::sync::Arc<dyn FileOffers> {
+    Slot::<dyn FileOffers>::of(rt)
+        .get()
         .unwrap_or_else(|| std::sync::Arc::new(NoOffers))
 }
 
@@ -712,19 +734,15 @@ impl FileFetch for NoFetch {
     }
 }
 
-static FETCH: parking_lot::RwLock<Option<std::sync::Arc<dyn FileFetch>>> =
-    parking_lot::const_rwlock(None);
-
-/// Register the contact fetcher (the a2a plugin, once it serves `theuth/a2a/1`).
-pub fn set_fetch(fetch: std::sync::Arc<dyn FileFetch>) {
-    *FETCH.write() = Some(fetch);
+/// Register `rt`'s engine's contact fetcher (the a2a plugin, once it serves `theuth/a2a/1`).
+pub fn set_fetch(rt: &runtime::Runtime, fetch: std::sync::Arc<dyn FileFetch>) {
+    Slot::of(rt).set(fetch);
 }
 
-/// The registered fetcher, else [`NoFetch`].
-pub fn fetch() -> std::sync::Arc<dyn FileFetch> {
-    FETCH
-        .read()
-        .clone()
+/// `rt`'s engine's registered fetcher, else [`NoFetch`].
+pub fn fetch(rt: &runtime::Runtime) -> std::sync::Arc<dyn FileFetch> {
+    Slot::<dyn FileFetch>::of(rt)
+        .get()
         .unwrap_or_else(|| std::sync::Arc::new(NoFetch))
 }
 

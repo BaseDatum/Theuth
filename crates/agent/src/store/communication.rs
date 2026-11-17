@@ -1951,7 +1951,12 @@ impl Store {
         .bind(caller.to_string())
         .fetch_optional(&self.read)
         .await?;
-        row.map(PeerRecord::try_from).transpose()
+        let Some(mut record) = row.map(PeerRecord::try_from).transpose()? else {
+            return Ok(None);
+        };
+        // 199: `files` as `exchange_record` gives it (the sender's card reads its offers).
+        record.files = self.exchange_cards(&id.to_string()).await?;
+        Ok(Some(record))
     }
 
     /// A participant's own records, newest first, at most `limit`; `after`
@@ -1977,7 +1982,14 @@ impl Store {
         .bind(i64::from(limit.clamp(1, TASK_PAGE_MAX)))
         .fetch_all(&self.read)
         .await?;
-        rows.into_iter().map(PeerRecord::try_from).collect()
+        let mut records = rows
+            .into_iter()
+            .map(PeerRecord::try_from)
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        for r in &mut records {
+            r.files = self.exchange_cards(&r.receipt.id.to_string()).await?;
+        }
+        Ok(records)
     }
 
     /// `accepted` intake for `recipient` in acceptance order, at most `limit`.

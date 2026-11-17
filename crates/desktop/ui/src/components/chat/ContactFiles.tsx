@@ -296,11 +296,9 @@ export function SentFiles({ files, paths, session }: { files: readonly ContactFi
   )
 }
 
-/** D15: `answer_peer_request` with the picked files. The `files` parameter is E1's (engine P1) and not in the generated
- * bindings yet, so it rides as the 4th positional param, sent only when there are files. */
+/** D15: `answer_peer_request` with the picked files, its optional 4th parameter, sent only when there are files. */
 export function answerPeer(api: Api, session: string, replyTo: string, text: string, files: readonly string[]): Promise<PeerReceipt> {
-  if (!files.length) return api.answer_peer_request(session, replyTo, text)
-  return (api.answer_peer_request as unknown as (...args: unknown[]) => Promise<PeerReceipt>)(session, replyTo, text, files)
+  return files.length ? api.answer_peer_request(session, replyTo, text, [...files]) : api.answer_peer_request(session, replyTo, text)
 }
 
 /**

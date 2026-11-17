@@ -174,12 +174,49 @@ pub(crate) fn ended(text: &str) -> Option<Entry> {
     text.starts_with("<message_file").then(|| entry(text.find("/>").and_then(|end| Line::parse(&text[..end + 2])), true))
 }
 
-/// A live row in the composer's queue: a notice shows as its line.
-pub(crate) fn queued(text: &str) -> Option<String> {
-    match notice(text)? {
-        Entry::Card { kind, title, .. } => Some(format!("{} {title}", kind.glyph())),
-        _ => Some(UNREADABLE.into()),
+/// A file entry as one plain line: its glyph and title, or [`UNREADABLE`].
+fn plain_line(e: Entry) -> String {
+    match e {
+        Entry::Card { kind, title, .. } => format!("{} {title}", kind.glyph()),
+        _ => UNREADABLE.into(),
     }
+}
+
+/// A notice row as its plain line (the composer's queue, the non-TTY printer); `None` for
+/// other text.
+pub(crate) fn notice_line(text: &str) -> Option<String> {
+    notice(text).map(plain_line)
+}
+
+/// An ended-share `errors` row as its labelled plain line; `None` for any other error.
+pub(crate) fn ended_line(text: &str) -> Option<String> {
+    ended(text).map(plain_line)
+}
+
+/// The non-TTY printer's text of a row: every message wrapper's placeholder tail (the
+/// elements and the receiving hint) as one plain line per file, never the markup.
+pub(crate) fn plain(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains("<message_file ") {
+        return text.into();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("</message>") {
+        let end = at + "</message>".len();
+        out.push_str(&rest[..end]);
+        let (files, after) = tail(&rest[end..]);
+        let any = !files.is_empty();
+        for f in files {
+            out.push('\n');
+            out.push_str(&plain_line(entry(f, false)));
+        }
+        if any && !after.is_empty() {
+            out.push('\n');
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out.into()
 }
 
 /// `ContactFileChanged`: every line of the file takes its new state. An outgoing file's first
@@ -475,5 +512,24 @@ mod tests {
         (other.id, other.exchange) = ("00".repeat(16), uuid::Uuid::nil());
         changed(&mut model, other);
         assert_eq!(model.entries.len(), 5);
+    }
+
+    /// The non-TTY printer (`lib.rs`): a message row's placeholders, a notice row and an
+    /// ended-share row print as file lines, the words around them kept, never the markup.
+    #[test]
+    fn plain_rows_print_file_lines_never_markup() {
+        let placeholders = engine::placeholders("peer:maya", &[zip(FileState::In(InState::Receiving)), pdf(FileState::In(InState::Receiving))]);
+        let text = format!("<message from=\"peer:maya\" id=\"{EXCHANGE}\" at=\"14:31\">\nAs promised.\n</message>\n{placeholders}\nafter");
+        let shown = plain(&text);
+        assert_eq!(shown, format!("<message from=\"peer:maya\" id=\"{EXCHANGE}\" at=\"14:31\">\nAs promised.\n</message>\n\
+            ▤ site-survey.zip · 1.2 GB · application/zip · receiving\n▤ drawings.pdf · 24.1 MB · application/pdf · receiving\nafter"));
+        assert_eq!(plain("no files here"), "no files here");
+        let received = zip(FileState::In(InState::Received));
+        assert_eq!(notice_line(&engine::notice("peer:maya", &received).unwrap()).as_deref(), Some("▤ site-survey.zip · 1.2 GB · application/zip · saved"));
+        assert_eq!(ended_line(&engine::ended_notice("peer:maya", &received).unwrap()).as_deref(),
+            Some("▤ site-survey.zip · 1.2 GB · application/zip · saved · not given to the agent"));
+        assert_eq!(ended_line("<message_file broken"), Some(UNREADABLE.into()));
+        assert_eq!(ended_line("some other error"), None);
+        assert_eq!(notice_line("plain words"), None);
     }
 }
