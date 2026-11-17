@@ -1875,7 +1875,7 @@ impl Agents {
             let why = format!("files not recorded: {e:#}");
             return self.fail_task(&task, &why).await.unwrap_or(task);
         }
-        let record = match self.store.exchange_record(exchange).await {
+        let record = match self.peer_record_named(exchange).await {
             Ok(Some(r)) => r,
             Ok(None) => {
                 return self
@@ -1982,7 +1982,8 @@ impl Agents {
         if let Some(q) = question
             && let Ok(Some(orig)) = self.store.exchange_receipt(q).await
         {
-            if orig.state == PeerMessageState::Replied && self.settle_wait(&orig) {
+            let answer = self.handed_answer(&orig, receipt.id, None).await;
+            if orig.state == PeerMessageState::Replied && self.settle_wait(&answer) {
                 handed = true;
                 if let Err(e) = self
                     .store
@@ -1996,8 +1997,7 @@ impl Agents {
         }
         if !handed {
             let record = self
-                .store
-                .exchange_record(receipt.id)
+                .peer_record_named(receipt.id)
                 .await
                 .map_err(internal)?
                 .ok_or_else(|| A2AError::internal("accepted exchange missing"))?;
@@ -2014,6 +2014,46 @@ impl Agents {
             }
         }
         Ok(task)
+    }
+
+    /// An HTTP peer's accepted exchange `id` as its session receives it: the record, with
+    /// its file cards, naming the peer as replies address it (183 F8: `peer:<alias>`, never
+    /// the binding id), so the wrapper, its receiving placeholders and the later notices
+    /// (199-E3) all say the same.
+    async fn peer_record_named(&self, id: Uuid) -> anyhow::Result<Option<PeerRecord>> {
+        let mut record = self.store.exchange_record(id).await?;
+        if let Some(r) = record.as_mut() {
+            self.network.name_peers(r);
+        }
+        Ok(record)
+    }
+
+    /// 199-E3: `orig` as a waiting `send_message` receives it: the answer `answer`'s text,
+    /// then the receiving placeholders and hint its delivered row would carry (from `from`,
+    /// else the files' sender `peer:<alias>`); the notices follow as for any row.
+    pub(super) async fn handed_answer(
+        &self,
+        orig: &PeerReceipt,
+        answer: Uuid,
+        from: Option<&str>,
+    ) -> PeerReceipt {
+        let mut out = orig.clone();
+        let files = match self.store.exchange_cards(&answer.to_string()).await {
+            Ok(files) => files,
+            Err(e) => {
+                tracing::warn!(exchange = %answer, "199: answer files: {e:#}");
+                return out;
+            }
+        };
+        if let Some(first) = files.first() {
+            let from = from.map_or_else(|| format!("peer:{}", first.contact), str::to_owned);
+            let text = out.reply.get_or_insert_with(String::new);
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&crate::communication::files::placeholders(&from, &files));
+        }
+        out
     }
 
     /// Apply a lifecycle step to the stored snapshot and fan it out.
@@ -4868,7 +4908,8 @@ impl Agents {
         }
         // 183 F8: the awaiting tool and the reply show the address the sender wrote.
         orig.to = format!("peer:{}", o.alias);
-        if self.settle_wait(&orig) {
+        let answer = self.handed_answer(&orig, reply.id, Some(&orig.to)).await;
+        if self.settle_wait(&answer) {
             if let Err(e) = self
                 .store
                 .consume_exchange_direct(reply.id, o.session, o.generation.revision() as i64)
@@ -6871,10 +6912,18 @@ mod tests {
     }
 
     /// 199-E3 (D13, P3): an HTTP peer's answer with file parts in its artifacts (inline and
-    /// at an `https` URL) becomes the reply's `in` rows, keyed by the peer's binding, and the
-    /// delivered reply carries their receiving placeholders beside its text.
+    /// at an `https` URL) becomes the reply's `in` rows, keyed by the peer's binding. Handed
+    /// straight to a waiting `send_message`, the answer carries the same receiving
+    /// placeholders and hint as a delivered row, naming the peer as replies address it
+    /// (`peer:lab`), as its notices will.
     #[tokio::test]
     async fn an_answers_artifact_files_become_the_replys_in_rows() {
+        for awaited in [false, true] {
+            answer_with_files(awaited).await;
+        }
+    }
+
+    async fn answer_with_files(awaited: bool) {
         struct Record(tokio::sync::mpsc::UnboundedSender<OutboundPeerMessage>);
         #[async_trait]
         impl PeerSender for Record {
@@ -6935,6 +6984,7 @@ mod tests {
             history: None,
             metadata: None,
         };
+        let waiter = awaited.then(|| a.wait(owner, sent.to.clone(), sent.id, live()).unwrap());
         a.apply_remote_task(sent.id, &t).await;
         let peer = format!("peer:{}", binding.id);
         let reply = a
@@ -6955,9 +7005,96 @@ mod tests {
         assert_eq!(record.text, "here it is");
         assert_eq!(record.files.len(), 2);
         assert_eq!(record.files[1].contact, "lab");
-        let shown = crate::communication::files::placeholders(&record.from, &record.files);
-        assert!(shown.contains("name=\"survey.zip\""), "{shown}");
-        assert!(shown.contains("state=\"receiving\""), "{shown}");
+        let Some(waiter) = waiter else { return };
+        let got = waiter.await.expect("handed to the waiting call");
+        let text = got.reply.expect("the answer");
+        assert!(
+            text.starts_with("here it is\n<message_file from=\"peer:lab\""),
+            "{text}"
+        );
+        assert_eq!(text.matches("state=\"receiving\"").count(), 2, "{text}");
+        assert!(text.contains("<message_file from=\"peer:lab\""), "{text}");
+        assert!(text.contains("name=\"survey.zip\""), "{text}");
+        assert!(
+            text.ends_with(
+                "Files from peer:lab are arriving; a notice follows when each one is saved or fails."
+            ),
+            "{text}"
+        );
+        // Its notice names the peer the same way.
+        let mut failed = rows[1].clone();
+        failed.state = "failed".into();
+        failed.error = Some("no response".into());
+        let alias = a.store.contact_alias(&failed.contact_id).await.unwrap();
+        let notice = failed
+            .notice_text(&Default::default(), &alias)
+            .expect("a notice");
+        assert!(
+            notice.starts_with("<message_file from=\"peer:lab\""),
+            "{notice}"
+        );
+        assert!(
+            a.network.peer_by_name("lab").is_some(),
+            "the address replies use"
+        );
+    }
+
+    /// 199-E3: an HTTP peer's message (here with an inline file), as its session receives
+    /// it, names the peer `peer:<alias>` in the wrapper, in its receiving placeholders and in
+    /// the file's notice: one name, the one replies address.
+    #[tokio::test]
+    async fn an_http_peers_message_names_it_one_way_in_wrapper_placeholders_and_notice() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let binding = a
+            .store
+            .bind_peer("lab", "https://lab.example/")
+            .await
+            .unwrap();
+        a.network.peers.insert(
+            binding.id,
+            RemotePeer {
+                name: "lab".into(),
+                roots: Vec::new(),
+                sender: None,
+                generation: CancellationToken::new(),
+                contact: false,
+                full: Vec::new(),
+            },
+        );
+        let principal = format!("peer:{}", binding.id);
+        let (session, _, receipt) = exported_task(&mut a, &principal).await;
+        crate::communication::files::foreign::admit(
+            &a.store,
+            session,
+            receipt.id,
+            &principal,
+            &[Part::raw(b"tiny".to_vec()).with_filename("tiny.txt")],
+        )
+        .await
+        .unwrap();
+        let record = a.peer_record_named(receipt.id).await.unwrap().unwrap();
+        assert_eq!(record.from, "peer:lab");
+        let shown = crate::loop_::peer_wrapper(&record, false, chrono::Local::now());
+        assert!(shown.starts_with("<message from=\"peer:lab\""), "{shown}");
+        assert!(shown.contains("<message_file from=\"peer:lab\""), "{shown}");
+        assert!(
+            shown.contains("Files from peer:lab are arriving"),
+            "{shown}"
+        );
+        let mut row = a
+            .store
+            .exchange_files(&receipt.id.to_string())
+            .await
+            .unwrap()
+            .remove(0);
+        row.state = "failed".into();
+        row.error = Some("no response".into());
+        let alias = a.store.contact_alias(&row.contact_id).await.unwrap();
+        let notice = row.notice_text(&Default::default(), &alias).unwrap();
+        assert!(
+            notice.starts_with("<message_file from=\"peer:lab\""),
+            "{notice}"
+        );
     }
 
     /// 183 F4: a grant change keeps a held first message whose export is unchanged: it moves

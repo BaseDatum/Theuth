@@ -2129,7 +2129,7 @@ impl Agents {
 
     /// Register an exact waiter for message `id` (50 §5.3), bounded per
     /// session and harness.
-    fn wait(
+    pub(crate) fn wait(
         &mut self,
         session: SessionId,
         to: String,

@@ -309,8 +309,9 @@ pub struct SendMessageArgs {
     /// Your idempotency key: repeating a call with the same request_id, addressee and body returns the original receipt instead of sending again.
     #[serde(default)]
     pub request_id: Option<String>,
-    /// Contacts only: absolute paths of local files to send with this message, any type, each
-    /// at most 5 GB. The receiver gets each file saved on its disk, not put into its context.
+    /// Absolute paths of local files to send with this message, any type. To a contact: each
+    /// at most 5 GB, saved on the receiver's disk, not put into its context. To a remote A2A
+    /// agent: sent inline, only if the whole message stays within 64 KiB.
     #[serde(default)]
     pub files: Vec<PathBuf>,
 }
@@ -444,10 +445,13 @@ impl Tool for SendMessageTool {
              With await_reply=true you block until each answers with reply_to set to its message's id (or one shared \
              timeout passes; unanswered messages are not recalled). When answering a <message> with \
              reply_expected=\"true\", set reply_to to its id. `peer_message()` (python) shows a message's current state. \
-             `files` (contacts only): absolute paths of local files, any type, each at most 5 GB; the contact's theuth \
-             saves each on its disk (never into its agent's context) and its chat gets a notice once each is saved or \
-             fails; `message` may then be empty. Theuth's own secret state is never sent. `structured.files` lists the \
-             offers; each lives 7 days."
+             `files`: absolute paths of local files, any type. To a contact: each at most 5 GB; the contact's \
+             theuth saves each on its disk (never into its agent's context) and its chat gets a notice once each \
+             is saved or fails. To a remote A2A agent (not a contact): sent inline inside the message, only when \
+             the whole message stays within 64 KiB; anything larger fails before sending (`<peer> takes files only \
+             inside the message, and <name> (<size> bytes) does not fit in 64 KiB`) and nothing is uploaded \
+             anywhere. `message` may be empty when files go. Theuth's own secret state is never sent. \
+             `structured.files` lists the offers; each lives 7 days."
         )
     }
 
