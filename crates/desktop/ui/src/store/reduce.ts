@@ -764,9 +764,33 @@ export function shorterTail(live: readonly Entry[], page: readonly Entry[]): boo
 
 type Reply = Extract<Entry, { kind: "assistant" }>;
 
-/** cells-midturn D2: a closed reply of the running turn drawn live, so without its stored row's `context` yet. */
-export function unstamped(s: Pick<SessionSlice, "entries" | "turnSeq" | "running">): boolean {
-  return s.running && s.turnSeq !== undefined && s.entries.some((e) => e.kind === "assistant" && e.turn === s.turnSeq && !e.open && !e.context);
+/** cells-midturn D2: the closed replies of the running turn drawn live, so without their stored row's `context` yet, as
+ * one key (`<turn>:<ids>`); `null` when there are none. */
+export function unstampedKey(s: Pick<SessionSlice, "entries" | "turnSeq" | "running">): string | null {
+  if (!s.running || s.turnSeq === undefined) return null;
+  const ids = s.entries.flatMap((e) => (e.kind === "assistant" && e.turn === s.turnSeq && !e.open && !e.context ? [e.id] : []));
+  return ids.length ? `${s.turnSeq}:${ids.join(" ")}` : null;
+}
+
+/** cells-midturn R1: reads that stamped nothing for `key`, the `unstampedKey` they began at. */
+export type StampTries = { key: string; misses: number };
+/** Reads that stamp nothing for one key before the stamp stops reading until the key changes. */
+const STAMP_MISSES = 2;
+
+/**
+ * cells-midturn R1: whether a mid-turn stamp read is worth it for `key`. A reply `stampStored` refuses for good (a text
+ * that differs, a salvage continuation, a page too short) keeps its key; after `STAMP_MISSES` reads for that key
+ * nothing reads until the key changes — a reply closes or gets stamped, or another turn runs. The settled reload at
+ * the turn's end still stamps everything.
+ */
+export function stampWanted(tries: StampTries | undefined, key: string | null): boolean {
+  return key !== null && (tries?.key !== key || tries.misses < STAMP_MISSES);
+}
+
+/** cells-midturn R1: `tries` after a read that began at key `before` and left `after`: the same key is a miss. */
+export function stampTried(tries: StampTries | undefined, before: string, after: string | null): StampTries | undefined {
+  if (after !== before) return undefined;
+  return { key: before, misses: (tries?.key === before ? tries.misses : 0) + 1 };
 }
 
 /**

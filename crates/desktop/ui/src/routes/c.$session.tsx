@@ -35,7 +35,7 @@ import { type SearchDestination, isSearchDestination, useSearchOrigin } from '@/
 import { useScope } from '@/store/engine-scope'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { freshness, on, useSessionField, useSessions } from '@/store/sessions'
-import { unstamped } from '@/store/reduce'
+import { type StampTries, stampTried, stampWanted, unstampedKey } from '@/store/reduce'
 import { ContactAllowStrip } from '@/components/chat/ContactAllowStrip'
 import { KernelStrip } from '@/components/cells/KernelStrip'
 import { BAR, useNativeBar } from '@/lib/native-chrome'
@@ -339,13 +339,16 @@ export function useSessionLoad(session: string): void {
 
   // cells-midturn D2: the running turn's stored replies give their cells a stored seq, so they run before the turn
   // ends. The engine publishes `ContextUsed` just before it stores the round and the tool, injection events after, so
-  // each asks when a closed reply lacks its row; one read in flight, calls meanwhile coalesce into one more.
+  // each asks when a closed reply lacks its row; one read in flight, calls meanwhile coalesce into one more. R1: reads
+  // that stamp nothing for the same replies give up after two (`stampWanted`) until a reply closes or gets stamped.
   const stamping = useRef(false)
   const restamp = useRef(false)
+  const stampTries = useRef<StampTries | undefined>(undefined)
   const stamp = useCallback(
     (signal: AbortSignal) => {
       const s = store.getState().sessions[session]
-      if (!s || !unstamped(s)) return
+      const key = s ? unstampedKey(s) : null
+      if (!s || key === null || !stampWanted(stampTries.current, key)) return
       if (stamping.current) {
         restamp.current = true
         return
@@ -356,7 +359,10 @@ export function useSessionLoad(session: string): void {
         .load_session(session, null, STAMP_PAGE)
         .then(
           (page) => {
-            if (!signal.aborted) store.getState().stampTail(session, page, fresh)
+            if (signal.aborted) return
+            store.getState().stampTail(session, page, fresh)
+            const after = store.getState().sessions[session]
+            stampTries.current = stampTried(stampTries.current, key, after ? unstampedKey(after) : null)
           },
           (e: unknown) => report(e, signal),
         )

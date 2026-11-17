@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { ContextEntry, HistoryEntry } from '@/rpc/bindings/method.agent.output'
-import { stampStored, unstamped } from './reduce'
+import { type StampTries, stampStored, stampTried, stampWanted, unstampedKey } from './reduce'
 import type { Entry } from './sessions'
 
 const ctx = (seq: number) => ({ target: { kind: 'message', seq }, active: true }) as unknown as ContextEntry
@@ -66,8 +66,32 @@ test('other turns are untouched; no turn → nothing', () => {
   expect(stampStored(entries, [user('disk?', 5), reply(A, 5, 6)], undefined)).toBe(entries)
 })
 
-test('`unstamped`: a closed live reply of the running turn without context', () => {
-  expect(unstamped({ entries, turnSeq: 5, running: true })).toBe(true)
-  expect(unstamped({ entries, turnSeq: 5, running: false })).toBe(false)
-  expect(unstamped({ entries: entries.filter((e) => e.id !== 'a' && e.id !== 'b'), turnSeq: 5, running: true })).toBe(false)
+test('`unstampedKey`: the running turn’s closed live replies without context, by id; none → null', () => {
+  expect(unstampedKey({ entries, turnSeq: 5, running: true })).toBe('5:a b')
+  expect(unstampedKey({ entries, turnSeq: 5, running: false })).toBe(null)
+  expect(unstampedKey({ entries: entries.filter((e) => e.id !== 'a' && e.id !== 'b'), turnSeq: 5, running: true })).toBe(null)
+})
+
+test('R1: two reads that stamp nothing for the same replies stop the reads until the key changes', () => {
+  // Each row: the key when an event asks, whether a read goes out, and the key that read leaves.
+  const rows: [key: string | null, reads: boolean, after: string | null][] = [
+    ['5:a', true, '5:a'], // `ContextUsed` before the store: a miss
+    ['5:a', true, '5:a'], // refused for good (text differs): the second miss
+    ['5:a', false, null], // gave up
+    ['5:a', false, null],
+    ['5:a b', true, '5:a b'], // a new reply closed: reads again
+    ['5:a b', true, '5:a b'],
+    ['5:a b', false, null],
+    ['9:x', true, null], // another turn: reads again; this one stamped
+    ['9:x y', true, '9:y'], // stamped one of two: progress, not a miss
+    ['9:y', true, '9:y'],
+    ['9:y', true, '9:y'],
+    ['9:y', false, null],
+    [null, false, null], // nothing unstamped: never reads
+  ]
+  let tries: StampTries | undefined
+  rows.forEach(([key, reads, after], i) => {
+    expect([i, stampWanted(tries, key)]).toEqual([i, reads])
+    if (reads && key !== null) tries = stampTried(tries, key, after)
+  })
 })

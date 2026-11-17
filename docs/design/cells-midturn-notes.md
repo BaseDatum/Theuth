@@ -17,13 +17,21 @@ the message").
   `CellOrdinals.turnRunning` stays (MessageAssistant, off-limits, still passes `open || turnRunning`); its doc says it
   gates nothing. No other cell code read `turnRunning` (grep).
 - **D2, the stored seq while the turn runs**
-  - `store/reduce.ts` `stampStored(entries, history, turn)` (pure) and `unstamped(slice)`.
+  - `store/reduce.ts` `stampStored(entries, history, turn)` (pure), `unstampedKey(slice)` and the R1 give-up
+    `stampWanted` / `stampTried`.
   - `store/sessions.ts` action `stampTail(id, page, fresh)`: applies it, dropped when `historyGeneration` moved.
   - `routes/c.$session.tsx` `useSessionLoad`: `stamp` reads `api.load_session(session, null, 16)` (plain read, 4th
     argument omitted = not `settled_only`, allowed mid-turn: `loop_.rs` `context_history` refuses only
     `settled_only` while busy) on `ContextUsed`, `ToolCallStarted`, `ToolCallFinished`, `InputInjected` of the
-    session, only when `unstamped` (a closed live reply of the running turn without `context`). One read in flight;
-    calls meanwhile coalesce into one more (the `settle` pattern).
+    session, only when `unstampedKey` is not null (closed live replies of the running turn without `context`). One
+    read in flight; calls meanwhile coalesce into one more (the `settle` pattern).
+  - **R1 (review), bounded reads.** A reply `stampStored` refuses for good (text mismatch, a salvage continuation —
+    one live reply, two stored rows — a tool batch wider than the page) used to keep every later event of the turn
+    reading. Now the attempts are keyed by `unstampedKey` (`<turn>:<ids of the closed unstamped replies>`); a read
+    that leaves the same key is a miss (`stampTried`), and after 2 misses for one key `stampWanted` says no until the
+    key changes (a reply closes or gets stamped, or another turn runs). The turn-end settled reload still stamps
+    everything. The normal round costs one miss (the `ContextUsed` read before the store) and then stamps, so it
+    never hits the limit; the fixture rerun still shows rows=1 (miss), rows=2 (stamped), then no more reads.
 - **D3, copy** — "ready when the reply ends" → "ready when this message is saved" in `Cell.tsx` (doc, comment, button
   reason, notice) and `RunbookBar.tsx` (doc, `aria-description`); the two docs now say "not stored yet".
 - **D4** — no Rust change (evidence below).
@@ -74,7 +82,8 @@ the message").
 
 - `src/store/stored-tail.test.ts` (new): stamps in order, identity of untouched entries; incremental (anchor) page
   without the opener; the not-yet-stored round changes nothing; text mismatch / too many stored / page not reaching
-  back → nothing; other turns and `turn: undefined` untouched; `unstamped`.
+  back → nothing; other turns and `turn: undefined` untouched; `unstampedKey`; R1 table: two misses for one key stop
+  the reads, a new reply reads again, stamping one of two is progress, another turn resets, no key never reads.
 - `src/components/cells/CellFence.test.ts`: a stored cell is runnable (button enabled, Run all) with and without a
   running turn; without a stored seq it is pending with "ready when this message is saved"; the incomplete-fence test
   keeps pending with the new copy.
@@ -91,7 +100,10 @@ All from `crates/desktop/ui` under `~/.theuth/bin/build-lock`:
 
 - `bunx tsc -b --noEmit`: 0 `error TS` (baseline before the change also 0; `/tmp/cells-midturn/tsc-base.txt`, `tsc.txt`).
 - targeted `bunx vitest run src/store/stored-tail.test.ts src/components/cells/{CellFence,Cell,RunbookBar}.test.ts
-  src/store/{reduce,sessions}.test.ts src/components/disclosure.test.ts src/lib/no-emoji.test.ts`: 8 files, 166 tests
-  passed (`/tmp/cells-midturn/vitest.txt`).
-- full `BUILD_SLOTS=1 … bunx vitest run src`: 360 files, 2531 tests passed (`/tmp/cells-midturn/vitest-full.txt`).
+  src/store/{reduce,sessions}.test.ts src/components/disclosure.test.ts src/lib/no-emoji.test.ts`: 8 files, 167 tests
+  passed after R1 (166 before; `/tmp/cells-midturn/vitest.txt`).
+- full `BUILD_SLOTS=1 … bunx vitest run src` after R1: 359 of 360 files, 2531 of 2532 tests passed; the one failure,
+  `src/link/pairing.test.ts` ("RpcError: connection changed", a relay round trip, nothing this branch touches),
+  passed alone (7/7, `/tmp/cells-midturn/vitest-pairing.txt`) — a load flake. Before R1 the full suite was 360 files,
+  2531 tests, all green (`/tmp/cells-midturn/vitest-full.txt` holds the R1 run).
 - No Rust touched: no cargo/mbx gates.
