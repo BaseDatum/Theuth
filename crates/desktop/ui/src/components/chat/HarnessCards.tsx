@@ -277,7 +277,7 @@ export function ParentViewCard({ lines, bytes }: Extract<Entry, { kind: 'parentV
           <span className="min-w-0 flex-1">
             <span className={HEAD}>
               <InfinityIcon className="size-3.5 shrink-0" aria-hidden="true" />
-              <span className="font-medium">parent's memory</span>
+              <span className="font-medium">parent's context</span>
               <Badge variant="outline">{lines.length} lines</Badge>
               <Badge variant="outline">≈ {fmtBytes(bytes)}</Badge>
             </span>

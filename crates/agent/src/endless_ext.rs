@@ -103,7 +103,7 @@ pub fn eta(secs: u64) -> String {
     }
 }
 
-/// The text every `/autocontext on|off` surface replies with (8.6, R1-D3, R1-D4),
+/// The text every `/fractal on|off` surface replies with (8.6, R1-D3, R1-D4),
 /// from the state the switch returned.
 pub fn reply(mode: MemoryMode, m: &SessionMemory) -> String {
     match mode {
@@ -115,10 +115,10 @@ pub fn reply(mode: MemoryMode, m: &SessionMemory) -> String {
                 est.model.clone()
             };
             if est.units == 0 {
-                format!("Autocontext on. Compactor: {model}. The view is up to date.")
+                format!("Fractal context on. Compactor: {model}. The view is up to date.")
             } else {
                 format!(
-                    "Autocontext on. Summarising {} messages in the background with {model} (ETA {}, ≈ ${:.2}); the session keeps its current memory until the view covers its history.",
+                    "Fractal context on. Summarising {} messages in the background with {model} (ETA {}, ≈ ${:.2}); the session keeps its current context until the view covers its history.",
                     est.units,
                     eta(est.eta_secs),
                     est.usd
@@ -126,21 +126,21 @@ pub fn reply(mode: MemoryMode, m: &SessionMemory) -> String {
             }
         }
         MemoryMode::Epochs => {
-            "Autocontext off. The view was written as this epoch's summary; the session continues with epochs.".to_owned()
+            "Fractal context off. The view was written as this epoch's summary; the session continues with epochs.".to_owned()
         }
     }
 }
 
-/// One line of memory state for `/autocontext` with no argument (and the
+/// One line of context state for `/fractal` with no argument (and the
 /// header badge's tooltip): mode, view size, lines, settle state, backfill.
 pub fn status(m: &SessionMemory) -> String {
     if m.mode != MemoryMode::Endless {
-        return "Memory: epochs (compaction). `/autocontext on` switches this session to autocontext."
+        return "Context: epochs (compaction). `/fractal on` switches this session to fractal context."
             .to_owned();
     }
     let bytes: usize = m.view.iter().map(|l| l.text.len()).sum();
     let mut s = format!(
-        "Memory: autocontext · view {} KB of {} KB · {} lines · {} messages · compactor {}",
+        "Fractal context · view {} KB of {} KB · {} lines · {} messages · compactor {}",
         bytes / 1000,
         m.view_bytes / 1000,
         m.view.len(),
@@ -248,17 +248,17 @@ mod tests {
                 && text.contains("$18.50"),
             "{text}"
         );
-        assert!(reply(MemoryMode::Epochs, &busy).starts_with("Autocontext off."));
+        assert!(reply(MemoryMode::Epochs, &busy).starts_with("Fractal context off."));
         assert_eq!(eta(59), "59s");
         assert_eq!(eta(125), "2m 05s");
         let s = status(&busy);
         assert!(
-            s.starts_with("Memory: autocontext · view 0 KB of 128 KB · 1 lines · 2 messages · compactor p/haiku · backfill 40/1240"),
+            s.starts_with("Fractal context · view 0 KB of 128 KB · 1 lines · 2 messages · compactor p/haiku · backfill 40/1240"),
             "{s}"
         );
         assert!(status(&memory(None)).ends_with("· up to date"));
         let mut epochs = memory(None);
         epochs.mode = MemoryMode::Epochs;
-        assert!(status(&epochs).starts_with("Memory: epochs"));
+        assert!(status(&epochs).starts_with("Context: epochs"));
     }
 }

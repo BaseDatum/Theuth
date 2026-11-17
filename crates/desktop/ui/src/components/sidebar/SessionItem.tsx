@@ -334,7 +334,7 @@ export const SessionItem = memo(function SessionItem({
               <SessionSubagents subagents={subagents} />
               <span className="truncate">{shown}</span>
               {endless && (
-                <span role="img" aria-label="Autocontext" className="shrink-0 text-sm leading-4 text-fg-tertiary">
+                <span role="img" aria-label="Fractal context" className="shrink-0 text-sm leading-4 text-fg-tertiary">
                   ∞
                 </span>
               )}

@@ -130,8 +130,8 @@ test('the existing chat options menu retains Open in new window', async () => {
   expect(openPopout).toHaveBeenCalledWith({ kind: 'chat', session: 'root' })
 })
 
-test('an autocontext session shows the ∞ badge labelled Autocontext after its title', async () => {
+test('a fractal context session shows the ∞ badge labelled Fractal context after its title', async () => {
   await mount([child], true)
-  expect(glyph('Autocontext').textContent).toBe('∞')
-  expect(document.querySelector('[aria-label*="ndless"]')).toBeNull()
+  expect(glyph('Fractal context').textContent).toBe('∞')
+  expect(document.querySelector('[aria-label*="ndless"], [aria-label*="emory"]')).toBeNull()
 })

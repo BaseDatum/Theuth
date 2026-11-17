@@ -52,9 +52,9 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     desc: 'reasoning effort (picker without arg)',
   },
   {
-    name: '/autocontext',
+    name: '/fractal',
     hint: 'on|off',
-    desc: 'switch this session between autocontext and epochs (idle sessions only)',
+    desc: 'switch this session between fractal context and epochs (idle sessions only)',
   },
   {
     name: '/mcp',
@@ -169,7 +169,7 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
 /** Commands whose name starts with the typed word (`/mo` → `/model`). */
 export const matches = (word: string) => COMMANDS.filter((c) => c.name.startsWith(word))
 
-/** Old names still run but are not listed: `/endless` is `/autocontext`'s. */
+/** Old names still run but are not listed: `/endless` is `/fractal`'s. */
 const ALIASES: readonly string[] = ['/endless']
 
 /** One slash-menu row: a theuth built-in or, in an ACP session (D15), one of the harness's own commands. */
@@ -384,17 +384,17 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       if (!session) return useDrafts.getState().setPick({ effort: arg === 'clear' ? null : arg })
       await api.set_effort(session, arg === 'clear' ? null : arg, true)
       return
-    // 137 §8.6 (157 D3): the TUI's `/autocontext on|off` on the desktop too — `set_session_memory`, idle sessions only; the
-    // badge and the Memory panel follow the refreshed `sessions` row (and a notebook's `notebook_chats` row) and `session_memory`.
-    case '/autocontext':
+    // 137 §8.6 (157 D3): the TUI's `/fractal on|off` on the desktop too — `set_session_memory`, idle sessions only; the
+    // badge and the Context panel follow the refreshed `sessions` row (and a notebook's `notebook_chats` row) and `session_memory`.
+    case '/fractal':
     case '/endless': {
-      if (sub !== 'on' && sub !== 'off') throw new Error(`/autocontext: expected on|off, got ${JSON.stringify(sub)}`)
+      if (sub !== 'on' && sub !== 'off') throw new Error(`/fractal: expected on|off, got ${JSON.stringify(sub)}`)
       if (!session) return useDrafts.getState().setCreate({ memory: sub === 'on' ? 'endless' : 'epochs' })
       const m = await api.set_session_memory(session, sub === 'on' ? 'endless' : 'epochs')
       active().qc.setQueryData(queryKeys.sessionMemory(session), m)
       void active().qc.invalidateQueries({ queryKey: queryKeys.sessions })
       void active().qc.invalidateQueries({ queryKey: [...notebookKeys.all, 'chats'] })
-      toast(m.mode === 'endless' ? 'Autocontext on' : 'Autocontext off: back to epochs')
+      toast(m.mode === 'endless' ? 'Fractal context on' : 'Fractal context off: back to epochs')
       return
     }
     case '/title': {

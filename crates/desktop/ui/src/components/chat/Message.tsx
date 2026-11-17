@@ -206,7 +206,7 @@ function describe(entry: Entry): string {
     case 'autoresearch':
       return `Autoresearch · ${entry.slug} · ${entry.event}`
     case 'parentView':
-      return "parent's memory"
+      return "parent's context"
     case 'compacted':
       return 'summary'
     case 'vision':

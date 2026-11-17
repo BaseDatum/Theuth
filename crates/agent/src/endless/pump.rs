@@ -2170,7 +2170,7 @@ pub(crate) async fn render_for_turn(
     again: bool,
 ) -> anyhow::Result<ViewRender> {
     let Some(state) = state_of(inner, session) else {
-        anyhow::bail!("session {session} is not attached to autocontext");
+        anyhow::bail!("session {session} does not use fractal context");
     };
     ingest(&state).await?;
     let mut live = state.live.lock();
@@ -2255,7 +2255,7 @@ pub(crate) async fn render_snapshot(
     session: SessionId,
 ) -> anyhow::Result<Vec<ViewBlock>> {
     let Some(state) = state_of(inner, session) else {
-        anyhow::bail!("session {session} is not attached to autocontext");
+        anyhow::bail!("session {session} does not use fractal context");
     };
     ingest(&state).await?;
     let mut live = state.live.lock();
@@ -2273,7 +2273,7 @@ pub(crate) async fn render_with_budget(
     bytes: u32,
 ) -> anyhow::Result<Vec<ViewLine>> {
     let Some(state) = state_of(inner, session) else {
-        anyhow::bail!("session {session} is not attached to autocontext");
+        anyhow::bail!("session {session} does not use fractal context");
     };
     ingest(&state).await?;
     let live = state.live.lock();
@@ -2378,7 +2378,7 @@ pub(crate) async fn zoom(
     n: u64,
 ) -> Result<Vec<ViewLine>, String> {
     let Some(state) = state_of(inner, session) else {
-        return Err("this session does not use autocontext".into());
+        return Err("this session does not use fractal context".into());
     };
     let mut live = state.live.lock();
     // R2-6 / R2-10: a folded run of several units is no node even when its
@@ -2423,7 +2423,7 @@ pub(crate) async fn recall(
     limit: u8,
 ) -> Result<Vec<ViewLine>, String> {
     let Some(state) = state_of(inner, session) else {
-        return Err("this session does not use autocontext".into());
+        return Err("this session does not use fractal context".into());
     };
     let limit = u32::from(limit.max(1));
     let hits = state
@@ -2470,7 +2470,7 @@ pub(crate) async fn date(
     id: u64,
 ) -> Result<Option<DateTime<Utc>>, String> {
     let Some(state) = state_of(inner, session) else {
-        return Err("this session does not use autocontext".into());
+        return Err("this session does not use fractal context".into());
     };
     let live = state.live.lock();
     live.units

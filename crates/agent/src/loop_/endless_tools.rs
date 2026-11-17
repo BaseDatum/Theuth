@@ -107,7 +107,7 @@ pub async fn run(
             },
             Err(e) => ToolOutput::err(format!("date: bad arguments: {e}")),
         },
-        other => ToolOutput::err(format!("{other} is not an autocontext tool")),
+        other => ToolOutput::err(format!("{other} is not a fractal context tool")),
     }
 }
 

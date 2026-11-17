@@ -105,7 +105,7 @@ impl Model {
             },
             "/compact" => self.compact_cmd(arg, tx),
             // `/endless`: the old name, accepted but not listed.
-            "/autocontext" | "/endless" => self.endless_cmd(arg, tx),
+            "/fractal" | "/endless" => self.endless_cmd(arg, tx),
             "/clear" => match self.session {
                 Some(session) => send(
                     tx,

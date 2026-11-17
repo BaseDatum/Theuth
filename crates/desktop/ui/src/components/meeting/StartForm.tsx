@@ -162,12 +162,12 @@ export function StartForm() {
               <span aria-hidden className="text-base leading-5 [font-feature-settings:normal]">
                 ∞
               </span>
-              Autocontext
+              Fractal context
             </span>
           }
-          description="Keeps a compressed memory of the whole meeting behind the live transcript; zoom and recall bring any earlier moment back."
+          description="Keeps a compressed view of the whole meeting behind the live transcript; zoom and recall bring any earlier moment back."
         >
-          <Switch aria-label="Autocontext" checked={endlessOn} onCheckedChange={setEndless} />
+          <Switch aria-label="Fractal context" checked={endlessOn} onCheckedChange={setEndless} />
         </Row>
         <Permission label="Microphone" state={perms.data?.microphone} pane="Privacy_Microphone" />
         <Permission label="System audio recording" state={perms.data?.audio_capture} pane="Privacy_AudioCapture" />
