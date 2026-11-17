@@ -4,8 +4,8 @@
 //! `models::onnx`'s run lock this returns "WebGPU validation failed. [CommandEncoder] is
 //! already finished" within seconds, or kills the test process in
 //! `onnxruntime_providers_webgpu.dll`. Plugin ≥ 0.5.0 on an eligible runtime (we ship 0.6.0 on
-//! ORT 1.32) may run them lock-free (`models::onnx::gpu_lock_free`, held off until this test
-//! passes on a GPU). Either way every run must be `Ok` for the whole 20 s; the output names
+//! ORT 1.32) runs them lock-free (`models::onnx::gpu_lock_free`). Either way every run must be
+//! `Ok` for the whole 20 s; the output names
 //! the mode. `crates/desktop/companion-windows/ort-webgpu-test.ps1` runs it on Windows against
 //! the pinned pair.
 //!
