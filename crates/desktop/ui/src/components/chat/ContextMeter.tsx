@@ -1,10 +1,13 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import NumberFlow, { NumberFlowGroup } from '@number-flow/react'
 import { useQuery } from '@tanstack/react-query'
+import { Gauge } from 'lucide-react'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { detailOf } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
+import type { SessionSummary } from '@/rpc/bindings/method.agent.output'
 import { useSessionField } from '@/store/sessions'
+import { MenuRow } from './HeaderMenu'
 
 /** Rounded thousands, no grouping (`1000k`, never `1,000k`). */
 const K = { maximumFractionDigits: 0, useGrouping: false }
@@ -28,7 +31,8 @@ const BAND = {
 /**
  * `used/limit k · pct% · cache` pill (bands at 75 / 90 / 95 %, 75 §5). `limit` is the harness's window when it
  * reported one, the catalog's otherwise. `compact`: the percent alone, for the narrow header;
- * the pane's own width decides that, not the viewport, so no `md:` gating here.
+ * the pane's own width decides that, not the viewport, so no `md:` gating here. `row`: the compact menu's line.
+ * Nothing for an `endless` (autocontext) session, chat or desk (Sky 2026-11-17).
  */
 /**
  * 141 R3 T14 (Q3): what the meter reads — a watch-only omp child's own `contextTokens/contextWindow` when the harness
@@ -45,7 +49,7 @@ export function meterSource(
   return { used: context, estimated: !!estimated, limit: size }
 }
 
-export function ContextMeter({ session, compact }: { session: string; compact?: boolean }) {
+export function ContextMeter({ session, memory, compact, row }: { session: string; memory?: SessionSummary['memory']; compact?: boolean; row?: boolean }) {
   const canQuery1 = useQuerySupport(["list_models"])
   const api = useApi()
   const context = useSessionField(session, 'context')
@@ -56,12 +60,12 @@ export function ContextMeter({ session, compact }: { session: string; compact?: 
   const observed = useSessionField(session, 'observed')
   const { data: models } = useQuery({ enabled: canQuery1, queryKey: queryKeys.models, queryFn: () => api.list_models() })
   const { used, estimated, limit: own } = meterSource(observed, context, contextEstimated, size ?? undefined)
-  if (used === undefined) return null
+  if (used === undefined || memory === 'endless') return null
   const limit = own ?? models?.find((m) => m.id === model)?.context ?? 0
   const pct = limit > 0 ? Math.round((used / limit) * 100) : null
   const cache = usage && usage.prompt > 0 ? Math.round((usage.cached / usage.prompt) * 100) : null
   const [tone, warn] = BAND[band(pct)]
-  return (
+  const pill = (
     <NumberFlowGroup>
       <span
         className={cn('rounded-full border px-2.5 py-0.5 text-xs whitespace-nowrap tabular-nums', tone)}
@@ -88,4 +92,5 @@ export function ContextMeter({ session, compact }: { session: string; compact?: 
       </span>
     </NumberFlowGroup>
   )
+  return row ? <MenuRow icon={Gauge} label="Context" detail={pill} /> : pill
 }

@@ -273,6 +273,8 @@ test('Revision 2 — contextFill: the provider’s last bill over the estimate, 
   expect(contextFill(b, s, undefined)).toBeNull()
   expect(contextFill(b, { ...s, model: 'unknown/model' }, models)).toBeNull()
   expect(contextFill(b, s, [{ ...models[0]!, context: 0 }])).toBeNull()
+  // Sky 2026-11-17: an endless (autocontext) desk has no gauge; the same desk in epochs (above) has one.
+  expect(contextFill(b, { ...s, memory: 'endless' }, models)).toBeNull()
   expect(kTokens(8_240)).toBe('8.2k')
   expect(kTokens(118_400)).toBe('118k')
   expect(ctxTitle({ fill: 0.59, used: 118_000, window: 200_000, live: true })).toBe('context ≈ 118k of 200k (59 %)')

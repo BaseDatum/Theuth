@@ -9,7 +9,7 @@ import { searchRequirements } from '@/components/sidebar/requirements'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { AppWindow, Contact, CornerLeftUp, Eye, Gauge, LayoutGrid, MessageSquare, Monitor, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
+import { AppWindow, Contact, CornerLeftUp, Eye, LayoutGrid, MessageSquare, Monitor, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
 import { Fragment, type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
@@ -324,12 +324,7 @@ export function Header({
           {!compact && vm.name}
         </Button>
       ),
-    context: (mode) =>
-      !session ? null : mode === 'row' ? (
-        <MenuRow icon={Gauge} label="Context" detail={<ContextMeter session={session} />} />
-      ) : (
-        <ContextMeter session={session} compact={mode === 'bar'} />
-      ),
+    context: (mode) => (session ? <ContextMeter session={session} memory={row?.memory} row={mode === 'row'} compact={mode === 'bar'} /> : null),
     cost: (mode) => (session ? <CostPill session={session} row={mode === 'row'} onOpen={() => setCost(true)} /> : null),
     terminals: (mode) => (session ? <TerminalButton session={session} row={mode === 'row'} onOpen={() => setTerminal(true)} /> : null),
     browser: (mode) =>
