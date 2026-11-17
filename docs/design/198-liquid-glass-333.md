@@ -59,7 +59,7 @@ package (`swift build` lines in the log, no `error:`); `** BUILD SUCCEEDED **`; 
 
 If this tauri-cli refuses a simulator `build`, use dev mode instead (it builds, installs and launches; keep it
 running for the steps below and stop it with Ctrl-C at the end):
-`TAURI_FRONTEND_PATH=ui cargo tauri ios dev "iPhone 16 Pro" --config tauri.ios.conf.json 2>&1 | tee /tmp/glass333/dev.log`.
+`TAURI_FRONTEND_PATH=ui /Users/sky/.cargo/bin/cargo-tauri ios dev "iPhone 16 Pro" --config tauri.ios.conf.json 2>&1 | tee /tmp/glass333/dev.log`.
 
 Failure triage: `grep -nE "error:|warning: .*glass|ld: " /tmp/glass333/build.log`. Swift errors point into
 `crates/tauri-plugin-glass/ios/Sources/*.swift`; a link error naming `init_plugin_glass` means the swift-rs library
