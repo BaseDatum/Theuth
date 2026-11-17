@@ -28,6 +28,8 @@ export const CELL_LANGUAGES = ['bash', 'zsh', 'sh', 'pwsh', 'powershell', 'pytho
  * (`replyCells`); `claim` hands a mounted fence its ordinal — the first unclaimed cell with the same body, so two
  * identical cells still get two ordinals; the claims reset with each value (one per message text). Only assistant
  * markdown provides it: without it a fence stays code (harness cards, tool results, peer text — §12.2).
+ * `turnRunning` gates nothing (cells-midturn D1: a closed, stored cell runs while its turn still runs); it stays
+ * because `MessageAssistant` still passes it.
  */
 export type CellOrdinals = { text: string; entry: string | null; turnRunning: boolean; cells: ReplyCell[]; claim(fence: string, body: string): number | null }
 export const CellOrdinals = createContext<CellOrdinals | null>(null)
@@ -92,7 +94,8 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
     () => (session && ordinals.entry ? { type: 'chat', session, entry: ordinals.entry, ordinal } : null),
     [session, ordinals.entry, ordinal],
   )
-  const pending = !!session && (isIncomplete || ordinals.turnRunning || !ordinals.entry)
+  // cells-midturn D1: closed fence + stored reply; whether the turn still runs does not matter.
+  const pending = !!session && (isIncomplete || !ordinals.entry)
   // F4: the user's edit outlives a remount (`edits`, by `refKey`); a cell without a ref cannot be edited.
   const editKey = cellRef ? refKey(cellRef) : ''
   const edited = useEdit(editKey)

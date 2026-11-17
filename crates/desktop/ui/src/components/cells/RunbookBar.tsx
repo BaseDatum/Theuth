@@ -29,7 +29,7 @@ export type RunbookBarProps = {
   whyKey: string
   onRunAll(): void
   onOpenAsNote(): void
-  /** 171:U1-ADD: false while the reply is still being written (`CellFence`'s "ready when the reply ends"). */
+  /** 171:U1-ADD: false while the reply is not stored yet (`CellFence`'s "ready when this message is saved"). */
   runnable?: boolean
 }
 
@@ -123,7 +123,7 @@ export function RunbookBar({ cells, kernels, pass, whyKey, onRunAll, onOpenAsNot
         size="sm"
         className="h-8 gap-1 pointer-coarse:h-12 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
         aria-disabled={disabled || undefined}
-        aria-description={!runnable ? 'ready when the reply ends' : busy ? 'a run is in progress' : undefined}
+        aria-description={!runnable ? 'ready when this message is saved' : busy ? 'a run is in progress' : undefined}
         title={`${label} (${mod}⇧↵)`}
         onClick={() => !disabled && onRunAll()}
       >

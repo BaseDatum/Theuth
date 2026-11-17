@@ -35,6 +35,7 @@ import { type SearchDestination, isSearchDestination, useSearchOrigin } from '@/
 import { useScope } from '@/store/engine-scope'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { freshness, on, useSessionField, useSessions } from '@/store/sessions'
+import { unstamped } from '@/store/reduce'
 import { ContactAllowStrip } from '@/components/chat/ContactAllowStrip'
 import { KernelStrip } from '@/components/cells/KernelStrip'
 import { BAR, useNativeBar } from '@/lib/native-chrome'
@@ -54,6 +55,8 @@ export const Route = createFileRoute('/c/$session')({
 })
 
 const PAGE = 60
+/** cells-midturn D2: rows of the newest page read for a running turn's stored replies; a round is a reply and its tool rows. */
+const STAMP_PAGE = 16
 /** Settled reloads refused because an event raced the read are retried at most this often before waiting for the next notification. */
 const SETTLE_TRIES = 3
 
@@ -334,6 +337,40 @@ export function useSessionLoad(session: string): void {
     [api, session, store, report, refreshBackground],
   )
 
+  // cells-midturn D2: the running turn's stored replies give their cells a stored seq, so they run before the turn
+  // ends. The engine publishes `ContextUsed` just before it stores the round and the tool, injection events after, so
+  // each asks when a closed reply lacks its row; one read in flight, calls meanwhile coalesce into one more.
+  const stamping = useRef(false)
+  const restamp = useRef(false)
+  const stamp = useCallback(
+    (signal: AbortSignal) => {
+      const s = store.getState().sessions[session]
+      if (!s || !unstamped(s)) return
+      if (stamping.current) {
+        restamp.current = true
+        return
+      }
+      stamping.current = true
+      const fresh = freshness(s)
+      void api
+        .load_session(session, null, STAMP_PAGE)
+        .then(
+          (page) => {
+            if (!signal.aborted) store.getState().stampTail(session, page, fresh)
+          },
+          (e: unknown) => report(e, signal),
+        )
+        .finally(() => {
+          stamping.current = false
+          if (restamp.current && !signal.aborted) {
+            restamp.current = false
+            stamp(signal)
+          }
+        })
+    },
+    [api, session, store, report],
+  )
+
   useEffect(() => {
     const ctl = new AbortController()
     const st = store.getState()
@@ -380,13 +417,18 @@ export function useSessionLoad(session: string): void {
         store.getState().markStale(session)
         settle(ctl.signal)
       }),
+      ...(['ContextUsed', 'ToolCallStarted', 'ToolCallFinished', 'InputInjected'] as const).map((type) =>
+        on("agent.events@1", type, (e) => {
+          if (e.session === session) stamp(ctl.signal)
+        }),
+      ),
     ]
     return () => {
       ctl.abort()
       window.removeEventListener('theuth:reload-session', reload)
       for (const off of offs) off()
     }
-  }, [load, settle, session, report, qc, store])
+  }, [load, settle, stamp, session, report, qc, store])
 }
 
 /** `Private` badge for a chat in the owned tree, plus the bounded reconnect countdown while its transport is down (51 §4.3). */
