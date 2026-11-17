@@ -95,7 +95,7 @@ impl Peers {
                     Request::SetPeerScope { root, scope, alias } => Msg::Communication(api.set_peer_scope(root, scope, alias).await.map_err(crate::reason)?),
                     Request::ListPeers(session) => Msg::Peers(session, api.list_peers(session, None, None, None).await.map_err(crate::reason)),
                     Request::ListPeerRequests(session) => Msg::PeerRequests(session, api.list_peer_messages(session, None, None, true).await.map_err(crate::reason)?),
-                    Request::AnswerPeerRequest { session, reply_to, text } => Msg::PeerAnswered(api.answer_peer_request(session, reply_to, text).await.map_err(crate::reason)?),
+                    Request::AnswerPeerRequest { session, reply_to, text } => Msg::PeerAnswered(api.answer_peer_request(session, reply_to, text, None).await.map_err(crate::reason)?),
                     Request::A2aStatus => Msg::A2a(api.a2a_status().await.map_err(crate::reason)?),
                     Request::ReloadA2a => Msg::A2a(api.reload_a2a().await.map_err(crate::reason)?),
                 })

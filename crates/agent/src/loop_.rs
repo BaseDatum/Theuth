@@ -10716,6 +10716,122 @@ mod tests {
         assert!(peer_wrapped(&record, &w));
     }
 
+    /// 199 D17 consumption: with the share ended (revoked after admission), the notice is
+    /// the engine-state row and opens nothing; live, it is one row (exactly its text, no
+    /// clock stamp) journaled `contact_file` under its id; a second accepted copy (a
+    /// re-send after the owner lost its pending set) adds nothing. Each clears its pending id.
+    #[tokio::test]
+    async fn a_file_notice_is_consumed_once_and_an_ended_share_opens_nothing() {
+        use crate::communication::files::notices::{self, Pending};
+        use crate::store::contacts::{Cell, RecordTable, RecordWrite};
+        let scratch = crate::TestDir::new("notice");
+        let dir = scratch.0.clone();
+        let store = Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        let model = Resolved {
+            id: "m".into(),
+            genai: "m".into(),
+            provider: None,
+            model: None,
+        };
+        let mut session = Session::new(
+            id,
+            0,
+            (model, None),
+            None,
+            SessionState::resume(0, None, vec![]),
+            Arc::new(AgentConfig::default()),
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+            store.clone(),
+            Client::new().unwrap(),
+            Auth::stub(&dir),
+            Runtime::new(figment::Figment::new(), dir.clone()),
+            Arc::new(models::Catalog::load(&dir)),
+            None,
+            Arc::new(Semaphore::new(1)),
+            SessionResources::durable_arc(&dir),
+        );
+        let mut turn = Turn::new(
+            session.shared.clone(),
+            Some(TurnId::new()),
+            CancellationToken::new(),
+            session.state.take().unwrap(),
+        );
+        let text = |n: &str| format!("<message_file from=\"peer:maya\" file=\"{n}\"/>\nhint");
+        let pend = |nid: Uuid, t: &str| Pending {
+            id: nid,
+            session: id,
+            contact: "rec".into(),
+            text: t.into(),
+        };
+        let input = |t: &str| Input {
+            text: t.into(),
+            ..harness_input(None)
+        };
+        // Ended: no share of this chat with `rec`.
+        let ended = Uuid::new_v4();
+        notices::hold(pend(ended, &text("a")));
+        assert!(!turn.take_input(input(&text("a"))).await);
+        assert!(turn.state.history.is_empty());
+        assert!(notices::claim(id, &text("a")).is_none());
+        let errors = store.errors(id).await.unwrap();
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0]
+                .1
+                .ends_with("has ended, so this was not given to the agent.")
+        );
+        // Live: `rec` is granted an export of this chat.
+        let set = |t, k: &str, cols| RecordWrite::new(t, k, cols);
+        store
+            .write_contact_records(&[
+                set(
+                    RecordTable::Contacts,
+                    "rec",
+                    vec![("alias", Cell::Text("maya".into()))],
+                ),
+                set(
+                    RecordTable::Exports,
+                    "x1",
+                    vec![
+                        ("name", Cell::Text("ops".into())),
+                        ("session", Cell::Text(id.to_string())),
+                    ],
+                ),
+                set(
+                    RecordTable::Grants,
+                    "rec|x1",
+                    vec![
+                        ("contact", Cell::Text("rec".into())),
+                        ("export", Cell::Text("x1".into())),
+                        ("granted", Cell::Int(1)),
+                    ],
+                ),
+            ])
+            .await
+            .unwrap();
+        let live = Uuid::new_v4();
+        for _ in 0..2 {
+            notices::hold(pend(live, &text("b")));
+            turn.take_input(input(&text("b"))).await;
+            assert!(notices::claim(id, &text("b")).is_none());
+        }
+        assert_eq!(turn.state.history.len(), 1);
+        assert_eq!(text_of(&turn.state.history[0].1.content), text("b"));
+        assert!(store.notice_committed(id, live).await.unwrap());
+        assert_eq!(store.errors(id).await.unwrap().len(), 1);
+    }
+
     /// 50 §9: the body cannot close the wrapper or forge a second one (nor a
     /// look-alike such as `<messages>`); other markup and the word "message"
     /// outside a tag are untouched.

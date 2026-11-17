@@ -916,13 +916,13 @@ mod tests {
         let row = in_row(s, ex, &"1".repeat(32));
         assert!(
             store
-                .admit_in_files(&ex.to_string(), &[row.clone()])
+                .admit_in_files(&ex.to_string(), std::slice::from_ref(&row))
                 .await
                 .unwrap()
         );
         assert!(
             !store
-                .admit_in_files(&ex.to_string(), &[row.clone()])
+                .admit_in_files(&ex.to_string(), std::slice::from_ref(&row))
                 .await
                 .unwrap()
         );

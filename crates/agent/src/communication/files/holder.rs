@@ -221,7 +221,10 @@ mod tests {
         let src = d.0.join("report.pdf");
         std::fs::write(&src, b"ours").unwrap();
         let row = saved(&"4".repeat(32), &src, 4);
-        store.insert_contact_files(&[row.clone()]).await.unwrap();
+        store
+            .insert_contact_files(std::slice::from_ref(&row))
+            .await
+            .unwrap();
         let dest = d.0.join("out.pdf");
         assert_eq!(
             export(&store, &r, &row.id, dest.clone()).await.unwrap(),

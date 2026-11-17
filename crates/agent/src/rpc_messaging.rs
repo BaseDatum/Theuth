@@ -610,4 +610,28 @@ mod tests {
             .unwrap_err();
         assert_eq!(e.code(), -32010);
     }
+
+    /// 199 D17: `contact_file_notice` is internal: a call without the front door's
+    /// `Forwarded` marker (a desktop, a phone, this engine's own clients) is refused
+    /// before anything is looked at.
+    #[tokio::test]
+    async fn a_file_notice_without_the_forwarded_marker_is_refused() {
+        use super::AgentMessagingApiServer as _;
+        let d = crate::TestDir::new("rpcnotice");
+        let server =
+            rpc_core::Server::new(runtime::Runtime::new(figment::Figment::new(), d.0.clone()));
+        let mut ext = jsonrpsee::Extensions::new();
+        ext.insert(rpc_core::RpcPeer::internal());
+        let e = server
+            .contact_file_notice(
+                &ext,
+                runtime::SessionId::new(),
+                uuid::Uuid::new_v4(),
+                "rec".into(),
+                "<message_file/>".into(),
+            )
+            .await
+            .unwrap_err();
+        assert!(e.message().contains("internal"), "{}", e.message());
+    }
 }

@@ -38,7 +38,8 @@ fn pending_has(id: Uuid) -> bool {
     PENDING.lock().as_ref().is_some_and(|m| m.contains_key(&id))
 }
 
-fn hold(p: Pending) {
+/// Hold `p` pending (admitted; the loop claims it by its text).
+pub(crate) fn hold(p: Pending) {
     PENDING.lock().get_or_insert_default().insert(p.id, p);
 }
 

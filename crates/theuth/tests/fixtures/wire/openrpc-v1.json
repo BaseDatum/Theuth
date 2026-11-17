@@ -117060,6 +117060,20 @@
             "type": "string"
           },
           "x-theuth-aliases": []
+        },
+        {
+          "name": "files",
+          "required": false,
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
         }
       ],
       "result": {
