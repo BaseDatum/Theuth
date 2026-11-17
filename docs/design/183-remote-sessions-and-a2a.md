@@ -1070,6 +1070,8 @@ For a session owned here the same four settings appear above the existing items.
 
 Same React app over the link transport (`crates/desktop/ui/src/rpc/client.ts`). Everything in §12.1–§12.5 works unchanged because the hub's front door forwards (§4.7). Settings › Network on a device is read-only except Rename, and Contacts are hidden: pairing needs the machine's own screen.
 
+Lifted 2026-11-17: phones and iPads share through the connected engine (capability-gated). Settings › Contacts shows there too; Add contact stays on the machine's own screen.
+
 ### 12.9 Unpair and vault-key rotation (D7)
 
 Today the Remove button unpairs on click with no confirm (`components/settings/Mesh.tsx:84`, `:157`). In Settings › Network, ⋯ Unpair opens `components/settings/UnpairDialog.tsx`, filled from `mesh_unpair_preview(id)`:

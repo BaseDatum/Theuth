@@ -239,7 +239,7 @@ impl std::str::FromStr for MemoryMode {
         match s {
             "epochs" => Ok(Self::Epochs),
             "endless" => Ok(Self::Endless),
-            _ => Err(format!("unknown memory mode: {s:?}")),
+            _ => Err(format!("unknown context mode: {s:?}")),
         }
     }
 }

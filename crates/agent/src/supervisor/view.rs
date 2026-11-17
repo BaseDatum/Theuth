@@ -38,6 +38,7 @@ pub(super) struct View {
     /// `child_turns[id].started_at`.
     turn_started: HashMap<SessionId, DateTime<Utc>>,
     caps: HashMap<SessionId, Risk>,
+    requested_models: HashMap<SessionId, String>,
 }
 
 impl Agents {
@@ -81,6 +82,7 @@ impl Agents {
                 .map(|(id, ct)| (*id, ct.started_at))
                 .collect(),
             caps: self.caps.clone(),
+            requested_models: self.requested_models.clone(),
         }
     }
 }
@@ -93,6 +95,25 @@ pub(super) async fn job_counts(ids: &[SessionId]) -> HashMap<SessionId, (u16, u1
             .await
             .unwrap_or_default(),
         _ => HashMap::new(),
+    }
+}
+
+/// [`AgentInfo::model`] for `row`: a native child's session model; a harness
+/// child's `harness_model`, else `requested` (its spawn's `model`), else `""`
+/// (its `model` column is the harness name); a watch-only child's own model,
+/// else the stored fallback.
+pub(super) fn effective_model(row: &SessionSummary, requested: Option<&String>) -> String {
+    match &row.agent {
+        Some(_) => row
+            .harness_model
+            .clone()
+            .or_else(|| requested.cloned())
+            .unwrap_or_default(),
+        None if row.observed.is_some() => row
+            .harness_model
+            .clone()
+            .unwrap_or_else(|| row.model.clone()),
+        None => row.model.clone(),
     }
 }
 
@@ -312,7 +333,7 @@ impl View {
             parent,
             depth,
             agent: row.agent.clone(),
-            model: row.model.clone(),
+            model: effective_model(row, self.requested_models.get(&id)),
             state,
             started_at: self.turn_started.get(&id).copied(),
             finished_at: self.last_stop.get(&id).map(|(_, at)| *at),

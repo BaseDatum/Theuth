@@ -72,6 +72,35 @@ async fn real_composition_discovery_is_cached_per_authenticated_view() {
     assert_ne!(reply(&mesh, "rpc.capabilities").await["result"]["schemaHash"], owner_summary["schemaHash"]);
 }
 
+/// The RPCs a phone's ⋯ Share with contact…, Stop sharing and Settings › Contacts call.
+const SHARE_METHODS: [&str; 6] = ["contact_list", "contact_update", "contact_remove", "a2a_exports", "a2a_export_put", "a2a_export_remove"];
+
+/// 183 §12.10, lifted 2026-11-17: a paired device's link conn carries a remote peer and no
+/// `DiscoveryView::Mesh`, so it negotiates the owner contract, which names every share RPC, and the
+/// real composition answers it with no audience or origin check (no a2a actor here: the empty lists).
+/// A share-link guest's contract names none of them, and the link gate refuses each before dispatch.
+#[tokio::test]
+async fn a_paired_device_negotiates_and_calls_the_share_rpcs_and_a_guest_is_refused_them() {
+    let (_, methods) = composition().await;
+    let mut device = methods.clone();
+    let (peer, _guard) = RpcPeer::open_remote();
+    device.extensions_mut().insert(peer);
+    let owner = reply(&device, "rpc.discover").await["result"].clone();
+    for name in SHARE_METHODS { assert!(names(&owner).contains(name), "{name} missing from the device contract"); }
+    for name in ["contact_list", "a2a_exports"] { assert_eq!(reply(&device, name).await["result"], json!([]), "{name}"); }
+
+    let mut guest = methods;
+    let (peer, _guest_guard) = RpcPeer::open_guest([1; 32], [2; 32]);
+    guest.extensions_mut().insert(peer);
+    let guest_document = reply(&guest, "rpc.discover").await["result"].clone();
+    for name in SHARE_METHODS {
+        assert!(!names(&guest_document).contains(name), "{name} offered to a guest");
+        let request = json!({"jsonrpc":"2.0", "id":1, "method":name, "params":[]}).to_string();
+        let refused = link::conn::guest_gate(request.as_bytes()).unwrap_or_else(|| panic!("{name} passed the guest gate"));
+        assert_eq!(serde_json::from_str::<Value>(refused.get()).unwrap()["error"]["code"], -32601, "{name}");
+    }
+}
+
 #[tokio::test]
 async fn authenticated_websocket_serves_the_same_frozen_owner_contract() {
     let (rt, methods) = composition().await;

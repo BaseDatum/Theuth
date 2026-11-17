@@ -3056,7 +3056,7 @@ const VIEW_RESERVE: usize = 48_000;
 
 /// 137G G10: the note a turn whose view was shrunk to fit gets.
 fn view_note(folded: u32) -> String {
-    format!("memory: {folded} older unsummarized lines were folded to fit (recall searches them)")
+    format!("context: {folded} older unsummarized lines were folded to fit (recall searches them)")
 }
 
 /// 178 W3: the longest a resumed turn holds its `resume_parallel` slot.
@@ -7058,7 +7058,7 @@ impl Turn {
                     Some(e) => {
                         endless_tools::run(e, session, &call.fn_name, &call.fn_arguments).await
                     }
-                    None => ToolOutput::err("endless memory is not available in this process"),
+                    None => ToolOutput::err("fractal context is not available in this process"),
                 }
             } else if call.fn_name == todo::NAME {
                 self.state.todo_touched_round = round;
@@ -7482,7 +7482,7 @@ impl Turn {
             tracing::info!(session = %self.shared.id, folded = n, "context_edit: /compact in endless = fold");
             self.note(
                 "memory",
-                &format!("memory: /compact folded {n} unsummarized lines into excerpts (no model call); zoom and recall still reach the full messages"),
+                &format!("context: /compact folded {n} unsummarized lines into excerpts (no model call); zoom and recall still reach the full messages"),
             )
             .await;
             return Ok(self.state.epoch);
@@ -7516,7 +7516,7 @@ impl Turn {
             .shared
             .endless
             .as_ref()
-            .ok_or("endless memory is not available in this process")?;
+            .ok_or("fractal context is not available in this process")?;
         let current = endless.mode(session).await.map_err(|e| format!("{e:#}"))?;
         if current == mode {
             let memory = endless

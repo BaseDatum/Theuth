@@ -1,5 +1,7 @@
 # 137 — Endless: an optional summary-tree memory mode, per session
 
+Shown as **Fractal context** in the product since 2026-11-17 (the settings category is **Context**); internal identifiers keep `endless`.
+
 Status: design v1 · 2026-10-08 03:10 · the contract for the overnight build wave (Sky, 02:50: "write the design doc, implement in parallel with omp subagents … make sure this lands while I'm sleeping, with high quality UI/UX. I'd like to be able to spawn any session in this mode too, with a switch in the new chat view like the private picker, but with the infinity symbol for the label"). Extends 07 (context: frames, epochs, compaction), 11 (compaction styles), 51 (private sessions: the create-options pattern), 67 §6.2/§9 (desks: episodes, journal, memory), 81 (meeting head). Sibling of 136 (dreaming): both put a model at write time and keep reads deterministic; no code dependency either way. Source: Victor Taelin's OptChat spec (gist `optchat.md`, 2026-10) and theuth's replay of it over two desk logs (knowledge `facts/optchat-replay-results-over-theuth-desk-logs-2026-10-08`, `facts/optchat-summary-tree-memory-spec-and-research-map-2026-10-08`, lab `~/Develop/theuth-labs/optchat-replay/{report.md,fold-variants.md}`).
 
 ## 0. Decisions in one screen

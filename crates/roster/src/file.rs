@@ -58,11 +58,18 @@ pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
         ));
     }
     let budget = fm.budget.as_deref().map_or(Ok(Budget::None), str::parse)?;
-    // 137 §10: `memory: epochs | endless`; `view_bytes` within the fold's range.
+    // 137 §10: `memory: epochs | endless`, `fractal` (the product name) read as
+    // `endless` (`render` keeps writing `endless` for older engines); `view_bytes`
+    // within the fold's range.
     let memory = trimmed(fm.memory)
         .map(|m| {
-            m.parse::<agent::MemoryMode>()
-                .map_err(|_| format!("memory: expected epochs|endless, got {m:?}"))
+            let wire = if m == "fractal" {
+                "endless"
+            } else {
+                m.as_str()
+            };
+            wire.parse::<agent::MemoryMode>()
+                .map_err(|_| format!("memory: expected epochs|fractal|endless, got {m:?}"))
         })
         .transpose()?;
     if let Some(b) = fm.view_bytes
@@ -408,6 +415,10 @@ mod tests {
         let on = parse("ops", "---\nmemory: endless\n---\nOps.").unwrap();
         assert_eq!(on.memory, Some(agent::MemoryMode::Endless));
         assert_eq!(render(&on), "---\nmemory: endless\n---\n\nOps.\n");
+        // The product name is an alias; the file is still written as `endless`.
+        let alias = parse("ops", "---\nmemory: fractal\n---\nOps.").unwrap();
+        assert_eq!(alias.memory, Some(agent::MemoryMode::Endless));
+        assert_eq!(render(&alias), "---\nmemory: endless\n---\n\nOps.\n");
         let off = parse("ops", "---\nmemory: epochs\nview_bytes: 32000\n---\nOps.").unwrap();
         assert_eq!(
             (off.memory, off.view_bytes),

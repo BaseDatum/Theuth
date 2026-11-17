@@ -193,6 +193,17 @@ test('CSV: one line per bucket, a column per series, total and previous; labels 
   ])
 })
 
+test('the ledger kind `endless` shows as Fractal context; ids, filters and the CSV keep `endless`', () => {
+  const ix = index(cube([{ hour: h('2026-10-04T05:00:00Z'), kind: 1, usd: 2 }, { hour: h('2026-10-04T06:00:00Z'), kind: 0, usd: 1 }]), 'UTC')
+  const r = range('2026-10-04T00:00:00Z', '2026-10-05T00:00:00Z')
+  expect(breakdown(ix, r, {}, 'kind').map((x) => [x.id, x.label])).toEqual([['endless', 'Fractal context'], ['round', 'round']])
+  expect(options(ix, r, {}).kind.map((x) => [x.id, x.label])).toContainEqual(['endless', 'Fractal context'])
+  const s = series(ix, { ...r, gran: 'day', groupBy: 'kind', metric: 'usd', filters: { kind: ['endless'] } })
+  expect(s.series.map((x) => [x.id, x.label])).toEqual([['endless', 'Fractal context']])
+  expect(s.total).toBe(2)
+  expect(toCsv(s, 'usd', false).split('\n')[0]).toBe('bucket_start,bucket,endless,total')
+})
+
 test('URL search: validate drops junk and defaults, survives the router round trip, resolves presets in the zone', () => {
   const s = validateCostsSearch({ range: '7d', gran: 'day', by: 'owner', metric: 'calls', compare: false, model: ['a', 'a', 'b'], provider: 'openai', kind: 42, q: 'alpha', junk: 1 })
   expect(s).toEqual({ range: '7d', gran: 'day', by: 'owner', metric: 'calls', compare: false, model: ['a', 'b'], provider: ['openai'], q: 'alpha' })

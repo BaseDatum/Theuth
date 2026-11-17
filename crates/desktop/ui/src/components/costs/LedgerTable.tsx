@@ -4,7 +4,7 @@
 import { useNavigate } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { BASES, BASIS_COLOR, BASIS_LABEL, type Filters, type Index, type Range, sessionLabel } from '@/lib/costs/cube'
+import { BASES, BASIS_COLOR, BASIS_LABEL, type Filters, type Index, KIND_LABEL, type Range, sessionLabel } from '@/lib/costs/cube'
 import { compact, usd } from '@/lib/costs/format'
 import { useCostCalls } from '@/lib/costs/queries'
 import { cn } from '@/lib/utils'
@@ -123,7 +123,7 @@ export const LedgerTable = memo(function LedgerTable({ ix, range, filters, now }
                     >
                       <span className="font-mono text-[11px] text-fg-tertiary">{time(c.at_ms, now)}</span>
                       <span className="max-w-[160px] truncate text-foreground">{titles.get(c.root) ?? 'Unknown session'}</span>
-                      <span className="truncate">{c.kind}</span>
+                      <span className="truncate">{KIND_LABEL[c.kind] ?? c.kind}</span>
                       <span className="truncate font-mono text-[11px]">{c.model?.replace(/^[^/]+\//, '') ?? '—'}</span>
                       <span className={NUM}>{c.input == null ? '—' : compact(c.input)}</span>
                       <span className={NUM}>{c.cache_read == null ? '—' : compact(c.cache_read)}</span>

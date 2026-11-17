@@ -71,7 +71,7 @@ function Range({ value, min, max, step, onChange, onCommit, disabled, 'aria-labe
 }
 
 /**
- * Settings › Agent › Memory (137 §11.3): the endless defaults, view size, slack, settle wait and the compactor model (`agent.endless`),
+ * Settings › Agent › Context (tab id `memory`; 137 §11.3): the endless defaults, view size, slack, settle wait and the compactor model (`agent.endless`),
  * and the compact style of chats that are not endless (188 A9, from the old Agent loop tab).
  * `focus`: `model` focuses the compactor model (the Memory panel's "Change model", 137F); `spend` opens Advanced on the
  * daily spend cap (the paused-by-spend row's link, 137G).
@@ -111,14 +111,14 @@ export function Memory({ focus = null }: { focus?: string | null }) {
   return (
     <>
       <Section title="Defaults">
-        <Row label="New chats start endless" description="The ∞ switch on the New chat view starts on; each draft can still turn it off.">
-          <Switch aria-label="New chats start endless" checked={s?.default_chat ?? false} disabled={busy} onCheckedChange={(v) => patch({ default_chat: v })} />
+        <Row label="New chats use fractal context" description="The ∞ switch on the New chat view starts on; each draft can still turn it off.">
+          <Switch aria-label="New chats use fractal context" checked={s?.default_chat ?? false} disabled={busy} onCheckedChange={(v) => patch({ default_chat: v })} />
         </Row>
-        <Row label="Desks start endless" description="Desks whose agents file has no memory: field open their session in endless mode; a desk already running switches at its next idle moment and backfills its history.">
-          <Switch aria-label="Desks start endless" checked={s?.default_desk ?? false} disabled={busy} onCheckedChange={(v) => patch({ default_desk: v })} />
+        <Row label="Desks use fractal context" description="Desks whose agents file does not pick a mode open their session with fractal context; a desk already running switches at its next idle moment and backfills its history.">
+          <Switch aria-label="Desks use fractal context" checked={s?.default_desk ?? false} disabled={busy} onCheckedChange={(v) => patch({ default_desk: v })} />
         </Row>
-        <Row label="Meetings start endless" description="The ∞ switch on the meeting start form starts on: the meeting keeps a compressed memory of the whole call behind the live transcript.">
-          <Switch aria-label="Meetings start endless" checked={s?.default_meeting ?? false} disabled={busy} onCheckedChange={(v) => patch({ default_meeting: v })} />
+        <Row label="Meetings use fractal context" description="The ∞ switch on the meeting start form starts on: the meeting keeps a compressed view of the whole call behind the live transcript.">
+          <Switch aria-label="Meetings use fractal context" checked={s?.default_meeting ?? false} disabled={busy} onCheckedChange={(v) => patch({ default_meeting: v })} />
         </Row>
         <Row label="Default compact style" description="How a compaction builds the new context head.">
           <Select value={info?.compact_style} disabled={!info || setCompact.isPending} onValueChange={(v) => setCompact.mutate(v as CompactStyle)}>
@@ -145,7 +145,7 @@ export function Memory({ focus = null }: { focus?: string | null }) {
           }
           description={
             settings.isError
-              ? `Could not read the memory settings: ${settings.error.message}`
+              ? `Could not read the context settings: ${settings.error.message}`
               : `${tokenEstimate(kb * 1000)} of the whole chat the model reads every turn; the distant past gets coarser to fit. 16–256 KB.`
           }
         >

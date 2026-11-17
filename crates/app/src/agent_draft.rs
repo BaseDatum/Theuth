@@ -340,10 +340,10 @@ pub fn source(
             Some(l) => meta.push(format!("mcp {}", l.join(", "))),
         }
         if let Some(m) = &d.memory_model {
-            meta.push(format!("memory model `{m}`"));
+            meta.push(format!("context summary model `{m}`"));
         }
         if let Some(e) = &d.memory_effort {
-            meta.push(format!("memory effort `{e}`"));
+            meta.push(format!("context summary effort `{e}`"));
         }
         let mut parts = vec![
             format!("{c}_head"),
@@ -513,7 +513,7 @@ mod tests {
         assert!(
             source(&[memory], &existing, "", None)
                 .0
-                .contains("memory model `p/m` · memory effort `low`")
+                .contains("context summary model `p/m` · context summary effort `low`")
         );
     }
 

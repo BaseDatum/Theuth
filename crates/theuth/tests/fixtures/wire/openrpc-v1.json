@@ -1826,6 +1826,14 @@
           {
             "description": "A subagent session was created for `parent`.",
             "properties": {
+              "agent": {
+                "default": null,
+                "description": "External harness (`agents.yaml` key) the child runs on; `None` = theuth.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "cap": {
                 "anyOf": [
                   {
@@ -1845,6 +1853,14 @@
                   }
                 ],
                 "description": "New session."
+              },
+              "model": {
+                "default": null,
+                "description": "The child's model as [`AgentInfo::model`] at spawn; `None` while\nunknown (a harness that has not reported one and no model asked).",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "name": {
                 "description": "Peer name, unique among the parent's children.",
@@ -1868,7 +1884,9 @@
               "parent",
               "child",
               "name",
-              "cap"
+              "cap",
+              "agent",
+              "model"
             ],
             "type": "object"
           },
@@ -4879,6 +4897,14 @@
           {
             "description": "A subagent session was created for `parent`.",
             "properties": {
+              "agent": {
+                "default": null,
+                "description": "External harness (`agents.yaml` key) the child runs on; `None` = theuth.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "cap": {
                 "anyOf": [
                   {
@@ -4898,6 +4924,14 @@
                   }
                 ],
                 "description": "New session."
+              },
+              "model": {
+                "default": null,
+                "description": "The child's model as [`AgentInfo::model`] at spawn; `None` while\nunknown (a harness that has not reported one and no model asked).",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "name": {
                 "description": "Peer name, unique among the parent's children.",
@@ -32226,7 +32260,7 @@
             "type": "string"
           },
           "model": {
-            "description": "Model used.",
+            "description": "Effective model: a native child's session model; a harness child's\n`harness_model`, else the model its spawn asked for (this process\nonly), else `\"\"`; a watch-only child's own model, else the stored\nfallback. Never the harness name.",
             "type": "string"
           },
           "name": {
@@ -41890,7 +41924,7 @@
             "type": "string"
           },
           "model": {
-            "description": "Model used.",
+            "description": "Effective model: a native child's session model; a harness child's\n`harness_model`, else the model its spawn asked for (this process\nonly), else `\"\"`; a watch-only child's own model, else the stored\nfallback. Never the harness name.",
             "type": "string"
           },
           "name": {

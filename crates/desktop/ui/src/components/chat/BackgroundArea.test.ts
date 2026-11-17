@@ -118,6 +118,34 @@ test('area hidden by default; cards ordered and collapsed; todo and subagent bod
   expect(button('Subagents').getAttribute('aria-expanded')).toBe('true')
 })
 
+test('Subagents card: a harness child reads `omp · <model>`, a native one its model, none known `model unknown`, never the harness alone; live events re-render the row', async () => {
+  const st = useSessions.getState()
+  st.ensure('s1')
+  st.applyEvents([
+    { type: 'SubagentSpawned', parent: 's1', child: 'scout', name: 'scout', cap: null, agent: null, model: 'anthropic/claude-fable-5-1' },
+    { type: 'SubagentSpawned', parent: 's1', child: 'reviewer', name: 'reviewer', cap: null, agent: 'omp', model: 'openai/gpt-6.1-sol' },
+    { type: 'SubagentSpawned', parent: 's1', child: 'worker', name: 'worker', cap: null, agent: 'omp', model: null },
+    { type: 'SubagentSpawned', parent: 's1', child: 'blank', name: 'blank', cap: null, agent: null, model: null },
+  ])
+  await mount()
+  await click('Show background activity')
+  await click('Subagents')
+  const slot = (id: string) => document.querySelector(`a[href="/c/${id}"] span.block.text-fg-tertiary`)?.textContent
+  const slots = () => ['scout', 'reviewer', 'worker', 'blank'].map(slot)
+  expect(slots()).toEqual(['anthropic/claude-fable-5-1', 'omp · openai/gpt-6.1-sol', 'omp · model unknown', 'model unknown'])
+  // The harness reports its model: the parent's row follows with no reload, the dot's title too.
+  await run(() => st.applyEvents([{ type: 'HarnessModelChanged', session: 'worker', model: 'openai/gpt-6.1-mini' }]))
+  expect(slot('worker')).toBe('omp · openai/gpt-6.1-mini')
+  expect(document.querySelector('a[href="/c/worker"]')?.getAttribute('title')).toBe('worker · running · omp · openai/gpt-6.1-mini')
+  // A native child switched model.
+  await run(() => st.applyEvents([{ type: 'ModelChanged', session: 'scout', model: 'anthropic/claude-opus-5-5' }]))
+  expect(slot('scout')).toBe('anthropic/claude-opus-5-5')
+  // A roster snapshot without the model keeps the one the child reported.
+  await run(() => st.setChildren('s1', [receiveComponent('method.agent.output.AgentInfo', { id: 'worker', parent: 's1', depth: 1, name: 'worker', agent: 'omp', model: '', state: { state: 'running' }, started_at: new Date().toISOString(), finished_at: null, last: '' })]))
+  expect(slot('worker')).toBe('omp · openai/gpt-6.1-mini')
+  expect(slots().filter((s) => s === 'omp')).toEqual([])
+})
+
 test('Jobs fetch only while visible and expanded, poll every two seconds, tick, kill, open terminals and open the full sheet', async () => {
   vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
   populate()

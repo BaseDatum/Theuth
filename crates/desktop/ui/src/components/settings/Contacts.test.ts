@@ -33,7 +33,8 @@ import type { CommunicationState } from "@/rpc/bindings/method.agent.output"
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
 const navigate = vi.hoisted(() => vi.fn())
 vi.mock('@tanstack/react-router', async (original) => ({ ...(await original<object>()), useNavigate: () => navigate, Link: ({ children }: { children: ReactNode }) => children }))
-vi.mock('@/link/engines', async (original) => ({ ...(await original<typeof Engines>()), hasLocal: () => true }))
+const local = vi.hoisted(() => ({ on: true }))
+vi.mock('@/link/engines', async (original) => ({ ...(await original<typeof Engines>()), hasLocal: () => local.on }))
 // Menus render their items in place (a click is a select); a select registers its setter under its trigger's label.
 vi.mock('@/components/ui/dropdown-menu', () => ({
   DropdownMenu: (p: { children: ReactNode }) => p.children,
@@ -166,6 +167,7 @@ const click = (label: string) =>
 
 beforeEach(() => {
   vi.clearAllMocks()
+  local.on = true
   useConnection.setState(useConnection.getInitialState())
   api.contact_nearby.mockResolvedValue(NEARBY)
   api.mesh_nearby.mockResolvedValue([])
@@ -685,6 +687,44 @@ test('Stop sharing is absent for a chat nobody can message', async () => {
   await mount(createElement(SharingItems, { session: 's-plan', onShare: vi.fn() }))
   expect(body()).toContain('Share with contact…')
   expect(body()).not.toContain('Stop sharing')
+})
+
+test('lifted 2026-11-17: on a phone or iPad (no local engine) Contacts lists every contact with Rename · Block · Remove, Access and its shares; Add contact stays on the machine', async () => {
+  local.on = false
+  await mount(createElement(ContactsTab, { focus: null } as never))
+  await vi.waitFor(() => expect(body()).toContain("Bob's MacBook"))
+  expect(body()).toContain('studio')
+  expect(button('Add contact…')).toBeUndefined()
+  expect(button('Share with bob…')).toBeDefined()
+  expect(button('bob: Rename · Block · Remove')).toBeDefined()
+  await click('Remove…')
+  await click('Remove')
+  await vi.waitFor(() => expect(api.contact_remove).toHaveBeenCalledWith('bob', false))
+})
+
+// The DOM here has no layout: what keeps the dialog usable at 390 px is checked as its parts (the live check renders it).
+test('⋯ Share with contact… at 390 px: rows wrap, every action is a 44 px touch target, and the dialog scrolls inside the screen', async () => {
+  await mount(createElement(ShareDialog, { session: 's-ops', title: 'Ops chat', onClose: vi.fn() }))
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
+  expect(dialog.className).toContain('max-h-[calc(100dvh-2rem)]')
+  expect(dialog.className).toContain('overflow-y-auto')
+  const rows = [...dialog.querySelectorAll('button[aria-label^="Stop sharing with"], button[aria-label^="Share this chat with"]')].map((b) => b.parentElement!)
+  expect(rows).toHaveLength(2)
+  for (const r of rows) expect(r.className).toContain('flex-wrap')
+  for (const b of dialog.querySelectorAll('button')) if (b.textContent !== 'Close') expect(b.className, b.textContent ?? '').toContain('pointer-coarse:min-h-11')
+  expect(body()).toContain('You can stop sharing at any time.')
+})
+
+test('⋯ Share with contact…: a refused share says so in the dialog, and for a chat on another machine names where to share it', async () => {
+  api.contact_update.mockRejectedValue(new Error('contacts are unavailable: the a2a plugin is not running'))
+  api.contact_list.mockImplementation(async () => [{ ...BOB, exports: [] }])
+  await mount(createElement(ShareDialog, { session: 's-plan', title: 'Launch plan', owner: 'xeus', onClose: vi.fn() }))
+  await click('Share this chat with bob')
+  await vi.waitFor(() => expect(document.querySelector('[role="alert"]')?.textContent).toBe('This machine could not share it (contacts are unavailable: the a2a plugin is not running). Open this chat on xeus, the machine that runs it, to share it.'))
+  await reset()
+  await mount(createElement(ShareDialog, { session: 's-ops', title: 'Ops chat', onClose: vi.fn() }))
+  await click('Share this chat with bob')
+  await vi.waitFor(() => expect(document.querySelector('[role="alert"]')?.textContent).toBe('Not shared: contacts are unavailable: the a2a plugin is not running'))
 })
 
 const FIRST: AttentionItem = receiveComponent("method.roster.output.AttentionItem", {

@@ -55,8 +55,8 @@ async function render(): Promise<string> {
 
 test('the ∞ switch follows agent.endless.default_meeting and sits under the model row with its one-line note', async () => {
   const html = await render()
-  expect(html).toMatch(/Session model.*aria-checked="true"[^>]*aria-label="Endless memory"/s)
-  expect(html).toContain('Keeps a compressed memory of the whole meeting behind the live transcript; zoom and recall bring any earlier moment back.')
+  expect(html).toMatch(/Session model.*aria-checked="true"[^>]*aria-label="Fractal context"/s)
+  expect(html).toContain('Keeps a compressed view of the whole meeting behind the live transcript; zoom and recall bring any earlier moment back.')
 })
 
 test('158 R3 / A2: the form shows the one lawful sentence and no consent checkbox; Start is not gated on it', async () => {

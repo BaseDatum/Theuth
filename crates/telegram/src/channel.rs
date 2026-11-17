@@ -3595,6 +3595,8 @@ pub(crate) mod tests {
                 child,
                 name: "grep-logs".into(),
                 cap: None,
+                agent: None,
+                model: None,
             }))
             .await;
         let calls = f.api.calls();
@@ -3630,6 +3632,8 @@ pub(crate) mod tests {
                 child,
                 name: "grep-logs".into(),
                 cap: None,
+                agent: None,
+                model: None,
             }))
             .await;
         let marker = f
@@ -3792,6 +3796,8 @@ pub(crate) mod tests {
                 child,
                 name: "x".into(),
                 cap: None,
+                agent: None,
+                model: None,
             }))
             .await;
         f.api.take_calls();

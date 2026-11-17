@@ -17,6 +17,8 @@ export const MAX_HOUR_DAYS = 7
 
 export const BASES: readonly CostBasis[] = ['known', 'reported', 'estimated', 'unpriced']
 export const BASIS_LABEL: Record<CostBasis, string> = { known: 'Known', reported: 'Reported', estimated: 'Estimated', unpriced: 'Unpriced' }
+/** How a ledger kind is shown; the stored kind, the RPC values, filter ids and the CSV keep the raw kind. */
+export const KIND_LABEL: Readonly<Record<string, string>> = { endless: 'Fractal context' }
 /** D2: known = malachite, reported = lapis, estimated = sand, unpriced = slate. */
 export const BASIS_COLOR: Record<CostBasis, string> = { known: 'var(--chart-4)', reported: 'var(--chart-3)', estimated: 'var(--chart-2)', unpriced: 'var(--chart-6)' }
 
@@ -202,7 +204,7 @@ export function index(cube: CostCube, tz: string = defaultTz()): Index {
   // Small dictionaries: cube index → our index (models collapse onto their canonical name).
   const modelOf = u32(cube.models.map((m) => put(d.model, m.name, m.name)))
   for (const p of cube.providers) put(d.provider, p, p)
-  for (const k of cube.kinds) put(d.kind, k, k)
+  for (const k of cube.kinds) put(d.kind, k, KIND_LABEL[k] ?? k)
   for (const v of cube.vias) put(d.via, v, v)
   for (const b of BASES) put(d.basis, b, BASIS_LABEL[b])
   const roots: (CostRoot | undefined)[] = []
@@ -412,7 +414,7 @@ export function bucketCount(z: Zone, r: Range, gran: Gran): number {
 
 export type Series = { key: string; id: string | null; label: string; color: string }
 export type SeriesRow = { label: string; tip: string; start: number; end: number; total: number; prev: number } & Record<string, number | string>
-export type SeriesOut = { buckets: Bucket[]; series: Series[]; rows: SeriesRow[]; total: number; prevTotal: number }
+export type SeriesOut = { buckets: Bucket[]; series: Series[]; rows: SeriesRow[]; total: number; prevTotal: number; groupBy: Dim }
 export type SeriesQuery = Range & { gran: Gran; groupBy: Dim; metric: Metric; filters: Filters; topN?: number }
 
 /** Rank colours: the minerals minus slate, which "other" keeps. */
@@ -473,7 +475,7 @@ export function series(ix: Index, q: SeriesQuery): SeriesOut {
     prevTotal += row.prev
     return row
   })
-  return { buckets: ax.buckets, series, rows, total, prevTotal }
+  return { buckets: ax.buckets, series, rows, total, prevTotal, groupBy: q.groupBy }
 }
 
 // --------------------------------------------------------------------------------------------------------------- totals
@@ -736,10 +738,10 @@ export function sessions(ix: Index, r: Range, filters: Filters): SessionRow[] {
 
 const csvCell = (s: string): string => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s)
 
-/** The current buckets × series as CSV: start (ISO), label, one column per series, total, and previous when `compare`. */
+/** The current buckets × series as CSV: start (ISO), label, one column per series, total, and previous when `compare`. Kind columns are the raw kinds (data, not display). */
 export function toCsv(out: SeriesOut, metric: Metric, compare: boolean): string {
   const num = (v: number) => (metric === 'usd' ? v.toFixed(6) : String(Math.round(v)))
-  const head = ['bucket_start', 'bucket', ...out.series.map((s) => s.label), 'total', ...(compare ? ['previous'] : [])]
+  const head = ['bucket_start', 'bucket', ...out.series.map((s) => (out.groupBy === 'kind' ? (s.id ?? s.label) : s.label)), 'total', ...(compare ? ['previous'] : [])]
   const lines = [head.map(csvCell).join(',')]
   for (const r of out.rows) lines.push([new Date(r.start).toISOString(), r.tip, ...out.series.map((s) => num(r[s.key] as number)), num(r.total), ...(compare ? [num(r.prev)] : [])].map(csvCell).join(','))
   return `${lines.join('\n')}\n`
