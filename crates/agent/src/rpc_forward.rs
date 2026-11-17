@@ -49,6 +49,17 @@ pub type FetchAttachment = for<'a> fn(
     &'a dyn Transport, &'a Path, &'a str, Option<&'a PeerId>,
 ) -> futures::future::BoxFuture<'a, anyhow::Result<PathBuf>>;
 
+/// 199 P2: fetch `(holder, id)` into this data dir's `files/cache/`, verified against
+/// the notice; `Ok(None)` when the holder answers `Missing` (`artifact::mesh`).
+pub type FetchContactFile =
+    for<'a> fn(
+        &'a dyn Transport,
+        &'a Path,
+        &'a PeerId,
+        &'a str,
+        &'a crate::communication::files::ReceivedNotice,
+    ) -> futures::future::BoxFuture<'a, anyhow::Result<Option<PathBuf>>>;
+
 /// Reverse-plugin operations installed once before RPC dispatch.
 pub struct ForwardHooks {
     /// Whether the sessions plugin is registered now.
@@ -61,6 +72,8 @@ pub struct ForwardHooks {
     pub attachments_dir: fn(&Path) -> PathBuf,
     /// Fetch an actual attachment marker, preferring the forwarder.
     pub fetch_attachment: FetchAttachment,
+    /// 199 P2: fetch a held contact file from its holder.
+    pub fetch_contact_file: FetchContactFile,
 }
 
 static HOOKS: std::sync::OnceLock<ForwardHooks> = std::sync::OnceLock::new();
@@ -70,7 +83,7 @@ pub fn install_forward_hooks(hooks: ForwardHooks) {
     HOOKS.get_or_init(|| hooks);
 }
 
-fn hooks() -> &'static ForwardHooks {
+pub(crate) fn hooks() -> &'static ForwardHooks {
     HOOKS.get().expect("rpc forwarding hooks must be installed before dispatch")
 }
 

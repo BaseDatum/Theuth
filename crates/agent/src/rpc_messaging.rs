@@ -9,7 +9,7 @@ use uuid::Uuid;
 use rpc_core::{ask, Server};
 use agent::rpc_support::RpcServerExt;
 use agent::communication::files::{
-    ContactFile, ContactFileThumbnail, NOT_YET, NoticeAdmission, NoticeStatus,
+    self, ContactFile, ContactFileThumbnail, NOT_YET, NoticeAdmission, NoticeStatus,
 };
 use std::path::PathBuf;
 
@@ -346,15 +346,40 @@ impl AgentMessagingApiServer for Server {
         Err(rpc_core::failed(NOT_YET))
     }
 
-    // 199-E2: `Req::GetContactFile` on `theuth/artifacts/1`, into `files/cache/`.
+    // 199 P2 (D11): expected values from this engine's own copy of the notice, bytes from
+    // the holder named, whoever owns the chat now.
     async fn contact_file_fetch(
         &self,
-        _: &Extensions,
-        _: SessionId,
-        _: String,
-        _: String,
+        ext: &Extensions,
+        session: SessionId,
+        holder: String,
+        id: String,
     ) -> RpcResult<PathBuf> {
-        Err(rpc_core::failed(NOT_YET))
+        self.authorize(ext, session).await?;
+        let store = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+        let notice = files::received_notice(&store, session, &holder, &id)
+            .await
+            .map_err(|e| rpc_core::failed(format!("{e:#}")))?
+            .ok_or_else(|| rpc_core::failed(format!("no notice for {id} in this chat")))?;
+        let missing = || rpc_core::failed(format!("no such file on {}", notice.machine));
+        if mesh::self_id().as_deref() == Some(holder.as_str()) {
+            let held = ask::<Agents, _>(agent::AGENT_ACTOR, files::HeldContactFile { id }).await?;
+            return held.map(|h| h.path).ok_or_else(missing);
+        }
+        let offline = || rpc_core::failed(format!("{} is offline", notice.machine));
+        let t = match replica::actor() {
+            Some(r) => r.ask(replica::GetTransport).await.ok().flatten(),
+            None => None,
+        }
+        .ok_or_else(offline)?;
+        let holder = replica::PeerId(holder);
+        if !t.peers().contains(&holder) {
+            return Err(offline());
+        }
+        (forward::hooks().fetch_contact_file)(t.as_ref(), &self.rt.data_dir, &holder, &id, &notice)
+            .await
+            .map_err(|e| rpc_core::failed(format!("{e:#}")))?
+            .ok_or_else(missing)
     }
 
     // 199-E1: internal-only auth, `forward::route` to the owner, share re-check, automatic

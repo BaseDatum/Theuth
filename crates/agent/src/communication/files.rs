@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::loop_::attr;
+use crate::store::Store;
 use crate::supervisor::Agents;
 
 /// Egress gate, protected set, hashing, quarantine and publication.
@@ -462,12 +463,123 @@ impl Message<HeldContactFile> for Agents {
 
     async fn handle(
         &mut self,
-        _: HeldContactFile,
+        m: HeldContactFile,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        // 199-E2: look up a `received` `in` row of `contact_files`; none exist before 199-E1.
-        None
+        held(&self.store, &m.id).await.unwrap_or_else(|e| {
+            tracing::warn!(id = %m.id, error = %e, "held contact file");
+            None
+        })
     }
+}
+
+/// The `received` `in` row `id` of `contact_files` with its path, `(dev, inode)`, size
+/// and BLAKE3 recorded. An `out` row, an unfinished or failed one, or an unknown id: `None`.
+pub(crate) async fn held(store: &Store, id: &str) -> anyhow::Result<Option<HeldFile>> {
+    let row: Option<(String, i64, i64, i64, String)> = sqlx::query_as(
+        "SELECT path, dev, inode, size, blake3 FROM contact_files \
+         WHERE id = ? AND direction = 'in' AND state = 'received' AND path IS NOT NULL \
+         AND dev IS NOT NULL AND inode IS NOT NULL AND size IS NOT NULL AND blake3 IS NOT NULL",
+    )
+    .bind(id)
+    .fetch_optional(store.pool())
+    .await?;
+    // SQLite keeps the u64s as i64 bit for bit.
+    Ok(row.map(|(path, dev, inode, size, blake3)| HeldFile {
+        path: path.into(),
+        dev: dev as u64,
+        inode: inode as u64,
+        size: size as u64,
+        blake3,
+    }))
+}
+
+/// What a fetching machine expects of `(holder, id)`: its `received` notice in this
+/// engine's own copy of the session (D11), never the holder's answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReceivedNotice {
+    /// The sanitised declared name (the cache file's name).
+    pub name: String,
+    /// Actual size.
+    pub size: u64,
+    /// Actual BLAKE3, 64 lowercase hex.
+    pub blake3: String,
+    /// The holder's machine name.
+    pub machine: String,
+}
+
+/// D11: the `received` notice of `(holder, id)` in `session`, found by its notice id
+/// through the committed predicate, in either form: the row at the `at_seq` of its
+/// `input_accepted` step, or the ended-share `errors` row. `None`: no such notice, a
+/// `failed` one, or one that names another file.
+pub(crate) async fn received_notice(
+    store: &Store,
+    session: runtime::SessionId,
+    holder: &str,
+    id: &str,
+) -> anyhow::Result<Option<ReceivedNotice>> {
+    let notice = notice_id(holder, id);
+    if !store.notice_committed(session, notice).await? {
+        return Ok(None);
+    }
+    let (s, n) = (session.to_string(), notice.to_string());
+    let step: Option<String> = sqlx::query_scalar(
+        "SELECT m.body FROM turn_steps t JOIN messages m \
+         ON m.session_id = t.session_id AND m.seq = t.at_seq \
+         WHERE t.session_id = ?1 AND t.kind = 'input_accepted' \
+         AND json_extract(t.payload, '$.input_id') = ?2 LIMIT 1",
+    )
+    .bind(&s)
+    .bind(&n)
+    .fetch_optional(store.pool())
+    .await?;
+    let step = match step {
+        Some(body) => Some(crate::loop_::text_of(
+            &serde_json::from_str::<genai::chat::ChatMessage>(&body)?.content,
+        )),
+        None => None,
+    };
+    let ended: Option<String> =
+        sqlx::query_scalar("SELECT text FROM errors WHERE session_id = ?1 AND id = ?2")
+            .bind(&s)
+            .bind(&n)
+            .fetch_optional(store.pool())
+            .await?;
+    Ok([step, ended]
+        .into_iter()
+        .flatten()
+        .find_map(|t| parse_received(&t, holder, id)))
+}
+
+/// The first `<message_file …/>` element of `text` when it is the `received` notice of
+/// `(holder, id)`. Values are [`attr`]-escaped, so neither `"` nor `/>` occurs inside one.
+fn parse_received(text: &str, holder: &str, id: &str) -> Option<ReceivedNotice> {
+    let el = &text[text.find("<message_file ")? + "<message_file".len()..];
+    let mut rest = &el[..el.find("/>")?];
+    let mut attrs = std::collections::HashMap::new();
+    while let Some((key, r)) = rest.split_once("=\"") {
+        let (value, r) = r.split_once('"')?;
+        let value = value
+            .replace("&quot;", "\"")
+            .replace("&gt;", ">")
+            .replace("&lt;", "<")
+            .replace("&amp;", "&");
+        attrs.insert(key.trim(), value);
+        rest = r;
+    }
+    let get = |k: &str| attrs.get(k).map(String::as_str);
+    if get("state") != Some("received") || get("holder") != Some(holder) || get("file") != Some(id)
+    {
+        return None;
+    }
+    let blake3 = get("blake3")
+        .filter(|b| b.len() == 64 && b.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')))?;
+    Some(ReceivedNotice {
+        name: get("name")?.to_owned(),
+        size: get("bytes")?.parse().ok()?,
+        blake3: blake3.to_owned(),
+        machine: get("machine").unwrap_or_default().to_owned(),
+    })
 }
 
 #[cfg(test)]
@@ -605,5 +717,131 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    async fn store() -> (Store, runtime::SessionId, crate::TestDir) {
+        let dir = crate::TestDir::new("files");
+        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let id = runtime::SessionId::new();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        (store, id, dir)
+    }
+
+    /// 199 P2: only a `received` `in` row is held; `out`, unfinished, failed and unknown
+    /// ids are not (the holder answers `Missing`).
+    #[tokio::test]
+    async fn only_a_received_incoming_row_is_held() {
+        let (store, session, _dir) = store().await;
+        let rows = [
+            ("a", "in", "received"),
+            ("b", "in", "saved"),
+            ("c", "out", "sent"),
+            ("d", "in", "failed"),
+        ];
+        for (id, direction, state) in rows {
+            sqlx::query(
+                "INSERT INTO contact_files (id, direction, session, exchange, seq, contact_id, \
+                 name, media_type, size, blake3, source, dev, inode, path, state, created_ms, \
+                 deadline_ms) VALUES (?, ?, ?, 'x', 0, 'rec', 'a.zip', 'application/zip', 7, \
+                 'b3', 'src', -1, 2, '/p/a.zip', ?, 0, 0)",
+            )
+            .bind(id.repeat(32))
+            .bind(direction)
+            .bind(session.to_string())
+            .bind(state)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            held(&store, &"a".repeat(32)).await.unwrap(),
+            Some(HeldFile {
+                path: "/p/a.zip".into(),
+                dev: u64::MAX,
+                inode: 2,
+                size: 7,
+                blake3: "b3".into(),
+            })
+        );
+        for id in ["b", "c", "d", "e"] {
+            assert_eq!(held(&store, &id.repeat(32)).await.unwrap(), None, "{id}");
+        }
+    }
+
+    /// 199 P2 (D11): the expected values come from the committed notice in either form,
+    /// the row at its journal step's `at_seq` or the ended-share `errors` row, with every
+    /// attribute unescaped. A failed notice, one naming another file, or none: `None`.
+    #[tokio::test]
+    async fn the_received_notice_is_read_in_either_form() {
+        let (store, session, _dir) = store().await;
+        let from = "peer:maya";
+        let mut f = file(FileState::In(InState::Received));
+        f.blake3 = Some("7c".repeat(32));
+        let want = ReceivedNotice {
+            name: f.name.clone(),
+            size: 1_200_000_000,
+            blake3: "7c".repeat(32),
+            machine: f.machine.clone(),
+        };
+        let found = async |id: &str| received_notice(&store, session, &f.holder, id).await;
+        assert_eq!(found(&f.id).await.unwrap(), None, "no notice yet");
+
+        // The journal form: the row, its step at that seq, then later rows.
+        store
+            .append(
+                session,
+                &genai::chat::ChatMessage::user(notice(from, &f).unwrap()),
+            )
+            .await
+            .unwrap();
+        let input = notice_id(&f.holder, &f.id).to_string();
+        store
+            .input_accepted(
+                session,
+                runtime::TurnId::new(),
+                Some(&input),
+                JOURNAL_SOURCE,
+            )
+            .await
+            .unwrap();
+        store
+            .append(session, &genai::chat::ChatMessage::assistant("later"))
+            .await
+            .unwrap();
+        assert_eq!(found(&f.id).await.unwrap(), Some(want.clone()));
+
+        // The ended-share form.
+        let ended = |g: &ContactFile| {
+            let text = ended_notice(from, g).unwrap();
+            let store = store.clone();
+            let id = notice_id(&f.holder, &g.id);
+            async move { store.record_error_once(session, id, &text).await.unwrap() }
+        };
+        let mut g = f.clone();
+        g.id = "41b8d2f0c7e65a1394b2a8d0e3f1c5a7".into();
+        ended(&g).await;
+        assert_eq!(found(&g.id).await.unwrap(), Some(want));
+
+        // A failed notice has no bytes to fetch.
+        let mut failed = f.clone();
+        failed.id = "c".repeat(32);
+        failed.state = FileState::In(InState::Failed);
+        ended(&failed).await;
+        assert_eq!(found(&failed.id).await.unwrap(), None);
+
+        // A notice id whose row names another file is never trusted for this one.
+        let mut lying = f.clone();
+        lying.id = "d".repeat(32);
+        let text = ended_notice(from, &f).unwrap();
+        store
+            .record_error_once(session, notice_id(&f.holder, &lying.id), &text)
+            .await
+            .unwrap();
+        assert_eq!(found(&lying.id).await.unwrap(), None);
     }
 }
