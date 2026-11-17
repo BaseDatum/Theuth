@@ -1,11 +1,11 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
-import { type ReactNode, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Branch, GLYPH, ago } from '@/components/sidebar/AgentTree'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useIsMobile } from '@/hooks/use-mobile'
@@ -60,24 +60,24 @@ export function BroadcastDialog() {
   if (isMobile) {
     return (
       <Sheet open={req !== null} onOpenChange={(o) => !o && close()}>
-        <SheetContent side="bottom" className="max-h-[90vh] gap-2 px-4">
+        <SheetContent side="bottom" className="max-h-[90vh] gap-2 px-4 pb-[calc(1rem+var(--safe-bottom))]">
           <SheetHeader className="px-0">
             <SheetTitle>Broadcast</SheetTitle>
             <SheetDescription>{DESCRIPTION}</SheetDescription>
           </SheetHeader>
-          {req && <Form req={req} onDone={close} Footer={SheetFooter} />}
+          {req && <Form req={req} onDone={close} />}
         </SheetContent>
       </Sheet>
     )
   }
   return (
     <Dialog open={req !== null} onOpenChange={(o) => !o && close()}>
-      <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-lg">
+      <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Broadcast</DialogTitle>
           <DialogDescription>{DESCRIPTION}</DialogDescription>
         </DialogHeader>
-        {req && <Form req={req} onDone={close} Footer={DialogFooter} />}
+        {req && <Form req={req} onDone={close} />}
       </DialogContent>
     </Dialog>
   )
@@ -85,16 +85,8 @@ export function BroadcastDialog() {
 
 type Preview = { receipt: BroadcastReceipt } | { error: string }
 
-/** Targets, message, delivery in one scroll; the footer previews with `dry_run: true` and sends with one click. */
-function Form({
-  req,
-  onDone,
-  Footer,
-}: {
-  req: Request
-  onDone(): void
-  Footer: (p: { children: ReactNode; className?: string }) => ReactNode
-}) {
+/** Message, delivery, Send and the `dry_run: true` preview on top; only the targets list below them scrolls. */
+export function Form({ req, onDone }: { req: Request; onDone(): void }) {
   const canQuery1 = useQuerySupport(["list_activity"])
   const canQuery1_2 = useQuerySupport(["list_sessions"])
   const api = useApi()
@@ -179,34 +171,16 @@ function Form({
   const section = { ids, now, sessions, onToggle: toggle, onPick: setPicked }
   return (
     <>
-      <div className="-mx-2 min-h-0 flex-1 space-y-4 overflow-auto px-2 text-sm">
-        <section>
-          <div className="mb-1 flex items-center gap-2">
-            <h3 className="font-medium">Targets</h3>
-            <div className="ml-auto flex gap-1">
-              {deskIds.length > 0 && <Chip onClick={() => setPicked(new Set(deskIds))}>All desks</Chip>}
-              <Chip onClick={() => rows && setPicked(new Set(runningRoots(rows)))}>Running roots</Chip>
-              <Chip onClick={() => rows && setPicked(new Set(allRoots(rows)))}>All roots</Chip>
-              <Chip onClick={() => setPicked(new Set())}>None</Chip>
-            </div>
-          </div>
-          {loadError && <p className="text-danger">{loadError instanceof Error ? loadError.message : String(loadError)}</p>}
-          {rows && rows.length === 0 && <p className="text-fg-tertiary">No live sessions</p>}
-          {desks.length > 0 && <Section label="Desks" groups={desks} {...section} />}
-          {rest.length > 0 && <Section label="Sessions" groups={rest} {...section} />}
-        </section>
-        <section>
-          <h3 className="mb-1 font-medium">Message</h3>
-          <Textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="What every selected session should hear"
-            rows={4}
-            autoFocus={!req.text}
-          />
-        </section>
-        <section>
-          <h3 className="mb-1 font-medium">Delivery</h3>
+      <section className="space-y-2 text-sm">
+        <h3 className="font-medium">Message</h3>
+        <Textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="What every selected session should hear"
+          rows={4}
+          autoFocus={!req.text}
+        />
+        <div className="flex flex-wrap items-center gap-2">
           <ToggleGroup
             type="single"
             variant="outline"
@@ -217,10 +191,11 @@ function Form({
             <ToggleGroupItem value="steer">Steer (inside the running turn)</ToggleGroupItem>
             <ToggleGroupItem value="next_turn">Next turn</ToggleGroupItem>
           </ToggleGroup>
-        </section>
-      </div>
-      <Footer className="items-center gap-2 sm:justify-between">
-        <span className={cn('min-w-0 flex-1 text-xs', preview && 'error' in preview ? 'text-danger' : 'text-fg-tertiary')}>
+          <Button className="ml-auto" disabled={n === 0 || !text.trim() || sending} onClick={() => void send()}>
+            {sending ? 'Sending…' : `Send to ${n} session${n === 1 ? '' : 's'}`}
+          </Button>
+        </div>
+        <p className={cn('text-xs', preview && 'error' in preview ? 'text-danger' : 'text-fg-tertiary')}>
           {preview === null
             ? n === 0
               ? 'Pick at least one session'
@@ -228,11 +203,25 @@ function Form({
             : 'error' in preview
               ? preview.error
               : summarize(preview.receipt)}
-        </span>
-        <Button disabled={n === 0 || !text.trim() || sending} onClick={() => void send()}>
-          {sending ? 'Sending…' : `Send to ${n} session${n === 1 ? '' : 's'}`}
-        </Button>
-      </Footer>
+        </p>
+      </section>
+      <section className="flex min-h-0 flex-1 flex-col text-sm">
+        <div className="mb-1 flex flex-wrap items-center gap-2">
+          <h3 className="font-medium">Targets</h3>
+          <div className="ml-auto flex gap-1">
+            {deskIds.length > 0 && <Chip onClick={() => setPicked(new Set(deskIds))}>All desks</Chip>}
+            <Chip onClick={() => rows && setPicked(new Set(runningRoots(rows)))}>Running roots</Chip>
+            <Chip onClick={() => rows && setPicked(new Set(allRoots(rows)))}>All roots</Chip>
+            <Chip onClick={() => setPicked(new Set())}>None</Chip>
+          </div>
+        </div>
+        <div className="-mx-2 min-h-0 flex-1 overflow-auto px-2">
+          {loadError && <p className="text-danger">{loadError instanceof Error ? loadError.message : String(loadError)}</p>}
+          {rows && rows.length === 0 && <p className="text-fg-tertiary">No live sessions</p>}
+          {desks.length > 0 && <Section label="Desks" groups={desks} {...section} />}
+          {rest.length > 0 && <Section label="Sessions" groups={rest} {...section} />}
+        </div>
+      </section>
     </>
   )
 }

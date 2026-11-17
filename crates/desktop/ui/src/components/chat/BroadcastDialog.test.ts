@@ -1,11 +1,20 @@
 import { receiveComponent } from '@/rpc/bindings/receive'
-import { expect, test } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { expect, test, vi } from 'vitest'
+import type * as Rpc from '@/lib/rpc'
+import { queryKeys } from '@/lib/rpc'
+import { useConnection } from '@/store/connection'
 import type { BroadcastReceipt } from "@/rpc/bindings/method.agent.output"
 import type { BroadcastRow } from "@/rpc/bindings/method.agent.output"
 import type { SessionActivity } from "@/rpc/bindings/method.agent.output"
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { AgentInfo } from '@/store/ui-events'
 import { allRoots, deskRoots, groupRows, outcomeLines, runningRoots, sectionState, splitGroups, summarize, title } from './broadcast'
+import { Form } from './BroadcastDialog'
+
+vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
 
 const activity = (p: Partial<SessionActivity> = {}): SessionActivity => (receiveComponent("method.agent.output.SessionActivity", {
   state: { state: 'idle' },
@@ -166,4 +175,19 @@ test('a section header is all / some / none by its roots alone; an empty section
   expect(sectionState(new Set(['B', 'A']), ['D', 'B'])).toBe('some')
   expect(sectionState(new Set(['A']), ['D', 'B'])).toBe('none')
   expect(sectionState(new Set(['A']), [])).toBe('none')
+})
+
+test('broadcast-top: message, one Send button and the preview line render above the first target row', () => {
+  useConnection.setState({ discovery: { ...useConnection.getState().discovery, phase: 'legacy' } })
+  const qc = new QueryClient()
+  qc.setQueryData(['activity'], rows)
+  qc.setQueryData(queryKeys.sessions, deskSessions)
+  const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(Form, { req: { text: 'hi' }, onDone: () => {} })))
+  const firstRow = html.indexOf('type="checkbox"')
+  expect(firstRow).toBeGreaterThan(0)
+  expect(html.match(/>Send to \d+ sessions?</g)).toEqual(['>Send to 3 sessions<'])
+  // The untouched "running" preset ticks A, B and D; the dry run has not answered yet.
+  for (const part of ['<textarea', '>Send to 3 sessions<', '>Previewing…<']) expect(html.indexOf(part), part).toBeLessThan(firstRow)
+  expect(html.indexOf('<textarea')).toBeLessThan(html.indexOf('>Send to'))
+  expect(html.indexOf('>Send to')).toBeLessThan(html.indexOf('>Previewing…<'))
 })
