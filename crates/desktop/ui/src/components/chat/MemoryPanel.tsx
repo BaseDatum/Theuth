@@ -37,7 +37,7 @@ export const lineKey = (l: ViewLine, prefix = ''): string => `${prefix}${l.id}+$
 /** Bytes of the view as rendered (`id+n|text\n` per line, 137 §7.2). */
 export const viewBytes = (view: readonly ViewLine[]): number => view.reduce((n, l) => n + new TextEncoder().encode(l.text).length + lineKey(l).length + 2, 0)
 
-/** The badge's tooltip (137 §11.3): `Endless memory · view 61 KB · 71 lines · up to date` / `… settling 3 lines` / `… backfill 12/80` / `… summaries failing` (137F) / `… settling paused` (137G). */
+/** The badge's tooltip (137 §11.3): `Autocontext · view 61 KB · 71 lines · up to date` / `… settling 3 lines` / `… backfill 12/80` / `… summaries failing` (137F) / `… settling paused` (137G). */
 export function badgeTip(m: SessionMemory): string {
   const waiting = m.backlog?.lines ?? m.unbuilt
   const state = m.stalled
@@ -49,7 +49,7 @@ export function badgeTip(m: SessionMemory): string {
         : m.settling
           ? `settling ${waiting.toLocaleString('en-US')} line${waiting === 1 ? '' : 's'}`
           : 'up to date'
-  return `Endless memory · view ${fmtBytes(viewBytes(m.view))} · ${m.view.length} line${m.view.length === 1 ? '' : 's'} · ${state}`
+  return `Autocontext · view ${fmtBytes(viewBytes(m.view))} · ${m.view.length} line${m.view.length === 1 ? '' : 's'} · ${state}`
 }
 
 export const guardTotal = (g: GuardTrips): number => g.copy + g.grounding + g.status + g.format + g.empty + g.size
@@ -142,7 +142,7 @@ export function MemoryBadge({ session, summary, row, open, onToggle }: { session
     return (
       <MenuRow
         icon={<span className={cn('size-4 shrink-0 text-center text-sm leading-4', failing ? 'text-warning' : 'text-fg-secondary')}>∞</span>}
-        label="Endless memory"
+        label="Autocontext"
         detail={m ? (failing ? <span className="text-warning">summaries failing</span> : busy ? 'settling' : `${m.view.length} lines`) : undefined}
         onSelect={onToggle}
       />
@@ -152,7 +152,7 @@ export function MemoryBadge({ session, summary, row, open, onToggle }: { session
       <TooltipTrigger asChild>
         <button
           type="button"
-          aria-label="Endless memory"
+          aria-label="Autocontext"
           aria-expanded={open}
           className={cn(
             'shrink-0 rounded-full border border-border-subtle px-2.5 py-0.5 text-sm leading-4 text-fg-secondary hover:text-foreground',
@@ -164,7 +164,7 @@ export function MemoryBadge({ session, summary, row, open, onToggle }: { session
           ∞
         </button>
       </TooltipTrigger>
-      <TooltipContent side="bottom">{m ? badgeTip(m) : memory.error ? `Endless memory · ${memory.error.message}` : 'Endless memory'}</TooltipContent>
+      <TooltipContent side="bottom">{m ? badgeTip(m) : memory.error ? `Autocontext · ${memory.error.message}` : 'Autocontext'}</TooltipContent>
     </Tooltip>
   )
 }
@@ -259,7 +259,7 @@ export function DraftMemory({ open, onOpenChange }: { open: boolean; onOpenChang
         <div className="flex flex-col items-start gap-4 px-4">
           <Select value={mode} onValueChange={(memory) => useDrafts.getState().setCreate({ memory: memory as 'endless' | 'epochs' })}>
             <SelectTrigger aria-label="Memory mode"><SelectValue /></SelectTrigger>
-            <SelectContent><SelectItem value="epochs">Epochs</SelectItem><SelectItem value="endless">Endless memory</SelectItem></SelectContent>
+            <SelectContent><SelectItem value="epochs">Epochs</SelectItem><SelectItem value="endless">Autocontext</SelectItem></SelectContent>
           </Select>
           <SummaryModel session="" m={{ model: pending.compactorModel ?? defaults.data?.model ?? '', model_override: pending.compactorModel ?? null, model_source: pending.compactorModel ? 'chat' : 'settings', effort_override: pending.compactorEffort ?? null }} />
           {bytes !== undefined && <ViewSize bytes={bytes} onChange={(viewBytes) => set({ viewBytes })} />}
@@ -732,7 +732,7 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
             </div>
           )}
           {memory.isError && <p className="px-2 py-4 text-sm text-fg-tertiary">Memory details unavailable: {memory.error.message}</p>}
-          {m && m.mode !== 'endless' && <p className="px-2 py-4 text-sm text-fg-tertiary">This session keeps its memory in epochs; `/endless on` switches it when idle.</p>}
+          {m && m.mode !== 'endless' && <p className="px-2 py-4 text-sm text-fg-tertiary">This session keeps its memory in epochs; `/autocontext on` switches it when idle.</p>}
           {hits && (
             <section aria-label="Recall hits" className="mb-3">
               <div className="mt-1 mb-0.5 px-2 text-[10px] font-medium tracking-wide text-fg-tertiary uppercase">

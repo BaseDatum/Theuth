@@ -97,7 +97,7 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
   const composer = (
     <div className="shrink-0 border-t border-border-subtle bg-background">
       <ContextLine estimate={estimate.data} error={estimate.error} />
-      {!session && endless && <p className="px-3 pt-1 text-[11px] text-fg-tertiary">Endless memory · compactor: {compactor}</p>}
+      {!session && endless && <p className="px-3 pt-1 text-[11px] text-fg-tertiary">Autocontext · compactor: {compactor}</p>}
       <Composer key={session ?? 'new'} session={session} pinned={pinned} sessionTitle={title} draftCreate={{ ...PLAIN_DRAFT, endless }} onCreated={(id) => void onCreated(id)} compact />
     </div>
   )
@@ -119,13 +119,13 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
           <Tooltip>
             <TooltipTrigger asChild>
               <label className="flex shrink-0 items-center gap-1.5">
-                <Switch checked={endless} onCheckedChange={(on) => setEndless(notebook, on)} aria-label="Endless memory" />
+                <Switch checked={endless} onCheckedChange={(on) => setEndless(notebook, on)} aria-label="Autocontext" />
                 <span aria-hidden className="relative -top-px text-sm leading-4 [font-feature-settings:normal]">
                   {'\u221E'}
                 </span>
               </label>
             </TooltipTrigger>
-            <TooltipContent side="bottom">Endless memory for this new chat{endless ? ` · compactor: ${compactor}` : ''}</TooltipContent>
+            <TooltipContent side="bottom">Autocontext for this new chat{endless ? ` · compactor: ${compactor}` : ''}</TooltipContent>
           </Tooltip>
         )}
         <DropdownMenu>

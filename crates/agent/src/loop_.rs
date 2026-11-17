@@ -7046,7 +7046,7 @@ impl Turn {
                     Some(e) => {
                         endless_tools::run(e, session, &call.fn_name, &call.fn_arguments).await
                     }
-                    None => ToolOutput::err("endless memory is not available in this process"),
+                    None => ToolOutput::err("autocontext is not available in this process"),
                 }
             } else if call.fn_name == todo::NAME {
                 self.state.todo_touched_round = round;
@@ -7504,7 +7504,7 @@ impl Turn {
             .shared
             .endless
             .as_ref()
-            .ok_or("endless memory is not available in this process")?;
+            .ok_or("autocontext is not available in this process")?;
         let current = endless.mode(session).await.map_err(|e| format!("{e:#}"))?;
         if current == mode {
             let memory = endless

@@ -4427,6 +4427,32 @@
     }
 
     #[test]
+    fn autocontext_slash_is_listed_and_endless_is_a_hidden_alias() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        let s = SessionId::new();
+        m.session = Some(s);
+        let listed: Vec<_> = m.command_specs("/").into_iter().map(|spec| spec.0).collect();
+        assert!(listed.contains(&"/autocontext") && !listed.contains(&"/endless"), "{listed:?}");
+        m.submit("/autocontext on", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::Memory { session, mode: Some(agent::MemoryMode::Endless) }) if session == s
+        ));
+        m.submit("/endless off", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::Memory { session, mode: Some(agent::MemoryMode::Epochs) }) if session == s
+        ));
+        m.submit("/endless maybe", &tx);
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Error(t)) if t.starts_with("usage: /autocontext ")
+        ));
+    }
+
+    #[test]
     fn peer_message_lands_above_streaming_text() {
         let mut m = Model::new("m".into(), true);
         let s = SessionId::new();

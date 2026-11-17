@@ -42,9 +42,11 @@ test('token estimate: bytes ÷ 3, in thousands', () => {
 
 test('the page reads agent.endless: switches, sliders and the settle count show the stored values; the compactor row offers "Same as the session"', async () => {
   const html = await render()
-  expect(html).toMatch(/aria-checked="true"[^>]*aria-label="New chats start endless"/)
-  expect(html).toMatch(/aria-checked="true"[^>]*aria-label="Desks start endless"/)
-  expect(html).toMatch(/aria-checked="false"[^>]*aria-label="Meetings start endless"/)
+  expect(html).toMatch(/aria-checked="true"[^>]*aria-label="New chats start with autocontext"/)
+  expect(html).toMatch(/aria-checked="true"[^>]*aria-label="Desks start with autocontext"/)
+  expect(html).toMatch(/aria-checked="false"[^>]*aria-label="Meetings start with autocontext"/)
+  expect(html).toContain('>New chats start with autocontext<')
+  expect(html).not.toMatch(/endless/i)
   expect(html).toContain('View size · <span class="tabular-nums">128 KB</span>')
   expect(html).toContain('≈ 43 k tokens')
   expect(html).toMatch(/<input type="range" aria-label="View size in KB"[^>]*min="16" max="256" step="8" value="128"/)

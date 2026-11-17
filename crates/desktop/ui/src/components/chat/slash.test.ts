@@ -187,18 +187,29 @@ test('148 R1: in a session /model and /effort switch that session (manual), leav
   expect(useDrafts.getState().pick).toEqual(NO_PICK)
 })
 
-test('157 D3: /endless switches an open session, keeps a draft choice pending, and rejects a bad argument', async () => {
+test('157 D3: /autocontext switches an open session, keeps a draft choice pending, and rejects a bad argument', async () => {
   const set_session_memory = vi.fn().mockResolvedValue({ mode: 'endless', view: [] })
-  expect(isCommand('/endless on', SKILLS)).toBe(true)
-  await run('/endless on', ctxFor({ set_session_memory }, 'abc'))
+  expect(isCommand('/autocontext on', SKILLS)).toBe(true)
+  await run('/autocontext on', ctxFor({ set_session_memory }, 'abc'))
   expect(set_session_memory).toHaveBeenCalledWith('abc', 'endless')
-  await run('/endless off', ctxFor({ set_session_memory }, 'abc'))
+  await run('/autocontext off', ctxFor({ set_session_memory }, 'abc'))
   expect(set_session_memory).toHaveBeenLastCalledWith('abc', 'epochs')
-  await expect(run('/endless maybe', ctxFor({ set_session_memory }, 'abc'))).rejects.toThrow(/on\|off/)
-  await run('/endless on', { ...ctxFor({ set_session_memory }), session: null })
+  await expect(run('/autocontext maybe', ctxFor({ set_session_memory }, 'abc'))).rejects.toThrow(/^\/autocontext: expected on\|off/)
+  await run('/autocontext on', { ...ctxFor({ set_session_memory }), session: null })
   expect(useDrafts.getState().settings.create?.memory).toBe('endless')
   useDrafts.setState({ settings: {} })
   expect(set_session_memory).toHaveBeenCalledTimes(2)
+})
+
+test('/endless is a hidden alias of /autocontext: it runs, the popup lists only /autocontext', async () => {
+  const set_session_memory = vi.fn().mockResolvedValue({ mode: 'epochs', view: [] })
+  expect(isCommand('/endless off', SKILLS)).toBe(true)
+  await run('/endless off', ctxFor({ set_session_memory }, 'abc'))
+  expect(set_session_memory).toHaveBeenCalledWith('abc', 'epochs')
+  await expect(run('/endless maybe', ctxFor({ set_session_memory }, 'abc'))).rejects.toThrow(/^\/autocontext: /)
+  expect(slashMenu('/', null).map((c) => c.name)).toContain('/autocontext')
+  expect(slashMenu('/', null).map((c) => c.name)).not.toContain('/endless')
+  expect(slashMenu('/en', null).map((c) => c.name)).not.toContain('/endless')
 })
 
 test('162 D8: /provider refresh <name> toasts the counts, bare refresh opens Providers, an engine error surfaces verbatim', async () => {
@@ -296,7 +307,7 @@ test('draft slash settings stay pending, including explicit off; none calls a se
   const ctx = { ...ctxFor(api), session: null }
   await run('/approvals off', ctx)
   await run('/communication on', ctx)
-  await run('/endless off', ctx)
+  await run('/autocontext off', ctx)
   await run('/project lab', ctx)
   expect(useDrafts.getState().settings).toEqual({ approvals: false, communication: true, create: { memory: 'epochs', project: 'lab' } })
   await run('/project off', ctx)

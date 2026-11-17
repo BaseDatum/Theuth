@@ -90,7 +90,7 @@ test('highlight marks every query word, case-insensitively, with regex character
 })
 
 test('the badge tooltip names size, line count and settle state', () => {
-  expect(badgeTip(memory)).toMatch(/^Endless memory · view \d+ B · 3 lines · up to date$/)
+  expect(badgeTip(memory)).toMatch(/^Autocontext · view \d+ B · 3 lines · up to date$/)
   expect(badgeTip({ ...memory, settling: true, unbuilt: 3 })).toContain('· settling 3 lines')
   expect(badgeTip({ ...memory, settling: true, unbuilt: 1 })).toContain('· settling 1 line')
   expect(badgeTip({ ...memory, backfill: { done: 12, total: 80, eta_secs: 300, usd_estimate: 0.4 } })).toContain('· backfill 12/80')
@@ -110,7 +110,7 @@ const render = (summaryRow: SessionSummary, data: SessionMemory) => {
 test('the ∞ badge shows for an endless session only, and pulses (motion-safe) while settling', () => {
   expect(render(summary('epochs'), memory)).toBe('')
   const quiet = render(summary('endless'), memory)
-  expect(quiet).toMatch(/<button[^>]*aria-label="Endless memory"[^>]*aria-expanded="false"[^>]*>∞<\/button>/)
+  expect(quiet).toMatch(/<button[^>]*aria-label="Autocontext"[^>]*aria-expanded="false"[^>]*>∞<\/button>/)
   expect(quiet).not.toContain('animate-pulse')
   expect(render(summary('endless'), { ...memory, settling: true, unbuilt: 2 })).toContain('motion-safe:animate-pulse')
 })

@@ -111,14 +111,14 @@ export function Memory({ focus = null }: { focus?: string | null }) {
   return (
     <>
       <Section title="Defaults">
-        <Row label="New chats start endless" description="The ∞ switch on the New chat view starts on; each draft can still turn it off.">
-          <Switch aria-label="New chats start endless" checked={s?.default_chat ?? false} disabled={busy} onCheckedChange={(v) => patch({ default_chat: v })} />
+        <Row label="New chats start with autocontext" description="The ∞ switch on the New chat view starts on; each draft can still turn it off.">
+          <Switch aria-label="New chats start with autocontext" checked={s?.default_chat ?? false} disabled={busy} onCheckedChange={(v) => patch({ default_chat: v })} />
         </Row>
-        <Row label="Desks start endless" description="Desks whose agents file has no memory: field open their session in endless mode; a desk already running switches at its next idle moment and backfills its history.">
-          <Switch aria-label="Desks start endless" checked={s?.default_desk ?? false} disabled={busy} onCheckedChange={(v) => patch({ default_desk: v })} />
+        <Row label="Desks start with autocontext" description="Desks whose agents file has no memory: field open their session with autocontext; a desk already running switches at its next idle moment and backfills its history.">
+          <Switch aria-label="Desks start with autocontext" checked={s?.default_desk ?? false} disabled={busy} onCheckedChange={(v) => patch({ default_desk: v })} />
         </Row>
-        <Row label="Meetings start endless" description="The ∞ switch on the meeting start form starts on: the meeting keeps a compressed memory of the whole call behind the live transcript.">
-          <Switch aria-label="Meetings start endless" checked={s?.default_meeting ?? false} disabled={busy} onCheckedChange={(v) => patch({ default_meeting: v })} />
+        <Row label="Meetings start with autocontext" description="The ∞ switch on the meeting start form starts on: the meeting keeps a compressed memory of the whole call behind the live transcript.">
+          <Switch aria-label="Meetings start with autocontext" checked={s?.default_meeting ?? false} disabled={busy} onCheckedChange={(v) => patch({ default_meeting: v })} />
         </Row>
         <Row label="Default compact style" description="How a compaction builds the new context head.">
           <Select value={info?.compact_style} disabled={!info || setCompact.isPending} onValueChange={(v) => setCompact.mutate(v as CompactStyle)}>

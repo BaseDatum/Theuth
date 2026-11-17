@@ -103,7 +103,7 @@ pub fn eta(secs: u64) -> String {
     }
 }
 
-/// The text every `/endless on|off` surface replies with (8.6, R1-D3, R1-D4),
+/// The text every `/autocontext on|off` surface replies with (8.6, R1-D3, R1-D4),
 /// from the state the switch returned.
 pub fn reply(mode: MemoryMode, m: &SessionMemory) -> String {
     match mode {
@@ -115,10 +115,10 @@ pub fn reply(mode: MemoryMode, m: &SessionMemory) -> String {
                 est.model.clone()
             };
             if est.units == 0 {
-                format!("Endless memory on. Compactor: {model}. The view is up to date.")
+                format!("Autocontext on. Compactor: {model}. The view is up to date.")
             } else {
                 format!(
-                    "Endless memory on. Summarising {} messages in the background with {model} (ETA {}, ≈ ${:.2}); the session keeps its current memory until the view covers its history.",
+                    "Autocontext on. Summarising {} messages in the background with {model} (ETA {}, ≈ ${:.2}); the session keeps its current memory until the view covers its history.",
                     est.units,
                     eta(est.eta_secs),
                     est.usd
@@ -126,21 +126,21 @@ pub fn reply(mode: MemoryMode, m: &SessionMemory) -> String {
             }
         }
         MemoryMode::Epochs => {
-            "Endless memory off. The view was written as this epoch's summary; the session continues with epochs.".to_owned()
+            "Autocontext off. The view was written as this epoch's summary; the session continues with epochs.".to_owned()
         }
     }
 }
 
-/// One line of memory state for `/endless` with no argument (and the
+/// One line of memory state for `/autocontext` with no argument (and the
 /// header badge's tooltip): mode, view size, lines, settle state, backfill.
 pub fn status(m: &SessionMemory) -> String {
     if m.mode != MemoryMode::Endless {
-        return "Memory: epochs (compaction). `/endless on` switches this session to endless memory."
+        return "Memory: epochs (compaction). `/autocontext on` switches this session to autocontext."
             .to_owned();
     }
     let bytes: usize = m.view.iter().map(|l| l.text.len()).sum();
     let mut s = format!(
-        "Memory: endless · view {} KB of {} KB · {} lines · {} messages · compactor {}",
+        "Memory: autocontext · view {} KB of {} KB · {} lines · {} messages · compactor {}",
         bytes / 1000,
         m.view_bytes / 1000,
         m.view.len(),
@@ -248,12 +248,12 @@ mod tests {
                 && text.contains("$18.50"),
             "{text}"
         );
-        assert!(reply(MemoryMode::Epochs, &busy).starts_with("Endless memory off."));
+        assert!(reply(MemoryMode::Epochs, &busy).starts_with("Autocontext off."));
         assert_eq!(eta(59), "59s");
         assert_eq!(eta(125), "2m 05s");
         let s = status(&busy);
         assert!(
-            s.starts_with("Memory: endless · view 0 KB of 128 KB · 1 lines · 2 messages · compactor p/haiku · backfill 40/1240"),
+            s.starts_with("Memory: autocontext · view 0 KB of 128 KB · 1 lines · 2 messages · compactor p/haiku · backfill 40/1240"),
             "{s}"
         );
         assert!(status(&memory(None)).ends_with("· up to date"));

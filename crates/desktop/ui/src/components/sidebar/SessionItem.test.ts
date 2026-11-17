@@ -32,12 +32,12 @@ const child = receiveComponent('method.agent.output.SessionSummary', { id: 'chil
 const glyph = (label: string) => document.querySelector(`[role="img"][aria-label="${label}"]`)!
 let unmount = async () => {}
 let client: QueryClient
-async function mount(subagents: SessionSummary[] = [child]) {
+async function mount(subagents: SessionSummary[] = [child], endless = false) {
   const host = document.body.appendChild(document.createElement('div'))
   const root = createRoot(host)
   client = new QueryClient()
   await act(async () => root.render(createElement(QueryClientProvider, { client, children: createElement(SidebarProvider, null, createElement('div', { onClick: rowClick, onPointerDown: rowPointerDown, onMouseDown: rowMouseDown }, createElement(SessionItem, {
-    id: 'root', title: 'Background work', created: '2026-11-16T12:00:00Z', tags: [], pinned: false, archived: false, project: null, owner: '', epoch: 1, here: true, running: true, endless: false, subagents, active: false, selected: false, selecting: false, select,
+    id: 'root', title: 'Background work', created: '2026-11-16T12:00:00Z', tags: [], pinned: false, archived: false, project: null, owner: '', epoch: 1, here: true, running: true, endless, subagents, active: false, selected: false, selecting: false, select,
   }))) })))
   unmount = async () => { await act(async () => root.unmount()) }
 }
@@ -128,4 +128,10 @@ test('the existing chat options menu retains Open in new window', async () => {
   expect(item).toBeDefined()
   await act(async () => item.click())
   expect(openPopout).toHaveBeenCalledWith({ kind: 'chat', session: 'root' })
+})
+
+test('an autocontext session shows the ∞ badge labelled Autocontext after its title', async () => {
+  await mount([child], true)
+  expect(glyph('Autocontext').textContent).toBe('∞')
+  expect(document.querySelector('[aria-label*="ndless"]')).toBeNull()
 })

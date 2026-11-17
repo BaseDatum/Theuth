@@ -12691,7 +12691,7 @@ impl Message<CreateSession> for Agents {
                 self.endless
                     .set_mode(id, memory, 0, UnitFilter::All)
                     .await
-                    .map_err(|e| format!("endless: {e:#}"))?;
+                    .map_err(|e| format!("autocontext: {e:#}"))?;
                 tracing::info!(session = %id, "endless: created in endless mode");
             }
             if let Some((model, effort)) = m.options.advisor {

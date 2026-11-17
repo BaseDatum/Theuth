@@ -55,7 +55,7 @@ async function render(): Promise<string> {
 
 test('the ∞ switch follows agent.endless.default_meeting and sits under the model row with its one-line note', async () => {
   const html = await render()
-  expect(html).toMatch(/Session model.*aria-checked="true"[^>]*aria-label="Endless memory"/s)
+  expect(html).toMatch(/Session model.*aria-checked="true"[^>]*aria-label="Autocontext"/s)
   expect(html).toContain('Keeps a compressed memory of the whole meeting behind the live transcript; zoom and recall bring any earlier moment back.')
 })
 

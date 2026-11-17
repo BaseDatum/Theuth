@@ -903,7 +903,7 @@ export function Composer({
         await deadline(api.send_input(id, body, files, null, clientId))
       } else {
         if (draftCreate?.private && (!client || !supports(client.discovery, privateRequirements))) throw new UnsupportedCapability('private sessions')
-        if (draftCreate?.endless && (!client || !supports(client.discovery, endlessRequirements))) throw new UnsupportedCapability('endless memory')
+        if (draftCreate?.endless && (!client || !supports(client.discovery, endlessRequirements))) throw new UnsupportedCapability('autocontext')
         if (draftCreate?.private && !usePrivate.getState().acknowledged)
           throw new Error('Acknowledge the private session notice first')
         // A switch on needs `create_session` with the pick in it; `openDraftSession` takes a bare pick there too, else `new_session()`.

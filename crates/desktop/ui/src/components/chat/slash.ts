@@ -52,9 +52,9 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     desc: 'reasoning effort (picker without arg)',
   },
   {
-    name: '/endless',
+    name: '/autocontext',
     hint: 'on|off',
-    desc: 'switch this session between endless memory and epochs (idle sessions only)',
+    desc: 'switch this session between autocontext and epochs (idle sessions only)',
   },
   {
     name: '/mcp',
@@ -169,6 +169,9 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
 /** Commands whose name starts with the typed word (`/mo` → `/model`). */
 export const matches = (word: string) => COMMANDS.filter((c) => c.name.startsWith(word))
 
+/** Old names still run but are not listed: `/endless` is `/autocontext`'s. */
+const ALIASES: readonly string[] = ['/endless']
+
 /** One slash-menu row: a theuth built-in or, in an ACP session (D15), one of the harness's own commands. */
 export type SlashItem = {
   name: string
@@ -227,7 +230,7 @@ export async function sendRaw(api: Api, session: string, text: string): Promise<
 export function isCommand(line: string, skills: readonly string[] | null): boolean {
   const word = line.split(/\s/, 1)[0] ?? ''
   if (word.length < 2 || !word.startsWith('/')) return false
-  if (COMMANDS.some((c) => c.name === word)) return true
+  if (ALIASES.includes(word) || COMMANDS.some((c) => c.name === word)) return true
   const name = word.slice(1)
   return skills ? skills.includes(name) : !/[/.]/.test(name)
 }
@@ -381,16 +384,17 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       if (!session) return useDrafts.getState().setPick({ effort: arg === 'clear' ? null : arg })
       await api.set_effort(session, arg === 'clear' ? null : arg, true)
       return
-    // 137 §8.6 (157 D3): the TUI's `/endless on|off` on the desktop too — `set_session_memory`, idle sessions only; the
+    // 137 §8.6 (157 D3): the TUI's `/autocontext on|off` on the desktop too — `set_session_memory`, idle sessions only; the
     // badge and the Memory panel follow the refreshed `sessions` row (and a notebook's `notebook_chats` row) and `session_memory`.
+    case '/autocontext':
     case '/endless': {
-      if (sub !== 'on' && sub !== 'off') throw new Error(`/endless: expected on|off, got ${JSON.stringify(sub)}`)
+      if (sub !== 'on' && sub !== 'off') throw new Error(`/autocontext: expected on|off, got ${JSON.stringify(sub)}`)
       if (!session) return useDrafts.getState().setCreate({ memory: sub === 'on' ? 'endless' : 'epochs' })
       const m = await api.set_session_memory(session, sub === 'on' ? 'endless' : 'epochs')
       active().qc.setQueryData(queryKeys.sessionMemory(session), m)
       void active().qc.invalidateQueries({ queryKey: queryKeys.sessions })
       void active().qc.invalidateQueries({ queryKey: [...notebookKeys.all, 'chats'] })
-      toast(m.mode === 'endless' ? 'endless memory on' : 'endless memory off: back to epochs')
+      toast(m.mode === 'endless' ? 'Autocontext on' : 'Autocontext off: back to epochs')
       return
     }
     case '/title': {

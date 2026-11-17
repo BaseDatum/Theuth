@@ -388,14 +388,14 @@ export function CreateOptions({
         <Capability required={endlessRequirements} hide><Tooltip>
           <TooltipTrigger asChild>
             <label className="flex items-center gap-2">
-              <Switch checked={endless} onCheckedChange={onEndless} aria-label="Endless memory" />
+              <Switch checked={endless} onCheckedChange={onEndless} aria-label="Autocontext" />
               {/* One text size up, pulled up a hair: the glyph's optical centre sits on the x-height, not the baseline. */}
               <span aria-hidden className="relative -top-px text-base leading-5 [font-feature-settings:normal]">
                 ∞
               </span>
             </label>
           </TooltipTrigger>
-          <TooltipContent side="bottom">Endless memory</TooltipContent>
+          <TooltipContent side="bottom">Autocontext</TooltipContent>
         </Tooltip></Capability>
         <div className="flex items-center gap-2">
           <Label htmlFor={pid} className="text-fg-secondary">
@@ -406,7 +406,7 @@ export function CreateOptions({
       </div>
       {endless && (
         <div className="mt-3 rounded-xl border border-border-subtle bg-muted/40 p-3">
-          <p className="font-medium">Endless memory</p>
+          <p className="font-medium">Autocontext</p>
           <ul className="mt-1 list-disc space-y-0.5 pl-5 text-fg-secondary">
             <li>Every turn starts from a compressed view of the whole chat; nothing is deleted, the distant past just gets coarser.</li>
             <li>A background summariser keeps the view fresh; the first answer after a long turn may wait a few seconds for it.</li>

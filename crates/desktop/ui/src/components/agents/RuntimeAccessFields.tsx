@@ -52,7 +52,7 @@ export function RuntimeFields({ d, set, memoryError }: { d: Draft; set: Setter; 
           effort={{ levels: efforts, current: d.effort, onSelect: (level) => set('effort', level) }}
         />
       </Field>
-      <Field label="Memory summary model" id="rt-memory-model" hint="Writes the endless memory summaries of its desk, and its thinking effort; a chat's own pick wins. Default = Settings › Memory.">
+      <Field label="Memory summary model" id="rt-memory-model" hint="Writes the autocontext summaries of its desk, and its thinking effort; a chat's own pick wins. Default = Settings › Memory.">
         <ModelCombobox
           id="rt-memory-model"
           aria-label="Memory summary model"

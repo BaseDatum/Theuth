@@ -47,15 +47,17 @@ const render = (props: Partial<Parameters<typeof CreateOptions>[0]>) =>
 
 test('the ∞ switch sits in the options row after Private; off, no notice', () => {
   const html = render({})
-  expect(html).toMatch(/aria-label="Private session".*aria-checked="false"[^>]*aria-label="Endless memory".*>Project</s)
+  expect(html).toMatch(/aria-label="Private session".*aria-checked="false"[^>]*aria-label="Autocontext".*>Project</s)
+  expect(html).toMatch(/aria-label="Autocontext"[^]*?>∞<\/span>/)
   expect(html).not.toContain('Every turn starts from a compressed view')
 })
 
 test('on: the neutral notice with the three sentences and the compactor line; the model name when one is set', () => {
   const html = render({ endless: true })
-  expect(html).toMatch(/aria-checked="true"[^>]*aria-label="Endless memory"/)
-  expect(html).toMatch(/border-border-subtle bg-muted\/40[^"]*"><p class="font-medium">Endless memory<\/p>/)
-  expect(html).not.toMatch(/bg-warning-bg.*Endless memory/s)
+  expect(html).toMatch(/aria-checked="true"[^>]*aria-label="Autocontext"/)
+  expect(html).toMatch(/border-border-subtle bg-muted\/40[^"]*"><p class="font-medium">Autocontext<\/p>/)
+  expect(html).not.toMatch(/bg-warning-bg.*Autocontext/s)
+  expect(html).not.toMatch(/endless/i)
   expect(html).toContain('Every turn starts from a compressed view of the whole chat; nothing is deleted, the distant past just gets coarser.')
   expect(html).toContain('A background summariser keeps the view fresh; the first answer after a long turn may wait a few seconds for it.')
   expect(html).toContain('zoom and recall bring any past message back word for word.')
