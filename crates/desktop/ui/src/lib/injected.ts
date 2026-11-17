@@ -184,6 +184,17 @@ export function parseFileNotice(text: string): FileNote | null {
   return cls?.length === 1 && cls[0]?.kind === 'file' ? cls[0].file : null
 }
 
+/** 199-Z2: an awaited answer's reply text (199-E3 hands the call the answer's words, then the receiving placeholders
+ * and their hint) as words only: whole lines that are a well-formed `<message_file …/>` or a file hint go, since the
+ * files arrive as their own cards. Anything else, a lookalike in the peer's own words included, is kept as written. */
+export function withoutFileNotes(text: string): string {
+  return text
+    .split('\n')
+    .filter((line) => !(line.startsWith('<message_file ') && line.endsWith('/>') && parseFileTag(line)) && !FILE_HINT.test(line))
+    .join('\n')
+    .trimEnd()
+}
+
 const int = (v: string | undefined) => (v && /^\d+$/.test(v) ? Number(v) : 0)
 
 /** `<session_moved …/>` (§11.1) as the card's fields; missing attributes read empty, never throw. */

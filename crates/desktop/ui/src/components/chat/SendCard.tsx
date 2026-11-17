@@ -4,6 +4,7 @@ import { useQueries } from '@tanstack/react-query'
 import { Fragment, useMemo } from 'react'
 import { Streamdown } from 'streamdown'
 import { Button } from '@/components/ui/button'
+import { withoutFileNotes } from '@/lib/injected'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { formatAt } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -79,10 +80,12 @@ function More({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   )
 }
 
-/** One recipient's answer, clamped to about three lines with a measured `Show all`. An outside agent's words stay plain text. */
+/** One recipient's answer, clamped to about three lines with a measured `Show all`. An outside agent's words stay plain
+ * text. 199-Z2: an awaited answer's file placeholders and hint are not words (the files are their own cards). */
 function Answer({ label, text, outside, part, at, onJump }: { label: string; text: string; outside: boolean; part: string; at?: number; onJump?: () => void }) {
   const [open, setOpen] = useScopedDisclosure(part)
   const [ref, hidden] = useOverflow<HTMLDivElement>(!open)
+  const words = withoutFileNotes(text)
   return (
     <div className="mt-2.5 border-t border-dashed border-border-subtle pt-2 text-[13px]">
       <div className="mb-0.5 flex flex-wrap items-center gap-x-1 text-xs text-fg-secondary">
@@ -96,10 +99,10 @@ function Answer({ label, text, outside, part, at, onJump }: { label: string; tex
       </div>
       <div ref={ref} className={cn(!open && 'max-h-[4.5rem] overflow-hidden')}>
         {outside ? (
-          <p className="whitespace-pre-wrap wrap-anywhere">{text}</p>
+          <p className="whitespace-pre-wrap wrap-anywhere">{words}</p>
         ) : (
           <Streamdown mode="static" className="text-[13px] [&_p]:my-0">
-            {text}
+            {words}
           </Streamdown>
         )}
       </div>

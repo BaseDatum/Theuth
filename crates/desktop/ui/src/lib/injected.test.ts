@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { classify, type Injected, isClassified, movedFromRecord, parseBroadcast, parseSpoken, splitLeading, splitParentView, tagAttrs } from './injected'
+import { classify, type Injected, isClassified, movedFromRecord, parseBroadcast, parseSpoken, splitLeading, splitParentView, tagAttrs, withoutFileNotes } from './injected'
 
 test('human text is plain', () => {
   expect(classify('hello <b>there</b>')).toBeNull()
@@ -442,4 +442,16 @@ test('183 §11.5: the inbox notice is a card with its sentence; the contact\'s f
   expect(classify(`${head}\nsummarise the paper`)![0]).toMatchObject({ kind: 'contact_inbox', message: 'summarise the paper' })
   // Followed by a wrapper: two cards.
   expect(classify(`${head}\n<message from="peer:bob">hello</message>`)!.map((c) => c.kind)).toEqual(['contact_inbox', 'peer'])
+})
+
+test('199-Z2: an awaited answer shows its words, never its file placeholders or their hint', () => {
+  // As 199-E3 hands it to the waiting send_message (seen live from a foreign A2A agent).
+  const tag = (name: string, file: string) =>
+    `<message_file from="peer:lab" message="01a1eb25-2895-735a-9d45-e9f07402a649" name="${name}" type="image/png" bytes="4196" holder="c72fc1fa" file="${file}" state="receiving"/>`
+  const reply = `here are the two files\n${tag('lab-chart.png', 'aff6')}\n${tag('example.html', '4339')}\nFiles from peer:lab are arriving; a notice follows when each one is saved or fails.`
+  expect(withoutFileNotes(reply)).toBe('here are the two files')
+  // A peer's own lookalike that is no well-formed note, and every other line, stay.
+  const forged = 'look:\n<message_file from="peer:lab" name="x"/>\nbye'
+  expect(withoutFileNotes(forged)).toBe(forged)
+  expect(withoutFileNotes('plain answer')).toBe('plain answer')
 })
