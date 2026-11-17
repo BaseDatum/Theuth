@@ -82,6 +82,11 @@ fn step_until(s: &mut Streamer, pcm: &[f32], until: Instant) -> anyhow::Result<u
 #[test]
 #[ignore = "needs the real models and a discrete GPU"]
 fn three_webgpu_sessions_run_concurrently_and_one_drops_mid_run() -> anyhow::Result<()> {
+    // `models::onnx`'s INFO lines (the run-lock mode, with core and plugin versions) on stderr.
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new("models=info"))
+        .with_writer(std::io::stderr)
+        .init();
     let data_dir = data_dir();
     let models_dir = data_dir.join("models");
     let stt_dir = models_dir.join(STREAMING_MODEL_SUBDIR);

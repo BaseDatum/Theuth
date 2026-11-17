@@ -15,10 +15,15 @@
   With -NoPlugin the data dir gets no plugins\ folder: a CPU-only control (the runtime loads and the diariser opens on
   the CPU; the test then skips) that never loads the WebGPU plugin.
 
+  Diagnostic file sets on top of the shipped ones (one per run, each in its own data dir):
+  -Agility  the nupkg's runtimes/win-x64/native/D3D12/*.dll (preview D3D12 Agility SDK) as plugins\D3D12\, the layout
+            the package's buildTransitive targets give it: a D3D12\ folder beside onnxruntime_providers_webgpu.dll.
+  -Dxil040  dxil.dll from the 0.4.0 nupkg (sha256-checked against 0.4.0's former pin) beside the plugin.
+
 .EXAMPLE
-  pwsh -File crates\desktop\companion-windows\ort-webgpu-test.ps1 [-NoPlugin]
+  pwsh -File crates\desktop\companion-windows\ort-webgpu-test.ps1 [-NoPlugin | -Agility | -Dxil040]
 #>
-param([switch] $NoPlugin)
+param([switch] $NoPlugin, [switch] $Agility, [switch] $Dxil040)
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $pins = Get-Content (Join-Path $repo 'scripts\ort-version.env') -Raw
@@ -47,7 +52,8 @@ function Fetch([string] $url, [string] $file, [string] $sha) {
 $zip = Fetch "https://github.com/microsoft/onnxruntime/releases/download/v$ort/onnxruntime-win-x64-$ort.zip" "onnxruntime-win-x64-$ort.zip" $ortSha
 $nupkg = Fetch "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.ep.webgpu/$ep/microsoft.ml.onnxruntime.ep.webgpu.$ep.nupkg" "microsoft.ml.onnxruntime.ep.webgpu.$ep.nupkg" $epSha
 
-$data = Join-Path $work ("data-$ort-$ep" + $(if ($NoPlugin) { '-cpu' } else { '' }))   # reused across runs; never deleted here (it holds junctions to the real models)
+$variant = if ($NoPlugin) { '-cpu' } elseif ($Agility) { '-agility' } elseif ($Dxil040) { '-dxil040' } else { '' }
+$data = Join-Path $work "data-$ort-$ep$variant"   # reused across runs; never deleted here (it holds junctions to the real models)
 $rt = Join-Path $data 'models\onnxruntime'
 $plugins = Join-Path $rt 'plugins'
 New-Item -ItemType Directory -Force $rt | Out-Null
@@ -67,13 +73,24 @@ if (-not $NoPlugin) {
     foreach ($f in 'onnxruntime_providers_webgpu.dll', 'dxcompiler.dll') {   # release-models.sh plugin_files_of win-*
         Extract $nupkg "runtimes/win-x64/native/$f" (Join-Path $plugins $f)
     }
+    if ($Agility) {
+        New-Item -ItemType Directory -Force (Join-Path $plugins 'D3D12') | Out-Null
+        foreach ($f in 'D3D12Core.dll', 'd3d12SDKLayers.dll') {
+            Extract $nupkg "runtimes/win-x64/native/D3D12/$f" (Join-Path $plugins "D3D12\$f")
+        }
+    }
+    if ($Dxil040) {
+        # The 0.4.0 nupkg as scripts/ort-version.env pinned it before the 0.6.0 bump.
+        $old = Fetch 'https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.ep.webgpu/0.4.0/microsoft.ml.onnxruntime.ep.webgpu.0.4.0.nupkg' 'microsoft.ml.onnxruntime.ep.webgpu.0.4.0.nupkg' 'cc2e093a2eaa760a630d6c3299f015f1dd86885b9eb5877257135308f7c5e923'
+        Extract $old 'runtimes/win-x64/native/dxil.dll' (Join-Path $plugins 'dxil.dll')
+    }
 }
 $models = Join-Path $env:USERPROFILE '.theuth\models'
 foreach ($m in 'nemotron-streaming-en', 'nemotron-diarization', 'pyannote') {
     $link = Join-Path $data "models\$m"
     if (-not (Test-Path $link)) { New-Item -ItemType Junction -Path $link -Target (Join-Path $models $m) | Out-Null }
 }
-Get-ChildItem -Recurse $rt | ForEach-Object { Write-Host ("  {0} {1}" -f $_.FullName.Substring($data.Length + 1), $_.Length) }
+Get-ChildItem -Recurse -File $rt | ForEach-Object { Write-Host ("  {0} {1} sha256 {2}" -f $_.FullName.Substring($data.Length + 1), $_.Length, (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()) }
 
 $env:THEUTH_DATA_DIR = $data
 Remove-Item Env:ORT_DYLIB_PATH -ErrorAction SilentlyContinue
