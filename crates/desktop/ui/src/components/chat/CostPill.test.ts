@@ -78,13 +78,23 @@ const pill = (o: Partial<CostBucket>) =>
     .replace(/<number-flow-react[\s\S]*?aria-label="([^"]*)"[\s\S]*?<\/number-flow-react>/g, '$1')
     .replace(/<[^>]*>/g, '')
 
-test('RollingCost: returned and the estimate side by side; a zero meter never hides the estimate', () => {
+test('RollingCost: one total, ~ when any part is estimated; a zero meter never hides the estimate; mixed currencies keep the split', () => {
   const est = [usd('23000000')]
-  expect(pill({ dispatched: 3, unavailable: 2, returned: [usd('0')], estimated_for_unavailable: est })).toBe('~$0.023')
-  expect(pill({ dispatched: 3, unavailable: 2, returned: [usd('100000000')], estimated_for_unavailable: est })).toBe('$0.100 + ~$0.023')
-  expect(pill({ dispatched: 1, returned: [usd('0')] })).toBe('$0.000')
+  expect(pill({ dispatched: 3, unavailable: 2, returned: [usd('0')], estimated_for_unavailable: est })).toBe('~$0.02')
+  expect(pill({ dispatched: 3, unavailable: 2, returned: [usd('4100000000')], estimated_for_unavailable: est })).toBe('~$4.12')
+  expect(pill({ dispatched: 3, returned: [usd('4123000000')] })).toBe('$4.12')
+  expect(pill({ dispatched: 1, returned: [usd('0')] })).toBe('$0.00')
   expect(pill({})).toBe('—')
   expect(pill({ dispatched: 4, unavailable: 1, returned: [eur('500000000'), usd('0')], estimated_for_unavailable: [eur('10000000'), usd('23000000')] })).toBe(
     '€0.500 + ~€0.010 + ~$0.023',
   )
+})
+
+test('CostDialog breakdown: every bucket row is one number with the ~ rule, no returned/estimated pair', () => {
+  const total: CostBucket = { ...bucket, dispatched: 3, unavailable: 1, returned: [usd('100000000')], estimated_for_unavailable: [usd('23000000')] }
+  const direct: CostBucket = { ...bucket, dispatched: 2, returned: [usd('100000000')] }
+  const text = renderToStaticMarkup(createElement(Breakdown, { cost: { ...cost(false), direct, total } })).replace(/<[^>]*>/g, '|')
+  expect(text).toContain('|Direct||$0.10|')
+  expect(text).toContain('|Total||~$0.12|')
+  expect(text).not.toMatch(/Returned cost|Estimated|\+/)
 })

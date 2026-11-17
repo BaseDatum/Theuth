@@ -2840,6 +2840,18 @@ impl Message<ContextBreakdownNow> for Session {
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let s = self.state.as_ref()?;
+        // An active endless session's frame is the view plus the last endless
+        // turn's rows (8.1); until one ran this process, `history` is the
+        // stored epochs frame the next turn drops: the caller prices the view.
+        if s.last_view.is_none()
+            && self
+                .shared
+                .endless
+                .as_ref()
+                .is_some_and(|e| e.active(self.shared.id))
+        {
+            return None;
+        }
         let mut b = ContextBreakdown::build(
             s.system_tokens,
             s.head.as_ref(),

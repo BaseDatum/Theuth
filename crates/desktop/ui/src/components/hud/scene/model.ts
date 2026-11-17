@@ -239,11 +239,12 @@ export const GAUGE_R = 17
 /**
  * Revision 2: the gauge value from a session's `ContextBreakdown`. `used` = the provider's last bill when it has one, else the
  * engine's estimate; `window` = the harness's reported `context_size` (what the ContextMeter trusts first), else the catalog's
- * `ModelInfo.context` for the session's model; neither → `null`, no gauge. `fill` clamped to [0, 1].
+ * `ModelInfo.context` for the session's model; neither → `null`, no gauge. `fill` clamped to [0, 1]. An `endless` (autocontext)
+ * session, chat or desk, has no gauge (Sky 2026-11-17), as the header has no meter.
  */
 export function contextFill(b: ContextBreakdown, s: SessionSummary, models: readonly ModelInfo[] | undefined): Ctx | null {
   const window = s.context_size ?? models?.find((m) => m.id === s.model)?.context ?? 0
-  if (window <= 0) return null
+  if (window <= 0 || s.memory === 'endless') return null
   const used = b.last_provider_context ?? b.total_estimate
   return { fill: Math.min(1, Math.max(0, used / window)), used, window, live: b.live }
 }
