@@ -121,9 +121,10 @@ pub fn resample_block(r: &mut rubato::Fft<f32>, block: &[f32]) -> anyhow::Result
     Ok(r.process(&input, None)?.take_data())
 }
 
-/// `text` spoken by the Pocket TTS checkpoint at `tts_dir` (`<data_dir>/models/pocket-tts`) with
-/// `voice`, as 16 kHz mono PCM for [`Engine::transcribe`]: a real utterance for `t --bench-models`,
-/// where silence transcribing to `""` proves nothing about the execution provider (58 step 13).
+/// `text` spoken by the Pocket TTS checkpoint at `tts_dir`
+/// (`<data_dir>/models/pocket-tts-en-2026-10`) with `voice`, as 16 kHz mono PCM for
+/// [`Engine::transcribe`]: a real utterance for `t --bench-models`, where silence transcribing
+/// to `""` proves nothing about the execution provider (58 step 13).
 /// Blocking; loads the TTS model (seconds) — not for a request path.
 pub fn speech_sample(tts_dir: &Path, voice: &str, text: &str) -> anyhow::Result<Vec<f32>> {
     use ptts::synth::SpeechOptions;

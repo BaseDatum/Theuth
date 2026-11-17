@@ -7,9 +7,9 @@
 //! ships it there, codesigned, and a hardened-runtime app must dlopen *that* copy, which is
 //! why it comes first), then [`DIR`] under `<data_dir>/models/` (dev and headless builds;
 //! the desktop downloader and `release-models.sh` fill it), then `$ORT_DYLIB_PATH`, then
-//! Homebrew's (`brew install onnxruntime`). Linked statically it brings protobuf 3.21, which
-//! cannot share a process with the protobuf-lite 3.14 inside `sentencepiece` (ptts): the TTS
-//! load aborts. As a dylib its symbols stay private to it.
+//! Homebrew's (`brew install onnxruntime`). `ort` is `load-dynamic` workspace-wide (one
+//! ort-sys per graph); until ptts 0.7.1 that also kept pyke's static protobuf 3.21 away from
+//! `sentencepiece`'s protobuf-lite 3.14, which ptts no longer uses.
 
 use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
