@@ -125,6 +125,9 @@ export const queryKeys = {
   peerMessages: (session: string, pendingOnly: boolean, mode: 'page' | 'infinite') =>
     ['peer-messages', session, pendingOnly, mode] as const,
   peerMessage: (session: string, id: string) => ['peer-message', session, id] as const,
+  /** 199: `contact_file(holder, id)` and `contact_file_thumbnail(holder, id)`, answered by the holder. */
+  contactFile: (holder: string, id: string) => ['contact-file', holder, id] as const,
+  contactFileThumbnail: (holder: string, id: string) => ['contact-file-thumbnail', holder, id] as const,
   a2a: ['a2a'] as const,
   /** 183 §12.7: `contact_list()`, under `a2a` so `A2aChanged` refetches it. */
   contacts: ['a2a', 'contacts'] as const,
