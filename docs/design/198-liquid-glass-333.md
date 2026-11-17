@@ -28,12 +28,17 @@ just ts-desktop 2>&1 | tee /tmp/glass333/ts.log
 (cd crates/desktop/ui && bunx vitest run src/lib/native-chrome.test.ts src/components/chat/native-chrome.test.ts) 2>&1 | tee /tmp/glass333/vitest.log
 ```
 
-Expect: `test result: ok. 1 passed` in ts.log, `Generated … methods`; tsc prints nothing; vitest `Tests  15 passed (15)`.
+Expect: `test result: ok. 1 passed` in ts.log, `Generated … methods`; tsc prints nothing; vitest `Tests  16 passed (16)`.
 
 ## 2. Build for the iOS 26 simulator
 
+The rebuild is warm after the first round (fix round 1: minutes, not the cold build). Put the real cargo first on
+PATH for every `cargo tauri ios …` here: through 333's mbx cargo shim the Xcode "Build Rust Code" step fails with
+"could not verify Cargo build storage".
+
 ```sh
 cd /Users/sky/Develop/skymoore/theuth-glass/crates/desktop
+export PATH=/Users/sky/.cargo/bin:$PATH
 rustup target add aarch64-apple-ios-sim
 TAURI_FRONTEND_PATH=ui cargo tauri ios build --debug --target aarch64-sim --config tauri.ios.conf.json \
   2>&1 | tee /tmp/glass333/build.log
@@ -69,17 +74,21 @@ console for every step below (`glass …:` warnings come from `lib/native-chrome
 
 ## 4. Pair with 333's own engine
 
-The daemon must be running with link enabled (TUI `/link on`, or desktop Settings › Network › Devices).
+The daemon must be running with link enabled (TUI `/link on`, or desktop Settings › Network › Devices). A baked
+`VITE_THEUTH_URL`/`VITE_THEUTH_TOKEN` does NOT work on iOS: there is no local daemon there
+(`invoke('connection')` → "no local daemon on this platform"), so the app always pairs through link.
 
 ```sh
 t --link 2>&1 | tee /tmp/glass333/link.txt     # prints a QR and https://<relay>/link#1.<…>.<…>, waits for "paired:"
 KEY=$(grep -oE 'https://[^ ]+/link#1\.[A-Za-z0-9_.-]+' /tmp/glass333/link.txt | head -1)
-xcrun simctl openurl "$UDID" "$KEY"
+printf %s "$KEY" | xcrun simctl pbcopy "$UDID"
 ```
 
-Expect: the app comes forward and pairs; `t --link` prints `paired: iPhone` and exits. If `openurl` opens Safari
-instead (no universal-link association in the simulator), paste: `printf %s "$KEY" | xcrun simctl pbcopy "$UDID"`,
-then in the app long-press the Paste key box → Paste → Pair. Same expectation.
+Paste the key into the pair screen: long-press the Paste key box → Paste → Pair (headless: `idb ui tap X Y` on the
+box, the Paste callout and Pair; `idb ui describe-all` for coordinates). Not `simctl openurl "$KEY"`: with no
+apple-app-site-association for `relay.theuth.io/link` in the simulator it opens Safari, not the app.
+
+Expect: the app pairs and shows the chat list; `t --link` prints `paired: iPhone` and exits.
 
 ## 5. Open a chat with content
 
@@ -101,13 +110,21 @@ Expect (the phase-1 checks):
 6. **Scroll-to-bottom:** scroll up more than 80 px → a round glass `arrow.down` fades in, centred, about 12 px above
    the composer; tap → the transcript jumps to the bottom and the button fades out. No web (outline) button ever.
 7. **Keyboard:** tap the composer → keyboard up; scroll up → the button sits just above the composer, above the
-   keyboard; dismiss the keyboard → it follows the composer down.
+   keyboard; dismiss the keyboard → it follows the composer down and never overlaps it, including the frames where
+   the composer is still raised after the keyboard has gone (fix round 1: the button is now placed from the screen's
+   top at the composer's measured top edge). Repeat with a three-line draft (taller composer): same.
 8. **Sheets:** open a full-screen surface (artifacts, terminal viewer, search) → bar and button hidden while open.
 9. **Other pages:** Settings (from the drawer) → no glass bar (it hides once the chat header unmounts); back to a
    chat → it returns with that chat's title.
 10. **Accessibility:** VoiceOver (Accessibility Inspector › Simulator) reads "Open sidebar", the title,
     "Session menu", "Scroll to bottom"; Settings › Accessibility › Larger Text at the largest size: the controls keep
-    44 pt, long-press shows the large content viewer, the title stays one truncated line.
+    44 pt, long-press shows the large content viewer, the title stays one truncated line. (idb's AX dump lists only
+    the app root; read the labels with Accessibility Inspector instead. In code: `accessibilityLabel` on all four
+    buttons, none hidden from accessibility while shown.)
+11. **Bottom band (fix round 1):** launch in light, then `xcrun simctl ui "$UDID" appearance dark`, keyboard down:
+    the area under the composer down to the screen's bottom edge is the dark page colour (`#12100e`), no cream band;
+    back to light: cream (`#e8dcc8`) everywhere, no dark band. Same with Settings › General › Appearance forced to
+    the other theme than the system. Optional, to place the cause: the same steps on a main build show the cream band.
 
 ## 6. Screenshots and video
 

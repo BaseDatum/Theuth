@@ -63,12 +63,14 @@ ACL `capabilities/glass.json` (platform iOS, `glass:default`).
 | `is_supported` | — | `{ supported }`: true only built with the iOS 26 SDK (`#if compiler(>=6.2)`), running iOS 26+ (`#available`), on an iPhone |
 | `configure` | `{ title, dark? }` | mounts the overlay (idempotent), sets the title, the appearance (`dark` = the page's theme; absent = system), shows the bar |
 | `set_title` | `{ title }` | the pill's title and accessibility label |
-| `set_scroll_button` | `{ visible, bottom }` | shows/hides the round button; `bottom` pt from the visible band's bottom (keyboard top, else screen bottom) to its bottom edge |
+| `set_scroll_button` | `{ visible, y }` | shows/hides the round button; `y` pt from the screen's top to its bottom edge (the web's composer top on screen minus 12) |
 | `set_hidden` | `{ hidden }` | hides/shows bar and scroll button together |
+| `set_background` | `{ red, green, blue }` | the page's `<html>` background (sRGB 0–255) on the window, host view, webview, its scroll view and under-page area |
 
 Event `tap { id }`, `id` ∈ `drawer` · `title` · `menu` · `scroll_bottom`; every tap plays a light impact haptic.
-Every command is rejected unless `is_supported` would be true. Commands arrive on Tauri's serial ipc queue; all UIKit
-work hops to the main queue in arrival order; the web serialises its sends through one promise chain.
+Every command but `set_background` is rejected unless `is_supported` would be true; `set_background` works on every
+iOS version and device. Commands arrive on Tauri's serial ipc queue; all UIKit work hops to the main queue in arrival
+order; the web serialises its sends through one promise chain.
 
 ### 2.3 Layout
 
@@ -76,8 +78,10 @@ work hops to the main queue in arrival order; the web serialises its sends throu
   sidebar"), the glass title pill (title + `chevron.down`, centred, truncating between the buttons), round glass
   `ellipsis` ("Session menu"). Its band is 4 + 44 + 4 = **52 pt**, the web header's height (`BAR` in
   `ui/src/lib/native-chrome.ts`).
-- Scroll-to-bottom: round glass `arrow.down` ("Scroll to bottom"), centred, `bottom` above
-  `keyboardLayoutGuide.top` (`usesBottomSafeArea = false`).
+- Scroll-to-bottom: round glass `arrow.down` ("Scroll to bottom"), centred, its bottom edge `y` pt below the view's
+  top. Not keyboard-relative: the native keyboard and the web layout move at different moments, and a
+  `keyboardLayoutGuide` offset measured in one state put the button over the composer in the other (333, fix round
+  1: composer still raised, keyboard already gone). The webview fills the same host view, so CSS px are these pt.
 - Glass: `UIButton.Configuration.glass()`; the overlay is added after the webview in the host view, so it samples
   the chat. Light and dark follow the page's theme (`dark`), else the system.
 - Dynamic Type: fixed 44 pt controls (the system bars' rule), the title font scales to 20 pt, the large content
@@ -100,9 +104,23 @@ work hops to the main queue in arrival order; the web serialises its sends throu
   content by `safe-top + 52px`; the virtualizer's coordinates stay list-relative (its `paddingStart` slack is
   untouched), so the row at `scrollTop` is the row at the bar's bottom edge and the §3.3 anchor's element search
   uses that edge. The web scroll-to-bottom is not rendered; the native one mirrors `unstuck` and sits 12 px above
-  the scroller's bottom (`scrollButtonBottom`, re-measured on scroller resize and `visualViewport` resize).
+  the scroller's bottom edge on screen — the composer's top, or a strip's right above it (`trackScrollButton`:
+  the rect less `visualViewport.offsetTop`, re-measured on scroller resize and `visualViewport` resize and scroll).
 - Hidden while covered: any Radix dialog outside a popper (sheets, the phone sidebar drawer, centred and
   full-screen dialogs) hides bar and button; the chevron popover and the ⋯ dropdown do not. Watched with a
   `MutationObserver` on `<body>`'s children only (portals), never the subtree.
 - Fallback: iOS < 26, no plugin, iPad (any width), desktop, browser: no plugin call beyond the probe on iOS, the web
   header and button render exactly as before.
+- Native background (every iOS, `syncPageBackground` from `main.tsx`): the native layers behind the webview take the
+  page's `<html>` colour at start and on every theme change. Before, they kept the colour `page_background` chose
+  from the system appearance at launch (`desktop/src/lib.rs` window builder; desktop re-paints on `ThemeChanged`,
+  mobile never did, and tao's iOS theme is a constant), so a page whose theme differed (the system switched after
+  launch, or Settings › Appearance forced the other) showed a cream band in the area WebKit leaves to the native
+  layers under the composer while the keyboard is down (333, fix round 1; pre-existing on main).
+
+### 2.5 Open questions for Sky
+
+- **Landscape.** Phase 1 is portrait-only as built: an iPhone in landscape is ≥ 768 px wide, so it takes the wide
+  layout (`useIsMobile` false) and keeps the web header and button. Should landscape get the glass bar too (it would
+  need the bar to clear the side safe areas and the wide layout's sidebar)? The width decides, not the orientation:
+  an iPhone SE (2nd/3rd gen, 667 pt landscape) stays in the phone layout and keeps the glass bar in landscape.
