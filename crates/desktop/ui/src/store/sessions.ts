@@ -645,7 +645,15 @@ export const createSessions = (): SessionsApi =>
         set((st) => {
           const cur = st.sessions[id] ?? empty(id);
           // 125 §8.5: an advisor child is never a tree row, a strip dot or a live session; the engine hides it, this is the belt.
-          const children = Object.fromEntries(agents.filter((a) => a.kind !== "advisor").map((a) => [a.id, a]));
+          // A row with no model yet takes the child's own `harnessModel` (a `HarnessModelChanged` newer than this snapshot).
+          const children = Object.fromEntries(
+            agents
+              .filter((a) => a.kind !== "advisor")
+              .map((a) => {
+                const known = !a.model && st.sessions[a.id]?.harnessModel;
+                return [a.id, known ? { ...a, model: known } : a];
+              }),
+          );
           return { sessions: { ...st.sessions, [id]: { ...cur, children } } };
         });
       },
