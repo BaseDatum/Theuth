@@ -158,10 +158,12 @@ pub(crate) async fn serve(
     if !matches!(c.gate(&remote), IrohGate::Contact { .. }) {
         return refuse(&remote, stream).await;
     }
-    // 199-E1a: a `GET`/`POST /a2a/files/<id>` line (`files::FILES_PATH`) is served here, before
-    // `serve_http`: outside its 60 s `HTTP_TIMEOUT`, `Route::of`, `forward::route` and the A2A rate limits.
-    // It serves through `agent::communication::files::offers()` (`open`, `receipt`) under
-    // `c.transfers.token(<the caller's record id>)`.
+    // 199 (D2): `GET`/`POST /a2a/files/<id>` is served here, before `serve_http`: outside its
+    // 60 s `HTTP_TIMEOUT`, `Route::of`, `forward::route` and the A2A rate limits, through the
+    // agent's offers under the caller's transfers token (`files::route`).
+    if super::files::is_route(&line) {
+        return super::files::route(&c, &remote, &line, stream).await;
+    }
     let shared = c.shared.clone();
     serve_http(
         shared,

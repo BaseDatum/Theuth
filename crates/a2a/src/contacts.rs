@@ -68,7 +68,7 @@ pub const EXT_MACHINE: &str = "https://theuth.io/a2a/ext/machine/v1";
 /// 186 (D10): the card extension a build that collaborates in full advertises.
 pub const EXT_FULL: &str = "https://theuth.io/a2a/ext/full/v1";
 /// 199 (D1): files between theuth engines (`files::FileMeta` under this key on a reference
-/// part; `Message.extensions` exactly `[EXT_FILES]`). Defined, not advertised until 199-E1a.
+/// part; `Message.extensions` exactly `[EXT_FILES]`), advertised with `maxBytes`.
 pub const EXT_FILES: &str = "https://theuth.io/a2a/ext/files/v1";
 /// What the contact RPCs answer when this process runs no a2a plugin.
 pub const OFF: &str = "contacts are unavailable: the a2a plugin is not running";
@@ -590,7 +590,16 @@ pub fn card(facts: &CardFacts) -> AgentCard {
                     required: Some(false),
                     params: None,
                 },
-                // 199-E1a: advertise `EXT_FILES` with `params: {"maxBytes": FILE_MAX}`.
+                // 199 (D1): reference parts, each file at most `FILE_MAX`.
+                AgentExtension {
+                    uri: EXT_FILES.to_owned(),
+                    description: None,
+                    required: Some(false),
+                    params: Some(std::collections::HashMap::from([(
+                        "maxBytes".to_owned(),
+                        agent::communication::files::FILE_MAX.into(),
+                    )])),
+                },
             ]),
             extended_agent_card: Some(false),
         },
@@ -710,6 +719,15 @@ pub fn card_full(card: &AgentCard) -> bool {
         .iter()
         .flatten()
         .any(|e| e.uri == EXT_FULL)
+}
+
+/// 199 (D1): the card advertises [`EXT_FILES`]: its engine takes file references.
+pub fn card_files(card: &AgentCard) -> bool {
+    card.capabilities
+        .extensions
+        .iter()
+        .flatten()
+        .any(|e| e.uri == EXT_FILES)
 }
 
 /// The `machine` and `os_name` of a card's [`EXT_MACHINE`] extension (empty when absent),
@@ -3199,13 +3217,22 @@ mod tests {
             .unwrap(),
             format!(r#"{{"alg":"EdDSA","kid":"{eid}","typ":"JOSE"}}"#)
         );
-        // 186: the card carries the full-collaboration extension too.
+        // 186, 199: the card carries the full-collaboration and the files extensions too.
         assert_eq!(
             sig.signature,
-            "ffspQrmo4NZ4XBudLJTKE-KXL0-xbw_b4RbippZgTzdXdoNabg3aQ-Po00ZNFuj1nmH8dVw8DH3MT-CyTAh-Bw"
+            "282xD1T3JqBI8nAySSmF3Ix1umLrj2JirtmqKNmGPVbrDIox8uiAvkJsM1Yj2CwQtdZ0lOyCdssV1DQoXeZaBA"
         );
         verify_card(&signed, &eid).unwrap();
         assert_eq!(card_machine(&signed), ("xeus".into(), "Arch Linux".into()));
+        // 199 (D1): it takes files, each up to 5 GB.
+        assert!(card_files(&signed));
+        let files = signed.capabilities.extensions.iter().flatten();
+        let files = files.filter(|e| e.uri == EXT_FILES).collect::<Vec<_>>();
+        assert_eq!(files[0].required, Some(false));
+        assert_eq!(
+            files[0].params.as_ref().unwrap()["maxBytes"],
+            serde_json::json!(5_000_000_000u64)
+        );
 
         // Over the wire and back: the same bytes verify.
         let back: AgentCard =

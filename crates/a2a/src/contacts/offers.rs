@@ -52,6 +52,8 @@ pub(crate) struct Cached {
     pub full: bool,
     /// 191 (D8): the `machine` of the last card that verified (`""` until one did).
     pub machine: String,
+    /// 199 (D1): the last card that verified advertised [`super::EXT_FILES`].
+    pub files: bool,
     /// The last refresh, whatever its outcome (the TTL counts from it).
     pub at: Option<Instant>,
     /// A card of it verified this run (a failed refresh alone leaves this unset): one that
@@ -68,6 +70,10 @@ pub(crate) struct Cached {
     #[cfg(test)]
     pub(super) refreshes: usize,
 }
+
+/// Every contact machine's [`Cached`], by endpoint id (`Ctx.offers`, shared with the
+/// contact clients).
+pub(crate) type Cards = Arc<parking_lot::Mutex<HashMap<String, Cached>>>;
 
 /// [`Ctx::offers_noticed`]'s claim on one contact's `busy` flag: released on drop unless
 /// the refresh loop already released it under the lock (`done`).
@@ -391,6 +397,7 @@ impl Ctx {
                             of_card(&card),
                             super::card_full(&card),
                             super::card_machine(&card).0,
+                            super::card_files(&card),
                         ))
                     }),
                 Ok((s, _)) => Err(format!("card: HTTP {s}")),
@@ -413,10 +420,11 @@ impl Ctx {
                 c.refreshes += 1;
             }
             match outcome {
-                Ok((offers, full, machine)) => {
+                Ok((offers, full, machine, files)) => {
                     // A card after a failure settles the contact again (D12).
                     let recovered = c.error.take().is_some();
                     c.fetched = true;
+                    c.files = files;
                     let was = std::mem::replace(&mut c.full, full);
                     let named = std::mem::replace(&mut c.machine, machine) != c.machine;
                     let changed = (std::mem::replace(&mut c.offers, offers) != c.offers)
@@ -585,6 +593,18 @@ impl Ctx {
     }
 }
 
+/// 199 (D1): the card that verified most recently among `eids` (a contact's machines)
+/// advertises [`super::EXT_FILES`]; `false` while none of them served one this run.
+pub(crate) fn files_of(all: &HashMap<String, Cached>, eids: &[String]) -> bool {
+    eids.iter()
+        .filter_map(|e| {
+            let c = all.get(e).filter(|c| c.fetched && c.error.is_none())?;
+            Some((c.at?, c.files))
+        })
+        .max()
+        .is_some_and(|(_, files)| files)
+}
+
 /// The contacts (191: every machine of each, by endpoint id) whose granted offers differ
 /// between `prev` and `next`; a contact new in `next` is left out (it fetches our card at
 /// pairing).
@@ -644,5 +664,32 @@ mod tests {
         all.insert("xeus".into(), card(vec![proj]));
         let s = settled(&eids, &all).expect("both served a card");
         assert!(s.full.contains("proj"), "one lists it in full");
+    }
+
+    /// 199 (D1): a file send reads the contact's last card: none verified this run, or the
+    /// most recent one without [`super::super::EXT_FILES`], refuses it; a failed refresh is
+    /// no card.
+    #[test]
+    fn a_contact_takes_files_by_its_most_recent_verified_card() {
+        let t0 = Instant::now();
+        let card = |at: Duration, files: bool| Cached {
+            fetched: true,
+            at: Some(t0 + at),
+            files,
+            ..Cached::default()
+        };
+        let eids = ["m333".to_owned(), "xeus".to_owned()];
+        let mut all = HashMap::new();
+        assert!(!files_of(&all, &eids), "no card yet");
+        all.insert("m333".to_owned(), card(Duration::ZERO, true));
+        assert!(files_of(&all, &eids));
+        all.insert("xeus".to_owned(), card(Duration::from_secs(1), false));
+        assert!(
+            !files_of(&all, &eids),
+            "xeus served the latest card, without files"
+        );
+        all.get_mut("xeus").unwrap().error = Some("dial failed".into());
+        assert!(files_of(&all, &eids), "a failed refresh is no card");
+        assert!(!files_of(&all, &["other".to_owned()]));
     }
 }
