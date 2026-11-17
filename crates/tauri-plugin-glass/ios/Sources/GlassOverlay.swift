@@ -1,8 +1,8 @@
 // Design 198 phase 1: the controls. A full-screen pass-through view over the webview carrying
 //   - the top bar under the safe-area top: round glass `sidebar.left` (drawer) · glass title pill with a chevron
 //     (title) · round glass `ellipsis` (menu);
-//   - the round glass `arrow.down` (scroll_bottom), centred, its bottom `bottom` points above the keyboard's top
-//     (or the screen's bottom), shown only when the web says so.
+//   - the round glass `arrow.down` (scroll_bottom), centred, its bottom edge at the `y` the web sends (its composer's
+//     top edge on screen minus the gap), shown only when the web says so.
 // Geometry the web mirrors (`ui/src/lib/native-chrome.ts` `BAR`): the bar's band is TOP + CONTROL + TOP = 52 pt
 // under the safe-area top, the web header's height. Controls keep a fixed 44 pt and show the large content viewer
 // at accessibility text sizes (the system bars' rule); the title font scales up to 20 pt.
@@ -60,11 +60,11 @@ final class GlassOverlayController: UIViewController {
     bar.addInteraction(UILargeContentViewerInteraction())
     view.addInteraction(UILargeContentViewerInteraction())
 
-    // The keyboard's top while it is up, the view's bottom (not the safe area's) while it is down: the web's
-    // `bottom` already counts the home-indicator inset through the composer's padding.
-    view.keyboardLayoutGuide.usesBottomSafeArea = false
+    // From the view's top, where the web measured: the webview fills the same host view, so its CSS px are these
+    // points. Not `keyboardLayoutGuide`: the native keyboard and the web layout move at different moments, and a
+    // keyboard-relative offset measured in one state put the button over the composer in the other.
     let guide = view.safeAreaLayoutGuide
-    let bottom = scroll.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -96)
+    let bottom = scroll.bottomAnchor.constraint(equalTo: view.topAnchor, constant: 0)
     scrollBottom = bottom
     // Centred on the bar unless a long title would overlap a button; then it keeps the gaps and truncates.
     let centred = pill.centerXAnchor.constraint(equalTo: bar.centerXAnchor)
@@ -121,11 +121,11 @@ final class GlassOverlayController: UIViewController {
     fade(scroll, visible: !hidden && scrollVisible)
   }
 
-  func setScrollButton(visible: Bool, bottom: CGFloat) {
+  func setScrollButton(visible: Bool, y: CGFloat) {
     loadViewIfNeeded()
     scrollVisible = visible
-    if scrollBottom?.constant != -bottom {
-      scrollBottom?.constant = -bottom
+    if scrollBottom?.constant != y {
+      scrollBottom?.constant = y
       if scroll.isHidden {
         view.layoutIfNeeded()
       } else {

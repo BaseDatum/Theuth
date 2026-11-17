@@ -2,6 +2,8 @@
 // here in lowerCamelCase) drive one `GlassOverlayController`, a child of the webview's host view controller whose
 // view lies over the WKWebView. Commands arrive on Tauri's serial ipc queue; every UIKit touch hops to the main
 // queue in arrival order (the upstream plugins' pattern). Taps go back as the `tap` event, `{ id }`.
+// `setBackground` is the one command that works on every iOS version and device: the page's theme for the native
+// layers behind the webview.
 
 import SwiftRs
 import Tauri
@@ -20,9 +22,16 @@ struct TitleArgs: Decodable {
 
 struct ScrollButtonArgs: Decodable {
   let visible: Bool
-  /// Points from the visible band's bottom (the keyboard's top while it is up, else the screen's bottom) to the
-  /// button's bottom edge: the composer's height plus the gap, as the web measures it.
-  let bottom: Double
+  /// Points from the top of the screen to the button's bottom edge: the web's composer top edge (on screen) minus
+  /// the gap. Top-based, so it never depends on which of the web layout and the keyboard moved first.
+  let y: Double
+}
+
+/// The page's background, sRGB 0–255 (the `<html>` background the web computed).
+struct BackgroundArgs: Decodable {
+  let red: Double
+  let green: Double
+  let blue: Double
 }
 
 struct HiddenArgs: Decodable {
@@ -31,6 +40,11 @@ struct HiddenArgs: Decodable {
 
 class GlassPlugin: Plugin {
   private var overlay: GlassOverlayController?
+  private weak var webView: WKWebView?
+
+  @objc public override func load(webview: WKWebView) {
+    self.webView = webview
+  }
 
   /// Real Liquid Glass only: built with the iOS 26 SDK (Swift 6.2) and running on iOS 26+, on an iPhone (phase 1 is
   /// the phone layout; an iPad keeps the web header in every window size). Main thread: `UIDevice` is UIKit.
@@ -70,7 +84,27 @@ class GlassPlugin: Plugin {
 
   @objc public func setScrollButton(_ invoke: Invoke) throws {
     let args = try invoke.parseArgs(ScrollButtonArgs.self)
-    onMain(invoke) { $0.setScrollButton(visible: args.visible, bottom: CGFloat(args.bottom)) }
+    onMain(invoke) { $0.setScrollButton(visible: args.visible, y: CGFloat(args.y)) }
+  }
+
+  /// Every native layer that can show where the page does not paint (the window, the host view, the webview, its
+  /// scroll view and under-page area) in the page's background. They are set once at launch from the system
+  /// appearance (`desktop` `page_background`); without this a page whose theme differs (the system switched since
+  /// launch, or Settings › Appearance forces one) shows the launch colour in the unpainted band under the composer.
+  @objc public func setBackground(_ invoke: Invoke) throws {
+    let args = try invoke.parseArgs(BackgroundArgs.self)
+    DispatchQueue.main.async { [weak self] in
+      let color = UIColor(red: args.red / 255, green: args.green / 255, blue: args.blue / 255, alpha: 1)
+      if let web = self?.webView {
+        web.backgroundColor = color
+        web.scrollView.backgroundColor = color
+        web.underPageBackgroundColor = color
+        web.superview?.backgroundColor = color
+        web.window?.backgroundColor = color
+      }
+      self?.manager.viewController?.view.backgroundColor = color
+      invoke.resolve()
+    }
   }
 
   /// Hides (or shows again) the bar and the scroll button together: a web sheet, dialog or the drawer is over the chat.

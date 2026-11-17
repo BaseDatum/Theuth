@@ -79,7 +79,7 @@ const bar = {
   covered: false,
   title: '',
   dark: false,
-  scroll: { visible: false, bottom: -1 },
+  scroll: { visible: false, y: -1 },
   stop: (): void => {},
 }
 
@@ -132,12 +132,63 @@ export function setBarTitle(title: string): void {
   send('set_title', { title })
 }
 
-/** The native scroll-to-bottom; `bottom` is px from the visible band's bottom to the button's bottom edge. */
-export function setScrollButton(visible: boolean, bottom: number): void {
-  const px = Math.max(0, Math.round(bottom))
-  if (visible === bar.scroll.visible && (!visible || px === bar.scroll.bottom)) return
-  bar.scroll = { visible, bottom: px }
-  send('set_scroll_button', { visible, bottom: px })
+/** The web button's gap above the composer (`bottom-3`), kept by the native one. */
+const GAP = 12
+
+/** The native scroll-to-bottom; `y` is px from the screen's top to the button's bottom edge. */
+export function setScrollButton(visible: boolean, y: number): void {
+  const px = Math.max(0, Math.round(y))
+  if (visible === bar.scroll.visible && (!visible || px === bar.scroll.y)) return
+  bar.scroll = { visible, y: px }
+  send('set_scroll_button', { visible, y: px })
+}
+
+/**
+ * Keeps the native button `GAP` above `scroller`'s bottom edge — the top of what lies under the transcript: the
+ * composer, or a strip right above it — on screen, while the disposer has not run. Measured from the screen's top
+ * (the layout rect less the visual viewport's scroll), so it tracks the composer wherever the web has it, whether
+ * the keyboard or the web layout moved first. Re-measured when the scroller resizes (the shell follows the keyboard,
+ * the composer grows) and when WebKit resizes or scrolls the visual viewport.
+ */
+export function trackScrollButton(scroller: Element, visible: boolean): () => void {
+  const vv = window.visualViewport
+  const place = () => setScrollButton(visible, scroller.getBoundingClientRect().bottom - (vv?.offsetTop ?? 0) - GAP)
+  place()
+  const ro = new ResizeObserver(place)
+  ro.observe(scroller)
+  vv?.addEventListener('resize', place)
+  vv?.addEventListener('scroll', place)
+  return () => {
+    ro.disconnect()
+    vv?.removeEventListener('resize', place)
+    vv?.removeEventListener('scroll', place)
+  }
+}
+
+/**
+ * iOS, every version and device: the native layers behind the webview (window, host view, webview, scroll view,
+ * under-page area) take the page's background — the `<html>` colour theme.css keys on `.dark` — now and on every
+ * theme change. Natively they keep the system appearance of the launch (`desktop` `page_background`), which showed
+ * as a cream band under the composer whenever the page's theme differed. Started once from `main.tsx`.
+ */
+export function syncPageBackground(): () => void {
+  if (container() !== 'ios') return () => {}
+  let last = ''
+  const sync = () => {
+    const css = getComputedStyle(document.documentElement).backgroundColor
+    const [red, green, blue, alpha] = css.match(/[\d.]+/g)?.map(Number) ?? []
+    // Before theme.css applies, `<html>` is transparent: nothing to copy yet.
+    if (css === last || blue === undefined || alpha === 0) return
+    last = css
+    send('set_background', { red, green, blue })
+  }
+  sync()
+  window.addEventListener('load', sync)
+  const stop = subscribeDark(sync)
+  return () => {
+    window.removeEventListener('load', sync)
+    stop()
+  }
 }
 
 const taps = new Set<(id: GlassTap) => void>()
@@ -157,14 +208,6 @@ export function onNativeTap(cb: (id: GlassTap) => void): () => void {
   }
 }
 
-/**
- * The visible band's bottom minus the scroller's, plus the web button's 12 px gap: where the native button's bottom
- * edge sits above the keyboard (or the screen's bottom). `vv` is `window.visualViewport` in layout px.
- */
-export function scrollButtonBottom(scrollerBottom: number, vv: { height: number; offsetTop: number }): number {
-  return vv.offsetTop + vv.height - scrollerBottom + 12
-}
-
 /** Test hook: forget the probe, the bar and the listeners. */
 export function resetNativeChrome(): void {
   probed = null
@@ -172,6 +215,6 @@ export function resetNativeChrome(): void {
   chain = Promise.resolve()
   taps.clear()
   bar.stop()
-  Object.assign(bar, { owners: 0, hidden: true, covered: false, title: '', dark: false, scroll: { visible: false, bottom: -1 }, stop: () => {} })
+  Object.assign(bar, { owners: 0, hidden: true, covered: false, title: '', dark: false, scroll: { visible: false, y: -1 }, stop: () => {} })
   useNativeChrome.setState({ supported: false })
 }

@@ -9,6 +9,7 @@
 - `allow-set-title`
 - `allow-set-scroll-button`
 - `allow-set-hidden`
+- `allow-set-background`
 - `allow-register-listener`
 - `allow-remove-listener`
 
@@ -121,6 +122,32 @@ Enables the remove_listener command without any pre-configured scope.
 <td>
 
 Denies the remove_listener command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`glass:allow-set-background`
+
+</td>
+<td>
+
+Enables the set_background command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`glass:deny-set-background`
+
+</td>
+<td>
+
+Denies the set_background command without any pre-configured scope.
 
 </td>
 </tr>

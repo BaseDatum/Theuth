@@ -8,6 +8,7 @@ permissions = [
   "allow-set-title",
   "allow-set-scroll-button",
   "allow-set-hidden",
+  "allow-set-background",
   "allow-register-listener",
   "allow-remove-listener",
 ]

@@ -8,7 +8,7 @@ import { bucket, counters, estimateRow, heights, MeasuredContext, persist, remem
 import { useNudges } from '@/lib/nudges'
 import { useApi } from '@/lib/rpc'
 import { useToolRuns } from '@/lib/tool-runs'
-import { BAR, onNativeTap, scrollButtonBottom, setScrollButton } from '@/lib/native-chrome'
+import { BAR, onNativeTap, setScrollButton, trackScrollButton } from '@/lib/native-chrome'
 import { cn } from '@/lib/utils'
 import { type Prompt, useApprovals, useAsks, useSecretRequests } from '@/store/approvals'
 import { useScope } from '@/store/engine-scope'
@@ -475,21 +475,8 @@ export function Transcript({ session, compact = false, under = false }: { sessio
     setUnstuck(false)
     if (ref.current) ref.current.scrollTop = ref.current.scrollHeight
   }
-  // 198: the native button mirrors the web one: shown while unstuck, its bottom edge 12 px above the scroller's.
-  useEffect(() => {
-    const el = ref.current
-    if (!under || !el) return
-    const vv = window.visualViewport
-    const place = () => setScrollButton(unstuck, scrollButtonBottom(el.getBoundingClientRect().bottom, vv ?? { height: window.innerHeight, offsetTop: 0 }))
-    place()
-    const ro = new ResizeObserver(place)
-    ro.observe(el)
-    vv?.addEventListener('resize', place)
-    return () => {
-      ro.disconnect()
-      vv?.removeEventListener('resize', place)
-    }
-  }, [under, unstuck])
+  // 198: the native button mirrors the web one: shown while unstuck, 12 px above the scroller's bottom edge on screen.
+  useEffect(() => (under && ref.current ? trackScrollButton(ref.current, unstuck) : undefined), [under, unstuck])
   useEffect(() => {
     if (!under) return
     const off = onNativeTap((id) => id === 'scroll_bottom' && toBottom())

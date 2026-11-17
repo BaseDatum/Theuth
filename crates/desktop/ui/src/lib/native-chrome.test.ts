@@ -9,9 +9,10 @@ import {
   onNativeTap,
   probeNativeChrome,
   resetNativeChrome,
-  scrollButtonBottom,
   setBarTitle,
   setScrollButton,
+  syncPageBackground,
+  trackScrollButton,
   useNativeBar,
   useNativeChrome,
 } from './native-chrome'
@@ -164,7 +165,7 @@ test('a header mounting while a sheet is open configures, then hides at once', a
   ])
 })
 
-test('the scroll button is sent only when it changes; bottoms are whole px, never negative', async () => {
+test('the scroll button is sent only when it changes; positions are whole px, never negative', async () => {
   stubIos()
   setScrollButton(false, 80)
   setScrollButton(true, 80.4)
@@ -174,9 +175,9 @@ test('the scroll button is sent only when it changes; bottoms are whole px, neve
   setScrollButton(false, 10)
   await flush()
   expect(plugin.calls).toEqual([
-    ['set_scroll_button', { visible: true, bottom: 80 }],
-    ['set_scroll_button', { visible: true, bottom: 0 }],
-    ['set_scroll_button', { visible: false, bottom: 0 }],
+    ['set_scroll_button', { visible: true, y: 80 }],
+    ['set_scroll_button', { visible: true, y: 0 }],
+    ['set_scroll_button', { visible: false, y: 0 }],
   ])
 })
 
@@ -194,14 +195,70 @@ test('taps: one plugin listener serves every subscriber until it unsubscribes', 
   expect(b).toEqual(['drawer', 'scroll_bottom'])
 })
 
-test('the native button sits 12 px above the scroller in both iOS keyboard modes, measured from the visible band', () => {
-  // Keyboard down, 852 pt screen; the scroller ends above a 120 px composer.
-  expect(scrollButtonBottom(732, { height: 852, offsetTop: 0 })).toBe(132)
-  // Only the visual viewport shrank (layout stays 852): the shell sits on the 516 px band, the scroller ends at 396.
-  expect(scrollButtonBottom(396, { height: 516, offsetTop: 0 })).toBe(132)
-  // The layout shrank too: same band, same answer; the keyboard's own height is the native keyboardLayoutGuide's.
-  expect(scrollButtonBottom(396, { height: 516, offsetTop: 0 })).toBe(132)
+test('the native button follows the composer on screen, whichever of the keyboard and the web layout moves first', async () => {
+  stubIos()
+  // An 852 pt iPhone. `edge` is the transcript's bottom = the composer's top edge (layout px); the visual viewport
+  // has its own resize/scroll listeners; the scroller's ResizeObserver fires when the shell or the composer moves it.
+  let edge = 732
+  const vv = { height: 852, offsetTop: 0, listeners: [] as (() => void)[] }
+  Object.assign(window, {
+    visualViewport: { ...vv, get offsetTop() { return vv.offsetTop }, addEventListener: (_: string, f: () => void) => vv.listeners.push(f), removeEventListener: (_: string, f: () => void) => (vv.listeners = vv.listeners.filter((g) => g !== f)) },
+  })
+  let resized: (() => void) | null = null
+  vi.stubGlobal('ResizeObserver', class { constructor(cb: () => void) { resized = cb } observe() {} disconnect() { resized = null } })
+  const scroller = { getBoundingClientRect: () => ({ bottom: edge }) } as unknown as Element
+  const at = (...y: number[]) => y.map((v) => ['set_scroll_button', { visible: true, y: v }])
+
+  const stop = trackScrollButton(scroller, true)
+  await flush()
+  expect(plugin.calls).toEqual(at(720))
+  // Keyboard up: the shell shrinks to the 516 px band and the composer rises with it.
+  edge = 396
+  resized!()
+  // Keyboard dismissed while the web still has the composer raised: the visual viewport is full again but the
+  // composer has not moved. The button stays above the composer (was: dropped onto it with the keyboard guide).
+  for (const f of vv.listeners) f()
+  await flush()
+  expect(plugin.calls).toEqual(at(720, 384))
+  // The shell catches up: the composer is back at the bottom, and so is the button.
+  edge = 732
+  resized!()
+  // WebKit scrolled the visual viewport 40 px: on screen the composer sits 40 px higher.
+  vv.offsetTop = 40
+  for (const f of vv.listeners) f()
+  await flush()
+  expect(plugin.calls).toEqual(at(720, 384, 720, 680))
+  stop()
+  expect(resized).toBeNull()
+  expect(vv.listeners).toHaveLength(0)
   expect(BAR).toBe(52)
+})
+
+test('iOS (any version): the native background follows the page’s <html> colour on every theme change; elsewhere nothing', async () => {
+  let css = 'rgba(0, 0, 0, 0)'
+  vi.stubGlobal('getComputedStyle', () => ({ backgroundColor: css }))
+  stubIos('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)')
+  Object.assign(window, { addEventListener() {}, removeEventListener() {} })
+  plugin.supported = false
+  const stop = syncPageBackground()
+  // Before theme.css applies <html> is transparent: nothing sent.
+  css = 'rgb(232, 220, 200)'
+  await mutate()
+  css = 'rgb(18, 16, 14)'
+  await mutate()
+  await mutate()
+  expect(plugin.calls).toEqual([
+    ['set_background', { red: 232, green: 220, blue: 200 }],
+    ['set_background', { red: 18, green: 16, blue: 14 }],
+  ])
+  stop()
+  expect(observers).toHaveLength(0)
+
+  plugin.calls = []
+  vi.stubGlobal('window', {})
+  syncPageBackground()
+  await flush()
+  expect(plugin.calls).toEqual([])
 })
 
 test('covered: any dialog outside a popper counts', () => {

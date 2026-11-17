@@ -8,10 +8,13 @@ import { GuestApp } from '@/components/share/GuestApp'
 import { isGuest } from '@/link/guest'
 import { container } from '@/lib/platform'
 import { initTheme } from '@/lib/theme'
+import { syncPageBackground } from '@/lib/native-chrome'
 import { trackViewport } from '@/lib/viewport'
 
 initTheme()
 trackViewport()
+// 198: iOS's native layers behind the webview follow the page's theme (the band under the composer).
+syncPageBackground()
 // The webview has no popup handler, so `window.open` (Streamdown's link-safety modal, etc.) is a silent no-op; hand it to the system browser.
 if (container() !== 'web') {
   window.open = (url) => {

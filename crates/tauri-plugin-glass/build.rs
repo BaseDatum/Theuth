@@ -8,6 +8,7 @@ const COMMANDS: &[&str] = &[
     "set_title",
     "set_scroll_button",
     "set_hidden",
+    "set_background",
     "register_listener",
     "remove_listener",
 ];
