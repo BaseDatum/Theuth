@@ -131,9 +131,7 @@ test('194: a model pick that drops the effort shows it: the trigger loses `· ef
   expect(api.set_advisor_default_model).toHaveBeenLastCalledWith(opus.id)
   // `opus` does not take `low`: the engine dropped it, and the refetched Info shows that.
   await vi.waitFor(() => expect(trigger().textContent).toBe('Claude Opus 4.8'))
-  await vi.waitFor(() => expect(trigger().hasAttribute('disabled')).toBe(false))
-  await open()
-  const chips = [...document.querySelectorAll<HTMLElement>('[aria-label="Effort"] > *')]
-  expect(chips.map((c) => c.textContent)).toEqual(['Default', 'high'])
+  // 2026-11-17: opus has levels, so the picker stayed open and shows its chips once the pick lands.
+  await vi.waitFor(() => expect([...document.querySelectorAll<HTMLElement>('[aria-label="Effort"] > *')].map((c) => c.textContent)).toEqual(['Default', 'high']))
   expect(pressed()).toEqual(['Default'])
 })
