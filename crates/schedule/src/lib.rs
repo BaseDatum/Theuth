@@ -3865,7 +3865,7 @@ mod fire_tests {
         )
         .unwrap();
         let rt = Runtime::new(figment::Figment::new(), dir.to_path_buf());
-        agent::spawn_engine_agents(rt, Default::default()).await
+        agent::spawn_engine_agents(rt, Default::default(), None).await
     }
 
     /// 194 D4e/D4a: a run's session starts on the routine's model at its effort; without

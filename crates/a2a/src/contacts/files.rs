@@ -824,6 +824,7 @@ async fn fetch_with<S: AsyncRead + AsyncWrite + Unpin>(
                 let mut req = format!("GET {FILES_PATH}{} HTTP/1.1\r\nhost: theuth\r\n", fetch.id);
                 if let Some(from) = range {
                     let _ = write!(req, "range: bytes={from}-\r\n");
+                    tracing::info!(id = %fetch.id, size = fetch.size, "199: contact file resumes with Range: bytes={from}-");
                 }
                 req.push_str("\r\n");
                 step(

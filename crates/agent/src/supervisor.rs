@@ -13198,13 +13198,16 @@ pub async fn spawn_test_agents(
 /// 183 (`test-support`): one engine's live [`Agents`] with agent communication on and no
 /// keyed provider, spawned but not registered, so a test can run two engines in one process
 /// (the a2a contact tests). 191: `ready` is that engine's own `contacts_ready` (its a2a
-/// context holds the same one), never the process-wide flag another engine sets.
+/// context holds the same one), never the process-wide flag another engine sets. 199:
+/// `engine` is its store's engine id (`sessions.owner`, a file offer's holder), its iroh
+/// endpoint as in a binary; `None` is `""`.
 #[cfg(feature = "test-support")]
 pub async fn spawn_engine_agents(
     rt: Runtime,
     ready: Arc<std::sync::atomic::AtomicBool>,
+    engine: Option<&str>,
 ) -> ActorRef<Agents> {
-    let mut a = bare_agents(rt, None, true).await;
+    let mut a = bare_agents(rt, engine, true).await;
     a.configured = Arc::new(|_| false);
     a.contacts_ready = ready;
     Agents::spawn(a)

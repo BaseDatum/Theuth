@@ -65,12 +65,19 @@ pub(crate) async fn node(name: &str, dir: &std::path::Path) -> Arc<mesh::net::Ne
 /// own `contacts_ready`, shared by its agent; a live engine's first reload sets it, one with
 /// no agent is taken as past its first pass. The mesh latch is done.
 async fn engine(name: &str, lan: &Lan, live: bool, cfg: A2aConfig) -> Engine {
+    engine_as(name, lan, live, cfg, false).await
+}
+
+/// [`engine`]; `own_id`: its store's engine id is its endpoint, as in a binary (a file
+/// offer's holder is the id its URL names), else `""`.
+async fn engine_as(name: &str, lan: &Lan, live: bool, cfg: A2aConfig, own_id: bool) -> Engine {
     let dir = tempfile::tempdir().unwrap();
     let net = node(name, dir.path()).await;
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(!live));
     let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+    let id = own_id.then(|| net.id.0.clone());
     let agents = if live {
-        Some(agent::spawn_engine_agents(rt.clone(), ready.clone()).await)
+        Some(agent::spawn_engine_agents(rt.clone(), ready.clone(), id.as_deref()).await)
     } else {
         None
     };
@@ -1462,6 +1469,22 @@ where
     panic!("timed out waiting for {what}");
 }
 
+/// The runners report consumption and outbound outcomes to the supervisor registered as
+/// `AGENT_ACTOR` (one per engine process). One test at a time holds that name (`agents`'s,
+/// until the guard drops); a finished test's leftover registration is dropped first.
+async fn supervise(agents: &kameo::actor::ActorRef<agent::Agents>) -> tokio::sync::MutexGuard<'static, ()> {
+    static NAME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let guard = NAME.lock().await;
+    kameo::registry::ACTOR_REGISTRY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(agent::AGENT_ACTOR);
+    agents
+        .register(agent::AGENT_ACTOR)
+        .expect("the supervisor name is free under its lock");
+    guard
+}
+
 /// 186 (D4, D5, D12), 190 (D2, D8, review 1): a chat shared with a contact. `cautious` is
 /// refused, `full` is accepted and ignored, and a share is never refused for the contact's
 /// version (its card unread or older). The contact's message is a peer row in the shared
@@ -1484,9 +1507,7 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
     // The runners report consumption and outcomes to the registered supervisor (one per
     // engine process): here A's, the side whose tasks complete on consumption. B's reports
     // reach A and find nothing of theirs; B's own steps here go by direct refs.
-    a_agents
-        .register(agent::AGENT_ACTOR)
-        .expect("no other test registers a supervisor");
+    let _supervisor = supervise(&a_agents).await;
     let chat_of = |agents: kameo::actor::ActorRef<agent::Agents>| async move {
         agents
             .ask(agent::CreateSession {
@@ -2043,7 +2064,7 @@ async fn contacts_are_refused_until_the_latch_and_the_first_reconcile() {
         Arc::new(AtomicBool::new(false)),
         Arc::new(AtomicBool::new(false)),
     );
-    let agents = agent::spawn_engine_agents(rt.clone(), ready.clone()).await;
+    let agents = agent::spawn_engine_agents(rt.clone(), ready.clone(), None).await;
     let l = latch.clone();
     let ctx = crate::test_ctx(
         rt,
@@ -2296,7 +2317,7 @@ async fn only_a_deleted_chat_tombstones_its_exports_never_a_listing() {
         Arc::new(AtomicBool::new(false)),
         Arc::new(AtomicBool::new(false)),
     );
-    let agents = agent::spawn_engine_agents(rt.clone(), ready.clone()).await;
+    let agents = agent::spawn_engine_agents(rt.clone(), ready.clone(), None).await;
     let l = latch.clone();
     let ctx = crate::test_ctx(
         rt.clone(),
@@ -3099,6 +3120,8 @@ async fn a_contact_file_streams_on_its_own_stream_and_a_block_cuts_it() {
     drop(writer);
 }
 
+#[cfg(unix)]
+mod file_transfers;
 mod forward;
 mod owners;
 mod rosters;
