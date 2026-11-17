@@ -1641,7 +1641,10 @@ pub struct AgentInfo {
     pub depth: u8,
     /// External harness (`agents.yaml` key); `None` = theuth.
     pub agent: Option<String>,
-    /// Model used.
+    /// Effective model: a native child's session model; a harness child's
+    /// `harness_model`, else the model its spawn asked for (this process
+    /// only), else `""`; a watch-only child's own model, else the stored
+    /// fallback. Never the harness name.
     pub model: String,
     /// Live state.
     pub state: AgentState,
@@ -3580,6 +3583,15 @@ pub enum AgentEvent {
         #[serde(default)]
         #[cfg_attr(feature = "ts", ts(optional))]
         cap: Option<tools::Risk>,
+        /// External harness (`agents.yaml` key) the child runs on; `None` = theuth.
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        agent: Option<String>,
+        /// The child's model as [`AgentInfo::model`] at spawn; `None` while
+        /// unknown (a harness that has not reported one and no model asked).
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        model: Option<String>,
     },
     /// A watch-only child of `parent` was created or changed (141 §7.5): an
     /// upsert, also on every state/detail change (detail-only changes are

@@ -1979,6 +1979,8 @@ mod tests {
                 child: SessionId::new(),
                 name: format!("worker-{i}-with-a-long-name"),
                 cap: None,
+                agent: None,
+                model: None,
             }));
         }
         for width in 60..=120u16 {

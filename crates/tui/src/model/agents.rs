@@ -58,6 +58,8 @@ impl Model {
                 child,
                 name,
                 cap,
+                agent,
+                model,
             } => {
                 let depth = self.descendant_depth(&ev);
                 if let Some(depth) = depth {
@@ -68,8 +70,8 @@ impl Model {
                             name: name.clone(),
                             parent: *parent,
                             depth,
-                            agent: None,
-                            model: String::new(),
+                            agent: agent.clone(),
+                            model: model.clone().unwrap_or_default(),
                             state: AgentState::Running,
                             started_at: Some(chrono::Utc::now()),
                             finished_at: None,

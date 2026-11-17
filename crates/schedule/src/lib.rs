@@ -5342,6 +5342,8 @@ mod watch_tests {
                 child,
                 name: "pr-review".into(),
                 cap: None,
+                agent: None,
+                model: None,
             })
             .await
             .unwrap();
