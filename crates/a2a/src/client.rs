@@ -986,7 +986,8 @@ async fn inline_message(
 
 /// One inline file as sent: its `raw` part, only when the bytes read are the bytes offered
 /// (SEC-P6: the very buffer is hashed, so a source changed between read and check cannot
-/// slip through).
+/// slip through). Unix only, like its caller [`inline_message`].
+#[cfg(unix)]
 fn inline_part(
     f: &agent::communication::files::ContactFile,
     bytes: Vec<u8>,
@@ -1462,6 +1463,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn inline_file(name: &str, bytes: &[u8]) -> agent::communication::files::ContactFile {
         use agent::communication::files::{ContactFile, FileState, OutState, foreign};
         ContactFile {
@@ -1486,6 +1488,7 @@ mod tests {
     /// SEC-P1: the inline bound is the encoded request. 12,000 U+0001 are 72,000 bytes once
     /// JSON-escaped, so they and a one-byte file are refused with the design's text naming
     /// the file; the same request with plain text fits.
+    #[cfg(unix)]
     #[test]
     fn inline_sends_are_measured_as_encoded() {
         let f = inline_file("dot.png", b"x");
@@ -1519,6 +1522,7 @@ mod tests {
 
     /// SEC-P6: the buffer that goes out is the one hashed: other bytes than those offered
     /// are refused, whatever the source reads now.
+    #[cfg(unix)]
     #[test]
     fn an_inline_part_carries_only_the_offered_bytes() {
         let f = inline_file("a.png", b"version A");

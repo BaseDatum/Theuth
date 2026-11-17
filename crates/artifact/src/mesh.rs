@@ -27,7 +27,10 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 #[cfg(unix)]
 use agent::communication::files::disk;
-use agent::communication::files::{self as contact, HeldContactFile, HeldFile, ReceivedNotice};
+use agent::communication::files::{self as contact, ReceivedNotice};
+#[cfg(unix)]
+use agent::communication::files::{HeldContactFile, HeldFile};
+#[cfg(unix)]
 use kameo::actor::ActorRef;
 
 use crate::store::Stores;
