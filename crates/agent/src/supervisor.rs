@@ -1551,7 +1551,7 @@ impl Agents {
     /// after this sees it (47 §4.3). `delivery` says how it lands on a busy
     /// session (62 §0.3). `channel` is the 172 origin of a channel's input.
     #[allow(clippy::too_many_arguments)]
-    async fn input(
+    pub(crate) async fn input(
         &mut self,
         sid: SessionId,
         id: Option<InputId>,
@@ -11696,8 +11696,6 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         cfg.acp = rt.section("acp")?;
     }
     let cfg = Arc::new(cfg);
-    // 199-E1b: register this engine's offers (the a2a file route serves through them).
-    crate::communication::files::set_offers(Arc::new(crate::communication::files::NoOffers));
     // 68 §2: `sessions.owner` is this engine's mesh id. The mesh plugin
     // starts after us, so read (or create) the identity file directly.
     let engine = match mesh::identity::Identity::load_or_create(&rt.data_dir.join(mesh::DIR)) {
@@ -11883,6 +11881,17 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     // reminders re-arm and spared results go — and what was sent to them
     // stays `accepted` for the un-pause (the restart accounting spares it).
     let boot_paused = pause::boot_accounting(&store, &rt.data_dir).await;
+    // 199: this engine's file service, after the restart accounting (its first pass fails
+    // the files of the exchanges that failed there); it registers the offers the a2a file
+    // route serves through.
+    #[cfg(unix)]
+    crate::communication::files::service::FileService::new(
+        store.clone(),
+        rt.data_dir.clone(),
+        Some(rt.clone()),
+        Arc::new(crate::communication::files::notices::FrontDoor),
+    )
+    .start(rt.shutdown.clone());
     // 125 §4.14: the Advisors actor loads every link before `resume_scan`
     // (which the activity registration triggers later).
     let advisor_store = store.clone();

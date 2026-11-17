@@ -443,7 +443,11 @@ impl Tool for SendMessageTool {
              per recipient (`structured.receipts`, always a list): `accepted` means committed to their intake, not read. \
              With await_reply=true you block until each answers with reply_to set to its message's id (or one shared \
              timeout passes; unanswered messages are not recalled). When answering a <message> with \
-             reply_expected=\"true\", set reply_to to its id. `peer_message()` (python) shows a message's current state."
+             reply_expected=\"true\", set reply_to to its id. `peer_message()` (python) shows a message's current state. \
+             `files` (contacts only): absolute paths of local files, any type, each at most 5 GB; the contact's theuth \
+             saves each on its disk (never into its agent's context) and its chat gets a notice once each is saved or \
+             fails; `message` may then be empty. Theuth's own secret state is never sent. `structured.files` lists the \
+             offers; each lives 7 days."
         )
     }
 
@@ -456,11 +460,6 @@ impl Tool for SendMessageTool {
         };
         if !admitted.live() {
             return Ok(refused(Self::NAME, Disabled::Revoked));
-        }
-        // 199-E1b: contacts only; every path through `files::disk::egress_open` (its errors are
-        // the design's texts), each opened and hashed once, then offered per recipient.
-        if !args.files.is_empty() {
-            return Ok(ToolOutput::err(crate::communication::files::SEND_NOT_YET));
         }
         let agents = match supervisor() {
             Ok(a) => a,
@@ -503,9 +502,43 @@ impl Tool for SendMessageTool {
                 Err(e) => return Ok(ToolOutput::err(e)),
             }
         }
+        // 199: contacts only; every file through the egress gate once (its errors are the
+        // design's texts), cloned and hashed once, then offered per recipient. Nothing is
+        // sent when that fails.
+        #[cfg(unix)]
+        let staged = match args.files.is_empty() {
+            true => None,
+            false => match crate::communication::files::send::stage(
+                &agents,
+                cx.session,
+                &canonical,
+                &args.files,
+                args.request_id.as_deref(),
+                &args.message,
+            )
+            .await
+            {
+                Ok(s) => Some(s),
+                Err(e) => return Ok(ToolOutput::err(e)),
+            },
+        };
+        #[cfg(not(unix))]
+        if !args.files.is_empty() {
+            return Ok(ToolOutput::err(crate::communication::files::NOT_YET));
+        }
         let mut receipts = Vec::with_capacity(canonical.len());
         let mut waits = Vec::with_capacity(canonical.len());
-        for c in canonical {
+        for (n, c) in canonical.into_iter().enumerate() {
+            #[cfg(unix)]
+            let request_id = match &staged {
+                Some(s) => Some(s.request_ids[n].clone()),
+                None => args.request_id.clone(),
+            };
+            #[cfg(not(unix))]
+            let request_id = {
+                let _ = n;
+                args.request_id.clone()
+            };
             match agents
                 .ask(Deliver {
                     from: cx.session,
@@ -513,7 +546,7 @@ impl Tool for SendMessageTool {
                     text: args.message.clone(),
                     await_reply: args.await_reply,
                     reply_to: args.reply_to,
-                    request_id: args.request_id.clone(),
+                    request_id,
                     admitted: admitted.token().clone(),
                 })
                 .await
@@ -531,6 +564,10 @@ impl Tool for SendMessageTool {
                     waits.push(None);
                 }
             }
+        }
+        #[cfg(unix)]
+        if let Some(s) = &staged {
+            s.finish().await;
         }
         // 183 F7: a remote peer answers a send within a moment (held until its owner
         // presses Allow, refused, or taken as a task); this call says so instead of `accepted`.
@@ -599,7 +636,13 @@ impl Tool for SendMessageTool {
         if !awaited.is_empty() {
             journal.wait(None, cx.session, &cx.call_id).await;
         }
-        Ok(receipts_output(&receipts))
+        #[allow(unused_mut)]
+        let mut out = receipts_output(&receipts);
+        #[cfg(unix)]
+        if let Some(s) = &staged {
+            s.annotate(&receipts, &mut out);
+        }
+        Ok(out)
     }
 }
 

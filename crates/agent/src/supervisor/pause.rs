@@ -233,6 +233,11 @@ pub(super) async fn boot_accounting(store: &Store, data_dir: &Path) -> Vec<(Stri
         Ok(n) => tracing::info!("191: {n} first-contact hold row(s) of the last run removed"),
         Err(e) => tracing::error!("191: remove the last run's hold rows: {e:#}"),
     }
+    // 199 (Restart): `publishing` rows resolved by inode before `files/partial/` is emptied;
+    // unfinished downloads restart from byte 0. The files of the exchanges failed above
+    // fail at the file service's first pass (no notice; failed receipts).
+    #[cfg(unix)]
+    crate::communication::files::service::recover(store, data_dir).await;
     paused
 }
 

@@ -1,6 +1,8 @@
-//! 199 CONTACT-FILES (P0 contract): the frozen shapes of files between contacts, and
-//! the pure pieces every builder shares. Nothing here is wired yet: `send_message`
-//! refuses `files`, the RPCs answer [`NOT_YET`], and no row is ever written.
+//! 199 CONTACT-FILES: the frozen shapes of files between contacts, the pure pieces every
+//! builder shares, and (P1, 199-E1b) this engine's agent side: [`send`] (offers),
+//! [`intake`] (admission rows), [`service`] (queue, publication, States, receipts, the
+//! notice outbox, the offers the a2a route serves, recovery), [`notices`] (D17) and
+//! [`holder`] (the holder RPCs). [`NOT_YET`] is what a path answers before its service runs.
 //!
 //! - Types: [`ContactFile`] and its states, the notice operation's answers.
 //! - [`sanitise`] and [`candidate`]: the saved name (Storage and sanitisation).
@@ -27,6 +29,18 @@ use crate::supervisor::Agents;
 /// Egress gate, protected set, hashing, quarantine and publication.
 #[cfg(unix)]
 pub mod disk;
+/// Holder RPCs: the card, a bounded thumbnail, a no-clobber export.
+pub mod holder;
+/// Admission: a message's reference parts as `in` rows.
+pub mod intake;
+/// D17: the typed notice, its admission on the chat's owner and the holder's door.
+pub mod notices;
+/// Sending: the gate, clones, hashes and staged offers of one message.
+#[cfg(unix)]
+pub mod send;
+/// The queue, publication, States, receipts, the outbox, the offers and recovery.
+#[cfg(unix)]
+pub mod service;
 
 /// The one limit (D7): 5 GB per file, decimal as Finder shows sizes.
 pub const FILE_MAX: u64 = 5_000_000_000;
@@ -38,8 +52,6 @@ pub const FILE_IDLE: Duration = Duration::from_secs(60);
 pub const JOURNAL_SOURCE: &str = "contact_file";
 /// What every entry point answers until its owner builds it.
 pub const NOT_YET: &str = "contact files are not available yet";
-/// What `send_message` answers for `files` until 199-E1b builds sending.
-pub const SEND_NOT_YET: &str = "sending files is not available yet";
 
 /// Received files: `<root>/files/received/<contact>/<YYYY-MM-DD>/<name>`.
 pub const RECEIVED_DIR: &str = "files/received";

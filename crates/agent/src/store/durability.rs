@@ -1057,7 +1057,11 @@ impl Store {
     // ---- W1: the loop's piggy-backed writes (§3.3) ----------------------------
 
     /// §3.3 step 1: the user row (with its 172 `channel` origin, if any) plus
-    /// `turn_steps(input_accepted)` in one transaction; returns the row's seq.
+    /// `turn_steps(input_accepted)` in one transaction; returns the row's seq. 199 D17: a
+    /// file notice (source `contact_file`, `input_id` its id) whose step is already
+    /// journaled (or recorded as an ended-share row) writes nothing and fails
+    /// [`NoticeCommitted`](crate::communication::files::notices::NoticeCommitted): the
+    /// check runs inside this write transaction.
     pub async fn append_input(
         &self,
         session: SessionId,
@@ -1069,6 +1073,12 @@ impl Store {
     ) -> anyhow::Result<i64> {
         let mut tx = self.begin_write().await?;
         let sid = session.to_string();
+        if source == crate::communication::files::JOURNAL_SOURCE
+            && let Some(notice) = input_id.and_then(|i| i.parse::<uuid::Uuid>().ok())
+            && notice_committed_in(&mut tx, session, notice).await?
+        {
+            return Err(crate::communication::files::notices::NoticeCommitted.into());
+        }
         let seq = insert_in(&mut tx, &sid, message, None, None).await?;
         channel_in(&mut tx, &sid, seq, channel).await?;
         step_in(

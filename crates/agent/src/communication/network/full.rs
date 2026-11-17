@@ -313,8 +313,6 @@ impl Agents {
     /// 186 (D4): a full contact's task: it waits aside (`working`, the session's slot stays
     /// free), its message goes in like a mesh peer's, and it completes on consumption.
     pub(super) async fn deliver_full(&mut self, task: A2aTask, generation: Generation) -> A2aTask {
-        // 199-E1b: one `in` row per file reference, in the transaction that stores the exchange;
-        // downloads then run from the `contact_files` queue.
         // 191 (D3, S4): never delivered into a session that is not strictly this engine's.
         if let Err(e) = self.contact_owned(task.session).await {
             return self.fail_task(&task, &e.message).await.unwrap_or(task);
@@ -336,6 +334,26 @@ impl Agents {
                 .await
                 .unwrap_or(task);
         };
+        // 199: one `in` row per file reference, beside the stored exchange and before its
+        // text is delivered (the record then carries the receiving placeholders); the
+        // downloads run from the `contact_files` queue.
+        let parts = snapshot(&task)
+            .history
+            .and_then(|h| h.into_iter().next())
+            .map(|m| m.parts)
+            .unwrap_or_default();
+        if let Err(e) = crate::communication::files::intake::admit(
+            &self.store,
+            task.session,
+            exchange,
+            &task.principal,
+            &parts,
+        )
+        .await
+        {
+            let why = format!("files not recorded: {e:#}");
+            return self.fail_task(&task, &why).await.unwrap_or(task);
+        }
         let mut record = match self.store.exchange_record(exchange).await {
             Ok(Some(r)) => r,
             Ok(None) => {
@@ -684,7 +702,8 @@ impl Agents {
         &mut self,
         m: A2aReturn,
     ) -> Result<SendMessageResponse, A2AError> {
-        // 199-E1b: `~return` with files: the same `in` rows and receiving placeholders.
+        // 199 (D13): `~return` with files: the same `in` rows, so the answer's text arrives
+        // at once with its receiving placeholders.
         if m.route.is_cancelled() {
             return Err(gone());
         }
@@ -807,6 +826,15 @@ impl Agents {
                     .set_exchange_contact(receipt.id, ShareMode::Full, Some(&context))
                     .await
                     .map_err(|e| format!("{e:#}"))?;
+                crate::communication::files::intake::admit(
+                    &self.store,
+                    thread.session,
+                    receipt.id,
+                    &peer,
+                    &msg.parts,
+                )
+                .await
+                .map_err(|e| format!("files not recorded: {e:#}"))?;
                 let mut record = self
                     .store
                     .exchange_record(receipt.id)

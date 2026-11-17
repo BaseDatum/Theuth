@@ -9,7 +9,7 @@ use uuid::Uuid;
 use rpc_core::{ask, Server};
 use agent::rpc_support::RpcServerExt;
 use agent::communication::files::{
-    ContactFile, ContactFileThumbnail, NOT_YET, NoticeAdmission, NoticeStatus,
+    ContactFile, ContactFileThumbnail, NOT_YET, NoticeAdmission, NoticeStatus, holder, notices,
 };
 use std::path::PathBuf;
 
@@ -69,13 +69,16 @@ pub trait AgentMessagingApi {
     /// Resolve pending request `reply_to` on behalf of `session` (50 §5.3):
     /// as its recipient the answer travels to the sender as a peer message
     /// from `session`; as its blocked sender its own wait resolves. Either
-    /// way `answered_by = owner:<session>`; never an arbitrary waiter.
+    /// way `answered_by = owner:<session>`; never an arbitrary waiter. 199 D15:
+    /// `files` (absolute paths on this machine) go with an answer to a contact,
+    /// only on the machine that owns the chat (elsewhere: `attach on <machine>`).
     #[method(name = "answer_peer_request", with_extensions)]
     async fn answer_peer_request(
         &self,
         session: SessionId,
         reply_to: Uuid,
         text: String,
+        files: Option<Vec<PathBuf>>,
     ) -> RpcResult<PeerReceipt>;
     /// A peer message from `session` to `to` (`parent`, `session:<uuid>`,
     /// `peer:<name>`, a child's name), routed like the model's `send_message`
@@ -266,15 +269,18 @@ impl AgentMessagingApiServer for Server {
         .await
     }
 
-    // 199-E1b: D15 human answers gain a `files` parameter (attach on the chat's machine only).
     async fn answer_peer_request(
         &self,
         ext: &Extensions,
         session: SessionId,
         reply_to: Uuid,
         text: String,
+        files: Option<Vec<PathBuf>>,
     ) -> RpcResult<PeerReceipt> {
         self.authorize_fwd(ext, session).await?;
+        if let Some(files) = files.filter(|f| !f.is_empty()) {
+            return answer_with_files(ext, session, reply_to, text, files).await;
+        }
         if let Some(r) = forward::route(
             ext,
             session,
@@ -320,30 +326,52 @@ impl AgentMessagingApiServer for Server {
         Ok(d.receipt)
     }
 
-    // 199-E1b: holder RPCs carried to `holder` over `theuth/rpc/1`.
-    async fn contact_file(&self, _: &Extensions, _: String, _: String) -> RpcResult<ContactFile> {
-        Err(rpc_core::failed(NOT_YET))
+    async fn contact_file(
+        &self,
+        ext: &Extensions,
+        holder: String,
+        id: String,
+    ) -> RpcResult<ContactFile> {
+        if let Some(r) = to_holder(ext, &holder, "contact_file", (&holder, &id)).await? {
+            return Ok(r);
+        }
+        let (store, r) = here().await?;
+        holder::card(&store, &r, &id)
+            .await
+            .map_err(rpc_core::failed)
     }
 
-    // 199-E1b: runs `tools::images::fit(bytes, 512)` on the holder (at most 64 MB read).
     async fn contact_file_thumbnail(
         &self,
-        _: &Extensions,
-        _: String,
-        _: String,
+        ext: &Extensions,
+        holder: String,
+        id: String,
     ) -> RpcResult<ContactFileThumbnail> {
-        Err(rpc_core::failed(NOT_YET))
+        if let Some(r) = to_holder(ext, &holder, "contact_file_thumbnail", (&holder, &id)).await? {
+            return Ok(r);
+        }
+        let (store, r) = here().await?;
+        holder::thumbnail(&store, &r, &id)
+            .await
+            .map_err(rpc_core::failed)
     }
 
-    // 199-E1b: no-clobber copy on the holder.
     async fn contact_file_export(
         &self,
-        _: &Extensions,
-        _: String,
-        _: String,
-        _: PathBuf,
+        ext: &Extensions,
+        holder: String,
+        id: String,
+        dest: PathBuf,
     ) -> RpcResult<PathBuf> {
-        Err(rpc_core::failed(NOT_YET))
+        if let Some(r) =
+            to_holder(ext, &holder, "contact_file_export", (&holder, &id, &dest)).await?
+        {
+            return Ok(r);
+        }
+        let (store, r) = here().await?;
+        holder::export(&store, &r, &id, dest)
+            .await
+            .map_err(rpc_core::failed)
     }
 
     // 199-E2: `Req::GetContactFile` on `theuth/artifacts/1`, into `files/cache/`.
@@ -357,28 +385,175 @@ impl AgentMessagingApiServer for Server {
         Err(rpc_core::failed(NOT_YET))
     }
 
-    // 199-E1b: internal-only auth, `forward::route` to the owner, share re-check, automatic
-    // input with journal source `files::JOURNAL_SOURCE`, or `Store::record_error_once`.
+    // 199 D17: internal only. The holder's own outbox calls `notices::admit` directly; over
+    // RPC only a paired machine's forwarded call (the front door's `Forwarded` marker) is
+    // taken, for a session this engine owns (`NOT_OWNER` otherwise).
     async fn contact_file_notice(
         &self,
-        _: &Extensions,
-        _: SessionId,
-        _: Uuid,
-        _: String,
-        _: String,
+        ext: &Extensions,
+        session: SessionId,
+        notice_id: Uuid,
+        contact_id: String,
+        notice: String,
     ) -> RpcResult<NoticeAdmission> {
-        Err(rpc_core::failed(NOT_YET))
+        if ext.get::<forward::Forwarded>().is_none() {
+            return Err(rpc_core::failed(
+                "contact_file_notice is internal: only a paired machine's front door calls it",
+            ));
+        }
+        self.authorize_fwd(ext, session).await?;
+        let params = (session, notice_id, &contact_id, &notice);
+        if let Some(r) = forward::route(ext, session, "contact_file_notice", params).await? {
+            return Ok(r);
+        }
+        notices::admit(session, notice_id, contact_id, notice).await
     }
 
-    // 199-E1b: through the same front door; reads the journal and `errors`.
+    // 199 D17: through the same front door; the one committed predicate.
     async fn contact_file_notice_status(
         &self,
-        _: &Extensions,
-        _: SessionId,
-        _: Uuid,
+        ext: &Extensions,
+        session: SessionId,
+        notice_id: Uuid,
     ) -> RpcResult<NoticeStatus> {
-        Err(rpc_core::failed(NOT_YET))
+        self.authorize_fwd(ext, session).await?;
+        let params = (session, notice_id);
+        if let Some(r) = forward::route(ext, session, "contact_file_notice_status", params).await? {
+            return Ok(r);
+        }
+        notices::status(session, notice_id).await
     }
+}
+
+/// This engine's store and card identity.
+async fn here() -> RpcResult<(agent::store::Store, agent::store::contact_files::Render)> {
+    let store = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+    let r = holder::render(&store).await;
+    Ok((store, r))
+}
+
+/// 199: a `(holder, id)` call carried to `holder` over `theuth/rpc/1` (`Ok(None)`: it is
+/// this engine, or the call was forwarded here already). An unreachable holder is
+/// `<machine> is offline`.
+async fn to_holder<T: serde::de::DeserializeOwned>(
+    ext: &Extensions,
+    holder: &str,
+    method: &str,
+    params: impl serde::Serialize,
+) -> RpcResult<Option<T>> {
+    match forward::to_engine(ext, Some(holder), method, params).await {
+        Err(e) if e.code() == forward::OWNER_UNREACHABLE => Err(rpc_core::failed(format!(
+            "{} is offline",
+            agent::communication::mesh::machine_name_now(holder).await
+        ))),
+        r => r,
+    }
+}
+
+/// 199 D15: a human answer with files, on the chat's own machine only: the same gate,
+/// offers and send path as the model's `send_message(reply_to, files)`, to the contact
+/// whose request it answers; the answer keeps the human's provenance.
+async fn answer_with_files(
+    ext: &Extensions,
+    session: SessionId,
+    reply_to: Uuid,
+    text: String,
+    files: Vec<PathBuf>,
+) -> RpcResult<PeerReceipt> {
+    let store = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+    let owner = match ext.get::<forward::Forwarded>() {
+        Some(_) => Some(store.engine().to_owned()),
+        None => store
+            .owner(session)
+            .await
+            .map_err(|e| rpc_core::failed(format!("{e:#}")))?
+            .map(|(o, _)| o)
+            .filter(|o| !o.is_empty() && o != store.engine()),
+    };
+    if let Some(owner) = owner {
+        let machine = agent::communication::mesh::machine_name_now(&owner).await;
+        return Err(rpc_core::failed(format!("attach on {machine}")));
+    }
+    let request = ask::<Agents, _>(
+        agent::AGENT_ACTOR,
+        GetPeerMessage {
+            session,
+            id: reply_to,
+        },
+    )
+    .await?;
+    let binding = request
+        .from
+        .strip_prefix("peer:")
+        .and_then(|b| b.parse::<Uuid>().ok());
+    let alias = match binding {
+        Some(b) => store
+            .peer_binding_by_id(b)
+            .await
+            .map_err(|e| rpc_core::failed(format!("{e:#}")))?
+            .map(|b| b.alias),
+        None => None,
+    }
+    .ok_or_else(|| {
+        rpc_core::failed(format!(
+            "files can go to contacts only; {} is not a contact",
+            request.from
+        ))
+    })?;
+    send_files(session, reply_to, text, files, store, alias).await
+}
+
+#[cfg(unix)]
+async fn send_files(
+    session: SessionId,
+    reply_to: Uuid,
+    text: String,
+    files: Vec<PathBuf>,
+    store: agent::store::Store,
+    alias: String,
+) -> RpcResult<PeerReceipt> {
+    let agents = rpc_core::lookup::<Agents>(agent::AGENT_ACTOR)?;
+    let to = format!("peer:{alias}");
+    let staged = agent::communication::files::send::stage(
+        &agents,
+        session,
+        std::slice::from_ref(&to),
+        &files,
+        None,
+        &text,
+    )
+    .await
+    .map_err(rpc_core::failed)?;
+    let sent = ask::<Agents, _>(
+        agent::AGENT_ACTOR,
+        agent::supervisor::Deliver {
+            from: session,
+            to,
+            text: text.clone(),
+            await_reply: false,
+            reply_to: Some(reply_to),
+            request_id: Some(staged.request_ids[0].clone()),
+            admitted: tokio_util::sync::CancellationToken::new(),
+        },
+    )
+    .await;
+    staged.finish().await;
+    let receipt = sent?.receipt;
+    // Provenance: the human answered for this session.
+    let _ = store.owner_answer(reply_to, session, &text).await;
+    Ok(receipt)
+}
+
+#[cfg(not(unix))]
+async fn send_files(
+    _: SessionId,
+    _: Uuid,
+    _: String,
+    _: Vec<PathBuf>,
+    _: agent::store::Store,
+    _: String,
+) -> RpcResult<PeerReceipt> {
+    Err(rpc_core::failed(NOT_YET))
 }
 
 pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {

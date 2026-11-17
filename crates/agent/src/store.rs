@@ -60,6 +60,7 @@ pub mod accounting;
 pub mod advisor;
 mod capture;
 pub mod communication;
+pub mod contact_files;
 pub mod contacts;
 pub mod dreaming;
 pub mod durability;

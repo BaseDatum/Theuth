@@ -333,6 +333,7 @@ dependencies = [
  "genai",
  "gray_matter",
  "hex",
+ "image",
  "jsonrpsee",
  "kameo",
  "knowledge",

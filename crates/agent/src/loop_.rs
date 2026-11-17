@@ -5563,6 +5563,16 @@ impl Turn {
         let scoped = input.scope.is_some() && self.shared.depth == 0;
         let advisory = input.advisory.take();
         let channel = input.channel.take();
+        // 199 D17: an admitted file notice is consumed through its own path (re-checked,
+        // journaled `contact_file` under its id, deduplicated at commit).
+        if peer.is_none()
+            && !replayed
+            && advisory.is_none()
+            && let Some(n) =
+                crate::communication::files::notices::claim(self.shared.id, &input.text)
+        {
+            return self.take_notice(n, ticket).await;
+        }
         let msg = match input.replay.take() {
             Some(m) => m,
             // 125 §5.4: an advisory row is the card text verbatim — no clock stamp.
@@ -5647,6 +5657,73 @@ impl Turn {
             .await;
         }
         true
+    }
+
+    /// 199 D17: consume the file notice `n`. The share is re-checked first: ended, it is
+    /// recorded as the engine-state row instead (no input, no turn). Otherwise its row and
+    /// `input_accepted` step (source `contact_file`, `input_id` = the notice id) commit
+    /// together unless the journal already has that step (a re-send's copy: dropped, it
+    /// counts as delivered). Every outcome clears the pending id; a dropped one releases
+    /// its ticket. `true` when the row is in the frame.
+    async fn take_notice(
+        &mut self,
+        n: crate::communication::files::notices::Pending,
+        ticket: Option<InputTicket>,
+    ) -> bool {
+        use crate::communication::files::{JOURNAL_SOURCE, notices};
+        let session = self.shared.id;
+        let Some(turn) = self.turn else {
+            return false;
+        };
+        let drop_ticket = || async move {
+            if let Some(ticket) = ticket {
+                continuation::notify(InputDropped { session, ticket }).await;
+            }
+        };
+        let store = self.shared.store.clone();
+        let live = store
+            .share_live(&session.to_string(), &n.contact)
+            .await
+            .unwrap_or(false);
+        if !live {
+            if let Err(e) =
+                notices::ended(&store, &self.shared.rt, session, Some(turn), n.id, &n.text).await
+            {
+                tracing::warn!(%session, notice = %n.id, "199: ended notice: {e}");
+            }
+            notices::clear(n.id);
+            drop_ticket().await;
+            return false;
+        }
+        let msg = ChatMessage::user(n.text.clone());
+        let r = store
+            .append_input(
+                session,
+                turn,
+                &msg,
+                Some(&n.id.to_string()),
+                JOURNAL_SOURCE,
+                None,
+            )
+            .await;
+        notices::clear(n.id);
+        if r.as_ref()
+            .is_err_and(|e| e.is::<notices::NoticeCommitted>())
+        {
+            drop_ticket().await;
+            return false;
+        }
+        let stored = self.record(msg, r).await;
+        if let (Some(ticket), true) = (ticket, stored) {
+            self.control_epoch.get_or_insert(ticket.epoch);
+            continuation::notify(InputConsumed {
+                session,
+                id: ticket.id,
+                turn,
+            })
+            .await;
+        }
+        stored
     }
 
     /// 50 §7 consumption transaction: the store appends `msg` and links the
@@ -9073,11 +9150,18 @@ pub(crate) fn peer_wrapper(
     if age >= Duration::from_secs(60) {
         head.push_str(&format!(" after=\"{}\"", clock::humanise(age)));
     }
-    // 199-E1b: `files::placeholders(&record.from, &record.files)` after `</message>`.
-    format!(
+    // 199 (D5): one `state="receiving"` placeholder per file after `</message>`, then the
+    // receiving hint; never the bytes.
+    let mut out = format!(
         "{head}>\n{}\n</message>",
         neutralise_delimiters(&record.text)
-    )
+    );
+    let files = crate::communication::files::placeholders(&record.from, &record.files);
+    if !files.is_empty() {
+        out.push('\n');
+        out.push_str(&files);
+    }
+    out
 }
 
 /// Whether `text` (a stored user row) holds the wrapper [`peer_wrapper`]

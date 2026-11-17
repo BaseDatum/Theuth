@@ -455,7 +455,7 @@ impl TryFrom<ExchangeRow> for PeerRecord {
                 Some(_) => Some(crate::communication::ShareMode::Cautious),
                 None => None,
             },
-            // 199-E1b: `Store::exchange_record` fills this from the exchange's `contact_files` rows.
+            // 199: `Store::exchange_record` fills this from the exchange's `contact_files` rows.
             files: Vec::new(),
         })
     }
@@ -1881,11 +1881,17 @@ impl Store {
     /// The owner-side record of any exchange (harness-internal; not
     /// caller-scoped): both participants of a receipt for notification.
     pub async fn exchange_record(&self, id: Uuid) -> anyhow::Result<Option<PeerRecord>> {
-        let mut conn = self.read.acquire().await?;
-        exchange_in(&mut conn, &id.to_string())
-            .await?
-            .map(PeerRecord::try_from)
-            .transpose()
+        let row = {
+            let mut conn = self.read.acquire().await?;
+            exchange_in(&mut conn, &id.to_string()).await?
+        };
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let mut record = PeerRecord::try_from(row)?;
+        // 199: the files it carried (in) or offers (out), in message order.
+        record.files = self.exchange_cards(&id.to_string()).await?;
+        Ok(Some(record))
     }
 
     /// Consume `id` without a history row: the reply was returned to the
