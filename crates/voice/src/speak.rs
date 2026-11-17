@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use kameo::actor::ActorRef;
+use ptts::comp::{GainConfig, LimiterConfig, ModuleConfig};
 use ptts::synth::{SpeechOptions, Synth};
 use tokio_util::sync::CancellationToken;
 
@@ -33,10 +34,27 @@ pub(crate) trait Synthesizer: Send + Sync {
     fn stream(&self, spoken: &str, voice: &str) -> anyhow::Result<Pcm>;
 }
 
+/// Output gain per shipped voice, dB. Kyutai's voice states keep their source recording's level:
+/// over the A/B set (43 §11.1) `peter_yearsley` came out at -31 dBFS RMS (peak 0.37), `alba` at
+/// -19, the earlier locally made `peter_yearsley` (loudness-normalized prompt) at -18. A limiter
+/// (1 dB headroom, 2 ms lookahead) follows the gain. Unlisted voices play as synthesized.
+const VOICE_GAIN_DB: &[(&str, f32)] = &[("peter_yearsley", 10.0)];
+
 impl Synthesizer for Synth {
     fn stream(&self, spoken: &str, voice: &str) -> anyhow::Result<Pcm> {
+        let mut opts = SpeechOptions::default().voice(voice);
+        if let Some(&(_, gain_db)) = VOICE_GAIN_DB.iter().find(|(v, _)| *v == voice) {
+            opts = opts.post_process([
+                ModuleConfig::Gain(GainConfig { gain_db }),
+                ModuleConfig::Limiter(LimiterConfig {
+                    lookahead_ms: 2.0,
+                    headroom_db: 1.0,
+                    release_ms: 50.0,
+                }),
+            ]);
+        }
         let stream = self
-            .stream_with(spoken, &SpeechOptions::default().voice(voice))
+            .stream_with(spoken, &opts)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(Box::new(
             stream.map(|c| c.map_err(|e| anyhow::anyhow!("{e}"))),

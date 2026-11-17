@@ -288,7 +288,7 @@ Config (`~/.theuth/`, created on first run; details in
   voice:                          # design docs 43 + 45 + 54; Read-aloud, voice notes and dictation: Pocket TTS, Parakeet and Nemotron streaming STT in the harness
     enabled: true                 # false: no actors, `speak`/`transcribe` answer "not running", the desktop shows no speaker or mic
     voice: peter_yearsley         # a `voices/<name>.safetensors` in the checkpoint directory
-    # model_dir: ~/.theuth/models/pocket-tts   # the Pocket TTS checkpoint (weights, tokenizer.model, voices/); this is the default
+    # model_dir: ~/.theuth/models/pocket-tts-en-2026-10   # the Pocket TTS checkpoint (Kyutai's english_2026-10, CC BY 4.0: config.json, model.safetensors, tokenizer.json, voices/); this is the default
     # stt_model_dir: ~/.theuth/models/parakeet-tdt  # Parakeet TDT ONNX (encoder-model.onnx, decoder_joint-model.onnx, vocab.txt) plus libonnxruntime.{dylib,so}; this is the default
     stt_idle_secs: 600            # unload the speech-to-text model (1.7 GB resident) after this long unused; 0 keeps it resident
     # dictation_model_dir: ~/.theuth/models/nemotron-streaming-en  # Nemotron streaming STT ONNX (encoder.onnx, decoder_joint.onnx, tokenizer.model) for live dictation; this is the default

@@ -3,7 +3,8 @@
 # `x-repo-commit`, `x-linked-etag`, `x-linked-size`, a redirect to a "CDN" hop whose etag is not the
 # file's) and a bucket that refuses connections. Cases: no record + matching etag (LFS sha256 and
 # plain-file blob sha1), stale revision → replaced (after --check reports it, exit 2), gated 401,
-# proxy 403 (Zscaler block page), dry runs of fetch-models and release-models (fake `aws`: no cp).
+# proxy 403 (Zscaler block page), dry runs of fetch-models and release-models (fake `aws`: no cp),
+# `repo:` files (copied from the checkout when missing, replaced when different).
 #
 #   scripts/tests/fetch-models-test.sh        prints one `ok` per case; any failure exits 1
 set -euo pipefail
@@ -63,10 +64,16 @@ PORT="$(cat "$ORIGIN/PORT")"
 export HF_BASE="http://127.0.0.1:$PORT" THEUTH_MODELS_DIR="$MODELS" THEUTH_S3_PUBLIC_BASE_URL="http://127.0.0.1:1/x"
 unset HF_TOKEN DRY_RUN MODELS_DRY_RUN THEUTH_S3_DRY_RUN
 
-# --- fixtures: every REQUIRED file on disk (so nothing is fetched); two of them at the fake origin ---
-# shellcheck disable=SC1090  # REQUIRED array lifted out of the script under test
-source <(sed -n '/^REQUIRED=(/,/^)/p' "$ROOT/scripts/fetch-models.sh")
-for f in "${REQUIRED[@]}"; do mkdir -p "$MODELS/$(dirname "$f")"; echo "placeholder $f" >"$MODELS/$f"; done
+# --- fixtures: every REQUIRED file on disk (so nothing is fetched); two of them at the fake origin;
+# `repo:` files as the checkout has them ---
+# shellcheck disable=SC1090  # REQUIRED array and origin_of lifted out of the script under test
+source <(sed -n -e '/^REQUIRED=(/,/^)/p' -e '/^origin_of() {/,/^}/p' "$ROOT/scripts/fetch-models.sh")
+REPO_FILES=()
+for f in "${REQUIRED[@]}"; do
+  mkdir -p "$MODELS/$(dirname "$f")"; o="$(origin_of "$f")"
+  if [[ "$o" == repo:* ]]; then cp "$ROOT/${o#repo:}" "$MODELS/$f"; REPO_FILES+=("$f"); else echo "placeholder $f" >"$MODELS/$f"; fi
+done
+[[ ${#REPO_FILES[@]} -ge 2 ]] || fail "expected repo: files in REQUIRED"
 LFS=nemotron-streaming-en/tokenizer.model; LFS_REPO=lokkju/nemotron-speech-streaming-en-0.6b-int8
 PLAIN=decision/rl_agent_config.json;        PLAIN_REPO=convaiinnovations/laya
 mkdir -p "$ORIGIN/$LFS_REPO" "$ORIGIN/$PLAIN_REPO"
@@ -91,7 +98,8 @@ has "HTTP 404 from $HF_BASE/cklxx/laya-browser/resolve/main/model.safetensors �
 has "pyannote/wespeaker_en_voxceleb_CAM++.onnx: pinned (https origin, no freshness check)"
 has "HTTP 404 from $HF_BASE/Olicorne/parakeet-tdt-0.6b-v3-optimized-onnx/resolve/main/istupakov_smoothquant/int8/decoder_joint-model.int8.onnx"
 has "pocket-tts/voices/peter_yearsley.safetensors: no documented origin — not checked"
-has "23 files: 0 stale, 0 missing, 19 not checkable"
+has "${REPO_FILES[0]}: up to date (repo)"
+has "28 files: 0 stale, 0 missing, 21 not checkable"
 echo "ok: no record + matching etag; gated 401; proxy 403; moved 404"
 
 # 2. the origin moves on: --check reports and exits 2 without touching anything; a plain run replaces
@@ -99,7 +107,7 @@ head -c 5000 /dev/urandom >"$ORIGIN/$LFS_REPO/tokenizer.model"; echo r2aaaaaaaaa
 run "$ROOT/scripts/fetch-models.sh" --check
 [[ $RC -eq 2 ]] || fail "--check exit $RC, want 2"
 has "$LFS: STALE rev r1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa → r2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; has "$PLAIN: up to date"
-has "23 files: 1 stale, 0 missing, 19 not checkable"
+has "28 files: 1 stale, 0 missing, 21 not checkable"
 [[ "$(jq -r .revision "$MODELS/.origin/$LFS.json")" == r1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ]] || fail "--check wrote the record"
 cmp -s "$MODELS/$LFS" "$ORIGIN/.cdn/$(shasum -a 256 "$MODELS/$LFS" | cut -d' ' -f1)" || fail "--check replaced the file"
 # 5a. dry run: plan only
@@ -117,12 +125,30 @@ cmp -s "$MODELS/$LFS" "$ORIGIN/$LFS_REPO/tokenizer.model" || fail "file not repl
 [[ "$(jq -r '.revision + " " + (.size|tostring)' "$MODELS/.origin/$LFS.json")" == "r2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 5000" ]] || fail "record not updated"
 run "$ROOT/scripts/fetch-models.sh" --check
 [[ $RC -eq 2 ]] || fail "post-update --check exit $RC (the 401/403/404 files stay unverifiable)"
-has "23 files: 0 stale, 0 missing, 19 not checkable"
+has "28 files: 0 stale, 0 missing, 21 not checkable"
 # --force re-downloads an up-to-date file
 run "$ROOT/scripts/fetch-models.sh" --force "$PLAIN"
 [[ $RC -eq 0 ]] || fail "--force exit $RC"
 has "$PLAIN: updated rev r1bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb → r1bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (12 bytes)"
 echo "ok: stale revision replaced, record updated, --force"
+
+# 6. `repo:` files: a locally edited one is STALE and a deleted one MISSING under --check (nothing
+# written); a dry run only plans; a plain run restores both from the checkout
+R1="${REPO_FILES[0]}"; R2="${REPO_FILES[1]}"; o1="$(origin_of "$R1")"; o2="$(origin_of "$R2")"
+echo "edited" >>"$MODELS/$R1"; rm "$MODELS/$R2"
+run "$ROOT/scripts/fetch-models.sh" --check
+[[ $RC -eq 2 ]] || fail "repo --check exit $RC, want 2"
+has "$R1: STALE (differs from ${o1#repo:})"; has "$R2: MISSING"
+has "28 files: 1 stale, 1 missing, 21 not checkable"
+[[ ! -e "$MODELS/$R2" ]] && ! cmp -s "$MODELS/$R1" "$ROOT/${o1#repo:}" || fail "--check touched a repo file"
+MODELS_DRY_RUN=1 run "$ROOT/scripts/fetch-models.sh"
+has "$R1: DRY_RUN: updated ← ${o1#repo:}"; has "$R2: DRY_RUN: new ← ${o2#repo:}"
+[[ ! -e "$MODELS/$R2" ]] || fail "dry run copied a repo file"
+run "$ROOT/scripts/fetch-models.sh"
+[[ $RC -eq 0 ]] || fail "repo run exit $RC"
+has "$R1: updated ("; has "$R2: new ("
+cmp -s "$MODELS/$R1" "$ROOT/${o1#repo:}" && cmp -s "$MODELS/$R2" "$ROOT/${o2#repo:}" || fail "repo files not restored"
+echo "ok: repo: files reported under --check, restored from the checkout"
 
 # 5b. release-models dry run: fake aws records every call; no `s3 cp`, summary table printed
 mkdir -p "$T/bin"; cat >"$T/bin/aws" <<SH

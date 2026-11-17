@@ -91,7 +91,7 @@ pub fn run(data_dir: &Path, decision_cfg: &DecisionConfig, accelerator: Accelera
                             }
                         }
                         // A real utterance: silence transcribing to "" proves nothing about the EP.
-                        let tts = data_dir.join("models/pocket-tts");
+                        let tts = data_dir.join("models").join(voice::TTS_MODEL_SUBDIR);
                         let t = Instant::now();
                         match voice::speech_sample(&tts, "peter_yearsley", SPEECH) {
                             Err(e) => println!(
