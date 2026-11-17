@@ -89,8 +89,9 @@ has "pocket-tts/tokenizer.model: cannot check freshness (kept)"
 has "HTTP 403 from $HF_BASE/onnx-community/Nemotron-3-Diarization-ONNX/resolve/main/onnx/model_quantized.onnx — blocked by the Zscaler proxy on this network"
 has "HTTP 404 from $HF_BASE/cklxx/laya-browser/resolve/main/model.safetensors — the file moved or was renamed at the origin; fix origin_of in scripts/fetch-models.sh (x-error-code: EntryNotFound)"
 has "pyannote/wespeaker_en_voxceleb_CAM++.onnx: pinned (https origin, no freshness check)"
-has "parakeet-tdt/vocab.txt: no documented origin — not checked"
-has "23 files: 0 stale, 0 missing, 16 not checkable"
+has "HTTP 404 from $HF_BASE/Olicorne/parakeet-tdt-0.6b-v3-optimized-onnx/resolve/main/istupakov_smoothquant/int8/decoder_joint-model.int8.onnx"
+has "pocket-tts/voices/peter_yearsley.safetensors: no documented origin — not checked"
+has "23 files: 0 stale, 0 missing, 19 not checkable"
 echo "ok: no record + matching etag; gated 401; proxy 403; moved 404"
 
 # 2. the origin moves on: --check reports and exits 2 without touching anything; a plain run replaces
@@ -98,7 +99,7 @@ head -c 5000 /dev/urandom >"$ORIGIN/$LFS_REPO/tokenizer.model"; echo r2aaaaaaaaa
 run "$ROOT/scripts/fetch-models.sh" --check
 [[ $RC -eq 2 ]] || fail "--check exit $RC, want 2"
 has "$LFS: STALE rev r1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa → r2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; has "$PLAIN: up to date"
-has "23 files: 1 stale, 0 missing, 16 not checkable"
+has "23 files: 1 stale, 0 missing, 19 not checkable"
 [[ "$(jq -r .revision "$MODELS/.origin/$LFS.json")" == r1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ]] || fail "--check wrote the record"
 cmp -s "$MODELS/$LFS" "$ORIGIN/.cdn/$(shasum -a 256 "$MODELS/$LFS" | cut -d' ' -f1)" || fail "--check replaced the file"
 # 5a. dry run: plan only
@@ -116,7 +117,7 @@ cmp -s "$MODELS/$LFS" "$ORIGIN/$LFS_REPO/tokenizer.model" || fail "file not repl
 [[ "$(jq -r '.revision + " " + (.size|tostring)' "$MODELS/.origin/$LFS.json")" == "r2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 5000" ]] || fail "record not updated"
 run "$ROOT/scripts/fetch-models.sh" --check
 [[ $RC -eq 2 ]] || fail "post-update --check exit $RC (the 401/403/404 files stay unverifiable)"
-has "23 files: 0 stale, 0 missing, 16 not checkable"
+has "23 files: 0 stale, 0 missing, 19 not checkable"
 # --force re-downloads an up-to-date file
 run "$ROOT/scripts/fetch-models.sh" --force "$PLAIN"
 [[ $RC -eq 0 ]] || fail "--force exit $RC"
