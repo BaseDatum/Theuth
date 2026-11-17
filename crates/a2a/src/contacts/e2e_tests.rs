@@ -1472,7 +1472,9 @@ where
 /// The runners report consumption and outbound outcomes to the supervisor registered as
 /// `AGENT_ACTOR` (one per engine process). One test at a time holds that name (`agents`'s,
 /// until the guard drops); a finished test's leftover registration is dropped first.
-async fn supervise(agents: &kameo::actor::ActorRef<agent::Agents>) -> tokio::sync::MutexGuard<'static, ()> {
+async fn supervise(
+    agents: &kameo::actor::ActorRef<agent::Agents>,
+) -> tokio::sync::MutexGuard<'static, ()> {
     static NAME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let guard = NAME.lock().await;
     kameo::registry::ACTOR_REGISTRY

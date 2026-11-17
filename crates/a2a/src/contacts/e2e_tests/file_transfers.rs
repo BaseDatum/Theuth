@@ -45,7 +45,11 @@ impl NoticeDoor for Door {
     }
 
     async fn status(&self, session: SessionId, id: uuid::Uuid) -> Result<NoticeStatus, String> {
-        let store = self.0.ask(agent::DurableStore).await.map_err(|e| e.to_string())?;
+        let store = self
+            .0
+            .ask(agent::DurableStore)
+            .await
+            .map_err(|e| e.to_string())?;
         match store.notice_committed(session, id).await {
             Ok(true) => Ok(NoticeStatus::Committed),
             Ok(false) => Ok(NoticeStatus::Unknown),
@@ -311,7 +315,13 @@ async fn rows(agents: &ActorRef<agent::Agents>, session: SessionId) -> Vec<Strin
 /// The incoming files of `exchange` on `e`, once each is `state` (else the rows as last
 /// seen).
 async fn incoming(e: &Engine, exchange: uuid::Uuid, n: usize, state: &str) -> Vec<cf::ContactFile> {
-    let store = e.ctx.agents().unwrap().ask(agent::DurableStore).await.unwrap();
+    let store = e
+        .ctx
+        .agents()
+        .unwrap()
+        .ask(agent::DurableStore)
+        .await
+        .unwrap();
     let ex = exchange.to_string();
     let mut last = Vec::new();
     for _ in 0..800 {
@@ -321,7 +331,10 @@ async fn incoming(e: &Engine, exchange: uuid::Uuid, n: usize, state: &str) -> Ve
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let seen: Vec<_> = last.iter().map(|r| (&r.name, &r.state, &r.error, &r.notice_state)).collect();
+    let seen: Vec<_> = last
+        .iter()
+        .map(|r| (&r.name, &r.state, &r.error, &r.notice_state))
+        .collect();
     panic!("timed out waiting for {n} file(s) {state}: {seen:?}");
 }
 
@@ -445,7 +458,15 @@ async fn an_image_and_a_pdf_go_both_ways_text_first_then_one_notice_each() {
     // A received file's holder is the engine that stored it, by its endpoint id (the id
     // `mesh_status().self_id` reads; the desktop's "is this the holder").
     assert_eq!(got[0].holder, s.a.eid(), "the holder is A's endpoint");
-    check_received(&s.a, s.chat, "two for you", &got, &to_a, &["Z1-PIXELS", "Z1-PAGES"]).await;
+    check_received(
+        &s.a,
+        s.chat,
+        "two for you",
+        &got,
+        &to_a,
+        &["Z1-PIXELS", "Z1-PAGES"],
+    )
+    .await;
     // B's record of its send lists the offers (the desktop's SendCard), and they read sent.
     let offered = eventually("B's offers sent", || {
         let b_agents = b_agents.clone();
@@ -458,7 +479,9 @@ async fn an_image_and_a_pdf_go_both_ways_text_first_then_one_notice_each() {
                 .await
                 .ok()?;
             (r.files.len() == 2
-                && r.files.iter().all(|f| f.state == FileState::Out(OutState::Sent)))
+                && r.files
+                    .iter()
+                    .all(|f| f.state == FileState::Out(OutState::Sent)))
             .then_some(r.files)
         }
     })
@@ -478,11 +501,22 @@ async fn an_image_and_a_pdf_go_both_ways_text_first_then_one_notice_each() {
     .await
     .unwrap();
     let y = record(&b_agents, s.origin, "and two back").await;
-    assert_eq!(y.receipt.reply_to, Some(sent.receipt.id), "it answers B's own message");
+    assert_eq!(
+        y.receipt.reply_to,
+        Some(sent.receipt.id),
+        "it answers B's own message"
+    );
     let back = incoming(&s.b, y.receipt.id, 2, "received").await;
     assert_eq!(back[0].holder, s.b.eid());
-    check_received(&s.b, s.origin, "and two back", &back, &to_b, &["Z1-PIXELS", "Z1-PAGES"])
-        .await;
+    check_received(
+        &s.b,
+        s.origin,
+        "and two back",
+        &back,
+        &to_b,
+        &["Z1-PIXELS", "Z1-PAGES"],
+    )
+    .await;
     for (_, stop) in &s.services {
         stop.cancel();
     }
@@ -502,16 +536,34 @@ async fn a_cut_resumes_with_range_and_a_restart_starts_over_once() {
     cutting.cuts.lock().push((2_000_000, 300_000));
     let first = vec![source(&s, "first.bin", &big)];
     // B writes first so A's chat has a message to answer over the return route.
-    send(&b_agents, s.origin, &format!("peer:{}/proj", s.b_alias), "hello", &[], None)
-        .await
-        .unwrap();
+    send(
+        &b_agents,
+        s.origin,
+        &format!("peer:{}/proj", s.b_alias),
+        "hello",
+        &[],
+        None,
+    )
+    .await
+    .unwrap();
     let x = record(&a_agents, s.chat, "hello").await;
-    send(&a_agents, s.chat, &format!("peer:{}", s.a_alias), "big one", &first, Some(x.receipt.id))
-        .await
-        .unwrap();
+    send(
+        &a_agents,
+        s.chat,
+        &format!("peer:{}", s.a_alias),
+        "big one",
+        &first,
+        Some(x.receipt.id),
+    )
+    .await
+    .unwrap();
     let y = record(&b_agents, s.origin, "big one").await;
     let got = incoming(&s.b, y.receipt.id, 1, "received").await;
-    assert_eq!(cutting.opens.load(Ordering::SeqCst), 2, "one cut, one resume");
+    assert_eq!(
+        cutting.opens.load(Ordering::SeqCst),
+        2,
+        "one cut, one resume"
+    );
     assert_eq!(
         cutting.seen.lock()[1],
         [300_000],
@@ -524,9 +576,16 @@ async fn a_cut_resumes_with_range_and_a_restart_starts_over_once() {
     *cutting.hold.lock() = Some(hold);
     cutting.cuts.lock().push((2_000_000, 500_000));
     let second = vec![source(&s, "second.bin", &big)];
-    send(&a_agents, s.chat, &format!("peer:{}", s.a_alias), "another", &second, Some(x.receipt.id))
-        .await
-        .unwrap();
+    send(
+        &a_agents,
+        s.chat,
+        &format!("peer:{}", s.a_alias),
+        "another",
+        &second,
+        Some(x.receipt.id),
+    )
+    .await
+    .unwrap();
     let z = record(&b_agents, s.origin, "another").await;
     eventually("B has 500,000 bytes of it", || {
         let sizes = cutting.sizes();
@@ -539,11 +598,18 @@ async fn a_cut_resumes_with_range_and_a_restart_starts_over_once() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     let store = b_agents.ask(agent::DurableStore).await.unwrap();
     cf::service::recover(&store, &s.b.ctx.rt.data_dir).await;
-    assert!(cutting.sizes().is_empty(), "the restart empties files/partial/");
+    assert!(
+        cutting.sizes().is_empty(),
+        "the restart empties files/partial/"
+    );
     s.services.push(service(&s.b).await);
     let again = incoming(&s.b, z.receipt.id, 1, "received").await;
     assert_eq!(cutting.opens.load(Ordering::SeqCst), 4);
-    assert_eq!(cutting.seen.lock()[3], [0], "it starts over from byte 0 (a fresh partial)");
+    assert_eq!(
+        cutting.seen.lock()[3],
+        [0],
+        "it starts over from byte 0 (a fresh partial)"
+    );
     check_received(&s.b, s.origin, "another", &again, &second, &[]).await;
     for (_, stop) in &s.services {
         stop.cancel();
@@ -576,9 +642,16 @@ async fn protected_oversize_and_extensionless_sends_are_refused_before_the_netwo
         (&hard, "is theuth's own secret state and is never sent"),
         (&sparse, "5000000001 bytes (over the 5 GB limit per file)"),
     ] {
-        let err = send(&b_agents, s.origin, &to, "nope", std::slice::from_ref(path), None)
-            .await
-            .unwrap_err();
+        let err = send(
+            &b_agents,
+            s.origin,
+            &to,
+            "nope",
+            std::slice::from_ref(path),
+            None,
+        )
+        .await
+        .unwrap_err();
         assert!(err.starts_with("files: ") && err.contains(why), "{err}");
     }
     assert!(
@@ -611,7 +684,10 @@ async fn protected_oversize_and_extensionless_sends_are_refused_before_the_netwo
             .await
             .unwrap();
         let done = got.receipt.state == agent::PeerMessageState::Failed
-            && got.files.iter().all(|f| f.state == FileState::Out(OutState::Failed));
+            && got
+                .files
+                .iter()
+                .all(|f| f.state == FileState::Out(OutState::Failed));
         r = Some(got);
         if done {
             break;
@@ -620,9 +696,25 @@ async fn protected_oversize_and_extensionless_sends_are_refused_before_the_netwo
     }
     let r = r.unwrap();
     assert_eq!(r.receipt.state, agent::PeerMessageState::Failed, "{r:?}");
-    assert!(r.receipt.error.as_deref().unwrap_or_default().contains(want), "{:?}", r.receipt);
+    assert!(
+        r.receipt
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains(want),
+        "{:?}",
+        r.receipt
+    );
     assert_eq!(r.files.len(), 1);
-    assert!(r.files[0].error.as_deref().unwrap_or_default().contains(want), "{:?}", r.files);
+    assert!(
+        r.files[0]
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains(want),
+        "{:?}",
+        r.files
+    );
     for (_, stop) in &s.services {
         stop.cancel();
     }
@@ -668,7 +760,9 @@ async fn a_hold_moved_exchange_rolls_back_its_saved_file_and_fails_both_offers()
         async move {
             let rows = store.exchange_files(&ex).await.ok()?;
             let done = rows.iter().find(|r| r.state == "saved")?;
-            rows.iter().any(|r| r.state == "receiving").then(|| done.clone())
+            rows.iter()
+                .any(|r| r.state == "receiving")
+                .then(|| done.clone())
         }
     })
     .await;
@@ -682,9 +776,16 @@ async fn a_hold_moved_exchange_rolls_back_its_saved_file_and_fails_both_offers()
         !std::path::Path::new(saved.path.as_deref().unwrap()).exists(),
         "the saved file is rolled back"
     );
-    assert!(failed.iter().all(|f| f.path.is_none() || !f.path.as_ref().unwrap().exists()));
+    assert!(
+        failed
+            .iter()
+            .all(|f| f.path.is_none() || !f.path.as_ref().unwrap().exists())
+    );
     let all = rows(&a_agents, s.chat).await;
-    assert!(!all.iter().any(|r| r.starts_with("<message_file ")), "no notice: {all:#?}");
+    assert!(
+        !all.iter().any(|r| r.starts_with("<message_file ")),
+        "no notice: {all:#?}"
+    );
     let reasons = eventually("B's offers failed by the receipts", || {
         let b_agents = b_agents.clone();
         async move {
