@@ -24,9 +24,10 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { chatName } from '@/lib/attach'
-import { PAIRED_RULE, SHARE_RULE, type Sharing, accessFocus, exportName, fingerprint, focusedContact, names, rogueLine, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
+import { FULL_ACCESS_SPREAD, PAIRED_RULE, SHARE_RULE, type Sharing, accessFocus, exportName, fingerprint, focusedContact, fullAccessFrom, fullAccessOff, fullAccessOn, fullAccessSaid, names, rogueLine, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
 import { hasLocal } from '@/link/engines'
 import { engineLabel } from '@/lib/owner'
 import { putPair, queryKeys, useApi } from '@/lib/rpc'
@@ -45,8 +46,7 @@ import type { FirstWaiting } from "@/rpc/bindings/method.a2a.output"
 import type { PairCeremony } from "@/rpc/bindings/method.a2a.output"
 import type { PeerPath } from "@/rpc/bindings/method.a2a.output"
 
-// 200-UI: `full_access: null` once the switch sends it.
-const NO_PATCH: ContactPatch = { name: null, blocked: null }
+const NO_PATCH: ContactPatch = { name: null, blocked: null, full_access: null }
 const PATH: Record<PeerPath, [string, string]> = { lan: ['LAN', 'bg-success'], relay: ['Relay', 'bg-warning'], offline: ['offline', 'ring-1 ring-fg-tertiary ring-inset'] }
 const CHIP = 'inline-flex items-center gap-1 rounded-full border border-border-subtle px-2 py-0.5 text-xs text-fg-secondary'
 const FIRST: [FirstContact, string][] = [
@@ -842,7 +842,52 @@ export function ContactAccess({ focus = null }: { focus?: string | null }) {
   )
 }
 
-// 200-UI: the Full access switch (confirm on turning on, the off/on labels) and the their-side line from `c.full_access_from`.
+/**
+ * 200 D13: per contact, the Full access switch (on asks first, off is immediate), its consequence line, what the contact
+ * gave us, and how far the last change has reached. A held or blocked contact has none: the engine reads it off there,
+ * so the switch could not show what it wrote.
+ */
+function FullAccess({ c }: { c: Contact }) {
+  const api = useApi()
+  const [asking, setAsking] = useState(false)
+  const [said, setSaid] = useState<string | null>(null)
+  const full = useAction(
+    async (on: boolean) => {
+      // An engine older than 200 ignores the field: its answer never shows the change.
+      if ((await api.contact_update(who(c), { ...NO_PATCH, full_access: on })).full_access !== on) throw new Error(OLD_ENGINE)
+    },
+    { keys: [queryKeys.contacts], onSuccess: (_, on) => setSaid(fullAccessSaid(c.name, on)) },
+  )
+  return (
+    <div className="flex flex-col gap-1 rounded-lg bg-layer-2 px-2.5 py-1.5">
+      <label className="flex items-center gap-2 text-sm font-medium pointer-coarse:min-h-11">
+        Full access
+        <Switch checked={c.full_access === true} disabled={full.isPending} aria-label={`Full access for ${c.name}`} onCheckedChange={(on) => (on ? setAsking(true) : full.mutate(false))} />
+      </label>
+      <p className="text-[13px] text-fg-secondary">{c.full_access ? fullAccessOn(c.name) : fullAccessOff(c.name)}</p>
+      <p className="text-[13px] text-fg-tertiary">{fullAccessFrom(c.name, c.full_access_from)}</p>
+      {said && (
+        <p role="status" className="text-xs text-fg-tertiary">
+          {said}
+        </p>
+      )}
+      <AlertDialog open={asking} onOpenChange={setAsking}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Give {c.name} full access?</AlertDialogTitle>
+            <AlertDialogDescription>{fullAccessOn(c.name)}</AlertDialogDescription>
+            <p className="text-sm text-fg-secondary">{FULL_ACCESS_SPREAD}</p>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => full.mutate(true)}>Give full access</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  )
+}
+
 function Access({ c, exports, focused }: { c: Contact; exports: readonly Export[]; focused: boolean }) {
   const row = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -909,6 +954,7 @@ function Access({ c, exports, focused }: { c: Contact; exports: readonly Export[
             </div>
           )
         })}
+        {!held(c) && !c.blocked && <FullAccess c={c} />}
         {picking ? (
           <div className="flex flex-col gap-1.5 rounded-lg border border-border-subtle p-2">
             <div className="flex gap-2">
