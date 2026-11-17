@@ -412,6 +412,8 @@ export interface OrbRendererOptions {
   /** Skip frames while the canvas is scrolled out of view. */
   readonly pauseOffscreen?: boolean;
   readonly onFirstFrame?: () => void;
+  /** A failure after init: a reported GPU error or a lost device (the canvas stops painting). */
+  readonly onError?: (error: unknown) => void;
 }
 
 /**
@@ -425,6 +427,7 @@ export const createOrbRenderer = ({
   maxDpr = 2,
   pauseOffscreen = true,
   onFirstFrame,
+  onError,
 }: OrbRendererOptions) => {
   let disposed = false;
   let gpu: Gpu | undefined;
@@ -452,6 +455,10 @@ export const createOrbRenderer = ({
     }
 
     gpu = nextGpu;
+    if (onError) {
+      gpu.onError(onError);
+      void gpu.gpu.lost.then((info) => !disposed && onError(info));
+    }
     try {
       const output = surface(gpu, canvas, { dpr: [1, maxDpr] });
       const timeline = clock(gpu);
