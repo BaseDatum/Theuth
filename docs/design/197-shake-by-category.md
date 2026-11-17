@@ -116,6 +116,13 @@ pub struct ContextPiece { pub target: ContextTarget, pub label: String, pub remo
 ```
 Both are optional arrays in TS.
 
+### 5.1 Amendment (22:47, from the desktop worker's finding; binding)
+show/app/page_preview cards render as `HistoryEntry::Tool`, whose `context` is the TOOL RESPONSE row's entry (`supervisor.rs` `render_with`, about line 11170 on 019ac62f2). A calls-only assistant row gets no Assistant entry at all. So:
+- `render_with` sets, on each `HistoryEntry::Tool`'s context, `sources` = the ONE `ContextPiece` of that card's own call: owner = the assistant row's seq (from `pending`), part = that call's content-part index; empty when the call has no source. Track the call's part index in `pending`.
+- A pending card with no result yet keeps `context: None`, as today.
+- Assistant entries keep `fences` (and no `sources`). The desktop reads `tool.context.sources[0]` on show/app/page_preview cards and the Assistant entry's `fences` for diagrams.
+- Test: a calls-only row and a text-plus-calls row both yield the source piece on their card's Tool entry.
+
 ## 6. RPC
 - `context_items` (existing) returns the extended snapshot.
 - `remove_context(session, expected_revision, targets)` (existing) accepts `fence` and `source` targets.
@@ -169,7 +176,7 @@ Source: `crates/agent/src/context.rs` (types, `surface_fences`, `classify`, `inj
 - **Fence scanner** (§3): no indent; an opener is ≥ 3 `` ` `` or `~` immediately followed by the info string (a backtick opener's info holds no backtick). Non-surface fences are tracked so a surface-looking line inside one is content and not counted.
 - **json-render label** types are the `elements` map's entries in text order (distinct, at most three).
 - **Peer label** sender is the sending session's `name`, else `title`, else the address.
-- **Card sources in history.** A `show` / `app` / `page_preview` call usually sits in a calls-only assistant row, which renders no `HistoryEntry`; its card (`HistoryEntry::Tool`, context = the response row) carries that one call's piece in `context.sources` (`supervisor::render_with`). An assistant row with text still lists all its own sources; fences ride only on `HistoryEntry::Assistant`.
+- **Card sources in history (§5.1).** Each `HistoryEntry::Tool` (context = the response row) carries its own call's one source piece in `context.sources`, for calls-only and text-plus-calls rows alike; `HistoryEntry::Assistant` carries `fences` and an empty `sources` (`supervisor::render_with`; test `render_puts_each_call_source_on_its_card`). `Store::context_history`'s raw `ContextEntry` of an assistant row still lists all its sources.
 - **Effective-frame consumers** through `Active::effective` → `project`: `Store::frame` (resume, the next request, `SessionState::install` after an edit), compaction and harvest (they read the installed `state.history`), `Active::estimate` / `ContextSnapshot.estimated_tokens`, `ContextBreakdown` (live: installed state; stored: `Store::frame`), the vision fallback (`Store::vision_frame` effective rows; part indexes unchanged since fences and sources never drop a part), regenerate (`Store::effective_message`) and mid-reply fork (a partial mask is materialized effective). Not through it: endless memory units (`Store::endless_messages_from`) honour only whole-row masks, as before for binaries.
 - **TUI** `/shake <category>` opens the picker filtered to the category with its items ticked (⏎ reviews); `messages` lists user/assistant/summary with nothing ticked.
 - **Wire.** `group`, `tokens` and `ContextRemoval.surfaces` are `#[serde(default)]` so the receiver view accepts a pre-197 reply (still required in the output schema and TS). `ContextKind` declaration order keeps the old positions (`user` where `message` was, then `image`, `document`, `tool`, `summary`). `crates/theuth/tests/wire_schema_snapshot.rs` still classifies `kind` `oneOf/0` `message → user` as Breaking: that is the contract's removal of `message`, and the OpenRPC baseline was not accepted here (explicit major-cut approval).
