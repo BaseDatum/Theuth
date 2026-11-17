@@ -1,6 +1,6 @@
 //! Communication switches, peer directory/answers and authenticated transcript cards.
 use super::*;
-use std::collections::VecDeque;
+use std::{collections::VecDeque, path::{Path, PathBuf}};
 use uuid::Uuid;
 use serde::Deserialize;
 use rpc_compose::api::clients::{AgentMessagingApiClient, A2aMessagingApiClient};
@@ -26,7 +26,18 @@ pub(crate) enum Menu {
 }
 #[derive(Debug)]
 pub(crate) enum Prompt {
-    PeerAnswer { session: SessionId, reply_to: Uuid, from: String, resolve: bool },
+    /// `files`: D15 attachments, admitted only when `attach` is [`Attach::Here`].
+    PeerAnswer { session: SessionId, reply_to: Uuid, from: String, resolve: bool, files: Vec<PathBuf>, attach: Attach },
+}
+/// D15: whether the answering chat lives on this machine, where the egress gate can open a file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Attach {
+    /// Not read yet.
+    Unknown,
+    /// This machine owns the chat.
+    Here,
+    /// The owning machine's name (its short id when the mesh does not name it).
+    On(String),
 }
 /// Exact owner request carried into the effect.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,7 +74,11 @@ pub enum Request {
         reply_to: Uuid,
         /// Human answer.
         text: String,
+        /// D15: absolute paths attached on the chat's machine.
+        files: Vec<PathBuf>,
     },
+    /// D15: where the answering chat lives.
+    ChatOwner(SessionId),
     /// Inspect network listener, peers and exports.
     A2aStatus,
     /// Validate and atomically reload network configuration.
@@ -74,6 +89,7 @@ pub(crate) enum Msg {
     Peers(SessionId, Result<PeerPage, String>),
     PeerRequests(SessionId, PeerMessagePage),
     PeerAnswered(PeerReceipt),
+    Owner(SessionId, Attach),
     A2a(a2a::A2aStatus),
     CommunicationChanged,
     PeerMessageChanged(PeerMessageChanged),
@@ -95,7 +111,22 @@ impl Peers {
                     Request::SetPeerScope { root, scope, alias } => Msg::Communication(api.set_peer_scope(root, scope, alias).await.map_err(crate::reason)?),
                     Request::ListPeers(session) => Msg::Peers(session, api.list_peers(session, None, None, None).await.map_err(crate::reason)),
                     Request::ListPeerRequests(session) => Msg::PeerRequests(session, api.list_peer_messages(session, None, None, true).await.map_err(crate::reason)?),
-                    Request::AnswerPeerRequest { session, reply_to, text } => Msg::PeerAnswered(api.answer_peer_request(session, reply_to, text).await.map_err(crate::reason)?),
+                    Request::AnswerPeerRequest { session, reply_to, text, files } => {
+                        // 199-E1: `answer_peer_request` gains `files` (D15); until it does, the engine's own refusal.
+                        if !files.is_empty() { return Err(agent::communication::files::SEND_NOT_YET.to_owned()) }
+                        Msg::PeerAnswered(api.answer_peer_request(session, reply_to, text).await.map_err(crate::reason)?)
+                    }
+                    Request::ChatOwner(session) => {
+                        use rpc_compose::api::clients::{AgentSessionsApiClient, NetworkApiClient};
+                        let attach = match api.list_sessions().await.map_err(crate::reason)?.into_iter().find(|s| s.id == session) {
+                            None => Attach::Unknown,
+                            Some(s) if s.here => Attach::Here,
+                            Some(s) => Attach::On(api.mesh_status().await.ok()
+                                .and_then(|mesh| mesh.peers.into_iter().find(|p| p.id.0 == s.owner).map(|p| clean(&p.name)))
+                                .unwrap_or_else(|| crate::model::engine_chip(&s.owner))),
+                        };
+                        Msg::Owner(session, attach)
+                    }
                     Request::A2aStatus => Msg::A2a(api.a2a_status().await.map_err(crate::reason)?),
                     Request::ReloadA2a => Msg::A2a(api.reload_a2a().await.map_err(crate::reason)?),
                 })
@@ -211,6 +242,7 @@ impl Peers {
             (KeyCode::Enter | KeyCode::Char('i'), Some(PeerRow::Request(record, resolve))) => Act::Inspect(request_card(record, *resolve)),
             (KeyCode::Char('a'), Some(PeerRow::Request(record, resolve))) => Act::Answer(Prompt::PeerAnswer {
                 session, reply_to: record.receipt.id, from: if *resolve { record.receipt.to.clone() } else { record.from.clone() }, resolve: *resolve,
+                files: Vec::new(), attach: Attach::Unknown,
             }),
             _ => Act::Nothing,
         };
@@ -221,7 +253,7 @@ impl Peers {
             Act::Move(to) => *current = to,
             Act::Open(id) => { self.menu = None; cx.close(); cx.core(CoreAction::ResumeSession(id)); }
             Act::Inspect(card) => { self.menu = None; cx.close(); cx.core(CoreAction::AppendCard(card)); }
-            Act::Answer(prompt) => { self.menu = None; self.prompt = Some(prompt); }
+            Act::Answer(prompt) => { self.menu = None; self.prompt = Some(prompt); self.request(Request::ChatOwner(session), cx); }
             Act::Refresh => { self.request(Request::ListPeers(session), cx); self.request(Request::ListPeerRequests(session), cx); }
             Act::Note(note) => cx.core(CoreAction::Notice(note.into())),
             Act::Close => { self.menu = None; cx.close(); }
@@ -268,6 +300,7 @@ impl Peers {
                 cx.plain(Plain::Line(line(id.to_string())));
                 cx.core(CoreAction::Notice(line(short_uuid(id))));
             }
+            Msg::Owner(session, owner) => if let Some(Prompt::PeerAnswer { session: current, attach, .. }) = &mut self.prompt && *current == session { *attach = owner; },
             Msg::A2a(status) => for line in a2a_lines(&status) { cx.plain(Plain::Line(line.clone())); cx.core(CoreAction::Notice(line)); },
             Msg::CommunicationChanged | Msg::A2aChanged => { self.refresh_communication = true; self.refresh_peers |= self.menu.is_some(); }
             Msg::PeerMessageChanged(event) => { self.refresh_peers |= matches!(&self.menu, Some(Menu::Peers { session, .. }) if *session == event.session); }
@@ -278,6 +311,8 @@ impl Peers {
                     if self.peer_shown.len() == 8 { self.peer_shown.pop_front(); }
                     self.peer_shown.push_back(event.text.clone());
                     cx.core(CoreAction::InterjectCard(peer_card(WrapperOrigin { id: event.origin.id, from: &event.origin.from, reply_to: event.origin.reply_to, full: event.origin.contact_mode == Some(agent::ShareMode::Full) }, event.text, "")));
+                    // 199: the message's files follow it as their own lines (`ContactFileChanged` moves them on).
+                    for file in &event.files { cx.core(CoreAction::InterjectCard(super::files::Line::from(file).card(false))); }
                 }
             }
             Msg::Agent => {
@@ -326,8 +361,21 @@ impl Component for Peers {
                 _ => cx.core(CoreAction::Reject("usage: /a2a [reload]".into())),
             },
             Input::Key(key) => self.key(key.code, cx),
-            Input::Submit(line) => if let Some(Prompt::PeerAnswer { session, reply_to, .. }) = self.prompt.take() {
-                cx.consume_key(); cx.close(); self.request(Request::AnswerPeerRequest { session, reply_to, text: line.to_owned() }, cx);
+            Input::Submit(line) => if let Some(Prompt::PeerAnswer { files, attach, .. }) = &mut self.prompt {
+                cx.consume_key();
+                // D15: `+<absolute path>` attaches a file, only where the chat lives.
+                if let Some(path) = line.strip_prefix('+').map(str::trim) {
+                    let note = match attach {
+                        Attach::Here if Path::new(path).is_absolute() => { files.push(path.into()); format!("peers: attached {path} ({} files)", files.len()) }
+                        Attach::Here => format!("files: {path} is not an absolute path"),
+                        Attach::On(machine) => format!("attach on {machine}"),
+                        Attach::Unknown => "attach: this chat's machine is not known yet".to_owned(),
+                    };
+                    cx.core(CoreAction::Notice(note));
+                    return;
+                }
+                let Some(Prompt::PeerAnswer { session, reply_to, files, .. }) = self.prompt.take() else { return };
+                cx.close(); self.request(Request::AnswerPeerRequest { session, reply_to, text: line.to_owned(), files }, cx);
             },
             Input::Message(message) => self.message(message, cx),
             Input::Tick { .. } => {
@@ -364,8 +412,14 @@ impl Component for Peers {
         project_xml(row)
     }
     fn editor(&self) -> Option<Editor> {
-        let Prompt::PeerAnswer { reply_to, from, resolve, .. } = self.prompt.as_ref()?;
-        Some(Editor { hint: format!("peers  {} {} · {}  answer  (esc cancel)",
+        let Prompt::PeerAnswer { reply_to, from, resolve, files, attach, .. } = self.prompt.as_ref()?;
+        let attach = match attach {
+            Attach::Unknown => String::new(),
+            Attach::Here if files.is_empty() => "  · +<path> attaches".to_owned(),
+            Attach::Here => format!("  · +<path> attaches ({} attached)", files.len()),
+            Attach::On(machine) => format!("  · attach on {machine}"),
+        };
+        Some(Editor { hint: format!("peers  {} {} · {}  answer{attach}  (esc cancel)",
             if *resolve { "resolve own wait on" } else { "answer for this session to" }, short_uuid(*reply_to), from), masked: false, submit_empty: false })
     }
     fn view(&self, at: Surface<'_>, cx: &ViewCx<'_>) -> Option<View> {
@@ -424,7 +478,8 @@ fn peer_card(origin: WrapperOrigin<'_>, body: String, facts: &str) -> Transcript
 /// `<message>` after an inbox's `<contact_inbox/>` notice. `facts` is the
 /// header tail: ` · bob on <machine> via <export> · read-only`.
 pub(super) fn contact_row(text: &str) -> Option<(String, String)> {
-    // 199-UIT: `<message_file …/>` placeholders and notice rows parse as file cards; the hint line is dropped.
+    // 199: `<message_file …/>` placeholders after a `<message>` are skipped by `injected` and drawn
+    // as their own lines by `components/files.rs`; notice rows never reach a contact row.
     let text = text.trim();
     let (open, words) = if let Some(rest) = text.strip_prefix("<contact_message ") {
         let (open, body) = rest.strip_suffix("</contact_message>")?.split_once('>')?;

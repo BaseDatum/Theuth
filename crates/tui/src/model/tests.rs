@@ -341,7 +341,7 @@
     use crate::components::costs::{cost_lines, cost_short, money_units};
     use agent::{CommunicationState, PeerOrigin, PeerRecord, PeerReceipt, PeerMessagePage, PeerMessageChanged, PeerScope};
     use crate::components::peers::{Peers, Menu as PeersMenu, Prompt as PeerPrompt, Request as PeerRequest,
-        Msg as PeerMsg, PeerRow, communication_lines, outside_card, kind as peer_kind};
+        Msg as PeerMsg, PeerRow, Attach, communication_lines, outside_card, kind as peer_kind};
     use tokio::sync::mpsc::unbounded_channel;
     use iocraft::KeyModifiers;
     use tools::JobEvent;
@@ -7501,10 +7501,28 @@
         assert!(
             matches!(&m.components.get::<Peers>().unwrap().prompt, Some(PeerPrompt::PeerAnswer { reply_to, resolve: false, .. }) if *reply_to == id)
         );
+        // D15: opening the answer asks where the chat lives; attach works only there.
+        assert!(matches!(component_request::<PeerRequest>(&mut rx), Ok(PeerRequest::ChatOwner(x)) if x == s));
+        let last_info = |m: &Model| match m.entries.last() { Some(Entry::Info(l)) => l.clone(), other => panic!("{other:?}") };
+        let editor_hint = |m: &Model| m.components.editor().map(|(_, e)| e.hint).unwrap_or_default();
+        m.submit("+/tmp/plan.pdf", &tx);
+        assert_eq!(last_info(&m), "attach: this chat's machine is not known yet");
+        component_reply(&mut m, "peers", PeerMsg::Owner(s, Attach::On("studio-mac".into())));
+        assert!(editor_hint(&m).contains("attach on studio-mac"), "{}", editor_hint(&m));
+        m.submit("+/tmp/plan.pdf", &tx);
+        assert_eq!(last_info(&m), "attach on studio-mac");
+        component_reply(&mut m, "peers", PeerMsg::Owner(s, Attach::Here));
+        m.submit("+plan.pdf", &tx);
+        assert_eq!(last_info(&m), "files: plan.pdf is not an absolute path");
+        m.submit("+/tmp/plan.pdf", &tx);
+        assert_eq!(last_info(&m), "peers: attached /tmp/plan.pdf (1 files)");
+        assert!(editor_hint(&m).contains("+<path> attaches (1 attached)"), "{}", editor_hint(&m));
+        assert!(rx.try_recv().is_err(), "attaching sends nothing");
         m.submit("8080", &tx);
         assert!(matches!(
             component_request::<PeerRequest>(&mut rx),
-            Ok(PeerRequest::AnswerPeerRequest { session, reply_to, text }) if session == s && reply_to == id && text == "8080"
+            Ok(PeerRequest::AnswerPeerRequest { session, reply_to, text, files }) if session == s && reply_to == id && text == "8080"
+                && files == [std::path::PathBuf::from("/tmp/plan.pdf")]
         ));
         // A pending change for this session refreshes an open picker only.
         assert!(!m.components.get::<Peers>().unwrap().refresh_peers);
