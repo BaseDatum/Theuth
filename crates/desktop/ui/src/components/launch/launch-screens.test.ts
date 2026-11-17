@@ -90,7 +90,7 @@ test('failed: danger header and step, the error as its detail, the log open, Rel
   expect(html).toContain('<p class="text-sm text-danger">Starting the engine<span class="sr-only">, failed</span></p>')
   expect(html).toContain('<p class="text-xs text-fg-secondary">The engine did not open its port within 15 s</p>')
   expect(html).toContain('Hide launch log')
-  expect(html).toMatch(/<pre[^>]*>Last login/)
+  expect(html).toMatch(/<pre[^>]*>Last login: Tue Nov 17 on ttys004\ntheuth 2.31.0\nopening store\n<\/pre>/)
   expect(html).toContain('Relaunch')
 })
 

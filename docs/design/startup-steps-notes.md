@@ -45,6 +45,9 @@ Branch `feat/startup-matches-shutdown`, cut from `887e5f5f3`.
    answers, so a log that opened itself stays open. It is rendered only when the log is non-empty (as before). The
    trigger reads `Show launch log` / `Hide launch log`, with the chevron pattern from `settings/Memory.tsx`. The `<pre>`
    styling is unchanged and it auto-scrolls on new output and on open.
+   Review R1: the pane shows `cleanLog(log)`, which turns `\r\n` into `\n` and drops CSI, OSC (never past a line end),
+   other `ESC` sequences (`ESC 7`, `ESC ( B`), lone `\r`, the other C0 controls except `\t`/`\n`, and DEL. It shares its
+   regex with the step detail's `lastLogLine`. The raw log is still what is kept and what the shell streams.
 6. **Link screen.** Title `Connecting to <name>` with the spinner even on failure: the link keeps retrying, and D5 only
    asks for the step to fail. `Reaching <name>` carries today's mesh/node sentence. On failure `FailureText` (with
    `className="text-sm"`) renders inside the failed row. The four buttons are unchanged and wrap in the 440 px card. The
@@ -60,9 +63,9 @@ Branch `feat/startup-matches-shutdown`, cut from `887e5f5f3`.
   the refactor (vitest runs with `CI=true`, so a mismatch fails instead of rewriting).
 - `bunx tsc -b --noEmit`: baseline 0 `error TS`, after 0 `error TS`.
 - `bunx vitest run src/components/launch/ src/lib/quit-progress.test.ts src/lib/no-emoji.test.ts src/components/disclosure.test.ts`
-  (gate corrected to add the disclosure ratchet): 5 files, 61 tests passed.
-- Full suite at the end (`BUILD_SLOTS=1 … bunx vitest run src`, per the gate correction): 359 files, 2528 tests passed,
-  0 failed (`/tmp/startup-steps/vitest-full.txt`).
+  (gate corrected to add the disclosure ratchet): 5 files, 62 tests passed after R1.
+- Full suite on the final tree (after R1; `BUILD_SLOTS=1 … bunx vitest run src`, `disclosure.test.ts` included): 359
+  files, 2529 tests passed, 0 failed (`/tmp/startup-steps/vitest-full.txt`). Before R1 it was 359 files / 2528 passed.
 - Earlier, one accidental full run on the base code (`vitest run -u <file>` took the path as `-u`'s argument): 2508
   passed.
 

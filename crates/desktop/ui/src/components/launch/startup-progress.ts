@@ -34,8 +34,12 @@ export type StartupView = {
   logOpen: boolean
 }
 
-// CSI (`ESC [ … final`), OSC (`ESC ] … BEL|ST`), two-byte escapes, then any other C0 control or DEL.
-const ESCAPES = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|\u001b[@-_]|[\u0000-\u0008\u000b-\u001f\u007f]/g
+// CSI (`ESC [ … final`), OSC (`ESC ] … BEL|ST`, never past a line end), other escapes (`ESC` intermediates final:
+// `ESC 7`, `ESC ( B`), then any other C0 control but `\t` and `\n` (so a lone `\r` too), and DEL.
+const ESCAPES = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b\n]*(?:\u0007|\u001b\\)?|\u001b[ -/]*[0-~]|[\u0000-\u0008\u000b-\u001f\u007f]/g
+
+/** The launch log as plain text for the log pane: `\r\n` → `\n`, escape sequences and other controls dropped. */
+export const cleanLog = (log: string): string => log.replaceAll('\r\n', '\n').replace(ESCAPES, '')
 
 /** The last non-empty line of the launch log, escape sequences stripped; a `\r` redraw keeps only what was drawn last. */
 export function lastLogLine(log: string): string | undefined {

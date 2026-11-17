@@ -12,7 +12,7 @@ import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { LOCAL, hasLocal, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
 import { LaunchCard, StepList, StepRow } from './LaunchCard'
-import { STUCK_MS, type StartupView, startupView } from './startup-progress'
+import { STUCK_MS, type StartupView, cleanLog, startupView } from './startup-progress'
 
 type Props = {
   onRelaunch: () => void
@@ -152,10 +152,11 @@ export function LocalStartupView({ view, log, onQuit, onRelaunch }: { view: Star
   const titleId = useId()
   const [open, setOpen] = useDisclosure(LOG_KEY, view.logOpen)
   const pre = useRef<HTMLPreElement>(null)
+  const text = cleanLog(log)
 
   useEffect(() => {
     pre.current?.scrollTo(0, pre.current.scrollHeight)
-  }, [log, open])
+  }, [text, open])
 
   return (
     <div
@@ -168,7 +169,7 @@ export function LocalStartupView({ view, log, onQuit, onRelaunch }: { view: Star
             <StepRow key={step.id} step={step} />
           ))}
         </StepList>
-        {log && (
+        {text && (
           <Collapsible open={open} onOpenChange={setOpen} className="flex flex-col gap-2">
             <CollapsibleTrigger className="flex w-fit items-center gap-1 text-[13px] text-fg-secondary [&[data-state=open]>svg]:rotate-90">
               <ChevronRight className="size-3.5 transition-transform" aria-hidden />
@@ -179,7 +180,7 @@ export function LocalStartupView({ view, log, onQuit, onRelaunch }: { view: Star
                 ref={pre}
                 className="max-h-[50vh] overflow-auto rounded-md bg-layer-2 p-3 font-mono text-xs leading-5 whitespace-pre-wrap break-all text-fg-secondary"
               >
-                {log}
+                {text}
               </pre>
             </CollapsibleContent>
           </Collapsible>
