@@ -88,3 +88,8 @@ Logs in `/tmp/200-e/`, label `200-e`, crate-level `-p` only.
 - **D17 paused hold to the resume** (`supervisor::tests::a_full_access_notice_for_a_paused_tree_waits_for_the_resume`, extended): after the hold, `ResumeTree` replays exactly the one notice, one turn starts on its text, the notice commits, a resend is `accepted` with no second turn. **Defect fixed**: deviation 4.
 - **Gates**: check and clippy (`-D warnings`) clean on `-p agent -p a2a`; the filtered run (`contacts:: communication:: access sessions server::`): a2a 125 passed, agent 164 passed, 0 failed; `a_private_chat_answers_like_an_unknown_id` passed in its own run.
 
+### 200-E security review of `fb124d15f`
+- **SHOULD, fixed**: `client::Sender::list_sessions` checked the route generation only before the fan-out, so a local block, removal or reload during it could still return what some members had answered. The fan-out now races the generation's cancellation, and the generation is checked again before returning: a cancelled listing is `peer `x`: route revoked`, never rows. Regression test `e2e_tests::full_access::a_local_block_mid_fan_out_refuses_the_listing`: A's answer is held 1.5 s (inside `LIST_DEADLINE`) and B blocks A at 0.3 s. Without the fence the test fails with an `Ok` listing (`partial: [A]`); with it, `Err(route revoked)`.
+- **MUST, not 200-E's**: D17 notices authorised by an inbound session thread after Off. This crosses into 199's files, and the final closer fixes it on the combined tree.
+- **Gates**: clippy `-D warnings` clean on `-p agent -p a2a`; filtered run a2a 126 passed, agent 164 passed, 0 failed.
+

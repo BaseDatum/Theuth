@@ -601,3 +601,57 @@ async fn every_hidden_session_and_cursor_answers_like_an_unknown_one() {
     pace().await;
     assert_ne!(mine, send(unknown).await);
 }
+
+/// Security review of `fb124d15f`: a listing in flight when this side blocks the contact
+/// (its route's generation cancelled) is the refusal, never the rows a member already gave.
+/// A's answer is held 1.5 s (inside `LIST_DEADLINE`); B blocks A at 0.3 s.
+#[tokio::test]
+async fn a_local_block_mid_fan_out_refuses_the_listing() {
+    use agent::communication::network::{PeerSender as _, ReadDelayForTest};
+    let lan = Lan::default();
+    let a = engine("a", &lan, true, cfg(600)).await;
+    let b = engine("b", &lan, true, cfg(600)).await;
+    let (a_alias, b_alias) = paired(&a, &b).await;
+    let a_agents = a.ctx.agents().unwrap();
+    let x = chat(&a_agents).await;
+    full_access(&a, &a_alias, true).await;
+    let client = b.ctx.state.lock().clients.get(&b_alias).cloned().unwrap();
+    let req = ListRequest {
+        limit: 5,
+        ..ListRequest::default()
+    };
+    let open = crate::client::Sender(client.clone())
+        .list_sessions(req.clone())
+        .await
+        .unwrap();
+    assert!(
+        open.rows.iter().any(|r| r.session.session == x),
+        "listed while open"
+    );
+
+    a_agents
+        .ask(ReadDelayForTest(Duration::from_millis(1500)))
+        .await
+        .unwrap();
+    let block = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        b.ctx
+            .update_contact(ContactUpdate {
+                name: b_alias.clone(),
+                patch: ContactPatch {
+                    blocked: Some(true),
+                    ..ContactPatch::default()
+                },
+            })
+            .await
+            .unwrap();
+    };
+    let sender = crate::client::Sender(client);
+    let (listed, ()) = tokio::join!(sender.list_sessions(req), block);
+    a_agents
+        .ask(ReadDelayForTest(Duration::ZERO))
+        .await
+        .unwrap();
+    let why = listed.expect_err("blocked mid fan-out: no rows");
+    assert!(why.contains("route revoked"), "{why}");
+}
