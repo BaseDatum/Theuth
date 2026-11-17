@@ -81,17 +81,17 @@ async fn full_access_lists_and_messages_any_session_until_it_is_turned_off() {
             .unwrap()
             .session
     };
-    // A's chat, never shared, in an Owner tree; an Isolated root (the default) stays hidden.
+    // A's chat, never shared (a new chat is an Owner root); one set Isolated stays hidden.
     let chat = session_of(a_agents.clone()).await;
+    let hidden = session_of(a_agents.clone()).await;
     a_agents
         .ask(agent::SetPeerScope {
-            root: chat,
-            scope: PeerScope::Owner,
+            root: hidden,
+            scope: PeerScope::Isolated,
             alias: None,
         })
         .await
         .unwrap();
-    let hidden = session_of(a_agents.clone()).await;
     // A chat A shares with B the ordinary way (interpretation 8: it outlives full access).
     let shared = session_of(a_agents.clone()).await;
     a.ctx
