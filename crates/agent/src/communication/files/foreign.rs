@@ -37,12 +37,18 @@ pub const NOT_PUBLIC: &str = "not a public HTTPS address";
 pub const NO_RESPONSE: &str = "no response";
 /// The failure of a foreign file whose authority ended (grant changed or gone, restart).
 pub const SHARE_ENDED: &str = "share ended";
+/// The holder's mark on a foreign notice's `contact` when the file's authority ended:
+/// the chat's owner records it as the engine-state row (D17 ended share), no turn.
+pub const ENDED: &str = "ended:";
 
 /// What each foreign file arrived under, by its notice id: the grant epoch of the HTTP
-/// peer's route (credentials, exports and roots as admitted; for an answer, the route's
-/// generation). In memory only, like a task's admission: once cancelled, or after a
-/// restart, the file's share has ended (its download fails, its notice is recorded
-/// without a turn). Entries go when their notice is delivered or found ended.
+/// peer's route (credentials, exports and roots as admitted; for an answer, the route it
+/// was sent under). Held by the file's holder, in memory only, like a task's admission: a
+/// restart forgets it, so an unfinished foreign file then fails `share ended` (fail
+/// closed). The holder alone judges it: its outbox marks an ended file's notice
+/// ([`notice_contact`]); the chat's owner, possibly another engine of the mesh, honours
+/// that mark and, when it holds the entry itself, re-checks it at consumption. Entries
+/// go when the notice is delivered, or with an exchange that ends without notices.
 static AUTHORITY: LazyLock<parking_lot::Mutex<HashMap<Uuid, CancellationToken>>> =
     LazyLock::new(Default::default);
 
@@ -51,28 +57,38 @@ pub fn authorize(notice: Uuid, token: CancellationToken) {
     AUTHORITY.lock().insert(notice, token);
 }
 
-/// The live authority of notice `notice`'s file; `None` once it ended (a cancelled entry
-/// is dropped).
+/// The live authority of notice `notice`'s file; `None` once it ended or when unknown.
 pub fn authority(notice: Uuid) -> Option<CancellationToken> {
-    let mut map = AUTHORITY.lock();
-    match map.get(&notice) {
-        Some(t) if !t.is_cancelled() => Some(t.clone()),
-        Some(_) => {
-            map.remove(&notice);
-            None
-        }
-        None => None,
-    }
+    AUTHORITY
+        .lock()
+        .get(&notice)
+        .filter(|t| !t.is_cancelled())
+        .cloned()
 }
 
-/// Forget notice `notice`'s authority (its notice is delivered).
+/// `Some(live)` when this engine holds notice `notice`'s authority, `None` when not.
+fn standing(notice: Uuid) -> Option<bool> {
+    AUTHORITY.lock().get(&notice).map(|t| !t.is_cancelled())
+}
+
+/// Forget notice `notice`'s authority (its notice is delivered, or will never exist).
 pub fn release(notice: Uuid) {
     AUTHORITY.lock().remove(&notice);
 }
 
-/// D17's share re-check of notice `notice` from `contact` into `session`: a foreign
-/// file's needs its own live authority as well (a live binding alone may reach other
-/// sessions); a contact's is [`Store::share_live`].
+/// The holder's `contact` for `contact_file_notice` of notice `notice`: a foreign file's
+/// binding, marked [`ENDED`] unless its authority is live here; a contact's record id.
+pub fn notice_contact(contact: &str, notice: Uuid) -> String {
+    match is_foreign(contact) && authority(notice).is_none() {
+        true => format!("{ENDED}{contact}"),
+        false => contact.to_owned(),
+    }
+}
+
+/// D17's share re-check on the chat's owner of notice `notice` from `contact` (as the
+/// holder sent it) into `session`: a holder's [`ENDED`] mark ends it; a foreign file whose
+/// authority this engine holds needs it live (a live binding alone may reach other
+/// sessions); otherwise [`Store::share_live`] (for a foreign file: its binding).
 ///
 /// # Errors
 /// The store's.
@@ -82,7 +98,7 @@ pub async fn share_live(
     contact: &str,
     notice: Uuid,
 ) -> anyhow::Result<bool> {
-    if is_foreign(contact) && authority(notice).is_none() {
+    if contact.starts_with(ENDED) || (is_foreign(contact) && standing(notice) == Some(false)) {
         return Ok(false);
     }
     store.share_live(session, contact).await
@@ -241,14 +257,35 @@ pub async fn admit(
         parts,
         Utc::now(),
     );
-    if store.admit_in_files(&exchange.to_string(), &rows).await? {
-        for r in &rows {
-            authorize(notice_id(store.engine(), &r.id), authority.clone());
-        }
+    if admit_rows(store, &exchange.to_string(), &rows, authority).await? {
         #[cfg(unix)]
         super::service::kick();
     }
     Ok(())
+}
+
+/// Round 2: `rows` of `exchange` with their authority registered before they are visible
+/// to the queue (a pass between the commit and a later registration would fail a valid
+/// file); a duplicate admission or a failed write takes its registrations back. `true`
+/// when the rows were written now.
+async fn admit_rows(
+    store: &Store,
+    exchange: &str,
+    rows: &[FileRow],
+    authority: &CancellationToken,
+) -> anyhow::Result<bool> {
+    let notices: Vec<Uuid> = rows
+        .iter()
+        .map(|r| notice_id(store.engine(), &r.id))
+        .collect();
+    for n in &notices {
+        authorize(*n, authority.clone());
+    }
+    let admitted = store.admit_in_files(exchange, rows).await;
+    if !matches!(admitted, Ok(true)) {
+        notices.iter().for_each(|n| release(*n));
+    }
+    admitted
 }
 
 /// A fetched foreign file: the partial holds exactly `bytes` bytes.
@@ -634,6 +671,18 @@ mod queue {
     impl Rig {
         /// A consumed message from `acme` carrying `parts`: its file rows admitted.
         async fn message(&self, parts: &[Part]) -> Vec<FileRow> {
+            let ex = self.accepted(parts).await;
+            let store = &self.svc.store;
+            store
+                .consume_exchange(ex, self.session, 1, ChatMessage::user("see attached"))
+                .await
+                .unwrap()
+                .unwrap();
+            store.exchange_files(&ex.to_string()).await.unwrap()
+        }
+
+        /// A message from `acme` carrying `parts`, accepted (not yet read): its exchange.
+        async fn accepted(&self, parts: &[Part]) -> uuid::Uuid {
             let store = &self.svc.store;
             let ex = store
                 .accept_exchange(&AcceptExchange {
@@ -660,12 +709,7 @@ mod queue {
             )
             .await
             .unwrap();
-            store
-                .consume_exchange(ex, self.session, 1, ChatMessage::user("see attached"))
-                .await
-                .unwrap()
-                .unwrap();
-            store.exchange_files(&ex.to_string()).await.unwrap()
+            ex
         }
 
         async fn row(&self, id: &str) -> FileRow {
@@ -986,5 +1030,89 @@ mod queue {
         release(notice_id(restarted.svc.store.engine(), &rows[0].id));
         let row = restarted.settled(&rows[0].id, 5).await;
         assert_eq!(row.error.as_deref(), Some(SHARE_ENDED));
+    }
+
+    /// Round 2: a file's authority exists before its row is visible, so a queue pass racing
+    /// the admission never fails a valid file `share ended`; a duplicate admission of the
+    /// same exchange registers nothing that stays.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn admission_never_races_the_queue_and_duplicates_leave_nothing() {
+        let rig = Arc::new(rig(None, Duration::from_secs(5)).await);
+        let stop = CancellationToken::new();
+        let ticking = {
+            let (rig, stop) = (rig.clone(), stop.clone());
+            tokio::spawn(async move {
+                while !stop.is_cancelled() {
+                    let _ = rig.svc.tick().await;
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+        let mut ids = Vec::new();
+        for n in 0..20u8 {
+            let rows = rig.message(&[Part::raw(vec![n; 16])]).await;
+            ids.push(rows[0].id.clone());
+        }
+        for id in &ids {
+            let row = rig.settled(id, 10).await;
+            assert_eq!(row.state, "received", "{id}: {:?}", row.error);
+        }
+        stop.cancel();
+        ticking.await.unwrap();
+
+        let ex = rig.accepted(&[Part::raw(b"once".to_vec())]).await;
+        let again = in_rows(
+            &rig.session.to_string(),
+            &ex.to_string(),
+            &rig.sender,
+            &[Part::raw(b"again".to_vec())],
+            Utc::now(),
+        );
+        let store = &rig.svc.store;
+        assert!(
+            !admit_rows(store, &ex.to_string(), &again, &rig.authority)
+                .await
+                .unwrap()
+        );
+        let unused = notice_id(store.engine(), &again[0].id);
+        assert!(
+            !AUTHORITY.lock().contains_key(&unused),
+            "a duplicate's registration went"
+        );
+        assert_eq!(
+            rig.svc
+                .store
+                .exchange_files(&ex.to_string())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    /// Round 2 (SHOULD): an exchange that ends without notices (here `HOLD_MOVED` before its
+    /// text was read) releases its files' authority.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_exchange_ending_without_notices_releases_its_authority() {
+        let rig = rig(None, Duration::from_secs(5)).await;
+        let ex = rig.accepted(&[Part::raw(b"tiny".to_vec())]).await;
+        let id = rig.svc.store.exchange_files(&ex.to_string()).await.unwrap()[0]
+            .id
+            .clone();
+        let notice = notice_id(rig.svc.store.engine(), &id);
+        assert!(AUTHORITY.lock().contains_key(&notice));
+        rig.svc
+            .store
+            .fail_exchange(ex, crate::communication::network::HOLD_MOVED)
+            .await
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while rig.row(&id).await.state != "failed" {
+            assert!(Instant::now() < until, "never settled");
+            rig.svc.tick().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!AUTHORITY.lock().contains_key(&notice), "released");
+        assert!(rig.row(&id).await.notice.is_none());
     }
 }

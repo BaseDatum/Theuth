@@ -265,6 +265,8 @@ impl FileService {
                 (Settled::Received, _) => self.send_receipt(&row, Receipt::Received),
                 (Settled::Noticed, _) => {}
                 (Settled::Failed, "in") => {
+                    // No notice will ever come: a foreign file's authority goes now.
+                    foreign::release(notice_id(self.store.engine(), &row.id));
                     // Saved files of a failed exchange are rolled back by inode.
                     let target = row.path.as_deref().map(Path::new);
                     let ours = target.zip(row.ino()).map(|(t, (d, i))| (t, d, i));
@@ -709,7 +711,9 @@ impl FileService {
         row: &FileRow,
         text: &str,
     ) -> bool {
-        match self.door.notice(session, id, &row.contact_id, text).await {
+        // Round 2: the holder judges a foreign file's authority; the owner honours its mark.
+        let contact = foreign::notice_contact(&row.contact_id, id);
+        match self.door.notice(session, id, &contact, text).await {
             Ok(_) => true,
             Err(e) => {
                 tracing::info!(file = %row.id, %session, "199: notice not accepted yet: {e}");
