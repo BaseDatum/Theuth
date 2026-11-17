@@ -39,16 +39,20 @@ test('a header fence outside assistant markdown stays code — e.g. inside a <su
   expect(html).not.toMatch(/data-cell|>Wipe</)
 })
 
-test('runnable only with a session, a finished stored reply and an idle turn (§4.1)', () => {
+test('runnable with a session and a closed, stored reply, whether or not its turn still runs (§4.1, cells-midturn D1)', () => {
   const button = /<button[^>]*>(?:<svg[\s\S]*?<\/svg>)?Preview<\/button>/
-  const live = render(assistant(md(REPLY, withCells)))
-  expect(live).toMatch(button)
-  expect(live.match(button)?.[0]).not.toContain('aria-disabled="true"')
-  expect(live).toContain('Run all · stops before Apply to ir-prod1')
+  for (const o of [{}, { running: true }]) {
+    const live = render(assistant(md(REPLY, withCells), o))
+    expect(live).toMatch(button)
+    expect(live.match(button)?.[0]).not.toContain('aria-disabled="true"')
+    expect(live).toContain('Run all · stops before Apply to ir-prod1')
+    expect(live).not.toContain('ready when this message is saved')
+  }
 
-  for (const o of [{ running: true }, { entry: null }]) {
+  // Not stored yet (the live reply has no stored seq): disabled with the short wait's reason, running or not.
+  for (const o of [{ entry: null }, { entry: null, running: true }]) {
     const html = render(assistant(md(REPLY, withCells), o))
-    expect(html).toContain('ready when the reply ends')
+    expect(html).toContain('ready when this message is saved')
     expect(html.match(button)?.[0]).toContain('aria-disabled="true"')
   }
 
@@ -57,7 +61,7 @@ test('runnable only with a session, a finished stored reply and an idle turn (§
   expect(archive).toContain('data-cell')
   expect(archive).toContain('preview-ir-prod1')
   expect(archive).not.toMatch(button)
-  expect(archive).not.toContain('ready when the reply ends')
+  expect(archive).not.toContain('ready when this message is saved')
 })
 
 test('a still-streaming cell fence is not runnable', () => {
@@ -69,7 +73,7 @@ test('a still-streaming cell fence is not runnable', () => {
       h(CellOrdinals, { value: cellOrdinals(text, '42', false) }, h(CellFence, { code: '#| cwd: /tmp\n#| label: Go\necho go', language: 'bash', isIncomplete: true })),
     ),
   )
-  expect(html).toContain('ready when the reply ends')
+  expect(html).toContain('ready when this message is saved')
 })
 
 test('ordinals follow document order; identical cells get distinct ordinals', () => {
