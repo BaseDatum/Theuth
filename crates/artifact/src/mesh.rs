@@ -199,11 +199,22 @@ pub async fn answer(rt: &Runtime, stores: &Stores, mut framed: Stream) -> anyhow
             send_contact_file(&mut framed, &rt.data_dir, held(id).await).await
         }
         #[cfg(not(unix))]
-        Req::GetContactFile { .. } => {
-            framed.send(encode(&Reply::Missing)?).await?;
-            Ok(())
-        }
+        Req::GetContactFile { .. } => contact_missing(&mut framed).await,
     }
+}
+
+/// 199 P2 (SEC-N2): a contact file's `Missing` answer, on every platform within
+/// [`contact::FILE_IDLE`] like every other write of that path.
+async fn contact_missing(framed: &mut Stream) -> anyhow::Result<()> {
+    tokio::time::timeout(contact::FILE_IDLE, framed.send(encode(&Reply::Missing)?))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "the fetcher took nothing for {} s",
+                contact::FILE_IDLE.as_secs()
+            )
+        })??;
+    Ok(())
 }
 
 /// `Chunk`… `End`, or `Missing` when `path` does not open.
@@ -255,10 +266,7 @@ async fn send_contact_file(
     let opened = held.and_then(|h| disk::egress_reopen(&h.path, root, h.dev, h.inode, h.size).ok());
     let Some(e) = opened else {
         // SEC-N2: even the short answer is bounded.
-        tokio::time::timeout(contact::FILE_IDLE, framed.send(encode(&Reply::Missing)?))
-            .await
-            .map_err(idle)??;
-        return Ok(());
+        return contact_missing(framed).await;
     };
     let mut buf = vec![0u8; CHUNK];
     let mut at = 0u64;
@@ -1053,6 +1061,19 @@ mod tests {
         ) -> std::task::Poll<std::io::Result<()>> {
             std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
         }
+    }
+
+    /// 199-Z2 (network review of `b5bbd2c0f`): a contact file's `Missing` answer is bounded
+    /// by the idle limit on every platform (the non-unix arm answers through this alone).
+    #[tokio::test(start_paused = true)]
+    async fn the_contact_missing_answer_is_bounded_on_every_platform() {
+        let (mine, _theirs) = tokio::io::duplex(1);
+        let mut framed = framed(Box::new(mine));
+        let bound = contact::FILE_IDLE + std::time::Duration::from_secs(1);
+        let sent = tokio::time::timeout(bound, contact_missing(&mut framed))
+            .await
+            .expect("the Missing answer is bounded");
+        assert!(sent.is_err(), "{sent:?}");
     }
 
     /// 199 P2 (the holder's serving and the cache use the unix-only `disk`).

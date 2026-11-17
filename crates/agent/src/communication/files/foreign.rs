@@ -94,9 +94,10 @@ pub fn notice_contact(contact: &str, notice: Uuid) -> String {
 /// (as the holder sent it, a moment ago) into `session`: a holder's [`ENDED`] mark ends
 /// it; a foreign file whose authority this engine holds needs it live; an unmarked one
 /// held elsewhere stands on its holder's word (it judged the authority as it sent); then
-/// [`Store::share_live`] (for a foreign file: its binding). Runs inside the supervisor's
-/// mailbox, so it never waits on another engine; consumption asks the holder again
-/// ([`consumption_live`]).
+/// [`Store::share_live`] (its binding). Runs inside the supervisor's mailbox, so it never
+/// waits on another engine; consumption asks the holder again ([`consumption_live`]). A
+/// contact's notice is not this function's (SEC-200-1: `notices::Agents::notice_live`):
+/// it reads ended here.
 ///
 /// # Errors
 /// The store's.
@@ -106,7 +107,7 @@ pub async fn share_live(
     contact: &str,
     notice: Uuid,
 ) -> anyhow::Result<bool> {
-    if contact.starts_with(ENDED) || (is_foreign(contact) && standing(notice) == Some(false)) {
+    if contact.starts_with(ENDED) || !is_foreign(contact) || standing(notice) == Some(false) {
         return Ok(false);
     }
     store.share_live(session, contact).await
@@ -116,8 +117,8 @@ pub async fn share_live(
 /// (text `text`): a foreign file's authority is judged where it is held, now. Held here:
 /// the local entry. Held elsewhere: its holder (the `holder`/`file` the notice names, which
 /// must give `notice` again) is asked within [`ASK_HOLDER`]; ended, unknown, unreachable or
-/// late all end it (fail closed, never the binding alone). A contact's notice is
-/// [`Store::share_live`].
+/// late all end it (fail closed, never the binding alone). A contact's notice is not this
+/// function's (SEC-200-1: `notices::consumption_live`): it reads ended here.
 ///
 /// # Errors
 /// The store's.
@@ -129,11 +130,8 @@ pub async fn consumption_live(
     notice: Uuid,
     text: &str,
 ) -> anyhow::Result<bool> {
-    if contact.starts_with(ENDED) {
+    if contact.starts_with(ENDED) || !is_foreign(contact) {
         return Ok(false);
-    }
-    if !is_foreign(contact) {
-        return store.share_live(session, contact).await;
     }
     let live = match standing(notice) {
         Some(live) => live,

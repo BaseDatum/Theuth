@@ -101,7 +101,8 @@ pub async fn thumbnail(
 /// `contact_file_export(holder, id, dest)` on the holder: a copy of the saved file at
 /// `dest`, which must not exist (never replaced). SEC-A6: the copy is written beside `dest`
 /// as `0600` with the quarantine xattr set and read back, then linked into place without
-/// clobbering, so `dest` never shows a copy without either.
+/// clobbering, so `dest` never shows a copy without either. Unix only, like `disk`.
+#[cfg(unix)]
 pub async fn export(store: &Store, r: &Render, id: &str, dest: PathBuf) -> Result<PathBuf, String> {
     use std::os::unix::fs::OpenOptionsExt as _;
     let row = row(store, r, id).await?;
@@ -146,6 +147,16 @@ pub async fn export(store: &Store, r: &Render, id: &str, dest: PathBuf) -> Resul
     .await
     .map_err(|e| e.to_string())?
 }
+
+/// `contact_file_export` on a non-unix engine: the copy needs `disk`'s quarantine and
+/// no-clobber link, so it is unavailable (P2's fetch answers the same).
+#[cfg(not(unix))]
+pub async fn export(_: &Store, _: &Render, _: &str, _: PathBuf) -> Result<PathBuf, String> {
+    Err(UNAVAILABLE.to_owned())
+}
+
+/// What a holder RPC that needs the unix-only `disk` answers elsewhere.
+pub const UNAVAILABLE: &str = "contact files need a unix engine";
 
 #[cfg(test)]
 mod tests {
@@ -230,6 +241,7 @@ mod tests {
 
     /// Export copies the saved bytes, `0600` and quarantined like the received file (SEC-A6),
     /// leaves no temporary beside it, and never replaces an existing file.
+    #[cfg(unix)]
     #[tokio::test]
     async fn export_never_clobbers() {
         use std::os::unix::fs::PermissionsExt as _;

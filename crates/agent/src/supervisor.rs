@@ -12385,6 +12385,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         runtime::subscriber_mailbox(),
     );
     agents.register(AGENT_ACTOR)?;
+    notice_authority(rt, &agents);
     // 176 A1: idle ACP children are parked, checked once a minute.
     if !idle_stop.is_zero() {
         let agents = agents.clone();
@@ -13521,6 +13522,17 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
     }
 }
 
+/// SEC-200-1: `rt`'s engine judges a contact's file notice at consumption through this
+/// supervisor (`notices::consumption_live`); every spawn of an engine's [`Agents`] does this.
+pub(crate) fn notice_authority(rt: &Runtime, agents: &ActorRef<Agents>) {
+    crate::communication::files::notices::set_authority(
+        rt,
+        Arc::new(crate::communication::files::notices::Supervisor(
+            agents.downgrade(),
+        )),
+    );
+}
+
 /// 148 R1 (`test-support`): [`bare_agents`] with `configured` deciding which
 /// providers count as keyed, spawned and registered as [`AGENT_ACTOR`] so a
 /// dependent crate's tests (the roster's desks) can talk to a live engine
@@ -13530,9 +13542,10 @@ pub async fn spawn_test_agents(
     rt: Runtime,
     configured: impl Fn(&str) -> bool + Send + Sync + 'static,
 ) -> Result<ActorRef<Agents>, String> {
-    let mut a = bare_agents(rt, None, false).await;
+    let mut a = bare_agents(rt.clone(), None, false).await;
     a.configured = Arc::new(configured);
     let agents = Agents::spawn(a);
+    notice_authority(&rt, &agents);
     agents.register(AGENT_ACTOR).map_err(|e| e.to_string())?;
     Ok(agents)
 }
@@ -13549,10 +13562,12 @@ pub async fn spawn_engine_agents(
     ready: Arc<std::sync::atomic::AtomicBool>,
     engine: Option<&str>,
 ) -> ActorRef<Agents> {
-    let mut a = bare_agents(rt, engine, true).await;
+    let mut a = bare_agents(rt.clone(), engine, true).await;
     a.configured = Arc::new(|_| false);
     a.contacts_ready = ready;
-    Agents::spawn(a)
+    let agents = Agents::spawn(a);
+    notice_authority(&rt, &agents);
+    agents
 }
 
 #[cfg(test)]
@@ -16802,7 +16817,9 @@ pub(crate) mod tests {
         // once: one turn on its text, one row; a resend after that adds nothing.
         let store = a.store.clone();
         let mut rx = tap(&a.rt).await;
+        let rt = a.rt.clone();
         let agents = Agents::spawn(a);
+        notice_authority(&rt, &agents);
         let report = agents.ask(ResumeTree { desk: root }).await.unwrap();
         assert_eq!(report.replayed, 1, "the one held notice");
         let mut seen = Vec::new();
@@ -16838,6 +16855,232 @@ pub(crate) mod tests {
             );
         }
         crate::communication::files::notices::clear(id);
+    }
+
+    /// SEC-200-1 (design-200 security review of `fb124d15f`): 199 D17's one predicate, at
+    /// admission and at consumption (paused and resumed included). The inbound
+    /// `session:<uuid>` thread a full-access send leaves never authorises on its own: a
+    /// notice first arriving after Off, or after the chat became ineligible, is the ended
+    /// row; one held for a paused tree across Off and the resume is given to no agent. An
+    /// export share and a conversation this chat opened still authorise, the latter only
+    /// while its return rule holds (the settled cards).
+    #[tokio::test]
+    async fn a_full_access_notice_needs_the_grant_and_visibility_now() {
+        use crate::communication::PeerScope;
+        use crate::communication::files::NoticeAdmission;
+        use crate::communication::files::notices::{AdmitNotice, claim, clear};
+        use crate::communication::network::SettledCards;
+        use crate::store::contacts::{Cell, RecordTable, RecordWrite};
+        let d = crate::TestDir::new("notice-sec2001");
+        let mut a = agents_on(d.0.clone(), Some("A"), true).await;
+        let root = SessionId::new();
+        a.store
+            .create_session(root, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store
+            .set_root_scope(root, PeerScope::Owner, None)
+            .await
+            .unwrap();
+        let binding = Uuid::now_v7();
+        let record =
+            |cols: Vec<(&'static str, Cell)>| RecordWrite::new(RecordTable::Contacts, "rec", cols);
+        a.store
+            .write_contact_records(&[record(vec![
+                ("binding", Cell::Text(format!("peer:{binding}"))),
+                ("alias", Cell::Text("maya".into())),
+                ("full_access", Cell::Int(1)),
+            ])])
+            .await
+            .unwrap();
+        a.network.insert_full_access_for_test(binding, "maya");
+        // B's full-access message into the chat left its inbound conversation.
+        a.store
+            .open_contact_thread(binding, "in", root, &format!("session:{root}"), false)
+            .await
+            .unwrap();
+        const TEXT: &str = "<message_file from=\"peer:maya\" message=\"m\" name=\"a.pdf\" type=\"application/pdf\" state=\"received\" holder=\"h\" file=\"f\"/>\nFile notice from theuth, not from peer:maya: no reply to the contact is needed.";
+        let notice = |id| AdmitNotice {
+            session: root,
+            id,
+            contact: "rec".into(),
+            text: TEXT.into(),
+        };
+        let ended = |errors: &[(i64, String)]| {
+            errors
+                .iter()
+                .filter(|(_, t)| t.ends_with("has ended, so this was not given to the agent."))
+                .count()
+        };
+        let off = |a: &mut Agents| {
+            a.network.insert_route_for_test(binding, "maya", false);
+        };
+        assert_eq!(a.notice_live(root, "rec", Uuid::new_v4()).await, Ok(true));
+
+        // Off before the notice first arrives: the inbound thread does not carry it.
+        off(&mut a);
+        a.store
+            .write_contact_records(&[record(vec![("full_access", Cell::Int(0))])])
+            .await
+            .unwrap();
+        let after_off = Uuid::new_v4();
+        assert_eq!(
+            a.admit_notice(notice(after_off)).await,
+            Ok(NoticeAdmission::Accepted)
+        );
+        assert!(claim(root, TEXT).is_none(), "nothing pending");
+        assert_eq!(ended(&a.store.errors(root).await.unwrap()), 1);
+        // The route says on while the records say off (a reconcile in flight): still off.
+        a.network.insert_full_access_for_test(binding, "maya");
+        assert_eq!(a.notice_live(root, "rec", Uuid::new_v4()).await, Ok(false));
+
+        // On again, the chat made ineligible (its root `Isolated`): ended too.
+        a.store
+            .write_contact_records(&[record(vec![("full_access", Cell::Int(1))])])
+            .await
+            .unwrap();
+        a.store
+            .set_root_scope(root, PeerScope::Isolated, None)
+            .await
+            .unwrap();
+        let ineligible = Uuid::new_v4();
+        assert_eq!(
+            a.admit_notice(notice(ineligible)).await,
+            Ok(NoticeAdmission::Accepted)
+        );
+        assert!(claim(root, TEXT).is_none(), "nothing pending");
+        assert_eq!(ended(&a.store.errors(root).await.unwrap()), 2);
+        a.store
+            .set_root_scope(root, PeerScope::Owner, None)
+            .await
+            .unwrap();
+
+        // An export share, and a conversation this chat opened, authorise without full
+        // access; the conversation only while the settled cards keep it open.
+        off(&mut a);
+        a.store
+            .write_contact_records(&[
+                RecordWrite::new(
+                    RecordTable::Exports,
+                    "x1",
+                    vec![
+                        ("name", Cell::Text("ops".into())),
+                        ("session", Cell::Text(root.to_string())),
+                    ],
+                ),
+                RecordWrite::new(
+                    RecordTable::Grants,
+                    "rec|x1",
+                    vec![
+                        ("contact", Cell::Text("rec".into())),
+                        ("export", Cell::Text("x1".into())),
+                        ("granted", Cell::Int(1)),
+                    ],
+                ),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(a.notice_live(root, "rec", Uuid::new_v4()).await, Ok(true));
+        a.store
+            .write_contact_records(&[RecordWrite::new(
+                RecordTable::Grants,
+                "rec|x1",
+                vec![("granted", Cell::Int(0))],
+            )])
+            .await
+            .unwrap();
+        assert_eq!(a.notice_live(root, "rec", Uuid::new_v4()).await, Ok(false));
+        let theirs = SessionId::new();
+        for (context, export) in [
+            ("out", "lab".to_owned()),
+            ("fa", format!("session:{theirs}")),
+        ] {
+            a.store
+                .open_contact_thread(binding, context, root, &export, true)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            a.notice_live(root, "rec", Uuid::new_v4()).await,
+            Ok(true),
+            "my own conversation, cards not settled"
+        );
+        let settle = |a: &mut Agents, full: &[&str], full_access| {
+            a.network.settle_for_test(
+                "maya",
+                SettledCards {
+                    full: full.iter().map(|e| (*e).to_owned()).collect(),
+                    full_access,
+                },
+            );
+        };
+        settle(&mut a, &["lab"], false);
+        assert_eq!(
+            a.notice_live(root, "rec", Uuid::new_v4()).await,
+            Ok(true),
+            "the export conversation still open"
+        );
+        settle(&mut a, &[], true);
+        assert_eq!(
+            a.notice_live(root, "rec", Uuid::new_v4()).await,
+            Ok(true),
+            "the session conversation open while they grant us"
+        );
+        settle(&mut a, &[], false);
+        assert_eq!(
+            a.notice_live(root, "rec", Uuid::new_v4()).await,
+            Ok(false),
+            "both closed by the settled cards"
+        );
+        a.store
+            .exec_for_test("DELETE FROM contact_threads WHERE outbound = 1")
+            .await;
+
+        // Held for a paused tree while on, then Off, then the resume: its turn takes it and
+        // the predicate (asked again) ends it: no row of it, nothing given to the agent.
+        a.network.insert_full_access_for_test(binding, "maya");
+        a.store
+            .write_contact_records(&[record(vec![("full_access", Cell::Int(1))])])
+            .await
+            .unwrap();
+        a.paused.insert(root, Vec::new());
+        let held = Uuid::new_v4();
+        assert_eq!(
+            a.admit_notice(notice(held)).await,
+            Ok(NoticeAdmission::Accepted)
+        );
+        assert_eq!(a.paused[&root].len(), 1, "held for the resume");
+        off(&mut a);
+        a.store
+            .write_contact_records(&[record(vec![("full_access", Cell::Int(0))])])
+            .await
+            .unwrap();
+        let store = a.store.clone();
+        let rt = a.rt.clone();
+        let agents = Agents::spawn(a);
+        notice_authority(&rt, &agents);
+        let report = agents.ask(ResumeTree { desk: root }).await.unwrap();
+        assert_eq!(report.replayed, 1, "the one held notice");
+        let recorded = tokio::time::timeout(Duration::from_secs(60), async {
+            while ended(&store.errors(root).await.unwrap()) < 3 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert!(recorded.is_ok(), "the ended row after the resume");
+        assert!(claim(root, TEXT).is_none(), "settled");
+        assert!(
+            store
+                .messages(root)
+                .await
+                .unwrap()
+                .iter()
+                .all(|(_, m)| !crate::loop_::text_of(&m.content).contains("<message_file")),
+            "nothing given to the agent"
+        );
+        for id in [after_off, ineligible, held] {
+            clear(id);
+        }
     }
 
     /// 183 §4.5 (D4): the row's messaging opt-out is applied when the actor

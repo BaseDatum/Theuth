@@ -218,15 +218,10 @@ impl Agents {
         {
             return Ok(NoticeAdmission::Accepted);
         }
-        // 199-E3 (SEC-P3): a foreign file's own authority, not only its binding. 200
-        // (Interplay with 199): or full access on for that contact and the chat visible to
-        // it; a paused tree's notice is held by `input` (no actor, no turn, no row) until
-        // `ResumeTree`.
-        let live =
-            super::foreign::share_live(&self.store, &m.session.to_string(), &m.contact, m.id)
-                .await
-                .map_err(|e| format!("{e:#}"))?
-                || self.full_access_notice(m.session, &m.contact).await;
+        // SEC-200-1: the one authorisation predicate ([`Agents::notice_live`]); a paused
+        // tree's notice is held by `input` (no actor, no turn, no row) until `ResumeTree`,
+        // and judged again when its turn takes it ([`consumption_live`]).
+        let live = self.notice_live(m.session, &m.contact, m.id).await?;
         if !live {
             ended(&self.store, &self.rt, m.session, None, m.id, &m.text).await?;
             return Ok(NoticeAdmission::Accepted);
@@ -265,6 +260,154 @@ impl Agents {
             return Err(e);
         }
         Ok(NoticeAdmission::Accepted)
+    }
+
+    /// SEC-200-1: 199 D17's one authorisation predicate, at admission. A foreign file
+    /// (199-E3) is judged by its own authority ([`super::foreign::share_live`]: never waits
+    /// on another engine inside this mailbox); a contact's by
+    /// [`Self::contact_notice_live`].
+    pub(crate) async fn notice_live(
+        &mut self,
+        session: SessionId,
+        contact: &str,
+        id: Uuid,
+    ) -> Result<bool, String> {
+        if foreign_or_ended(contact) {
+            return super::foreign::share_live(&self.store, &session.to_string(), contact, id)
+                .await
+                .map_err(|e| format!("{e:#}"));
+        }
+        self.contact_notice_live(session, contact).await
+    }
+
+    /// SEC-200-1, the contact half (admission and consumption alike): `contact` (a record
+    /// id) still reaches `session` now by
+    /// - an export of it still granted ([`Store::share_live`]), or
+    /// - a conversation this chat opened toward the contact whose return rule still holds
+    ///   ([`Store::notice_threads`], [`Self::conversation_open`]), or
+    /// - full access given now (route and group rule) and `session` visible now
+    ///   ([`Self::full_access_notice`]).
+    ///
+    /// A conversation the contact opened into the chat (an inbound `session:<uuid>` thread
+    /// of a full-access send included) never authorises on its own.
+    ///
+    /// [`Store::share_live`]: crate::store::Store::share_live
+    /// [`Store::notice_threads`]: crate::store::Store::notice_threads
+    pub(crate) async fn contact_notice_live(
+        &mut self,
+        session: SessionId,
+        contact: &str,
+    ) -> Result<bool, String> {
+        let s = session.to_string();
+        let err = |e: anyhow::Error| format!("{e:#}");
+        if self.store.share_live(&s, contact).await.map_err(err)? {
+            return Ok(true);
+        }
+        let threads = self.store.notice_threads(&s, contact).await.map_err(err)?;
+        if self.conversation_open(&threads) {
+            return Ok(true);
+        }
+        Ok(self.full_access_notice(session, contact).await)
+    }
+}
+
+/// A foreign peer's file (`peer:<binding>`) or one its holder marked ended (199-E3).
+fn foreign_or_ended(contact: &str) -> bool {
+    contact.starts_with(super::foreign::ENDED) || super::foreign::is_foreign(contact)
+}
+
+/// `ask` → the contact half of the predicate ([`Agents::contact_notice_live`]): how a
+/// session loop judges a contact's notice when its turn takes it.
+#[derive(Clone, Debug)]
+pub struct ContactNoticeLive {
+    /// The chat.
+    pub session: SessionId,
+    /// The contact's record id.
+    pub contact: String,
+}
+
+impl Message<ContactNoticeLive> for Agents {
+    type Reply = Result<bool, String>;
+
+    async fn handle(
+        &mut self,
+        m: ContactNoticeLive,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.contact_notice_live(m.session, &m.contact).await
+    }
+}
+
+/// SEC-200-1: how a session loop reaches its engine's supervisor for the contact half of
+/// the predicate at consumption (paused and resumed notices included). Registered per
+/// engine ([`set_authority`]); none registered fails closed.
+#[async_trait::async_trait]
+pub trait NoticeAuthority: Send + Sync {
+    /// [`Agents::contact_notice_live`] for `session` and `contact`, now.
+    async fn live(&self, session: SessionId, contact: &str) -> Result<bool, String>;
+}
+
+/// Production: the engine's supervisor.
+pub struct Supervisor(pub kameo::actor::WeakActorRef<Agents>);
+
+#[async_trait::async_trait]
+impl NoticeAuthority for Supervisor {
+    async fn live(&self, session: SessionId, contact: &str) -> Result<bool, String> {
+        let agents = self.0.upgrade().ok_or("the supervisor stopped")?;
+        let contact = contact.to_owned();
+        agents
+            .ask(ContactNoticeLive { session, contact })
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Register `rt`'s engine's [`NoticeAuthority`] (the supervisor, once spawned).
+pub fn set_authority(rt: &runtime::Runtime, authority: std::sync::Arc<dyn NoticeAuthority>) {
+    super::Slot::of(rt).set(authority);
+}
+
+/// SEC-200-1: 199 D17's one authorisation predicate when a session loop CONSUMES notice
+/// `id` (text `text`) for `session`: a foreign file through
+/// [`super::foreign::consumption_live`] (its holder asked now, off every mailbox), a
+/// contact's through the supervisor ([`NoticeAuthority`], the same
+/// [`Agents::contact_notice_live`] admission ran). Any error, or no supervisor, ends it.
+pub async fn consumption_live(
+    store: &crate::store::Store,
+    rt: &runtime::Runtime,
+    session: SessionId,
+    contact: &str,
+    id: Uuid,
+    text: &str,
+) -> bool {
+    let live = match foreign_or_ended(contact) {
+        true => {
+            super::foreign::consumption_live(store, rt, &session.to_string(), contact, id, text)
+                .await
+                .map_err(|e| format!("{e:#}"))
+        }
+        false => match super::Slot::<dyn NoticeAuthority>::of(rt).get() {
+            Some(authority) => authority.live(session, contact).await,
+            None => Err("no supervisor".into()),
+        },
+    };
+    live.inspect_err(|e| tracing::info!(%session, notice = %id, "199: notice re-check: {e}"))
+        .unwrap_or(false)
+}
+
+/// Tests without a spawned supervisor: a stand-in [`NoticeAuthority`] answering the export
+/// half only ([`crate::store::Store::share_live`]).
+#[cfg(test)]
+pub(crate) struct ShareOnly(pub crate::store::Store);
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl NoticeAuthority for ShareOnly {
+    async fn live(&self, session: SessionId, contact: &str) -> Result<bool, String> {
+        self.0
+            .share_live(&session.to_string(), contact)
+            .await
+            .map_err(|e| format!("{e:#}"))
     }
 }
 
@@ -405,6 +548,8 @@ mod tests {
         use crate::continuation::InputConsumed;
         let (_d, mut a) = crate::supervisor::tests::agents_with(true).await;
         let (s, t) = crate::supervisor::tests::in_turn(&mut a).await;
+        // No spawned supervisor here: its export half judges consumption.
+        set_authority(&a.rt, std::sync::Arc::new(ShareOnly(a.store.clone())));
         for sql in [
             "INSERT INTO contacts (id, alias, binding) VALUES ('rec', 'maya', 'peer:b1')".to_owned(),
             format!("INSERT INTO a2a_exports (id, name, session) VALUES ('x1', 'ops', '{s}')"),

@@ -11,7 +11,7 @@ use chrono::{DateTime, TimeZone as _, Utc};
 use sqlx::{FromRow, SqliteConnection};
 
 use super::Store;
-use crate::communication::files::{ContactFile, FileState, InState, OFFER_TTL, OutState, notice};
+use crate::communication::files::{ContactFile, FileState, InState, OutState, notice};
 
 /// Columns of [`FileRow`], in table order; a macro so `concat!` splices it into
 /// `&'static str` SQL (sqlx 0.9 `SqlSafeStr`, as `exchange_cols!`).
@@ -511,7 +511,9 @@ impl Store {
 
     /// Publication step 6, one transaction: the actual size and BLAKE3, and `received`
     /// with its notice queued when the exchange reads `consumed` or `replied`, else
-    /// `saved`. `None` when the row is no longer `publishing` (it failed meanwhile).
+    /// `saved`. `None` when the row is no longer `publishing` (it failed meanwhile). An
+    /// error of the commit itself is [`CommitUnknown`] (COMMIT may have run, SEC-A5); any
+    /// other error left the row as it was.
     pub async fn file_published(
         &self,
         r: &Render,
@@ -552,7 +554,17 @@ impl Store {
         .bind(id)
         .execute(&mut *tx)
         .await?;
-        tx.commit().await?;
+        #[cfg(test)]
+        if commit_unknown_for_test(id, false) {
+            return Err(CommitUnknown(anyhow::anyhow!("injected: COMMIT never ran")).into());
+        }
+        tx.commit()
+            .await
+            .map_err(|e| anyhow::Error::new(CommitUnknown(e)))?;
+        #[cfg(test)]
+        if commit_unknown_for_test(id, true) {
+            return Err(CommitUnknown(anyhow::anyhow!("injected: after COMMIT")).into());
+        }
         Ok(Some(row))
     }
 
@@ -863,12 +875,11 @@ impl Store {
         Ok(id)
     }
 
-    /// D17 share re-check: `contact` (a record id, merges followed) is neither removed nor
-    /// blocked, and still shares `session` with us: an export of it granted to the
-    /// contact (no member refusing), or a live `~return` conversation into it (one this
-    /// chat opened toward the contact's export, `outbound`). The contact's own conversation
-    /// into our export never outlives the grant (199-Z1, found live). 199-E3: a foreign
-    /// peer's (`peer:<binding>`) lives while its binding does.
+    /// D17 share re-check, the export half: `contact` (a record id, merges followed) is
+    /// neither removed nor blocked and is granted an export of `session` (no member
+    /// refusing). 199-E3: a foreign peer's (`peer:<binding>`) lives while its binding does.
+    /// The conversation half is [`Self::notice_threads`], judged by the supervisor
+    /// (SEC-200-1: `notices::Agents::contact_notice_live`).
     pub async fn share_live(&self, session: &str, contact: &str) -> anyhow::Result<bool> {
         if let Some(binding) = contact.strip_prefix("peer:") {
             return Ok(sqlx::query_scalar(
@@ -881,22 +892,72 @@ impl Store {
         let root = self.contact_root(contact).await?;
         let live: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM contacts WHERE id = ?1 AND removed_ms IS NULL \
-             AND COALESCE(blocked, 0) = 0) AND (\
-               (EXISTS (SELECT 1 FROM contact_grants g JOIN a2a_exports x ON x.id = g.export \
-                 WHERE g.contact = ?1 AND g.granted = 1 AND x.session = ?2 AND x.removed_ms IS NULL) \
-                AND NOT EXISTS (SELECT 1 FROM contact_grants g JOIN a2a_exports x ON x.id = g.export \
-                 WHERE g.contact = ?1 AND g.granted = 0 AND x.session = ?2)) \
-               OR EXISTS (SELECT 1 FROM contact_threads t JOIN contacts c ON c.id = ?1 \
-                 WHERE 'peer:' || t.binding = c.binding AND t.session = ?2 AND t.outbound = 1 \
-                 AND t.last_ms >= ?3))",
+             AND COALESCE(blocked, 0) = 0) \
+             AND EXISTS (SELECT 1 FROM contact_grants g JOIN a2a_exports x ON x.id = g.export \
+               WHERE g.contact = ?1 AND g.granted = 1 AND x.session = ?2 AND x.removed_ms IS NULL) \
+             AND NOT EXISTS (SELECT 1 FROM contact_grants g JOIN a2a_exports x ON x.id = g.export \
+               WHERE g.contact = ?1 AND g.granted = 0 AND x.session = ?2)",
         )
         .bind(&root)
         .bind(session)
-        .bind(now_ms() - OFFER_TTL.as_millis() as i64)
         .fetch_one(&self.read)
         .await?;
         Ok(live)
     }
+
+    /// D17 re-check, the conversation half: the conversations `session` opened toward
+    /// `contact` (a record id, merges followed; neither removed nor blocked) within
+    /// [`THREAD_TTL`], as `(binding, export)`. Only `outbound` ones: a conversation the
+    /// contact opened into our chat (an export's, or a full-access `session:<uuid>` one)
+    /// never authorises on its own (199-Z1; SEC-200-1). Whether its return rule still holds
+    /// is the supervisor's (the cards).
+    ///
+    /// [`THREAD_TTL`]: crate::communication::network::THREAD_TTL
+    pub async fn notice_threads(
+        &self,
+        session: &str,
+        contact: &str,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        let root = self.contact_root(contact).await?;
+        let ttl = crate::communication::network::THREAD_TTL.as_millis() as i64;
+        Ok(sqlx::query_as(
+            "SELECT t.binding, t.export FROM contact_threads t JOIN contacts c ON c.id = ?1 \
+             WHERE c.removed_ms IS NULL AND COALESCE(c.blocked, 0) = 0 \
+             AND 'peer:' || t.binding = c.binding AND t.session = ?2 AND t.outbound = 1 \
+             AND t.last_ms >= ?3 ORDER BY t.last_ms DESC",
+        )
+        .bind(&root)
+        .bind(session)
+        .bind(now_ms() - ttl)
+        .fetch_all(&self.read)
+        .await?)
+    }
+}
+
+/// SEC-A5: a transaction's commit failed, so it is unknown whether COMMIT ran (`store.rs`
+/// `WriteTx::commit`); the caller re-reads the row before acting on either outcome.
+#[derive(Debug)]
+pub struct CommitUnknown(pub anyhow::Error);
+
+impl std::fmt::Display for CommitUnknown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "commit outcome unknown: {:#}", self.0)
+    }
+}
+
+impl std::error::Error for CommitUnknown {}
+
+/// Tests (SEC-A5): `(file id, committed)`: that file's `file_published` reports
+/// [`CommitUnknown`] once, after its COMMIT ran (`true`) or with none run (`false`).
+#[cfg(test)]
+pub(crate) static COMMIT_UNKNOWN: parking_lot::Mutex<Vec<(String, bool)>> =
+    parking_lot::const_mutex(Vec::new());
+
+#[cfg(test)]
+fn commit_unknown_for_test(id: &str, committed: bool) -> bool {
+    let mut ids = COMMIT_UNKNOWN.lock();
+    let hit = ids.iter().position(|(i, c)| i == id && *c == committed);
+    hit.map(|n| ids.remove(n)).is_some()
 }
 
 async fn insert_in(conn: &mut SqliteConnection, r: &FileRow) -> anyhow::Result<()> {
@@ -1293,9 +1354,10 @@ mod tests {
         );
     }
 
-    /// D17 share re-check: a granted export of the chat (no member refusing), or a live
-    /// return conversation into it; a blocked or removed contact shares nothing. A merged
-    /// record is followed to its root.
+    /// D17 share re-check: a granted export of the chat (no member refusing); the
+    /// conversations this chat opened toward the contact (only those, never the contact's
+    /// own, SEC-200-1) for the supervisor's return rule; a blocked or removed contact has
+    /// neither. A merged record is followed to its root.
     #[tokio::test]
     async fn the_share_re_check() {
         let (store, s, _d) = fresh().await;
@@ -1334,39 +1396,62 @@ mod tests {
         assert!(!store.share_live(&sid, "rec").await.unwrap());
         exec(&store, "UPDATE contacts SET blocked = 0 WHERE id = 'rec'").await;
         exec(&store, "DELETE FROM contact_grants").await;
-        // 199-Z1: the contact's own conversation into our (now ungranted) export keeps
-        // nothing alive.
-        sqlx::query(
-            "INSERT INTO contact_threads (id, binding, context_id, session, export, outbound, \
-             last_ms) VALUES ('b1|in', 'b1', 'in', ?, 'proj', 0, ?)",
-        )
-        .bind(&sid)
-        .bind(now_ms())
-        .execute(&store.write)
-        .await
-        .unwrap();
+        // 199-Z1 / SEC-200-1: the contact's own conversation into our (now ungranted)
+        // export, or into a session by full access, is no conversation of ours.
+        for (id, export) in [("b1|in", "proj"), ("b1|fa", "session:x")] {
+            sqlx::query(
+                "INSERT INTO contact_threads (id, binding, context_id, session, export, \
+                 outbound, last_ms) VALUES (?, 'b1', ?, ?, ?, 0, ?)",
+            )
+            .bind(id)
+            .bind(id)
+            .bind(&sid)
+            .bind(export)
+            .bind(now_ms())
+            .execute(&store.write)
+            .await
+            .unwrap();
+        }
+        assert!(!store.share_live(&sid, "rec").await.unwrap());
+        assert!(store.notice_threads(&sid, "rec").await.unwrap().is_empty());
+        for (id, export, at) in [
+            ("b1|c", "", now_ms()),
+            (
+                "b1|old",
+                "ops",
+                now_ms() - crate::communication::network::THREAD_TTL.as_millis() as i64 - 1,
+            ),
+        ] {
+            sqlx::query(
+                "INSERT INTO contact_threads (id, binding, context_id, session, export, \
+                 outbound, last_ms) VALUES (?, 'b1', ?, ?, ?, 1, ?)",
+            )
+            .bind(id)
+            .bind(id)
+            .bind(&sid)
+            .bind(export)
+            .bind(at)
+            .execute(&store.write)
+            .await
+            .unwrap();
+        }
         assert!(
             !store.share_live(&sid, "rec").await.unwrap(),
-            "an ungranted export with the contact's conversation into it"
+            "a conversation is not an export share"
         );
-        sqlx::query(
-            "INSERT INTO contact_threads (id, binding, context_id, session, export, outbound, \
-             last_ms) VALUES ('b1|c', 'b1', 'c', ?, '', 1, ?)",
-        )
-        .bind(&sid)
-        .bind(now_ms())
-        .execute(&store.write)
-        .await
-        .unwrap();
-        assert!(
-            store.share_live(&sid, "rec").await.unwrap(),
-            "a live return conversation"
+        assert_eq!(
+            store.notice_threads(&sid, "old").await.unwrap(),
+            vec![("b1".to_owned(), String::new())],
+            "ours, within the TTL, merged into rec"
         );
+        exec(&store, "UPDATE contacts SET blocked = 1 WHERE id = 'rec'").await;
+        assert!(store.notice_threads(&sid, "rec").await.unwrap().is_empty());
         exec(
             &store,
-            "UPDATE contacts SET removed_ms = 1 WHERE id = 'rec'",
+            "UPDATE contacts SET blocked = 0, removed_ms = 1 WHERE id = 'rec'",
         )
         .await;
+        assert!(store.notice_threads(&sid, "rec").await.unwrap().is_empty());
         assert!(!store.share_live(&sid, "rec").await.unwrap());
     }
 }

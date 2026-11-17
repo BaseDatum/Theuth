@@ -5681,22 +5681,11 @@ impl Turn {
             }
         };
         let store = self.shared.store.clone();
-        // 199-E3 (SEC-P3): a foreign file's own authority, judged by its holder now. 200
-        // (Interplay with 199): or full access still on for that contact (no share needed).
-        let live = crate::communication::files::foreign::consumption_live(
-            &store,
-            &self.shared.rt,
-            &session.to_string(),
-            &n.contact,
-            n.id,
-            &n.text,
-        )
-        .await
-        .unwrap_or(false)
-            || store
-                .full_access_notice_live(session, &n.contact)
-                .await
-                .unwrap_or(false);
+        // SEC-200-1: 199 D17's one predicate again, now (199-E3's holder for a foreign file,
+        // the supervisor for a contact's: share, own conversation, or full access + visible).
+        let live =
+            notices::consumption_live(&store, &self.shared.rt, session, &n.contact, n.id, &n.text)
+                .await;
         if !live {
             if let Err(e) =
                 notices::ended(&store, &self.shared.rt, session, Some(turn), n.id, &n.text).await
@@ -10770,6 +10759,12 @@ mod tests {
             None,
             Arc::new(Semaphore::new(1)),
             SessionResources::durable_arc(&dir),
+        );
+        // SEC-200-1: the engine's authority judges a contact's notice at consumption; here,
+        // without a supervisor, a stand-in answering the export half.
+        notices::set_authority(
+            &session.shared.rt,
+            Arc::new(notices::ShareOnly(store.clone())),
         );
         let mut turn = Turn::new(
             session.shared.clone(),

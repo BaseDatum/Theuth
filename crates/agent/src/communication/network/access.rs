@@ -133,7 +133,8 @@ impl Agents {
     }
 
     /// 199 D17's full-access branch (design 200, "Interplay with 199"): `contact` (a record
-    /// id) is a live contact we gave full access, and `session` is visible to it.
+    /// id) is a live contact we give full access now (its live route's grant and D1's group
+    /// rule on the records), and `session` is visible to it now (D5, both halves).
     pub(crate) async fn full_access_notice(&mut self, session: SessionId, contact: &str) -> bool {
         let mut ours = false;
         for b in self.network.full_access_bindings() {
@@ -149,7 +150,28 @@ impl Agents {
                 break;
             }
         }
-        ours && self.full_access_eligibility(session).await.visible
+        ours && self
+            .store
+            .full_access_granted(contact)
+            .await
+            .unwrap_or(false)
+            && self.full_access_eligibility(session).await.visible
+    }
+
+    /// SEC-200-1, the conversation half of 199 D17: one of `threads` (`(binding, export)`,
+    /// conversations the chat opened toward the contact, [`Store::notice_threads`]) whose
+    /// return rule still holds as `full_return` applies it to the answer that carried the
+    /// file: the contact's route live, and the conversation not closed by the settled
+    /// cards (D10 for `session:<uuid>`, 186 D12 for an export).
+    pub(crate) fn conversation_open(&self, threads: &[(String, String)]) -> bool {
+        threads.iter().any(|(binding, export)| {
+            binding
+                .parse::<uuid::Uuid>()
+                .ok()
+                .and_then(|b| self.network.peers.get(&b))
+                .filter(|p| p.contact && !p.generation.is_cancelled())
+                .is_some_and(|p| !self.network.conversation_closed(&p.name, export))
+        })
     }
 }
 
@@ -500,7 +522,19 @@ impl super::NetworkState {
     /// Tests: a live contact route `name` on `binding` we gave full access (no sender).
     #[cfg(test)]
     pub(crate) fn insert_full_access_for_test(&mut self, binding: uuid::Uuid, name: &str) {
-        self.peers.insert(
+        self.insert_route_for_test(binding, name, true);
+    }
+
+    /// Tests: a live contact route `name` on `binding` (no sender), our grant
+    /// `full_access`; it replaces (and cancels) the route on that binding, as a reconcile.
+    #[cfg(test)]
+    pub(crate) fn insert_route_for_test(
+        &mut self,
+        binding: uuid::Uuid,
+        name: &str,
+        full_access: bool,
+    ) {
+        let old = self.peers.insert(
             binding,
             super::RemotePeer {
                 name: name.into(),
@@ -509,9 +543,18 @@ impl super::NetworkState {
                 generation: tokio_util::sync::CancellationToken::new(),
                 contact: true,
                 full: Vec::new(),
-                full_access: true,
+                full_access,
             },
         );
+        if let Some(old) = old {
+            old.generation.cancel();
+        }
+    }
+
+    /// Tests: `alias`'s settled cards (every machine verified).
+    #[cfg(test)]
+    pub(crate) fn settle_for_test(&mut self, alias: &str, cards: super::SettledCards) {
+        self.settled.insert(alias.into(), cards);
     }
 }
 

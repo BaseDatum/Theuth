@@ -498,15 +498,10 @@ impl Store {
         Ok(())
     }
 
-    /// 200 (199 D17 at consumption): we still give the contact of record `contact` full access
-    /// (every live record of its group reads 1, none blocked: D1's group rule on the records
-    /// staging reads), and `session` passes D5's row half. The session loop's re-check beside
-    /// `share_live`.
-    pub async fn full_access_notice_live(
-        &self,
-        session: SessionId,
-        contact: &str,
-    ) -> anyhow::Result<bool> {
+    /// 200 D1's group rule on the records: we give the contact of record `contact` full
+    /// access (every live record of its group reads 1, none blocked). With the live route's
+    /// grant and D5's `visible`, 199 D17's full-access branch (SEC-200-1).
+    pub async fn full_access_granted(&self, contact: &str) -> anyhow::Result<bool> {
         let rows: Vec<(String, Option<i64>, Option<i64>)> = sqlx::query_as(
             "SELECT id, full_access, blocked FROM contacts WHERE removed_ms IS NULL",
         )
@@ -521,7 +516,7 @@ impl Store {
                 group = true;
             }
         }
-        Ok(group && self.full_access_row(session).await?)
+        Ok(group)
     }
 
     /// 191 (D3, S4): whose `session` is, strictly: this engine's when its row exists and reads

@@ -849,10 +849,40 @@ async fn publish_here(
             disk::abandon(&partial, Some((&target, dev, ino)))?;
             Ok(None)
         }
-        // SEC-A5: step 6 failed after the link: our target goes (by inode) with the partial
-        // before the caller records the failure, so no published file is left behind. If
-        // that record fails too, the row stays `publishing` and the next start, finding
-        // neither, downloads it again.
+        // SEC-A5: the commit itself failed, so COMMIT may have run: the durable outcome is
+        // read back before either link goes. Committed (`saved`/`received`, its notice
+        // queued with it): the file stays and this is a success. Failed meanwhile, or gone:
+        // verified not ours to publish, cleaned up by inode. Still `publishing`, or
+        // unreadable: both links stay with the row's recorded target and inode, the recovery
+        // intent startup resolves (`recover`), never the failure path.
+        Err(e) if e.is::<crate::store::contact_files::CommitUnknown>() => {
+            match store.contact_file(&row.id).await {
+                Ok(Some(now)) if matches!(now.state.as_str(), "saved" | "received") => {
+                    tracing::warn!(file = %row.id, "199: step 6 committed despite: {e:#}");
+                    disk::finish(&partial)?;
+                    Ok(Some(now))
+                }
+                Ok(found) if found.as_ref().is_none_or(|now| now.state != "publishing") => {
+                    disk::abandon(&partial, Some((&target, dev, ino)))?;
+                    Ok(None)
+                }
+                read => {
+                    let row_says = match read {
+                        Ok(_) => "publishing".to_owned(),
+                        Err(r) => format!("unreadable: {r:#}"),
+                    };
+                    tracing::warn!(
+                        file = %row.id,
+                        "199: step 6 outcome unknown ({e:#}; row {row_says}): kept for startup recovery"
+                    );
+                    Ok(None)
+                }
+            }
+        }
+        // SEC-A5: step 6 failed before its commit (nothing of it is durable): our target goes
+        // (by inode) with the partial before the caller records the failure, so no published
+        // file is left behind. If that record fails too, the row stays `publishing` and the
+        // next start, finding neither, downloads it again.
         Err(e) => {
             disk::abandon(&partial, Some((&target, dev, ino)))?;
             Err(io(e))
@@ -1769,6 +1799,87 @@ mod tests {
             rig.fake.receipts.lock().last().map(|r| r.1.clone()),
             Some(Receipt::Failed { .. })
         ));
+    }
+
+    /// SEC-A5 (agent-layer confirmation review of `b5bbd2c0f`): step 6's COMMIT ran, then
+    /// its completion reported an error. The outcome is read back before any link goes: the
+    /// row reads `received`, so the file stays where its notice says, exactly one received
+    /// notice is delivered, and the sender gets the received receipt.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_commit_reported_failed_after_it_ran_keeps_the_file() {
+        use crate::store::contact_files::COMMIT_UNKNOWN;
+        let rig = rig().await;
+        let gate = Arc::new(Semaphore::new(0));
+        rig.fake.gates.lock().insert("a5".into(), gate.clone());
+        let ex = rig.exchange().await;
+        rig.consume(ex).await;
+        let id = rig
+            .file(ex, "a5", "kept.txt", b"committed, then reported failed")
+            .await;
+        COMMIT_UNKNOWN.lock().push((id.clone(), true));
+        gate.add_permits(1);
+        rig.until("delivered", async |r| {
+            r.row(&id).await.notice_state.as_deref() == Some("delivered")
+        })
+        .await;
+        assert!(
+            !COMMIT_UNKNOWN.lock().iter().any(|(i, _)| *i == id),
+            "the injected report fired"
+        );
+        let row = rig.row(&id).await;
+        assert_eq!(row.state, "received");
+        let target = PathBuf::from(row.path.expect("published"));
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"committed, then reported failed"
+        );
+        assert!(!rig.svc.partial(&id).exists(), "the partial finished");
+        assert_eq!(
+            *rig.door.notices.lock(),
+            vec![notice_id(rig.svc.store.engine(), &id)],
+            "one received notice"
+        );
+        let receipts = rig.fake.receipts.lock().clone();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].1, Receipt::Received);
+    }
+
+    /// SEC-A5: step 6 reported an unknown outcome and its COMMIT never ran: the row still
+    /// reads `publishing`, so neither link goes and nothing fails (no notice, no receipt);
+    /// startup recovery finds the target and the partial on one inode and commits step 6.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unknown_commit_outcome_is_left_to_startup_recovery() {
+        use crate::store::contact_files::COMMIT_UNKNOWN;
+        let rig = rig().await;
+        let gate = Arc::new(Semaphore::new(0));
+        rig.fake.gates.lock().insert("a5u".into(), gate.clone());
+        let ex = rig.exchange().await;
+        rig.consume(ex).await;
+        let id = rig.file(ex, "a5u", "later.txt", b"outcome unknown").await;
+        COMMIT_UNKNOWN.lock().push((id.clone(), false));
+        gate.add_permits(1);
+        rig.until("the attempt", async |_| {
+            !COMMIT_UNKNOWN.lock().iter().any(|(i, _)| *i == id)
+        })
+        .await;
+        for _ in 0..5 {
+            rig.svc.tick().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let row = rig.row(&id).await;
+        assert_eq!(row.state, "publishing", "{row:?}");
+        let target = PathBuf::from(row.path.clone().expect("the link was recorded"));
+        assert!(target.exists(), "the published link stays");
+        assert!(rig.svc.partial(&id).exists(), "the partial stays");
+        assert!(rig.door.notices.lock().is_empty());
+        assert!(rig.fake.receipts.lock().is_empty());
+        recover(&rig.svc.store, &rig.svc.root).await;
+        let row = rig.row(&id).await;
+        assert_eq!(row.state, "received");
+        assert_eq!(row.path.as_deref(), Some(target.to_str().unwrap()));
+        assert_eq!(std::fs::read(&target).unwrap(), b"outcome unknown");
+        assert!(!rig.svc.partial(&id).exists());
+        assert_eq!(row.notice_state.as_deref(), Some("queued"));
     }
 
     fn walk(dir: &Path) -> Vec<PathBuf> {
