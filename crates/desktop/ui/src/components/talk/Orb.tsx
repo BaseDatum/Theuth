@@ -1,16 +1,19 @@
 // 76 §0.12: the orb *is* the state. `@shadercn/orb-16` (WebGPU, its own state palette — no theme tint) when the
-// webview has it and motion is welcome;
-// otherwise a CSS orb that shows the same three states without a frame loop (reduced motion: no animation).
+// webview can really render it (an adapter, see `lib/webgpu`) and motion is welcome;
+// otherwise — and while the probe is pending, or once the shader fails — a CSS orb that shows the same three
+// states without a frame loop (reduced motion: no animation). Never a blank button.
 
 import { useState } from 'react'
 import { Orb16 } from '@/components/orbs/orb-16'
 import type { OrbState } from '@/lib/talk'
 import { cn } from '@/lib/utils'
+import { useWebGpu, webGpuFailed } from '@/lib/webgpu'
 
 const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches
 
 export function Orb({ state, size, onClick, label }: { state: OrbState; size: number; onClick: () => void; label: string }) {
-  const [gpu] = useState(() => 'gpu' in navigator && !reduced())
+  const [motion] = useState(() => !reduced())
+  const gpu = useWebGpu() === true && motion
   return (
     <button
       type="button"
@@ -21,7 +24,7 @@ export function Orb({ state, size, onClick, label }: { state: OrbState; size: nu
       style={{ width: size, height: size }}
     >
       {gpu ? (
-        <Orb16 size={size} state={state} ariaLabel="" className="pointer-events-none" />
+        <Orb16 size={size} state={state} ariaLabel="" className="pointer-events-none" onError={webGpuFailed} />
       ) : (
         <span
           aria-hidden

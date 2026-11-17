@@ -83,9 +83,6 @@ mod mobile {
     use crate::commands;
 
     pub(super) fn configure(builder: Builder<Wry>) -> Builder<Wry> {
-        // 198: the glass chrome; the web asks `is_supported` (iOS 26, iPhone) before using it.
-        #[cfg(target_os = "ios")]
-        let builder = builder.plugin(tauri_plugin_glass::init());
         builder
             .plugin(tauri_plugin_barcode_scanner::init())
             .plugin(tauri_plugin_deep_link::init())

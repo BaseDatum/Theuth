@@ -360,7 +360,6 @@ tauri-plugin-autostart = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"  # 39 §3.3: the .app swaps itself at quit
-tauri-plugin-glass = { path = "crates/tauri-plugin-glass" }  # 198: first-party Liquid Glass chrome over the iOS webview
 # Meetings island (design doc 53 decision 8, 03 §1): `tauri-nspanel` swizzles the island window into a
 # non-activating `NSPanel` (2.1 on objc2; doc 174); `objc2-app-kit` for
 # `NSScreen.safeAreaInsets` (notch placement), the screen-parameters notification, and

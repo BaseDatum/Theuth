@@ -5090,7 +5090,6 @@ dependencies = [
  "tauri-plugin-barcode-scanner",
  "tauri-plugin-deep-link",
  "tauri-plugin-dialog",
- "tauri-plugin-glass",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-haptics",
  "tauri-plugin-notification",
@@ -21692,14 +21691,6 @@ dependencies = [
  "thiserror 2.0.21",
  "toml 1.1.8+spec-1.1.0",
  "url",
-]
-
-[[package]]
-name = "tauri-plugin-glass"
-version = "2.21.1"
-dependencies = [
- "tauri",
- "tauri-plugin",
 ]
 
 [[package]]

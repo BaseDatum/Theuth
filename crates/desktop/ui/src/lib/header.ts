@@ -110,20 +110,6 @@ export function layout<T extends Pick<HeaderItem, 'slot' | 'shed'>>(items: reado
   }
 }
 
-/** The items the native glass bar (198) stands in for: its drawer button, title pill and ⋯. */
-const NATIVE: Partial<Record<HeaderId, true>> = { sidebar: true, title: true, more: true, menu: true }
-
-/**
- * 198: under the native glass bar the web header is invisible. Its bar keeps only the two menus, mounted so the
- * native title pill and ⋯ can open them; the chevron menu lists every other item, whatever the tier.
- */
-export function nativeLayout<T extends Pick<HeaderItem, 'id'>>(items: readonly T[]): { bar: T[]; menu: T[] } {
-  return {
-    bar: items.filter((i) => i.id === 'more' || i.id === 'menu'),
-    menu: items.filter((i) => !NATIVE[i.id]),
-  }
-}
-
 /** The chevron panel's widest, and its inset from the pane's and viewport's edges. */
 export const PANEL_MAX = 360
 export const PANEL_GAP = 8

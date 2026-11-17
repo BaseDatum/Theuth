@@ -44,7 +44,6 @@ const CHROME: Record<string, true> = {
   'chat/AdvisorPill.tsx': true,
   'chat/AttachPicker.tsx': true,
   'chat/CostPill.tsx': true,
-  'chat/Header.tsx': true,
   'chat/HeaderMenu.tsx': true,
   'chat/HeldStrip.tsx': true,
   'chat/ModelCombobox.tsx': true,
