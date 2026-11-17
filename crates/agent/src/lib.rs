@@ -221,7 +221,7 @@ pub use communication::{
 pub use compact::CompactStyle;
 pub use context::{
     ContextAttachment, ContextBreakdown, ContextEntry, ContextItem, ContextKind, ContextOwner,
-    ContextRemoval, ContextSnapshot, ContextTarget,
+    ContextPiece, ContextRemoval, ContextSnapshot, ContextTarget,
 };
 pub use cost::{
     CallId, CallKind, CallStatus, ChildCost, CostBucket, CostObservation, CostScope, Coverage,

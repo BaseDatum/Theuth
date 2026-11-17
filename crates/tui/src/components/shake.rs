@@ -11,17 +11,23 @@ pub(crate) enum Request { ContextItems { session: SessionId, category: Option<Sh
 pub(crate) enum Msg { Loaded { session: SessionId, category: Option<ShakeCategory>, result: Result<ContextSnapshot, String> } }
 
 
-/// The `/shake` argument: which kind of context item the picker lists.
+/// The `/shake` argument: which category the picker opens on (197 §7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShakeCategory {
-    /// Image occurrences: user images, tool-response screenshots, snap-head PNGs.
+    /// Every image occurrence: attachments, screenshots, tool images, summary frames.
     Images,
     /// Native PDF parts.
     Documents,
-    /// Whole messages; nothing preselected.
-    Messages,
+    /// Diagram fences in replies and page/app/file sources.
+    Surfaces,
     /// Tool exchanges with their protocol groups.
     Tools,
+    /// Harness-injected rows.
+    Notes,
+    /// Messages from other agents.
+    Agents,
+    /// The conversation (user, assistant, summary); nothing preselected.
+    Messages,
     /// The current epoch head.
     Summary,
 }
@@ -32,21 +38,30 @@ impl ShakeCategory {
         Some(match arg {
             "images" => Self::Images,
             "documents" => Self::Documents,
-            "messages" => Self::Messages,
+            "surfaces" => Self::Surfaces,
             "tools" => Self::Tools,
+            "notes" => Self::Notes,
+            "agents" => Self::Agents,
+            "messages" => Self::Messages,
             "summary" => Self::Summary,
             _ => return None,
         })
     }
 
-    /// The inventory kind this category lists.
-    fn kind(self) -> ContextKind {
+    /// The inventory kinds this category lists.
+    fn lists(self, k: ContextKind) -> bool {
         match self {
-            Self::Images => ContextKind::Image,
-            Self::Documents => ContextKind::Document,
-            Self::Messages => ContextKind::Message,
-            Self::Tools => ContextKind::Tool,
-            Self::Summary => ContextKind::Summary,
+            Self::Images => k == ContextKind::Image,
+            Self::Documents => k == ContextKind::Document,
+            Self::Surfaces => k == ContextKind::Surface,
+            Self::Tools => k == ContextKind::Tool,
+            Self::Notes => k == ContextKind::Note,
+            Self::Agents => k == ContextKind::Peer,
+            Self::Messages => matches!(
+                k,
+                ContextKind::User | ContextKind::Assistant | ContextKind::Summary
+            ),
+            Self::Summary => k == ContextKind::Summary,
         }
     }
 
@@ -55,8 +70,11 @@ impl ShakeCategory {
         match self {
             Self::Images => "images",
             Self::Documents => "documents",
-            Self::Messages => "messages",
+            Self::Surfaces => "surfaces",
             Self::Tools => "tool exchanges",
+            Self::Notes => "notes",
+            Self::Agents => "agent messages",
+            Self::Messages => "messages",
             Self::Summary => "summary",
         }
     }
@@ -99,8 +117,10 @@ pub struct Shake {
 pub struct ReviewRow {
     /// What `remove_context` gets.
     pub target: ContextTarget,
-    /// Inventory kind (`Message` for a companion the inventory does not list).
+    /// Inventory kind (`Tool` for a companion the inventory does not list).
     pub kind: ContextKind,
+    /// Inventory group (197 §1).
+    pub group: String,
     /// The inventory label.
     pub label: String,
     /// Not ticked: a protocol companion of a ticked message (48 §4.2).
@@ -110,18 +130,29 @@ pub struct ReviewRow {
 /// Lowercase kind for picker rows and the print-mode inventory.
 pub fn kind_name(k: ContextKind) -> &'static str {
     match k {
-        ContextKind::Message => "message",
         ContextKind::Image => "image",
         ContextKind::Document => "document",
+        ContextKind::Surface => "surface",
         ContextKind::Tool => "tool",
+        ContextKind::Note => "note",
+        ContextKind::Peer => "peer",
+        ContextKind::User => "user",
+        ContextKind::Assistant => "assistant",
         ContextKind::Summary => "summary",
     }
 }
 
-/// The message or head a binary target sits in.
+/// `kind · group`, padded, for picker, review and print-mode lines (197 §7).
+pub fn kind_group(k: ContextKind, group: &str) -> String {
+    format!("{:<22}", format!("{} · {group}", kind_name(k)))
+}
+
+/// The message or head a binary, fence or source target sits in.
 fn owner_target(t: ContextTarget) -> Option<ContextTarget> {
     match t {
-        ContextTarget::Binary { owner, .. } => Some(match owner {
+        ContextTarget::Binary { owner, .. }
+        | ContextTarget::Fence { owner, .. }
+        | ContextTarget::Source { owner, .. } => Some(match owner {
             agent::ContextOwner::Message { seq } => ContextTarget::Message { seq },
             agent::ContextOwner::Head { epoch } => ContextTarget::Head { epoch },
         }),
@@ -131,8 +162,8 @@ fn owner_target(t: ContextTarget) -> Option<ContextTarget> {
 
 /// The exact removal set (48 §3.2): the ticked items plus their
 /// `remove_with` companions, followed to closure, each target once, in
-/// inventory order. A whole message or head subsumes its attachments, so a
-/// ticked image inside a ticked message is not listed twice.
+/// inventory order. A whole message or head subsumes its attachments,
+/// fences and sources, so a ticked piece of a ticked message is not listed twice.
 pub fn expand(items: &[ContextItem], selected: &BTreeSet<usize>) -> Vec<ReviewRow> {
     let picked: BTreeSet<ContextTarget> = selected
         .iter()
@@ -163,21 +194,28 @@ pub fn expand(items: &[ContextItem], selected: &BTreeSet<usize>) -> Vec<ReviewRo
         .map(|it| ReviewRow {
             target: it.target,
             kind: it.kind,
+            group: it.group.clone(),
             label: it.label.clone(),
             companion: !picked.contains(&it.target),
         })
         .collect();
     // A companion the inventory does not list (the server names a row it
-    // hid): still part of the set, labelled by its coordinate.
+    // hid): still part of the set, labelled by its coordinate. Companions
+    // are tool-exchange rows by construction (48 §4.2).
     for &c in &companions {
         if !subsumed(c) && !rows.iter().any(|r| r.target == c) {
             rows.push(ReviewRow {
                 target: c,
-                kind: ContextKind::Message,
+                kind: ContextKind::Tool,
+                group: "tool".into(),
                 label: match c {
                     ContextTarget::Message { seq } => format!("message #{seq}"),
                     ContextTarget::Head { epoch } => format!("summary (epoch {epoch})"),
                     ContextTarget::Binary { part, .. } => format!("attachment part {part}"),
+                    ContextTarget::Fence { part, index, .. } => {
+                        format!("fence {index} of part {part}")
+                    }
+                    ContextTarget::Source { part, .. } => format!("source of part {part}"),
                 },
                 companion: true,
             });
@@ -203,23 +241,24 @@ impl Shake {
         self.cursor = 0;
     }
 
-    /// `(messages, attachments, heads, companions)` of the review.
-    fn counts(&self) -> (usize, usize, usize, usize) {
-        let mut c = (0, 0, 0, 0);
+    /// `(messages, attachments, surfaces, heads, companions)` of the review.
+    fn counts(&self) -> (usize, usize, usize, usize, usize) {
+        let mut c = (0, 0, 0, 0, 0);
         for r in &self.review {
             match r.target {
                 ContextTarget::Message { .. } => c.0 += 1,
                 ContextTarget::Binary { .. } => c.1 += 1,
-                ContextTarget::Head { .. } => c.2 += 1,
+                ContextTarget::Fence { .. } | ContextTarget::Source { .. } => c.2 += 1,
+                ContextTarget::Head { .. } => c.3 += 1,
             }
-            c.3 += usize::from(r.companion);
+            c.4 += usize::from(r.companion);
         }
         c
     }
 
-    /// Picker rows: `[x] image     shot.png · +2 messages` (the companions a
-    /// tick pulls in); review rows: the set with companions and summary
-    /// warnings spelled out.
+    /// Picker rows: `[x] image · screenshot   shot.png · PNG · 1568×1103 ·
+    /// +2 messages` (the companions a tick pulls in); review rows: the set
+    /// with companions, summary and surface warnings spelled out.
     pub fn rows(&self) -> Vec<String> {
         match self.stage {
             ShakeStage::Pick => self
@@ -227,14 +266,15 @@ impl Shake {
                 .iter()
                 .map(|&i| {
                     let it = &self.items[i];
+                    let detail = it.detail.as_ref().map_or(String::new(), |d| format!(" · {d}"));
                     let more = match it.remove_with.len() {
                         0 => String::new(),
                         n => format!(" · +{n} message(s)"),
                     };
                     format!(
-                        "[{}] {:<8} {}{more}",
+                        "[{}] {} {}{detail}{more}",
                         if self.selected.contains(&i) { "x" } else { " " },
-                        kind_name(it.kind),
+                        kind_group(it.kind, &it.group),
                         it.label
                     )
                 })
@@ -251,10 +291,16 @@ impl Shake {
                         } => {
                             " · summary image: removing this loses part of the earlier conversation"
                         }
+                        ContextTarget::Fence { .. } => {
+                            " · cut out of its reply; the reply text stays, with a one-line marker"
+                        }
+                        ContextTarget::Source { .. } => {
+                            " · the card stays; the model sees a one-line marker instead of its source"
+                        }
                         _ if r.companion => " · protocol companion",
                         _ => "",
                     };
-                    format!("{:<8} {}{note}", kind_name(r.kind), r.label)
+                    format!("{} {}{note}", kind_group(r.kind, &r.group), r.label)
                 })
                 .collect(),
         }
@@ -268,9 +314,9 @@ impl Shake {
                 self.selected.len()
             ),
             ShakeStage::Review => {
-                let (m, a, h, c) = self.counts();
+                let (m, a, s, h, c) = self.counts();
                 format!(
-                    "remove from context: {m} message(s), {a} attachment(s), {h} head(s), {c} companion(s)  ⏎ remove  esc back   originals stay in history; later replies stay; /undo does not restore"
+                    "remove from context: {m} message(s), {a} attachment(s), {s} surface(s), {h} head(s), {c} companion(s)  ⏎ remove  esc back   originals stay in history; later replies stay; /undo does not restore"
                 )
             }
         }
@@ -278,7 +324,8 @@ impl Shake {
 }
 impl ShakePanel {
 
-    /// `/shake [images|documents|messages|tools|summary]` (48 §2.1): ask the
+    /// `/shake [images|documents|surfaces|tools|notes|agents|messages|summary]`
+    /// (48 §2.1, 197 §7): ask the
     /// server for the whole active inventory; the reply opens the picker.
     /// An unknown word is usage, never chat input or a skill.
     fn shake_cmd(&mut self, arg: &str, cx: &mut Cx<'_, '_, Msg>) {
@@ -301,10 +348,10 @@ impl ShakePanel {
         }
     }
 
-    /// Open the `/shake` picker over `snapshot`: every item for the bare
-    /// command and `messages` with nothing ticked; a category's items ticked
-    /// and straight into review otherwise. A refusal (busy, external
-    /// harness) and an empty match are one notice each; nothing is written.
+    /// Open the `/shake` picker over `snapshot` (197 §7): every item for the
+    /// bare command; a category's items otherwise, all ticked, except
+    /// `messages` (the conversation, nothing ticked). A refusal (busy,
+    /// external harness) and an empty match are one notice each; nothing is written.
     fn open_shake(
         &mut self,
         session: SessionId,
@@ -328,7 +375,7 @@ impl ShakePanel {
             return;
         }
         let shown: Vec<usize> = (0..snapshot.items.len())
-            .filter(|&i| category.is_none_or(|c| snapshot.items[i].kind == c.kind()))
+            .filter(|&i| category.is_none_or(|c| c.lists(snapshot.items[i].kind)))
             .collect();
         if shown.is_empty() {
             cx.core(CoreAction::Notice(match category {
@@ -341,7 +388,7 @@ impl ShakePanel {
             None | Some(ShakeCategory::Messages) => BTreeSet::new(),
             Some(_) => shown.iter().copied().collect(),
         };
-        let mut shake = Shake {
+        let shake = Shake {
             session,
             revision: snapshot.revision,
             items: snapshot.items,
@@ -351,9 +398,6 @@ impl ShakePanel {
             stage: ShakeStage::Pick,
             review: Vec::new(),
         };
-        if !shake.selected.is_empty() {
-            shake.open_review();
-        }
         self.menu = Some(Box::new(shake));
         cx.focus(FocusClass::Modal);
     }
@@ -399,12 +443,13 @@ impl ShakePanel {
 }
 
 /// The `/shake` usage line, shown on an unknown argument (48 §2.1).
-pub const SHAKE_USAGE: &str = "usage: /shake [images|documents|messages|tools|summary]";
+pub const SHAKE_USAGE: &str =
+    "usage: /shake [images|documents|surfaces|tools|notes|agents|messages|summary]";
 impl Component for ShakePanel {
     type Msg = Msg;
     fn declaration(&self) -> Declaration {
         Declaration { id: "shake", interests: &[], bindings: &[],
-            slash: &[("/shake", "[images|documents|messages|tools|summary]", "remove images, messages or the summary from the model's context")] }
+            slash: &[("/shake", "[images|documents|surfaces|tools|notes|agents|messages|summary]", "remove images, diagrams, tool output, notes, messages or the summary from the model's context")] }
     }
     fn decode(&self, _: &TopicEvent, _: &CoreView<'_>) -> Option<Msg> { None }
     fn update(&mut self, input: Input<'_, Msg>, cx: &mut Cx<'_, '_, Msg>) {
@@ -416,7 +461,7 @@ impl Component for ShakePanel {
                     use std::fmt::Write;
                     let mut text = if cx.core.reasoning { "\x1b[0m\nmenus need a TTY\n".into() } else { "menus need a TTY\n".to_owned() };
                     for item in &snapshot.items {
-                        let _ = writeln!(text, "{:<8} {}{}", kind_name(item.kind), item.label,
+                        let _ = writeln!(text, "{} {}{}", kind_group(item.kind, &item.group), item.label,
                             match item.remove_with.len() { 0 => String::new(), n => format!(" · +{n} message(s)") });
                     }
                     cx.plain(Plain::Text(text));

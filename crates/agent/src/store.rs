@@ -46,7 +46,7 @@ use sqlx::{FromRow, Sqlite, SqliteConnection, Transaction};
 
 use crate::context::{
     Active, ContextHistory, ContextOwner, ContextRemoval, ContextSnapshot, ContextTarget, Mask,
-    entry, project,
+    RowMeta, entry, project,
 };
 use crate::loop_::text_of;
 use crate::todo::{Todo, TodoSnapshot, TodoSource};
@@ -712,7 +712,15 @@ const ROOT_HOPS: usize = 32;
 /// mixed versions for nothing. Never a lower or an unrelated number: a peer
 /// whose value reads as newer is shipped rows its schema cannot apply, and
 /// `sqlite3changeset_apply` skips the table while the cursor advances.
-pub const SESSIONS_WIRE_SCHEMA: u32 = 66;
+///
+/// **67 (197 SHAKE-BY-CATEGORY) is a value change, not a migration:**
+/// `messages.excluded` masks gained `fences`/`sources`. An older engine
+/// decodes such a mask with both fields ignored and would replay the surface
+/// fences and page/app sources the user removed, the one thing
+/// [`crate::context::Mask::decode`] exists to prevent; so it must not take or
+/// apply these rows. The next migration that changes a replicated column
+/// bumps past 67 (to its own number, or 68 if that is 0067).
+pub const SESSIONS_WIRE_SCHEMA: u32 = 67;
 
 impl Store {
     /// Open (creating) the database in WAL mode and run migrations. Two
@@ -2212,6 +2220,7 @@ impl Store {
             at_seq,
             head,
             rows: rows.into_iter().map(Row::into_active).collect(),
+            meta: BTreeMap::new(),
         };
         let (head, tail) = active.effective();
         Ok(VisionFrame {
@@ -2741,7 +2750,7 @@ impl Store {
             if !m.content.tool_calls().is_empty() {
                 // A whole-excluded reply keeps its mask over the stripped raw
                 // row; a partially masked one is copied effective, mask cleared.
-                let (source, excluded) = if mask.whole || mask.binaries.is_empty() {
+                let (source, excluded) = if mask.whole || !mask.partial() {
                     (m.clone(), mask.encode()?)
                 } else {
                     (project(m, mask).unwrap_or_else(|| m.clone()), None)
@@ -2949,9 +2958,41 @@ impl Store {
     pub async fn context_items(&self, id: SessionId) -> anyhow::Result<ContextSnapshot> {
         let mut tx = self.read.begin().await?;
         let revision = revision_in(&mut tx, &id.to_string()).await?;
-        let active = active_in(&mut tx, id).await?;
+        let mut active = active_in(&mut tx, id).await?;
+        drop(tx);
+        self.mark_peers(id, &mut active).await?;
         let groups = active.groups();
         Ok(active.snapshot(&revision.to_string(), &groups))
+    }
+
+    /// 197 §1: each row's peer provenance, as the history marks it
+    /// ([`Store::peer_origins`]), on the inventory meta, with the sending
+    /// session's name when it is one of ours. Provenance never changes once
+    /// a row is written, so reading it after the frame's snapshot is safe.
+    async fn mark_peers(&self, id: SessionId, active: &mut Active) -> anyhow::Result<()> {
+        let mut names: HashMap<String, Option<String>> = HashMap::new();
+        for (seq, origin) in self.peer_origins(id).await? {
+            let Some(meta) = active.meta.get_mut(&seq) else {
+                continue;
+            };
+            if !names.contains_key(&origin.from) {
+                let name = match origin.from.strip_prefix("session:") {
+                    Some(sid) => sqlx::query_scalar::<_, Option<String>>(
+                        "SELECT COALESCE(NULLIF(name, ''), NULLIF(title, '')) FROM sessions \
+                         WHERE id = ?",
+                    )
+                    .bind(sid)
+                    .fetch_optional(&self.read)
+                    .await?
+                    .flatten(),
+                    None => None,
+                };
+                names.insert(origin.from.clone(), name);
+            }
+            meta.sender = names[&origin.from].clone();
+            meta.peer = Some(origin.from);
+        }
+        Ok(())
     }
 
     /// The effective form of one visible row (`None` when removed or emptied
@@ -3092,6 +3133,7 @@ impl Store {
             images = plan.images,
             documents = plan.documents,
             heads = plan.heads,
+            surfaces = plan.surfaces,
             "context_edit"
         );
         let (head, tail) = after.effective();
@@ -3101,6 +3143,7 @@ impl Store {
             images: plan.images,
             documents: plan.documents,
             heads: plan.heads,
+            surfaces: plan.surfaces,
             estimated_tokens: after.estimate(),
         };
         Ok((removal, after.epoch, head, tail))
@@ -3120,7 +3163,7 @@ impl Store {
         drop(tx);
         let latest = epochs.last().map(|(e, _)| (e.n, e.tail_from, e.at_seq));
         let (epoch, tail_from, at_seq) = latest.unwrap_or((0, 0, -1));
-        let active = Active {
+        let mut active = Active {
             epoch,
             tail_from,
             at_seq,
@@ -3132,7 +3175,13 @@ impl Store {
                 .filter(|r| r.seq >= tail_from)
                 .map(|r| (r.seq, r.message.clone(), r.mask.clone()))
                 .collect(),
+            meta: rows
+                .iter()
+                .filter(|r| r.seq >= tail_from)
+                .map(|r| (r.seq, r.meta()))
+                .collect(),
         };
+        self.mark_peers(id, &mut active).await?;
         let groups = active.groups();
         let snapshot = active.snapshot(&revision, &groups);
         let thinking = rows
@@ -3925,6 +3974,16 @@ impl Row {
         (self.seq, self.message, self.mask)
     }
 
+    /// What the inventory needs besides the body (peer provenance is added
+    /// by [`Store::mark_peers`]).
+    fn meta(&self) -> RowMeta {
+        RowMeta {
+            at: self.at.clone(),
+            note: self.is_note(),
+            ..RowMeta::default()
+        }
+    }
+
     /// A typed note (vision consultation or advisory, 52 §6 / 125 §5.4):
     /// never opens a turn, transparent to turn readers.
     fn is_note(&self) -> bool {
@@ -4126,16 +4185,14 @@ async fn active_in(conn: &mut SqliteConnection, id: SessionId) -> anyhow::Result
         Some((e, mask)) => (e.n, e.tail_from, e.at_seq, Some((e.head, mask))),
         None => (0, 0, -1, None),
     };
+    let rows = rows_in(conn, id, tail_from).await?;
     Ok(Active {
         epoch,
         tail_from,
         at_seq,
         head,
-        rows: rows_in(conn, id, tail_from)
-            .await?
-            .into_iter()
-            .map(Row::into_active)
-            .collect(),
+        meta: rows.iter().map(|r| (r.seq, r.meta())).collect(),
+        rows: rows.into_iter().map(Row::into_active).collect(),
     })
 }
 
@@ -4447,7 +4504,7 @@ mod tests {
     #[tokio::test]
     async fn sessions_wire_schema_tracks_the_replicated_columns() {
         const SNAPSHOT: (u32, &str) = (
-            66,
+            67,
             "sessions: id,created_at,title,model,parent,name,effort,cut_at,agent,acp_session,cwd,updated_at,pinned,todo_version,context_revision,scope,alias,project,archived,tags,harness_model,unattended,owner,epoch,desk,harness_commands,context_size,acp_skills,last_stop,finished_at,kind,memory,endless_base,endless_filter,endless_view_bytes,budget,observed_source,observed_state,observed_stop,observed_cancel,observed_description,observed_tool_call,observed_detail,observed_cursor,observed_cost_rule,notebook,acp_previous,endless_paused,endless_spend_override,endless_model,endless_agent_model,approvals,communication,contact_inbox,hidden_tools,endless_effort,endless_agent_effort,knowledge_identity
 messages: session_id,seq,body,excluded,vision,at,thinking_ms,advisory,channel,moved,peer
 epochs: session_id,n,at_seq,tail_from,head,created_at,excluded
@@ -6655,6 +6712,103 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
             .await
             .unwrap();
         assert!(store.session_hidden(id).await.is_err());
+    }
+
+    /// 197: a fence and a `show` source come out under the revision guard,
+    /// a repeat is a no-op, and the masks survive a restart in
+    /// `messages.excluded` with the inventory and the history agreeing.
+    #[tokio::test]
+    async fn remove_context_cuts_fences_and_sources_durably() {
+        let (store, id, dir) = fresh().await;
+        let show = genai::chat::ToolCall {
+            call_id: "s1".into(),
+            fn_name: "show".into(),
+            fn_arguments: serde_json::json!({"name": "p.html", "content": "<p>hi</p>"}),
+            thought_signatures: None,
+        };
+        append_all(
+            &store,
+            id,
+            [
+                ChatMessage::user("draw"),
+                ChatMessage::assistant(MessageContent::from_parts(vec![
+                    ContentPart::Text("a\n```mermaid\ngraph TD\n```\nb".into()),
+                    ContentPart::ToolCall(show),
+                ])),
+                ChatMessage::from(vec![ToolResponse::new("s1", "shown")]),
+                asst("done"),
+            ],
+        )
+        .await;
+        let fence = ContextTarget::Fence {
+            owner: ContextOwner::Message { seq: 1 },
+            part: 0,
+            index: 0,
+        };
+        let source = ContextTarget::Source {
+            owner: ContextOwner::Message { seq: 1 },
+            part: 1,
+        };
+        let err = store.remove_context(id, "3", &[fence]).await.unwrap_err();
+        assert!(err.to_string().contains("stale revision"), "{err}");
+        let (removal, _, _, tail) = store
+            .remove_context(id, "4", &[fence, source])
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                removal.revision.as_str(),
+                removal.surfaces,
+                removal.messages
+            ),
+            ("5", 2, 0)
+        );
+        assert_eq!(
+            tail[1].1.content.texts(),
+            ["a\n[mermaid diagram removed from context]\nb"]
+        );
+        let (again, _, _, _) = store
+            .remove_context(id, "5", &[fence, source])
+            .await
+            .unwrap();
+        assert_eq!((again.revision.as_str(), again.surfaces), ("5", 0));
+        let raw: Option<String> =
+            sqlx::query_scalar("SELECT excluded FROM messages WHERE session_id = ? AND seq = 1")
+                .bind(id.to_string())
+                .fetch_one(&store.read)
+                .await
+                .unwrap();
+        assert_eq!(
+            raw.as_deref(),
+            Some(r#"{"whole":false,"binaries":[],"fences":[{"part":0,"index":0}],"sources":[1]}"#)
+        );
+        store.close().await;
+        drop(store);
+
+        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let (_, _, tail) = store.frame(id).await.unwrap();
+        let call = &tail[1].1.content.tool_calls()[0];
+        assert_eq!(
+            call.fn_arguments["content"],
+            "[page removed from context: p.html]"
+        );
+        assert_eq!(call.call_id, "s1");
+        let snap = store.context_items(id).await.unwrap();
+        assert!(
+            snap.items
+                .iter()
+                .all(|i| i.target != fence && i.target != source)
+        );
+        let h = store.context_history(id).await.unwrap();
+        let e = &h.entries[&1];
+        assert!(e.fences[0].removed && e.sources[0].removed && !e.removed);
+        // The raw row is the original.
+        assert_eq!(
+            h.messages[1].1.content.texts(),
+            ["a\n```mermaid\ngraph TD\n```\nb"]
+        );
     }
 
     /// A committed removal survives a restart: the reopened store projects the
