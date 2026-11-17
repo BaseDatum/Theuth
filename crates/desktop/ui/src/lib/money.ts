@@ -33,14 +33,24 @@ export function formatMoney(m: Money): string {
   return s ? `${s}${units}.${frac}` : `${m.currency} ${units}.${frac}`
 }
 
+/** Nanos (decimal string) → cents, rounded half up; never a float. */
+const cents = (m: Money): bigint => (BigInt(m.nanos) + 5_000_000n) / 10_000_000n
+
+/** `$4.12`, `€4.12`, else `XYZ 4.12`: a session total at cents (a ballpark gauge), rounded half up. */
+export function formatCents(m: Money): string {
+  const c = cents(m)
+  const v = `${c / 100n}.${(c % 100n).toString().padStart(2, '0')}`
+  const s = symbol(m.currency)
+  return s ? `${s}${v}` : `${m.currency} ${v}`
+}
+
 /**
- * `formatMoney` split for a rolling display (`CostPill`): the symbol (or `XYZ ` code) as text and the half-up-rounded
- * milli-units as a number, exact at three decimals (`0.123`), so `Intl` prints the same digits `formatMoney` does.
+ * `formatCents` split for a rolling display (`CostPill`): the symbol (or `XYZ ` code) as text and the cents as a
+ * number, exact at two decimals (`4.12`), so `Intl` prints the same digits `formatCents` does.
  */
 export function moneyParts(m: Money): { prefix: string; value: number } {
-  const milli = (BigInt(m.nanos) + NANOS_PER_MILLI / 2n) / NANOS_PER_MILLI
   const s = symbol(m.currency)
-  return { prefix: s ?? `${m.currency} `, value: Number(milli) / 1000 }
+  return { prefix: s ?? `${m.currency} `, value: Number(cents(m)) / 100 }
 }
 
 /**
@@ -57,28 +67,53 @@ export function costLines(b: CostBucket): { primary: string; secondary?: string 
   return { primary, secondary: `Estimated ${b.estimated_for_unavailable.map((m) => `~${formatMoney(m)}`).join(' + ')}` }
 }
 
-/** `costLines` as one tooltip: the returned line, then the estimate line. */
-export function costTitle(b: CostBucket): string {
-  const { primary, secondary } = costLines(b)
-  return secondary ? `${primary}\n${secondary}` : primary
-}
-
 /**
- * The terms a one-line cost shows: returned money and the estimate side by side. A known-zero returned entry (an omp
- * child's meter before it reports) is dropped when an estimate or unavailable calls exist, so it never hides them.
+ * The terms of a bucket: returned money and the estimate. A known-zero returned entry (an omp child's meter before it
+ * reports) is dropped when an estimate or unavailable calls exist, so it never reads as the whole cost.
  */
-export function costParts(b: CostBucket): { returned: Money[]; estimated: Money[] } {
+function costParts(b: CostBucket): { returned: Money[]; estimated: Money[] } {
   const estimated = b.estimated_for_unavailable
   const hideZero = estimated.length > 0 || b.unavailable > 0
   return { returned: hideZero ? b.returned.filter((m) => BigInt(m.nanos) !== 0n) : b.returned, estimated }
 }
 
-/** One bucket for a pill or agent row: `$0.100 + ~$0.023` (returned, then the tilde-marked estimate), either alone, else `—`. */
-export function costShort(b: CostBucket): string {
-  const { returned, estimated } = costParts(b)
-  const terms = [...returned.map(formatMoney), ...estimated.map((m) => `~${formatMoney(m)}`)]
+/**
+ * A session's (desk's, task's, subagent's) cost as ONE figure (Sky 2026-11-17): returned plus estimated money of every
+ * bucket summed; `approx` when any part is an estimate. `null` when nothing is priced or the parts span currencies.
+ */
+export function costTotal(...bs: CostBucket[]): { money: Money; approx: boolean } | null {
+  const parts = bs.flatMap((b) => {
+    const { returned, estimated } = costParts(b)
+    return [...returned.map((m) => ({ m, est: false })), ...estimated.map((m) => ({ m, est: true }))]
+  })
+  const currency = parts[0]?.m.currency
+  if (currency === undefined || parts.some((p) => p.m.currency !== currency)) return null
+  const nanos = parts.reduce((n, p) => n + BigInt(p.m.nanos), 0n)
+  return { money: { currency, nanos: String(nanos) }, approx: parts.some((p) => p.est) }
+}
+
+/**
+ * The buckets' total as one string: `$4.12`, `~$4.12` when part of it is estimated, `—` when nothing is priced. Mixed
+ * currencies keep the split (`€0.500 + ~$0.023`): money in two currencies does not add up.
+ */
+export function costShort(...bs: CostBucket[]): string {
+  const t = costTotal(...bs)
+  if (t) return `${t.approx ? '~' : ''}${formatCents(t.money)}`
+  const terms = bs.flatMap((b) => {
+    const { returned, estimated } = costParts(b)
+    return [...returned.map(formatMoney), ...estimated.map((m) => `~${formatMoney(m)}`)]
+  })
   return terms.length ? terms.join(' + ') : '—'
 }
 
-/** 141 §7.6: a USD figure a harness reported as a float (omp `progress[].cost`), in `formatMoney`'s digits. */
-export const usd = (n: number): string => formatMoney({ currency: 'USD', nanos: String(Math.round(n * 1e9)) })
+/** The tooltip beside `costShort`: says why a `~` is there; mixed currencies keep `costLines`; else none. */
+export function costTitle(b: CostBucket): string | undefined {
+  const t = costTotal(b)
+  if (t) return t.approx ? 'Approximate: part of this cost is estimated' : undefined
+  if (!costParts(b).returned.length && !b.estimated_for_unavailable.length) return undefined
+  const { primary, secondary } = costLines(b)
+  return secondary ? `${primary}\n${secondary}` : primary
+}
+
+/** 141 §7.6: a USD figure a harness reported as a float (omp `progress[].cost`), in `formatCents`'s digits (a session total). */
+export const usd = (n: number): string => formatCents({ currency: 'USD', nanos: String(Math.round(n * 1e9)) })

@@ -2,9 +2,9 @@ import { useQuerySupport } from '@/rpc/capabilities'
 import NumberFlow from '@number-flow/react'
 import { useQuery } from '@tanstack/react-query'
 import { Coins, Eye } from 'lucide-react'
-import { Fragment, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { costLines, costParts, costShort, costTitle, moneyParts } from '@/lib/money'
+import { costShort, costTitle, costTotal, moneyParts } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { CostBucket } from "@/rpc/bindings/method.agent.output"
 import type { RemoteTokens } from "@/rpc/bindings/method.agent.output"
@@ -22,14 +22,12 @@ export const COST_RULE: Record<ObservedMeta['cost_rule'], string> = {
 }
 
 function Bucket({ label, bucket }: { label: string; bucket: CostBucket }) {
-  const { primary, secondary } = costLines(bucket)
   return (
     <div className="flex flex-col gap-0.5 tabular-nums">
       <div className="flex justify-between gap-4">
         <span className="text-fg-secondary">{label}</span>
-        <span>{primary}</span>
+        <span title={costTitle(bucket)}>{costShort(bucket)}</span>
       </div>
-      {secondary && <div className="text-right text-xs text-fg-tertiary">{secondary}</div>}
       {bucket.unresolved > 0 && (
         <div className="text-right text-xs text-fg-tertiary">{bucket.unresolved} unresolved attempts</div>
       )}
@@ -148,27 +146,18 @@ const useCost = (session: string) => {
   return useQuery({ enabled: canQuery1, queryKey: queryKeys.sessionCost(session), queryFn: () => api.session_cost(session) }).data
 }
 
-/** Three fixed decimals, no grouping: `formatMoney`'s digits. */
-const MILLI = { minimumFractionDigits: 3, maximumFractionDigits: 3, useGrouping: false }
+/** Two fixed decimals, no grouping: `formatCents`'s digits. */
+const CENTS = { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }
 
-/** `costShort` with rolling digits: returned money, then `~` estimates, joined ` + `; `—` stays text. Reads the same at rest. */
+/** `costShort` with rolling digits: one total, `~` when part of it is estimated; `—` and mixed currencies stay text. */
 export function RollingCost({ bucket }: { bucket: CostBucket }) {
-  const { returned, estimated } = costParts(bucket)
-  const monies = [...returned.map((m) => ({ m, est: false })), ...estimated.map((m) => ({ m, est: true }))]
-  if (!monies.length) return '—'
-  return monies.map(({ m, est }, i) => {
-    const { prefix, value } = moneyParts(m)
-    return (
-      <Fragment key={i}>
-        {i > 0 && ' + '}
-        {est && '~'}
-        <NumberFlow value={value} prefix={prefix} locales="en" format={MILLI} />
-      </Fragment>
-    )
-  })
+  const t = costTotal(bucket)
+  if (!t) return costShort(bucket)
+  const { prefix, value } = moneyParts(t.money)
+  return <NumberFlow value={value} prefix={`${t.approx ? '~' : ''}${prefix}`} locales="en" format={CENTS} />
 }
 
-/** Header pill with the session's returned total and its estimate (51 §6.2); `row`: the compact menu's line. Click opens `CostDialog`. */
+/** Header pill with the session's total as one ballpark figure; `row`: the compact menu's line. Click opens `CostDialog`. */
 export function CostPill({ session, row, onOpen }: { session: string; row?: boolean; onOpen(): void }) {
   const data = useCost(session)
   if (!data) return null

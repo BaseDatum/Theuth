@@ -60,11 +60,13 @@ test('rosterRows picks the children of one spawn call in the harness’s order; 
 })
 
 test('the cost cell follows the rule: counted → the meter’s money (else the harness’s), inside_parent → greyed, unreported → —', () => {
-  expect(watchCost(meta({ detail: { cost: 0.11 } }), money('121280250'))).toMatchObject({ text: '$0.121', grey: false })
-  expect(watchCost(meta({ detail: { cost: 0.11 } }), undefined)).toMatchObject({ text: '$0.110', grey: false })
+  expect(watchCost(meta({ detail: { cost: 0.11 } }), money('121280250'))).toMatchObject({ text: '$0.12', grey: false })
+  // Sky 2026-11-17: one figure, `~` when part of it is estimated.
+  expect(watchCost(meta(), { ...money('121280250'), unavailable: 1, estimated_for_unavailable: [{ currency: 'USD', nanos: '4000000000' }] })).toMatchObject({ text: '~$4.12' })
+  expect(watchCost(meta({ detail: { cost: 0.11 } }), undefined)).toMatchObject({ text: '$0.11', grey: false })
   // An empty bucket (no meter rows yet) is not money: the harness's figure, else `—`.
   expect(watchCost(meta(), { ...money('0'), returned: [] })).toMatchObject({ text: '—', grey: false })
-  expect(watchCost(meta({ cost_rule: 'inside_parent', detail: { cost: 0.05 } }), undefined)).toMatchObject({ text: '$0.050', grey: true, title: expect.stringMatching(/inside parent/) })
+  expect(watchCost(meta({ cost_rule: 'inside_parent', detail: { cost: 0.05 } }), undefined)).toMatchObject({ text: '$0.05', grey: true, title: expect.stringMatching(/inside parent/) })
   expect(watchCost(meta({ source: 'opencode_ext', cost_rule: 'unreported' }), undefined)).toMatchObject({ text: '—', grey: true })
   expect(watchCost(meta({ source: 'rfd', cost_rule: 'display_only' }), undefined)).toMatchObject({ text: '—', title: expect.stringMatching(/not counted/) })
 })
@@ -78,9 +80,9 @@ test('RosterRows renders one link per child with agent, activity, tools, tokens,
   expect([...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1])).toEqual(['/c/ReadA', '/c/ReadB'])
   expect(html).toContain('scout · Reading first line')
   expect(html).toContain('2 tools · 9.1k tok')
-  expect(html).toContain('$0.121')
+  expect(html).toContain('$0.12')
   // R3 T8: the metered figure is the row's own `session_cost`, per child.
-  expect(html).toContain('$0.330')
+  expect(html).toContain('$0.33')
   // R3 T10: a row with no counters shows no `0 tools · 0 tok`; a half-known pair reads `—` for the unknown side.
   expect(html).not.toContain('0 tools')
   const half = renderToStaticMarkup(createElement(RosterRows, { rows: [row('ReadC', meta({ detail: { toolCount: 3 } }))] }))

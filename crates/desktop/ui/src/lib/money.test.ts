@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { CostBucket } from "@/rpc/bindings/method.agent.output"
-import { costLines, costShort, formatMoney, moneyParts } from './money'
+import { costLines, costShort, costTitle, formatCents, formatMoney, moneyParts } from './money'
 
 const usd = (nanos: string) => ({ currency: 'USD', nanos })
 const bucket = (o: Partial<CostBucket>): CostBucket => ({
@@ -23,11 +23,13 @@ test('formatMoney rounds nanos half up to milli-units without floats', () => {
   expect(formatMoney(usd('99999999999999999999'))).toBe('$100000000000.000')
 })
 
-test('moneyParts prints formatMoney digit for digit through Intl', () => {
-  for (const nanos of ['123000000', '100000000', '0', '1234499999', '1234500000', '1004500000', '99999999999999999999']) {
+test('moneyParts prints formatCents digit for digit through Intl', () => {
+  for (const nanos of ['123000000', '100000000', '0', '1234499999', '1235000000', '1004500000', '99999999999999999999']) {
     const { prefix, value } = moneyParts(usd(nanos))
-    expect(prefix + value.toLocaleString('en', { minimumFractionDigits: 3, maximumFractionDigits: 3, useGrouping: false })).toBe(formatMoney(usd(nanos)))
+    expect(prefix + value.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false })).toBe(formatCents(usd(nanos)))
   }
+  expect(formatCents(usd('4124999999'))).toBe('$4.12')
+  expect(formatCents(usd('4125000000'))).toBe('$4.13')
   expect(moneyParts({ currency: 'XYZ', nanos: '5000000' }).prefix).toBe('XYZ ')
 })
 
@@ -53,20 +55,33 @@ test('costLines follows 51 §6.2 and never merges returned with estimate', () =>
   )
 })
 
-test('costShort shows returned money and the tilde-marked estimate together; a zero meter never hides the estimate', () => {
+test('costShort: one total, ~ when any part is estimated; a zero meter never hides the estimate; mixed currencies keep the split', () => {
   const est = [usd('23000000')]
-  expect(costShort(bucket({ dispatched: 2, returned: [usd('100000000')], estimated_for_unavailable: est }))).toBe('$0.100 + ~$0.023')
-  expect(costShort(bucket({ dispatched: 2, estimated_for_unavailable: est }))).toBe('~$0.023')
-  expect(costShort(bucket({ dispatched: 2, returned: [usd('100000000')] }))).toBe('$0.100')
+  // All returned: no ~.
+  expect(costShort(bucket({ dispatched: 2, returned: [usd('100000000')] }))).toBe('$0.10')
+  expect(costShort(bucket({ dispatched: 2, returned: [usd('4000000000'), usd('120000000')] }))).toBe('$4.12')
+  // Any part estimated: one summed figure behind ~.
+  expect(costShort(bucket({ dispatched: 2, returned: [usd('4100000000')], estimated_for_unavailable: est }))).toBe('~$4.12')
+  expect(costShort(bucket({ dispatched: 2, estimated_for_unavailable: est }))).toBe('~$0.02')
   // omp child connected (known-zero meter rolled up) over an estimate-only parent.
-  expect(costShort(bucket({ dispatched: 2, unavailable: 2, returned: [usd('0')], estimated_for_unavailable: est }))).toBe('~$0.023')
-  expect(costShort(bucket({ dispatched: 1, returned: [usd('0')] }))).toBe('$0.000')
+  expect(costShort(bucket({ dispatched: 2, unavailable: 2, returned: [usd('0')], estimated_for_unavailable: est }))).toBe('~$0.02')
+  // Zero.
+  expect(costShort(bucket({ dispatched: 1, returned: [usd('0')] }))).toBe('$0.00')
   expect(costShort(bucket({ dispatched: 2, unavailable: 2, returned: [usd('0')] }))).toBe('—')
   expect(costShort(bucket({ dispatched: 2, unavailable: 2 }))).toBe('—')
   expect(costShort(bucket({}))).toBe('—')
+  // Several buckets (a task's sessions) add up.
+  expect(costShort(bucket({ returned: [usd('1000000000')] }), bucket({ estimated_for_unavailable: [usd('2000000000')] }))).toBe('~$3.00')
   const eur = (nanos: string) => ({ currency: 'EUR', nanos })
+  expect(costShort(bucket({ dispatched: 2, unavailable: 1, returned: [usd('0')], estimated_for_unavailable: [eur('10000000')] }))).toBe('~€0.01')
   expect(
     costShort(bucket({ dispatched: 4, unavailable: 1, returned: [eur('500000000'), usd('0')], estimated_for_unavailable: [eur('10000000'), usd('23000000')] })),
   ).toBe('€0.500 + ~€0.010 + ~$0.023')
-  expect(costShort(bucket({ dispatched: 2, returned: [eur('500000000'), usd('1000000000')], estimated_for_unavailable: est }))).toBe('€0.500 + $1.000 + ~$0.023')
+})
+
+test('costTitle explains the ~ and nothing else; mixed currencies keep the 51 §6.2 lines', () => {
+  expect(costTitle(bucket({ dispatched: 2, returned: [usd('100000000')], estimated_for_unavailable: [usd('1')] }))).toBe('Approximate: part of this cost is estimated')
+  expect(costTitle(bucket({ dispatched: 2, returned: [usd('100000000')] }))).toBeUndefined()
+  expect(costTitle(bucket({}))).toBeUndefined()
+  expect(costTitle(bucket({ dispatched: 2, returned: [usd('1000000000'), { currency: 'EUR', nanos: '500000000' }] }))).toBe('Returned cost $1.000 + €0.500')
 })

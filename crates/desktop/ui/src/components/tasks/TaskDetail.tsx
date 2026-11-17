@@ -394,7 +394,7 @@ function Sessions({ task: t, events }: { task: Task; events: TaskEvent[] }) {
       </Section>
       <Section title="Cost">
         <p className="text-sm tabular-nums">
-          {costs.some((c) => c.data) ? costs.flatMap((c) => (c.data ? [costShort(c.data.total)] : [])).join(' + ') : <span className="text-fg-tertiary">— (no session reported cost yet)</span>}
+          {costs.some((c) => c.data) ? costShort(...costs.flatMap((c) => (c.data ? [c.data.total] : []))) : <span className="text-fg-tertiary">— (no session reported cost yet)</span>}
         </p>
       </Section>
     </>
