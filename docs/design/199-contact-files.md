@@ -69,8 +69,9 @@ Reason: the unary path cannot carry 5 GB. The contact connection already proves 
 **D3. Text first, then one notice per file.**
 - The message's text is delivered at once through today's paths, unchanged: the 190/191 intake (`full_intake`), and `full_return` for `~return`. Every existing rule applies to the text, `HOLD_MOVED` included.
 - The delivered row carries one `state="receiving"` placeholder per file right after the wrapper, plus a fixed hint line.
-- Each file downloads on its own from the durable queue. When it becomes terminal, its holder durably queues one notice for that file. The notice is delivered as an input to the chat's *current* owner, through the session front door.
-- No file is ever held behind another, and the text is never held behind a file.
+- Each file downloads on its own from the durable queue. Once a file is saved *and* its exchange reads `consumed` or `replied`, the holder durably queues one notice for it. The notice goes to the chat's *current* owner as the typed operation `contact_file_notice` (D17).
+- If the exchange instead ends `failed` or `suppressed` (`HOLD_MOVED`, `interrupted_by_restart`, a revocation), all its files fail. Saved files are rolled back by inode, no notice is sent, and the sender's receipts report the reason.
+- No file is ever held behind another.
 
 Reason: Sky's ruling cut the held intake. The text path stays exactly as built, and each file is one independent, retryable event.
 
@@ -117,7 +118,7 @@ Reason: neither a peer's expiry nor its pace may keep our transfers alive past o
 **D11. Holder-qualified access; no replicated manifest.** The transfer table is node-local.
 - A file's *holder* is the engine that owns the receiving chat when the message arrives. The holder keeps the file there even if the chat moves later.
 - Every file-specific read names `(holder, id)`. The holder answers it, over our own mesh; current session ownership never decides.
-- For a P2 fetch, the expected `bytes` and `blake3` come from that file's `received` notice row in the fetching engine's own replicated copy of the transcript, never from the holder's answer. The fetcher finds the row by the `input_accepted` step whose `input_id` is the notice's id (D17).
+- For a P2 fetch, the expected `bytes` and `blake3` come from that file's `received` notice in the fetching engine's own replicated copy of the transcript, never from the holder's answer. The fetcher finds the notice by its id (D17), either as the `input_id` of an `input_accepted` step or as the id of an `errors` row.
 
 Reason: ownership moves and files don't. The notice row replicates only between our own machines, and only the holder writes it, so it can be trusted without a manifest.
 
@@ -144,15 +145,20 @@ Elsewhere the control says "attach on <machine>". Phones and iPads, which contro
   - A failed download restarts from zero, until the deadline.
 - **Toward peers without the extension:** a file goes inline as `raw` only if the serialized request still fits 64 KiB. Otherwise the send fails, and nothing is uploaded publicly.
 
-**D17. Notices go through the session front door, with a durable one-row guard.** The holder delivers a notice with `send_input(session, text, files: [], delivery: NextTurn, id)`, dispatched into its own RPC server as the internal peer. This is the existing session front door (`crates/agent/src/rpc_forward.rs:1-22`, `rpc_turns.rs:226-262`):
-- If the chat is owned here, `SendInput` runs locally.
-- If it is owned by another of our machines, `forward::route` carries the call there over `theuth/rpc/1`. An offline owner answers `OWNER_UNREACHABLE`, and the outbox retries. A moved chat answers `NOT_OWNER` and is re-resolved on the retry.
+**D17. A typed file notice: `contact_file_notice`.** Reusing `send_input` would make a contact-derived notice `InputOrigin::External`. That resets the communication and reminder budgets (`continuation.rs:361-374`), skips any contact check, and is acknowledged before anything is durable. So notices get their own operation:
 
-`id` is the notice id: UUIDv5 of `(holder, file id)`. Duplicate notices are guarded in two places:
-- Within one process, the existing `seen` map dedups retries (`supervisor.rs:1708-1740`).
-- Across restarts, the owner refuses an input whose `id` already appears as the `input_id` of an `input_accepted` step in this session's journal. The loop records the notice id there through `append_input`, in the same transaction as the row (`store/durability.rs:1040-1063`; today the loop passes `None`, `loop_.rs:5630`). `turn_steps` replicates, so the guard holds on a new owner too.
+- **Call:** `contact_file_notice(session, notice_id, contact_id, notice)`. `notice_id` is UUIDv5 of `(holder, file id)`.
+- **Routing:** it goes through the session front door (`crates/agent/src/rpc_forward.rs:1-22`). It runs locally when the chat is owned here; otherwise `forward::route` carries it over `theuth/rpc/1` to the current owner.
+- **Auth:** it is internal-only. It is accepted only from this engine, or from a paired machine of our mesh carrying the front door's `Forwarded` marker, and never from a desktop, phone or contact client. The owner also checks that it owns `session`, and otherwise answers `NOT_OWNER`.
+- **Share re-check:** the owner checks the contact's share for that chat: the export grant, or the live `~return` conversation, and the contact neither removed nor blocked.
+  - **Live share:** the owner admits the notice as automatic input, `InputOrigin::Automatic` (`continuation.rs:49`), which continues the chain and never resets a budget. The journal source is the new `contact_file`. Session and agent tool ceilings and approvals are unchanged, and there is no approval card. When the chat is idle the notice starts a turn; when it is busy it waits for the next turn, like other automatic input.
+  - **Ended share:** the owner records the notice without starting a turn, as a terminal engine-state row. `Store::record_error_once(session, id = notice_id, text)` is `record_error` (`store.rs:2286-2300`) with `INSERT … ON CONFLICT(id) DO NOTHING`. The `errors` table replicates, and its id is the dedup key.
+- **Admission answer:** `accepted`. If this process already holds the notice id pending, or the notice is already committed, the owner answers `accepted` again and enqueues nothing.
+- **Commit:** when the loop consumes the notice, `append_input` checks the journal for an `input_accepted` step of this session with `input_id = notice_id`. The check runs in the same write transaction that would insert the row and the step (`store/durability.rs:1040-1063`). If the step exists, the copy is dropped and counts as delivered, so two accepted copies always give one row, even after the in-memory `seen` TTL. Otherwise the row and the step, with `input_id = notice_id` and source `contact_file`, are written together. Today the loop passes `None` for `input_id` (`loop_.rs:5630`). `step_in` records `at_seq` in that transaction (`store/durability.rs:57-79`), so the step identifies the notice's row with no extra link field.
+- **Status:** `contact_file_notice_status(session, notice_id) -> committed | unknown`, through the same front door. It answers `committed` when the owner's journal has a step with that `input_id`, or its `errors` table has that id; otherwise `unknown`. Both tables replicate, so a new owner after a move answers correctly.
+- **Old owners:** an owner without the operation answers method-not-found. The holder retries with backoff and never falls back to `send_input`. Notices arrive only once the owner is upgraded; meanwhile the holder's file card shows the outcome.
 
-A notice starts a turn when the chat is idle. When the chat is busy it opens the next turn (`Delivery::NextTurn`), like any input. Reason: this is the simplest existing path that reaches a session on any of our machines. Durable one-row protection comes from the journal row that is written with the history row, not from process memory.
+Reason: a notice is contact-derived automatic input. It needs a durable acknowledgement and an authorization check, neither of which human input carries.
 
 ## Contract
 
@@ -274,28 +280,33 @@ POST /a2a/files/<sender-id>   {"state":"received"} | {"state":"failed","reason":
 
 **Admission.** The engine that owns the chat admits a message that carries file references. In `deliver_full` (`full.rs:320-350`) or `full_return` (`full.rs:681-829`), it writes one `in` row per file, in the same transaction that stores the exchange. Each row gets the holder's random local id and `exchange` = the exchange id. `Store::exchange_record` fills a new `PeerRecord.files` from those rows, in `seq` order. `peer_wrapper` (`loop_.rs:9042-9069`) writes them after `</message>` as `state="receiving"` placeholders, plus the receiving hint. The text is then delivered exactly as today: `full_intake`, or `full_return`'s own intake. It is consumed once, by `consume_exchange` (`store/communication.rs:1324-1364`, checked at `loop_.rs:5687-5727`).
 
-**Downloads.** Downloads run from the queue, keyed by the local file id. The per-member scheduling, resume, timer and gate rules (D6–D8) are unchanged. Each download is independent of the others and of the text's fate. The one exception is an exchange that fails before consumption (`HOLD_MOVED`, `interrupted_by_restart`, a revoked route): its non-terminal files fail with the exchange's reason.
+**Downloads.** Downloads run from the queue, keyed by the local file id. The per-member scheduling, resume, timer and gate rules (D6–D8) are unchanged, and each download is independent of the others.
 
-**Terminal states.**
-- `in`: `received` or `failed`.
-- `out`: `sent` or `failed`.
+**States.**
 
 ```rust
-enum InState { Queued, Receiving, Publishing, Received, Failed }
-enum OutState { Queued, Sending, Sent, Failed }
+enum InState { Queued, Receiving, Publishing, Saved, Received, Failed }  // Received, Failed terminal
+enum OutState { Queued, Sending, Sent, Failed }                           // Sent, Failed terminal
 enum FileDirection { Out, In }
+enum NoticeState { Queued, Sent, Delivered }
 ```
 
-Every transition is a conditional update (`… WHERE id=? AND state=<expected>`). `Received` is written in one transaction with the file's notice: the path, inode, actual size and BLAKE3, `notice` = the exact notice text, `notice_state` = `queued`. `Failed` is written the same way, with the failure notice. A terminal row never changes again. Writing the notice is `UPDATE … SET notice=? WHERE id=? AND notice IS NULL`, so enqueueing a notice twice leaves one.
+Every transition is a conditional update (`… WHERE id=? AND state=<expected>`), and a terminal row never changes again.
+- **Published while the exchange reads `accepted` or `held`:** the file is `saved`. It waits for its exchange.
+- **Exchange reads `consumed` or `replied`:** in one transaction, `saved` becomes `received`, with `notice` = the exact notice text and `notice_state` = `queued`. A file published after that point goes straight to `received` in step 6. Writing the notice is `UPDATE … SET notice=? WHERE id=? AND notice IS NULL`, so enqueueing twice leaves one.
+- **Exchange reads `failed` or `suppressed`** (`HOLD_MOVED`, `interrupted_by_restart`, a revocation): every non-terminal file of it becomes `failed` with the exchange's reason, and a `saved` file's published path is unlinked if its inode matches. No notice is written.
+- **Download fails:** the file becomes `failed`. If its exchange is consumed or replied, a failure notice is queued in the same transaction; otherwise it waits like a saved file.
 
-**Notice outbox.** The outbox is two columns on `contact_files`: `notice`, and `notice_state` (`queued` or `delivered`).
-- A queued notice is sent once its exchange is no longer `accepted`, so it can never arrive before the text.
-- It is sent with `send_input(session, notice, [], NextTurn, id = UUIDv5(holder, file id))`, through the session front door (D17).
-- After the call returns, `notice_state` becomes `delivered`.
-- On failure it retries with D8's backoff and no deadline.
-- On restart, every `queued` notice is sent again. The owner's journal guard turns a repeat into a no-op.
+The terminal receipt follows the terminal state: `received`, or `failed` with the reason.
 
-**Chat moved.** A notice follows the chat. The front door sends it to whichever machine owns the session at that moment. The file itself stays on its holder. An unconsumed text still fails with `HOLD_MOVED`, as built (`191-notes.md:325-329`). Its unfinished files fail too, while files already received keep their notice.
+**Notice outbox.** The outbox is two columns on `contact_files`: `notice`, and `notice_state` (`queued`, `sent` or `delivered`).
+- **queued → sent:** `contact_file_notice` answers `accepted`.
+- **sent → delivered:** `contact_file_notice_status` answers `committed`.
+- While the status answers `unknown`, the holder re-sends the notice on its D8 backoff ticks; the owner's commit-time dedup makes a re-send safe.
+- Errors such as offline, `NOT_OWNER` or method-not-found retry on the same backoff, with no deadline: it is our own mesh.
+- On restart, `queued` and `sent` notices resume from where they stopped.
+
+**Chat moved.** A notice follows the chat: the front door sends it, and its status query, to whichever machine owns the session at that moment. The file stays on its holder. An unconsumed text still fails with `HOLD_MOVED` as built (`191-notes.md:325-329`), and its files fail under the third rule above.
 
 **RPCs.** Each `(holder, id)` call is carried to `holder` over `theuth/rpc/1`, the way owner-forwarded calls are. A holder that is not connected answers `<machine> is offline`.
 - `contact_file(holder, id) -> ContactFile`. Error: `no such file on <machine>`.
@@ -331,11 +342,11 @@ CREATE TABLE contact_files (
     inode        INTEGER,
     path         TEXT,              -- in: target path, set before linking
     done         INTEGER NOT NULL DEFAULT 0,
-    state        TEXT NOT NULL,     -- in: queued|receiving|publishing|received|failed
+    state        TEXT NOT NULL,     -- in: queued|receiving|publishing|saved|received|failed
                                     -- out: queued|sending|sent|failed
     error        TEXT,
     notice       TEXT,              -- in: the exact notice text, written with the terminal state
-    notice_state TEXT,              -- in: queued | delivered
+    notice_state TEXT,              -- in: queued | sent | delivered
     created_ms   INTEGER NOT NULL,
     deadline_ms  INTEGER NOT NULL
 );
@@ -376,8 +387,9 @@ File notice from theuth, not from peer:maya: no reply to the contact is needed.
 - `bytes` is the declared size in a placeholder and the actual size in a `received` notice. `blake3` is actual.
 - `holder` is the receiving engine's endpoint id, and `file` is its local id.
 - `name` is the sanitised declared name; the saved basename may add ` (2)`.
-- The three hint lines are fixed text as shown, with only the sender substituted.
+- The hint lines are fixed text as shown, with only the sender substituted.
 - The desktop's `classify` and the TUI's `contact_row` parse each element as a self-closing note and drop its hint line. A notice row renders as a file card, never as a user bubble.
+- **Ended share:** when the contact's share for the chat ended before the notice arrived, the owner records it as an engine-state row instead of an input (D17). No turn starts, and the model never sees it. The text is the same element followed by: `File notice from theuth: the share with <sender> has ended, so this was not given to the agent.`
 
 ### Wire events and consumers
 
@@ -423,12 +435,12 @@ Publication. Ownership of a published file is decided by inode, never by name or
    - No `QuarantineEventsV2` record is written.
 4. Choose a target name. In one write, persist `state='publishing'`, `path=<target>`, and the partial's `(dev, inode)`.
 5. `std::fs::hard_link(partial, target)`. It fails if the name exists; on a clash, go back to step 4 with the next `stem (n).ext`.
-6. In one transaction, record `state='received'` with the path, inode, actual size and BLAKE3, `notice`, and `notice_state='queued'`. Only after this commit is the partial's link removed.
+6. In one transaction, record the path, inode, actual size and BLAKE3. The state becomes `received`, with `notice` and `notice_state='queued'`, if the exchange is consumed or replied, and `saved` otherwise (States). Only after this commit is the partial's link removed.
 
 A failure before step 5 removes the partial. A failure after step 5 removes the target only if the target's inode equals the recorded one; it then removes the partial. Nothing is ever opened or executed automatically.
 
 **Restart.** Each `publishing` row is resolved *before* the global `files/partial/` cleanup:
-- The target exists with the recorded inode: it is ours. If the partial still exists, finish step 6. Its bytes were verified in step 2, so the notice is queued exactly once. If the partial is gone, remove the target and requeue the download.
+- The target exists with the recorded inode: it is ours. If the partial still exists, finish step 6; its bytes were verified in step 2, so at most one notice is queued. If the partial is gone, remove the target and requeue the download.
 - The target exists with a different inode: it is never removed, never adopted. If the partial exists, the row retries publication under the next collision-suffixed name. Otherwise it requeues the download.
 - No target: retry step 5 from the partial, or requeue the download if the partial is gone.
 
@@ -481,10 +493,13 @@ The set is built at each gate call, for this engine's runtime root and, when dif
 | Sender file changed or deleted | `410 changed` / `410 missing` → failed | Failed notice with that reason | Partial |
 | Receiver offline at send | Tool error and failed card: "<contact> is offline" | Nothing | Offer row; clone |
 | Owner machine offline (191) at send | Failed: "the chat's machine is offline" | Nothing | Offer row; clone |
-| Chat's owner offline when a notice is due | Sent (the receipt does not wait) | The notice arrives when the owner is back (outbox retries) | — |
+| Chat's owner offline when a notice is due | Sent (the receipt does not wait for the notice) | The notice arrives when the owner is back (the outbox retries) | — |
+| Owner crashes after accepting a notice, before consuming it | Sent | The status stays `unknown`, the holder re-sends, and exactly one row results | — |
+| Share revoked, contact removed or blocked, before the notice | Sent | The notice is recorded as an engine-state row; no turn starts | — |
+| Owner on an old build (no `contact_file_notice`) | Sent | No notice until the owner upgrades; the holder retries and never uses `send_input`; the holder's card shows the outcome | — |
 | Forwarded to the owner (191) | Normal | Normal: the owner fetches from the holder named in the URI | — |
-| Chat moved mid-download | Sending, then sent | The notice reaches the new owner through the front door; the file stays on its holder | — |
-| Chat moved before the text was consumed | Failed: "the chat moved; send again" | `HOLD_MOVED`, as built; unfinished files fail | Partials |
+| Chat moved mid-download, text already consumed | Sending, then sent | The notice reaches the new owner through the front door; the file stays on its holder | — |
+| Exchange failed or suppressed (`HOLD_MOVED`, restart, revocation) | Failed with that reason | No notices; saved files rolled back by inode | Partials; our own targets |
 | Contact removed, blocked or re-membered | Active GETs cut; failed | Downloads cancelled; failed notices | Partials |
 | Holder offline mid-transfer | Card frozen on that machine | Queued; retries until the deadline | At the deadline |
 | No receipt by the deadline | Failed: "expired without a receipt" | — | Clone |
@@ -497,8 +512,8 @@ The set is built at each gate call, for this engine's runtime root and, when dif
 
 | Phase | Gate | Tests (minimum) |
 |---|---|---|
-| **P0 contract** | <ul><li>Types and enums (`InState`, `OutState`, `FileDirection`, `ContactFile`, `PeerDelivered.files`, `PeerRecord.files`).</li><li>RPC signatures.</li><li>`0067_contact_files.sql`.</li><li>`egress_open` and the protected set.</li><li>The sanitiser.</li><li>Publication with inode ownership.</li><li>`blake3` as a direct dependency.</li><li>D14.</li><li>`EXT_FILES` defined, not advertised.</li><li>OpenRPC baseline accepted with Breaking 0.</li></ul> | <ul><li>Gate: a FIFO with no writer is refused at once, without blocking; a socket and a directory are refused.</li><li>Every file in the protected-set table, and its siblings, is refused, as are a symlink, a hardlink and a case variant of `mesh/identity`. A file swapped after the gate opened is caught. A received `research.sqlite` passes.</li><li>Sanitiser table: traversal, `\`, bidi, controls, `. report .`, leading dot, reserved stems, the 200-byte cut.</li><li>Publication against a real temporary directory: NFC and NFD forms of one name, and `Report.pdf` beside `report.pdf` (expectation per the volume's case sensitivity). An existing `report.pdf` with different bytes survives a crash injected after each of steps 1–6, and after each restart branch. An identical pre-existing `report.pdf` is never adopted; ours becomes `report (2).pdf`.</li><li>Migration: it applies, the table is not in `ATTACHED`, and `SESSIONS_WIRE_SCHEMA == 67`.</li><li>`read_file` refuses a 300 MB file and cuts a file that grows during the read at 256 MB.</li></ul> |
-| **P1 contacts, both ways; desktop and TUI cards** | <ul><li>The extension advertised.</li><li>The file route.</li><li>The queue and D8's timer.</li><li>Resume.</li><li>Receipts.</li><li>Placeholders in the message row.</li><li>The notice outbox through the front door (D17), with the journal guard.</li><li>Holder RPCs.</li><li>Cards and thumbnails.</li><li>`~return` with files.</li></ul> | <ul><li>Two-engine e2e: image and PDF A→B, and B→A over `~return`. Text arrives at once with receiving placeholders, then one notice per file.</li><li>A plain text message with no extensions works on new and old engines.</li><li>ProtoJSON round-trip both ways. A part with both `text` and `url` is refused.</li><li>A 5,000,000,001-byte sparse file is refused.</li><li>The exact placeholder, notice and hint lines, with `"`, `<` and `&` in name, media type, machine, sender and reason.</li><li>`<message_file` in a body is neutralised. No binary part reaches the provider.</li><li>Transfer: `Range` resume; a 416, a 200 answer to a `Range` request, a wrong `content-range` total and a short EOF; a zero-length file.</li><li>Timing: a transfer longer than 60 s completes; a stalled one loses its slot and resumes; a 1-byte-per-59-s drip is killed at a short test deadline.</li><li>Source: a replaced source gives `410 changed`; a grown original is served at its declared length.</li><li>A contact blocked mid-transfer cuts both sides. A URL host belonging to another contact is refused without dialling.</li><li>A crash after saving, before the notice is queued: restart queues exactly one notice.</li><li>A notice enqueued twice gives one row in `contact_files`. A notice sent twice, across an owner restart, gives one transcript row.</li><li>Chat moved mid-download: the notice is delivered to the new owner.</li><li>Owner offline: the notice is retried and delivered later. The sender is already sent.</li><li>An exchange failing `HOLD_MOVED` before consumption fails its unfinished files.</li><li>Receipt: none by the deadline gives "expired without a receipt".</li><li>n1 forwards to the owner n2, which fetches from the holder.</li><li>The quarantine xattr read back matches the spec.</li><li>A thumbnail still works after the chat has moved (answered by the holder).</li><li>UI: receiving placeholder card, notice card, live view equals history, sender states, TUI lines, and the icon when a thumbnail fails.</li></ul> |
+| **P0 contract** | <ul><li>Types and enums (`InState`, `OutState`, `FileDirection`, `NoticeState`, `ContactFile`, `PeerDelivered.files`, `PeerRecord.files`).</li><li>RPC signatures, including `contact_file_notice` and `contact_file_notice_status`.</li><li>The `contact_file` journal source.</li><li>`0067_contact_files.sql`.</li><li>`egress_open` and the protected set.</li><li>The sanitiser.</li><li>Publication with inode ownership.</li><li>`blake3` as a direct dependency.</li><li>D14.</li><li>`EXT_FILES` defined, not advertised.</li><li>OpenRPC baseline accepted with Breaking 0.</li></ul> | <ul><li>Gate: a FIFO with no writer is refused at once, without blocking; a socket and a directory are refused.</li><li>Every file in the protected-set table, and its siblings, is refused, as are a symlink, a hardlink and a case variant of `mesh/identity`. A file swapped after the gate opened is caught. A received `research.sqlite` passes.</li><li>Sanitiser table: traversal, `\`, bidi, controls, `. report .`, leading dot, reserved stems, the 200-byte cut.</li><li>Publication against a real temporary directory: NFC and NFD forms of one name, and `Report.pdf` beside `report.pdf` (expectation per the volume's case sensitivity). An existing `report.pdf` with different bytes survives a crash injected after each of steps 1–6, and after each restart branch. An identical pre-existing `report.pdf` is never adopted; ours becomes `report (2).pdf`.</li><li>Migration: it applies, the table is not in `ATTACHED`, and `SESSIONS_WIRE_SCHEMA == 67`.</li><li>`read_file` refuses a 300 MB file and cuts a file that grows during the read at 256 MB.</li></ul> |
+| **P1 contacts, both ways; desktop and TUI cards** | <ul><li>The extension advertised.</li><li>The file route.</li><li>The queue and D8's timer.</li><li>Resume.</li><li>Receipts.</li><li>Placeholders in the message row.</li><li>`contact_file_notice` and `contact_file_notice_status` (D17): automatic origin, owner auth, share re-check, commit-time dedup.</li><li>The notice outbox.</li><li>Holder RPCs.</li><li>Cards and thumbnails.</li><li>`~return` with files.</li></ul> | <ul><li>Two-engine e2e: image and PDF A→B, and B→A over `~return`. Text arrives at once with receiving placeholders, then one notice per file.</li><li>A plain text message with no extensions works on new and old engines.</li><li>ProtoJSON round-trip both ways; a part with both `text` and `url` is refused.</li><li>A 5,000,000,001-byte sparse file is refused.</li><li>The exact placeholder, notice and hint lines, with `"`, `<` and `&` in name, media type, machine, sender and reason.</li><li>`<message_file` in a body is neutralised. No binary part reaches the provider.</li><li>Transfer: `Range` resume; a 416, a 200 answer to a `Range` request, a wrong `content-range` total and a short EOF; a zero-length file.</li><li>Timing: a transfer longer than 60 s completes; a stalled one loses its slot and resumes; a 1-byte-per-59-s drip is killed at a short test deadline.</li><li>Source: a replaced source gives `410 changed`; a grown original is served at its declared length.</li><li>A contact blocked mid-transfer cuts both sides. A URL host belonging to another contact is refused without dialling.</li><li>A crash after saving, before the notice is queued: restart queues exactly one notice.</li><li>A notice enqueued twice gives one `contact_files` notice.</li><li>The owner crashes after accepting the notice, before consuming it: the holder re-sends, and exactly one row results.</li><li>Two copies consumed: one row.</li><li>The share is revoked before the notice arrives: an engine-state row, no turn.</li><li>The notice is `InputOrigin::Automatic`: neither the reminder budget nor the communication chain resets.</li><li>A call without the `Forwarded` marker from a non-mesh client is refused; a call for a session owned elsewhere answers `NOT_OWNER`.</li><li>Chat moved mid-download: the notice and its status go to the new owner.</li><li>Owner offline: the notice is retried and delivered later.</li><li>An old owner answers method-not-found: the holder retries and never calls `send_input`.</li><li>The exchange fails with `HOLD_MOVED` after one file is saved: that file is rolled back, no notice is sent, and the sender gets a failed receipt.</li><li>No receipt by the deadline gives "expired without a receipt".</li><li>n1 forwards to the owner n2, which fetches from the holder.</li><li>The quarantine xattr read back matches the spec.</li><li>A thumbnail still works after the chat has moved (answered by the holder).</li><li>UI: receiving placeholder card, notice card, engine-state row, live view equals history, sender states, TUI lines, and the icon when a thumbnail fails.</li></ul> |
 | **P2 human attach; access from another of our machines** | <ul><li>D15 attach.</li><li>New `Req::GetContactFile { id }` on `theuth/artifacts/1`, plus `contact_file_fetch(session, holder, id)`:<ul><li>The holder serves only a `received` row to a paired machine, in `receive_file`'s chunks (`crates/artifact/src/mesh.rs:306`), under D8's idle timer in place of the 60 s per-ask `TIMEOUT` (`:35`).</li><li>The fetching machine takes the expected `bytes` and `blake3` from the `received` notice in its own copy of the session (D11), never from the holder.</li><li>It publishes to `files/cache/<holder>/<id>/<name>` with the same inode-owned steps, and verifies on fetch and on every cache hit. It never takes the existing cache-hit shortcut (`mesh.rs:395-420`).</li></ul></li></ul> | <ul><li>A human answer with two files arrives.</li><li>A protected pick is refused. Attach on a non-owning machine says "attach on <machine>".</li><li>After the chat moves to node 3, node 2 fetches a 1 GB file (over 60 s) from the holder, and its thumbnail still shows.</li><li>A holder answering different bytes, and a tampered cache entry, are refused.</li><li>An `out` id, or an id with no notice, is refused.</li></ul> |
 | **P3 foreign A2A and public HTTPS** | <ul><li>`raw` and `https` admitted.</li><li>Artifact file parts through `Retained::of`.</li><li>`web::fetch::download` (D16).</li><li>Inline `raw` toward peers without the extension.</li><li>`accepted_output_modes` adds `*/*`.</li><li>Text, status and artifact text bounds unchanged.</li></ul> | <ul><li>A `raw` part is saved with its computed BLAKE3 and notified.</li><li>A public file with no `content-length` is fetched.</li><li>A transfer longer than the old client's whole-request timeout completes.</li><li>An HTTPS server that never sends headers is killed at idle.</li><li>Refused: `https://127.0.0.1`, a redirect to `http:`, a redirect to `10.0.0.1`, CGNAT, `169.254.169.254`, userinfo.</li><li>Over 5 GB by header and by stream.</li><li>A cut download restarts from zero.</li><li>An artifact file part in an answer.</li><li>A file too large for inline gives the error text.</li></ul> |
 
@@ -515,6 +530,7 @@ Two scratch engines, A and B, are paired as contacts over real iroh with no rela
 3. Mid-1 GB:
    - Cut the stream: the download resumes with `Range: bytes=N-`.
    - Restart B: it resumes from 0%, and exactly one notice follows.
+   - Kill B's chat owner right after it accepts the notice: the holder's status query reads `unknown`, it re-sends, and exactly one row results.
    - Move B's chat to another machine of B's mesh: the notice lands there.
 4. A refuses `mesh/identity`, a hardlink to it outside the data dir, `SESSIONS.SQLITE`, and a FIFO. A received `research.sqlite` is forwarded.
 5. Desktop and TUI captures: a receiving placeholder; a received image with a thumbnail; a failed notice (source deleted mid-transfer); the sender's sending, sent and failed cards.
