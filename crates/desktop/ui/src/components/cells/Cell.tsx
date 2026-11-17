@@ -34,7 +34,7 @@ export const KILL_AFTER_MS = 5000
 /**
  * What the host (chat `CellFence`, note `NoteCell`) knows beyond `CellProps`: whether the cell starts unfolded (the
  * latest cell of a reply stays open, §11.1), the `after:` cell's label, the queue position, a refusal or read error
- * to show, a keyboard hint, and `pending` — the reply is still being written ("ready when the reply ends", §4.1).
+ * to show, a keyboard hint, and `pending` — the fence is still streaming or its reply is not stored yet ("ready when this message is saved", §4.1).
  */
 export type CellExtras = {
   open?: boolean
@@ -391,7 +391,7 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
   const errors = problems.filter((p) => p.severity === 'error')
   const warnings = problems.filter((p) => p.severity === 'warning')
   const cwdMissing = warnings.find((p) => p.code === 'cwd_not_found')
-  // A pending reply shows the button disabled with its reason ("ready when the reply ends"), not no button.
+  // A pending reply shows the button disabled with its reason ("ready when this message is saved"), not no button.
   const canPress = (runnable || !!extras.pending) && !readOnly && view !== 'invalid' && view !== 'superseded' && view !== 'guest'
   // CELLAFTER (§7.6): an unarmed `after` gate warns (the strip) and the button runs anyway; the host sends the override.
   const gate = canPress ? disarmedReason(state, cell) : null
@@ -431,7 +431,7 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
       )
     // A member's edit still names whose text runs past the gate (171F `runText` "Run Alice's edit").
     const text = gate ? (extras.runText ? `${extras.runText} anyway` : RUN_ANYWAY) : view === 'lost' ? 'Run again' : (extras.runText ?? label) /* 171:U2-ADD */
-    const reason = extras.pending ? 'ready when the reply ends' : (gate ?? undefined)
+    const reason = extras.pending ? 'ready when this message is saved' : (gate ?? undefined)
     const disabled = !!extras.pending || !!cwdMissing
     return (
       <Button
@@ -531,7 +531,7 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
       {view === 'edited' && <Notice tone="muted">theuth will see the code that actually ran.</Notice>}
       {view === 'stopped' && <Notice tone="muted">{stopText(latest)}</Notice>}
       {view === 'guest' && <Notice tone="muted">Only the owner can run cells</Notice>}
-      {extras.pending && <Notice tone="muted">ready when the reply ends</Notice>}
+      {extras.pending && <Notice tone="muted">ready when this message is saved</Notice>}
       {extras.notice && <Notice tone="danger">{extras.notice}</Notice>}
       {extras.hint && <Notice tone="info">{extras.hint}</Notice>}
       {extras.rows /* 171:U2-ADD */}

@@ -41,6 +41,7 @@ import {
   route,
   settleCompacting,
   shorterTail,
+  stampStored,
 } from "./reduce";
 import type { SecretRequested } from "./approvals";
 import { type Stores, active, scoped } from "./engine-scope";
@@ -384,6 +385,9 @@ type SessionsStore = {
     mode: "replace" | "prepend" | "settled",
     fresh?: Freshness,
   ): boolean;
+  /** cells-midturn D2: a mid-turn `load_session` page's `context` copied onto the running turn's live replies
+   * (`stampStored`); dropped when `fresh.gen` moved (a newer page landed or the context was edited meanwhile). */
+  stampTail(id: string, loaded: LoadedPage, fresh: Freshness): void;
   /** Show our own input at once and skip its echo. */
   markSent(id: string, text: string, files?: string[]): void;
   /** The send failed: drop the row `markSent` showed and its echo skip. */
@@ -478,6 +482,12 @@ export const createSessions = (): SessionsApi =>
             sessions: changed ? draft : sessions,
             lagged: lagged + dropped,
           });
+      },
+      stampTail(id, loaded, fresh) {
+        const s = get().sessions[id];
+        if (!s || s.historyGeneration !== fresh.gen) return;
+        const entries = stampStored(s.entries, loaded.history, s.turnSeq);
+        if (entries !== s.entries) set((st) => ({ sessions: { ...st.sessions, [id]: { ...s, entries } } }));
       },
       loadHistory(id, loaded, mode, fresh) {
         const before = get().sessions[id] ?? empty(id);

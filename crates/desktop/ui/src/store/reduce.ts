@@ -762,6 +762,73 @@ export function shorterTail(live: readonly Entry[], page: readonly Entry[]): boo
   return a.user !== undefined && a.user === b.user && a.reply.length > b.reply.length && a.reply.startsWith(b.reply);
 }
 
+type Reply = Extract<Entry, { kind: "assistant" }>;
+
+/** cells-midturn D2: the closed replies of the running turn drawn live, so without their stored row's `context` yet, as
+ * one key (`<turn>:<ids>`); `null` when there are none. */
+export function unstampedKey(s: Pick<SessionSlice, "entries" | "turnSeq" | "running">): string | null {
+  if (!s.running || s.turnSeq === undefined) return null;
+  const ids = s.entries.flatMap((e) => (e.kind === "assistant" && e.turn === s.turnSeq && !e.open && !e.context ? [e.id] : []));
+  return ids.length ? `${s.turnSeq}:${ids.join(" ")}` : null;
+}
+
+/** cells-midturn R1: reads that stamped nothing for `key`, the `unstampedKey` they began at. */
+export type StampTries = { key: string; misses: number };
+/** Reads that stamp nothing for one key before the stamp stops reading until the key changes. */
+const STAMP_MISSES = 2;
+
+/**
+ * cells-midturn R1: whether a mid-turn stamp read is worth it for `key`. A reply `stampStored` refuses for good (a text
+ * that differs, a salvage continuation, a page too short) keeps its key; after `STAMP_MISSES` reads for that key
+ * nothing reads until the key changes — a reply closes or gets stamped, or another turn runs. The settled reload at
+ * the turn's end still stamps everything.
+ */
+export function stampWanted(tries: StampTries | undefined, key: string | null): boolean {
+  return key !== null && (tries?.key !== key || tries.misses < STAMP_MISSES);
+}
+
+/** cells-midturn R1: `tries` after a read that began at key `before` and left `after`: the same key is a miss. */
+export function stampTried(tries: StampTries | undefined, before: string, after: string | null): StampTries | undefined {
+  if (after !== before) return undefined;
+  return { key: before, misses: (tries?.key === before ? tries.misses : 0) + 1 };
+}
+
+/**
+ * cells-midturn D2: `entries` with the stored rows' `context` copied onto the live replies of `turn` that lack it, as
+ * a reload mid-turn would show them (a chat cell needs its reply's stored seq, 171 §3.4). `history` is a newest
+ * `load_session` page; it must reach back to the turn's last stamped reply (else its opener): the stored replies after
+ * that point pair in order with the closed unstamped live replies, each pair with identical text. Any doubt — the page
+ * too short, more stored replies than live ones, one text differs — leaves `entries` as they are. Only `context` is
+ * added; nothing is replaced, reordered or dropped.
+ */
+export function stampStored(entries: Entry[], history: readonly HistoryEntry[], turn: number | undefined): Entry[] {
+  if (turn === undefined) return entries;
+  const mine = (e: Entry): e is Reply => e.kind === "assistant" && e.turn === turn;
+  const anchorAt = entries.findLastIndex((e) => mine(e) && !!e.context);
+  if (entries.some((e, i) => i < anchorAt && mine(e) && !e.context)) return entries;
+  const anchor = seqOf(entries[anchorAt]?.context);
+  // The anchor's reasoning row shares its seq: the reply is the last row with it.
+  const from =
+    anchorAt < 0
+      ? history.findIndex((h) => h.role === "user" && h.turn === turn)
+      : anchor === undefined
+        ? -1
+        : history.findLastIndex((h) => seqOf(h.context ?? undefined) === anchor);
+  if (from < 0) return entries;
+  const stored = history
+    .slice(from + 1)
+    .filter((h): h is Extract<HistoryEntry, { role: "assistant" }> => h.role === "assistant" && h.turn === turn && !!h.text.trim());
+  const live = entries.flatMap((e, i) => (i > anchorAt && mine(e) && !e.context && !e.open ? [i] : []));
+  if (!stored.length || stored.length > live.length) return entries;
+  if (stored.some((h, k) => !h.context || h.text !== (entries[live[k] as number] as Reply).text)) return entries;
+  const out = [...entries];
+  stored.forEach((h, k) => {
+    const at = live[k] as number;
+    out[at] = { ...(out[at] as Reply), context: h.context ?? undefined };
+  });
+  return out;
+}
+
 /**
  * Fold one event into its session's slice (mirrors `tui::model::apply_agent`
  * and the job arm of `Model::apply`). Returns `slice` itself when nothing
