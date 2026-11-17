@@ -228,8 +228,8 @@ its two `SHASUMS256` sums — bump all three together). No host needs Bun.
    or changed under `<data_dir>/models/` (`crates/desktop/src/models.rs`; `THEUTH_MODELS_URL`
    points at a scratch manifest). Check:
    `curl -s https://s3.rwx.dev/theuth/releases/models/models.json | jq '.files|length'` → one
-   row per REQUIRED file plus the 13 ONNX Runtime rows (41 after the 2026-11-17 publish of
-   `pocket-tts-en-2026-10/`).
+   row per REQUIRED file plus the 14 ONNX Runtime rows (42 after the 2026-11-17 publish of
+   `pocket-tts-en-2026-10/` and ONNX Runtime 1.32.0 / WebGPU plugin 0.6.0 with its `D3D12/` folder).
 
 ## 7. Verification checklist (39 §12)
 
