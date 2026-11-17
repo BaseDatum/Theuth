@@ -32,6 +32,8 @@ flate2 = { workspace = true }
 encoding_rs = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
+# 199 D16: `fetch::download` hashes while it streams.
+blake3 = "1.8.7"
 # 122 revision 1: the stealth client (W5). Declared here so the dependency graph is fixed by the contract.
 wreq = { workspace = true }
 wreq-util = { workspace = true }
@@ -41,6 +43,9 @@ ts-rs = { workspace = true, optional = true }
 wiremock = { workspace = true }
 figment = { workspace = true }
 image = { workspace = true }
+tempfile = "3"
+# Loopback HTTPS server for `fetch::download` tests.
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs"] }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts"]

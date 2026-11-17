@@ -8,6 +8,7 @@
 
 pub mod charset;
 pub mod client;
+mod download;
 pub mod issue;
 pub mod meta;
 mod ssrf;
@@ -26,6 +27,7 @@ use url::Url;
 
 use client::{ClientConfig, ClientError, ClientKind, HttpClient, Impersonate};
 
+pub use download::{DownloadError, DownloadOpts, Downloaded, download};
 pub use ssrf::{check_url, is_blocked_hostname, is_blocked_ip};
 pub use text::{Cut, MAX_OMITTED_HEADINGS, collapse_ws, cut, hard_truncate, take_title};
 
