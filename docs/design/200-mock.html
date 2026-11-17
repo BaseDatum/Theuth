@@ -151,7 +151,7 @@ dialog::backdrop { background:var(--overlay); }
       <div class="fa on" data-fa="maya">
         <span class="fa-title">Full access</span>
         <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Full access for maya" data-contact="maya"></button>
-        <span class="fa-label" data-label>Full access: any of maya’s sessions can message any of your sessions and see your session list (titles, running or idle). Private chats stay hidden. Nothing is synced.</span>
+        <span class="fa-label" data-label>Full access: any of maya’s sessions can message your sessions and see their list (titles, running or idle). Private chats and your other contacts’ conversations stay hidden. Nothing is synced.</span>
         <span class="fa-theirs">maya has given you full access: your sessions can list and message hers.</span>
       </div>
     </div>
@@ -201,7 +201,7 @@ dialog::backdrop { background:var(--overlay); }
     <div class="prow">
       <span class="pname">maya <span class="badge">a2a</span><span class="chip contact">Contact</span><span class="chip full">full access</span></span>
       <span class="paddr">peer:maya</span>
-      <span class="pmeta">full access · 4 sessions · Maya’s Mac mini did not answer; its sessions are not listed</span>
+      <span class="pmeta">full access · 5 sessions · Maya’s Mac mini did not answer · more: discover_peers(kind="contact", query="maya", cursor="full:maya:…")</span>
       <span class="pact"><button class="btn" type="button" data-copy="peer:maya">Copy</button></span>
     </div>
     <div class="prow child">
@@ -225,8 +225,14 @@ dialog::backdrop { background:var(--overlay); }
     <div class="prow child">
       <span class="pname">maya/Claude Code · site <span class="badge">a2a</span><span class="badge">remote</span><span class="badge">session</span><span class="badge state-idle">idle</span></span>
       <span class="paddr">peer:maya/session:0193d4c9-5e77-7a01-9c3b-1d2e3f4a5b6c</span>
-      <span class="pmeta">Maya’s MacBook Air · acp · does not accept messages</span>
+      <span class="pmeta">Maya’s MacBook Air · acp · send · no reply</span>
       <span class="pact"><button class="btn" type="button" data-copy="peer:maya/session:0193d4c9-5e77-7a01-9c3b-1d2e3f4a5b6c">Copy</button></span>
+    </div>
+    <div class="prow child">
+      <span class="pname">maya/explore-assets <span class="badge">a2a</span><span class="badge">remote</span><span class="badge">session</span><span class="badge state-run">running</span></span>
+      <span class="paddr">peer:maya/session:0193d4ca-11f0-7e2b-8a4c-6d7e8f9a0b1c</span>
+      <span class="pmeta">Maya’s MacBook Air · watch-only child · does not take messages</span>
+      <span class="pact"><button class="btn" type="button" data-copy="peer:maya/session:0193d4ca-11f0-7e2b-8a4c-6d7e8f9a0b1c">Copy</button></span>
     </div>
     <div class="prow">
       <span class="pname">sam <span class="badge">a2a</span><span class="chip contact">Contact</span></span>
@@ -235,7 +241,7 @@ dialog::backdrop { background:var(--overlay); }
       <span class="pact"><button class="btn" type="button" data-copy="peer:sam">Copy</button></span>
     </div>
   </div>
-  <p class="note">Contact rows have no Open: you can message a contact’s sessions, never read them. Maya’s private chats are not in her list, and nothing tells you they exist.</p>
+  <p class="note">Contact rows have no Open: you can message a contact’s sessions, never read them. Maya’s list holds what her own machines could reach from one of her owner chats: her private chats, her other contacts’ conversations, advisors and isolated automation roots are not in it, and nothing tells you they exist. A machine that does not answer in 2 s is named, and the cursor picks it up next time.</p>
   <p class="status-line" id="status-b" role="status"></p>
 </section>
 
@@ -278,7 +284,7 @@ Your checklist still lists port 8082 for review; …
 <pre class="code"><span class="dim">— the tool result the model reads —</span>
 peer:sam/session:0193a2f0-…-9b1e failed error=peer:sam/session:0193a2f0-…-9b1e: sam has not given you full access; message a chat sam shares instead (discover_peers kind="contact")
 peer:maya/session:0193c0de-…-0042 failed error=peer:maya/session:0193c0de-…-0042: no such session</pre>
-  <p class="note">A private chat and a session that never existed give the same answer, from every one of maya’s machines.</p>
+  <p class="note">A private chat, another contact’s conversation and a session that never existed give the same answer, from every one of maya’s machines, even when the machine holding it is offline.</p>
 </section>
 
 <section class="full-width" aria-labelledby="tui-title">
@@ -287,11 +293,12 @@ peer:maya/session:0193c0de-…-0042 failed error=peer:maya/session:0193c0de-…-
 <pre class="tui"><span class="meta">peers · communication: on   ⏎ open  i inspect  a answer  r refresh  esc</span>
 <span class="run">●</span> port-layout          child        running    native   send reply session:01936c1e-4f0a-7b21-9a3e-55b0c2d1e7f4
   01936b07             root         remote     native   send reply session:01936b07-91c2-7d4e-8f10-2a6b3c9d0e15
-<span class="ok">○</span> <span class="name">maya</span>                 remote       idle       a2a      send reply peer:maya          <span class="acc">full access · 4 sessions · Maya’s Mac mini did not answer</span>
+<span class="ok">○</span> <span class="name">maya</span>                 remote       idle       a2a      send reply peer:maya          <span class="acc">full access · 5 sessions · Maya’s Mac mini did not answer · more: cursor full:maya:…</span>
 <span class="ok">○</span> maya/Handoff review  remote       idle       a2a      send reply peer:maya/handoff
 <span class="run">●</span> maya/Port layout v3  remote       running    a2a      send reply peer:maya/session:0193f0a2-6b1c-7d3e-9f40-1a2b3c4d5e6f
 <span class="ok">○</span> maya/Invoice cleanup remote       idle       a2a      send reply peer:maya/session:0193e811-02aa-7c6f-b1d2-8e4f5a6b7c80
-<span class="ok">○</span> maya/Claude Code · s remote       idle       a2a                 peer:maya/session:0193d4c9-5e77-7a01-9c3b-1d2e3f4a5b6c
+<span class="ok">○</span> maya/Claude Code · s remote       idle       a2a      send       peer:maya/session:0193d4c9-5e77-7a01-9c3b-1d2e3f4a5b6c
+<span class="run">●</span> maya/explore-assets  remote       running    a2a                 peer:maya/session:0193d4ca-11f0-7e2b-8a4c-6d7e8f9a0b1c
 <span class="ok">○</span> <span class="name">sam</span>                  remote       idle       a2a      send reply peer:sam
 <span class="meta">──────────────────────────────────────────────────────────────</span>
 <span class="meta">no requests await a human (a restart clears live waits)</span>
@@ -303,8 +310,8 @@ peer:maya/session:0193c0de-…-0042 failed error=peer:maya/session:0193c0de-…-
 <dialog id="confirm" aria-labelledby="confirm-title">
   <div class="dlg">
     <h2 id="confirm-title">Give <span data-who>sam</span> full access?</h2>
-    <p>Full access: any of <span data-who>sam</span>’s sessions can message any of your sessions and see your session list (titles, running or idle). Private chats stay hidden. Nothing is synced.</p>
-    <p>It applies on all your machines. Turn it off here at any time; it ends at once.</p>
+    <p>Full access: any of <span data-who>sam</span>’s sessions can message your sessions and see their list (titles, running or idle). Private chats and your other contacts’ conversations stay hidden. Nothing is synced.</p>
+    <p>It applies on all your machines as each receives it, normally within seconds. You can turn it off here at any time.</p>
     <div class="row"><button class="btn" type="button" id="confirm-cancel">Cancel</button><button class="btn primary" type="button" id="confirm-ok">Give full access</button></div>
   </div>
 </dialog>
@@ -325,7 +332,7 @@ peer:maya/session:0193c0de-…-0042 failed error=peer:maya/session:0193c0de-…-
     else if (hasHost) document.documentElement.classList.add('light');
   } catch (ignore) {}
   function say(id, text) { var el = document.getElementById(id); if (el) el.textContent = 'Mock · ' + text; }
-  var ON = function (c) { return 'Full access: any of ' + c + '’s sessions can message any of your sessions and see your session list (titles, running or idle). Private chats stay hidden. Nothing is synced.'; };
+  var ON = function (c) { return 'Full access: any of ' + c + '’s sessions can message your sessions and see their list (titles, running or idle). Private chats and your other contacts’ conversations stay hidden. Nothing is synced.'; };
   var OFF = function (c) { return 'Full access is off. ' + c + ' reaches only the chats you share.'; };
   function set(sw, on) {
     var c = sw.getAttribute('data-contact');
@@ -333,7 +340,7 @@ peer:maya/session:0193c0de-…-0042 failed error=peer:maya/session:0193c0de-…-
     sw.setAttribute('aria-checked', on ? 'true' : 'false');
     box.classList.toggle('on', on);
     box.querySelector('[data-label]').textContent = on ? ON(c) : OFF(c);
-    say('status-a', on ? 'contact_update("' + c + '", {full_access: true}) on all your machines.' : 'contact_update("' + c + '", {full_access: false}): new listings and messages from ' + c + ' are refused now.');
+    say('status-a', on ? 'contact_update("' + c + '", {full_access: true}) on all your machines.' : 'contact_update("' + c + '", {full_access: false}): refused on this machine now, and on your other machines as each receives the change (normally seconds; a machine offline catches up when it reconnects).');
   }
   var dialog = document.getElementById('confirm');
   var pending = null;
