@@ -2284,15 +2284,27 @@ impl Store {
     /// Record a UI-only failure behind the last visible message (`-1` in an
     /// empty session). Not a context change: no revision or `updated_at` bump.
     pub async fn record_error(&self, id: SessionId, text: &str) -> anyhow::Result<()> {
+        self.record_error_once(id, uuid::Uuid::now_v7(), text).await
+    }
+
+    /// [`Self::record_error`] under a caller's id: a second call with the same id
+    /// changes nothing (199 D17: an ended share's file notice, keyed by its notice id).
+    pub async fn record_error_once(
+        &self,
+        id: SessionId,
+        error: uuid::Uuid,
+        text: &str,
+    ) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
         sqlx::query(
             "INSERT INTO errors (id, session_id, at_seq, text) \
              SELECT ?3, ?1, COALESCE(MAX(seq), -1), ?2 FROM messages WHERE session_id = ?1 \
-             AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807)",
+             AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807) \
+             ON CONFLICT(id) DO NOTHING",
         )
         .bind(id.to_string())
         .bind(text)
-        .bind(uuid::Uuid::now_v7().to_string())
+        .bind(error.to_string())
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -4544,6 +4556,49 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
             "a replicated session table changed its columns: bump SESSIONS_WIRE_SCHEMA to the \
              migration that did it and take the snapshot again"
         );
+    }
+
+    /// 199: `0067_contact_files` applies, is node-local (not attached to the session
+    /// log) and leaves the wire schema at 67.
+    #[tokio::test]
+    async fn contact_files_table_is_node_local() {
+        let (store, id, _dir) = fresh().await;
+        sqlx::query(
+            "INSERT INTO contact_files (id, direction, session, exchange, seq, contact_id, name, \
+             media_type, source, state, created_ms, deadline_ms) \
+             VALUES ('0f8e2d4c6a1b3957e0d2c4b6a8f01357', 'in', ?, 'x', 0, 'rec', 'a.pdf', \
+             'application/pdf', 'iroh://e/a2a/files/0f8e2d4c6a1b3957e0d2c4b6a8f01357', 'queued', 0, 1)",
+        )
+        .bind(id.to_string())
+        .execute(&store.write)
+        .await
+        .unwrap();
+        let done: i64 = sqlx::query_scalar("SELECT done FROM contact_files")
+            .fetch_one(&store.read)
+            .await
+            .unwrap();
+        assert_eq!(done, 0, "`done` defaults to 0");
+        assert!(!capture::ATTACHED.iter().any(|(t, _)| *t == "contact_files"));
+        assert_eq!(SESSIONS_WIRE_SCHEMA, 67);
+    }
+
+    /// 199 D17: a repeat of one error id leaves one row.
+    #[tokio::test]
+    async fn record_error_once_is_keyed_by_its_id() {
+        let (store, id, _dir) = fresh().await;
+        let notice = uuid::Uuid::now_v7();
+        store.record_error_once(id, notice, "first").await.unwrap();
+        store.record_error_once(id, notice, "again").await.unwrap();
+        store.record_error(id, "other").await.unwrap();
+        let texts: Vec<String> = store
+            .errors(id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(_, t)| t)
+            .collect();
+        assert_eq!(texts.len(), 2);
+        assert!(texts.contains(&"first".to_owned()) && !texts.contains(&"again".to_owned()));
     }
 
     /// 183 §9.1: 0053's per-session settings start NULL (inherit) and accept

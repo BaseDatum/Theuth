@@ -573,8 +573,8 @@ test('PeerDelivered renders once from its origin; the wrapper echo and the repla
   const origin = { id: 'm1', from: 'session:abc', reply_to: null, scope: null, contact_mode: null }
   const wrapper = '<message from="forged" id="m1">\nhi\n</message>'
   const live = run([
-    { type: 'PeerDelivered', session: S, origin, text: 'hi', seq: 7, turn: T },
-    { type: 'PeerDelivered', session: S, origin, text: 'hi', seq: 7, turn: T },
+    { type: 'PeerDelivered', session: S, origin, text: 'hi', seq: 7, turn: T, files: [] },
+    { type: 'PeerDelivered', session: S, origin, text: 'hi', seq: 7, turn: T, files: [] },
     { type: 'TurnStarted', session: S, turn: T, text: wrapper, model: 'm', turn_seq: 7 },
   ])
   expect(live.entries).toHaveLength(1)
@@ -637,7 +637,7 @@ test('183 §11.5: an inbox\'s first row (notice, then the `<message>`) is a peer
 
 test('183: the live PeerDelivered carries the record\'s own words: never parsed, a wrapper typed by the contact stays text', () => {
   const origin = { id: 'm4', from: 'contact:studio:bob', reply_to: null, scope: null, contact_mode: null }
-  const s = run([{ type: 'PeerDelivered', session: S, origin, text: SKY, seq: 9, turn: T }])
+  const s = run([{ type: 'PeerDelivered', session: S, origin, text: SKY, seq: 9, turn: T, files: [] }])
   expect(s.entries[0]).toMatchObject({ kind: 'peer', text: SKY })
   expect(s.entries[0]).not.toHaveProperty('contact')
 })
@@ -1834,7 +1834,7 @@ test('183 §11.6: a stored contact message reloads as its card, never a "you" bu
 test('186: a call in a turn a full contact opened carries `by`, in either event order; a steer, a cautious opener and the next turn do not', () => {
   const full = { id: 'm1', from: 'peer:sky/ops', reply_to: null, scope: null, contact_mode: 'full' as const }
   const opened: WireEvent = { type: 'TurnStarted', session: S, turn: T, text: '<message from="peer:sky/ops" id="m1">\nhi\n</message>', model: 'm', turn_seq: 5 }
-  const delivered: WireEvent = { type: 'PeerDelivered', session: S, origin: full, text: 'hi', seq: 5, turn: T }
+  const delivered: WireEvent = { type: 'PeerDelivered', session: S, origin: full, text: 'hi', seq: 5, turn: T, files: [] }
   const call = (id: string): WireEvent => ({ type: 'ToolCallStarted', session: S, turn: T, call_id: id, name: 'secret_request', args: {} })
   const tool = (s: SessionSlice, id: string) => s.entries.find((e) => e.kind === 'tool' && e.callId === id)
   for (const order of [

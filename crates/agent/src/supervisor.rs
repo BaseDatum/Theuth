@@ -6680,6 +6680,7 @@ impl Message<PeerConsumed> for Agents {
                         text: r.text,
                         seq: m.seq,
                         turn: m.turn,
+                        files: r.files,
                     })
                     .await;
             }

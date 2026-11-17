@@ -118,6 +118,7 @@ function Answer({ label, text, outside, part, at, onJump }: { label: string; tex
  * live transcript of it is there to scroll.
  */
 export function SendCard({ tool, session, at, readOnly }: { tool: Tool; session: string; at?: number; readOnly?: boolean }) {
+  // 199-UID: `structured.files` ({id, holder, to, name, size, media_type, blake3}) become sender-side file cards.
   const canQuery1 = useQuerySupport(["peer_message"])
   const api = useApi()
   const args = (tool.args ?? {}) as { to?: unknown; message?: unknown }

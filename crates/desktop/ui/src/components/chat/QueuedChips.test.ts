@@ -80,7 +80,7 @@ test('190: during a contact\'s turn (full, or an old cautious `<contact_message>
   const origin = { id: 'm1', from: 'peer:sky/ops', reply_to: null, scope: null, contact_mode: 'full' as const }
   const openers: WireEvent[][] = [
     [
-      { type: 'PeerDelivered', session: 'contact-full', origin, text: 'hi', seq: 5, turn: 'T1' },
+      { type: 'PeerDelivered', session: 'contact-full', origin, text: 'hi', seq: 5, turn: 'T1', files: [] },
       { type: 'TurnStarted', session: 'contact-full', turn: 'T1', text: '<message from="peer:sky/ops" id="m1">\nhi\n</message>', model: 'm', turn_seq: 5 },
     ],
     [

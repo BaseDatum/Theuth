@@ -424,6 +424,7 @@ fn peer_card(origin: WrapperOrigin<'_>, body: String, facts: &str) -> Transcript
 /// `<message>` after an inbox's `<contact_inbox/>` notice. `facts` is the
 /// header tail: ` · bob on <machine> via <export> · read-only`.
 pub(super) fn contact_row(text: &str) -> Option<(String, String)> {
+    // 199-UIT: `<message_file …/>` placeholders and notice rows parse as file cards; the hint line is dropped.
     let text = text.trim();
     let (open, words) = if let Some(rest) = text.strip_prefix("<contact_message ") {
         let (open, body) = rest.strip_suffix("</contact_message>")?.split_once('>')?;
@@ -698,7 +699,7 @@ fn typed_peer_delivery_and_legacy_echo_share_one_card_above_streaming_assistant(
     model.apply(event(AgentEvent::TextDelta { session, turn, text: "before".into() }));
     model.apply(UiEvent::Wire(super::tests::topic("agent.peer-delivered", 1, serde_json::to_value(PeerDelivered {
         session, origin: agent::PeerOrigin { id: Uuid::nil(), from: "session:source".into(), reply_to: None, scope: None, contact_mode: None },
-        text: "PONG".into(), seq: 1, turn,
+        text: "PONG".into(), seq: 1, turn, files: Vec::new(),
     }).unwrap())));
     model.apply(event(AgentEvent::MessageDelivered { session, from: "session:source".into(), text: "PONG".into() }));
     model.apply(event(AgentEvent::TextDelta { session, turn, text: " after".into() }));

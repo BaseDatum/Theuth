@@ -7480,6 +7480,7 @@
             created_at: chrono::Utc::now(),
             request_scope: None,
             contact_mode: None,
+            files: Vec::new(),
         };
         component_reply(&mut m, "peers", PeerMsg::PeerRequests(
             s,

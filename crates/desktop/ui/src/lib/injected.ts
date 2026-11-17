@@ -372,6 +372,7 @@ export function splitParentView(text: string): { lines: ParentViewLine[]; bytes:
  * `null` for human text (or anything not entirely made of wrappers).
  */
 export function classify(text: string): Injected[] | null {
+  // 199-UID: a notice row (`<message_file …/>` plus its hint line) parses as a self-closing note.
   let rest = text.trimStart()
   if (rest.startsWith('<skill name="')) {
     // `indexOf`, not `split(sep, 2)`: JS's limit drops the remainder, and a body with `">` in it (`<input type="date">`) is common.

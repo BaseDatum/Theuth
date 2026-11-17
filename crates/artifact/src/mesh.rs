@@ -60,6 +60,12 @@ pub enum Req {
         /// The file name; never a path.
         name: String,
     },
+    /// 199 P2: a received contact file by its holder's local id (32 lowercase hex). Only
+    /// a `received` `in` row is served, to a paired machine.
+    GetContactFile {
+        /// The holder's local id; never a path.
+        id: String,
+    },
 }
 
 /// Answer frames.
@@ -180,6 +186,13 @@ pub async fn answer(rt: &Runtime, stores: &Stores, mut framed: Stream) -> anyhow
         Req::GetAttachment { name } => {
             anyhow::ensure!(plain_name(&name), "bad attachment name");
             send_file(&mut framed, &attachments_dir(&rt.data_dir).join(name)).await
+        }
+        // 199-E2: ask `Agents` `agent::communication::files::HeldContactFile { id }`, reopen
+        // the path and require its recorded `(dev, inode)` and size, stream under D8's idle
+        // timer instead of `TIMEOUT`. Until then no engine holds one.
+        Req::GetContactFile { .. } => {
+            framed.send(encode(&Reply::Missing)?).await?;
+            Ok(())
         }
     }
 }

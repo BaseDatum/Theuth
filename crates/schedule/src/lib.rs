@@ -5375,6 +5375,7 @@ mod watch_tests {
                 text: "P1 finding".into(),
                 seq: 33,
                 turn: runtime::TurnId::new(),
+                files: Vec::new(),
             })
             .await
             .unwrap();

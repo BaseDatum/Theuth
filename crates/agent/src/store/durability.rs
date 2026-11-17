@@ -51,6 +51,27 @@ fn json(s: &str) -> Value {
     serde_json::from_str(s).unwrap_or(Value::Null)
 }
 
+/// 199 D17: the one `committed` predicate of a file notice, on `conn` (the commit-time
+/// check runs it inside the write transaction that would insert the row): this session's
+/// journal has an `input_accepted` step with `input_id = notice`, or its `errors` table a
+/// row with that id (the ended-share form, `Store::record_error_once`). Admission dedup,
+/// the commit-time check, `contact_file_notice_status` and the P2 lookup all use it.
+pub(crate) async fn notice_committed_in(
+    conn: &mut SqliteConnection,
+    session: SessionId,
+    notice: uuid::Uuid,
+) -> anyhow::Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM turn_steps WHERE session_id = ?1 \
+         AND kind = 'input_accepted' AND json_extract(payload, '$.input_id') = ?2) \
+         OR EXISTS (SELECT 1 FROM errors WHERE session_id = ?1 AND id = ?2)",
+    )
+    .bind(session.to_string())
+    .bind(notice.to_string())
+    .fetch_one(conn)
+    .await?)
+}
+
 /// Append one `turn_steps` row inside the caller's transaction (§3.2).
 /// `at_seq` is the session's last message seq at this moment (`-1` before
 /// the first message); `n` follows the turn's previous row.
@@ -1109,6 +1130,16 @@ impl Store {
         }))
     }
 
+    /// 199 D17: whether file notice `notice` is committed in `session` (`notice_committed_in`).
+    pub async fn notice_committed(
+        &self,
+        session: SessionId,
+        notice: uuid::Uuid,
+    ) -> anyhow::Result<bool> {
+        let mut conn = self.read.acquire().await?;
+        notice_committed_in(&mut conn, session, notice).await
+    }
+
     /// §3.3 step 2: `reserve_call` plus `turn_steps(model_call)` with the
     /// attempt's `call_id`, one transaction.
     #[expect(clippy::too_many_arguments, reason = "one row, one call")]
@@ -1887,6 +1918,32 @@ mod tests {
             .await
             .unwrap();
         (store, id, scratch)
+    }
+
+    /// 199 D17: a notice is committed by its journal step or by its ended-share
+    /// `errors` row, in its own session only.
+    #[tokio::test]
+    async fn notice_committed_reads_both_forms() {
+        let (store, id, _dir) = fresh().await;
+        let (step, row) = (uuid::Uuid::now_v7(), uuid::Uuid::now_v7());
+        assert!(!store.notice_committed(id, step).await.unwrap());
+        store
+            .input_accepted(id, TurnId::new(), Some(&step.to_string()), "contact_file")
+            .await
+            .unwrap();
+        store
+            .record_error_once(id, row, "<message_file …/>")
+            .await
+            .unwrap();
+        assert!(store.notice_committed(id, step).await.unwrap());
+        assert!(store.notice_committed(id, row).await.unwrap());
+        let other = SessionId::new();
+        store
+            .create_session(other, "m", None, None, None)
+            .await
+            .unwrap();
+        assert!(!store.notice_committed(other, step).await.unwrap());
+        assert!(!store.notice_committed(other, row).await.unwrap());
     }
 
     fn call(id: &str, name: &str) -> ToolCall {

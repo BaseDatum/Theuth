@@ -395,6 +395,7 @@ function stampUser(entries: Entry[], turn: number, cells: CellResultInput[] = []
  * (§11.5); the raw text otherwise. A contact wrapper also gives the contact facts and the harness note the model read
  * (Details lists them, never the tag). Display only; identity comes from the typed `PeerOrigin`. */
 function peerBody(text: string): { text: string; contact?: ContactNote & { note: string } } {
+  // 199-UID: `<message_file …/>` placeholders after `</message>` (and their hint line) become file cards.
   const [head, next, more] = classify(text) ?? []
   if (more) return { text }
   if (head?.kind === 'peer' && !next) return { text: head.text }
@@ -799,6 +800,7 @@ export function apply(
     // The consumed exchange as a typed card (50 §10). Its row is already stored, so a settled reload lands the same
     // card: one shows once, whichever arrives first (matched by exchange id, the wrapper echo on `TurnStarted` is skipped).
     case "PeerDelivered":
+      // 199-UID: `e.files` (ContactFile[]) are the live card's receiving placeholders.
       if (
         slice.entries.some(
           (x) => x.kind === "peer" && x.origin?.id === e.origin.id,

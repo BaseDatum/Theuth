@@ -195,6 +195,7 @@ tgbot = { version = "=0.48.1", default-features = false }
 sha2 = "0.11"
 hmac = "0.13"
 hex = "0.4"  # digest 0.11 outputs (hybrid-array) have no `LowerHex`
+blake3 = "1.8.7"  # 199 (D9): contact-file digests; already built for iroh
 # Documents (design doc 59): `yrs` = the Yjs-compatible CRDT the harness holds as authority; `sync` = y-protocols
 # awareness. Pinned exactly: the desktop and helper pin `yjs` 13.6.32, and the two must agree on the wire.
 yrs = { version = "=0.28.0", features = ["sync"] }

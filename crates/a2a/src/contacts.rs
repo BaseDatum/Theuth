@@ -23,6 +23,7 @@ pub mod ceremony;
 pub mod discovery;
 #[cfg(test)]
 pub(crate) mod e2e_tests;
+pub mod files;
 pub mod forward;
 pub mod members;
 pub mod offers;
@@ -66,6 +67,9 @@ pub const JWS_TYP: &str = "JOSE";
 pub const EXT_MACHINE: &str = "https://theuth.io/a2a/ext/machine/v1";
 /// 186 (D10): the card extension a build that collaborates in full advertises.
 pub const EXT_FULL: &str = "https://theuth.io/a2a/ext/full/v1";
+/// 199 (D1): files between theuth engines (`files::FileMeta` under this key on a reference
+/// part; `Message.extensions` exactly `[EXT_FILES]`). Defined, not advertised until 199-E1.
+pub const EXT_FILES: &str = "https://theuth.io/a2a/ext/files/v1";
 /// What the contact RPCs answer when this process runs no a2a plugin.
 pub const OFF: &str = "contacts are unavailable: the a2a plugin is not running";
 
@@ -586,6 +590,7 @@ pub fn card(facts: &CardFacts) -> AgentCard {
                     required: Some(false),
                     params: None,
                 },
+                // 199-E1: advertise `EXT_FILES` with `params: {"maxBytes": FILE_MAX}`.
             ]),
             extended_agent_card: Some(false),
         },

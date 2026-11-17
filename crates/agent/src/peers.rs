@@ -309,6 +309,10 @@ pub struct SendMessageArgs {
     /// Your idempotency key: repeating a call with the same request_id, addressee and body returns the original receipt instead of sending again.
     #[serde(default)]
     pub request_id: Option<String>,
+    /// Contacts only: absolute paths of local files to send with this message, any type, each
+    /// at most 5 GB. The receiver gets each file saved on its disk, not put into its context.
+    #[serde(default)]
+    pub files: Vec<PathBuf>,
 }
 
 /// Symmetric peer messaging.
@@ -452,6 +456,11 @@ impl Tool for SendMessageTool {
         };
         if !admitted.live() {
             return Ok(refused(Self::NAME, Disabled::Revoked));
+        }
+        // 199-E1: contacts only; every path through `files::disk::egress_open` (its errors are
+        // the design's texts), each opened and hashed once, then offered per recipient.
+        if !args.files.is_empty() {
+            return Ok(ToolOutput::err(crate::communication::files::SEND_NOT_YET));
         }
         let agents = match supervisor() {
             Ok(a) => a,

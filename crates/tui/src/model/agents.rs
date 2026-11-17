@@ -575,6 +575,8 @@ impl Model {
             | AgentEvent::SessionOwnerChanged { .. }
             | AgentEvent::SessionClosing { .. }
             | AgentEvent::PartialDropped { .. } => {}
+            // 199-UIT: progress and state of the file card (`components/peers.rs`).
+            AgentEvent::ContactFileChanged { .. } => {}
             // 139 §9.3 (D5): a system takeover left the turn open here, not
             // resumed; the engine's local note (W2) carries the Resume hint.
             AgentEvent::ResumePending { from, .. } => {

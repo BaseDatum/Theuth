@@ -8,6 +8,10 @@ use runtime::SessionId;
 use uuid::Uuid;
 use rpc_core::{ask, Server};
 use agent::rpc_support::RpcServerExt;
+use agent::communication::files::{
+    ContactFile, ContactFileThumbnail, NOT_YET, NoticeAdmission, NoticeStatus,
+};
+use std::path::PathBuf;
 
 /// Messaging RPC methods owned by this plugin.
 #[rpc_core_macros::rpc_descriptors(owner = "agent", descriptors = rpc_descriptors, audience = "owner")]
@@ -84,6 +88,56 @@ pub trait AgentMessagingApi {
         to: String,
         text: String,
     ) -> RpcResult<PeerReceipt>;
+    /// 199: file `id` as its holder records it; carried to `holder` (an endpoint id)
+    /// over `theuth/rpc/1`. Errors: `no such file on <machine>`, `<machine> is offline`.
+    #[method(name = "contact_file", with_extensions)]
+    async fn contact_file(&self, holder: String, id: String) -> RpcResult<ContactFile>;
+    /// 199: an image file's thumbnail, fitted to 512 px by the holder's guarded decoder.
+    /// Errors: `not an image`, `too large for a thumbnail`, `no such file on <machine>`.
+    #[method(name = "contact_file_thumbnail", with_extensions)]
+    async fn contact_file_thumbnail(
+        &self,
+        holder: String,
+        id: String,
+    ) -> RpcResult<ContactFileThumbnail>;
+    /// 199: a no-clobber copy of a received file to `dest` on the holder's disk; the
+    /// path written. Errors: `no such file on <machine>`, `<dest> exists`.
+    #[method(name = "contact_file_export", with_extensions)]
+    async fn contact_file_export(
+        &self,
+        holder: String,
+        id: String,
+        dest: PathBuf,
+    ) -> RpcResult<PathBuf>;
+    /// 199 P2: fetch a received file of `session` from its holder into this engine's
+    /// cache, verified against the chat's own `received` notice; the cached path.
+    /// Errors: `no notice for <id> in this chat`, `<machine> is offline`, `verification failed`.
+    #[method(name = "contact_file_fetch", with_extensions)]
+    async fn contact_file_fetch(
+        &self,
+        session: SessionId,
+        holder: String,
+        id: String,
+    ) -> RpcResult<PathBuf>;
+    /// 199 D17 (internal: this engine, or a paired machine with the front door's
+    /// `Forwarded` marker): the holder delivers one file's notice to the chat's owner,
+    /// as automatic input from `contact_id`'s share. `notice_id` is
+    /// `files::notice_id(holder, file)`; a repeat answers `accepted` and adds nothing.
+    #[method(name = "contact_file_notice", with_extensions)]
+    async fn contact_file_notice(
+        &self,
+        session: SessionId,
+        notice_id: Uuid,
+        contact_id: String,
+        notice: String,
+    ) -> RpcResult<NoticeAdmission>;
+    /// 199 D17: `committed` once the owner's journal (or `errors`) holds `notice_id`.
+    #[method(name = "contact_file_notice_status", with_extensions)]
+    async fn contact_file_notice_status(
+        &self,
+        session: SessionId,
+        notice_id: Uuid,
+    ) -> RpcResult<NoticeStatus>;
 }
 
 #[async_trait]
@@ -212,6 +266,7 @@ impl AgentMessagingApiServer for Server {
         .await
     }
 
+    // 199-E1: D15 human answers gain a `files` parameter (attach on the chat's machine only).
     async fn answer_peer_request(
         &self,
         ext: &Extensions,
@@ -263,6 +318,66 @@ impl AgentMessagingApiServer for Server {
         )
         .await?;
         Ok(d.receipt)
+    }
+
+    // 199-E1: holder RPCs carried to `holder` over `theuth/rpc/1`.
+    async fn contact_file(&self, _: &Extensions, _: String, _: String) -> RpcResult<ContactFile> {
+        Err(rpc_core::failed(NOT_YET))
+    }
+
+    // 199-E1: runs `tools::images::fit(bytes, 512)` on the holder (at most 64 MB read).
+    async fn contact_file_thumbnail(
+        &self,
+        _: &Extensions,
+        _: String,
+        _: String,
+    ) -> RpcResult<ContactFileThumbnail> {
+        Err(rpc_core::failed(NOT_YET))
+    }
+
+    // 199-E1: no-clobber copy on the holder.
+    async fn contact_file_export(
+        &self,
+        _: &Extensions,
+        _: String,
+        _: String,
+        _: PathBuf,
+    ) -> RpcResult<PathBuf> {
+        Err(rpc_core::failed(NOT_YET))
+    }
+
+    // 199-E2: `Req::GetContactFile` on `theuth/artifacts/1`, into `files/cache/`.
+    async fn contact_file_fetch(
+        &self,
+        _: &Extensions,
+        _: SessionId,
+        _: String,
+        _: String,
+    ) -> RpcResult<PathBuf> {
+        Err(rpc_core::failed(NOT_YET))
+    }
+
+    // 199-E1: internal-only auth, `forward::route` to the owner, share re-check, automatic
+    // input with journal source `files::JOURNAL_SOURCE`, or `Store::record_error_once`.
+    async fn contact_file_notice(
+        &self,
+        _: &Extensions,
+        _: SessionId,
+        _: Uuid,
+        _: String,
+        _: String,
+    ) -> RpcResult<NoticeAdmission> {
+        Err(rpc_core::failed(NOT_YET))
+    }
+
+    // 199-E1: through the same front door; reads the journal and `errors`.
+    async fn contact_file_notice_status(
+        &self,
+        _: &Extensions,
+        _: SessionId,
+        _: Uuid,
+    ) -> RpcResult<NoticeStatus> {
+        Err(rpc_core::failed(NOT_YET))
     }
 }
 

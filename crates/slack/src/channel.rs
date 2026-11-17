@@ -2859,7 +2859,9 @@ impl Worker {
             // 145 §0.3: parked harness inputs are the talk's business; the thread sees nothing.
             | AgentEvent::InputsParked { .. }
             // 125 §9: the pill is the TUI's and the app's; the thread sees nothing.
-            | AgentEvent::AdvisorChanged { .. } => {}
+            | AgentEvent::AdvisorChanged { .. }
+            // 199: file cards are the TUI's and the app's; the thread sees the notice row.
+            | AgentEvent::ContactFileChanged { .. } => {}
             // 125 §9: a concern or blocker is one quiet line; nits post nothing.
             AgentEvent::AdvisoryAdded { advisory, .. } => {
                 if let Some(line) = advisory.channel_line() {
@@ -4451,6 +4453,7 @@ pub(crate) mod tests {
             text: text.into(),
             seq: 1,
             turn: TurnId::new(),
+            files: Vec::new(),
         }
     }
 

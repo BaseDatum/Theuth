@@ -3935,6 +3935,14 @@ pub enum AgentEvent {
         /// The typed card.
         advisory: Advisory,
     },
+    /// 199: a contact file changed state, or moved bytes (at most twice a second per
+    /// file). Cards key it by `(file.holder, file.id)`.
+    ContactFileChanged {
+        /// The chat the file belongs to.
+        session: SessionId,
+        /// Its current card.
+        file: communication::files::ContactFile,
+    },
 }
 
 impl wire::WireEvent for AgentEvent {
@@ -3996,7 +4004,8 @@ impl AgentEvent {
             | Self::TurnSuspended { session, .. }
             | Self::PartialDropped { session, .. }
             | Self::AdvisorChanged { session, .. }
-            | Self::AdvisoryAdded { session, .. } => Some(*session),
+            | Self::AdvisoryAdded { session, .. }
+            | Self::ContactFileChanged { session, .. } => Some(*session),
             Self::SubagentSpawned { child, .. } | Self::ObservedChildChanged { child, .. } => {
                 Some(*child)
             }

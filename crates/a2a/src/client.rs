@@ -795,6 +795,8 @@ impl PeerClient {
                     self.remote_text(&e.to_string())
                 ))
             })?;
+        // 199-E1: one reference part per file after the text (omitted when empty), and
+        // `extensions: [EXT_FILES]`. 199-E3: inline `raw` toward peers without the extension.
         let mut message = Message::new(
             Role::User,
             vec![Part::text(self.redact(&outbound.record.text))],
@@ -971,6 +973,7 @@ struct Retained {
 impl Retained {
     /// Measure a whole snapshot against every bound.
     fn of(task: &Task) -> Result<Self, String> {
+        // 199-E3: artifact file parts go to the same storage, placeholders and notices.
         if task
             .artifacts
             .iter()

@@ -27,6 +27,9 @@ pub mod network;
 /// `theuth/rpc/1` and the engine-name lookup for `discover_peers`.
 pub mod mesh;
 
+/// 199 CONTACT-FILES: files between contacts (P0 contract: shapes and pure pieces).
+pub mod files;
+
 /// `tell` (runner → `Agents`): a peer exchange was linked into `session`'s
 /// history at `seq` inside `turn` (§7 consumption transaction). Sent after
 /// the runner's `InputConsumed` for the same ticket, which is what binds the
@@ -249,6 +252,9 @@ pub struct PeerRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub contact_mode: Option<ShareMode>,
+    /// 199: the files this exchange carries, in message order (`contact_files` rows).
+    #[serde(default)]
+    pub files: Vec<files::ContactFile>,
 }
 
 impl PeerRecord {
@@ -853,6 +859,9 @@ pub struct PeerDelivered {
     pub seq: i64,
     /// The turn that consumed it.
     pub turn: TurnId,
+    /// 199: the files the message carries, for the live card's receiving placeholders.
+    #[serde(default)]
+    pub files: Vec<files::ContactFile>,
 }
 
 impl wire::WireEvent for PeerDelivered {

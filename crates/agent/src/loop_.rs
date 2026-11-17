@@ -9073,6 +9073,7 @@ pub(crate) fn peer_wrapper(
     if age >= Duration::from_secs(60) {
         head.push_str(&format!(" after=\"{}\"", clock::humanise(age)));
     }
+    // 199-E1: `files::placeholders(&record.from, &record.files)` after `</message>`.
     format!(
         "{head}>\n{}\n</message>",
         neutralise_delimiters(&record.text)
@@ -9110,7 +9111,7 @@ pub(crate) fn peer_wrapped(record: &PeerRecord, text: &str) -> bool {
 }
 
 /// XML attribute escape.
-fn attr(s: &str) -> String {
+pub(crate) fn attr(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -10499,6 +10500,7 @@ mod tests {
                 .with_timezone(&chrono::Utc),
             request_scope: None,
             contact_mode: None,
+            files: Vec::new(),
         };
         let now = |s: &str| {
             chrono::DateTime::parse_from_rfc3339(s)
@@ -10545,6 +10547,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             request_scope: Some(Uuid::now_v7()),
             contact_mode: Some(crate::communication::ShareMode::Full),
+            files: Vec::new(),
         };
         let at = chrono::Local::now();
         for shown in ["peer:sky-moore", "peer:sky/ops"] {
