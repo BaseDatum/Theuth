@@ -1,6 +1,8 @@
 import type { Requirements } from '@/rpc/discovery'
 
 export const broadcastRequirements = { methods: ['broadcast', 'list_sessions'] } as const satisfies Requirements
+// 183 §12.10: what ⋯ Share with contact…, its dialog and Stop sharing call (any engine that offers them, phone or iPad included).
+export const shareRequirements = { methods: ['a2a_exports', 'a2a_export_put', 'contact_list', 'contact_update'] } as const satisfies Requirements
 export const terminalRequirements = {"methods":["cell_attach","cell_detach","cell_input","list_terminals","mesh_status","pty_input","pty_resize","subscribe_pty","unsubscribe_pty"],"topics":[]} as const satisfies Requirements
 export const privateRequirements = { fields: [{ method: 'create_session', parameter: 'options', path: ['retention'], value: 'private' }, { method: 'create_session', parameter: 'options', path: ['view'] }] } as const satisfies Requirements
 export const endlessRequirements = { methods: ['endless_settings_get', 'session_memory'], topics: ['agent.endless-progress@1'], fields: [{ method: 'create_session', parameter: 'options', path: ['memory'], value: 'endless' }] } as const satisfies Requirements

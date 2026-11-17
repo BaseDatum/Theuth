@@ -1,4 +1,4 @@
-import { useQuerySupport } from '@/rpc/capabilities'
+import { Capability, useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { MoreHorizontal } from 'lucide-react'
@@ -43,7 +43,6 @@ import { canPopout, openPopout } from '@/lib/popout'
 import { engineLabel, ownerUnreachable, parkIfOffline, routed, useOwnerOffline } from '@/lib/owner'
 import { RpcError } from '@/rpc/client'
 import { chatName } from '@/lib/attach'
-import { hasLocal } from '@/link/engines'
 import { ShareDialog, SharingItems } from '@/components/settings/Contacts'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
@@ -59,6 +58,7 @@ import { useMessagingSheet } from './messaging-sheet'
 import { useToolsSheet } from './tools-sheet'
 import { type Ctx, openSurface, run, type Surface, surfaceOf } from './slash'
 import { JobsSheet } from './JobsSheet'
+import { shareRequirements } from './requirements'
 
 /** One row of the ⋯ menu's settings block (183 §12.2, mock panel 3), in order; `move` is 181's Move to ▸. */
 export type SettingsRow =
@@ -481,12 +481,12 @@ export function SessionMenu({ session }: { session: string }) {
           </> : <DropdownMenuItem onSelect={() => openSurface('memory')}>Memory…</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => useMessagingSheet.getState().show(session)}>Messaging…</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => useToolsSheet.getState().show(session)}>Tools…</DropdownMenuItem>
-          {/* 183 §12.10: contacts live on this machine; a phone or iPad never shares (§12.8). */}
-          {session && hasLocal() && <SharingItems session={session} onShare={() => setShare(true)} />}
+          {/* 183 §12.10, lifted 2026-11-17: wherever the connected engine offers the share methods, phone and iPad included. */}
+          {session && <Capability required={shareRequirements} hide><SharingItems session={session} onShare={() => setShare(true)} /></Capability>}
         </DropdownMenuContent>
       </DropdownMenu>
       {session && <RenameDialog session={session} open={rename} onOpenChange={setRename} />}
-      {share && <ShareDialog session={session} title={row ? chatName(row) : 'this chat'} onClose={() => setShare(false)} />}
+      {share && <ShareDialog session={session} title={row ? chatName(row) : 'this chat'} owner={owner} onClose={() => setShare(false)} />}
       <PromptSheet
         session={session}
         open={sheet === 'prompt'}
