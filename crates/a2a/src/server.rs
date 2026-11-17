@@ -572,6 +572,8 @@ pub fn trim_history(task: &mut Task, history_length: Option<i32>) {
 /// `message` to an empty one, so emptiness is checked here; text parts, and 199 (D1) file
 /// references from `caller` (the contact it came from; `None` for an HTTP peer, which
 /// sends none) under `extensions == [EXT_FILES]`; no push config, no other extensions.
+/// 199-E3 (P3, D16): an HTTP peer's files, inline `raw` (within [`BODY_LIMIT`]) or at an
+/// `https` URL without credentials (what it serves is checked when it is fetched).
 /// The one rule decoding loses (exactly one content field per part) is [`exactly_one`]'s.
 pub fn validate_send(
     req: &SendMessageRequest,
@@ -595,17 +597,20 @@ pub fn validate_send(
             ));
         }
     };
-    // 199-E3: P3 admits `raw` and `https` URL parts from foreign peers.
     let members = caller
         .filter(|f| !f.id.is_empty())
         .map_or(&[][..], |f| &f.eids[..]);
     for (i, p) in m.parts.iter().enumerate() {
+        let invalid = |why: &str| A2AError::invalid_params(format!("message.parts[{i}]: {why}"));
         match &p.content {
             PartContent::Text(_) => {}
             PartContent::Url(url) if with_files => {
-                files::check_reference(url, p.metadata.as_ref(), members).map_err(|why| {
-                    A2AError::invalid_params(format!("message.parts[{i}]: {why}"))
-                })?;
+                files::check_reference(url, p.metadata.as_ref(), members)
+                    .map_err(|why| invalid(&why))?;
+            }
+            PartContent::Raw(_) if caller.is_none() => {}
+            PartContent::Url(url) if caller.is_none() => {
+                agent::communication::files::foreign::https_url(url).map_err(invalid)?;
             }
             _ => return Err(A2AError::content_type_not_supported()),
         }
@@ -1377,9 +1382,10 @@ mod tests {
                 metadata: None,
             }],
         );
+        // 199-E3: an HTTP peer's URL part must be a credential-free `https` file URL.
         assert_eq!(
             validate_send(&send(file), None).unwrap_err().code,
-            error_code::CONTENT_TYPE_NOT_SUPPORTED
+            error_code::INVALID_PARAMS
         );
 
         let mut ext = ok.clone();
@@ -1419,6 +1425,61 @@ mod tests {
             validate_send(&modes, None).unwrap_err().code,
             error_code::CONTENT_TYPE_NOT_SUPPORTED
         );
+    }
+
+    /// 199-E3 (P3, D16): from an HTTP peer (no files extension), inline `raw` parts and
+    /// `https` URL parts are admitted beside text; any other URL, or one with userinfo, is
+    /// `invalid_params` naming the part; `data` stays unsupported. A contact (a theuth)
+    /// sends no such parts.
+    #[test]
+    fn foreign_files_are_admitted_inline_or_at_https_urls_only() {
+        let msg = |parts: Vec<Part>| {
+            let mut m = Message::new(Role::User, parts);
+            m.message_id = "m1".into();
+            send(m)
+        };
+        let raw = Part::raw(vec![0x89, b'P', b'N', b'G'])
+            .with_filename("dot.png")
+            .with_media_type("image/png");
+        let https = Part::url("https://files.example/report.pdf");
+        assert!(
+            validate_send(
+                &msg(vec![Part::text("see"), raw.clone(), https.clone()]),
+                None
+            )
+            .is_ok()
+        );
+        assert!(validate_send(&msg(vec![raw.clone()]), None).is_ok());
+        for (url, why) in [
+            ("http://files.example/report.pdf", "the url is not https"),
+            (
+                "https://user:pw@files.example/f",
+                "the url carries credentials",
+            ),
+            (
+                "https://user@files.example/f",
+                "the url carries credentials",
+            ),
+            ("file:///etc/passwd", "the url is not https"),
+            ("not a url", "the url does not parse"),
+        ] {
+            let e = validate_send(&msg(vec![Part::text("see"), Part::url(url)]), None).unwrap_err();
+            assert_eq!(e.code, error_code::INVALID_PARAMS, "{url}");
+            assert_eq!(e.message, format!("message.parts[1]: {why}"), "{url}");
+        }
+        assert_eq!(
+            validate_send(&msg(vec![Part::data(serde_json::json!({"k": 1}))]), None)
+                .unwrap_err()
+                .code,
+            error_code::CONTENT_TYPE_NOT_SUPPORTED
+        );
+        let maya = contact("rec-maya", &["7a7a"]);
+        for p in [raw, https] {
+            assert_eq!(
+                validate_send(&msg(vec![p]), Some(&maya)).unwrap_err().code,
+                error_code::CONTENT_TYPE_NOT_SUPPORTED
+            );
+        }
     }
 
     fn contact(id: &str, eids: &[&str]) -> crate::config::ContactFacts {

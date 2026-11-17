@@ -157,8 +157,16 @@ impl FileRow {
     }
 }
 
-/// The contact's display alias by record id (the record itself when it has none).
+/// The contact's display alias by record id (the record itself when it has none). 199-E3:
+/// a foreign peer's file is keyed by its binding (`peer:<uuid>`): that binding's alias.
 async fn alias_in(conn: &mut SqliteConnection, contact: &str) -> anyhow::Result<String> {
+    if let Some(binding) = contact.strip_prefix("peer:") {
+        let row: Option<(String,)> = sqlx::query_as("SELECT alias FROM peer_bindings WHERE id = ?")
+            .bind(binding)
+            .fetch_optional(conn)
+            .await?;
+        return Ok(row.map_or_else(|| binding.get(..8).unwrap_or(binding).to_owned(), |(a,)| a));
+    }
     let row: Option<(Option<String>,)> = sqlx::query_as("SELECT alias FROM contacts WHERE id = ?")
         .bind(contact)
         .fetch_optional(conn)
@@ -421,6 +429,23 @@ impl Store {
         tx.commit().await
     }
 
+    /// 199-E3: a foreign download's measured size and BLAKE3, before publication (so a
+    /// restart resolves its `publishing` row by inode like a contact's).
+    pub async fn file_measured(&self, id: &str, size: u64, blake3: &str) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "UPDATE contact_files SET size = ?, blake3 = ?, done = ? WHERE id = ? \
+             AND state = 'receiving'",
+        )
+        .bind(size as i64)
+        .bind(blake3)
+        .bind(size as i64)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await
+    }
+
     /// Back to the queue: `receiving` (or, after a restart, `publishing`) → `queued`,
     /// `done` as given (0 restarts from byte 0).
     pub async fn file_requeue(&self, id: &str, done: u64) -> anyhow::Result<bool> {
@@ -627,6 +652,18 @@ impl Store {
         Ok(out)
     }
 
+    /// 199-E3: foreign `in` files that failed before their exchange ended without being
+    /// read (States: such a file never gets a notice), by id.
+    pub async fn foreign_files_noticeless(&self) -> anyhow::Result<Vec<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT f.id FROM contact_files f JOIN peer_exchanges e ON e.id = f.exchange \
+             WHERE f.direction = 'in' AND f.contact_id LIKE 'peer:%' AND f.state = 'failed' \
+             AND f.notice IS NULL AND e.state IN ('failed', 'suppressed', 'unknown')",
+        )
+        .fetch_all(&self.read)
+        .await?)
+    }
+
     /// Rows still moving bytes past their deadline at `now_ms`, not in `skip`: queued or
     /// receiving downloads and unsettled offers. A file already on disk (`publishing`,
     /// `saved`) only waits for its exchange.
@@ -830,8 +867,17 @@ impl Store {
     /// blocked, and still shares `session` with us: an export of it granted to the
     /// contact (no member refusing), or a live `~return` conversation into it (one this
     /// chat opened toward the contact's export, `outbound`). The contact's own conversation
-    /// into our export never outlives the grant (199-Z1, found live).
+    /// into our export never outlives the grant (199-Z1, found live). 199-E3: a foreign
+    /// peer's (`peer:<binding>`) lives while its binding does.
     pub async fn share_live(&self, session: &str, contact: &str) -> anyhow::Result<bool> {
+        if let Some(binding) = contact.strip_prefix("peer:") {
+            return Ok(sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM peer_bindings WHERE id = ? AND revoked_at IS NULL)",
+            )
+            .bind(binding)
+            .fetch_one(&self.read)
+            .await?);
+        }
         let root = self.contact_root(contact).await?;
         let live: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM contacts WHERE id = ?1 AND removed_ms IS NULL \

@@ -132,8 +132,9 @@ pub struct Staged {
 }
 
 /// Gate, clone, hash and stage `paths` for each of `to` (canonical addresses, every one
-/// a contact). `request_id` is the caller's key; a repeat of it must carry the same
-/// `(blake3, size, name)` list. Nothing is sent when this fails.
+/// a contact, or (199-E3) an HTTP A2A peer the files fit inline for). `request_id` is the
+/// caller's key; a repeat of it must carry the same `(blake3, size, name)` list. Nothing
+/// is sent when this fails.
 pub async fn stage(
     agents: &ActorRef<Agents>,
     session: SessionId,
@@ -149,6 +150,8 @@ pub async fn stage(
         .flatten()
         .ok_or(NOT_YET)?;
     let mut contacts = Vec::with_capacity(to.len());
+    // 199-E3 (D16): an HTTP A2A peer (no files extension) takes files inline only.
+    let mut foreign = Vec::new();
     for c in to {
         let alias = c.strip_prefix("peer:").unwrap_or_default();
         let contact = !alias.is_empty()
@@ -156,12 +159,22 @@ pub async fn stage(
                 .ask(crate::communication::network::IsContact(alias.to_owned()))
                 .await
                 .unwrap_or(false);
+        let name = alias.split('/').next().unwrap_or(alias);
         let record = match contact {
             true => svc
                 .store
-                .contact_of_alias(alias.split('/').next().unwrap_or(alias))
+                .contact_of_alias(name)
                 .await
                 .map_err(|e| format!("{e:#}"))?,
+            false if !alias.is_empty() => svc
+                .store
+                .peer_binding(name)
+                .await
+                .map_err(|e| format!("{e:#}"))?
+                .map(|b| {
+                    foreign.push(name.to_owned());
+                    (format!("peer:{}", b.id), String::new())
+                }),
             false => None,
         };
         let Some((record, _)) = record else {
@@ -203,6 +216,15 @@ pub async fn stage(
         return Err(
             "too many files for one message (over 64 KiB); send them in several messages".into(),
         );
+    }
+    for peer in &foreign {
+        let files = picked
+            .iter()
+            .map(|f| (f.name.as_str(), f.media_type.as_str(), f.size));
+        if let Err(e) = super::foreign::inline_fit(peer, text, files) {
+            drop_staging();
+            return Err(e);
+        }
     }
     debug_assert!(picked.iter().all(|f| f.size <= FILE_MAX));
     let base = request_id.map_or_else(local_id, str::to_owned);

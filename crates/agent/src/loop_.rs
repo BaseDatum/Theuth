@@ -5681,10 +5681,17 @@ impl Turn {
             }
         };
         let store = self.shared.store.clone();
-        let live = store
-            .share_live(&session.to_string(), &n.contact)
-            .await
-            .unwrap_or(false);
+        // 199-E3 (SEC-P3): a foreign file's own authority, judged by its holder now.
+        let live = crate::communication::files::foreign::consumption_live(
+            &store,
+            &self.shared.rt,
+            &session.to_string(),
+            &n.contact,
+            n.id,
+            &n.text,
+        )
+        .await
+        .unwrap_or(false);
         if !live {
             if let Err(e) =
                 notices::ended(&store, &self.shared.rt, session, Some(turn), n.id, &n.text).await
@@ -9231,7 +9238,7 @@ async fn set_turn_limits(
 /// tag start whose name begins with `message` (`<message`, `</message`,
 /// `<messages`), in any case and with any whitespace after `<` or `/`, loses
 /// its `<`. Everything else (code, other tags) is left as the sender wrote it.
-fn neutralise_delimiters(body: &str) -> String {
+pub(crate) fn neutralise_delimiters(body: &str) -> String {
     neutralise(body, "message")
 }
 
@@ -10828,6 +10835,112 @@ mod tests {
         assert_eq!(text_of(&turn.state.history[0].1.content), text("b"));
         assert!(store.notice_committed(id, live).await.unwrap());
         assert_eq!(store.errors(id).await.unwrap().len(), 1);
+    }
+
+    /// SEC-P3 (round 3): a foreign file's notice admitted on this owner while its grant was
+    /// live (unmarked; another engine holds the file and its authority) is judged by that
+    /// holder again at consumption, never by the live binding alone: the grant ended since
+    /// → the engine-state row, no turn; the holder unreachable → the same; still live → one
+    /// row.
+    #[tokio::test]
+    async fn a_foreign_notice_is_judged_by_its_holder_at_consumption() {
+        use crate::communication::files::foreign::{self, HolderAuthority};
+        use crate::communication::files::notice_id;
+        use crate::communication::files::notices::{self, Pending};
+        struct Holder;
+        #[async_trait::async_trait]
+        impl HolderAuthority for Holder {
+            async fn live(&self, holder: &str, id: &str) -> Result<bool, String> {
+                assert_eq!(holder, "h0");
+                match id {
+                    "ended" => Ok(false),
+                    "live" => Ok(true),
+                    _ => Err("h0 is not connected".into()),
+                }
+            }
+        }
+        let scratch = crate::TestDir::new("notice-holder");
+        let dir = scratch.0.clone();
+        let store = Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        let binding = store
+            .bind_peer("lab", "https://lab.example/")
+            .await
+            .unwrap();
+        let contact = format!("peer:{}", binding.id);
+        let rt = Runtime::new(figment::Figment::new(), dir.clone());
+        foreign::set_holder_authority(&rt, Arc::new(Holder));
+        let model = Resolved {
+            id: "m".into(),
+            genai: "m".into(),
+            provider: None,
+            model: None,
+        };
+        let mut session = Session::new(
+            id,
+            0,
+            (model, None),
+            None,
+            SessionState::resume(0, None, vec![]),
+            Arc::new(AgentConfig::default()),
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+            store.clone(),
+            Client::new().unwrap(),
+            Auth::stub(&dir),
+            rt,
+            Arc::new(models::Catalog::load(&dir)),
+            None,
+            Arc::new(Semaphore::new(1)),
+            SessionResources::durable_arc(&dir),
+        );
+        let mut turn = Turn::new(
+            session.shared.clone(),
+            Some(TurnId::new()),
+            CancellationToken::new(),
+            session.state.take().unwrap(),
+        );
+        let text = |file: &str| {
+            format!(
+                "<message_file from=\"peer:lab\" state=\"received\" holder=\"h0\" file=\"{file}\"/>\nhint"
+            )
+        };
+        let input = |t: &str| Input {
+            text: t.into(),
+            ..harness_input(None)
+        };
+        for (n, file) in ["ended", "down"].into_iter().enumerate() {
+            let nid = notice_id("h0", file);
+            notices::hold(Pending {
+                id: nid,
+                session: id,
+                contact: contact.clone(),
+                text: text(file),
+            });
+            assert!(!turn.take_input(input(&text(file))).await, "{file}");
+            assert!(turn.state.history.is_empty(), "{file}: no turn");
+            assert_eq!(store.errors(id).await.unwrap().len(), n + 1, "{file}");
+        }
+        let nid = notice_id("h0", "live");
+        notices::hold(Pending {
+            id: nid,
+            session: id,
+            contact,
+            text: text("live"),
+        });
+        turn.take_input(input(&text("live"))).await;
+        assert_eq!(turn.state.history.len(), 1);
+        assert!(store.notice_committed(id, nid).await.unwrap());
+        assert_eq!(store.errors(id).await.unwrap().len(), 2);
     }
 
     /// 50 §9: the body cannot close the wrapper or forge a second one (nor a

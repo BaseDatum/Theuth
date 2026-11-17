@@ -448,7 +448,11 @@ impl Agents {
         {
             self.peer_changed(&orig).await;
             orig.to = from.clone();
-            if self.settle_wait(&orig) {
+            // 199-E3: a waiting `send_message` sees the answer's receiving placeholders too.
+            let answer = self
+                .handed_answer(&orig, record.receipt.id, Some(&from))
+                .await;
+            if self.settle_wait(&answer) {
                 let revision = generation.revision() as i64;
                 match self
                     .store

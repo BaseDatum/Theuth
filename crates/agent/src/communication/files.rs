@@ -30,6 +30,8 @@ use crate::supervisor::Agents;
 /// Egress gate, protected set, hashing, quarantine and publication.
 #[cfg(unix)]
 pub mod disk;
+/// P3 (199-E3): foreign peers' inline and public HTTPS files, inline sends toward them.
+pub mod foreign;
 /// Holder RPCs: the card, a bounded thumbnail, a no-clobber export.
 pub mod holder;
 /// Admission: a message's reference parts as `in` rows.
@@ -62,11 +64,6 @@ pub const PARTIAL_DIR: &str = "files/partial";
 pub const OUTGOING_DIR: &str = "files/outgoing";
 /// P2 copies from another of our machines: `<root>/files/cache/<holder>/<id>/<name>`.
 pub const CACHE_DIR: &str = "files/cache";
-
-// 199-E3: P3 intake of an `https` URL part (or an artifact file part) streams it with
-// `web::fetch::download(url, &partial, &opts)` (199-W, public-only, HTTPS-only) into
-// `PARTIAL_DIR`, counts it against `FILE_MAX`, records the computed BLAKE3, then publishes
-// with `disk::publish` like a contact download. Inline `raw` parts skip the download.
 
 /// Which way a file travels, from this engine's view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]

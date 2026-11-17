@@ -369,6 +369,7 @@ dependencies = [
  "surface",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
  "tools",
  "tracing",

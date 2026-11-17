@@ -218,11 +218,11 @@ impl Agents {
         {
             return Ok(NoticeAdmission::Accepted);
         }
-        let live = self
-            .store
-            .share_live(&m.session.to_string(), &m.contact)
-            .await
-            .map_err(|e| format!("{e:#}"))?;
+        // 199-E3 (SEC-P3): a foreign file's own authority, not only its binding.
+        let live =
+            super::foreign::share_live(&self.store, &m.session.to_string(), &m.contact, m.id)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
         if !live {
             ended(&self.store, &self.rt, m.session, None, m.id, &m.text).await?;
             return Ok(NoticeAdmission::Accepted);
@@ -455,5 +455,54 @@ mod tests {
         consume(&mut a);
         clear(over);
         assert_eq!(a.ledger.request_for_test(s, None), (0, 1));
+    }
+
+    /// SEC-P3 (rounds 1–2): a foreign file's notice needs the authority it arrived under, not
+    /// only a live binding. Ended where this engine holds it (an export removed, the binding
+    /// kept), or marked ended by the holder (another engine, or after its restart): the
+    /// engine-state row, no input. An unmarked notice whose authority another engine of the
+    /// mesh holds is judged by that holder: only the binding is re-checked here.
+    #[tokio::test]
+    async fn a_foreign_notice_whose_authority_ended_starts_no_turn() {
+        use super::super::foreign;
+        let d = crate::TestDir::new("notice-foreign");
+        let mut a = crate::supervisor::tests::agents_on(d.0.clone(), Some("A"), true).await;
+        let s = SessionId::new();
+        a.store
+            .create_session(s, "m", None, None, None)
+            .await
+            .unwrap();
+        let binding = a
+            .store
+            .bind_peer("lab", "https://lab.example/")
+            .await
+            .unwrap();
+        let contact = format!("peer:{}", binding.id);
+        let ended = tokio_util::sync::CancellationToken::new();
+        let (revoked, marked, elsewhere) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        foreign::authorize(revoked, ended.clone());
+        ended.cancel();
+        // The holder's outbox marks a notice whose authority it no longer holds live.
+        let mark = foreign::notice_contact(&contact, marked);
+        assert_eq!(mark, format!("{}{contact}", foreign::ENDED));
+        let session = s.to_string();
+        assert!(
+            foreign::share_live(&a.store, &session, &contact, elsewhere)
+                .await
+                .unwrap(),
+            "another holder's unmarked notice: its binding decides"
+        );
+        for (id, contact) in [(revoked, contact.clone()), (marked, mark)] {
+            let m = AdmitNotice {
+                session: s,
+                id,
+                contact,
+                text: TEXT.into(),
+            };
+            assert_eq!(a.admit_notice(m).await, Ok(NoticeAdmission::Accepted));
+            assert!(!pending_has(id), "no input opened");
+            assert!(a.store.notice_committed(s, id).await.unwrap(), "recorded");
+        }
+        assert_eq!(a.store.errors(s).await.unwrap().len(), 2);
     }
 }
