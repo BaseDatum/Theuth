@@ -201,7 +201,7 @@ dialog::backdrop { background:var(--overlay); }
     <div class="prow">
       <span class="pname">maya <span class="badge">a2a</span><span class="chip contact">Contact</span><span class="chip full">full access</span></span>
       <span class="paddr">peer:maya</span>
-      <span class="pmeta">full access · 5 sessions · Maya’s Mac mini did not answer · more: discover_peers(kind="contact", query="maya", cursor="full:maya:…")</span>
+      <span class="pmeta">full access · more: discover_peers(kind="contact", query="maya") · did not answer: Maya’s Mac mini</span>
       <span class="pact"><button class="btn" type="button" data-copy="peer:maya">Copy</button></span>
     </div>
     <div class="prow child">
@@ -241,7 +241,7 @@ dialog::backdrop { background:var(--overlay); }
       <span class="pact"><button class="btn" type="button" data-copy="peer:sam">Copy</button></span>
     </div>
   </div>
-  <p class="note">Contact rows have no Open: you can message a contact’s sessions, never read them. Maya’s list holds what her own machines could reach from one of her owner chats: her private chats, her other contacts’ conversations, advisors and isolated automation roots are not in it, and nothing tells you they exist. A machine that does not answer in 2 s is named, and the cursor picks it up next time.</p>
+  <p class="note">Contact rows have no Open: you can message a contact’s sessions, never read them. Maya’s list holds what her own machines could reach from one of her owner chats: her private chats, her other contacts’ conversations, advisors and isolated automation roots are not in it, and nothing tells you they exist. This is the preview (her newest sessions, at most eight rows under her); “more” walks the whole list newest first with one cursor. A machine that does not answer in 2 s is named and asked again on the next call.</p>
   <p class="status-line" id="status-b" role="status"></p>
 </section>
 
@@ -293,7 +293,7 @@ peer:maya/session:0193c0de-…-0042 failed error=peer:maya/session:0193c0de-…-
 <pre class="tui"><span class="meta">peers · communication: on   ⏎ open  i inspect  a answer  r refresh  esc</span>
 <span class="run">●</span> port-layout          child        running    native   send reply session:01936c1e-4f0a-7b21-9a3e-55b0c2d1e7f4
   01936b07             root         remote     native   send reply session:01936b07-91c2-7d4e-8f10-2a6b3c9d0e15
-<span class="ok">○</span> <span class="name">maya</span>                 remote       idle       a2a      send reply peer:maya          <span class="acc">full access · 5 sessions · Maya’s Mac mini did not answer · more: cursor full:maya:…</span>
+<span class="ok">○</span> <span class="name">maya</span>                 remote       idle       a2a      send reply peer:maya          <span class="acc">full access · more: discover_peers(kind="contact", query="maya") · did not answer: Maya’s Mac mini</span>
 <span class="ok">○</span> maya/Handoff review  remote       idle       a2a      send reply peer:maya/handoff
 <span class="run">●</span> maya/Port layout v3  remote       running    a2a      send reply peer:maya/session:0193f0a2-6b1c-7d3e-9f40-1a2b3c4d5e6f
 <span class="ok">○</span> maya/Invoice cleanup remote       idle       a2a      send reply peer:maya/session:0193e811-02aa-7c6f-b1d2-8e4f5a6b7c80
