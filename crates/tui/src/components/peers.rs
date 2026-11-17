@@ -111,10 +111,12 @@ impl Peers {
                     Request::SetPeerScope { root, scope, alias } => Msg::Communication(api.set_peer_scope(root, scope, alias).await.map_err(crate::reason)?),
                     Request::ListPeers(session) => Msg::Peers(session, api.list_peers(session, None, None, None).await.map_err(crate::reason)),
                     Request::ListPeerRequests(session) => Msg::PeerRequests(session, api.list_peer_messages(session, None, None, true).await.map_err(crate::reason)?),
+                    Request::AnswerPeerRequest { session, reply_to, text, files } if files.is_empty() => Msg::PeerAnswered(api.answer_peer_request(session, reply_to, text).await.map_err(crate::reason)?),
+                    // D15: `files` is the optional 4th positional parameter, sent only when non-empty
+                    // (199-E1b adds it to the typed client; until then the call is built here).
                     Request::AnswerPeerRequest { session, reply_to, text, files } => {
-                        // 199-E1: `answer_peer_request` gains `files` (D15); until it does, the engine's own refusal.
-                        if !files.is_empty() { return Err(agent::communication::files::SEND_NOT_YET.to_owned()) }
-                        Msg::PeerAnswered(api.answer_peer_request(session, reply_to, text).await.map_err(crate::reason)?)
+                        use jsonrpsee::core::client::ClientT;
+                        Msg::PeerAnswered(api.request("answer_peer_request", jsonrpsee::rpc_params![session, reply_to, text, files]).await.map_err(crate::reason)?)
                     }
                     Request::ChatOwner(session) => {
                         use rpc_compose::api::clients::{AgentSessionsApiClient, NetworkApiClient};

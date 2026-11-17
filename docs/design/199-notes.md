@@ -84,14 +84,17 @@ Branch `feat/199-uit` from the contract fold `c5d0895af`. TUI only (`crates/tui`
 ### Deviations
 1. **Placement beyond `contact_row`.** `contact_row` only sees rows with typed peer provenance; placeholders also reach the live `TurnStarted` echo and history fallbacks, and notice rows are automatic input with no peer origin. The parse sits once in `injected`/`from_history`/`user_entries` (one line each) and in the new module; `contact_row` itself is unchanged except its comment.
 2. **File lines are their own keyed cards**, not text inside the peer card body: a `WrapperView::Card` carries no entry key, and keyed cards give live updates and actions for free.
-3. **D15 send is blocked on E1.** `answer_peer_request(session, reply_to, text)` has no `files` yet (`// 199-E1` stub in `rpc_messaging.rs`). The TUI carries `files` in its own `Request::AnswerPeerRequest`; a non-empty list answers the engine's `files::SEND_NOT_YET` (`sending files is not available yet`) without calling the RPC. When E1 lands the parameter, the one change is that request arm in `components/peers.rs`.
+3. **D15 send against the decided signature** (see the next heading): the answer carries the attachments as the 4th positional parameter of `answer_peer_request`.
 4. **Outgoing lines after a reload**: history keeps no `structured.files`, so a reloaded sender shows the tool's own text until the next `ContactFileChanged` for that file adds its line.
 5. **The non-TTY line printer** (`lib.rs`) still prints rows as text (as it does for every wrapper).
 6. **fmt**: house compact style, matching the sibling components; no whole-file `cargo fmt` (none of the TUI component files is rustfmt-clean on main).
 
+### Contract changes after C (199-UIT)
+- **`answer_peer_request(session, reply_to, text, files)`**, decided by the orchestrator on 2026-11-17: `files` is an optional 4th positional parameter (Rust `Option<Vec<PathBuf>>`, serde default, wire `string[]`), sent only when non-empty. E1b implements it and regenerates the bindings; the RPC trait is unchanged here. Until then, the TUI builds that one call in its own request plumbing (`components/peers.rs`, `Request::AnswerPeerRequest`): with no attachments it calls the typed client exactly as today; with attachments it calls `ClientT::request("answer_peer_request", rpc_params![session, reply_to, text, files])`. Not run against an engine: one without E1b should refuse the extra parameter with its own params error, not drop the files silently. Once E1b lands, the second arm can become the typed call.
+
 ### Tests and gates
 Logs in `/tmp/199-uit/`, label `199-uit`.
 - New: `components::files::tests` 6 (receiving placeholders under the card and the hidden live echo; received and failed notice rows; ended-share rows in history and live, malformed `unreadable`, other errors untouched; controls and bidi stripped; live `PeerDelivered.files`; `ContactFileChanged` progress and the four outgoing states under the right call), `ui::tests::file_lines_paint_without_markup_or_controls` (all five forms through the real paint), and `model::tests::communication_precedence_and_exact_answer` extended with the attach gating (unknown, elsewhere, relative, here, and the files carried into the answer request). Fixtures use the engine's own `files::placeholders`, `notice` and `ended_notice`.
-- `mbx check --tests -p tui`: 0 errors, 0 warnings (13 s warm; 6 m 21 s cold).
-- `mbx clippy -p tui --no-deps --tests -- -D warnings`: only the known `components/mcp.rs:24` (`large_enum_variant`), 147 s; with `-A clippy::large_enum_variant`: clean, 168 s.
-- `mbx test -p tui --no-run` 9 m 15 s, then bare `mbx test -p tui` 11 s: lib 244 passed, `dependency_limit` 1, `no_emoji` 1, 0 failed.
+- `mbx check --tests -p tui`: 0 errors, 0 warnings (13 s warm; 6 m 21 s cold; 11 s after the 4th-parameter change).
+- `mbx clippy -p tui --no-deps --tests -- -D warnings`: only the known `components/mcp.rs:24` (`large_enum_variant`), 147 s; with `-A clippy::large_enum_variant`: clean, 168 s (13 s after the 4th-parameter change).
+- `mbx test -p tui --no-run` 9 m 15 s (17 s after the change), then bare `mbx test -p tui` 11 s (6 s): lib 244 passed, `dependency_limit` 1, `no_emoji` 1, 0 failed.
