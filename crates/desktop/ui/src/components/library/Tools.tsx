@@ -76,8 +76,8 @@ type Actions = {
   gate: Action<{ server: string; tool: string | null; gate: Gate | null }, null>
   hidden: Action<{ names: string[]; hidden: boolean }, null>
   switchTo: Action<{ server: McpServer; to: SwitchState }, void>
-  /** The sign-in URL when it must be opened on the node (over link), else null: it opened here. */
-  login: Action<string, string | null>
+  /** The sign-in URL the engine opened on its host, and whether that host is this machine (`local`). */
+  login: Action<string, { url: string; local: boolean }>
   logout: Action<string, null>
   home: Action<{ server: string; action: McpHomeAction }, null>
   remove: Action<string, null>
@@ -119,14 +119,9 @@ function useMcpActions(session: string | null): Actions {
       },
       { keys },
     ),
-    // As Settings' provider logins: over link the daemon opens its own browser on the engine (31 §9), so the URL is
-    // only shown here.
-    login: useAction(async (server: string) => {
-      const url = await api.mcp_login(server)
-      if (active !== LOCAL) return url
-      window.open(url, '_blank')
-      return null
-    }),
+    // As Settings' provider logins: the engine's `mcp_login` opens the browser on its own host (here, or the node over
+    // link, 31 §9), so the URL is only shown here; opening it here too would start a second sign-in.
+    login: useAction(async (server: string) => ({ url: await api.mcp_login(server), local: active === LOCAL })),
     logout: useAction((server: string) => api.mcp_logout(server), { keys }),
     // 187: which machine runs it (`mcp/homes.yaml`).
     home: useAction((v: { server: string; action: McpHomeAction }) => api.set_mcp_home(v.server, v.action), { keys }),
@@ -266,7 +261,7 @@ function ServerRow({
   act: Actions
 }) {
   const [open, setOpen] = useState(false)
-  const [remote, setRemote] = useState<string | null>(null)
+  const [pending, setPending] = useState<{ url: string; local: boolean } | null>(null)
   const engineName = useConnection((st) => st.info?.name)
   const sw = serverSwitch(s)
   const live = s.tools.some((t) => t.registered !== null)
@@ -363,7 +358,7 @@ function ServerRow({
               size="sm"
               disabled={act.login.isPending || act.logout.isPending}
               onClick={() =>
-                s.auth === 'required' ? act.login.mutate(s.name, { onSuccess: setRemote }) : act.logout.mutate(s.name)
+                s.auth === 'required' ? act.login.mutate(s.name, { onSuccess: setPending }) : act.logout.mutate(s.name)
               }
             >
               {s.auth === 'required' ? 'Log in' : 'Log out'}
@@ -373,10 +368,10 @@ function ServerRow({
         {machines && homeActions(s, machines).map((a) => <HomeButton key={a.label} server={s.name} action={a} act={act} />)}
       </div>
       {s.reason && <p className="mt-1 ml-6 text-[13px] break-words text-fg-tertiary">{s.reason}</p>}
-      {remote && s.auth === 'required' && (
+      {pending && s.auth === 'required' && (
         <p className="mt-1 ml-6 text-[13px] text-fg-secondary">
-          Sign in from the node ({engineName ?? 'node'}):{' '}
-          <code className="select-all break-all font-mono text-xs">{remote}</code>
+          {pending.local ? "Browser didn't open?" : `Sign in from the node (${engineName ?? 'node'}):`}{' '}
+          <code className="select-all break-all font-mono text-xs">{pending.url}</code>
         </p>
       )}
       <CollapsibleContent className="mt-2 ml-6">
