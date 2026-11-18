@@ -1156,6 +1156,11 @@ fn presence(auth: &Auth) -> Vec<Present> {
             ..row("opencode-go", "api_key", auth.opencode_go_key().is_some())
         },
         Present {
+            poll: Some(Source::Xai),
+            account: login_account("xai"),
+            ..row("xai", "oauth", auth.oauth.load("xai").is_some())
+        },
+        Present {
             headers: false,
             poll: Some(Source::DeepSeek),
             ..row(

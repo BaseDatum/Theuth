@@ -30,17 +30,19 @@ pub(crate) enum Source {
     OpenRouter,
     OpencodeGo,
     DeepSeek,
+    Xai,
     Probe,
 }
 
 impl Source {
-    pub(crate) const ALL: [Source; 7] = [
+    pub(crate) const ALL: [Source; 8] = [
         Source::Local,
         Source::Codex,
         Source::Claude,
         Source::OpenRouter,
         Source::OpencodeGo,
         Source::DeepSeek,
+        Source::Xai,
         Source::Probe,
     ];
 
@@ -53,6 +55,7 @@ impl Source {
             Source::OpenRouter => "openrouter",
             Source::OpencodeGo => "opencode-go",
             Source::DeepSeek => "deepseek",
+            Source::Xai => "xai",
         }
     }
 
@@ -64,6 +67,7 @@ impl Source {
             Source::OpenRouter => Some("openrouter:api_key"),
             Source::OpencodeGo => Some("opencode-go:api_key"),
             Source::DeepSeek => Some("deepseek:api_key"),
+            Source::Xai => Some("xai:oauth"),
             Source::Local | Source::Probe => None,
         }
     }
@@ -242,6 +246,7 @@ pub(crate) fn has_credential(source: Source, auth: &Auth) -> bool {
         Source::OpenRouter => auth.openrouter_key().is_some(),
         Source::OpencodeGo => auth.opencode_go_key().is_some(),
         Source::DeepSeek => key(auth, "deepseek", "DEEPSEEK_API_KEY").is_some(),
+        Source::Xai => auth.oauth.load("xai").is_some(),
         Source::Probe => anthropic_key(auth).is_some(),
     }
 }
@@ -340,6 +345,29 @@ pub(crate) async fn fetch(
             )
             .await?;
             parse_deepseek(&v).map(Some).map_err(PollError::Hard)
+        }
+        Source::Xai => {
+            if auth.oauth.load("xai").is_none() {
+                return Ok(None);
+            }
+            let t = access(auth, oauth::XAI)
+                .await
+                .map_err(|e| token_error("xai", &e))?;
+            // The Grok CLI's own header: billing sits behind the same product gate as chat.
+            let headers = [
+                bearer(&t.access_token),
+                ("x-xai-token-auth", "xai-grok-cli".to_owned()),
+            ];
+            let credits = get_json(http, XAI_BILLING_CREDITS, &headers, Some("xai")).await?;
+            let monthly = if xai_wants_monthly(&credits, now_ms) {
+                Some(get_json(http, XAI_BILLING, &headers, Some("xai")).await?)
+            } else {
+                None
+            };
+            let mut data =
+                parse_xai(&credits, monthly.as_ref(), now_ms).map_err(PollError::Hard)?;
+            data.account = t.account_id.as_deref().map(truncate_account);
+            Ok(Some(data))
         }
         Source::Local | Source::Probe => Ok(None),
     }
@@ -633,6 +661,105 @@ pub(crate) fn parse_claude(v: &Value) -> Result<PollData, String> {
     Ok(data)
 }
 
+/// SuperGrok billing as the Grok CLI reads it (oh-my-pi `usage/xai-oauth.ts`):
+/// `?format=credits` is the weekly credit shape; the bare URL is the monthly
+/// included quota of a unified-billing account.
+const XAI_BILLING_CREDITS: &str = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
+const XAI_BILLING: &str = "https://cli-chat-proxy.grok.com/v1/billing";
+
+/// The weekly period of a credits payload, `(start, end)` ms.
+fn xai_week(c: &Value) -> Option<(u64, u64)> {
+    let p = c.get("currentPeriod")?;
+    let weekly = p
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|t| t.to_ascii_uppercase().contains("WEEK"));
+    let (start, end) = (iso_ms(p, "start")?, iso_ms(p, "end")?);
+    (weekly && end > start).then_some((start, end))
+}
+
+/// A unified-billing account without a weekly percent keeps its usage on
+/// the monthly URL; so does a payload with no usable weekly period.
+fn xai_wants_monthly(credits: &Value, now_ms: u64) -> bool {
+    let c = credits.get("config").unwrap_or(&Value::Null);
+    let unified = c.get("isUnifiedBillingUser").and_then(Value::as_bool) == Some(true);
+    let percent = f64_at(c, "creditUsagePercent").is_some();
+    xai_week(c).is_none_or(|(_, end)| !percent && (unified || end <= now_ms))
+}
+
+/// `{"val": n}`, xAI's amount wrapper.
+fn xai_val(c: &Value, key: &str) -> Option<f64> {
+    c.get(key).and_then(|v| f64_at(v, "val")).filter(|v| *v >= 0.0)
+}
+
+/// SuperGrok usage: the weekly credit percent (missing = 0 while the period
+/// runs) with one window per product, else the monthly included quota.
+pub(crate) fn parse_xai(
+    credits: &Value,
+    monthly: Option<&Value>,
+    now_ms: u64,
+) -> Result<PollData, String> {
+    let mut data = PollData::default();
+    let c = credits.get("config").unwrap_or(&Value::Null);
+    if let Some((start, end)) = xai_week(c) {
+        let percent = f64_at(c, "creditUsagePercent");
+        // A missing percent means nothing spent yet, unless the account
+        // keeps its usage on the monthly quota instead.
+        if let Some(pct) = percent.or((monthly.is_none() && end > now_ms).then_some(0.0)) {
+            let window = |id: String, label: String, pct: f64| UsageWindow {
+                id,
+                label,
+                used_fraction: pct / 100.0,
+                resets_at_ms: Some(end),
+                window_secs: Some((end - start) / 1000),
+            };
+            data.windows
+                .push(window("weekly".into(), "Weekly".into(), pct));
+            for p in c
+                .get("productUsage")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let Some(name) = p.get("product").and_then(Value::as_str) else {
+                    continue;
+                };
+                let name = match name {
+                    "GrokBuild" => "Grok Build",
+                    "Api" => "API",
+                    n => n,
+                };
+                let pct = f64_at(p, "usagePercent").unwrap_or(0.0);
+                data.windows
+                    .push(window(format!("weekly:{name}"), format!("Weekly · {name}"), pct));
+            }
+        }
+    }
+    if let Some(m) = monthly.and_then(|m| m.get("config"))
+        && let (Some(limit), Some(used)) = (xai_val(m, "monthlyLimit"), xai_val(m, "used"))
+        && limit > 0.0
+        && let (Some(start), Some(end)) =
+            (iso_ms(m, "billingPeriodStart"), iso_ms(m, "billingPeriodEnd"))
+        && end > start
+    {
+        data.windows.push(UsageWindow {
+            id: "monthly".into(),
+            label: "Monthly".into(),
+            used_fraction: used / limit,
+            resets_at_ms: Some(end),
+            window_secs: Some((end - start) / 1000),
+        });
+    }
+    if data.windows.is_empty() {
+        return Err("xAI billing: unexpected response shape".into());
+    }
+    data.limited = data.windows.iter().any(|w| w.used_fraction >= 1.0)
+        && xai_val(c, "onDemandCap").is_none_or(|cap| {
+            cap <= xai_val(c, "onDemandUsed").unwrap_or(0.0)
+        });
+    Ok(data)
+}
+
 /// `GET /api/v1/key` (recon §3.5): credits are USD.
 pub(crate) fn parse_openrouter(v: &Value) -> Result<PollData, String> {
     let d = v
@@ -877,6 +1004,42 @@ mod tests {
         assert_eq!((b.used, b.limit), (Some(12.34), Some(50.0)));
         assert!((b.remaining.unwrap() - 37.66).abs() < 1e-9);
         assert!(parse_claude(&json!({"error": {"type": "x"}})).is_err());
+    }
+
+    /// SuperGrok payloads as oh-my-pi's tests record them.
+    #[test]
+    fn xai_weekly_credits_then_unified_monthly() {
+        let now = iso_ms(&json!({"t": "2026-07-25T00:00:00Z"}), "t").unwrap();
+        let weekly = json!({"config": {
+            "creditUsagePercent": 11,
+            "currentPeriod": {"start": "2026-07-23T11:11:10.769917+00:00",
+                "end": "2026-07-30T11:11:10.769917+00:00", "type": "USAGE_PERIOD_TYPE_WEEKLY"},
+            "productUsage": [{"product": "GrokBuild", "usagePercent": 9}, {"product": "Api", "usagePercent": 2}],
+        }});
+        assert!(!xai_wants_monthly(&weekly, now));
+        let d = parse_xai(&weekly, None, now).unwrap();
+        let w: Vec<_> = d.windows.iter().map(|w| (w.label.as_str(), w.used_fraction)).collect();
+        assert_eq!(w, [("Weekly", 0.11), ("Weekly · Grok Build", 0.09), ("Weekly · API", 0.02)]);
+        assert_eq!(d.windows[0].window_secs, Some(604_800));
+        assert!(!d.limited);
+
+        // Unified billing: no weekly percent; the monthly URL holds the usage.
+        let unified = json!({"config": {
+            "currentPeriod": {"start": "2026-07-23T11:11:10.769917+00:00",
+                "end": "2026-07-30T11:11:10.769917+00:00", "type": "USAGE_PERIOD_TYPE_WEEKLY"},
+            "isUnifiedBillingUser": true, "onDemandCap": {"val": 0},
+        }});
+        assert!(xai_wants_monthly(&unified, now));
+        let monthly = json!({"config": {"monthlyLimit": {"val": 15000}, "used": {"val": 1650},
+            "billingPeriodStart": "2026-07-01T00:00:00+00:00", "billingPeriodEnd": "2026-08-01T00:00:00+00:00"}});
+        let d = parse_xai(&unified, Some(&monthly), now).unwrap();
+        assert_eq!(d.windows.len(), 1);
+        assert_eq!((d.windows[0].label.as_str(), d.windows[0].used_fraction), ("Monthly", 0.11));
+
+        // A fresh week with nothing spent yet reads 0, not an error.
+        let fresh = json!({"config": {"currentPeriod": weekly["config"]["currentPeriod"].clone()}});
+        assert_eq!(parse_xai(&fresh, None, now).unwrap().windows[0].used_fraction, 0.0);
+        assert!(parse_xai(&json!({"config": {}}), None, now).is_err());
     }
 
     #[test]
