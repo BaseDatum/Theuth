@@ -525,6 +525,8 @@ fn thought_connection(opts: ChatOptions, label: &str) -> ChatOptions {
 /// Keep the provider detail, but explain the failed authentication and recovery.
 /// A Zen `ModelProtocolUnsupported` body means the model was reached through a
 /// user gateway that speaks only chat completions (85 §0.8): point at the built-in.
+/// A Claude Code too-old refusal raises the live client version
+/// ([`crate::claude_code`]); the loop resends a turn's call, others say to resend.
 fn provider_error(error: genai::Error) -> String {
     match error {
         genai::Error::AdapterNotSupported {
@@ -538,6 +540,8 @@ fn provider_error(error: genai::Error) -> String {
             let text = error.to_string();
             if text.contains("ModelProtocolUnsupported") {
                 format!("{text}\n{BUILTIN_HINT}")
+            } else if let Some(v) = crate::claude_code::global().heal(&text) {
+                format!("{text}\ntheuth updated its Claude Code client version to {v}; resend.")
             } else {
                 text
             }

@@ -84,6 +84,7 @@ pub mod ask;
 pub mod attach;
 mod aws;
 mod backend;
+mod claude_code;
 pub mod clock;
 pub mod communication;
 pub mod compact;
