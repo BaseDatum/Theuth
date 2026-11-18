@@ -1,17 +1,20 @@
 //! The Claude Code client identity an Anthropic subscription (OAuth) request
-//! claims: `User-Agent: claude-cli/<version> (external, cli)` and the
-//! `anthropic-beta` list. Anthropic refuses a version it deems too old (400
+//! claims: `User-Agent: claude-cli/<version> (external, cli)`, the
+//! `anthropic-beta` list and the body's shape ([`wire`]). Anthropic refuses a version it deems too old (400
 //! `claude_code_version_too_old`), so the version is live, not compiled in:
 //!
-//! - `<data_dir>/claude-code.json` (`version`, `betas`, `source`,
-//!   `checked_at`, `pin`), re-read when its mtime changes (stat at most every
+//! - `<data_dir>/claude-code.json` (`version`, `betas`, `system`,
+//!   `tool_prefix`, `system_replace`, `source`, `checked_at`, `pin`), re-read when its mtime changes (stat at most every
 //!   [`RECHECK`]);
 //! - [`Store::heal`]: the refusal's required version, persisted;
 //! - [`start`]: npm's `latest` at startup and every 24 h, never a downgrade.
 //!
 //! The newest of the compiled default, the file and a learned value wins; a
 //! file with `"pin": true` wins outright. `betas`, when set, replaces
-//! [`DEFAULT_BETAS`]. See docs/design/cc-version-notes.md.
+//! [`DEFAULT_BETAS`]; `system`, `tool_prefix` and `system_replace`, when set,
+//! replace [`wire::Wire`]'s defaults. See docs/design/cc-version-notes.md.
+
+pub(crate) mod wire;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -23,6 +26,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::supervisor::Auth;
+use wire::Wire;
 
 /// The npm release current when this was built (2026-11-18).
 pub(crate) const DEFAULT_VERSION: Version = Version(2, 1, 327);
@@ -66,6 +70,15 @@ struct Entry {
     version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     betas: Option<String>,
+    /// The first system block; `""` sends none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    system: Option<String>,
+    /// The tool-name prefix; `""` sends names as they are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_prefix: Option<String>,
+    /// `[from, to]` pairs replaced in the system text, in order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    system_replace: Option<Vec<(String, String)>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -79,6 +92,7 @@ struct Entry {
 pub(crate) struct Identity {
     pub(crate) version: Version,
     pub(crate) betas: String,
+    pub(crate) wire: Wire,
 }
 
 impl Identity {
@@ -140,7 +154,17 @@ impl State {
         })
     }
 
-    /// Adopt `v` and persist it (keeping the file's `betas`).
+    fn wire(&self) -> Wire {
+        let d = Wire::default();
+        let e = &self.entry;
+        Wire {
+            system: e.system.clone().unwrap_or(d.system),
+            tool_prefix: e.tool_prefix.clone().unwrap_or(d.tool_prefix),
+            replace: e.system_replace.clone().unwrap_or(d.replace),
+        }
+    }
+
+    /// Adopt `v` and persist it (keeping the file's other fields).
     fn raise(&mut self, v: Version, source: String) {
         self.learned = Some(v);
         let Some(path) = self.path.clone() else {
@@ -148,10 +172,10 @@ impl State {
         };
         let entry = Entry {
             version: Some(v.to_string()),
-            betas: self.entry.betas.clone(),
             source: Some(source),
             checked_at: Some(chrono::Utc::now().to_rfc3339()),
             pin: false,
+            ..self.entry.clone()
         };
         let tmp = path.with_extension("json.tmp");
         let written = serde_json::to_vec_pretty(&entry)
@@ -193,6 +217,7 @@ impl Store {
                 .clone()
                 .filter(|b| !b.trim().is_empty())
                 .unwrap_or_else(|| DEFAULT_BETAS.to_owned()),
+            wire: st.wire(),
         }
     }
 
@@ -399,6 +424,15 @@ mod tests {
         let id = s.current();
         assert_eq!(id.user_agent(), "claude-cli/3.0.1 (external, cli)");
         assert_eq!(id.betas, "oauth-2025-04-20,x-1");
+        assert_eq!(id.wire, Wire::default());
+        write(
+            &dir,
+            serde_json::json!({"system": "", "tool_prefix": "x_", "system_replace": [["a", "b"]]}),
+        );
+        s.0.lock().checked = None;
+        let w = s.current().wire;
+        assert_eq!((w.system.as_str(), w.tool_prefix.as_str()), ("", "x_"));
+        assert_eq!(w.replace, [("a".to_owned(), "b".to_owned())]);
     }
 
     /// The loop resends once when `outdated` after the heal; a second
@@ -406,7 +440,10 @@ mod tests {
     #[test]
     fn heal_persists_and_allows_one_resend() {
         let dir = tempfile::tempdir().unwrap();
-        write(&dir, serde_json::json!({"betas": "oauth-2025-04-20"}));
+        write(
+            &dir,
+            serde_json::json!({"betas": "oauth-2025-04-20", "tool_prefix": ""}),
+        );
         let s = store(&dir);
         // Refused at the default (2.1.327) for 2.1.400.
         let refusal = REFUSAL
@@ -425,6 +462,7 @@ mod tests {
             Some("oauth-2025-04-20"),
             "a heal keeps betas"
         );
+        assert_eq!(e.tool_prefix.as_deref(), Some(""), "and the wire fields");
         assert!(s.outdated(&refusal), "sent 2.1.327 < 2.1.400: resend");
         assert_eq!(
             s.current().user_agent(),

@@ -389,8 +389,16 @@ impl Backend {
                 .await
             }
             Backend::Genai { client, auth } => {
-                let (client, spec, label, limit_auth) =
+                let (client, spec, label, limit_auth, subscription) =
                     genai_request(client, resolved, auth).await?;
+                // An Anthropic subscription call is shaped as Claude Code's
+                // (`claude_code::wire`); the reply gets theuth's tool names back.
+                let (req, names) = if subscription {
+                    let (req, names) = crate::claude_code::global().current().wire.outgoing(req);
+                    (req, Some(names))
+                } else {
+                    (req, None)
+                };
                 let tap = crate::limits::HeaderTap::new(&label, limit_auth, slug(resolved));
                 // Go with a key: its headers, and its reported charge read off the frames.
                 let go_key = (resolved.provider.as_deref() == Some("opencode-go"))
@@ -418,6 +426,9 @@ impl Backend {
                     .await
                     .map(|r| -> EventStream {
                         Box::pin(r.stream.map(move |mut ev| {
+                            if let (Ok(e), Some(n)) = (&mut ev, &names) {
+                                *e = n.event(std::mem::replace(e, ChatStreamEvent::Start));
+                            }
                             if let (Ok(ChatStreamEvent::End(end)), Some(c)) = (&mut ev, &go_cost) {
                                 c.fill(end);
                             }
@@ -447,12 +458,14 @@ impl Backend {
     }
 }
 
-/// The client and spec `stream` sends, with the existing limits attribution.
+/// The client and spec `stream` sends, with the existing limits attribution,
+/// and whether the call goes out on the Anthropic subscription — the
+/// condition under which `supervisor::client`'s resolver swaps in its bearer.
 async fn genai_request<'a>(
     client: &'a Client,
     resolved: &Resolved,
     auth: &Auth,
-) -> Result<(&'a Client, ModelSpec, String, &'static str), String> {
+) -> Result<(&'a Client, ModelSpec, String, &'static str, bool), String> {
     // 160 §5.4: `limit_auth` names the provider row the response headers feed.
     match target_for(resolved, auth) {
         Some(t) => {
@@ -472,6 +485,7 @@ async fn genai_request<'a>(
                 .into(),
                 label,
                 limit_auth,
+                false,
             ))
         }
         None => {
@@ -485,6 +499,7 @@ async fn genai_request<'a>(
                 resolved.genai.as_str().into(),
                 connection_label(resolved, kind),
                 crate::limits::auth_mode(kind, &target.auth, auth.login("xai")),
+                kind == AdapterKind::Anthropic && auth.login("anthropic"),
             ))
         }
     }
@@ -617,8 +632,16 @@ mod tests {
 
     async fn routed_target(resolved: &Resolved, auth: &Auth) -> ServiceTarget {
         let shared = crate::supervisor::client(auth.clone()).unwrap();
-        let (client, spec, label, limit_auth) =
+        let (client, spec, label, limit_auth, subscription) =
             genai_request(&shared, resolved, auth).await.unwrap();
+        // Every login is in force here: only the built-in Anthropic id is
+        // shaped as Claude Code's; a gateway or Zen target never is.
+        assert_eq!(
+            subscription,
+            target_for(resolved, auth).is_none() && ns(&resolved.genai) == "anthropic",
+            "{}",
+            resolved.id
+        );
         if target_for(resolved, auth).is_some() {
             assert_eq!(label, resolved.provider.as_deref().unwrap());
             assert_eq!(

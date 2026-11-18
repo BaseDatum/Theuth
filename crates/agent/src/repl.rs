@@ -2332,7 +2332,7 @@ mod tests {
         }
         let scratch = crate::TestDir::new("image-guidance");
         let prompt = crate::frame::baseline(
-            &scratch.0, None, "", "", false, None, None, false, false, false,
+            &scratch.0, None, "", "", None, None, false, false, false,
         );
         let guidance = prompt.split("## Guidance").nth(1).unwrap_or_default();
         assert!(

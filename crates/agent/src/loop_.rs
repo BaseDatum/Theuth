@@ -4981,8 +4981,6 @@ impl Turn {
             prompt_blocks(prompts, toolset.as_ref(), attended),
             bound,
         );
-        let genai = self.model().model.genai;
-        let claude_code = ns(&genai) == "anthropic" && self.shared.auth.login("anthropic");
         let subagent_model = self
             .shared
             .subagent_model
@@ -5040,7 +5038,6 @@ impl Turn {
                 identity.as_deref(),
                 &peer_line,
                 &blocks,
-                claude_code,
                 subagent_model.as_deref(),
                 subagent_effort.as_deref(),
                 attended,
@@ -10341,7 +10338,7 @@ mod tests {
         let skills_dir = skills::dir(&data_dir);
         std::fs::create_dir_all(&skills_dir).unwrap();
         let bare = frame::baseline(
-            &data_dir, None, "", "", false, None, None, true, false, false,
+            &data_dir, None, "", "", None, None, true, false, false,
         );
         assert!(bare.starts_with("You are theuth, a meta-harness"));
         assert!(!bare.contains("## Skills"));
@@ -10358,7 +10355,6 @@ mod tests {
             None,
             "## Peers\npeer text",
             "Plugin block.",
-            false,
             None,
             None,
             true,

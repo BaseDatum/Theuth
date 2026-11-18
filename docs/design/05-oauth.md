@@ -152,15 +152,19 @@ Anthropic keeps the adapter and swaps only the auth: URL
 Bearer`, `anthropic-version: 2023-06-01`, `anthropic-beta:
 claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14`,
 `User-Agent: claude-cli/2.1.257 (external, cli)`, `x-app: cli`,
-`anthropic-dangerous-direct-browser-access: true`. The loop prepends `You
-are Claude Code, Anthropic's official CLI for Claude.` to the system prompt
-when the login is in force (`Auth::login("anthropic")`), which is what the
-backend checks. Deliberately **not** replicated from oh-my-pi's fuller
+`anthropic-dangerous-direct-browser-access: true`. The body is shaped in
+`backend::Backend::stream` when the login is in force
+(`Auth::login("anthropic")`): `You are Claude Code, Anthropic's official CLI
+for Claude.` as its own first system block, and every tool named `mcp__<name>`
+(restored on the reply). Without that shape Anthropic treats the call as a
+third-party app and answers a bare 429 `rate_limit_error` (2026-11-18). The
+rules live in `claude_code::wire`, overridable from `claude-code.json`; see
+cc-version-notes.md. Deliberately **not** replicated from oh-my-pi's fuller
 fingerprint: the billing-header system block with its xxhash `cch`
-attestation (needs post-serialisation body patching genai cannot do), the
-`_` tool-name prefix, `metadata.user_id`, the Stainless headers. If Anthropic
-starts rejecting the minimal set, those need a genai patch
-(`[patch.crates-io]`, rule 3), not more resolver code.
+attestation (needs post-serialisation body patching genai cannot do),
+`metadata.user_id`, the Stainless headers. If Anthropic starts rejecting
+this set, those need a genai patch (`[patch.crates-io]`, rule 3), not more
+resolver code.
 
 ### 2.5 Cursor transport (crate `cursor`)
 

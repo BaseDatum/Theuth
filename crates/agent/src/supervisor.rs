@@ -8067,16 +8067,6 @@ impl Agents {
         }
     }
 
-    /// Whether the Claude Code identity line leads the system prompt for `model`
-    /// (design doc 05 §2.3): Anthropic namespace with a login in force.
-    fn claude_code(&self, model: &Resolved) -> bool {
-        model
-            .genai
-            .split_once("::")
-            .is_some_and(|(ns, _)| ns == "anthropic")
-            && self.auth.login("anthropic")
-    }
-
     fn skills_dir(&self) -> std::path::PathBuf {
         skills::dir(&self.rt.data_dir)
     }
@@ -8391,7 +8381,6 @@ impl Message<ShowPrompt> for Agents {
 
     async fn handle(&mut self, m: ShowPrompt, _: &mut Context<Self, Self::Reply>) -> String {
         let peers = m.session.map(|s| self.peer_context(s)).unwrap_or_default();
-        let (model, _) = self.resolve_model(&self.default_model);
         let registry = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
             .ok()
             .flatten();
@@ -8435,7 +8424,6 @@ impl Message<ShowPrompt> for Agents {
             identity.as_deref(),
             &peers,
             &blocks,
-            self.claude_code(&model),
             subagent_model.as_deref(),
             subagent_effort.as_deref(),
             attended,

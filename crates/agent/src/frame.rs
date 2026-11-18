@@ -15,9 +15,6 @@ use runtime::SessionId;
 use crate::endless::ViewBlock;
 use crate::skills;
 
-/// Identity line the Claude Code login requires first in the system prompt (design doc 05 §2.3).
-const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
-
 /// theuth's own opening sentence: what a user session and theuth's desk are.
 const THEUTH_HEADER: &str = "You are theuth, a meta-harness on the user's machine: an orchestrator that gets work done by delegating it \
 to subagents and to other AI harnesses, then checking and reporting the result. Your own tools are for \
@@ -385,10 +382,9 @@ pub fn strip_reasoning(m: &mut ChatMessage) {
     );
 }
 
-/// The system prompt (design doc 07 §4), rendered once per turn: Claude Code
-/// identity (when `claude_code`), then either theuth's own header +
-/// `<data_dir>/prompt.md` (its `root-only` spans resolved for `attended`, see
-/// [`root_only`]) or, for a roster agent's desk and its work sessions,
+/// The system prompt (design doc 07 §4), rendered once per turn: theuth's
+/// own header + `<data_dir>/prompt.md` (its `root-only` spans resolved for
+/// `attended`, see [`root_only`]) or, for a roster agent's desk and its work sessions,
 /// `identity` verbatim in their place (70 DESK-PROTOCOL: the desk is that
 /// agent, not theuth; `prompt.md` is theuth's charter only), then the
 /// working-directory/date line (with the user's preferred `subagent_model`
@@ -397,7 +393,8 @@ pub fn strip_reasoning(m: &mut ChatMessage) {
 /// filtered for the audience by the caller), static guidance (its "report
 /// visually" sentence only when `attended`). Empty parts skipped, one blank
 /// line between the rest. A pure function of its inputs, so cache-stable for
-/// the session's lifetime.
+/// the session's lifetime. The Claude Code identity an Anthropic login needs
+/// is not part of it: `claude_code::wire` adds it as its own block when sending.
 // Every argument is a distinct per-turn input; a struct would be built at the call sites alone.
 #[allow(clippy::too_many_arguments)]
 pub fn baseline(
@@ -405,7 +402,6 @@ pub fn baseline(
     identity: Option<&str>,
     peer_line: &str,
     plugin_blocks: &str,
-    claude_code: bool,
     subagent_model: Option<&str>,
     subagent_effort: Option<&str>,
     attended: bool,
@@ -417,7 +413,6 @@ pub fn baseline(
         identity,
         peer_line,
         plugin_blocks,
-        claude_code,
         subagent_model,
         subagent_effort,
         attended,
@@ -439,7 +434,6 @@ pub fn baseline_dated(
     identity: Option<&str>,
     peer_line: &str,
     plugin_blocks: &str,
-    claude_code: bool,
     subagent_model: Option<&str>,
     subagent_effort: Option<&str>,
     attended: bool,
@@ -495,11 +489,6 @@ pub fn baseline_dated(
     ]
     .concat();
     [
-        if claude_code {
-            CLAUDE_CODE_IDENTITY
-        } else {
-            ""
-        },
         header.as_str(),
         &standing,
         &skills::always_bodies(&skills_dir, &skills),
@@ -622,7 +611,6 @@ mod tests {
             None,
             "PEER-LINE",
             "PLUGIN-BLOCK",
-            false,
             None,
             None,
             true,
@@ -662,7 +650,6 @@ mod tests {
                 None,
                 "",
                 "",
-                false,
                 m,
                 e,
                 true,
@@ -1133,7 +1120,6 @@ mod tests {
             None,
             "",
             &blocks(true),
-            false,
             None,
             None,
             true,
@@ -1145,7 +1131,6 @@ mod tests {
             None,
             "",
             &blocks(false),
-            false,
             None,
             None,
             false,
@@ -1182,7 +1167,6 @@ mod tests {
             None,
             "",
             "## Tools\nT",
-            false,
             None,
             None,
             true,
@@ -1194,7 +1178,6 @@ mod tests {
             None,
             "",
             "## Tools\nT",
-            false,
             None,
             None,
             false,
@@ -1206,7 +1189,6 @@ mod tests {
             Some("You are Infrastructure (`karol`), an agent on this theuth roster."),
             "",
             "## Tools\nT",
-            false,
             None,
             None,
             false,
@@ -1253,7 +1235,6 @@ mod tests {
             Some(karol),
             "",
             "## Tools\nT",
-            false,
             None,
             None,
             false,
@@ -1283,7 +1264,6 @@ mod tests {
             None,
             "",
             "## Tools\nT",
-            false,
             None,
             None,
             false,
@@ -1310,7 +1290,6 @@ mod tests {
             None,
             "",
             "## Tools\nT",
-            false,
             None,
             None,
             false,

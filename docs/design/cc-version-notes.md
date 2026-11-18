@@ -15,6 +15,65 @@ refusing it for new models:
 The compiled default is now `2.1.327` (npm `latest` that day), and the
 version no longer needs a rebuild to change.
 
+## Body shape (`crates/agent/src/claude_code/wire.rs`)
+
+Headers alone are not enough. On 2026-11-18 every theuth subscription call
+got `429 {"type":"rate_limit_error","message":"Error"}` with the plan at 2 %
+of its week, while Hermes Agent, sending the same headers from the same
+account, was served. The difference was the body: theuth joined the identity
+sentence and its own prompt into one system string and sent bare tool names
+(`python`, `read_file`); Hermes sends the identity as its own first system
+block and names every tool `mcp__<name>`. Anthropic bills a body that does not
+look like Claude Code's as a third-party app (extra usage; none left → 429).
+
+`Wire::outgoing` runs on every subscription call in `Backend::stream` (the
+one place model calls leave, so titles, compaction, the advisor and contact
+sessions get it too) and does:
+
+1. The identity as a separate first system message (`system`). A request
+   built with `ChatRequest::system` has it moved after the identity. When no
+   system message carries a cache mark, the last one gets `Ephemeral`, since
+   genai joins unmarked system messages into one string.
+2. `system_replace` pairs, applied to the system text, in order (none by default).
+3. `tool_prefix` (`mcp__`) on every tool name lacking it, in the tool list
+   and in replayed tool calls/results. `Names::event` restores names on the
+   stream: the offered tool's own name, else the prefix stripped (a runtime
+   function called directly is still bridged).
+
+Each rule is a `claude-code.json` field, live like `betas`:
+
+```json
+{ "system": "You are Claude Code, Anthropic's official CLI for Claude.",
+  "tool_prefix": "mcp__",
+  "system_replace": [["You are theuth, a meta-harness", "You are a harness"]] }
+```
+
+`""` turns `system` or `tool_prefix` off. A heal or npm update rewrites the
+version and keeps every other field.
+
+### If this stops being enough: what oh-my-pi sends
+
+oh-my-pi (`packages/ai/src/providers/anthropic.ts`, `anthropic-headers.ts`,
+`anthropic-identity.ts`, `claude-code-fingerprint.ts`) mirrors Claude Code
+far more closely and is maintained against it; it is the reference for the
+next requirement. Beyond our rules it sends:
+
+- system[0] = `x-anthropic-billing-header: cc_version=<ver>.<sha256 suffix>;
+  cc_entrypoint=cli; cch=<xxhash64 of the serialized body>;`, before the
+  identity block (system[1]). The `cch` hash covers the final body bytes, so
+  it needs a genai hook after serialization.
+- tool prefix `_` (not `mcp__`), except Anthropic's built-ins (`web_search`,
+  `code_execution`, `text_editor`, `computer`). Either prefix passes today;
+  set `tool_prefix` to `_` to follow omp.
+- `metadata.user_id`: a JSON string carrying `device_id`, `account_uuid` and
+  `session_id`.
+- the `X-Stainless-*` headers, `X-Claude-Code-Session-Id`, and a longer beta
+  list (`context-management-2025-06-27`, `prompt-caching-scope-2026-01-05`,
+  `effort-2025-11-24`, `fallback-credit-2026-06-01`, …). Betas are already a
+  `claude-code.json` field.
+- never `context-1m-2025-08-07`: a subscription without long-context credit
+  gets a hard 429 ("Usage credits are required for long context requests").
+
 ## Sources and order (`crates/agent/src/claude_code.rs`)
 
 1. Compiled default `DEFAULT_VERSION` = 2.1.327, betas `DEFAULT_BETAS`.
