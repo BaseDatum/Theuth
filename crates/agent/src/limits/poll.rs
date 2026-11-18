@@ -240,7 +240,7 @@ pub(crate) fn has_credential(source: Source, auth: &Auth) -> bool {
         Source::Codex => auth.oauth.load("openai").is_some(),
         Source::Claude => auth.oauth.load("anthropic").is_some(),
         Source::OpenRouter => auth.openrouter_key().is_some(),
-        Source::OpencodeGo => key(auth, "opencode_go", "OPENCODE_GO_API_KEY").is_some(),
+        Source::OpencodeGo => auth.opencode_go_key().is_some(),
         Source::DeepSeek => key(auth, "deepseek", "DEEPSEEK_API_KEY").is_some(),
         Source::Probe => anthropic_key(auth).is_some(),
     }
@@ -316,12 +316,12 @@ pub(crate) async fn fetch(
             parse_openrouter(&v).map(Some).map_err(PollError::Hard)
         }
         Source::OpencodeGo => {
-            let Some(k) = key(auth, "opencode_go", "OPENCODE_GO_API_KEY") else {
+            let Some(k) = auth.opencode_go_key() else {
                 return Ok(None);
             };
             let v = get_json(
                 http,
-                "https://opencode.ai/zen/go/v1/usage",
+                "https://opencode.ai/inference/go/v1/usage",
                 &[bearer(&k)],
                 None,
             )
@@ -677,7 +677,8 @@ pub(crate) fn parse_openrouter(v: &Value) -> Result<PollData, String> {
     Ok(data)
 }
 
-/// `GET /zen/go/v1/usage` (recon §3.6): `usage.{rolling,weekly,monthly}`.
+/// `GET /inference/go/v1/usage` (recon §3.6, then at `/zen/go/v1/usage`; both
+/// routes answer 401 keyless, undocumented): `usage.{rolling,weekly,monthly}`.
 pub(crate) fn parse_opencode_go(v: &Value) -> Result<PollData, String> {
     let u = v
         .get("usage")

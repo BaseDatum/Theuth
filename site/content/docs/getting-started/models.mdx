@@ -46,13 +46,16 @@ The vault name is the provider's genai adapter name, which is the models.dev id 
 | `cohere` | `cohere` | `COHERE_API_KEY` |
 | `openrouter` | `openrouter` (legacy `open_router` also read) | `OPENROUTER_API_KEY` (or `OPEN_ROUTER_API_KEY`) |
 | `opencode` (OpenCode Zen) | `opencode` | `OPENCODE_API_KEY` |
+| `opencode-go` (OpenCode Go) | `opencode-go` (legacy `opencode_go` also read) | `OPENCODE_GO_API_KEY` |
 | `togetherai` | `together` | `TOGETHER_API_KEY` |
 | `fireworks-ai` | `fireworks` | `FIREWORKS_API_KEY` |
 | `moonshotai` | `moonshot` | `MOONSHOT_API_KEY` |
 | `amazon-bedrock` | `bedrock_api` (bearer key, optional) | see Bedrock below |
 | `ollama` | — (no key) | — |
 
-The bundled catalog also covers `alibaba` (`qwen_cloud`), `alibaba-cn` (`aliyun`), `zai`, `nebius`, `minimax`, `aihubmix`, `github-copilot` (`github_copilot`), `google-vertex` (`vertex`), `ollama-cloud` (`ollama_cloud`) and `opencode-go` (`opencode_go`); the vault name is the one in parentheses where it differs. Providers genai cannot route are not in the catalog at all.
+The bundled catalog also covers `alibaba` (`qwen_cloud`), `alibaba-cn` (`aliyun`), `zai`, `nebius`, `minimax`, `aihubmix`, `github-copilot` (`github_copilot`), `google-vertex` (`vertex`) and `ollama-cloud` (`ollama_cloud`); the vault name is the one in parentheses where it differs. Providers genai cannot route are not in the catalog at all.
+
+OpenCode Go (`opencode-go/<id>`, e.g. `opencode-go/kimi-k3`) is the OpenCode Console subscription, separate from Zen's pay-as-you-go. Requests go to `https://opencode.ai/inference/go` under the model's API family from the catalog (`/openai/v1/…` for chat completions and Responses, `/anthropic/v1/messages`, `/google/v1beta/…`; chat completions when the catalog names none), with the key as a Bearer, `User-Agent: theuth/<version>` and the theuth session id as `x-opencode-session`, which Go requires. The cost recorded per call is what Go reports (`usage.cost`: $0 within the plan's limits). Free-tier `*-free` models answer 403 outside OpenCode and are left out of `/model`. **Refresh models** on its row lists Go's public model endpoint, no key needed.
 
 ### Storing a key
 
@@ -65,7 +68,7 @@ t --secret-list                              # names, versions, notes — never 
 ```
 
 - Terminal UI: `/secrets add anthropic` prompts for the value in a masked field (`/secrets` alone opens the list: `a` add, `r` replace, `h` history, `d` delete).
-- Desktop: **Secrets** under *Library* in the sidebar — a `Name` / `Value` (masked) / `Note` form, with Replace, History and Delete per entry. Settings › Connections › *Built-in providers* has **Set key…** buttons for OpenCode Zen and OpenRouter that store the same `opencode` / `openrouter` secrets.
+- Desktop: **Secrets** under *Library* in the sidebar — a `Name` / `Value` (masked) / `Note` form, with Replace, History and Delete per entry. Settings › Connections › *Built-in providers* has **Set key…** buttons for OpenCode Zen, OpenCode Go and OpenRouter that store the same `opencode` / `opencode-go` / `openrouter` secrets.
 
 A key stored while theuth is running is picked up on the next model call; no restart is needed. The vault, its key store and the `{{secret:NAME}}` placeholder the agent uses are described in [Secrets](/docs/reference/secrets).
 
@@ -95,11 +98,11 @@ Any endpoint that speaks the OpenAI chat API can be added as a named provider:
   provider add  gateway  api key    → (masked)
 ```
 
-or in one line, `/provider add <name> <base-url> <key>`. On the desktop the same form is Settings › Connections › *Gateways* (`Name`, URL, `API key`, **Add**). Names are 1–32 characters, start with a letter, then letters, digits, `_` or `-`; `opencode`, `openrouter`, `open_router`, `zen` and the other built-in names (every catalog adapter such as `anthropic` or `openai`, the OAuth providers, `cursor`, and anything starting `genai_`) are refused because those are built in — set their secret or log in instead.
+or in one line, `/provider add <name> <base-url> <key>`. On the desktop the same form is Settings › Connections › *Gateways* (`Name`, URL, `API key`, **Add**). Names are 1–32 characters, start with a letter, then letters, digits, `_` or `-`; `opencode`, `opencode-go`, `openrouter`, `open_router`, `zen` and the other built-in names (every catalog adapter such as `anthropic` or `openai`, the OAuth providers, `cursor`, and anything starting `genai_`) are refused because those are built in — set their secret or log in instead.
 
 Adding a gateway writes three things: `~/.theuth/providers.yaml` gets `<name>: { base_url: … }`, the key goes into the vault under `<name>`, and theuth calls `GET <base-url>/models` and writes the returned ids into `~/.theuth/models.json` as `<name>/<id>` so they show up in `/model`. Each fetched model is given context, reasoning and image flags from the closest models.dev entry by name (`Qwen/Qwen3-235B` borrows from `qwen3-235b`). If the endpoint returns nothing, the gateway is still saved but no models appear — theuth only logs a warning; add entries to `models.json` by hand in that case.
 
-`/provider` lists the built-ins (OpenCode Zen, OpenRouter, with whether their key is set) and your gateways; `/provider rm <name>` forgets one — its `providers.yaml` entry, its vault key and its `models.json` models. The OpenRouter passthrough options (`agent.openrouter.provider`, `referer`, `title`) are in [Configuration](/docs/reference/configuration).
+`/provider` lists the built-ins (OpenCode Zen, OpenCode Go, OpenRouter, with whether their key is set) and your gateways; `/provider rm <name>` forgets one — its `providers.yaml` entry, its vault key and its `models.json` models. The OpenRouter passthrough options (`agent.openrouter.provider`, `referer`, `title`) are in [Configuration](/docs/reference/configuration).
 
 ### Local models
 

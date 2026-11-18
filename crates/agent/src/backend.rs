@@ -13,7 +13,10 @@ use cursor::chat_stream;
 use futures::{Stream, StreamExt};
 use genai::Headers;
 use genai::adapter::AdapterKind;
-use genai::chat::{ChatOptions, ChatRequest, ChatStreamEvent, StopReason, StreamEnd};
+use genai::chat::{
+    ChatFrameSink, ChatOptions, ChatRequest, ChatStreamEvent, FrameCtx, RawFrameRef, StopReason,
+    StreamEnd, UsageCost, UsageCostSource,
+};
 use genai::resolver::{AuthData, Endpoint};
 use genai::{Client, ModelIden, ModelSpec, ServiceTarget};
 use models::{Protocol, Resolved};
@@ -27,9 +30,13 @@ use crate::supervisor::Auth;
 
 /// Zen's one base URL (85 §0.2); the protocol picks the path under it.
 pub(crate) const ZEN_ENDPOINT: &str = "https://opencode.ai/zen/v1/";
+/// OpenCode Go's base: the API family is in the path ([`go_endpoint`]); the
+/// public model list is `{GO_BASE}v1/models`.
+pub(crate) const GO_BASE: &str = "https://opencode.ai/inference/go/";
 
 /// Appended when a user gateway answers Zen's `ModelProtocolUnsupported` (85 §0.8).
-const BUILTIN_HINT: &str = "built-in provider — set the `opencode` / `openrouter` secret instead";
+const BUILTIN_HINT: &str =
+    "built-in provider — set the `opencode` / `opencode-go` / `openrouter` secret instead";
 
 /// One model call's events, from genai or the Cursor backend.
 pub(crate) type EventStream = Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, String>> + Send>>;
@@ -66,11 +73,15 @@ pub(crate) struct ProtocolTarget {
 }
 
 /// The target for a Zen model (`opencode/*` with a key: kind from the catalog
-/// protocol, else the prefix guess) or a user gateway (kind OpenAI unless its
+/// protocol, else the prefix guess), a Go model (`opencode-go/*` with a key,
+/// [`go_target`]) or a user gateway (kind OpenAI unless its
 /// `<data_dir>/models.json` entry names a `protocol`); `None` lets genai
 /// resolve the id itself.
 pub(crate) fn target_for(resolved: &Resolved, auth: &Auth) -> Option<ProtocolTarget> {
     let provider = resolved.provider.as_deref()?;
+    if provider == "opencode-go" {
+        return auth.opencode_go_key().map(|k| go_target(resolved, k));
+    }
     let zen = (provider == "opencode")
         .then(|| auth.opencode_key())
         .flatten();
@@ -106,6 +117,32 @@ fn protocol_target(
         endpoint: Endpoint::from_owned(gw.base_url),
         auth: AuthData::Key(key),
     })
+}
+
+/// A Go model's target: its catalog protocol's family, else chat completions —
+/// Go serves every text model on every family (it translates), so an unknown
+/// id needs no guess.
+fn go_target(resolved: &Resolved, key: String) -> ProtocolTarget {
+    let kind = resolved
+        .model
+        .as_ref()
+        .and_then(|m| m.protocol)
+        .map_or(AdapterKind::OpenAI, kind_of);
+    ProtocolTarget {
+        kind,
+        endpoint: Endpoint::from_static(go_endpoint(kind)),
+        auth: AuthData::Key(key),
+    }
+}
+
+/// Go's base per API family (Console docs, harnesses § Base URLs); genai
+/// appends `chat/completions`, `responses`, `messages` or `models/<id>:…`.
+fn go_endpoint(kind: AdapterKind) -> &'static str {
+    match kind {
+        AdapterKind::Anthropic => "https://opencode.ai/inference/go/anthropic/v1/",
+        AdapterKind::Gemini => "https://opencode.ai/inference/go/google/v1beta/",
+        _ => "https://opencode.ai/inference/go/openai/v1/",
+    }
 }
 
 /// 177 E4: the Bearer value a keyless local provider's model calls carry.
@@ -176,6 +213,88 @@ pub(crate) fn thinking_off(opts: ChatOptions) -> ChatOptions {
     opts.with_extra_body(serde_json::json!({
         "chat_template_kwargs": {"enable_thinking": false}
     }))
+}
+
+/// OpenCode Go's client rules: theuth's own user agent, the theuth session id
+/// as `x-opencode-session` (a request without it is a 400 `MissingSessionID`),
+/// and the key as a Bearer on every API family (genai's Anthropic and Gemini
+/// adapters send only their own key header). Merged over headers already set.
+fn go_headers(session: SessionId, key: &str, opts: ChatOptions) -> ChatOptions {
+    let mut headers = opts.extra_headers.clone().unwrap_or_default();
+    headers.merge(vec![
+        ("Authorization", format!("Bearer {key}")),
+        (
+            "User-Agent",
+            concat!("theuth/", env!("CARGO_PKG_VERSION")).to_owned(),
+        ),
+        ("x-opencode-session", session.to_string()),
+    ]);
+    opts.with_extra_headers(headers)
+}
+
+/// Go reports what a call charged in `usage.cost` (`usageMetadata.cost` on
+/// Gemini) on its final usage frame — 0 within the plan's limits; genai reads
+/// it on the OpenAI families only. Forwards every frame to the limits tap and
+/// keeps the last amount for [`GoCost::fill`].
+struct GoCost {
+    tap: std::sync::Arc<crate::limits::HeaderTap>,
+    usd: parking_lot::Mutex<Option<f64>>,
+}
+
+impl GoCost {
+    /// The reported charge as the call's provider-reported cost, unless genai already read one.
+    fn fill(&self, end: &mut StreamEnd) {
+        let Some(amount) = *self.usd.lock() else {
+            return;
+        };
+        let usage = end.captured_usage.get_or_insert_default();
+        if usage.cost.is_none() {
+            usage.cost = Some(UsageCost {
+                amount,
+                currency: "USD".into(),
+                source: UsageCostSource::ProviderReported,
+            });
+        }
+    }
+}
+
+/// `usage.cost` / `usageMetadata.cost` of one frame's JSON, when it has one.
+fn go_frame_cost(data: &str) -> Option<f64> {
+    if !data.contains("\"cost\"") {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(data).ok()?;
+    let usage = v.get("usage").or_else(|| v.get("usageMetadata"))?;
+    usage
+        .get("cost")?
+        .as_f64()
+        .filter(|c| c.is_finite() && *c >= 0.0)
+}
+
+impl ChatFrameSink for GoCost {
+    fn on_frame(&self, ctx: &FrameCtx, frame: RawFrameRef<'_>) {
+        self.tap.on_frame(ctx, frame);
+        if let Some(c) = go_frame_cost(frame.data) {
+            *self.usd.lock() = Some(c);
+        }
+    }
+
+    fn on_end(&self, ctx: &FrameCtx, end: &StreamEnd) {
+        self.tap.on_end(ctx, end);
+    }
+
+    fn on_error(&self, ctx: &FrameCtx, err: &genai::Error) {
+        self.tap.on_error(ctx, err);
+    }
+
+    fn on_response(
+        &self,
+        ctx: &FrameCtx,
+        status: reqwest::StatusCode,
+        headers: &reqwest::header::HeaderMap,
+    ) {
+        self.tap.on_response(ctx, status, headers);
+    }
 }
 
 impl Backend {
@@ -273,14 +392,35 @@ impl Backend {
                 let (client, spec, label, limit_auth) =
                     genai_request(client, resolved, auth).await?;
                 let tap = crate::limits::HeaderTap::new(&label, limit_auth, slug(resolved));
+                // Go with a key: its headers, and its reported charge read off the frames.
+                let go_key = (resolved.provider.as_deref() == Some("opencode-go"))
+                    .then(|| auth.opencode_go_key())
+                    .flatten();
+                let (sink, go_cost): (std::sync::Arc<dyn ChatFrameSink>, _) = match go_key {
+                    Some(_) => {
+                        let c = std::sync::Arc::new(GoCost {
+                            tap,
+                            usd: parking_lot::Mutex::new(None),
+                        });
+                        (c.clone(), Some(c))
+                    }
+                    None => (tap, None),
+                };
                 let opts = thought_connection(reply_cap(opts.clone(), resolved), &label)
-                    .with_raw_frame_sink_arc(tap);
+                    .with_raw_frame_sink_arc(sink);
                 let opts = openrouter_options(resolved, &auth.openrouter, opts);
+                let opts = match &go_key {
+                    Some(k) => go_headers(session, k, opts),
+                    None => opts,
+                };
                 client
                     .exec_chat_stream(spec, req, Some(&opts))
                     .await
                     .map(|r| -> EventStream {
-                        Box::pin(r.stream.map(move |ev| {
+                        Box::pin(r.stream.map(move |mut ev| {
+                            if let (Ok(ChatStreamEvent::End(end)), Some(c)) = (&mut ev, &go_cost) {
+                                c.fill(end);
+                            }
                             if let Ok(ChatStreamEvent::End(end)) = &ev
                                 && let Some(p) =
                                     end.captured_usage.as_ref().and_then(|u| u.prompt_tokens)
@@ -317,7 +457,7 @@ async fn genai_request<'a>(
     match target_for(resolved, auth) {
         Some(t) => {
             let label = connection_label(resolved, t.kind);
-            let limit_auth = if label == "opencode" {
+            let limit_auth = if matches!(label.as_str(), "opencode" | "opencode-go") {
                 "api_key"
             } else {
                 "gateway"
@@ -467,6 +607,7 @@ mod tests {
             assert!(auth.login(ns), "{ns} login must be in force");
         }
         vault.set("opencode", "zk", None, "test").await.unwrap();
+        vault.set("opencode-go", "gk", None, "test").await.unwrap();
         (scratch, auth)
     }
 
@@ -478,7 +619,7 @@ mod tests {
             assert_eq!(label, resolved.provider.as_deref().unwrap());
             assert_eq!(
                 limit_auth,
-                if label == "opencode" {
+                if matches!(label.as_str(), "opencode" | "opencode-go") {
                     "api_key"
                 } else {
                     "gateway"
@@ -573,6 +714,33 @@ mod tests {
         );
     }
 
+    // Go with the `opencode-go` vault key: Go's base and key, the catalog kind,
+    // attributed to the `opencode-go:api_key` limits row; genai's adapter is not used.
+    #[tokio::test]
+    async fn oauth_routing_go_is_final() {
+        let (_scratch, auth) = oauth_auth().await;
+        let resolved = catalog()
+            .resolve("opencode-go/claude-haiku-5-5", &|_| true)
+            .unwrap();
+        let target = routed_target(&resolved, &auth).await;
+        assert_eq!(
+            target.endpoint.base_url(),
+            "https://opencode.ai/inference/go/anthropic/v1/"
+        );
+        assert_eq!(target.model.adapter_kind, AdapterKind::Anthropic);
+        assert_eq!(&*target.model.model_name, "claude-haiku-5-5");
+        assert!(matches!(&target.auth, AuthData::Key(k) if k == "gk"));
+        // The legacy vault name (genai's namespace) still keys it.
+        let vault = auth.vault.clone().unwrap();
+        vault.delete("opencode-go").await.unwrap();
+        vault
+            .set("opencode_go", "legacy", None, "test")
+            .await
+            .unwrap();
+        let t = target_for(&resolved, &auth).unwrap();
+        assert!(matches!(&t.auth, AuthData::Key(k) if k == "legacy"));
+    }
+
     #[tokio::test]
     async fn oauth_routing_builtin_login_rewrites_remain() {
         let (_scratch, auth) = oauth_auth().await;
@@ -609,6 +777,46 @@ mod tests {
 
     fn zen(resolved: &Resolved) -> ProtocolTarget {
         protocol_target(resolved, Some("zk".into()), None).unwrap()
+    }
+
+    fn go(resolved: &Resolved) -> ProtocolTarget {
+        go_target(resolved, "gk".into())
+    }
+
+    // Go: the catalog protocol's API family under `inference/go`, else chat
+    // completions (Go translates; no slug guess), always the Go key.
+    #[test]
+    fn go_targets_follow_catalog_protocol_else_chat_completions() {
+        let cat = catalog();
+        let r = |id: &str| cat.resolve(id, &|_| true).unwrap();
+        let openai = "https://opencode.ai/inference/go/openai/v1/";
+        for (id, kind, base) in [
+            (
+                "opencode-go/claude-haiku-5-5",
+                AdapterKind::Anthropic,
+                "https://opencode.ai/inference/go/anthropic/v1/",
+            ),
+            ("opencode-go/gpt-6-luna", AdapterKind::OpenAIResp, openai),
+            (
+                "opencode-go/gemini-4-argon",
+                AdapterKind::Gemini,
+                "https://opencode.ai/inference/go/google/v1beta/",
+            ),
+            ("opencode-go/kimi-k3", AdapterKind::OpenAI, openai),
+            // genai's own adapter sent this to chat completions; the catalog says messages.
+            (
+                "opencode-go/qwen4-max",
+                AdapterKind::Anthropic,
+                "https://opencode.ai/inference/go/anthropic/v1/",
+            ),
+            // Unknown ids (no catalog protocol): chat completions, whatever the slug.
+            ("opencode-go/claude-opus-9", AdapterKind::OpenAI, openai),
+            ("opencode-go/gpt-9", AdapterKind::OpenAI, openai),
+        ] {
+            let t = go(&r(id));
+            assert_eq!((t.kind, t.endpoint.base_url()), (kind, base), "{id}");
+            assert!(matches!(&t.auth, AuthData::Key(k) if k == "gk"), "{id}");
+        }
     }
 
     // 85 §0.2: the kind follows the catalog protocol; an unknown Zen id is guessed from its slug.
@@ -768,6 +976,139 @@ mod tests {
                 assert_eq!(body["model"], slug(&resolved), "{id}");
             }
         }
+    }
+
+    // Go on the wire: each API family's path under `inference/go`, the key as a
+    // Bearer on every family (beside Anthropic's and Gemini's own key header),
+    // theuth's user agent and the session id; options' own headers kept.
+    #[tokio::test]
+    async fn go_wire_path_auth_user_agent_and_session_per_family() {
+        let server = fake().await;
+        let client = Client::new().unwrap();
+        let cat = catalog();
+        let session = SessionId::new();
+        let ua = format!("theuth/{}", env!("CARGO_PKG_VERSION"));
+        for (id, want_path, native) in [
+            (
+                "opencode-go/claude-haiku-5-5",
+                "/inference/go/anthropic/v1/messages",
+                Some("x-api-key"),
+            ),
+            (
+                "opencode-go/gpt-6-luna",
+                "/inference/go/openai/v1/responses",
+                None,
+            ),
+            (
+                "opencode-go/gemini-4-argon",
+                "/inference/go/google/v1beta/models/gemini-4-argon:streamGenerateContent",
+                Some("x-goog-api-key"),
+            ),
+            (
+                "opencode-go/kimi-k3",
+                "/inference/go/openai/v1/chat/completions",
+                None,
+            ),
+        ] {
+            let resolved = cat.resolve(id, &|_| true).unwrap();
+            let t = go(&resolved);
+            let base = t
+                .endpoint
+                .base_url()
+                .replace("https://opencode.ai", &server.uri());
+            let spec: ModelSpec = ServiceTarget {
+                endpoint: Endpoint::from_owned(base),
+                auth: t.auth,
+                model: ModelIden::new(t.kind, slug(&resolved).to_owned()),
+            }
+            .into();
+            let opts = ChatOptions::default()
+                .with_extra_headers(Headers::from(vec![("x-a", "1".to_owned())]));
+            send(&client, spec, &go_headers(session, "gk", opts)).await;
+            let reqs = server.received_requests().await.unwrap();
+            let req = reqs.last().unwrap();
+            let h = |k: &str| req.headers.get(k).map(|v| v.to_str().unwrap().to_owned());
+            assert_eq!(req.url.path(), want_path, "{id}");
+            assert_eq!(h("authorization").as_deref(), Some("Bearer gk"), "{id}");
+            if let Some(native) = native {
+                assert_eq!(h(native).as_deref(), Some("gk"), "{id}");
+            }
+            assert_eq!(h("user-agent").as_deref(), Some(ua.as_str()), "{id}");
+            assert_eq!(h("x-opencode-session"), Some(session.to_string()), "{id}");
+            assert_eq!(h("x-a").as_deref(), Some("1"), "{id}");
+        }
+    }
+
+    // Go's `usage.cost` on an Anthropic `message_delta` (genai reads cost there
+    // only from Zen's `ping`) becomes the call's provider-reported cost: 0
+    // within the plan, not the catalog's list price. A cost genai read wins.
+    #[tokio::test]
+    async fn go_anthropic_usage_cost_is_the_reported_cost() {
+        let sse = [
+            r#"{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"claude-haiku-5-5","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}"#,
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#,
+            r#"{"type":"content_block_stop","index":0}"#,
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2,"cost":0,"opencode":{"billing_source":"go","allowance":0.0012,"list_cost":0.0012}}}"#,
+            r#"{"type":"message_stop"}"#,
+        ]
+        .iter()
+        .map(|d| {
+            let ty = serde_json::from_str::<serde_json::Value>(d).unwrap()["type"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            format!("event: {ty}\ndata: {d}\n\n")
+        })
+        .collect::<String>();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .mount(&server)
+            .await;
+        let sink = std::sync::Arc::new(GoCost {
+            tap: crate::limits::HeaderTap::new("opencode-go", "api_key", "claude-haiku-5-5"),
+            usd: parking_lot::Mutex::new(None),
+        });
+        let spec: ModelSpec = ServiceTarget {
+            endpoint: Endpoint::from_owned(format!("{}/anthropic/v1/", server.uri())),
+            auth: AuthData::Key("gk".into()),
+            model: ModelIden::new(AdapterKind::Anthropic, "claude-haiku-5-5".to_owned()),
+        }
+        .into();
+        let opts = ChatOptions::default()
+            .with_capture_usage(true)
+            .with_raw_frame_sink_arc(sink.clone());
+        let req = ChatRequest::new(vec![genai::chat::ChatMessage::user("hi")]);
+        let mut s = Client::new()
+            .unwrap()
+            .exec_chat_stream(spec, req, Some(&opts))
+            .await
+            .unwrap()
+            .stream;
+        let mut end = None;
+        while let Some(ev) = s.next().await {
+            if let ChatStreamEvent::End(e) = ev.unwrap() {
+                end = Some(e);
+            }
+        }
+        let mut end = end.expect("an End event");
+        assert!(end.captured_usage.as_ref().unwrap().cost.is_none());
+        sink.fill(&mut end);
+        let cost = end.captured_usage.as_ref().unwrap().cost.clone().unwrap();
+        assert_eq!(
+            (cost.amount, cost.source),
+            (0.0, UsageCostSource::ProviderReported)
+        );
+        // Gemini's field; a frame without a cost leaves the amount alone.
+        assert_eq!(
+            go_frame_cost(r#"{"usageMetadata":{"totalTokenCount":3,"cost":0.25}}"#),
+            Some(0.25)
+        );
+        assert_eq!(go_frame_cost(r#"{"usage":{"output_tokens":2}}"#), None);
+        *sink.usd.lock() = Some(9.0);
+        sink.fill(&mut end);
+        assert_eq!(end.captured_usage.unwrap().cost.unwrap().amount, 0.0);
     }
 
     // 85 §0.6: provider preferences, the Anthropic trailing breakpoint and header

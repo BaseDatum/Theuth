@@ -141,6 +141,19 @@ test('177 U4: local models and their providers carry the "local" tag; 194 D5: on
   expect(tags(lead)).toBe(4)
 })
 
+test('built-in key providers show their label; ids stay `opencode-go/<id>`', () => {
+  const go = [model('opencode-go', 'opencode-go/kimi-k3', 'Kimi K3'), model('opencode', 'opencode/gpt-5.6-sol', 'GPT 5.6 Sol'), ...models]
+  const html = renderToStaticMarkup(createElement(ModelPicker, { models: go, model: undefined, onSelect() {}, onClose() {} }))
+  expect(html).toContain('>OpenCode Go</span>')
+  expect(html).toContain('>OpenCode Zen</span>')
+  expect(html).toContain('>anthropic</span>')
+  expect(values(viewFor({ models: go, model: undefined, provider: null, query: '' }))).toContain('provider:opencode-go')
+  const one = renderToStaticMarkup(createElement(ModelPicker, { models: go.slice(0, 1), model: undefined, onSelect() {}, onClose() {} }))
+  expect(one).toContain('OpenCode Go · 1 models')
+  expect(one).toContain('>Kimi K3<')
+  expect(values(viewFor({ models: go, model: undefined, provider: 'opencode-go', query: '' }))).toContain('model:opencode-go/kimi-k3')
+})
+
 // ── 2026-11-11: the effort chips under the selected model's row ──────────────────────────────────────────────────
 
 window.HTMLElement.prototype.scrollIntoView = () => {}
