@@ -581,15 +581,11 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       if (!arg) return settings(navigate, 'providers')
       // A provider name first, else an MCP server.
       const url = await api.login(arg).catch(() => api.mcp_login(arg))
-      // Over link the daemon opens its own browser on the engine (31 §9); here the URL is only shown.
-      if (useEngines.getState().active !== LOCAL) {
-        toast.message(
-          `Sign in from the node (${useConnection.getState().info?.name ?? 'node'})`,
-          { description: url },
-        )
-      } else {
-        window.open(url, '_blank')
-      }
+      // The engine opens the browser on its own host (here, or the node over link, 31 §9); here the URL is only shown.
+      toast.message(
+        useEngines.getState().active === LOCAL ? "Browser didn't open?" : `Sign in from the node (${useConnection.getState().info?.name ?? 'node'})`,
+        { description: url },
+      )
       return
     }
     case '/logout':
