@@ -72,36 +72,37 @@ function useLogins() {
   const api = useApi()
   const active = useEngines((s) => s.active)
   const logins = useQuery({ enabled: canQuery1, queryKey: queryKeys.logins, queryFn: () => api.list_logins() })
-  // Over link the daemon opens its own browser on the engine (31 §9): the URL is only shown here, as text.
-  const [remote, setRemote] = useState<{ name: string; url: string } | null>(null)
+  // The engine's `login` opens the browser on its own host (here, or the node over link, 31 §9): the URL is only shown
+  // here, as text, until `LoginFinished`. Opening it here too would start a second sign-in.
+  const [pending, setPending] = useState<{ name: string; url: string; local: boolean } | null>(null)
   const login = useAction(async (name: string) => {
     const url = await api.login(name)
-    if (active !== LOCAL) setRemote({ name, url })
-    else window.open(url, '_blank')
+    setPending({ name, url, local: active === LOCAL })
   })
   // A logout changes which providers `list_models` may offer (52 §3.2); a login refreshes via `LoginFinished`.
   const logout = useAction((name: string) => api.logout(name), { keys: [queryKeys.logins, queryKeys.models] })
   useEffect(
     () =>
       on("agent.login@1", 'LoginFinished', (e) => {
-        setRemote(null)
+        setPending(null)
         if (e.error) toast.error(`${e.provider}: ${e.error}`)
         else toast.success(`Logged in to ${e.provider}`)
       }),
     [],
   )
-  return { list: logins.data, remote, login, logout }
+  return { list: logins.data, pending, login, logout }
 }
 
 type Logins = ReturnType<typeof useLogins>
 
-/** A login's state, or while a remote sign-in waits, the URL to open on the node. */
+/** A login's state, or while a sign-in waits, its URL: to open on the node, or locally if the browser did not open. */
 function LoginState({ l, logins }: { l: LoginInfo; logins: Logins }) {
   const engineName = useConnection((s) => s.info?.name)
-  if (logins.remote?.name !== l.name) return <>{loginText(l)}</>
+  if (logins.pending?.name !== l.name) return <>{loginText(l)}</>
   return (
     <span className="block">
-      Sign in from the node ({engineName ?? 'node'}): <code className="select-all break-all font-mono text-xs">{logins.remote.url}</code>
+      {logins.pending.local ? "Browser didn't open?" : `Sign in from the node (${engineName ?? 'node'}):`}{' '}
+      <code className="select-all break-all font-mono text-xs">{logins.pending.url}</code>
     </span>
   )
 }

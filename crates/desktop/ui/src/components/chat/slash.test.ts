@@ -316,3 +316,14 @@ test('draft slash settings stay pending, including explicit off; none calls a se
   for (const call of Object.values(api)) expect(call).not.toHaveBeenCalled()
   useDrafts.setState({ settings: {} })
 })
+
+test('/login on a local engine calls login once and leaves the browser to the engine; the URL is a fallback toast', async () => {
+  const open = vi.fn()
+  vi.stubGlobal('window', { open })
+  const login = vi.fn().mockResolvedValue('https://auth.example/authorize')
+  await run('/login anthropic', ctxFor({ login }))
+  expect(login).toHaveBeenCalledTimes(1)
+  expect(open).not.toHaveBeenCalled()
+  expect(toast.message).toHaveBeenLastCalledWith("Browser didn't open?", { description: 'https://auth.example/authorize' })
+  vi.unstubAllGlobals()
+})

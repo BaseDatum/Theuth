@@ -1,7 +1,7 @@
 import { receiveComponent } from '@/rpc/bindings/receive'
 import { expect, test } from 'vitest'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
-import type { SessionSlice } from '@/store/sessions'
+import { createSessions, type SessionSlice } from '@/store/sessions'
 import { empty } from '@/store/reduce'
 import { activeRoots, rowActivity, runningSubagents } from './SessionItem'
 import { buildRows, listOffset, newChatLabel, type Row, watchListOffset } from './SessionList'
@@ -183,19 +183,19 @@ test('desks, advisors and study sessions never enter Active, even when their ids
   expect(keys(buildRows(sessions, [], new Set(), true, new Set(['desk', 'adv', 'st']))).filter((k) => !k.startsWith('h:'))).toEqual(['a'])
 })
 
-test('activeRoots: own turn (here or remote, slice or snapshot), a job, a live terminal, a reminder, a prompt, or any of those on a descendant', () => {
+test('activeRoots: own turn (here or remote, slice or snapshot), a job, an open terminal (quiet too), a reminder, a prompt, or any of those on a descendant', () => {
   const root = (id: string, p: Partial<SessionSummary> = {}) => ({ ...s(id, null, '2026-01-01T00:00:00Z'), ...p })
   const kid = (id: string, parent: string, p: Partial<SessionSummary> = {}) => ({ ...root(id, p), parent })
   const slice = (id: string, p: Partial<SessionSlice>) => ({ ...empty(id), ...p })
-  const roots = ['idle', 'turn', 'cold', 'remote', 'stale', 'job', 'pty', 'rem', 'ask', 'sub', 'subjob', 'deep', 'subask'].map((id) =>
+  const roots = ['idle', 'turn', 'cold', 'remote', 'stale', 'job', 'pty', 'quiet', 'rem', 'ask', 'sub', 'subjob', 'subquiet', 'deep', 'subask'].map((id) =>
     root(id, { running: id === 'cold' || id === 'remote', here: id !== 'remote' && id !== 'stale' }),
   )
   const subs = new Map([
     ['sub', [kid('sub1', 'sub', { running: true })]],
     ['subjob', [kid('sj1', 'subjob')]],
+    ['subquiet', [kid('sq1', 'subquiet')]],
     ['deep', [kid('d1', 'deep'), kid('d2', 'd1')]],
     ['subask', [kid('sa1', 'subask')]],
-    // A quiet terminal (`terminals` without `ptys`) shows no glyph, so it does not count either.
     ['idle', [kid('i1', 'idle')]],
   ])
   const slices = {
@@ -203,12 +203,32 @@ test('activeRoots: own turn (here or remote, slice or snapshot), a job, a live t
     // A remote row's slice activity alone does not light it: `list_sessions.running` gates.
     stale: slice('stale', { activity: 'streaming' }),
     job: slice('job', { jobs: new Set(['j1']) }),
-    pty: slice('pty', { ptys: new Set(['j2']) }),
+    pty: slice('pty', { ptys: new Set(['j2']), terminals: new Set(['j2']) }),
+    // An open terminal whose screen stopped changing (`terminals` without `ptys`) still counts.
+    quiet: slice('quiet', { terminals: new Set(['j4']) }),
     rem: slice('rem', { reminders: new Set(['r1']) }),
     sj1: slice('sj1', { jobs: new Set(['j3']) }),
+    sq1: slice('sq1', { terminals: new Set(['j5']) }),
     d2: slice('d2', { reminders: new Set(['r2']) }),
-    i1: slice('i1', { terminals: new Set(['quiet']) }),
+    i1: slice('i1', {}),
   }
-  expect(activeRoots(roots, subs, slices, new Set(['ask', 'sa1']))).toEqual(['turn', 'cold', 'remote', 'job', 'pty', 'rem', 'ask', 'sub', 'subjob', 'deep', 'subask'])
+  expect(activeRoots(roots, subs, slices, new Set(['ask', 'sa1']))).toEqual(['turn', 'cold', 'remote', 'job', 'pty', 'quiet', 'rem', 'ask', 'sub', 'subjob', 'subquiet', 'deep', 'subask'])
   expect(activeRoots(roots, subs, {}, new Set())).toEqual(['cold', 'remote', 'sub'])
+})
+
+test('activeRoots over the store: a snapshot-seeded quiet PTY keeps its root (or its parent) Active until it exits', () => {
+  const store = createSessions()
+  const root = (id: string) => s(id, null, '2026-01-01T00:00:00Z')
+  const roots = [root('own'), root('parent')]
+  const subs = new Map([['parent', [{ ...root('kid'), parent: 'parent' }]]])
+  const active = () => activeRoots(roots, subs, store.getState().sessions, new Set())
+  // After a reload nothing streamed yet: `list_live_counts` lists every running PTY, quiet ones included.
+  store.getState().seedLive([{ session: 'own', jobs: [], ptys: ['p1'], reminders: [] }, { session: 'kid', jobs: [], ptys: ['p2'], reminders: [] }])
+  expect(active()).toEqual(['own', 'parent'])
+  expect(store.getState().sessions.own!.ptys.size).toBe(0)
+  const finished = (session: string, id: string) => ({ type: 'JobFinished', session, id, command: 'top', kind: 'pty', exit: 'killed', secs: 1, output: '', inline: false, pty: true }) as const
+  store.getState().applyEvents([finished('own', 'p1')])
+  expect(active()).toEqual(['parent'])
+  store.getState().applyEvents([finished('kid', 'p2')])
+  expect(active()).toEqual([])
 })
