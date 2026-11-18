@@ -63,8 +63,13 @@ const ACTIVITY: Record<Exclude<Activity, 'idle'>, [LucideIcon | ComponentType<{ 
 export const rowActivity = (shown: Activity, remoteRunning?: boolean): Activity =>
   remoteRunning === undefined ? shown : !remoteRunning ? 'idle' : shown === 'idle' ? 'thinking' : shown
 
-function SessionActivity({ id, remoteRunning }: { id: string; remoteRunning?: boolean }) {
-  const activity = rowActivity(shownActivity(useSessionField(id, 'activity'), useSessionField(id, 'harvesting')), remoteRunning)
+/** The row's own turn glyph. A row owned here reads its slice, but `list_sessions.running` also counts: a turn already
+ * running when this client (re)loaded has no `TurnStarted` in its slice (ACTIVE-TOP). */
+export const turnActivity = (s: Pick<SessionSummary, 'here' | 'running'>, slice: SessionSlice | undefined): Activity =>
+  rowActivity(shownActivity(slice?.activity, slice?.harvesting), s.here && !s.running ? undefined : s.running)
+
+function SessionActivity({ id, here, running }: { id: string; here: boolean; running: boolean }) {
+  const activity = useSessions((s) => turnActivity({ here, running }, s.sessions[id]))
   if (activity === 'idle') return null
   const [Icon, label] = ACTIVITY[activity]
   // The lucide glyphs pulse; the loading-dev ones (thinking, harvesting) animate on their own.
@@ -95,14 +100,38 @@ function SessionPending({ id }: { id: string }) {
 
 const NONE: SessionSummary[] = []
 
-/** Descendants with a turn in flight: the live slice (`TurnStarted`…`TurnFinished`, every session is subscribed) or, before this client saw one, the `list_sessions` snapshot.
+/** A descendant with a turn in flight: the live slice (`TurnStarted`…`TurnFinished`, every session is subscribed) or, before this client saw one, the `list_sessions` snapshot.
  * A watch-only child (141) has no turn of its own; the harness's state (`running` / `requires_action`, live from `ObservedChildChanged`, else the snapshot) is its live bit. */
+const subagentRunning = (d: SessionSummary, slices: Record<string, SessionSlice>): boolean => {
+  const observed = slices[d.id]?.observed ?? d.observed
+  if (observed) return observed.state === 'running' || observed.state === 'requires_action'
+  return !!(slices[d.id]?.running || d.running)
+}
+
 export const runningSubagents = (subagents: readonly SessionSummary[], slices: Record<string, SessionSlice>): number =>
-  subagents.filter((d) => {
-    const observed = slices[d.id]?.observed ?? d.observed
-    if (observed) return observed.state === 'running' || observed.state === 'requires_action'
-    return slices[d.id]?.running || d.running
-  }).length
+  subagents.filter((d) => subagentRunning(d, slices)).length
+
+/**
+ * ACTIVE-TOP: which of `roots` the list floats into its `Active` section. A root counts when its own turn runs (a tool
+ * call or an approval happens inside one), it holds a background job, live terminal or pending reminder, or a prompt
+ * of its waits on the user (`prompting`); or when any descendant (`subs`) runs or holds any of those. The same
+ * predicates as the row's glyphs, so the section and the glyphs cannot disagree.
+ */
+export function activeRoots(
+  roots: readonly SessionSummary[],
+  subs: ReadonlyMap<string, readonly SessionSummary[]>,
+  slices: Record<string, SessionSlice>,
+  prompting: ReadonlySet<string>,
+): string[] {
+  // A non-PTY background job, a live terminal or a pending reminder (what `SessionPending` shows), or a prompt.
+  const busy = (d: SessionSummary) => {
+    const s = slices[d.id]
+    return (!!s && (s.jobs.size > 0 || s.ptys.size > 0 || s.reminders.size > 0)) || prompting.has(d.id)
+  }
+  return roots
+    .filter((r) => turnActivity(r, slices[r.id]) !== 'idle' || busy(r) || (subs.get(r.id) ?? NONE).some((d) => subagentRunning(d, slices) || busy(d)))
+    .map((r) => r.id)
+}
 
 /** Subagent glyph: shown while any descendant (any depth) is running; the tree below a selected row (or a desk) shows which. */
 export function SessionSubagents({ subagents = NONE }: { subagents: readonly SessionSummary[] | undefined }) {
@@ -329,7 +358,7 @@ export const SessionItem = memo(function SessionItem({
                   {selected && <Check className="size-3 stroke-[3]" />}
                 </span>
               )}
-              <SessionActivity id={id} remoteRunning={here ? undefined : running} />
+              <SessionActivity id={id} here={here} running={running} />
               <SessionPending id={id} />
               <SessionSubagents subagents={subagents} />
               <span className="truncate">{shown}</span>
