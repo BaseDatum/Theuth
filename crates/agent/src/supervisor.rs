@@ -11898,13 +11898,14 @@ pub(crate) fn client(auth: Auth) -> anyhow::Result<Client> {
                                 .access(&oauth::ANTHROPIC)
                                 .await
                                 .map_err(genai::resolver::Error::Custom)?;
+                            let cc = crate::claude_code::global().current();
                             target.auth = AuthData::RequestOverride {
                                 url: "https://api.anthropic.com/v1/messages?beta=true".into(),
                                 headers: Headers::from(vec![
                                     ("Authorization", format!("Bearer {}", t.access_token)),
                                     ("anthropic-version", "2023-06-01".to_owned()),
-                                    ("anthropic-beta", ANTHROPIC_BETAS.to_owned()),
-                                    ("User-Agent", CLAUDE_CODE_UA.to_owned()),
+                                    ("User-Agent", cc.user_agent()),
+                                    ("anthropic-beta", cc.betas),
                                     ("x-app", "cli".to_owned()),
                                     (
                                         "anthropic-dangerous-direct-browser-access",
@@ -11929,13 +11930,6 @@ pub(crate) fn client(auth: Auth) -> anyhow::Result<Client> {
         ))
         .build()?)
 }
-
-/// Betas a subscription token is accepted with; `oauth-2025-04-20` is the
-/// one that turns a 403 into a 200.
-const ANTHROPIC_BETAS: &str =
-    "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14";
-/// The client the subscription token was minted for.
-const CLAUDE_CODE_UA: &str = "claude-cli/2.1.257 (external, cli)";
 
 /// The merged catalog with every local custom provider marked (177 E7:
 /// assumed windows, no cloud siblings).
@@ -12156,6 +12150,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     };
     auth.oauth.migrate_files().await;
     crate::limits::LimitsHub::global().start(rt, auth.clone()); // 160:LIM pollers
+    crate::claude_code::start(&rt.data_dir, auth.clone(), rt.shutdown.clone());
     // A harness-wide ceiling on Python workers (08 §9), decoupled from the
     // per-tree child caps (01 §2.6); lazy, so idle trees cost nothing.
     // The worker is this binary (08 §9).

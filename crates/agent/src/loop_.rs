@@ -5200,6 +5200,7 @@ impl Turn {
         let mut tries = 0;
         let mut stripped = false;
         let mut shrunk = false;
+        let mut healed = false;
         let budget = self.shared.budget.read().clone();
         loop {
             let reserved = Reserved::open(
@@ -5260,6 +5261,16 @@ impl Turn {
                 Err(Abort::Model(e)) => e,
                 Err(other) => return Err(other),
             };
+            // Claude Code too-old refusal: `backend::provider_error` already
+            // raised the client version; resend once if it moved past the
+            // one this attempt sent.
+            if !healed && text.is_empty() && !calls && crate::claude_code::global().outdated(&e) {
+                tracing::info!(session = %self.shared.id, "resending with the updated Claude Code client version");
+                healed = true;
+                self.retries.fetch_add(1, Ordering::Relaxed);
+                attempt += 1;
+                continue;
+            }
             // 90 §1.5: strip reasoning and resend at once — no backoff, the
             // answer does not change with time. Only before anything streamed.
             if !stripped && text.is_empty() && !calls && compact::is_reasoning_rejected(&e) {

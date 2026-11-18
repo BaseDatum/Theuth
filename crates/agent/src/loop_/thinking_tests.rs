@@ -27,14 +27,16 @@ const SIGNATURE: &str = "sig-deadbeef";
 /// `output_tokens` the fake reports: Anthropic counts thinking inside it.
 const OUTPUT_TOKENS: u32 = 57;
 /// The fake: records every request body, answers the first `reject` requests
-/// with Anthropic's rejected-signature 400 (90 §0), then each with one signed
-/// thinking block followed by one `tool_use` (a tool-use turn), then `message_stop`.
+/// with a 400 (`refusal`, by default the rejected signature of 90 §0), then each
+/// with one signed thinking block followed by one `tool_use` (a tool-use turn), then `message_stop`.
 /// With `text`, a text block follows the thinking instead of the tool call
 /// (91: a plain reply ends the thinking); with `silent`, no thinking block
 /// streams at all. The thinking always streams as two deltas.
 struct Fake {
     bodies: Arc<Mutex<Vec<Value>>>,
     reject: AtomicUsize,
+    /// The 400 body a rejected request gets: [`REJECTED`] unless set.
+    refusal: &'static str,
     text: bool,
     silent: bool,
 }
@@ -52,7 +54,7 @@ impl Respond for Fake {
             .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok()
         {
-            return ResponseTemplate::new(400).set_body_raw(REJECTED, "application/json");
+            return ResponseTemplate::new(400).set_body_raw(self.refusal, "application/json");
         }
         let ev = |name: &str, data: Value| format!("event: {name}\ndata: {data}\n\n");
         // Two deltas (91: the measurement starts at the first, not the last).
@@ -147,25 +149,25 @@ pub(crate) struct Harness {
 
 impl Harness {
     async fn new() -> Self {
-        Self::build(0, false, false).await
+        Self::build(0, REJECTED, false, false).await
     }
 
-    /// A harness whose fake answers the first `reject` requests with [`REJECTED`].
-    async fn rejecting(reject: usize) -> Self {
-        Self::build(reject, false, false).await
+    /// A harness whose fake answers the first `reject` requests with `refusal`.
+    async fn rejecting(reject: usize, refusal: &'static str) -> Self {
+        Self::build(reject, refusal, false, false).await
     }
 
     /// A harness whose fake replies with text after the thinking (91).
     pub(crate) async fn texting() -> Self {
-        Self::build(0, true, false).await
+        Self::build(0, REJECTED, true, false).await
     }
 
     /// A harness whose fake replies with text and no thinking at all (91).
     async fn plain() -> Self {
-        Self::build(0, true, true).await
+        Self::build(0, REJECTED, true, true).await
     }
 
-    async fn build(reject: usize, text: bool, silent: bool) -> Self {
+    async fn build(reject: usize, refusal: &'static str, text: bool, silent: bool) -> Self {
         let bodies = Arc::new(Mutex::new(Vec::new()));
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -173,6 +175,7 @@ impl Harness {
             .respond_with(Fake {
                 bodies: bodies.clone(),
                 reject: AtomicUsize::new(reject),
+                refusal,
                 text,
                 silent,
             })
@@ -739,7 +742,7 @@ async fn thinking_block_round_trips_with_signature_on_tool_use_turn() {
 /// attempts of one request.
 #[tokio::test]
 async fn rejected_thinking_signature_is_resent_stripped() {
-    let h = Harness::rejecting(1).await;
+    let h = Harness::rejecting(1, REJECTED).await;
     let fable = h.resolve("anthropic/claude-fable-5-1");
     let (end, rows) = h.turn_call(fable, &foreign_thinking_history()).await;
 
@@ -824,7 +827,7 @@ async fn foreign_signature_is_not_replayed_at_all() {
 /// requests, no third.
 #[tokio::test]
 async fn second_rejection_is_a_turn_error() {
-    let h = Harness::rejecting(2).await;
+    let h = Harness::rejecting(2, REJECTED).await;
     let fable = h.resolve("anthropic/claude-fable-5-1");
     let (end, rows) = h.turn_call(fable, &foreign_thinking_history()).await;
 
@@ -844,6 +847,35 @@ async fn second_rejection_is_a_turn_error() {
         (rows[0].3.as_str(), rows[1].3.as_str()),
         ("failed", "failed")
     );
+}
+
+/// Sky's refusal (2026-11-18): the request claimed Claude Code 2.1.257.
+const TOO_OLD: &str = r#"{"type":"error","error":{"type":"invalid_request_error","message":"Claude Code 2.1.257 does not support this model; version 2.1.280 or newer is required. Run 'claude update', or update the Claude desktop app, then try again.","details":{"error_code":"claude_code_version_too_old"}},"request_id":"req_011ChAVxq7rgFvFQmnk27n2u"}"#;
+
+/// A Claude Code too-old refusal of a version older than the live one is
+/// resent once at once; a second refusal is the turn's error, no third request.
+#[tokio::test]
+async fn claude_code_too_old_is_resent_once() {
+    let h = Harness::rejecting(1, TOO_OLD).await;
+    let (end, rows) = h
+        .turn_call(h.resolve("anthropic/claude-fable-5-1"), &user())
+        .await;
+    assert!(end.is_ok(), "resend failed");
+    assert_eq!(h.bodies.lock().len(), 2);
+    assert_eq!(
+        (rows[0].3.as_str(), rows[1].3.as_str()),
+        ("failed", "settled")
+    );
+
+    let h = Harness::rejecting(2, TOO_OLD).await;
+    let (end, _) = h
+        .turn_call(h.resolve("anthropic/claude-fable-5-1"), &user())
+        .await;
+    match end {
+        Err(Abort::Model(e)) => assert!(e.contains("claude_code_version_too_old"), "{e}"),
+        _ => panic!("a second refusal is the turn's error"),
+    }
+    assert_eq!(h.bodies.lock().len(), 2, "no third request");
 }
 
 /// 91 THOUGHT-TIME: two reasoning chunks then a text chunk publish exactly
