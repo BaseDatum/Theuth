@@ -98,6 +98,15 @@ test('built-in labels and key notes', () => {
   expect(builtinKeyNote('zen')).toBe('zen key (Settings > Models > Providers)')
 })
 
+test('OpenCode Go: a built-in row between Zen and OpenRouter, keyed by the `opencode-go` secret, refreshable without a key', () => {
+  const t = text(render([row('opencode', true, true, true), row('opencode-go', true, false, true), row('openrouter', true, false, false)]))
+  expect(t.indexOf('OpenCode Zen')).toBeLessThan(t.indexOf('OpenCode Go'))
+  expect(t.indexOf('OpenCode Go')).toBeLessThan(t.indexOf('OpenRouter'))
+  expect(t).toContain('no key (secret `opencode-go`)')
+  expect(t.match(/Refresh models/g)).toHaveLength(2)
+  expect(builtinKeyNote('opencode-go')).toBe('OpenCode Go key (Settings > Models > Providers)')
+})
+
 const login = (name: string, logged_in: boolean, account: string | null = null): LoginInfo => ({ name, logged_in, account, expires_at: null })
 
 test('188 A6: a login pairs with the provider row of its name; the rest stand alone, engine order kept', () => {

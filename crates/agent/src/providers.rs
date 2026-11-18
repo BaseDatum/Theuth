@@ -90,9 +90,12 @@ pub fn validate_name(name: &str, local: bool) -> Result<(), String> {
         return Ok(());
     }
     // 85 §0.8: the built-in key providers are secrets, not gateways.
-    if matches!(name, "opencode" | "openrouter" | "open_router" | "zen") {
+    if matches!(
+        name,
+        "opencode" | "opencode-go" | "openrouter" | "open_router" | "zen"
+    ) {
         return Err(format!(
-            "`{name}` is a built-in provider — set the `opencode` / `openrouter` secret instead"
+            "`{name}` is a built-in provider — set the `opencode` / `opencode-go` / `openrouter` secret instead"
         ));
     }
     // Which namespaces have a backend (12 §6); the only other place that knows is backend.rs.
@@ -517,10 +520,16 @@ mod tests {
         );
         assert!(validate_name("openai", true).is_err());
         // 85 §0.8: the built-ins are secrets, not gateways; the error points there.
-        for name in ["opencode", "openrouter", "open_router", "zen"] {
+        for name in [
+            "opencode",
+            "opencode-go",
+            "openrouter",
+            "open_router",
+            "zen",
+        ] {
             let err = validate_name(name, false).unwrap_err();
             assert!(
-                err.contains("set the `opencode` / `openrouter` secret"),
+                err.contains("set the `opencode` / `opencode-go` / `openrouter` secret"),
                 "{name}: {err}"
             );
         }

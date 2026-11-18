@@ -10067,10 +10067,13 @@ impl Message<ListModels> for Agents {
             .filter(|p| (self.configured)(Catalog::adapter(&p.id)))
             .flat_map(|p| {
                 let local = self.provider_local(&p.id);
-                p.models.values().map(move |m| ModelInfo {
-                    local,
-                    ..ModelInfo::new(&p.id, m)
-                })
+                p.models
+                    .values()
+                    .filter(|m| !go_free(&p.id, &m.id))
+                    .map(move |m| ModelInfo {
+                        local,
+                        ..ModelInfo::new(&p.id, m)
+                    })
             })
             .collect();
         // Cursor is not in models.dev: ask the backend what the account may use.
@@ -10090,6 +10093,12 @@ impl Message<ListModels> for Agents {
         out.sort_by(|a, b| (&a.provider, &a.id).cmp(&(&b.provider, &b.id)));
         out
     }
+}
+
+/// OpenCode Go's free-tier models (`*-free`) answer 403 to every client but
+/// OpenCode itself, key or not: they are left out of the picker and the count.
+fn go_free(provider: &str, id: &str) -> bool {
+    provider == "opencode-go" && id.ends_with("-free")
 }
 
 /// A Cursor listing row, its limits borrowed from the closest catalog
@@ -10770,11 +10779,17 @@ impl Agents {
             .catalog
             .providers()
             .find(|p| p.id == name)
-            .map_or(0, |p| p.models.len() as u32);
+            .map_or(0, |p| {
+                p.models.keys().filter(|id| !go_free(name, id)).count() as u32
+            });
         let (base_url, builtin, configured, has_key, gw) = match name {
             "opencode" => {
                 let k = self.auth.opencode_key().is_some();
                 (crate::backend::ZEN_ENDPOINT.to_owned(), true, k, k, None)
+            }
+            "opencode-go" => {
+                let k = self.auth.opencode_go_key().is_some();
+                (crate::backend::GO_BASE.to_owned(), true, k, k, None)
             }
             "openrouter" => {
                 let k = self.auth.openrouter_key().is_some();
@@ -10791,7 +10806,8 @@ impl Agents {
             models,
             builtin,
             configured,
-            refreshable: configured,
+            // Go lists its models publicly, keyed or not.
+            refreshable: configured || name == "opencode-go",
             local: gw.as_ref().is_some_and(|g| g.local()),
             runtime: gw.and_then(|g| g.runtime),
             has_key,
@@ -10900,6 +10916,12 @@ impl Agents {
                 crate::backend::ZEN_ENDPOINT.to_owned(),
                 self.auth.opencode_key(),
             ),
+            // Go's listing is public; no key is sent.
+            "opencode-go" => (
+                AdapterKind::OpenAI,
+                format!("{}v1/", crate::backend::GO_BASE),
+                None,
+            ),
             "openrouter" => (
                 AdapterKind::OpenRouter,
                 OPENROUTER_ENDPOINT.to_owned(),
@@ -10935,13 +10957,15 @@ impl Agents {
                 });
             }
         };
-        let key = key
-            .filter(|k| !k.is_empty())
-            .ok_or_else(|| format!("{name} has no key; set it first"))?;
+        let auth = match key.filter(|k| !k.is_empty()) {
+            Some(k) => AuthData::Key(k),
+            None if name == "opencode-go" => AuthData::None,
+            None => return Err(format!("{name} has no key; set it first")),
+        };
         let ids = tokio::time::timeout(
             Self::LISTING_TIMEOUT,
             self.client
-                .all_model_names(kind, (Endpoint::from_owned(endpoint), AuthData::Key(key))),
+                .all_model_names(kind, (Endpoint::from_owned(endpoint), auth)),
         )
         .await
         .map_err(|_| {
@@ -10988,7 +11012,8 @@ impl Message<ListProviders> for Agents {
             .collect();
         custom.sort();
         // 85 §0.9: the built-ins first, keyed by a secret rather than a providers.yaml row.
-        ["opencode".to_owned(), "openrouter".to_owned()]
+        ["opencode", "opencode-go", "openrouter"]
+            .map(str::to_owned)
             .into_iter()
             .chain(custom)
             .filter_map(|name| self.provider_info(&name))
@@ -11706,6 +11731,15 @@ impl Auth {
         self.key("opencode").or_else(|| env_key("OPENCODE_API_KEY"))
     }
 
+    /// The OpenCode Go key — vault `opencode-go` (its Settings row), else the
+    /// genai-namespace name `opencode_go` keys were stored under before, else
+    /// `OPENCODE_GO_API_KEY`. Read by the backend's protocol target and limits.
+    pub(crate) fn opencode_go_key(&self) -> Option<String> {
+        self.key("opencode-go")
+            .or_else(|| self.key("opencode_go"))
+            .or_else(|| env_key("OPENCODE_GO_API_KEY"))
+    }
+
     /// 85 §0.6: the OpenRouter key — vault `openrouter` (preferred) or genai's
     /// `open_router`, else `OPENROUTER_API_KEY` or `OPEN_ROUTER_API_KEY`.
     pub(crate) fn openrouter_key(&self) -> Option<String> {
@@ -11917,12 +11951,13 @@ fn load_catalog(data_dir: &Path, auth: &Auth) -> Catalog {
 /// adapter needing no key (`ollama`). `cursor` is not a genai adapter: only
 /// a login configures it. Bedrock has no key env, so SigV4 counts as
 /// configured only when [`bedrock_configured`] finds credentials to use.
-/// `opencode` (Zen) and `open_router` are keyed by name or env (85 §2).
+/// `opencode` (Zen), `opencode_go` (Go) and `open_router` are keyed by name or env (85 §2).
 pub(crate) fn configured(auth: Auth) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
     Arc::new(move |ns: &str| {
         match ns {
             "bedrock_sigv4" => return bedrock_configured(&auth),
             "opencode" => return auth.opencode_key().is_some(),
+            "opencode_go" => return auth.opencode_go_key().is_some(),
             "open_router" => return auth.openrouter_key().is_some(),
             _ => {}
         }
@@ -13640,6 +13675,14 @@ pub(crate) mod tests {
         assert!(is("open_router") && auth.openrouter_key().as_deref() == Some("legacy"));
         vault.set("openrouter", "ork", None, "test").await.unwrap();
         assert_eq!(auth.openrouter_key().as_deref(), Some("ork"));
+
+        // OpenCode Go: its Settings name first, the genai-namespace name still read.
+        let env_go = std::env::var_os("OPENCODE_GO_API_KEY").is_some();
+        assert_eq!(is("opencode_go"), env_go);
+        vault.set("opencode_go", "old", None, "test").await.unwrap();
+        assert!(is("opencode_go") && auth.opencode_go_key().as_deref() == Some("old"));
+        vault.set("opencode-go", "gk", None, "test").await.unwrap();
+        assert_eq!(auth.opencode_go_key().as_deref(), Some("gk"));
 
         let client = client(auth).unwrap();
         let target = client
@@ -23265,6 +23308,44 @@ done
             .unwrap();
         let or = a.provider_info("openrouter").unwrap();
         assert!(or.builtin && or.configured && or.refreshable);
+    }
+
+    /// OpenCode Go is a built-in Providers row: Go's base, the bundled models,
+    /// configured by the `opencode-go` secret, refreshable without one (its
+    /// listing is public), not removable, and not a name a gateway may take.
+    #[tokio::test]
+    async fn opencode_go_is_a_builtin_row_keyed_by_its_secret() {
+        let (_scratch, mut a) = agents().await;
+        let vault = Arc::new(
+            secrets::Vault::open(&a.rt.data_dir, secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
+        a.auth.vault = Some(vault.clone());
+        let env_go = std::env::var_os("OPENCODE_GO_API_KEY").is_some();
+        let p = a.provider_info("opencode-go").unwrap();
+        assert_eq!(
+            (p.base_url.as_str(), p.builtin, p.configured, p.has_key),
+            (crate::backend::GO_BASE, true, env_go, env_go)
+        );
+        assert!(p.refreshable && !p.local && p.runtime.is_none());
+        // Free-tier `*-free` ids (403 outside OpenCode) are not counted.
+        let bundled = a
+            .catalog
+            .providers()
+            .find(|p| p.id == "opencode-go")
+            .unwrap();
+        let paid = bundled
+            .models
+            .keys()
+            .filter(|id| !id.ends_with("-free"))
+            .count();
+        assert!(paid > 0 && paid < bundled.models.len());
+        assert_eq!(p.models as usize, paid);
+        vault.set("opencode-go", "gk", None, "test").await.unwrap();
+        let p = a.provider_info("opencode-go").unwrap();
+        assert!(p.configured && p.has_key && p.refreshable);
+        assert!(crate::providers::validate_name("opencode-go", false).is_err());
     }
 
     /// 177 R2-7: a listing that never answers (a black-holed LAN host) gives

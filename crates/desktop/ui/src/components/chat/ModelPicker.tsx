@@ -10,6 +10,7 @@ import { Fragment, type KeyboardEvent, useEffect, useRef, useState } from 'react
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { cn } from '@/lib/utils'
 import { modelsOfProvider, providersOf, rankModels, searchTerms } from '@/lib/model-search'
+import { BUILTIN_LABEL } from '@/components/settings/providers'
 import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 
 /** The provider row that lists `extra` ids (on-file values missing from the catalog). */
@@ -306,7 +307,7 @@ export function ModelPicker({ models, model, onSelect, onClose, effort, none, ex
       case 'provider':
         return (
           <CommandItem key={row.value} value={row.value} onSelect={() => setProvider(row.id)}>
-            <span className="truncate">{row.id}</span>
+            <span className="truncate">{BUILTIN_LABEL[row.id] ?? row.id}</span>
             {local.has(row.id) && <LocalTag />}
             <span className="ml-auto shrink-0 text-xs text-fg-tertiary">{row.count} models</span>
             {row.current && <Check className="size-4" />}
@@ -362,7 +363,7 @@ export function ModelPicker({ models, model, onSelect, onClose, effort, none, ex
         {/* 127: favorites are the first cmdk items, so the highlight starts on them and Enter picks one. */}
         {view.mode === 'providers' && grouped('favorite', 'Favorites')}
         <div className="p-1 empty:hidden">{view.rows.map(leadRow)}</div>
-        {view.mode === 'models' ? grouped('model', `${view.provider} · ${view.rows.filter((r) => r.kind === 'model').length} models`) : view.mode === 'search' ? view.rows.map(item) : grouped('provider', 'Providers')}
+        {view.mode === 'models' ? grouped('model', `${BUILTIN_LABEL[view.provider ?? ''] ?? view.provider} · ${view.rows.filter((r) => r.kind === 'model').length} models`) : view.mode === 'search' ? view.rows.map(item) : grouped('provider', 'Providers')}
       </CommandList>
     </Command>
   )

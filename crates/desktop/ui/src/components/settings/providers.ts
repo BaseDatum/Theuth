@@ -10,6 +10,7 @@ import type { LoginInfo } from "@/rpc/bindings/method.agent.output"
 /** Display names of the built-in key providers (85 §0.9); the engine sends the ids. */
 export const BUILTIN_LABEL: Record<string, string> = {
   opencode: 'OpenCode Zen',
+  'opencode-go': 'OpenCode Go',
   openrouter: 'OpenRouter',
 }
 

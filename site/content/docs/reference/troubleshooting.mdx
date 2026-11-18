@@ -49,7 +49,7 @@ them there first.
 
 | Symptom | Check |
 |---|---|
-| `/model` does not list a provider | only configured providers are listed: a vault secret named after the adapter (`anthropic`, `openai`, …), a `/login`, a gateway from `/provider add`, or the adapter's env var. Add one with `t --secret-set anthropic`. Zen (`opencode/*`) needs the `opencode` secret or `OPENCODE_API_KEY`; OpenRouter (`openrouter/*`) the `openrouter` secret or `OPENROUTER_API_KEY` |
+| `/model` does not list a provider | only configured providers are listed: a vault secret named after the adapter (`anthropic`, `openai`, …), a `/login`, a gateway from `/provider add`, or the adapter's env var. Add one with `t --secret-set anthropic`. Zen (`opencode/*`) needs the `opencode` secret or `OPENCODE_API_KEY`; OpenCode Go (`opencode-go/*`) the `opencode-go` secret or `OPENCODE_GO_API_KEY`; OpenRouter (`openrouter/*`) the `openrouter` secret or `OPENROUTER_API_KEY` |
 | the key is in the environment but the daemon does not see it | the desktop app and the service launch through your login shell; a key exported only in an interactive rc file may be missing. Put it in the vault instead |
 | `/login` opens no browser | the TUI prints `login: open <url>`; copy it. The loopback listener waits 300 s |
 | Bedrock: denied access or expired session | `aws sso login --profile <name>`, then send again; `/aws <profile>` selects a profile harness-wide; an explicit profile beats ambient keys and bearer tokens; `bedrock_api` in the vault or `BEDROCK_API_KEY` beats the default chain |

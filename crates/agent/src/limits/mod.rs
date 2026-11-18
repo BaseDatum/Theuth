@@ -1153,11 +1153,7 @@ fn presence(auth: &Auth) -> Vec<Present> {
         Present {
             headers: false,
             poll: Some(Source::OpencodeGo),
-            ..row(
-                "opencode-go",
-                "api_key",
-                poll::key(auth, "opencode_go", "OPENCODE_GO_API_KEY").is_some(),
-            )
+            ..row("opencode-go", "api_key", auth.opencode_go_key().is_some())
         },
         Present {
             headers: false,
