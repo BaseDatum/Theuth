@@ -303,9 +303,10 @@ export type SessionSlice = {
   browserLive: boolean;
   /** A PTY job started in this session (`JobStarted.pty`): the header shows the terminals icon. */
   terminal: boolean;
-  /** PTY jobs whose screen is still changing: added on `JobStarted.pty`/`JobScreen`, dropped on `JobIdle`/`JobFinished`. The sidebar's live-terminal glyph. */
+  /** PTY jobs whose screen is still changing: added on `JobStarted.pty`/`JobScreen`, dropped on `JobIdle`/`JobFinished`. The sidebar's terminal glyph pulses while non-empty. */
   ptys: Set<string>;
-  /** Running terminals, including quiet ones; unlike `ptys`, only exit removes them. */
+  /** Open terminals, including quiet ones; unlike `ptys`, only exit removes them. Seeded for every session by `seedLive`;
+   * a non-empty set keeps the row in the sidebar's Active section and shows its terminal glyph (static while quiet). */
   terminals: Set<string>;
   /** Non-PTY background jobs still running (`JobStarted` until `JobFinished`). The sidebar's background-job glyph. */
   jobs: Set<string>;
@@ -434,8 +435,9 @@ type SessionsStore = {
   markStale(id?: string): void;
   /** Forget that any transcript was loaded: the chat route refetches on its next mount. */
   unload(): void;
-  /** Install the `list_live_counts` snapshot: every row's session gets exactly its `jobs`/`ptys`/`reminders`; every
-   * other slice with a non-empty set is emptied (the snapshot is the truth). Touches nothing else. */
+  /** Install the `list_live_counts` snapshot: every row's session gets exactly its `jobs`/`terminals`/`reminders`, and
+   * `ptys` keeps only the ids already known to be changing; every other slice with a non-empty set is emptied (the
+   * snapshot is the truth). Touches nothing else. */
   seedLive(rows: LiveCountsRow[]): void;
   /** 142 F4: install `list_sessions`' `running` on every slice and subtree row (`reseedRunning`); a session the list
    * lacks keeps its marks. Touches nothing else. */
@@ -864,18 +866,22 @@ export const createSessions = (): SessionsApi =>
           const seen = new Set<string>();
           for (const r of rows) {
             seen.add(r.session);
+            const prev = sessions[r.session] ?? empty(r.session);
             sessions[r.session] = {
-              ...(sessions[r.session] ?? empty(r.session)),
+              ...prev,
               jobs: new Set(r.jobs),
-              ptys: new Set(r.ptys),
+              // The snapshot lists every running PTY, quiet or not: all are open terminals. Only one this client already
+              // saw change stays "changing"; the rest turn live again on their next `JobScreen`.
+              terminals: new Set(r.ptys),
+              ptys: new Set(r.ptys.filter((id) => prev.ptys.has(id))),
               reminders: new Set(r.reminders),
               reminderDetails: new Map([...(sessions[r.session]?.reminderDetails ?? [])].filter(([id]) => r.reminders.includes(id))),
               jobBeats: Object.fromEntries(Object.entries(sessions[r.session]?.jobBeats ?? {}).filter(([id]) => r.jobs.includes(id) || r.ptys.includes(id))),
             };
           }
           for (const [id, s] of Object.entries(sessions)) {
-            if (seen.has(id) || !(s.jobs.size || s.ptys.size || s.reminders.size)) continue;
-            sessions[id] = { ...s, jobs: new Set(), ptys: new Set(), reminders: new Set(), reminderDetails: new Map(), jobBeats: {} };
+            if (seen.has(id) || !(s.jobs.size || s.ptys.size || s.terminals.size || s.reminders.size)) continue;
+            sessions[id] = { ...s, jobs: new Set(), ptys: new Set(), terminals: new Set(), reminders: new Set(), reminderDetails: new Map(), jobBeats: {} };
           }
           return { sessions };
         });

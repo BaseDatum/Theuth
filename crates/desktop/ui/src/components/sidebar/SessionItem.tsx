@@ -82,17 +82,30 @@ function SessionActivity({ id, here, running }: { id: string; here: boolean; run
   )
 }
 
+/** The terminal glyph's tooltip: `open` terminals, `live` of them with a changing screen. */
+const terminalLabel = (open: number, live: number): string =>
+  open === 1 ? `Terminal ${live ? 'running' : 'idle'}` : !live ? `${open} terminals idle` : live === open ? `${open} terminals running` : `${open} terminals, ${live} running`
+
 /** Pending-work glyphs, shown whether or not a turn runs: a cog per session with non-PTY background jobs still running, a terminal per
- * session with a PTY whose screen is still changing, a timer (not pulsing: waiting, not working) per session with a reminder pending.
+ * session with an open PTY (animated while a screen is changing, still while all are quiet: an idle terminal still wakes the agent on
+ * its schedule), a timer (not pulsing: waiting, not working) per session with a reminder pending.
  * LIVE-GLYPHS (2026-10-07): the sets are seeded by `list_live_counts` and kept by `JobEvent`/`ReminderEvent`. */
 function SessionPending({ id }: { id: string }) {
   const jobs = useSessionField(id, 'jobs')?.size ?? 0
-  const ptys = useSessionField(id, 'ptys')?.size ?? 0
+  const ptys = useSessionField(id, 'ptys')
+  const terminals = useSessionField(id, 'terminals')
+  const open = new Set([...(terminals ?? []), ...(ptys ?? [])]).size
+  const live = ptys?.size ?? 0
   const reminders = useSessionField(id, 'reminders')?.size ?? 0
+  const pty = terminalLabel(open, live)
   return (
     <>
       {jobs > 0 && <Cog className={cn('size-3.5 shrink-0 animate-pulse', backgroundColors.jobs.text)} aria-label={`${jobs} background job${jobs === 1 ? '' : 's'}`} role="img" />}
-      {ptys > 0 && <PtyIcon live className={cn('size-3.5 shrink-0', backgroundColors.terminals.text)} aria-label={`${ptys} live terminal${ptys === 1 ? '' : 's'}`} role="img" />}
+      {open > 0 && (
+        <PtyIcon live={live > 0} className={cn('size-3.5 shrink-0', backgroundColors.terminals.text)} aria-label={pty} role="img">
+          <title>{pty}</title>
+        </PtyIcon>
+      )}
       {reminders > 0 && <Timer className={cn('size-3.5 shrink-0', backgroundColors.reminders.text)} aria-label={`${reminders} reminder${reminders === 1 ? '' : 's'} pending`} role="img" />}
     </>
   )
@@ -113,7 +126,7 @@ export const runningSubagents = (subagents: readonly SessionSummary[], slices: R
 
 /**
  * ACTIVE-TOP: which of `roots` the list floats into its `Active` section. A root counts when its own turn runs (a tool
- * call or an approval happens inside one), it holds a background job, live terminal or pending reminder, or a prompt
+ * call or an approval happens inside one), it holds a background job, open terminal (quiet included) or pending reminder, or a prompt
  * of its waits on the user (`prompting`); or when any descendant (`subs`) runs or holds any of those. The same
  * predicates as the row's glyphs, so the section and the glyphs cannot disagree.
  */
@@ -123,10 +136,10 @@ export function activeRoots(
   slices: Record<string, SessionSlice>,
   prompting: ReadonlySet<string>,
 ): string[] {
-  // A non-PTY background job, a live terminal or a pending reminder (what `SessionPending` shows), or a prompt.
+  // A non-PTY background job, an open terminal or a pending reminder (what `SessionPending` shows), or a prompt.
   const busy = (d: SessionSummary) => {
     const s = slices[d.id]
-    return (!!s && (s.jobs.size > 0 || s.ptys.size > 0 || s.reminders.size > 0)) || prompting.has(d.id)
+    return (!!s && (s.jobs.size > 0 || s.terminals.size > 0 || s.ptys.size > 0 || s.reminders.size > 0)) || prompting.has(d.id)
   }
   return roots
     .filter((r) => turnActivity(r, slices[r.id]) !== 'idle' || busy(r) || (subs.get(r.id) ?? NONE).some((d) => subagentRunning(d, slices) || busy(d)))
