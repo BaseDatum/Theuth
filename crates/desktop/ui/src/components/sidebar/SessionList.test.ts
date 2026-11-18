@@ -2,7 +2,8 @@ import { receiveComponent } from '@/rpc/bindings/receive'
 import { expect, test } from 'vitest'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { SessionSlice } from '@/store/sessions'
-import { rowActivity, runningSubagents } from './SessionItem'
+import { empty } from '@/store/reduce'
+import { activeRoots, rowActivity, runningSubagents } from './SessionItem'
 import { buildRows, listOffset, newChatLabel, type Row, watchListOffset } from './SessionList'
 
 const s = (id: string, project: string | null, updated_at: string, pinned = false, archived = false): SessionSummary => (receiveComponent("method.agent.output.SessionSummary", {
@@ -151,4 +152,63 @@ test('183 W-7: a row owned elsewhere shows its running glyph from list_sessions.
   expect(rowActivity('tool', true)).toBe('tool')
   expect(rowActivity('tool', false)).toBe('idle')
   expect(rowActivity('idle', false)).toBe('idle')
+})
+
+// ACTIVE-TOP: a root with anything going on leaves its usual place (pinned, a collapsed project, Archived) for the `Active` header on top.
+test('active roots lead under one Active header, out of pinned, collapsed projects and Archived, never twice; idle again they return', () => {
+  const sessions = [
+    s('a', null, '2026-01-03T00:00:00Z'),
+    s('pin', 'beta', '2026-01-02T00:00:00Z', true),
+    s('col', 'beta', '2026-01-05T00:00:00Z'),
+    s('arc', 'alpha', '2026-01-04T00:00:00Z', false, true),
+    s('d', 'alpha', '2026-01-01T00:00:00Z'),
+  ]
+  const active = new Set(['pin', 'col', 'arc'])
+  const rows = keys(buildRows(sessions, ['col'], new Set(['beta']), false, active))
+  expect(rows.slice(0, 5)).toEqual(['h:active', 'col', 't:col', 'arc', 'pin'])
+  expect(rows.filter((k) => ['pin', 'col', 'arc'].includes(k))).toHaveLength(3)
+  expect(rows).not.toContain('h:pinned')
+  expect(rows).not.toContain('p:archived')
+  expect(keys(buildRows(sessions, [], new Set(), false, new Set()))).toEqual(keys(buildRows(sessions, [])))
+  expect(keys(buildRows(sessions, [], new Set(), false, new Set(['a']))).slice(0, 3)).toEqual(['h:active', 'a', 'h:pinned'])
+})
+
+test('desks, advisors and study sessions never enter Active, even when their ids are in the set', () => {
+  const sessions = [
+    { ...s('desk', null, '2026-01-05T00:00:00Z'), desk: 'theuth' },
+    { ...s('adv', null, '2026-01-05T00:00:00Z'), kind: 'advisor' as const },
+    { ...s('st', null, '2026-01-05T00:00:00Z'), title: 'autoresearch-x' },
+    s('a', null, '2026-01-01T00:00:00Z'),
+  ]
+  expect(keys(buildRows(sessions, [], new Set(), true, new Set(['desk', 'adv', 'st']))).filter((k) => !k.startsWith('h:'))).toEqual(['a'])
+})
+
+test('activeRoots: own turn (here or remote, slice or snapshot), a job, a live terminal, a reminder, a prompt, or any of those on a descendant', () => {
+  const root = (id: string, p: Partial<SessionSummary> = {}) => ({ ...s(id, null, '2026-01-01T00:00:00Z'), ...p })
+  const kid = (id: string, parent: string, p: Partial<SessionSummary> = {}) => ({ ...root(id, p), parent })
+  const slice = (id: string, p: Partial<SessionSlice>) => ({ ...empty(id), ...p })
+  const roots = ['idle', 'turn', 'cold', 'remote', 'stale', 'job', 'pty', 'rem', 'ask', 'sub', 'subjob', 'deep', 'subask'].map((id) =>
+    root(id, { running: id === 'cold' || id === 'remote', here: id !== 'remote' && id !== 'stale' }),
+  )
+  const subs = new Map([
+    ['sub', [kid('sub1', 'sub', { running: true })]],
+    ['subjob', [kid('sj1', 'subjob')]],
+    ['deep', [kid('d1', 'deep'), kid('d2', 'd1')]],
+    ['subask', [kid('sa1', 'subask')]],
+    // A quiet terminal (`terminals` without `ptys`) shows no glyph, so it does not count either.
+    ['idle', [kid('i1', 'idle')]],
+  ])
+  const slices = {
+    turn: slice('turn', { running: true, activity: 'tool' }),
+    // A remote row's slice activity alone does not light it: `list_sessions.running` gates.
+    stale: slice('stale', { activity: 'streaming' }),
+    job: slice('job', { jobs: new Set(['j1']) }),
+    pty: slice('pty', { ptys: new Set(['j2']) }),
+    rem: slice('rem', { reminders: new Set(['r1']) }),
+    sj1: slice('sj1', { jobs: new Set(['j3']) }),
+    d2: slice('d2', { reminders: new Set(['r2']) }),
+    i1: slice('i1', { terminals: new Set(['quiet']) }),
+  }
+  expect(activeRoots(roots, subs, slices, new Set(['ask', 'sa1']))).toEqual(['turn', 'cold', 'remote', 'job', 'pty', 'rem', 'ask', 'sub', 'subjob', 'deep', 'subask'])
+  expect(activeRoots(roots, subs, {}, new Set())).toEqual(['cold', 'remote', 'sub'])
 })

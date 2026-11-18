@@ -26,9 +26,11 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { notAdvisor, notStudy, rootOf, subtrees } from '@/lib/session-tree'
 import { nextSelection, type SelectMode } from '@/lib/selection'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
+import { useSessions } from '@/store/sessions'
+import { useApprovals, useAsks, useSecretRequests } from '@/store/approvals'
 import { AgentTree } from './AgentTree'
 import { ProjectIcon, ProjectStyleDialog } from './ProjectStyle'
-import { SessionItem } from './SessionItem'
+import { activeRoots, SessionItem } from './SessionItem'
 
 export type Row =
   | { key: string; label: string }
@@ -115,18 +117,20 @@ function group(iso: string, now: number): string {
 }
 
 /**
- * Pinned top-level sessions first under one `Pinned` header, then the rest newest first with day-group headers;
- * the root of every open chat (the URL's and each split pane's) is followed by its agent tree. With any project
- * set (51 §3), unpinned roots are bucketed by project in first-seen order of that ordering, `Ungrouped` last,
- * under collapsible project headers (`collapsed` holds project labels, `''` = ungrouped). Archived roots (51 §3)
- * leave all of that for one `Archived (N)` header at the very bottom, collapsed unless `archivedOpen`; their
- * children only ever render under them (as the tree of an open chat), never as orphans above.
+ * ACTIVE-TOP: every root in `active` first under one `Active` header, wherever it would sit otherwise (pinned, in a
+ * collapsed project, archived), and only there. Then pinned top-level sessions under one `Pinned` header, then the
+ * rest newest first with day-group headers; the root of every open chat (the URL's and each split pane's) is followed
+ * by its agent tree. With any project set (51 §3), unpinned roots are bucketed by project in first-seen order of that
+ * ordering, `Ungrouped` last, under collapsible project headers (`collapsed` holds project labels, `''` = ungrouped).
+ * Archived roots (51 §3) leave all of that for one `Archived (N)` header at the very bottom, collapsed unless
+ * `archivedOpen`; their children only ever render under them (as the tree of an open chat), never as orphans above.
  */
 export function buildRows(
   sessions: SessionSummary[],
   open: readonly string[],
   collapsed: ReadonlySet<string> = new Set(),
   archivedOpen = false,
+  active: ReadonlySet<string> = new Set(),
 ): Row[] {
   const now = Date.now()
   const roots = new Set(open.map((id) => rootOf(sessions, id)))
@@ -138,7 +142,13 @@ export function buildRows(
   // A roster desk (`desk` set) is never a chat row — pinned, archived or in a project; the Desks group is its place. Nor is an
   // advisor (125 §8.5), nor an autoresearch study session (140 §13 Revision 2: the Study view is its place).
   const all = sessions.filter((s) => s.parent === null && s.desk == null && notAdvisor(s) && notStudy(s)).sort((a, b) => b.updated_at.localeCompare(a.updated_at))
-  const top = all.filter((s) => !s.archived)
+  const hot = all.filter((s) => active.has(s.id))
+  if (hot.length) {
+    rows.push({ key: 'h:active', label: 'Active' })
+    hot.forEach(push)
+  }
+  const rest = all.filter((s) => !active.has(s.id))
+  const top = rest.filter((s) => !s.archived)
   const pinned = top.filter((s) => s.pinned)
   if (pinned.length) {
     rows.push({ key: 'h:pinned', label: 'Pinned' })
@@ -168,7 +178,7 @@ export function buildRows(
       push(s)
     }
   }
-  const archived = all.filter((s) => s.archived)
+  const archived = rest.filter((s) => s.archived)
   if (archived.length) {
     rows.push({ key: 'p:archived', archived: archived.length, collapsed: !archivedOpen })
     if (archivedOpen) archived.forEach(push)
@@ -233,8 +243,16 @@ export function SessionList({
   const [archivedOpen, setArchivedOpen] = useState(false)
   const root = usePanes((s) => s.root)
   const open = useMemo(() => (root ? leaves(root) : active ? [active] : []), [root, active])
-  const rows = useMemo(() => buildRows(sessions, open, collapsed, archivedOpen), [sessions, open, collapsed, archivedOpen])
   const subs = useMemo(() => subtrees(sessions), [sessions])
+  const roots = useMemo(() => sessions.filter((s) => s.parent === null), [sessions])
+  const approvals = useApprovals((s) => s.pending)
+  const asks = useAsks((s) => s.pending)
+  const secrets = useSecretRequests((s) => s.pending)
+  const prompting = useMemo(() => new Set([...approvals, ...asks, ...secrets].map((p) => p.session)), [approvals, asks, secrets])
+  // Joined, so the selector's result is a stable string while every streamed delta re-runs it.
+  const hot = useSessions((s) => activeRoots(roots, subs, s.sessions, prompting).join('\n'))
+  const activeSet = useMemo(() => new Set(hot ? hot.split('\n') : []), [hot])
+  const rows = useMemo(() => buildRows(sessions, open, collapsed, archivedOpen, activeSet), [sessions, open, collapsed, archivedOpen, activeSet])
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set())
   const [confirming, setConfirming] = useState(false)
   // Every selected row is archived: the bar offers Unarchive instead of Archive.
