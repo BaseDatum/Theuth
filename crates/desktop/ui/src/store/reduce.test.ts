@@ -792,6 +792,7 @@ test('LIVE-GLYPHS: seedLive installs the snapshot for a session with no slice an
   const fresh = 'seed-fresh'
   st.applyEvents([
     { type: 'JobStarted', session: stale, id: 'j1', command: 'make', kind: 'shell', call_id: 'c1', log: '/l', name: null, pty: false },
+    { type: 'JobStarted', session: stale, id: 'p1', command: 'top', kind: 'shell', call_id: 'c2', log: '/l', name: null, pty: true },
     { type: 'ReminderSet', session: stale, id: 'r1', message: 'm', set_at: 1, fires_at: 2, seconds: 1 },
   ])
   const before = useSessions.getState().sessions[stale]!
@@ -800,12 +801,18 @@ test('LIVE-GLYPHS: seedLive installs the snapshot for a session with no slice an
   st.seedLive([{ session: fresh, jobs: ['j7'], ptys: ['j8'], reminders: ['r3'] }])
   const seeded = useSessions.getState().sessions[fresh]!
   expect([...seeded.jobs]).toEqual(['j7'])
-  expect([...seeded.ptys]).toEqual(['j8'])
+  // Every running PTY is an open terminal; none is known to be changing until its next `JobScreen`.
+  expect([...seeded.terminals]).toEqual(['j8'])
+  expect([...seeded.ptys]).toEqual([])
   expect([...seeded.reminders]).toEqual(['r3'])
   expect(seeded).toMatchObject({ loaded: false, entries: [] })
   const cleared = useSessions.getState().sessions[stale]!
-  expect(cleared.jobs.size + cleared.ptys.size + cleared.reminders.size).toBe(0)
+  expect(cleared.jobs.size + cleared.ptys.size + cleared.terminals.size + cleared.reminders.size).toBe(0)
   expect(cleared.entries).toBe(before.entries)
+  // A reseed (reconnect) keeps a PTY already seen changing animated.
+  st.applyEvents([{ type: 'JobScreen', session: fresh, id: 'j8', rows: ['$'], cursor: [0, 1] }])
+  st.seedLive([{ session: fresh, jobs: [], ptys: ['j8'], reminders: [] }])
+  expect([...useSessions.getState().sessions[fresh]!.ptys]).toEqual(['j8'])
   // A slice with nothing live and no row is left untouched.
   st.seedLive([])
   expect(useSessions.getState().sessions[stale]).toBe(cleared)

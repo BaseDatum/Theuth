@@ -62,9 +62,10 @@ export const ArtifactWriting = (
 
 /**
  * lucide's `SquareTerminal`, path for path, with the prompt chevron and cursor addressable: `live` nudges the chevron
- * and blinks the cursor (`.pty-live` in styles.css); still otherwise. Takes a LucideIcon's props.
+ * and blinks the cursor (`.pty-live` in styles.css); still otherwise. Takes a LucideIcon's props; `children` (an SVG
+ * `<title>` tooltip) render after the shapes.
  */
-export function PtyIcon({ live, className, ...props }: ComponentProps<'svg'> & { live: boolean }) {
+export function PtyIcon({ live, className, children, ...props }: ComponentProps<'svg'> & { live: boolean }) {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
@@ -82,6 +83,7 @@ export function PtyIcon({ live, className, ...props }: ComponentProps<'svg'> & {
       <path className="pty-prompt" d="m7 11 2-2-2-2" />
       <path className="pty-cursor" d="M11 13h4" />
       <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
+      {children}
     </svg>
   )
 }

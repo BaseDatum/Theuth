@@ -165,18 +165,20 @@ test('188 D2: each server row names its home and state here; a home action sets 
   unmount()
 })
 
-test('188 D2: Log in opens the sign-in URL here; over link it is shown to open on the node; Log out logs out', async () => {
+test('188 D2: Log in asks the engine once (it opens the browser) with the URL as a local fallback; over link it is shown to open on the node; Log out logs out', async () => {
   const open = vi.spyOn(window, 'open').mockReturnValue(null)
   const { el, button, unmount } = await mount()
   expect(el.textContent).toContain('logged in')
   await act(async () => button('Log in')[0]!.click())
-  await vi.waitFor(() => expect(open).toHaveBeenCalledWith('https://auth.example/linear', '_blank'))
+  await vi.waitFor(() => expect(el.textContent).toContain("Browser didn't open? https://auth.example/linear"))
+  expect(calls.filter(([m]) => m === 'mcp_login')).toEqual([['mcp_login', 'linear']])
   expect(el.textContent).not.toContain('Sign in from the node')
   await act(async () => useEngines.setState({ active: 'remote-node' }))
   await vi.waitFor(() => expect(button('Log in')[0]?.disabled).toBe(false))
   await act(async () => button('Log in')[0]!.click())
   await vi.waitFor(() => expect(el.textContent).toContain('Sign in from the node (node): https://auth.example/linear'))
-  expect(open).toHaveBeenCalledTimes(1)
+  expect(calls.filter(([m]) => m === 'mcp_login')).toHaveLength(2)
+  expect(open).not.toHaveBeenCalled()
   await act(async () => button('Log out')[0]!.click())
   await vi.waitFor(() => expect(calls).toContainEqual(['mcp_logout', 'grafana']))
   unmount()

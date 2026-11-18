@@ -62,9 +62,9 @@ test('sidebar categories match the dot palette without changing their shapes, pu
   expect(glyph('2 background jobs').getAttribute('class')).toContain('lucide-cog')
   expect(glyph('2 background jobs').getAttribute('class')).toContain('text-project-lapis')
   expect(glyph('2 background jobs').getAttribute('class')).toContain('animate-pulse')
-  expect(glyph('1 live terminal').getAttribute('class')).toContain('text-project-faience')
-  expect(glyph('1 live terminal').getAttribute('class')).toContain('pty-live')
-  expect(glyph('1 live terminal').querySelector('.pty-cursor')).not.toBeNull()
+  expect(glyph('Terminal running').getAttribute('class')).toContain('text-project-faience')
+  expect(glyph('Terminal running').getAttribute('class')).toContain('pty-live')
+  expect(glyph('Terminal running').querySelector('.pty-cursor')).not.toBeNull()
   expect(glyph('1 reminder pending').getAttribute('class')).toContain('lucide-timer')
   expect(glyph('1 reminder pending').getAttribute('class')).toContain('text-project-plum')
   expect(glyph('1 reminder pending').getAttribute('class')).not.toContain('animate-pulse')
@@ -72,6 +72,30 @@ test('sidebar categories match the dot palette without changing their shapes, pu
   expect(glyph('1 subagent running').getAttribute('class')).toContain('text-project-malachite')
   expect(glyph('1 subagent running').getAttribute('class')).toContain('animate-pulse')
   expect(glyph('Thinking').getAttribute('class')).toContain('text-info')
+})
+
+test('an open but quiet terminal keeps a still terminal glyph labelled idle; a changing screen animates it; exit removes it', async () => {
+  useSessions.setState({ sessions: { root: { ...empty('root'), terminals: new Set(['t1']) }, child: empty('child') } })
+  await mount()
+  const idle = glyph('Terminal idle')
+  expect(idle.getAttribute('class')).toContain('text-project-faience')
+  expect(idle.getAttribute('class')).not.toContain('pty-live')
+  expect(idle.querySelector('title')?.textContent).toBe('Terminal idle')
+  await act(async () => useSessions.getState().applyEvents([{ type: 'JobStarted', session: 'root', id: 't2', command: 'top', kind: 'pty', call_id: 'c2', log: '/l', name: null, pty: true }]))
+  expect(glyph('2 terminals, 1 running').getAttribute('class')).toContain('pty-live')
+  await act(async () => useSessions.getState().applyEvents([{ type: 'JobIdle', session: 'root', id: 't2', command: 'top', name: null, nudge: 1, quiet_secs: 1, secs: 1, user_typed_secs: null, why: '', output: '' }]))
+  expect(glyph('2 terminals idle').getAttribute('class')).not.toContain('pty-live')
+  await act(async () => useSessions.getState().applyEvents([
+    { type: 'JobFinished', session: 'root', id: 't1', command: 'top', kind: 'pty', exit: 'killed', secs: 1, output: '', inline: false, pty: true },
+    { type: 'JobFinished', session: 'root', id: 't2', command: 'top', kind: 'pty', exit: 'killed', secs: 1, output: '', inline: false, pty: true },
+  ]))
+  expect(document.querySelector('.lucide-square-terminal')).toBeNull()
+})
+
+test("a child's quiet terminal puts no terminal glyph on the root row", async () => {
+  useSessions.setState({ sessions: { root: empty('root'), child: { ...empty('child'), terminals: new Set(['t1']) } } })
+  await mount()
+  expect(document.querySelector('.lucide-square-terminal')).toBeNull()
 })
 
 test('only an approval in this subtree turns the network glyph warning; resolving restores malachite', async () => {

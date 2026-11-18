@@ -19,7 +19,7 @@ advisors excluded), has one of these. Every predicate is the one the row's glyph
 | Awaiting / approval of a watch-only child | `observed.state` `running` / `requires_action` (slice, else snapshot) | `list_sessions.observed` |
 | Running subagent | `runningSubagents`' rule per descendant: slice `running` or `SessionSummary.running` | `list_sessions.running` |
 | Background job (non-PTY) | slice `jobs` | `list_live_counts.jobs` (`seedLive`) |
-| Terminal (PTY) | slice `ptys` | `list_live_counts.ptys` (`seedLive`) |
+| Open terminal (PTY), quiet or changing | slice `terminals` (`JobStarted.pty` / `JobScreen` add, only `JobFinished` drops, for every session) | `list_live_counts.ptys` → `terminals` (`seedLive`) |
 | Pending reminder | slice `reminders` | `list_live_counts.reminders` (`seedLive`) |
 
 Glyph change in the same commit: the row's own turn glyph (`SessionActivity`) now also lights from
@@ -27,14 +27,23 @@ Glyph change in the same commit: the row's own turn glyph (`SessionActivity`) no
 (re)loaded showed no glyph until a streaming event arrived in that session; the section and the glyph now share
 `turnActivity`.
 
+## Open terminals (ACTIVE-PTY, 2026-11-18)
+
+An idle terminal still wakes its agent on a schedule (`JobIdle` nudges with backoff), so an open PTY counts as active
+whether or not its screen changes. `terminals` (every open PTY) is the signal; `ptys` (screen still changing) only
+decides the glyph's animation:
+
+- `seedLive` installs `terminals` from `list_live_counts.ptys` (every running non-cell PTY, the same set
+  `list_terminals` reports as `running`) for every session, viewed or not, and empties it for sessions absent from the
+  snapshot. `ptys` keeps only ids this client already saw changing: a fresh reload no longer marks a quiet terminal as
+  changing until its next `JobIdle` (which may never come); a changing one animates again on its next `JobScreen`.
+- The row's own glyph (`SessionPending`): one `PtyIcon` in the terminals colour when `terminals ∪ ptys` is non-empty,
+  animated (`pty-live`) while any screen changes, still otherwise. Label and SVG `<title>` tooltip: `Terminal running`
+  / `Terminal idle`, or `N terminals running` / `N terminals idle` / `N terminals, M running`.
+- A descendant's open terminal promotes the root but adds no root glyph (Sky: the running-subagent glyph is enough).
+- The background strip and Jobs card already list `terminals ∪ ptys` for the viewed chat; unchanged.
+
 ## Gaps
 
-- Quiet terminals. The sidebar's terminal signal is `ptys`: a PTY whose screen is still changing. Live, `JobIdle`
-  drops a quiet PTY from it (no glyph, not Active); a reload seeds every running PTY from `list_live_counts.ptys`, so
-  a quiet one counts until its next `JobIdle`. `terminals` (every running PTY, quiet included) is only relisted for
-  the viewed chat (`relistTerminals`), so it is not snapshot-backed for unviewed sessions and is not used. Smallest
-  seam if quiet-but-open terminals should count: `seedLive` also installs `terminals: new Set(r.ptys)` (the snapshot
-  already lists every running PTY), then `activeRoots` reads `terminals`; no engine change. The row would then sit
-  in Active without a glyph unless the PTY glyph also learns a quiet state.
 - Descendant jobs, terminals, reminders and prompts promote the root but have no glyph of their own on the root row
   (the subagent glyph covers running descendants only).
