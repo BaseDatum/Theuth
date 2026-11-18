@@ -741,8 +741,10 @@ html .bn-editor [data-frontmatter] h1 {
   font-weight: 600;
 }
 /* Page typography (59 §24.y): the pre-59 concept view's prose (Streamdown's defaults on the 16/24 body) so a
-   knowledge page in BlockNote reads as it did and a note reads as its sibling. Headings 30/24/20 px semibold with
-   `mt-6 mb-2`, links `text-primary font-medium underline`, inline code and code wells on the muted token. */
+   knowledge page in BlockNote reads as it did and a note reads as its sibling. Headings 30/24/20/18/16/14 px (h1-h6,
+   Streamdown's text-3xl..text-sm) semibold with `mt-6 mb-2`, links `text-primary font-medium underline`, inline code
+   and code wells on the muted token. The base heading rule outranks BlockNote's per-level `--level`, so every level
+   the editor can produce (1-6: block type menu, `#### `, import) needs its own rule here. */
 html .bn-editor {
   font-size: 16px;
   line-height: 24px;
@@ -760,6 +762,34 @@ html .bn-editor [data-content-type="heading"][data-level="2"] {
 }
 html .bn-editor [data-content-type="heading"][data-level="3"] {
   --level: 20px;
+}
+html .bn-editor [data-content-type="heading"][data-level="4"] {
+  --level: 18px;
+}
+html .bn-editor [data-content-type="heading"][data-level="5"] {
+  --level: 16px;
+}
+html .bn-editor [data-content-type="heading"][data-level="6"] {
+  --level: 14px;
+}
+/* BlockNote's `--prev-level` (the start of its 0.2 s font-size transition on a level change) on the same scale. */
+html .bn-editor [data-prev-level="1"] {
+  --prev-level: 30px;
+}
+html .bn-editor [data-prev-level="2"] {
+  --prev-level: 24px;
+}
+html .bn-editor [data-prev-level="3"] {
+  --prev-level: 20px;
+}
+html .bn-editor [data-prev-level="4"] {
+  --prev-level: 18px;
+}
+html .bn-editor [data-prev-level="5"] {
+  --prev-level: 16px;
+}
+html .bn-editor [data-prev-level="6"] {
+  --prev-level: 14px;
 }
 html .bn-editor .bn-block-group > .bn-block-outer:first-child > .bn-block > [data-content-type="heading"] {
   margin-top: 0;
