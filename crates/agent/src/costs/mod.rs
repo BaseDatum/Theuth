@@ -104,6 +104,28 @@ pub(crate) fn model_id(raw: &str) -> &str {
     raw.split(':').next().unwrap_or(raw)
 }
 
+/// The provider a vendor's own harness bills to, by its name: claude-acp
+/// reports its model as `default`, `opus` or `claude-sonnet-5`, never
+/// `anthropic/…`. Harnesses that front many providers (opencode, omp)
+/// report `provider/model` and are not listed.
+fn harness_vendor(harness: &str) -> Option<&'static str> {
+    let h = harness.to_ascii_lowercase();
+    [("claude", "anthropic"), ("codex", "openai"), ("gemini", "google")]
+        .into_iter()
+        .find(|(k, _)| h.contains(k))
+        .map(|(_, p)| p)
+}
+
+/// A harness-reported model id qualified with its vendor's provider when it
+/// names none (`claude-acp` + `default` → `anthropic/default`), so the cube
+/// does not file it under `unknown`.
+pub(crate) fn harness_model(harness: &str, raw: String) -> String {
+    match harness_vendor(harness) {
+        Some(p) if !raw.contains('/') => format!("{p}/{raw}"),
+        _ => raw,
+    }
+}
+
 /// `(display name, provider)` of a raw model id: the catalog's canonical
 /// vendor id when it names one, else the id itself, without the provider
 /// and any `-YYYYMMDD` snapshot suffix (`claude-haiku-4-5-20251001` →

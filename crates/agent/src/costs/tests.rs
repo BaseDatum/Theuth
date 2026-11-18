@@ -1337,3 +1337,14 @@ async fn measure_on_a_real_ledger() {
         "HUD = cube MTD"
     );
 }
+
+/// A vendor harness's bare model id is filed under its vendor, not `unknown`.
+#[test]
+fn harness_model_names_the_vendor() {
+    use super::harness_model;
+    assert_eq!(harness_model("claude-acp", "default".into()), "anthropic/default");
+    assert_eq!(harness_model("codex-acp", "gpt-5.6".into()), "openai/gpt-5.6");
+    assert_eq!(harness_model("omp", "rwx/glm".into()), "rwx/glm");
+    assert_eq!(harness_model("omp", "glm".into()), "glm");
+    assert_eq!(harness_model("claude-acp", "anthropic/opus".into()), "anthropic/opus");
+}

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use super::place::{Piece, place};
 use super::{
     CostBasis, CostCallsQuery, CostCells, CostCube, CostCubeCursor, CostCubeMeta, CostModel,
-    CostReason, CostRoot, CostRootEntry, Prices, hour_of, hour_text, model_id, model_name, ms,
+    CostReason, CostRoot, CostRootEntry, Prices, harness_model, hour_of, hour_text, model_id, model_name, ms,
 };
 use crate::cost::SpendOwnerKind;
 use crate::store::Store;
@@ -122,9 +122,15 @@ struct Reported {
 }
 
 async fn fetch_reported(store: &Store, prices: &Prices) -> anyhow::Result<Reported> {
-    let meters = store.cost_meters().await?;
+    let mut meters = store.cost_meters().await?;
     let reports = store.cost_meter_reports().await?;
-    let turns = store.cost_turns().await?;
+    let mut turns = store.cost_turns().await?;
+    for m in &mut meters {
+        m.harness_model = m.harness_model.take().map(|h| harness_model(&m.origin, h));
+    }
+    for t in &mut turns {
+        t.model = t.model.take().map(|h| harness_model(&t.harness, h));
+    }
     let pieces = place(&meters, &reports, &turns, prices);
     Ok(Reported { pieces, turns })
 }
