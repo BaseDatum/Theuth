@@ -24,8 +24,31 @@ pub fn category_key(id: &str) -> String {
 #[serde(default)]
 pub struct BuiltinsConfig {
     /// Harness-wide "Off always": builtin tool names and [`category_key`]s,
-    /// sorted. Written back by `SetBuiltinsDisabled`.
+    /// sorted. Written back by `SetBuiltinsDisabled`. Left empty (YAML null): none.
+    #[serde(deserialize_with = "null_as_empty")]
     pub disabled: Vec<String>,
+}
+
+fn null_as_empty<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    Option::<Vec<String>>::deserialize(d).map(Option::unwrap_or_default)
+}
+
+/// Longest [`summary`], in chars, before the ellipsis.
+const SUMMARY_CHARS: usize = 400;
+
+/// What `ListBuiltins` sends of a tool description: its first paragraph, cut at
+/// [`SUMMARY_CHARS`] chars with a trailing `…` when longer.
+pub fn summary(description: &str) -> String {
+    let para = description
+        .trim_start()
+        .lines()
+        .take_while(|l| !l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    match para.char_indices().nth(SUMMARY_CHARS) {
+        Some((cut, _)) => format!("{}…", para[..cut].trim_end()),
+        None => para.trim_end().to_owned(),
+    }
 }
 
 /// One category of builtin tools as an app shows it.
@@ -544,5 +567,50 @@ mod tests {
         assert_eq!(CATEGORIES.last().unwrap().id, OTHER);
         assert!(CATEGORIES.iter().all(|c| !c.description.is_empty()));
         assert!(category("files").is_some() && category("nope").is_none());
+    }
+
+    #[test]
+    fn builtins_summary_is_first_paragraph_cut_on_a_char_boundary() {
+        assert_eq!(summary("One line.\n\nMore.\n\nEven more."), "One line.");
+        assert_eq!(summary("  a\nb\n   \nc"), "a\nb");
+        assert_eq!(summary("short"), "short");
+        let long = "é".repeat(SUMMARY_CHARS + 5);
+        let s = summary(&long);
+        assert_eq!(s.chars().count(), SUMMARY_CHARS + 1);
+        assert!(s.ends_with('…'));
+        assert_eq!(
+            summary(&"x".repeat(SUMMARY_CHARS)),
+            "x".repeat(SUMMARY_CHARS)
+        );
+    }
+
+    /// `tools.builtins.disabled:` left empty is no switch; missing is too.
+    #[test]
+    fn builtins_config_null_or_missing_is_empty() {
+        use figment::providers::{Format as _, Yaml};
+        let read = |yaml: &str| {
+            figment::Figment::new()
+                .merge(Yaml::string(yaml))
+                .extract_inner::<BuiltinsConfig>("tools.builtins")
+        };
+        assert!(
+            read("tools:\n  builtins:\n    disabled:\n")
+                .unwrap()
+                .disabled
+                .is_empty()
+        );
+        assert!(
+            read("tools:\n  builtins:\n    other: 1\n")
+                .unwrap()
+                .disabled
+                .is_empty()
+        );
+        assert_eq!(
+            read("tools:\n  builtins:\n    disabled: [\"cat:web\"]\n")
+                .unwrap()
+                .disabled,
+            ["cat:web"]
+        );
+        assert!(read("tools:\n  builtins:\n    disabled: 3\n").is_err());
     }
 }

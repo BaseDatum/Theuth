@@ -2868,7 +2868,7 @@ mod tests {
                 out.content
             );
 
-            assert!(cx.registry.ask(switch(true)).await.unwrap().is_empty());
+            cx.registry.ask(switch(true)).await.unwrap();
             assert!(!prompt_block(&specs(&cx).await, true).contains("async def list_dir("));
             let out = repl.run("off", &listing).await;
             assert!(
@@ -2878,7 +2878,7 @@ mod tests {
             );
             assert!(find_tool(&cx, "list_dir").await.is_none());
 
-            assert!(cx.registry.ask(switch(false)).await.unwrap().is_empty());
+            cx.registry.ask(switch(false)).await.unwrap();
             assert!(prompt_block(&specs(&cx).await, true).contains("async def list_dir("));
             let out = repl.run("on", &listing).await;
             assert!(

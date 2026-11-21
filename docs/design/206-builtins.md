@@ -16,10 +16,13 @@ names cannot contain `:`, so a key never matches a tool by name.
 ## Two scopes
 
 - Off always: `tools.builtins.disabled` in `<data_dir>/config.yaml` (`ToolsConfig.builtins: BuiltinsConfig { disabled }`,
-  tolerant of a missing key), a sorted list of builtin names and category keys. `registry::start` seeds
-  `ToolRegistry.builtins_disabled` from it; `SetBuiltinsDisabled` changes it live and rewrites the key with
-  `runtime::write_nested_config_value` (comments preserved; the value is written as a JSON array so `cat:<id>` stays a string).
-  Node-local like the rest of config.yaml. Applies to every session on the engine.
+  tolerant of a missing key and of an empty one, YAML null; any other non-list value fails `tools` start like every other key),
+  a sorted list of builtin names and category keys. `registry::start` seeds `ToolRegistry.builtins_disabled` from it;
+  `SetBuiltinsDisabled` computes the new set, rewrites the key with `runtime::write_nested_config_value` (comments preserved;
+  the value is written as a JSON array so `cat:<id>` stays a string; a hand-written block list under the key is replaced whole)
+  and only after a successful write swaps it into memory and bumps `hidden_epoch`. A write that fails changes nothing and is
+  an error. A call that changes nothing (no names, or every name already in the wanted state) writes nothing and bumps
+  nothing. Node-local like the rest of config.yaml. Applies to every session on the engine.
 - Off here: the existing per-session hidden set (`ToolRegistry.hidden`, persisted in `sessions.hidden_tools`, inherited by
   subagents through `parents`), written by the existing `set_mcp_hidden`. `cat:<id>` entries in it are honoured exactly like
   `mcp:<server>` entries. No new column, no migration.
@@ -33,7 +36,16 @@ runtime's per-cell re-list), `visible()` (`Invoke`, `AppInvoke`, `InspectTool`).
 unfiltered. MCP tools are never touched by `cat:` keys or the harness-wide set. `Invoke` of a tool switched off by a builtin
 switch answers `<name> is turned off (Settings > Tools > Builtins)`; a hide by plain name, an MCP hide, a contact allowlist and
 unregistered names keep `unknown tool: <name>`. Every change bumps `hidden_epoch`, so a running turn re-lists before its next
-model call (`rebase`).
+model call (`rebase`). The `t mcp --session` shim leaves out of its listing the registry tools `list_builtins(session)`
+reports as disabled or hidden.
+
+The switch is for the model's tools. The harness's own calls go through `HarnessInvoke` (a sibling of `Invoke`), which skips
+only `builtin_switched`; hides by name or MCP server, allowlists, caps, policy and approvals still apply. Callers:
+`agent::notebooks::invoke` (notebook context, `ask`, overviews: `source_get`, `doc_read`, `notebook_get`, `nb_search`, `show`,
+`notebook_add`), `document::ingest::routes::invoke` (ingest's web and session tools), the web Settings search test
+(`search_test`), autoresearch's launch card (`autoresearch_launch_card`) and its `code_map` study context. Model-facing paths
+keep `Invoke`: the turn loop, resumed calls, the python runtime, app queries and mutations (`AppInvoke`), the MCP shim
+(`session_call_tool`), `secret_capture`, and autoresearch `calls` made for a study.
 
 ## Wire
 
@@ -43,11 +55,16 @@ On `AgentToolingApi` (`crates/agent/src/rpc_tooling.rs`, owner `agent`, audience
   empty ones left out, tools sorted by name. `BuiltinTool { name, description, risk, direct, disabled, hidden }`: `disabled` =
   name or category key in the harness-wide set; `hidden` = name or category key in the session's or an ancestor's hidden set,
   always false without a session. A session owned by another engine is forwarded to it (as `list_mcp`).
-- `set_builtins_disabled(names: Vec<String>, disabled: bool) -> ()` — registry `SetBuiltinsDisabled`, engine-local. Every name
-  must be a registered builtin or `cat:<known id>`, else invalid params and nothing is written. Removing an absent name is fine.
+- `set_builtins_disabled(names: Vec<String>, disabled: bool, session: Option<SessionId>) -> ()` — registry
+  `SetBuiltinsDisabled`. With `session`, authorised and forwarded exactly like `list_builtins`: the engine that owns the
+  session changes its own harness-wide set (the set that chat's sheet lists); without, this engine. Adding: every name must
+  be a registered builtin or `cat:<known id>`. Removing: also any name currently in the set (a stale entry whose tool is not
+  registered now). Anything else is invalid params and nothing is written. A config file that cannot be written is an
+  internal error (`the config file could not be written, nothing changed: <path>: <reason>`) and nothing changes.
 - `set_mcp_hidden(session, names, hidden)` — unchanged signature, now also meaningful for `cat:<id>`.
 
-`BuiltinCategory` / `BuiltinTool` live in `crates/tools/src/builtins.rs` (serde, schemars, ts-exported).
+`BuiltinCategory` / `BuiltinTool` live in `crates/tools/src/builtins.rs` (serde, schemars, ts-exported). `description` is the
+tool description's first paragraph, cut at 400 characters (char boundary) with a trailing `…` when longer.
 
 ## Deliberately out
 
@@ -55,4 +72,35 @@ On `AgentToolingApi` (`crates/agent/src/rpc_tooling.rs`, owner `agent`, audience
   switchable.
 - A TUI view.
 - Replicating the harness-wide set across engines of a mesh: it is config.yaml, node-local.
-- System-prompt prose blocks (plugin prompts) that still mention a disabled tool by name.
+- System-prompt prose blocks (plugin prompts) and the skills index that still mention a switched-off tool by name.
+- Sensors call file, web and knowledge tool structs directly, not through the registry: the switch does not affect them.
+- `AppInvoke` and `InspectTool` answer `unknown tool` (not "turned off") for a switched-off builtin.
+- The harness's own features bypass the switch (`HarnessInvoke`, see Enforcement): notebook context, `ask`, overviews,
+  document ingest, the Settings search test, autoresearch's launch card and `code_map`.
+
+## Endless chats
+
+An endless chat (design 201) pins its tool part per generation (`crates/agent/src/endless/tool_pin.rs`); a switch goes
+through that pin like any other hide.
+
+- Off applies before the next model call, in either scope. It breaks the prefix cache once: the direct tool array is at
+  the front of the frame. A category change is one registry message and one `hidden_epoch` bump, so a whole category costs
+  the same single break as one tool. A runtime-only tool also takes the pinned `## Runtime` index with it (taken fresh).
+- Hide versus removal: `batch_tools` (and `input_notes`) ask the unfiltered `ListTools(None)`; a name missing from the
+  session's list but present there is a hide (applies now, its call is refused as "not available in this session"), a
+  name missing from both is a removal (stays defined until the trim, its call refused as "no longer available"). 206
+  keeps `ListTools(None)` unfiltered, so a switch is always classified as a hide.
+- On is an addition: callable from python at once (the runtime re-lists per cell, direct calls of it are bridged), in the
+  direct list and the pinned index only at the next trim or cold cache, announced by the `<tools>` note at the next turn
+  opening. A hide forgets the name as announced, so off and on again within one generation is announced again.
+- The switch-off note: the same `<tools>` note, after the turn's input, gains the sentence `Switched off for this chat
+  (calls are refused until they are switched back on): a, b, ...` (sorted, at most 12 names then `and N more`). Each name
+  is told once per switch-off; a name switched back on before the note goes out is dropped; one not told when the
+  generation changes is told in the new one. Either sentence may appear alone. It serves MCP and per-name hides too, so
+  it never says "builtin". Classic (epochs) sessions get no note: their list changes at once.
+- Never switchable: the endless tools `zoom`, `recall`, `date`, `ledger` and `todo`, `python`, `advise`, `consult` are
+  loop-local, not in the registry.
+- Side calls (compactor, small profile, image describe, consult, title) carry no tools and are unaffected.
+- The advisor's child session inherits the chat's hides (parent chain) and the harness-wide set, so its fixed read-only
+  toolset shrinks accordingly.
+- `<knowledge>` hints are still injected when `knowledge_get` is off.
