@@ -1046,6 +1046,196 @@ async fn s6() {
     assert!(!texts(&r).iter().any(|s| s.starts_with("<tools>")));
 }
 
+#[test]
+fn eval_s7_builtin_switches_through_the_loop() {
+    crate::with_test_registry(s7());
+}
+
+/// The last `<tools>` note of request `b`.
+fn last_tools_note(b: &Value) -> Option<String> {
+    texts(b).into_iter().rev().find(|t| t.starts_with("<tools>"))
+}
+
+/// S7: 206 through the loop with a real python worker pool. Two builtins of
+/// the `sandbox` category (one direct, one runtime-only) are switched off
+/// harness-wide and per chat by category mid-generation: each applies at the
+/// next call, is told once by the `<tools>` note and its call refuses as not
+/// available (a hide, never a removal); switched back on they are additions
+/// (announced, callable from python, direct again at the trim). The endless
+/// tools stay throughout; another endless chat sees the harness-wide switch.
+async fn s7() {
+    let (_reg_dir, reg) = registry().await;
+    let Some(pool) = worker_pool().await else {
+        eprintln!("S7: no python worker (THEUTH_WORKER, monty/t on PATH); scenario skipped");
+        return;
+    };
+    eprintln!("S7: running with a python worker pool");
+    const DIRECT: &str = "sandbox_evaldirect";
+    const RUNTIME: &str = "sandbox_evalrun";
+    assert_eq!(tools::builtins::category_of(DIRECT), "sandbox");
+    assert_eq!(tools::builtins::category_of(RUNTIME), "sandbox");
+    register(&reg, DIRECT, true).await;
+    register(&reg, RUNTIME, false).await;
+    let has = |b: &Value, n: &str| tool_names(b).iter().any(|t| t == n);
+    let endless_tools = |b: &Value| {
+        for n in ["zoom", "recall", "date"] {
+            assert!(has(b, n), "{n} stays: {:?}", tool_names(b));
+        }
+    };
+
+    let script = Script::new();
+    let mut h = Harness::new(ScriptRef(script.clone())).await;
+    add_models(&mut h, &[("evals7", false, 128_000)]);
+    let model = "openai/evals7";
+    let hang = EvalCompactor::new(Act::Hang);
+    let e = service(&h, EndlessConfig::default(), &hang);
+    attach(&h, &e, model).await;
+    let actor = session(&h, model, Some(&e), Some(pool.clone())).await;
+
+    // A second endless chat on the same registry.
+    let script2 = Script::new();
+    let mut h2 = Harness::new(ScriptRef(script2.clone())).await;
+    add_models(&mut h2, &[("evals7b", false, 128_000)]);
+    let model2 = "openai/evals7b";
+    let hang2 = EvalCompactor::new(Act::Hang);
+    let e2 = service(&h2, EndlessConfig::default(), &hang2);
+    attach(&h2, &e2, model2).await;
+    let actor2 = session(&h2, model2, Some(&e2), Some(pool.clone())).await;
+
+    script.text("One.");
+    turn(&mut h, &actor, "First turn.").await;
+    let r1 = main_calls(&h).await.pop().unwrap();
+    assert!(has(&r1, DIRECT), "{:?}", tool_names(&r1));
+    assert!(system(&r1).contains(RUNTIME), "the index has {RUNTIME}");
+    endless_tools(&r1);
+    let g1 = generation(&e, &h).await.n;
+    script2.text("Other one.");
+    turn(&mut h2, &actor2, "Other chat, first turn.").await;
+    assert!(has(&main_calls(&h2).await.pop().unwrap(), DIRECT));
+
+    // (1) Off always: gone at the next call, same generation, told once.
+    reg.ask(tools::SetBuiltinsDisabled {
+        names: vec![DIRECT.into()],
+        disabled: true,
+    })
+    .await
+    .unwrap();
+    script.call(DIRECT, json!({}));
+    script.text("Two.");
+    turn(&mut h, &actor, "Second turn: call it.").await;
+    let calls = main_calls(&h).await;
+    let (r2a, r2b) = (&calls[calls.len() - 2], &calls[calls.len() - 1]);
+    assert!(!has(r2a, DIRECT), "off at once: {:?}", tool_names(r2a));
+    endless_tools(r2a);
+    assert_eq!(generation(&e, &h).await.n, g1, "no trim");
+    assert!(is_prefix(&r1, r2a), "diff at message {}", first_diff(&r1, r2a));
+    let note = last_tools_note(r2a).expect("a <tools> note");
+    assert!(
+        note.contains("Switched off for this chat") && note.contains(DIRECT),
+        "{note}"
+    );
+    assert!(!note.contains("builtin"), "{note}");
+    let sent = texts(r2a);
+    let input = sent
+        .iter()
+        .position(|t| t.contains("Second turn: call it."))
+        .unwrap();
+    let at = sent.iter().rposition(|t| t.starts_with("<tools>")).unwrap();
+    assert!(at > input, "the note follows the input");
+
+    // (2) Its call refuses as not available: a hide, not a removal.
+    let k = script.main_calls() - 2;
+    let out = tool_result(r2b, &format!("ecall_{k}")).unwrap_or_default();
+    assert!(
+        out.contains("is not available in this session") && !out.contains("no longer available"),
+        "the call refuses: {out}"
+    );
+    // (3) Every call keeps its result.
+    let (mut ids, mut results) = call_ids(r2b);
+    ids.sort();
+    results.sort();
+    assert_eq!(ids, results);
+
+    // (8) The other chat sees the harness-wide switch at its next call.
+    script2.text("Other two.");
+    turn(&mut h2, &actor2, "Other chat, second turn.").await;
+    let q2 = main_calls(&h2).await.pop().unwrap();
+    assert!(!has(&q2, DIRECT), "{:?}", tool_names(&q2));
+    endless_tools(&q2);
+
+    // (4) The whole category off for this chat: the runtime-only one leaves
+    // the index; only it is told (the direct one was told already).
+    reg.ask(tools::registry::SetHidden {
+        session: h.id,
+        tools: vec![tools::category_key("sandbox")],
+        hidden: true,
+    })
+    .await
+    .unwrap();
+    script.text("Three.");
+    turn(&mut h, &actor, "Third turn.").await;
+    let r3 = main_calls(&h).await.pop().unwrap();
+    assert!(!system(&r3).contains(RUNTIME), "left the index");
+    assert!(!has(&r3, DIRECT));
+    endless_tools(&r3);
+    let note = last_tools_note(&r3).expect("a <tools> note");
+    assert!(note.contains(RUNTIME) && !note.contains(DIRECT), "{note}");
+    assert_eq!(generation(&e, &h).await.n, g1, "no trim");
+
+    // (5) Both back on: additions — the direct list holds, the note names
+    // both, python calls the runtime-only one now.
+    reg.ask(tools::SetBuiltinsDisabled {
+        names: vec![DIRECT.into()],
+        disabled: false,
+    })
+    .await
+    .unwrap();
+    reg.ask(tools::registry::SetHidden {
+        session: h.id,
+        tools: vec![tools::category_key("sandbox")],
+        hidden: false,
+    })
+    .await
+    .unwrap();
+    script.call(
+        repl::NAME,
+        json!({"code": format!("print(await {RUNTIME}())")}),
+    );
+    script.text("Four.");
+    turn(&mut h, &actor, "Fourth turn.").await;
+    let calls = main_calls(&h).await;
+    let (r4a, r4b) = (&calls[calls.len() - 2], &calls[calls.len() - 1]);
+    assert_eq!(r4a["tools"], r3["tools"], "the direct list is held");
+    assert_eq!(generation(&e, &h).await.n, g1, "no trim");
+    let note = last_tools_note(r4a).expect("a <tools> note");
+    assert!(
+        note.contains("New tools") && note.contains(DIRECT) && note.contains(RUNTIME),
+        "{note}"
+    );
+    assert!(!note.contains("Switched off"), "{note}");
+    let k = script.main_calls() - 2;
+    let out = tool_result(r4b, &format!("ecall_{k}")).unwrap_or_default();
+    assert!(out.contains(&format!("{RUNTIME} ran")), "python calls it: {out}");
+
+    // (6) A trim: both are back in the request's tool part.
+    script.text("Five.");
+    turn(
+        &mut h,
+        &actor,
+        &format!("BIG {}", "filler words ".repeat(6_000)),
+    )
+    .await;
+    script.text("Six.");
+    turn(&mut h, &actor, "Sixth turn.").await;
+    assert!(generation(&e, &h).await.n > g1, "a trim happened");
+    let r6 = main_calls(&h).await.pop().unwrap();
+    assert!(has(&r6, DIRECT), "direct again: {:?}", tool_names(&r6));
+    assert!(system(&r6).contains(RUNTIME), "the index has {RUNTIME}");
+    endless_tools(&r6);
+    drop(actor2);
+    drop(actor);
+}
+
 // endregion: --- S6
 
 // region:    --- S9: the ledger through turns
