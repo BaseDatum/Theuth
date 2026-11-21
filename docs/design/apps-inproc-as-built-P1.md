@@ -277,6 +277,22 @@ dropped (see above), nothing of the Bun helper remains.
 
 ## Verification
 
-Results are in the final report of this work (commands, `test result:` lines). Not verified here: any
-packaging/release/install/Docker run (not run by rule); `package-windows.ps1` (read only, not executed);
-`crates/update` tests (changed; see the report for whether they ran); the site docs build.
+All with `CARGO_TARGET_DIR=<worktree>/target CARGO_BUILD_JOBS=4 --offline`, 2026-11-21:
+
+- `bun test` (packages/apps): before 226 pass / 0 fail, after 229 pass / 0 fail, 24 files each.
+- `just apps-bundle-check`: ok. `just --list`: ok. `bash -n` on app-parser-env.sh, package-macos.sh,
+  package-linux.sh, package-update-macos.sh, stage-linux.sh, setup-ubuntu-build.sh, release-s3.sh,
+  install-macos.sh: ok. `tsc --noEmit` (packages/apps): exit 0.
+- `cargo test -p app-js`: unit `18 passed; 0 failed`, golden `1 passed; 0 failed`.
+- `cargo test -p app -p update`: app unit `49 passed`, `tests/publish.rs` `1 passed`, update unit `5 passed`,
+  0 failed.
+- `cargo tree -i v8 -p app-js` and `-p theuth`: one `v8 v150.4.0` via `deno_v8 0.4.0` / `deno_core 0.412.0`,
+  shared with `obscura-js` in `theuth`.
+- `cargo check -p theuth`, `cargo clippy`, the stub build: see the final report.
+
+Not verified: any packaging/release/install/Docker run (not run by rule); `package-windows.ps1` (read only,
+not executed; no PowerShell parse check); the stub inside a signed/notarized app bundle; the site docs build;
+`t` end to end with a real model (the app tool path is covered by the crate tests above).
+
+Build note: the seeded `target/` carried CMake caches from another checkout; `opusic-sys` and `btls-sys`
+needed `cargo clean -p` (crate-scoped) before `cargo test -p app -p update` built.
