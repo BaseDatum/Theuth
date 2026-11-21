@@ -77,3 +77,30 @@ tool description's first paragraph, cut at 400 characters (char boundary) with a
 - `AppInvoke` and `InspectTool` answer `unknown tool` (not "turned off") for a switched-off builtin.
 - The harness's own features bypass the switch (`HarnessInvoke`, see Enforcement): notebook context, `ask`, overviews,
   document ingest, the Settings search test, autoresearch's launch card and `code_map`.
+
+## Endless chats
+
+An endless chat (design 201) pins its tool part per generation (`crates/agent/src/endless/tool_pin.rs`); a switch goes
+through that pin like any other hide.
+
+- Off applies before the next model call, in either scope. It breaks the prefix cache once: the direct tool array is at
+  the front of the frame. A category change is one registry message and one `hidden_epoch` bump, so a whole category costs
+  the same single break as one tool. A runtime-only tool also takes the pinned `## Runtime` index with it (taken fresh).
+- Hide versus removal: `batch_tools` (and `input_notes`) ask the unfiltered `ListTools(None)`; a name missing from the
+  session's list but present there is a hide (applies now, its call is refused as "not available in this session"), a
+  name missing from both is a removal (stays defined until the trim, its call refused as "no longer available"). 206
+  keeps `ListTools(None)` unfiltered, so a switch is always classified as a hide.
+- On is an addition: callable from python at once (the runtime re-lists per cell, direct calls of it are bridged), in the
+  direct list and the pinned index only at the next trim or cold cache, announced by the `<tools>` note at the next turn
+  opening. A hide forgets the name as announced, so off and on again within one generation is announced again.
+- The switch-off note: the same `<tools>` note, after the turn's input, gains the sentence `Switched off for this chat
+  (calls are refused until they are switched back on): a, b, ...` (sorted, at most 12 names then `and N more`). Each name
+  is told once per switch-off; a name switched back on before the note goes out is dropped; one not told when the
+  generation changes is told in the new one. Either sentence may appear alone. It serves MCP and per-name hides too, so
+  it never says "builtin". Classic (epochs) sessions get no note: their list changes at once.
+- Never switchable: the endless tools `zoom`, `recall`, `date`, `ledger` and `todo`, `python`, `advise`, `consult` are
+  loop-local, not in the registry.
+- Side calls (compactor, small profile, image describe, consult, title) carry no tools and are unaffected.
+- The advisor's child session inherits the chat's hides (parent chain) and the harness-wide set, so its fixed read-only
+  toolset shrinks accordingly.
+- `<knowledge>` hints are still injected when `knowledge_get` is off.
