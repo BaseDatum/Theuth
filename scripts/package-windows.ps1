@@ -239,8 +239,9 @@ if ($env:THEUTH_SKIP_BUN_INSTALL -ne '1') {
     try { Exec 'bun install (desktop UI)' { bun install } } finally { Pop-Location }
 }
 # externalBin/resources are not in tauri.conf.json (tauri-build would fail `cargo check` without
-# the files); the helper names carry the library hash / protocol version, so the overlay is
-# rendered here - to a file, not inline, so no JSON survives Windows argument quoting.
+# the files); the app parser's name carries its library hash (the documents helper is compiled into
+# t.exe, nothing to ship), so the overlay is rendered here - to a file, not inline, so no JSON
+# survives Windows argument quoting.
 $BundleConf = Join-Path $Root 'target/tauri.windows.bundle.conf.json'
 # A directory key under resources is walked and lands under its value (tauri-utils resources.rs:
 # dest.join(path.strip_prefix(dir))), so the ~450-file publish folder becomes $INSTDIR\companion\.
