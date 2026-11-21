@@ -94,3 +94,65 @@ docs/design/208-as-built-B.md                      |   (this file)
 - Generated TypeScript was not regenerated (`bun run wire:generate`) and not diffed against §7. `bindings/openrpc.json` does have the definitions under the expected names: `method.agent.output.{AgentGraph, GraphNode, GraphEdge, GraphOlder, GraphNodeKind, GraphOutcome, GraphWait}`, `method.agent.input.GraphCursor`, `event.agent_2egraph.{output,receiver}.{AgentGraphChanged, GraphPulse, GraphPulseKind, …}`. As §7.1 allows, `GraphPulse`/`GraphPulseKind` exist only in the event file. **Possible §7.2 difference:** in the OpenRPC, `agent_graph`'s params are `window_ms` (required: true), `include` (required: true), `cursor` (required: false). jsonrpsee marks a trailing `Option` optional, so the generated `AgentGraphParams` may come out as a tuple with an optional third element, not the fixed 3-tuple of §7.2. Callers that always pass all three are unaffected. F: check after `wire:generate`.
 - Never run against a live engine: no `subscribe_topics` delivery check for `agent.graph@1`, no restart check of `last_event_ms` beyond the store reopen test.
 - `SESSIONS_WIRE_SCHEMA` (70) and `ATTACHED` are unchanged (not touched), and no `sessions` column was added. No test asserts this.
+
+## Review fixes (engine fixer, worktree `theuth-graph`, branch `feat/208-attention-graph-be`)
+
+Base `caf05c99d` (its `crates/agent` and `crates/rpc-compose` trees are identical to `769fffcd2`). No wire change: no type, field, method or topic changed; `PeerReceipt` untouched. Tests are in `crates/agent/src/graph/tests.rs` unless noted.
+
+| # | Status | What changed | Test |
+|---|---|---|---|
+| 1 | fixed (integration branch's version) | After merging `feat/208-attention-graph` (`472ff17ff`), the merged tree keeps the fixer's re-seed path (`start_seed` with a generation, wider waiters re-seed for everyone) and takes from `472ff17ff` the two guards it adds: a rebuilt model's epoch is later than the previous one (`last_epoch`, theirs `prev_epoch`), and a flush begun on a replaced model is discarded (`flush_epoch`). The fixer's test was dropped in favour of theirs. | `wider_window_reads_older_trees` |
+| 2 | fixed | `activity_sessions`: a positive list (turn started/finished/resumed/suspended, text/reasoning deltas, tool calls, error, input queued/injected, subagent spawned, observed child changed, message delivered, compaction, vision progress) moves the clock; title, model, effort, owner, skills, context, todos, usage, advisor, deletion and closing do not. Peer changes, peer deliveries, approvals/asks and job events still touch (activity). Structure patches (title, model, owner) still mark the node dirty. | `metadata_events_do_not_move_the_clock`, `persist_skips_deleted_sessions_and_cleanup_drops_orphans` (actor path) |
+| 3 | fixed | `Agents::peer_changed` (`supervisor.rs`) does the `exchange_sender` read and the publishes in a spawned task; the changes of one exchange publish in call order (a per-exchange chain of oneshots in a function-local static; each task waits for its predecessor, the entry is removed by the last). On a failed or empty read it still publishes to the recipient with `from` empty (the event stays a refetch trigger for the UI and sessionsync); `Model::peer` now ignores an event without two endpoints before it records anything, so nothing wrong is counted and the next change or the next seed carries the edge. | `peer_changed_fills_ends_in_order_off_the_actor` (normal message: both participants, `from`/`to`, `result: false`, Accepted before Consumed per participant; child result: `result: true`; unknown exchange: recipient only, `from` empty, the model records nothing) |
+| 4 | fixed | `guarded`: the seed runs in its own task under `tokio::time::timeout(SEED_TIMEOUT = 20 s)`; a timeout (task aborted) or a panic (`JoinError`) becomes `Seeded { Err }`, which answers every waiter with the error and clears `seeding`; the next call seeds again. `Seeding`/`Seeded` carry a generation so a late result of a superseded seed is ignored. | `a_seed_that_hangs_or_panics_fails` (the helper; the actor wiring is not driven with a hanging `Agents`) |
+| 5 | fixed | `Graph::expire`: every entry that would apply or publish (`apply_agent`, `apply_peer`, `mark`, `FlushTick`, `Flushed`, `Adopt`, the prune tick) drops the model first when the lease has run out. | `an_expired_lease_drops_the_model_on_every_entry` |
+| 6 | fixed | `Model.ex: HashMap<Uuid, Ex { open, states, at }>` replaces `seen`/`closed`, seeded from the seed rows (`open` = row `accepted`/`held`). An exchange counts in `ab`/`ba`/`results` the first time it is seen (seed or live); `open` +1 only when first seen opening, −1 once on its first closing state; pulses stay deduplicated per `(id, state)`. | `seed_and_live_count_each_exchange_once` (seeded `accepted` + buffered `Accepted`; `held` row later accepted; `Replied` of a row the seed saw `consumed`; first seen closing) |
+| 7 | fixed | `prune` reads the ends of recent edges once per call (no per-node edge scan) and drops closed `ex` entries older than the window. Node cap for nodes added after the seed (`child`, `adopt`, boundary peers): beyond `max_nodes` (`MAX_NODES`) the id is not added and counts once into `older` (`roots` for roots and peers), which the next delta publishes. | `nodes_past_the_cap_fold_into_older`; prune covered by `reply_cursor_children_lease_and_prune` and `seed_and_live_count_each_exchange_once` |
+| 8 | fixed | `Adoptions`: one read in flight per id (`adopting`), and a negative cache (`UNKNOWN_TTL_MS` 5 min, at most `MAX_UNKNOWN` 4096 entries; expired entries swept, then cleared when full) of ids whose read found nothing (advisor, ask, private, gone). The adoption task always reports back (`Adopt { asked, .. }`), also when it read nothing. | `adoptions_read_once_and_remember_misses` |
+| 9 | fixed | `SessionDeleted` no longer spawns its own delete: the id goes to `Graph.deleted`, and the next persist tick writes the clock rows minus the deleted ids, then deletes those rows (one task, upsert before delete). The prune tick, while leased, runs the new `Store::prune_last_events(500)` (`DELETE … WHERE session IN (SELECT session … WHERE session NOT IN (SELECT id FROM sessions) LIMIT ?)`). | `persist_skips_deleted_sessions_and_cleanup_drops_orphans` |
+| 10 | fixed | `exchanges_since` orders by `updated_at DESC` (the `peer_exchanges_updated` index). Format checked: every `peer_exchanges.updated_at` write in `store/communication.rs` binds `now()` = `Utc::now().to_rfc3339()` (`+00:00`, 0/3/6/9 fraction digits); the other writers (`store.rs:2621`, `store/contact_files.rs` tests) do not touch `updated_at`. The bound uses the same formatter; text order is correct across fraction lengths because `+` sorts before `.` and the digits. | `exchanges_since_bound_matches_the_writer_format` (ms bound as the seed builds it, rows ±0.5 ms in the writer's format) |
+| 11 | fixed (integration branch's version) | Merged tree: `472ff17ff`'s `pub(crate) fn supervisor::view::observed_state(&ObservedMeta, &AgentState)`, re-exported from `supervisor.rs`; the fixer's `observed_row_state` was dropped. | `observed_state_is_the_harness_view_unless_approval` |
+| 12 | answered, no change | see below | — |
+
+### 12: can `agent.graph` reach a non-owner connection? No.
+
+`audience = "owner"` does not authorize. It is discovery metadata only (`crates/rpc-core/src/discovery.rs:17-25`, used by `catalog.rs:95-103`). `wire::EventPolicy` has no audience field (`crates/wire/src/lib.rs:102-115`), and `always_wanted` only skips the session filter (`crates/rpc-compose/src/api/contracts.rs:268-275`). The per-event checks in the subscription loop (`crates/rpc-compose/src/api.rs:428-431`: `wanted`, `admitted` (private ownership, `contracts.rs:241-260`), `mode.selected`) do not look at the connection's role. What keeps the topic away from non-owners is that no non-owner connection can hold a bus subscription:
+- share-link guests (link mode 2, engine and mesh uplinks): `guest_gate` refuses every method outside `GUEST_METHODS`, which lists `doc_subscribe` but not `subscribe_events`/`subscribe_topics` (`crates/rpc-core/src/catalog.rs:13-17`, `crates/link/src/conn.rs:553-565`, applied at `:608`);
+- mesh peers (`theuth/rpc/1`, same owner): one request line, one reply line per stream, so no subscription can be served (`crates/agent/src/rpc_forward.rs:500-560`);
+- contacts (`theuth/a2a/1`): A2A only, `SendMessage`/`GetTask`/`CancelTask`, streaming refused (`crates/a2a/src/contacts/forward.rs:35-37`, `:78-90`, `:196`).
+Owner connections (local bearer WebSocket, in-process, paired devices in link mode 0) do receive it; that is intended. Private sessions never enter the model (`graph.rs` `forest` and `seed` filter `Retention::Private`). A hard per-topic guarantee would need an owner-only field on `EventPolicy` checked beside `admitted` (`api.rs:429`), outside this design's files; today it would duplicate the guest gate. Traced by reading only.
+
+### Gates (fixer)
+
+Script `/tmp/theuth-208-e-gate.sh` (no `cargo fmt`; `rustfmt --edition 2024` on `graph.rs` + `graph/tests.rs` + `rpc_graph.rs` only), log `/tmp/theuth-208-e-gate.log`, full output `/tmp/theuth-208-e-<hold>-<step>.out`.
+
+| Hold | Step | rc | Counts |
+|---|---|---|---|
+| h1 (22:11, stopped at 22:14) | clippy | 101 | `large_enum_variant` on `Buffered` (B's gate allowed it; this round's clippy line does not) and `type_complexity` on `persist_batch`: fixed (`Buffered::Agent(Box<AgentEvent>)`, `type PersistBatch`). The hold was stopped after clippy (its other steps could not compile) |
+| h2 (22:14) | clippy `-p agent -p rpc-compose -p sessionsync --all-targets` | 0 | |
+| h2 | test `-p agent --lib graph` | 101 | 23 passed, 1 failed: `exchanges_since_bound_matches_the_writer_format` (a test bug: three rows with the same `(sender, request_id)` hit the unique index); fixed (request id per row) |
+| h2 | test `--lib store` | 0 | 164 passed |
+| h2 | test `--lib communication` | 101 | 167 passed, 1 failed: `notices_are_automatic_and_stop_at_the_chain_limit` (known red, fails at base too) |
+| h2 | test `--lib supervisor::waits` | 0 | 6 passed |
+| h2 | test `-p rpc-compose` | 101 | 82 passed, 2 failed: `wire_golden::legacy_event_families`, `wire_parity_inc4::agent_golden_parity` (known reds) |
+| h2 | test `-p roster -p tasks` | 0 | 254 passed |
+| h2 | `just wire-schema` (export_bindings) | 0 | |
+| h2 | classifier `wire_schema_snapshot` | 0 | 1 passed: no difference from the accepted fixture |
+| h3 (22:40) | test `-p agent --lib graph` | 0 | 24 passed: B's 14 and the 10 review tests (`exchanges_since_bound_matches_the_writer_format` included, after its fix) |
+| h3 | clippy `-p agent --all-targets -D warnings` | 0 | |
+| h4 (22:47, merged tree `e7a430097`) | clippy `-p agent -p rpc-compose -p sessionsync --all-targets` | 0 | |
+| h4 | test `--lib graph` | 0 | 25 passed |
+| h4 | test `--lib store` | 0 | 164 passed |
+| h4 | test `--lib communication` | 101 | 167 passed, 1 failed (notices, known red) |
+
+Rule breaches: hold 2 started 22 s after hold 1's release (short of the 50 s spacing); hold 3 was launched 46 s after hold 2's release (it queued behind another session's hold); hold 4 (on the merged tree) is a fourth hold, over the three-hold limit (hold 1 was stopped after clippy).
+
+Merge: `feat/208-attention-graph` (tip `e47653f5d`) merged into this branch (`e7a430097`); conflicts in `graph.rs`, `graph/tests.rs`, `supervisor.rs`, `supervisor/view.rs` resolved as described in rows 1 and 11. `472ff17ff`'s `peer_changed_fills_ends_and_result` is kept; it now waits for the asynchronous publish (`settle`) instead of a fixed 200 ms sleep. UI commits untouched.
+
+### Not done / not verified (fixer)
+
+- Item 4 is tested on the `guarded` helper; the actor path (a hanging `Agents` behind a real seed) is not driven.
+- Item 3: a failed `exchange_sender` read is not simulated; the empty-`from` path is tested with an exchange id that has no row.
+- `peer_changed` now publishes after its call returns (spawned task): callers that relied on the event being on the bus when `peer_changed` returned would see it a moment later. No test in `agent`, `rpc-compose`, `roster`, `tasks` depended on it (h2); `sessionsync` tests were not run in this round.
+- Not run against a live engine.
+

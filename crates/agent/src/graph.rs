@@ -614,6 +614,29 @@ pub(crate) fn aggregate(
     )
 }
 
+/// What the edge counts already hold for one exchange.
+#[derive(Debug, Default)]
+struct Ex {
+    /// Counted in `open` and not yet closed.
+    open: bool,
+    /// The states seen live (`state_bit`), for the pulse dedupe.
+    states: u8,
+    /// ms of the last change (seed: `updated_at`), for the prune.
+    at: u64,
+}
+
+fn state_bit(s: PeerMessageState) -> u8 {
+    1 << match s {
+        PeerMessageState::Accepted => 0,
+        PeerMessageState::Held => 1,
+        PeerMessageState::Consumed => 2,
+        PeerMessageState::Replied => 3,
+        PeerMessageState::Suppressed => 4,
+        PeerMessageState::Failed => 5,
+        PeerMessageState::Unknown => 6,
+    }
+}
+
 fn observed_outcome(o: &ObservedMeta) -> Option<GraphOutcome> {
     match o.state {
         ObservedState::Completed => Some(GraphOutcome::Finished),
@@ -774,8 +797,12 @@ pub(crate) struct Model {
     removed: Vec<String>,
     edges_removed: Vec<String>,
     pulses: Vec<GraphPulse>,
-    seen: HashSet<(Uuid, PeerMessageState)>,
-    closed: HashSet<Uuid>,
+    /// Per exchange id: what the edge counts already hold (seeded from the seed's rows).
+    ex: HashMap<Uuid, Ex>,
+    /// Ids refused over the node cap (counted into `older` once).
+    folded: HashSet<String>,
+    /// The node cap for nodes added after the seed (`MAX_NODES`; smaller in tests).
+    pub(crate) max_nodes: usize,
     /// When the scheduled flush fires; `None` = none scheduled.
     pub(crate) flush_at: Option<u64>,
     last_flush: u64,
@@ -836,6 +863,18 @@ impl Model {
             nodes.insert(p, n);
         }
         let mut m = Self::empty(now_ms, window_ms);
+        for r in &seed.rows {
+            if let (Ok(id), true) = (r.id.parse::<Uuid>(), row_ends(r).is_some()) {
+                m.ex.insert(
+                    id,
+                    Ex {
+                        open: matches!(r.state.as_str(), "accepted" | "held"),
+                        states: 0,
+                        at: rfc_ms(&r.updated_at),
+                    },
+                );
+            }
+        }
         m.nodes = nodes;
         m.edges = edges;
         m.older = seed.older;
@@ -863,8 +902,9 @@ impl Model {
             removed: Vec::new(),
             edges_removed: Vec::new(),
             pulses: Vec::new(),
-            seen: HashSet::new(),
-            closed: HashSet::new(),
+            ex: HashMap::new(),
+            folded: HashSet::new(),
+            max_nodes: MAX_NODES,
             flush_at: None,
             last_flush: 0,
         }
@@ -942,6 +982,10 @@ impl Model {
             return false;
         };
         let id = child.to_string();
+        if !self.nodes.contains_key(&id) && self.nodes.len() >= self.max_nodes {
+            self.fold(&id, false, now);
+            return true;
+        }
         let n = self.nodes.entry(id.clone()).or_insert_with(|| GraphNode {
             id: id.clone(),
             kind: GraphNodeKind::Child,
@@ -1007,6 +1051,10 @@ impl Model {
                 .and_then(|p| self.nodes.get(&p.to_string()))
                 .and_then(|p| p.root.parse().ok())
                 .unwrap_or(tree[&s.id].0);
+            if self.nodes.len() >= self.max_nodes {
+                at = at.or(self.fold(&id, s.parent.is_none(), now));
+                continue;
+            }
             if let Some(n) = node_of(s, root, last_of(s, last), None, None, stops.get(&s.id)) {
                 self.nodes.insert(id.clone(), n);
                 at = at.or(self.mark(&id, now));
@@ -1015,17 +1063,45 @@ impl Model {
         at
     }
 
-    /// Record an exchange's state change.
+    /// Record an exchange's state change. Counts are keyed by exchange id, as `aggregate` counts rows: an exchange
+    /// counts once in `ab`/`ba` (and `results`) the first time it is seen, by the seed or live; `open` follows its
+    /// one open → closed transition. Pulses are deduplicated by `(id, state)` (one event per local participant).
+    /// An event without two distinct endpoints is ignored and remembers nothing.
     pub(crate) fn peer(&mut self, ev: &PeerMessageChanged, now: u64) -> Option<u64> {
-        if !self.seen.insert((ev.id, ev.state)) {
-            return None;
-        }
         let (Some(from), Some(to)) = (endpoint(&ev.from), endpoint(&ev.to)) else {
             return None;
         };
         if from == to {
             return None;
         }
+        let bit = state_bit(ev.state);
+        let first = !self.ex.contains_key(&ev.id);
+        let x = self.ex.entry(ev.id).or_default();
+        if x.states & bit != 0 {
+            return None;
+        }
+        x.states |= bit;
+        x.at = now;
+        let opens = matches!(
+            ev.state,
+            PeerMessageState::Accepted | PeerMessageState::Held
+        );
+        let closes = matches!(
+            ev.state,
+            PeerMessageState::Consumed
+                | PeerMessageState::Replied
+                | PeerMessageState::Suppressed
+                | PeerMessageState::Failed
+        );
+        let open_delta: i8 = if first && opens {
+            x.open = true;
+            1
+        } else if !first && closes && x.open {
+            x.open = false;
+            -1
+        } else {
+            0
+        };
         let (edge, a, b) = pair(&from, &to);
         let kind = match ev.state {
             PeerMessageState::Accepted if ev.result => Some(GraphPulseKind::Result),
@@ -1047,33 +1123,30 @@ impl Model {
             last_from: String::new(),
             last_id: String::new(),
         });
-        match ev.state {
-            PeerMessageState::Accepted => {
-                if from == a {
-                    e.ab += 1;
-                } else {
-                    e.ba += 1;
-                }
-                if ev.result {
-                    e.results += 1;
-                }
-                e.open += 1;
+        if first {
+            if from == a {
+                e.ab += 1;
+            } else {
+                e.ba += 1;
             }
-            PeerMessageState::Consumed
-            | PeerMessageState::Replied
-            | PeerMessageState::Suppressed
-            | PeerMessageState::Failed => {
-                if self.closed.insert(ev.id) {
-                    e.open = e.open.saturating_sub(1);
-                }
+            if ev.result {
+                e.results += 1;
             }
-            PeerMessageState::Held | PeerMessageState::Unknown => {}
+        }
+        match open_delta {
+            1 => e.open += 1,
+            -1 => e.open = e.open.saturating_sub(1),
+            _ => {}
         }
         e.last_ms = now;
         e.last_from = from.clone();
         e.last_id = ev.id.to_string();
         for end in [&from, &to] {
             if end.starts_with("peer:") {
+                if !self.nodes.contains_key(end.as_str()) && self.nodes.len() >= self.max_nodes {
+                    self.fold(end.as_str(), true, now);
+                    continue;
+                }
                 let n = self
                     .nodes
                     .entry(end.clone())
@@ -1093,6 +1166,24 @@ impl Model {
             });
         }
         self.dirty_edges.insert(edge);
+        self.schedule(now)
+    }
+
+    /// Over the node cap: `id` is not added; it counts once into the `older` stub instead (published by the next
+    /// flush).
+    fn fold(&mut self, id: &str, root: bool, now: u64) -> Option<u64> {
+        if !self.folded.insert(id.to_owned()) {
+            return None;
+        }
+        tracing::debug!(id, "graph: node cap reached, folded into older");
+        let o = self.older.get_or_insert(GraphOlder {
+            roots: 0,
+            nodes: 0,
+            newest_ms: 0,
+        });
+        o.roots += u32::from(root);
+        o.nodes += 1;
+        o.newest_ms = o.newest_ms.max(now);
         self.schedule(now)
     }
 
@@ -1288,9 +1379,18 @@ impl Model {
         missing
     }
 
-    /// 208 §4.3 (6): drop idle nodes that left the window (no descendant, not included), and their edges. Silent.
+    /// 208 §4.3 (6): drop idle nodes that left the window (no descendant, not included), and their edges, and
+    /// forget closed exchanges older than the window. Silent. Linear per pass: the ends of recent edges are read
+    /// once, not per node.
     pub(crate) fn prune(&mut self, now: u64) {
         let bound = now.saturating_sub(self.window_ms).saturating_sub(60_000);
+        let recent: HashSet<String> = self
+            .edges
+            .values()
+            .filter(|e| e.last_ms >= bound)
+            .flat_map(|e| [e.a.clone(), e.b.clone()])
+            .collect();
+        self.ex.retain(|_, x| x.open || x.at >= bound);
         loop {
             let parents: HashSet<String> = self
                 .nodes
@@ -1305,10 +1405,7 @@ impl Model {
                         && !self.include.contains(&n.id)
                         && !parents.contains(&n.id)
                         && n.last_event_ms < bound
-                        && !self
-                            .edges
-                            .values()
-                            .any(|e| (e.a == n.id || e.b == n.id) && e.last_ms >= bound)
+                        && !recent.contains(&n.id)
                 })
                 .map(|n| n.id.clone())
                 .collect();
@@ -1334,13 +1431,129 @@ pub(crate) fn lease_expired(lease_until_ms: u64, now: u64) -> bool {
     now > lease_until_ms
 }
 
-/// The sessions an event moves the clock of.
+/// The sessions an event concerns (both ends of a spawn).
 fn event_sessions(ev: &AgentEvent) -> Vec<SessionId> {
     match ev {
         AgentEvent::SubagentSpawned { parent, child, .. }
         | AgentEvent::ObservedChildChanged { parent, child, .. } => vec![*child, *parent],
         other => other.session().into_iter().collect(),
     }
+}
+
+/// The sessions whose `last_event_ms` an event moves: real activity only (turns, output, tool calls, errors,
+/// inputs, children, deliveries, compaction). Metadata (title, model, effort, owner, skills, context, todos,
+/// usage, advisor, deletion, closing) never does: renaming or replicating a month-old session must not bring it
+/// back into the window.
+fn activity_sessions(ev: &AgentEvent) -> Vec<SessionId> {
+    match ev {
+        AgentEvent::TurnStarted { .. }
+        | AgentEvent::TextDelta { .. }
+        | AgentEvent::ReasoningDelta { .. }
+        | AgentEvent::ReasoningDone { .. }
+        | AgentEvent::ToolCallPending { .. }
+        | AgentEvent::ToolCallProgress { .. }
+        | AgentEvent::ToolCallStarted { .. }
+        | AgentEvent::ToolCallFinished { .. }
+        | AgentEvent::TurnFinished { .. }
+        | AgentEvent::TurnResumed { .. }
+        | AgentEvent::TurnSuspended { .. }
+        | AgentEvent::Error { .. }
+        | AgentEvent::InputQueued { .. }
+        | AgentEvent::InputInjected { .. }
+        | AgentEvent::SubagentSpawned { .. }
+        | AgentEvent::ObservedChildChanged { .. }
+        | AgentEvent::MessageDelivered { .. }
+        | AgentEvent::Compacting { .. }
+        | AgentEvent::Compacted { .. }
+        | AgentEvent::VisionProgress { .. } => event_sessions(ev),
+        _ => Vec::new(),
+    }
+}
+
+/// A seed that has not delivered by then fails (its waiters get the error; the next call seeds again).
+pub(crate) const SEED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// An id whose adoption found nothing is not read again for this long.
+const UNKNOWN_TTL_MS: u64 = 300_000;
+/// Negative-cache entries kept at most.
+const MAX_UNKNOWN: usize = 4_096;
+/// `session_last_event` rows without a session removed per prune tick.
+const CLEANUP_ROWS: i64 = 500;
+
+/// The seed's reads, bounded: a panic or a read that never completes becomes an error instead of parking every
+/// later call behind `seeding`.
+pub(crate) async fn guarded<T: Send + 'static>(
+    fut: impl Future<Output = anyhow::Result<T>> + Send + 'static,
+    limit: std::time::Duration,
+) -> anyhow::Result<T> {
+    let task = tokio::spawn(fut);
+    let abort = task.abort_handle();
+    match tokio::time::timeout(limit, task).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => Err(anyhow::anyhow!("seed task failed: {e}")),
+        Err(_) => {
+            abort.abort();
+            Err(anyhow::anyhow!("seed timed out after {limit:?}"))
+        }
+    }
+}
+
+/// Reads of sessions the model lacks: one in flight per id, and a bounded negative cache of ids that found
+/// nothing (advisor, ask, private, gone), so a stream of events for such a session does not read the store each
+/// time.
+#[derive(Debug, Default)]
+pub(crate) struct Adoptions {
+    adopting: HashSet<SessionId>,
+    unknown: HashMap<SessionId, u64>,
+}
+
+impl Adoptions {
+    /// The ids worth a read now (not in flight, not recently missing); they are in flight from here.
+    pub(crate) fn want(&mut self, ids: Vec<SessionId>, now: u64) -> Vec<SessionId> {
+        let mut out = Vec::new();
+        for id in ids {
+            if self.unknown.get(&id).is_some_and(|until| now < *until) {
+                continue;
+            }
+            if self.adopting.insert(id) {
+                out.push(id);
+            }
+        }
+        out
+    }
+
+    /// A read of `asked` came back; `found(id)`: the id is in the model now.
+    pub(crate) fn done(
+        &mut self,
+        asked: &[SessionId],
+        found: impl Fn(&SessionId) -> bool,
+        now: u64,
+    ) {
+        for id in asked {
+            self.adopting.remove(id);
+            if found(id) {
+                self.unknown.remove(id);
+                continue;
+            }
+            if self.unknown.len() >= MAX_UNKNOWN {
+                self.unknown.retain(|_, until| *until > now);
+                if self.unknown.len() >= MAX_UNKNOWN {
+                    self.unknown.clear();
+                }
+            }
+            self.unknown.insert(*id, now + UNKNOWN_TTL_MS);
+        }
+    }
+
+    /// A read came back with no model to apply it to: in flight no more, nothing learned.
+    pub(crate) fn forget(&mut self, asked: &[SessionId]) {
+        for id in asked {
+            self.adopting.remove(id);
+        }
+    }
+}
+
+fn window_of(m: &Snapshot) -> u64 {
+    m.window_ms.unwrap_or(DEFAULT_WINDOW_MS).min(MAX_WINDOW_MS)
 }
 
 /// `ask` → `anyhow::Result<AgentGraph>`: the `agent_graph` RPC.
@@ -1356,17 +1569,20 @@ pub struct Snapshot {
 
 type Waiter = (Snapshot, Option<ReplySender<anyhow::Result<AgentGraph>>>);
 
-/// An input buffered while a seed runs.
+/// An input buffered while a seed runs (the agent event boxed: it is the large one).
 enum Buffered {
     Agent(Box<AgentEvent>),
     Peer(PeerMessageChanged),
 }
 
+/// A persist tick's work: clock rows to upsert, then ids whose rows to delete.
+type PersistBatch = (Vec<(SessionId, u64)>, Vec<SessionId>);
+
 struct Seeding {
+    /// Which seed this is (a late `Seeded` of an earlier one is ignored).
+    generation: u64,
     waiters: Vec<Waiter>,
     buffered: Vec<Buffered>,
-    /// The epoch of the model this seed replaces (0 = none): the new one must be later.
-    prev_epoch: u64,
 }
 
 /// 208 §4: the graph actor. Dormant: only the clock; leased: the model and the delta stream.
@@ -1377,14 +1593,20 @@ pub struct Graph {
     agents: ActorRef<Agents>,
     last_event: HashMap<SessionId, u64>,
     unsaved: HashSet<SessionId>,
+    /// Sessions deleted since the last persist: their rows are deleted by it, never upserted.
+    deleted: HashSet<SessionId>,
     /// Approval / ask id → session, to place their resolutions (which carry no session).
     prompts: HashMap<String, SessionId>,
     model: Option<Model>,
     lease_until_ms: u64,
     seeding: Option<Seeding>,
+    seed_generation: u64,
+    adoptions: Adoptions,
     flushing: bool,
     /// The model epoch the flush in flight began on.
     flush_epoch: u64,
+    /// The epoch of the last model built: the next one must be later.
+    last_epoch: u64,
     again: bool,
 }
 
@@ -1397,12 +1619,16 @@ impl Graph {
             agents,
             last_event: HashMap::new(),
             unsaved: HashSet::new(),
+            deleted: HashSet::new(),
             prompts: HashMap::new(),
             model: None,
             lease_until_ms: 0,
             seeding: None,
+            seed_generation: 0,
+            adoptions: Adoptions::default(),
             flushing: false,
             flush_epoch: 0,
+            last_epoch: 0,
             again: false,
         }
     }
@@ -1458,6 +1684,30 @@ impl Graph {
         self.unsaved.insert(s);
     }
 
+    /// The lease ran out: the model goes (silently), so nothing is flushed, adopted or published for nobody.
+    /// `true` while a model is held.
+    fn expire(&mut self, now: u64) -> bool {
+        if self.model.is_some() && lease_expired(self.lease_until_ms, now) {
+            self.model = None;
+        }
+        self.model.is_some()
+    }
+
+    /// The clock rows to write and the ids to delete; deleted ids are never written back.
+    fn persist_batch(&mut self) -> Option<PersistBatch> {
+        if self.unsaved.is_empty() && self.deleted.is_empty() {
+            return None;
+        }
+        let deleted: Vec<SessionId> = self.deleted.drain().collect();
+        let rows: Vec<(SessionId, u64)> = self
+            .unsaved
+            .drain()
+            .filter(|s| !deleted.contains(s))
+            .filter_map(|s| self.last_event.get(&s).map(|t| (s, *t)))
+            .collect();
+        Some((rows, deleted))
+    }
+
     fn arm(&self, at: Option<u64>, me: &ActorRef<Self>, now: u64) {
         if let Some(at) = at {
             let me = me.clone();
@@ -1471,6 +1721,9 @@ impl Graph {
 
     /// Mark `s` (delta-class → `bump`) in the model; schedule as needed.
     fn mark(&mut self, s: SessionId, quiet: bool, me: &ActorRef<Self>, now: u64) {
+        if !self.expire(now) {
+            return;
+        }
         let at = match self.model.as_mut() {
             Some(m) if quiet => m.bump(&s.to_string(), now),
             Some(m) => m.mark(&s.to_string(), now),
@@ -1479,14 +1732,15 @@ impl Graph {
         self.arm(at, me, now);
     }
 
-    fn adopt_later(&self, ids: Vec<SessionId>, me: &ActorRef<Self>) {
-        if ids.is_empty() {
+    fn adopt_later(&mut self, ids: Vec<SessionId>, me: &ActorRef<Self>, now: u64) {
+        let asked = self.adoptions.want(ids, now);
+        if asked.is_empty() {
             return;
         }
         let (store, me) = (self.store.clone(), me.clone());
         tokio::spawn(async move {
             let mut rows: Vec<SessionSummary> = Vec::new();
-            for id in ids {
+            for id in asked.iter().copied() {
                 let mut cur = Some(id);
                 let mut hops = 0;
                 while let Some(c) = cur.filter(|c| !rows.iter().any(|r| r.id == *c)) {
@@ -1503,29 +1757,24 @@ impl Graph {
                     }
                 }
             }
-            if rows.is_empty() {
-                return;
-            }
             let ids: Vec<SessionId> = rows.iter().map(|r| r.id).collect();
-            let stops = store.last_stops(&ids).await.unwrap_or_default();
-            let _ = me.tell(Adopt { rows, stops }).await;
+            let stops = if ids.is_empty() {
+                HashMap::new()
+            } else {
+                store.last_stops(&ids).await.unwrap_or_default()
+            };
+            let _ = me.tell(Adopt { asked, rows, stops }).await;
         });
     }
 
     fn on_agent(&mut self, ev: AgentEvent, me: &ActorRef<Self>, now: u64) {
-        let sessions = event_sessions(&ev);
-        for s in &sessions {
-            self.touch(*s, now);
+        for s in activity_sessions(&ev) {
+            self.touch(s, now);
         }
         if let AgentEvent::SessionDeleted { session } = &ev {
             self.last_event.remove(session);
             self.unsaved.remove(session);
-            let (store, id) = (self.store.clone(), *session);
-            tokio::spawn(async move {
-                if let Err(e) = store.delete_last_event(id).await {
-                    tracing::warn!(%id, "graph: delete_last_event: {e:#}");
-                }
-            });
+            self.deleted.insert(*session);
         }
         if let Some(s) = self.seeding.as_mut() {
             if s.buffered.len() < MAX_BUFFERED {
@@ -1537,6 +1786,9 @@ impl Graph {
     }
 
     fn apply_agent(&mut self, ev: AgentEvent, me: &ActorRef<Self>, now: u64) {
+        if !self.expire(now) {
+            return;
+        }
         let Some(m) = self.model.as_mut() else {
             return;
         };
@@ -1649,7 +1901,7 @@ impl Graph {
         }
         let at = m.flush_at.filter(|_| idle);
         self.arm(at, me, now);
-        self.adopt_later(adopt, me);
+        self.adopt_later(adopt, me, now);
     }
 
     fn on_peer(&mut self, ev: PeerMessageChanged, me: &ActorRef<Self>, now: u64) {
@@ -1665,7 +1917,14 @@ impl Graph {
             }
             return;
         }
-        let at = self.model.as_mut().and_then(|m| m.peer(&ev, now));
+        self.apply_peer(&ev, me, now);
+    }
+
+    fn apply_peer(&mut self, ev: &PeerMessageChanged, me: &ActorRef<Self>, now: u64) {
+        if !self.expire(now) {
+            return;
+        }
+        let at = self.model.as_mut().and_then(|m| m.peer(ev, now));
         self.arm(at, me, now);
         self.mark(ev.session, false, me, now);
     }
@@ -1677,18 +1936,57 @@ impl Graph {
         }
     }
 
-    /// Answer a `Snapshot` against the model (the seed has run).
+    /// Answer a `Snapshot` against the model (seeded with a window at least as wide as the call's).
     fn answer(&mut self, m: Snapshot, me: &ActorRef<Self>, now: u64) -> anyhow::Result<AgentGraph> {
         let model = self
             .model
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("graph: no model"))?;
-        // `window_of(&m) <= model.window_ms` here: a wider ask re-seeds (`Message<Snapshot>`).
         let include: Vec<SessionId> = m.include.into_iter().take(MAX_INCLUDE).collect();
         let missing = model.include(&include);
         let reply = model.reply(m.cursor, now);
-        self.adopt_later(missing, me);
+        self.adopt_later(missing, me, now);
         Ok(reply)
+    }
+
+    /// Start a seed of `window` for `waiters` (a new epoch when it lands).
+    fn start_seed(
+        &mut self,
+        window: u64,
+        include: Vec<SessionId>,
+        waiters: Vec<Waiter>,
+        me: &ActorRef<Self>,
+        now: u64,
+    ) {
+        self.seed_generation += 1;
+        let generation = self.seed_generation;
+        self.seeding = Some(Seeding {
+            generation,
+            waiters,
+            buffered: Vec::new(),
+        });
+        let (store, agents, mem, me) = (
+            self.store.clone(),
+            self.agents.clone(),
+            self.last_event.clone(),
+            me.clone(),
+        );
+        tokio::spawn(async move {
+            let seed = guarded(
+                Self::seed(store, agents, mem, include.clone(), now, window),
+                SEED_TIMEOUT,
+            )
+            .await;
+            let _ = me
+                .tell(Seeded {
+                    generation,
+                    seed,
+                    now,
+                    window,
+                    include,
+                })
+                .await;
+        });
     }
 
     async fn seed(
@@ -1793,6 +2091,7 @@ struct Flushed {
 
 /// Internal: a seed's reads.
 struct Seeded {
+    generation: u64,
     seed: anyhow::Result<Seed>,
     now: u64,
     window: u64,
@@ -1801,6 +2100,7 @@ struct Seeded {
 
 /// Internal: rows read for sessions the model lacked.
 struct Adopt {
+    asked: Vec<SessionId>,
     rows: Vec<SessionSummary>,
     stops: HashMap<SessionId, String>,
 }
@@ -1816,70 +2116,31 @@ impl Message<Snapshot> for Graph {
             s.waiters.push((m, tx));
             return reply;
         }
+        let me = ctx.actor_ref().clone();
         let window = window_of(&m);
         let mut include: Vec<SessionId> = m.include.iter().copied().take(MAX_INCLUDE).collect();
-        let mut prev_epoch = 0;
-        if let Some(model) = self.model.as_ref() {
-            if window <= model.window_ms {
-                let me = ctx.actor_ref().clone();
+        match self.model.take() {
+            Some(model) if window <= model.window_ms => {
+                self.model = Some(model);
                 let r = self.answer(m, &me, now);
                 if let Some(tx) = tx {
                     tx.send(r);
                 }
                 return reply;
             }
-            // A wider window than the seed read: older trees are only in the store, so seed again (a new epoch;
-            // every client re-snapshots on its next delta or renewal).
-            prev_epoch = model.epoch_ms;
-            for s in model.include.iter().filter_map(|s| s.parse().ok()) {
-                if include.len() < MAX_INCLUDE && !include.contains(&s) {
-                    include.push(s);
+            Some(model) => {
+                // Wider than the seed read: seed again (a new epoch), so the older trees, their edges and the
+                // `older` stub come from the wider read. The lease's includes carry over.
+                for id in model.include.iter().filter_map(|s| s.parse().ok()) {
+                    if !include.contains(&id) {
+                        include.push(id);
+                    }
                 }
             }
-            self.model = None;
+            None => {}
         }
-        let seeding = Seeding {
-            waiters: vec![(m, tx)],
-            buffered: Vec::new(),
-            prev_epoch,
-        };
-        self.start_seed(seeding, include, window, now, ctx.actor_ref().clone());
+        self.start_seed(window, include, vec![(m, tx)], &me, now);
         reply
-    }
-}
-
-/// The window a `Snapshot` asks for (null = default; clamped).
-fn window_of(m: &Snapshot) -> u64 {
-    m.window_ms.unwrap_or(DEFAULT_WINDOW_MS).min(MAX_WINDOW_MS)
-}
-
-impl Graph {
-    /// Run a seed over `window` in the background; its reads arrive as [`Seeded`].
-    fn start_seed(
-        &mut self,
-        seeding: Seeding,
-        include: Vec<SessionId>,
-        window: u64,
-        now: u64,
-        me: ActorRef<Self>,
-    ) {
-        self.seeding = Some(seeding);
-        let (store, agents, mem) = (
-            self.store.clone(),
-            self.agents.clone(),
-            self.last_event.clone(),
-        );
-        tokio::spawn(async move {
-            let seed = Self::seed(store, agents, mem, include.clone(), now, window).await;
-            let _ = me
-                .tell(Seeded {
-                    seed,
-                    now,
-                    window,
-                    include,
-                })
-                .await;
-        });
     }
 }
 
@@ -1887,32 +2148,47 @@ impl Message<Seeded> for Graph {
     type Reply = ();
 
     async fn handle(&mut self, m: Seeded, ctx: &mut Context<Self, ()>) {
+        if self
+            .seeding
+            .as_ref()
+            .is_none_or(|s| s.generation != m.generation)
+        {
+            return;
+        }
         let Some(seeding) = self.seeding.take() else {
             return;
         };
         let me = ctx.actor_ref().clone();
-        // A caller asked a wider window while this seed ran: seed again for it before answering anyone.
-        let wider = seeding.waiters.iter().map(|(s, _)| window_of(s)).max();
-        if m.seed.is_ok()
-            && let Some(w) = wider.filter(|w| *w > m.window)
-        {
-            self.start_seed(seeding, m.include, w, now_ms(), me);
-            return;
-        }
+        let now = now_ms();
         match m.seed {
             Ok(seed) => {
+                // A call during the seed asked a wider window: seed that one for everyone (one epoch for all).
+                let wider = seeding
+                    .waiters
+                    .iter()
+                    .map(|(s, _)| window_of(s))
+                    .max()
+                    .filter(|w| *w > m.window);
+                if let Some(window) = wider {
+                    let mut include = m.include;
+                    for (s, _) in &seeding.waiters {
+                        for id in s.include.iter().take(MAX_INCLUDE) {
+                            if !include.contains(id) {
+                                include.push(*id);
+                            }
+                        }
+                    }
+                    self.start_seed(window, include, seeding.waiters, &me, now);
+                    return;
+                }
                 let mut model = Model::build(seed, m.now, m.window, &m.include);
-                model.epoch_ms = model.epoch_ms.max(seeding.prev_epoch + 1);
+                model.epoch_ms = model.epoch_ms.max(self.last_epoch + 1);
+                self.last_epoch = model.epoch_ms;
                 self.model = Some(model);
-                let now = now_ms();
                 for b in seeding.buffered {
                     match b {
                         Buffered::Agent(ev) => self.apply_agent(*ev, &me, now),
-                        Buffered::Peer(ev) => {
-                            let at = self.model.as_mut().and_then(|md| md.peer(&ev, now));
-                            self.arm(at, &me, now);
-                            self.mark(ev.session, false, &me, now);
-                        }
+                        Buffered::Peer(ev) => self.apply_peer(&ev, &me, now),
                     }
                 }
                 for (snap, tx) in seeding.waiters {
@@ -1944,6 +2220,9 @@ impl Message<FlushTick> for Graph {
             return;
         }
         let now = now_ms();
+        if !self.expire(now) {
+            return;
+        }
         let Some(model) = self.model.as_mut() else {
             return;
         };
@@ -1990,6 +2269,9 @@ impl Message<Flushed> for Graph {
     async fn handle(&mut self, m: Flushed, ctx: &mut Context<Self, ()>) {
         self.flushing = false;
         let now = now_ms();
+        if !self.expire(now) {
+            return;
+        }
         let Some(model) = self.model.as_mut() else {
             return;
         };
@@ -2016,10 +2298,20 @@ impl Message<Adopt> for Graph {
 
     async fn handle(&mut self, m: Adopt, ctx: &mut Context<Self, ()>) {
         let now = now_ms();
-        let at = self
-            .model
-            .as_mut()
-            .and_then(|model| model.adopt(&m.rows, &m.stops, &self.last_event, now));
+        self.expire(now);
+        let at = match self.model.as_mut() {
+            Some(model) => {
+                let at = model.adopt(&m.rows, &m.stops, &self.last_event, now);
+                let nodes = &model.nodes;
+                self.adoptions
+                    .done(&m.asked, |id| nodes.contains_key(&id.to_string()), now);
+                at
+            }
+            None => {
+                self.adoptions.forget(&m.asked);
+                None
+            }
+        };
         let me = ctx.actor_ref().clone();
         self.arm(at, &me, now);
     }
@@ -2032,27 +2324,36 @@ impl Message<Tick> for Graph {
         let now = now_ms();
         match t {
             Tick::Persist => {
-                if self.unsaved.is_empty() {
+                let Some((rows, deleted)) = self.persist_batch() else {
                     return;
-                }
-                let rows: Vec<(SessionId, u64)> = self
-                    .unsaved
-                    .drain()
-                    .filter_map(|s| self.last_event.get(&s).map(|t| (s, *t)))
-                    .collect();
+                };
                 let store = self.store.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = store.upsert_last_events(&rows).await {
+                    if !rows.is_empty()
+                        && let Err(e) = store.upsert_last_events(&rows).await
+                    {
                         tracing::warn!("graph: upsert_last_events: {e:#}");
+                    }
+                    for id in deleted {
+                        if let Err(e) = store.delete_last_event(id).await {
+                            tracing::warn!(%id, "graph: delete_last_event: {e:#}");
+                        }
                     }
                 });
             }
             Tick::Prune => {
-                if lease_expired(self.lease_until_ms, now) {
-                    self.model = None;
-                } else if let Some(m) = self.model.as_mut() {
+                if !self.expire(now) {
+                    return;
+                }
+                if let Some(m) = self.model.as_mut() {
                     m.prune(now);
                 }
+                let store = self.store.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = store.prune_last_events(CLEANUP_ROWS).await {
+                        tracing::warn!("graph: prune_last_events: {e:#}");
+                    }
+                });
             }
         }
     }
