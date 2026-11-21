@@ -147,6 +147,12 @@ A request already resolved elsewhere answers `gone`; a resolver error answers `f
 
 **Open question Q1 (owner):** a dismissed approval could go to the double instead of "not run" (the double answers at its level for that class, or the call is not run when it has no level). Not built; one branch in `Dismiss` if chosen.
 
+**Decided 2026-11-21.**
+
+- The Dismiss on a question card inside a chat (`components/chat/AskCard.tsx`) is deliberately left as it is: it still dismisses the questions and ends the agent's turn. Only the Attention list's dismiss means "leave it to the agent".
+- A parked decision left to the agent (blocker `left:decision:<id>` only) stays visible, overriding "`left:` blockers make no item" in the table above: the `blocked:<task>` item reads "“<task>”: decision left to the agent" / "Decision left to the agent; it will act when it next runs", base class Notice (no new kind), no alert, dismiss hides it (versioned), Unblock still works. It still never wakes the agent. When the leave lands between `escalate`'s `Escalate` and its live wait, the wait returns the left answer at once and the task is unblocked as by a live leave.
+- An external ACP harness's permission ask (Claude Code, Codex, an omp child) that the user leaves to the agent is answered with the harness's `reject_once` option, marked `_meta.theuth = {left_to_agent: true, text}`. ACP has no "not run, not refused" outcome; `cancelled` is the answer to a cancelled turn. A harness that does not read `_meta` cannot tell this from a denial.
+
 ### 5.3 Bulk
 
 `attention_dismiss_many(target)` and `attention_snooze_many(target, until_ms)` on `BoardsApi` (owner `roster`): `target` is `{ids}` or `{filter: {kinds, projects, before_ms}}`, exactly one; per-id `AttentionOutcome` in `ids` order (filter: engine order); one recheck and one `AttentionChanged` after the batch. `attention_dismiss(id)` becomes `attention_dismiss_many({ids: [id]})` (same signature; the per-kind semantics now apply to old clients too). Allow / Deny N: the UI loops `resolve_approval(id, decision)` (owner `tasks`, `crates/tasks/src/rpc_hub.rs:18-19`), at most 6 in flight; no new RPC.
