@@ -12,7 +12,7 @@ import type * as Rpc from '@/lib/rpc'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
 import { accessFocus, contactFirstOf, exportName, fingerprint, focusedContact, names, sharedLabel, sharingOf } from '@/lib/contacts'
 import { ContactFirstScreen } from '@/components/attention/PlainScreens'
-import { KindActions } from '@/components/hud/Hud'
+import { KindActions } from '@/components/attention/actions'
 import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import type { Contact } from "@/rpc/bindings/method.a2a.output"
 import type { FirstWaiting } from "@/rpc/bindings/method.a2a.output"

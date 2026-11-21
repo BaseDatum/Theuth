@@ -2,8 +2,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
-import { itemLabel } from '@/components/hud/Hud'
-import { snoozeUntil } from '@/components/hud/model'
 import { ATTENTION_KEY, useAttentionActions } from '@/components/hud/queries'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -14,6 +12,8 @@ import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import type { Packet } from "@/rpc/bindings/method.roster.output"
 import type { Priority } from "@/rpc/bindings/method.roster.output"
 import { nextAfter } from './model'
+import { SnoozeDismiss } from './actions'
+import { chipLabel } from './labels'
 
 /**
  * 101 D11: where the pane goes once `item` left the list — desktop: the next newest item (the list in cache still holds
@@ -30,8 +30,8 @@ export function useResolved(item: AttentionItem): () => void {
   }
 }
 
-export function Chip({ kind, id = '' }: { kind: AttentionItem['kind']; id?: string }) {
-  return <span className="rounded-full bg-layer-2 px-2 py-0.5 text-[11px] uppercase tracking-wide text-fg-secondary">{itemLabel({ id, kind })}</span>
+export function Chip({ kind, id = '', stop = null }: { kind: AttentionItem['kind']; id?: string; stop?: AttentionItem['stop'] }) {
+  return <span className="rounded-full bg-layer-2 px-2 py-0.5 text-[11px] uppercase tracking-wide text-fg-secondary">{chipLabel({ id, kind, stop })}</span>
 }
 
 /** The scrolling column every screen shares: 720 px of content, padded. A size container so `PacketBoard.css` can use its width (`cqi`) and visible height (`cqh`). */
@@ -47,10 +47,8 @@ export function SectionTitle({ children }: { children: ReactNode }) {
   return <h3 className="text-xs font-semibold tracking-wide text-fg-tertiary uppercase">{children}</h3>
 }
 
-/** Open task · Snooze · Dismiss — the footer of the decision and review screens (`onResolved` after Dismiss). */
+/** Open task · Snooze ▾ · Dismiss — the footer of the decision and review screens (`onResolved` after either). */
 export function Footer({ item, onResolved, children }: { item: AttentionItem; onResolved: () => void; children?: ReactNode }) {
-  const act = useAttentionActions()
-  const busy = act.snooze.isPending || act.dismiss.isPending
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {children}
@@ -61,12 +59,7 @@ export function Footer({ item, onResolved, children }: { item: AttentionItem; on
           </Link>
         </Button>
       )}
-      <Button variant="ghost" size="sm" disabled={busy} title="Snooze until 09:00 tomorrow" onClick={() => void act.snooze.mutateAsync({ id: item.id, until: snoozeUntil('tomorrow') }).then(onResolved, () => undefined)}>
-        Snooze
-      </Button>
-      <Button variant="ghost" size="sm" disabled={busy} onClick={() => void act.dismiss.mutateAsync(item.id).then(onResolved, () => undefined)}>
-        Dismiss
-      </Button>
+      <SnoozeDismiss item={item} size="sm" onResolved={onResolved} />
     </div>
   )
 }

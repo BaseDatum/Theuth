@@ -8,17 +8,24 @@ import * as speech from '@/lib/speech'
 import type { Answer } from '@/rpc/bindings/method.tasks.input'
 import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import { usePrediction } from '@/store/double'
+import { useQuerySupport } from '@/rpc/capabilities'
+import { DISMISS_HINT } from './labels'
+import { useAttentionBulk } from './queries'
 import { Body, useResolved } from './shared'
 import { ActionBar, ContextLine, SnoozeButton, Source } from './source'
 
 /**
  * 104 A6: an `ask_user` from any session — Source · the context line · `AskCard`'s question blocks with the recommended
- * option pre-picked · **Send** (`answer_ask(id, answers)`) / **Dismiss (ends the question)** (`answer_ask(id, null)`) /
- * Snooze in the fixed bar. Without the questions on the item (an older engine) the screen points at the session.
+ * option pre-picked · **Send** (`answer_ask(id, answers)`) / Snooze in the fixed bar. 207 §5.2: with
+ * `attention_dismiss_many` the second button is **Leave to agent** (the agent decides and its turn goes on); an older
+ * engine keeps **Dismiss (ends the question)** (`answer_ask(id, null)`, which ends the turn). Without the questions on
+ * the item (an older engine) the screen points at the session.
  */
 export function AskScreen({ item }: { item: AttentionItem }) {
   const ask = item.ask
   const act = useAttentionActions()
+  const bulk = useAttentionBulk()
+  const leaves = useQuerySupport(['attention_dismiss_many'])
   const onResolved = useResolved(item)
   const voice = speech.useVoice()
   // 126 §9.2: the double's L1 pick pre-selects; the model's `recommended` badge stays, so a disagreement shows both.
@@ -26,13 +33,20 @@ export function AskScreen({ item }: { item: AttentionItem }) {
   const prediction = usePrediction(ask?.id)
   const { draft, pick, typeOwn, drop } = useAskDraft(ask, prediction)
   const answered = allAnswered(draft.picks)
-  const busy = act.ask.isPending
+  const busy = act.ask.isPending || bulk.pending
   const send = (answers: Answer[] | null) => {
     if (!ask) return
     void act.ask.mutateAsync({ id: ask.id, answers }).then(() => {
       drop()
       onResolved()
     }, () => undefined)
+  }
+  const leave = () => {
+    void bulk.dismiss([item.id]).then((outs) => {
+      if (!outs.some((o) => o.resolution !== 'failed')) return
+      drop()
+      onResolved()
+    })
   }
   return (
     <>
@@ -81,9 +95,15 @@ export function AskScreen({ item }: { item: AttentionItem }) {
         <Button size="sm" disabled={busy || !ask || !answered} onClick={() => send(draft.picks.map(toAnswer))}>
           Send
         </Button>
-        <Button size="sm" variant="outline" disabled={busy || !ask} title="Ends the agent's question without an answer" onClick={() => send(null)}>
-          Dismiss (ends the question)
-        </Button>
+        {leaves ? (
+          <Button size="sm" variant="outline" disabled={busy} title={DISMISS_HINT} onClick={leave}>
+            Leave to agent
+          </Button>
+        ) : (
+          <Button size="sm" variant="outline" disabled={busy || !ask} title="Ends the agent's question without an answer" onClick={() => send(null)}>
+            Dismiss (ends the question)
+          </Button>
+        )}
         <SnoozeButton item={item} onResolved={onResolved} />
         {ask && !answered && <span className="text-xs text-fg-tertiary">answer or skip every question</span>}
       </ActionBar>
