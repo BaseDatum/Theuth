@@ -20822,6 +20822,13 @@
           "name": {
             "description": "Vault name the answer is stored under.",
             "type": "string"
+          },
+          "note": {
+            "description": "Stored as the secret's note (shown in `secret_list`); `None` = the label. Absent on\nthe wire when `None`, so a field without one looks as it did before.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -20857,6 +20864,13 @@
                 "minimum": 0,
                 "type": [
                   "integer",
+                  "null"
+                ]
+              },
+              "expires": {
+                "description": "The agent's expiry suggestion for the card's control ([`SecretRequest::expires`]);\nabsent on the wire when `None`.",
+                "type": [
+                  "string",
                   "null"
                 ]
               },
@@ -21464,6 +21478,13 @@
           "name": {
             "description": "Vault name the answer is stored under.",
             "type": "string"
+          },
+          "note": {
+            "description": "Stored as the secret's note (shown in `secret_list`); `None` = the label. Absent on\nthe wire when `None`, so a field without one looks as it did before.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -21498,6 +21519,13 @@
                 "minimum": 0,
                 "type": [
                   "integer",
+                  "null"
+                ]
+              },
+              "expires": {
+                "description": "The agent's expiry suggestion for the card's control ([`SecretRequest::expires`]);\nabsent on the wire when `None`.",
+                "type": [
+                  "string",
                   "null"
                 ]
               },
@@ -23360,6 +23388,13 @@
           "name": {
             "description": "Vault name the answer is stored under.",
             "type": "string"
+          },
+          "note": {
+            "description": "Stored as the secret's note (shown in `secret_list`); `None` = the label. Absent on\nthe wire when `None`, so a field without one looks as it did before.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -23395,6 +23430,13 @@
                 "minimum": 0,
                 "type": [
                   "integer",
+                  "null"
+                ]
+              },
+              "expires": {
+                "description": "The agent's expiry suggestion for the card's control ([`SecretRequest::expires`]);\nabsent on the wire when `None`.",
+                "type": [
+                  "string",
                   "null"
                 ]
               },
@@ -23751,6 +23793,13 @@
           "name": {
             "description": "Vault name the answer is stored under.",
             "type": "string"
+          },
+          "note": {
+            "description": "Stored as the secret's note (shown in `secret_list`); `None` = the label. Absent on\nthe wire when `None`, so a field without one looks as it did before.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -23785,6 +23834,13 @@
                 "minimum": 0,
                 "type": [
                   "integer",
+                  "null"
+                ]
+              },
+              "expires": {
+                "description": "The agent's expiry suggestion for the card's control ([`SecretRequest::expires`]);\nabsent on the wire when `None`.",
+                "type": [
+                  "string",
                   "null"
                 ]
               },
@@ -110651,6 +110707,14 @@
             "minimum": 0,
             "type": "integer"
           },
+          "expires": {
+            "default": null,
+            "description": "When the current version expires and the secret is deleted (RFC 3339 UTC); `None` = never.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "name": {
             "description": "`[A-Za-z0-9_.-]{1,64}`.",
             "type": "string"
@@ -110681,7 +110745,8 @@
           "source",
           "current",
           "versions",
-          "updated"
+          "updated",
+          "expires"
         ],
         "type": "object"
       },
@@ -110706,6 +110771,14 @@
           "engine": {
             "description": "Engine the session runs on.",
             "type": "string"
+          },
+          "expires": {
+            "default": null,
+            "description": "The agent's expiry suggestion that pre-fills the card's control: `30m` / `2h` / `3d`\n(counted from when the user stores) or an RFC 3339 instant. `None` = Never.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "fields": {
             "description": "The `fields` JSON column.",
@@ -110757,7 +110830,8 @@
           "created_ms",
           "answered_ms",
           "outcome",
-          "hlc"
+          "hlc",
+          "expires"
         ],
         "type": "object"
       },
@@ -110784,6 +110858,13 @@
           "name": {
             "description": "Vault name the answer is stored under.",
             "type": "string"
+          },
+          "note": {
+            "description": "Stored as the secret's note (shown in `secret_list`); `None` = the label. Absent on\nthe wire when `None`, so a field without one looks as it did before.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -110854,6 +110935,14 @@
             "minimum": 0,
             "type": "integer"
           },
+          "expires": {
+            "default": null,
+            "description": "When the current version expires and the secret is deleted (RFC 3339 UTC); `None` = never.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "name": {
             "description": "`[A-Za-z0-9_.-]{1,64}`.",
             "type": "string"
@@ -110909,6 +110998,14 @@
           "engine": {
             "description": "Engine the session runs on.",
             "type": "string"
+          },
+          "expires": {
+            "default": null,
+            "description": "The agent's expiry suggestion that pre-fills the card's control: `30m` / `2h` / `3d`\n(counted from when the user stores) or an RFC 3339 instant. `None` = Never.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "fields": {
             "description": "The `fields` JSON column.",
@@ -110983,6 +111080,13 @@
           "name": {
             "description": "Vault name the answer is stored under.",
             "type": "string"
+          },
+          "note": {
+            "description": "Stored as the secret's note (shown in `secret_list`); `None` = the label. Absent on\nthe wire when `None`, so a field without one looks as it did before.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -119092,6 +119196,21 @@
             ]
           },
           "x-theuth-aliases": []
+        },
+        {
+          "name": "expires_ms",
+          "required": false,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "expiresMs"
+          ]
         }
       ],
       "result": {

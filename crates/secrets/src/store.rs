@@ -32,6 +32,8 @@ pub struct Row {
     pub updated_ms: u64,
     /// 183 §6.9.4: the id of the mesh key that sealed `ciphertext`; `''` = the legacy key.
     pub key_id: String,
+    /// Absolute expiry (Unix ms) set by this write; `None` = never. The current version's is the secret's.
+    pub expires_ms: Option<u64>,
 }
 
 /// Open or create the file and run the migrations (WAL, 4 connections, 5 s busy).
@@ -74,7 +76,7 @@ pub fn id(name: &str, version: u32) -> String {
 /// Every row, by name then newest version first, and the current pointer per name.
 pub async fn rows(pool: &SqlitePool) -> anyhow::Result<(Vec<Row>, HashMap<String, u32>)> {
     let rows = sqlx::query(
-        "SELECT name, version, ciphertext, note, source, updated_ms, key_id FROM vault ORDER BY name, version DESC",
+        "SELECT name, version, ciphertext, note, source, updated_ms, key_id, expires_ms FROM vault ORDER BY name, version DESC",
     )
     .fetch_all(pool)
     .await?
@@ -87,6 +89,7 @@ pub async fn rows(pool: &SqlitePool) -> anyhow::Result<(Vec<Row>, HashMap<String
         source: r.get("source"),
         updated_ms: r.get::<i64, _>("updated_ms") as u64,
         key_id: r.get("key_id"),
+        expires_ms: r.get::<Option<i64>, _>("expires_ms").map(|v| v as u64),
     })
     .collect();
     let current = sqlx::query("SELECT name, version FROM vault_current")

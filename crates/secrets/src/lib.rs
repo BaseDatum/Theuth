@@ -8,6 +8,7 @@
 //! version (`secret_restore`) — never from the model's arguments.
 //!
 //! - [`vault`]: the encrypted file, five versions per name, the scrubber.
+//! - [`expiry`]: the `expires` grammar (`30m`, `2h`, `3d`, ISO-8601) and local-time text.
 //! - [`requests`]: the replicated `secret_requests` rows (79 §6.6).
 //! - [`tools`]: the five `secret_*` tools and the prompt block.
 //!
@@ -25,6 +26,7 @@ pub mod rpc_support;
 pub mod rpc;
 pub use rpc::{CredentialsApiClient, rpc_module};
 mod key;
+pub mod expiry;
 pub mod requests;
 pub mod store;
 pub mod tools;
@@ -94,6 +96,10 @@ pub struct SecretRequestField {
     pub masked: bool,
     /// `Some(v)` when the name exists: the answer adds `v + 1`.
     pub current: Option<u32>,
+    /// Stored as the secret's note (shown in `secret_list`); `None` = the label. Absent on
+    /// the wire when `None`, so a field without one looks as it did before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// One `secret_requests` row (79 §6.6, contract §2.7): a session on any engine
@@ -121,6 +127,10 @@ pub struct SecretRequest {
     pub outcome: Option<String>,
     /// Replication clock.
     pub hlc: Option<String>,
+    /// The agent's expiry suggestion that pre-fills the card's control: `30m` / `2h` / `3d`
+    /// (counted from when the user stores) or an RFC 3339 instant. `None` = Never.
+    #[serde(default)]
+    pub expires: Option<String>,
 }
 
 /// `ask` → [`SecretsList`]: names, notes, versions, key store. Never values.
@@ -180,6 +190,10 @@ pub struct Request {
     /// `secret_request*` call); an answered row resolves at once.
     #[serde(default)]
     pub id: Option<RequestId>,
+    /// The agent's expiry suggestion ([`SecretRequest::expires`]), already normalized by
+    /// [`expiry::normalize`]; the user's choice on the card wins.
+    #[serde(default)]
+    pub expires: Option<String>,
 }
 
 /// What [`Request`] resolves to: the new version per field when stored, else why not.
@@ -189,6 +203,8 @@ pub struct Outcome {
     pub stored: Vec<(String, u32)>,
     /// Nobody answered in time.
     pub timed_out: bool,
+    /// When the stored values expire (absolute Unix ms), as the user set it on the card.
+    pub expires_ms: Option<u64>,
 }
 
 /// `ask` → `Result<bool, String>`: answer a request — one waiting here, or a
@@ -205,6 +221,9 @@ pub struct Answer {
     pub value: Option<String>,
     /// Field name → typed value for a form.
     pub values: HashMap<String, String>,
+    /// When every stored value expires (absolute Unix ms, in the future); `None` = never.
+    #[serde(default)]
+    pub expires_ms: Option<u64>,
 }
 
 /// `tell`: this engine's mesh id, stamped on the rows this engine writes
@@ -260,6 +279,10 @@ pub enum SecretsEvent {
         /// Every field, in card order; one entry for `secret_request`.
         #[serde(default)]
         fields: Vec<SecretRequestField>,
+        /// The agent's expiry suggestion for the card's control ([`SecretRequest::expires`]);
+        /// absent on the wire when `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires: Option<String>,
     },
     /// The request was answered, declined or timed out; frontends drop the field.
     #[serde(rename = "SecretResolved")]
@@ -399,12 +422,14 @@ impl Message<Request> for SecretsActor {
             .collect();
         let id = m.id.unwrap_or_else(|| RequestId(uuid::Uuid::now_v7()));
         let mut title = m.title;
+        let mut expires = m.expires;
         let mut timeout = self.timeout;
         match requests::get(self.vault.pool(), id).await {
             Ok(Some(row)) => {
                 // 109 §6.2: re-arm the stored row; downtime counts (§6.3).
                 fields = row.fields;
                 title = row.title;
+                expires = row.expires;
                 let deadline = row.created_ms.saturating_add(timeout.as_millis() as u64);
                 timeout = Duration::from_millis(deadline.saturating_sub(now_ms()));
             }
@@ -419,6 +444,7 @@ impl Message<Request> for SecretsActor {
                     answered_ms: None,
                     outcome: None,
                     hlc: None,
+                    expires: expires.clone(),
                 };
                 if let Err(e) = requests::insert(self.vault.pool(), &row).await {
                     fail(tx, format!("secret_requests: {e:#}"));
@@ -439,6 +465,7 @@ impl Message<Request> for SecretsActor {
             current: first.current,
             title,
             fields: fields.clone(),
+            expires,
         };
         let (atx, arx) = oneshot::channel();
         self.pending.insert(id, (m.session, requested.clone(), atx));
@@ -538,7 +565,12 @@ async fn wait(
     } else {
         Vec::new()
     };
-    Outcome { stored, timed_out }
+    let expires_ms = stored.first().and_then(|(n, _)| vault.expires_ms(n));
+    Outcome {
+        stored,
+        timed_out,
+        expires_ms,
+    }
 }
 
 impl Message<Answer> for SecretsActor {
@@ -551,6 +583,14 @@ impl Message<Answer> for SecretsActor {
         };
         if row.answered_ms.is_some() {
             return Ok(false);
+        }
+        if let Some(t) = m.expires_ms
+            && t <= now_ms()
+        {
+            return Err(format!(
+                "the expiry {} is in the past",
+                expiry::local_time(t)
+            ));
         }
         let mut values = m.values;
         if let Some(v) = m.value
@@ -565,11 +605,14 @@ impl Message<Answer> for SecretsActor {
             for f in &row.fields {
                 if let Some(v) = values.get(&f.name) {
                     self.vault
-                        .set(
+                        .set_expiring(
                             &f.name,
                             v,
-                            (!f.label.is_empty()).then_some(&f.label),
+                            f.note
+                                .as_deref()
+                                .or((!f.label.is_empty()).then_some(f.label.as_str())),
                             "user",
+                            m.expires_ms,
                         )
                         .await?;
                 }
@@ -799,6 +842,7 @@ impl runtime::Plugin for SecretsPlugin {
         ));
         actor.register(SECRETS_ACTOR)?;
         tokio::spawn(replicate(rt.clone(), vault.clone()));
+        tokio::spawn(sweeper(rt.clone(), vault.clone()));
         if !cfg.tools {
             return Ok(());
         }
@@ -885,6 +929,53 @@ async fn replicate(rt: Runtime, vault: Arc<Vault>) {
 /// [`REFRESH_POLL`] ticks between two [`Vault::maintain`] runs.
 const MAINTAIN_EVERY: u64 = 5;
 
+/// Longest the expiry sweeper sleeps without looking again (a wall-clock jump, a far expiry).
+const SWEEP_MAX_NAP: Duration = Duration::from_secs(3600);
+/// Shortest: a delete that keeps failing must not spin.
+const SWEEP_MIN_NAP: Duration = Duration::from_millis(250);
+
+/// Delete expired secrets on start, then on a timer armed for the soonest expiry and
+/// re-armed whenever the vault changes (an own write, a peer's rows). Runs whether or not
+/// the agent tools are on: an expiry the user set is kept regardless.
+async fn sweeper(rt: Runtime, vault: Arc<Vault>) {
+    let mut changes = vault.watch_changes();
+    loop {
+        changes.mark_unchanged();
+        sweep(&rt, &vault, now_ms()).await;
+        let nap = vault.next_expiry().map_or(SWEEP_MAX_NAP, |t| {
+            Duration::from_millis(t.saturating_sub(now_ms()))
+                .clamp(SWEEP_MIN_NAP, SWEEP_MAX_NAP)
+        });
+        tokio::select! {
+            () = tokio::time::sleep(nap) => {}
+            r = changes.changed() => if r.is_err() { return },
+            () = rt.shutdown.cancelled() => return,
+        }
+    }
+}
+
+/// Delete every secret whose current version expired at or before `now`, every version,
+/// through [`Vault::delete_expired`] (the rows `/secrets rm` deletes, so the deletion
+/// replicates), log one line per name (never a value) and publish one
+/// [`SecretsEvent::Changed`] when anything went. Returns how many were deleted.
+pub async fn sweep(rt: &Runtime, vault: &Vault, now: u64) -> usize {
+    let mut n = 0;
+    for name in vault.expired(now) {
+        match vault.delete_expired(&name, now).await {
+            Ok(true) => {
+                tracing::info!("secrets: {name} expired; deleted with every version");
+                n += 1;
+            }
+            Ok(false) => {}
+            Err(e) => tracing::warn!("secrets: deleting expired {name}: {e}"),
+        }
+    }
+    if n > 0 {
+        rt.publish(SecretsEvent::Changed).await;
+    }
+    n
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -899,6 +990,7 @@ mod tests {
             label: label.into(),
             masked: true,
             current: None,
+            note: None,
         }
     }
 
@@ -926,6 +1018,7 @@ mod tests {
                 title,
                 fields,
                 id: None,
+                expires: None,
             })
             .await
             .map_err(|e| e.to_string())
@@ -982,6 +1075,7 @@ mod tests {
             id: row.id,
             value: Some("ghp_secret_value".into()),
             values: HashMap::new(),
+            expires_ms: None,
         };
         assert!(a.ask(answer.clone()).await.unwrap());
         let out = ask.await.unwrap().unwrap();
@@ -1049,6 +1143,7 @@ mod tests {
                 id: row.id,
                 value: None,
                 values,
+                expires_ms: None,
             })
             .await
             .unwrap()
@@ -1089,6 +1184,7 @@ mod tests {
                 id: row.id,
                 value: None,
                 values: HashMap::new(),
+                expires_ms: None,
             })
             .await
             .unwrap()
@@ -1161,11 +1257,230 @@ mod tests {
                 id: row.id,
                 value: Some("late".into()),
                 values: HashMap::new(),
+                expires_ms: None,
             })
             .await
             .unwrap(),
             "a late answer is refused"
         );
         assert!(vault.get("TOKEN", 0).is_none());
+    }
+
+    /// A bus subscriber that forwards [`SecretsEvent`]s to a channel.
+    #[derive(kameo::Actor)]
+    struct Tap(tokio::sync::mpsc::UnboundedSender<SecretsEvent>);
+
+    impl Message<SecretsEvent> for Tap {
+        type Reply = ();
+
+        async fn handle(&mut self, e: SecretsEvent, _: &mut Context<Self, Self::Reply>) {
+            let _ = self.0.send(e);
+        }
+    }
+
+    async fn tap(rt: &Runtime) -> tokio::sync::mpsc::UnboundedReceiver<SecretsEvent> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let t = Tap::spawn(Tap(tx));
+        rt.subscribe::<Tap, SecretsEvent>(&t).await;
+        rx
+    }
+
+    #[tokio::test]
+    async fn an_answer_with_an_expiry_sets_it_on_every_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, vault) = actor(dir.path(), Duration::from_secs(10)).await;
+        let mut pass = field("gh.pass", "Password");
+        pass.note = Some("alice's GitHub password".into());
+        let (ask, row) = open_request(&a, Some("GitHub"), vec![field("gh.user", "Username"), pass]).await;
+        let at = now_ms() + 3_600_000;
+        let values = HashMap::from([
+            ("gh.user".to_owned(), "alice".to_owned()),
+            ("gh.pass".to_owned(), "hunter22".to_owned()),
+        ]);
+        assert!(
+            a.ask(Answer {
+                id: row.id,
+                value: None,
+                values,
+                expires_ms: Some(at),
+            })
+            .await
+            .unwrap()
+        );
+        let out = ask.await.unwrap().unwrap();
+        assert_eq!(out.stored, [("gh.user".to_owned(), 1), ("gh.pass".to_owned(), 1)]);
+        assert_eq!(out.expires_ms, Some(at), "the receipt names the expiry");
+        assert_eq!(vault.expires_ms("gh.user"), Some(at));
+        assert_eq!(vault.expires_ms("gh.pass"), Some(at));
+        let listed = vault.list();
+        let pass = listed.iter().find(|s| s.name == "gh.pass").unwrap();
+        assert_eq!(pass.expires.as_deref(), Some(expiry::rfc3339(at).as_str()));
+        assert_eq!(pass.note, "alice's GitHub password", "a field's note is the secret's note");
+        let user = listed.iter().find(|s| s.name == "gh.user").unwrap();
+        assert_eq!(user.note, "Username", "no note: the label");
+    }
+
+    #[tokio::test]
+    async fn an_answer_with_a_past_expiry_is_refused_and_stores_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, vault) = actor(dir.path(), Duration::from_secs(10)).await;
+        let (_ask, row) = open_request(&a, None, vec![field("TOKEN", "x")]).await;
+        let err = a
+            .ask(Answer {
+                id: row.id,
+                value: Some("value-for-token".into()),
+                values: HashMap::new(),
+                expires_ms: Some(now_ms() - 1),
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("in the past"), "{err}");
+        assert!(!err.contains("value-for-token"));
+        assert!(vault.get("TOKEN", 0).is_none());
+        let after = requests::get(vault.pool(), row.id).await.unwrap().unwrap();
+        assert!(after.answered_ms.is_none(), "the card can still be answered");
+    }
+
+    #[tokio::test]
+    async fn the_agents_suggestion_rides_the_row_and_the_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, _vault) = actor(dir.path(), Duration::from_secs(10)).await;
+        let a2 = a.clone();
+        tokio::spawn(async move {
+            a2.ask(Request {
+                session: SessionId::new(),
+                title: None,
+                fields: vec![field("TOKEN", "x")],
+                id: None,
+                expires: Some("2h".into()),
+            })
+            .await
+        });
+        let row = loop {
+            let rows = a.ask(ListRequests { unanswered_only: true }).await.unwrap();
+            if let Some(r) = rows.into_iter().next() {
+                break r;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert_eq!(row.expires.as_deref(), Some("2h"));
+        match &a.ask(PendingRequests).await.unwrap()[..] {
+            [SecretsEvent::Requested { expires, .. }] => assert_eq!(expires.as_deref(), Some("2h")),
+            other => panic!("pending: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_plain_replace_clears_the_expiry() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::open(dir.path(), KeyStore::File).await.unwrap();
+        let at = now_ms() + 60_000;
+        vault
+            .set_expiring("TOKEN", "value-one-long", None, "user", Some(at))
+            .await
+            .unwrap();
+        assert_eq!(vault.expires_ms("TOKEN"), Some(at));
+        let same = vault
+            .set_expiring("TOKEN", "value-one-long", None, "user", Some(at))
+            .await
+            .unwrap();
+        assert_eq!(same.current, 1, "same value, same expiry: nothing written");
+        let info = vault.set("TOKEN", "value-one-long", None, "user").await.unwrap();
+        assert_eq!(info.current, 2, "the same value without the expiry is a new version");
+        assert_eq!(info.expires, None);
+        assert_eq!(vault.expires_ms("TOKEN"), None);
+        assert_eq!(vault.next_expiry(), None);
+    }
+
+    #[tokio::test]
+    async fn an_expired_placeholder_fails_before_the_sweeper_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::open(dir.path(), KeyStore::File).await.unwrap();
+        vault.set("TOKEN", "older-value-long", None, "user").await.unwrap();
+        let at = now_ms() - 1;
+        vault
+            .set_expiring("TOKEN", "newer-value-long", None, "user", Some(at))
+            .await
+            .unwrap();
+        let want = format!("secret TOKEN expired at {}", expiry::local_time(at));
+        for p in ["{{secret:TOKEN}}", "{{secret:TOKEN:-1}}"] {
+            let mut args = serde_json::json!({ "cmd": format!("curl -H {p}") });
+            assert_eq!(vault.expand(&mut args).unwrap_err(), want, "{p}");
+        }
+        let mut other = serde_json::json!({"cmd": "echo hi"});
+        assert_eq!(vault.expand(&mut other).unwrap(), 0, "no placeholder, no error");
+    }
+
+    #[tokio::test]
+    async fn sweep_deletes_every_version_and_announces_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let mut events = tap(&rt).await;
+        let vault = Vault::open(dir.path(), KeyStore::File).await.unwrap();
+        let now = now_ms();
+        vault.set("GONE", "gone-value-one", None, "user").await.unwrap();
+        vault
+            .set_expiring("GONE", "gone-value-two", None, "user", Some(now - 1))
+            .await
+            .unwrap();
+        vault
+            .set_expiring("LATER", "later-value-x", None, "user", Some(now + 60_000))
+            .await
+            .unwrap();
+        vault.set("KEPT", "kept-value-xx", None, "user").await.unwrap();
+        assert_eq!(vault.next_expiry(), Some(now - 1));
+
+        assert_eq!(sweep(&rt, &vault, now).await, 1);
+        let names: Vec<_> = vault.list().into_iter().map(|s| s.name).collect();
+        assert_eq!(names, ["KEPT", "LATER"]);
+        assert!(vault.get("GONE", 1).is_none());
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault WHERE name = 'GONE'")
+            .fetch_one(vault.pool())
+            .await
+            .unwrap();
+        assert_eq!(rows, 0, "every version's row is gone");
+        let ev = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(ev, SecretsEvent::Changed), "{ev:?}");
+        assert_eq!(sweep(&rt, &vault, now).await, 0, "nothing left to sweep");
+
+        // A replace that lands between the scan and the delete keeps the secret.
+        vault
+            .set_expiring("RACE", "race-value-xx", None, "user", Some(now - 1))
+            .await
+            .unwrap();
+        vault.set("RACE", "race-value-new", None, "user").await.unwrap();
+        assert!(!vault.delete_expired("RACE", now).await.unwrap());
+        assert!(vault.get("RACE", 0).is_some());
+    }
+
+    #[tokio::test]
+    async fn the_sweeper_task_arms_for_a_new_expiry() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let mut events = tap(&rt).await;
+        let vault = Arc::new(Vault::open(dir.path(), KeyStore::File).await.unwrap());
+        vault
+            .set_expiring("BOOT", "boot-value-xx", None, "user", Some(now_ms() - 1))
+            .await
+            .unwrap();
+        let task = tokio::spawn(sweeper(rt.clone(), vault.clone()));
+        // On start: the already-expired one goes.
+        let ev = tokio::time::timeout(Duration::from_secs(5), events.recv()).await.unwrap();
+        assert!(matches!(ev, Some(SecretsEvent::Changed)));
+        assert!(vault.get("BOOT", 0).is_none());
+        // Written after the sweeper went to sleep with nothing to wait for: the change re-arms it.
+        vault
+            .set_expiring("SOON", "soon-value-xx", None, "user", Some(now_ms() + 400))
+            .await
+            .unwrap();
+        let ev = tokio::time::timeout(Duration::from_secs(5), events.recv()).await.unwrap();
+        assert!(matches!(ev, Some(SecretsEvent::Changed)));
+        assert!(vault.get("SOON", 0).is_none());
+        rt.shutdown.cancel();
+        tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
     }
 }

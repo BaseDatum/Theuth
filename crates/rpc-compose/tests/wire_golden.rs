@@ -355,8 +355,10 @@ async fn pending_snapshot(rt: &Runtime, methods: &jsonrpsee::Methods, live: &mut
                         label: "Token".into(),
                         masked: true,
                         current: None,
+                        note: None,
                     }],
                     id: Some(secret_id),
+                    expires: None,
                 })
                 .await
                 .unwrap()
@@ -390,6 +392,7 @@ async fn pending_snapshot(rt: &Runtime, methods: &jsonrpsee::Methods, live: &mut
             id: secret_id,
             value: None,
             values: Default::default(),
+            expires_ms: None,
         })
         .await
         .unwrap();

@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { SecretInfo } from "@/rpc/bindings/method.secrets.output"
+import { describeExpiry } from '@/components/chat/secret-expiry'
 
 const EMPTY_FORM = { name: '', value: '', note: '' }
 
@@ -66,6 +67,7 @@ export function Secrets() {
               description={
                 <>
                   v{s.current} · {s.versions.length} kept{s.note && <> · {s.note}</>} · {when(s.updated)}
+                  {s.expires && <span title={when(s.expires)}> · {describeExpiry(s.expires)}</span>}
                 </>
               }
             >
