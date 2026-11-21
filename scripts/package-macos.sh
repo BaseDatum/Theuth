@@ -3,12 +3,11 @@
 #
 #   1. cargo build --release -p theuth  (daemon sidecar, host arch)
 #      + packages/apps: bun build --compile → theuth-app-parser (46 §2.1; scripts/app-parser-env.sh)
-#      + packages/documents: bun build --compile → theuth-documents (59 §3.2; same env script)
 #   2. check_sidecar (LC_RPATH /usr/lib/swift + `t --version`; 27 Revision 2026-10-07) and
 #      stage sidecar as binaries/t-<host-triple>
 #   3. cargo tauri build --config tauri.bundle.conf.json  (app bundle only)
 #      + libonnxruntime.dylib (Microsoft's release, pinned) into Contents/Frameworks (45 §2.1)
-#      + theuth-app-parser-<hash> and theuth-documents-<version> into Contents/MacOS beside the sidecar
+#      + theuth-app-parser-<hash> into Contents/MacOS beside the sidecar (the documents helper is in `t`)
 #      + Theuth Companion.app (130 D11; scripts/bundle-companion.sh when crates/desktop/companion exists)
 #        into Contents/Library/LoginItems — by hand, not `bundle.macOS.files`: the bundler copies those
 #        but never signs them (spike SA §3), and this script's sign order is already manual
@@ -82,9 +81,6 @@ MLX_RS_METAL_PATH="$MLX_METAL_DIR" cargo build --release -p theuth
 echo "==> [1/5] building $HELPER (bun build --compile)"
 build_helper
 
-echo "==> [1/5] building $DOC_HELPER (bun build --compile)"
-build_doc_helper
-
 if [[ -f crates/desktop/companion/Package.swift ]]; then
   echo "==> [1/5] building Theuth Companion.app (swift build + bundle)"
   scripts/bundle-companion.sh
@@ -122,10 +118,9 @@ echo "==> [3/5] mlx.metallib → Contents/Resources"
 [[ -f "$MLX_METAL_DIR/mlx.metallib" ]] || { echo "error: $MLX_METAL_DIR/mlx.metallib not built (mlx-sys)" >&2; exit 1; }
 install -m 644 "$MLX_METAL_DIR/mlx.metallib" "$APP/Contents/Resources/mlx.metallib"
 
-echo "==> [3/5] $HELPER + $DOC_HELPER → Contents/MacOS"
-rm -f "$APP/Contents/MacOS"/theuth-app-parser-* "$APP/Contents/MacOS"/theuth-documents-*
+echo "==> [3/5] $HELPER → Contents/MacOS"
+rm -f "$APP/Contents/MacOS"/theuth-app-parser-*
 install -m 755 "$HELPER_SRC" "$APP/Contents/MacOS/$HELPER"
-install -m 755 "$DOC_HELPER_SRC" "$APP/Contents/MacOS/$DOC_HELPER"
 
 if [[ -d "$COMPANION_SRC" ]]; then
   echo "==> [3/5] Theuth Companion.app → Contents/Library/LoginItems"
@@ -149,10 +144,6 @@ codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
   -i "${BUNDLE_ID}.app-parser" \
   --entitlements "$HELPER_ENTITLEMENTS" "$APP/Contents/MacOS/$HELPER"
 check_helper "$APP/Contents/MacOS/$HELPER"
-codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
-  -i "${BUNDLE_ID}.documents" \
-  --entitlements "$HELPER_ENTITLEMENTS" "$APP/Contents/MacOS/$DOC_HELPER"
-check_doc_helper "$APP/Contents/MacOS/$DOC_HELPER"
 codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
   -i "${BUNDLE_ID}.t" \
   --entitlements "$ENTITLEMENTS" "$APP/Contents/MacOS/t"
@@ -185,7 +176,6 @@ echo
 echo "done:"
 echo "  app: $APP"
 echo "  helper: $APP/Contents/MacOS/$HELPER"
-echo "  documents helper: $APP/Contents/MacOS/$DOC_HELPER"
 [[ -d "$COMPANION_DST" ]] && echo "  companion: $COMPANION_DST"
 echo "  dmg: $DMG"
 if [[ "$IDENTITY" == "-" ]]; then

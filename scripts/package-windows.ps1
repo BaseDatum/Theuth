@@ -7,10 +7,9 @@ release-s3.sh. Runs ON the Windows host from the repo root: `just package-window
   1. cargo build --release -p theuth  (daemon sidecar, x86_64-pc-windows-msvc)
      + packages/apps: bun build --compile -> theuth-app-parser-<hash>.exe (46 S2.1; the same
        hash / --version / stdin-EOF checks as scripts/app-parser-env.sh)
-     + packages/documents: bun build --compile -> theuth-documents-<ver>.exe (59 S3.2)
-  2. stage all as externalBin: binaries/t-<triple>.exe, binaries/theuth-app-parser-<hash>-<triple>.exe,
-     binaries/theuth-documents-<ver>-<triple>.exe (the helpers must sit beside `t.exe` - helper_path -
-     so they ride the same mechanism, as package-linux.sh does)
+  2. stage both as externalBin: binaries/t-<triple>.exe, binaries/theuth-app-parser-<hash>-<triple>.exe
+     (the helper must sit beside `t.exe`, so it rides the same mechanism, as package-linux.sh does;
+     the documents helper is compiled into `t`)
   3. onnxruntime.dll (Microsoft's win-x64 CPU build, pinned in scripts/ort-version.env, sha256-checked,
      zip cached in target/) staged as a Tauri resource that lands beside t.exe in the install dir -
      first in `models::onnx::find_ort_lib`'s search order (<exe dir>\onnxruntime.dll before
@@ -69,7 +68,7 @@ function Test-StdinEof([string]$Exe) {
 }
 
 # `bun run build:helper` in $Pkg, then the compiled exe. Bun appends .exe to a suffix-less
-# --outfile on Windows, and both build-helper.ts scripts then copy/self-test the suffix-less name,
+# --outfile on Windows, and build-helper.ts then copies/self-tests the suffix-less name,
 # which fails *after* the compile; so the script's exit code is reported, not fatal - the exe
 # must exist and pass the same checks release-s3.sh runs on every payload.
 function Build-Helper([string]$Pkg, [string]$Stable) {
@@ -115,9 +114,6 @@ if ($TauriVersion -ne $Version) { Fail "version mismatch: crates/theuth/Cargo.to
 $HelperHash = (Get-Content packages/apps/generated/library-hash.txt -Raw).Trim()
 if ($HelperHash -notmatch '^[0-9a-f]{64}$') { Fail "packages/apps/generated/library-hash.txt is not a sha256 hex (got '$HelperHash'; run bun run generate in packages/apps)" }
 $Helper = "theuth-app-parser-$HelperHash"
-$DocVersion = (Select-String -Path packages/documents/src/protocol.ts -Pattern '^export const PROTOCOL_VERSION = "([0-9.]+)";').Matches[0].Groups[1].Value
-if ($DocVersion -notmatch '^[0-9.]+$') { Fail "packages/documents/src/protocol.ts declares no PROTOCOL_VERSION" }
-$DocHelper = "theuth-documents-$DocVersion"
 
 # scripts/ort-version.env: the one ORT pin.
 $OrtEnv = Get-Content scripts/ort-version.env -Raw
@@ -155,19 +151,11 @@ if ($LASTEXITCODE -ne 0) { Fail "$HelperSrc --version failed: $said" }
 if ($said -notlike "*$HelperHash*") { Fail "$HelperSrc --version printed '$said', expected library hash $HelperHash (stale build? rerun bun run generate && build:helper)" }
 Test-StdinEof $HelperSrc
 
-Write-Host "==> [1/6] building $DocHelper.exe (bun build --compile)"
-$DocHelperSrc = Build-Helper 'packages/documents' 'theuth-documents'
-$said = (& $DocHelperSrc --version 2>&1 | Out-String).Trim()
-if ($LASTEXITCODE -ne 0) { Fail "$DocHelperSrc --version failed: $said" }
-if ($said -ne "theuth-documents $DocVersion") { Fail "$DocHelperSrc --version printed '$said', expected 'theuth-documents $DocVersion'" }
-Test-StdinEof $DocHelperSrc
-
-Write-Host "==> [2/6] staging sidecars (t, $Helper, $DocHelper)"
+Write-Host "==> [2/6] staging sidecars (t, $Helper)"
 New-Item -ItemType Directory -Path $Binaries -Force | Out-Null
 Get-ChildItem $Binaries -File | Remove-Item -Force
 Copy-Item $T (Join-Path $Binaries "t-$Triple.exe")
 Copy-Item $HelperSrc (Join-Path $Binaries "$Helper-$Triple.exe")
-Copy-Item $DocHelperSrc (Join-Path $Binaries "$DocHelper-$Triple.exe")
 
 Write-Host "==> [3/6] onnxruntime.dll $OrtVersion -> binaries/ (bundled beside t.exe)"
 $OrtZip = Join-Path $Root "target/onnxruntime-win-x64-$OrtVersion.zip"
@@ -259,7 +247,7 @@ $BundleConf = Join-Path $Root 'target/tauri.windows.bundle.conf.json'
 $resources = @{ 'binaries/onnxruntime.dll' = 'onnxruntime.dll' }
 if ($Companion) { $resources['../../target/release/companion-windows/'] = 'companion/' }
 @{ bundle = @{
-    externalBin = @('binaries/t', "binaries/$Helper", "binaries/$DocHelper")
+    externalBin = @('binaries/t', "binaries/$Helper")
     resources   = $resources
 } } | ConvertTo-Json -Depth 4 | Set-Content -Path $BundleConf -Encoding utf8
 if (Test-Path $BundleDir) { Remove-Item $BundleDir -Recurse -Force }
@@ -281,12 +269,11 @@ if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Path $stage | Out-Null
 Copy-Item $T (Join-Path $stage 't.exe')
 Copy-Item $HelperSrc (Join-Path $stage "$Helper.exe")
-Copy-Item $DocHelperSrc (Join-Path $stage "$DocHelper.exe")
 if (Test-Path $Zip) { Remove-Item $Zip -Force }
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $Zip -CompressionLevel Optimal
 $archive = [System.IO.Compression.ZipFile]::OpenRead($Zip)
 try { $members = @($archive.Entries | ForEach-Object FullName | Sort-Object) } finally { $archive.Dispose() }
-$expected = @('t.exe', "$Helper.exe", "$DocHelper.exe") | Sort-Object
+$expected = @('t.exe', "$Helper.exe") | Sort-Object
 if (($members -join "`n") -ne ($expected -join "`n")) { Fail "$Zip members: $($members -join ', '); expected exactly: $($expected -join ', ')" }
 
 Write-Host ''
@@ -294,5 +281,5 @@ Write-Host 'done:'
 foreach ($f in @($Setup, $Zip)) { Write-Host ("  {0}  {1}" -f (Format-Size (Get-Item $f).Length), $f) }
 Write-Host "  installer: unsigned NSIS, per-user (%LOCALAPPDATA%\theuth); silent: $($built[0].Name) /S"
 if ($Companion) { Write-Host "  companion: $CompanionExe -> %LOCALAPPDATA%\theuth\companion\ (Run value removed by nsis/hooks.nsh on uninstall)" } else { Write-Host '  companion: not bundled (build.ps1 absent)' }
-Write-Host "  zip: t.exe, $Helper.exe, $DocHelper.exe"
+Write-Host "  zip: t.exe, $Helper.exe"
 Write-Host "  .sig files: release-s3.sh (cargo tauri signer sign) on the Mac"

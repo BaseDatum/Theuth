@@ -3,10 +3,8 @@
 #
 #   1. cargo build --release -p theuth  (daemon sidecar, host arch)
 #      + packages/apps: bun build --compile → theuth-app-parser (46 §2.1; scripts/app-parser-env.sh)
-#      + packages/documents: bun build --compile → theuth-documents (59 §3.2; same env script)
-#   2. stage all as externalBin: binaries/t-<triple>, binaries/theuth-app-parser-<hash>-<triple>,
-#      binaries/theuth-documents-<ver>-<triple> (the helpers must sit beside `t` — helper_path — so
-#      they ride the same mechanism)
+#   2. stage both as externalBin: binaries/t-<triple>, binaries/theuth-app-parser-<hash>-<triple>
+#      (the helper must sit beside `t`, so it rides the same mechanism)
 #   3. cargo tauri build --config <inline json>  (targets from tauri.linux.conf.json: deb, rpm, appimage)
 #   4. copy as theuth_<ver>_linux-<arch>.{deb,rpm,AppImage} → target/release/dist
 #   5. aws s3 cp → s3://$THEUTH_S3_BUCKET/staging/<ver>/  (private; release-s3.sh publishes)
@@ -123,26 +121,22 @@ cargo build --release -p theuth
 echo "==> [1/5] building $HELPER (bun build --compile)"
 build_helper
 
-echo "==> [1/5] building $DOC_HELPER (bun build --compile)"
-build_doc_helper
-
-echo "==> [2/5] staging sidecars (t, $HELPER, $DOC_HELPER)"
+echo "==> [2/5] staging sidecars (t, $HELPER)"
 mkdir -p crates/desktop/binaries
-rm -f crates/desktop/binaries/theuth-app-parser-* crates/desktop/binaries/theuth-documents-*
+rm -f crates/desktop/binaries/theuth-app-parser-*
 cp target/release/t "crates/desktop/binaries/t-$HOST_TRIPLE"
 cp "$HELPER_SRC" "crates/desktop/binaries/$HELPER-$HOST_TRIPLE"
-cp "$DOC_HELPER_SRC" "crates/desktop/binaries/$DOC_HELPER-$HOST_TRIPLE"
 
 echo "==> [3/5] tauri build (deb, rpm, appimage)"
 if [[ "${THEUTH_SKIP_BUN_INSTALL:-0}" != "1" ]]; then
   (cd crates/desktop/ui && bun install)
 fi
 # externalBin is not in tauri.conf.json (tauri-build would fail `cargo check` without the files);
-# the helper names carry the library hash / protocol version, so the overlay is rendered here, not committed.
-BUNDLE_CONF="$(jq -cn --arg h "binaries/$HELPER" --arg d "binaries/$DOC_HELPER" '{bundle: {externalBin: ["binaries/t", $h, $d]}}')"
+# the helper name carries the library hash, so the overlay is rendered here, not committed.
+BUNDLE_CONF="$(jq -cn --arg h "binaries/$HELPER" '{bundle: {externalBin: ["binaries/t", $h]}}')"
 rm -rf "$BUNDLE_DIR/deb" "$BUNDLE_DIR/rpm" "$BUNDLE_DIR/appimage"
 # linuxdeploy aborts when `ldd` fails on any executable in the AppDir; on aarch64 `ldd` exits 1 with no output on
-# Bun-compiled binaries (the two helpers) although `ld.so --verify` accepts them and they need only glibc, which
+# Bun-compiled binaries (the app parser helper) although `ld.so --verify` accepts them and they need only glibc, which
 # linuxdeploy never bundles. A shim turns "failed silently" into "no dependencies"; every other case passes through.
 LDD_SHIM="$(mktemp -d)"
 cat >"$LDD_SHIM/ldd" <<'SH'
@@ -171,9 +165,9 @@ for src in "$DEB" "$RPM" "$APPIMAGE"; do
   cp -f "$src" "$dst"
   OUT+=("$dst")
 done
-# The deb must carry the sidecar and both helpers in /usr/bin (helper_path looks beside `t`).
+# The deb must carry the sidecar and the helper in /usr/bin (`t` looks for it beside itself).
 listed="$(dpkg-deb -c "$DEB" | awk '{print $6}' | sed 's|^\./||' | sort)"
-for f in usr/bin/t "usr/bin/$HELPER" "usr/bin/$DOC_HELPER" usr/bin/theuth-desktop; do
+for f in usr/bin/t "usr/bin/$HELPER" usr/bin/theuth-desktop; do
   grep -qx "$f" <<<"$listed" || { echo "error: $DEB lacks $f" >&2; exit 1; }
 done
 

@@ -20,7 +20,7 @@ setup:
 build *ARGS:
     cargo build {{ARGS}}
 
-check *ARGS:
+check *ARGS: documents-bundle-check
     CARGO_INCREMENTAL={{incremental}} cargo check --workspace --all-targets {{ARGS}}
 
 test *ARGS:
@@ -78,18 +78,17 @@ run *ARGS:
 
 # Release build of `t` + its helpers copied into ~/.cargo/bin (or $THEUTH_INSTALL_BIN). Not `cargo install`:
 # that re-resolves (index + git fetch every time) and rebuilds in a scratch dir.
-# The helpers land as theuth-app-parser-<hash> (46 §2.1) and theuth-documents-<version>
-# (59 §3.2) beside `t`; older names are left in place for any still-running `t`.
-install: helper documents-helper
+# The app parser helper lands as theuth-app-parser-<hash> (46 §2.1) beside `t`; older names are left in
+# place for any still-running `t`. The documents helper is compiled into `t` (crates/document-js).
+install: helper
     #!/usr/bin/env bash
     set -euo pipefail
     source scripts/app-parser-env.sh
     cargo build --release -p theuth
     bin="${THEUTH_INSTALL_BIN:-${CARGO_HOME:-$HOME/.cargo}/bin}"
     install -m 755 "$HELPER_SRC" "$bin/$HELPER.new" && mv -f "$bin/$HELPER.new" "$bin/$HELPER"
-    install -m 755 "$DOC_HELPER_SRC" "$bin/$DOC_HELPER.new" && mv -f "$bin/$DOC_HELPER.new" "$bin/$DOC_HELPER"
     install -m 755 target/release/t "$bin/t.new" && mv -f "$bin/t.new" "$bin/t"
-    echo "installed $(command -v t) + $bin/$HELPER + $bin/$DOC_HELPER"
+    echo "installed $(command -v t) + $bin/$HELPER"
 
 # Standalone app parser helper (bun build --compile) → packages/apps/dist/theuth-app-parser,
 # checked against packages/apps/generated/library-hash.txt. THEUTH_SKIP_BUN_INSTALL=1 skips bun install.
@@ -99,16 +98,6 @@ helper:
     source scripts/app-parser-env.sh
     build_helper
     echo "built $HELPER_SRC ($HELPER)"
-
-# Standalone documents helper (bun build --compile) → packages/documents/dist/theuth-documents (59 §3.2);
-# `--version` must print the PROTOCOL_VERSION of packages/documents/src/protocol.ts. Debug builds of `t`
-# find it there; `install` and the package recipes copy it beside `t` as theuth-documents-<version>.
-documents-helper:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source scripts/app-parser-env.sh
-    build_doc_helper
-    echo "built $DOC_HELPER_SRC ($DOC_HELPER)"
 
 # In-process documents bundle (crates/document-js, docs/design/documents-inproc-as-built-P1.md): rebuild
 # packages/documents/dist/theuth-documents-inproc.js, commit it as crates/document-js/js/theuth-documents-inproc.js
@@ -163,7 +152,7 @@ wire-schema-accept: wire-schema
 # Desktop app in dev mode against `target/debug/t` (or `$THEUTH_BIN`); `THEUTH_DATA_DIR` overrides ~/.theuth.
 # `TAURI_FRONTEND_PATH`: the UI lives inside the crate (not beside it as Tauri assumes), so the
 # before*Command cwd must be pinned.
-desktop: ts-desktop documents-helper
+desktop: ts-desktop
     cargo build -p theuth
     cd crates/desktop/ui && bun install
     cd crates/desktop && TAURI_FRONTEND_PATH=ui THEUTH_BIN="${THEUTH_BIN:-$PWD/../../target/debug/t}" cargo tauri dev
