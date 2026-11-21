@@ -741,10 +741,7 @@ impl Double {
         }
         let now = Utc::now();
         let (session, class) = (pc.session, pc.class.clone());
-        let item = self
-            .pending
-            .get(qid)
-            .and_then(|pc| self.item(pc, true));
+        let item = self.pending.get(qid).and_then(|pc| self.item(pc, true));
         if let Some(item) = item {
             self.acted.push(Acted { item, at: now });
         }

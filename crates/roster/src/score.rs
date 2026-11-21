@@ -204,7 +204,7 @@ pub fn score(item: &AttentionItem, w: &ScoreWeights, now_ms: u64) -> (u32, Vec<A
         reasons.push(reason(AttentionSignal::Live, w.live, text.to_owned()));
     }
     if item.blocks > 0 {
-        let points = item.blocks.saturating_mul(w.blocks_each).min(w.blocks_max);
+        let points = clamp(u64::from(item.blocks) * u64::from(w.blocks_each)).min(w.blocks_max);
         let text = if item.blocks == 1 {
             "blocks 1 agent".to_owned()
         } else {
@@ -247,9 +247,14 @@ pub fn score(item: &AttentionItem, w: &ScoreWeights, now_ms: u64) -> (u32, Vec<A
     // D4: only items with a task priority; `rank` = project step × 100 + weight.
     if let Some(p) = item.priority {
         let ranked = item.rank >= 100;
-        let points = w.task_max.min(
-            (item.rank % 100) * w.task_per_weight + if ranked { w.task_ranked_project } else { 0 },
-        );
+        // E6: in u64, clamped — configured weights may be huge.
+        let raw = u64::from(item.rank % 100) * u64::from(w.task_per_weight)
+            + if ranked {
+                u64::from(w.task_ranked_project)
+            } else {
+                0
+            };
+        let points = w.task_max.min(clamp(raw));
         if points > 0 {
             let mut text = format!("{} priority", p.as_str());
             if ranked {
@@ -284,8 +289,13 @@ pub fn score(item: &AttentionItem, w: &ScoreWeights, now_ms: u64) -> (u32, Vec<A
             .cmp(&a.points)
             .then((a.signal as u8).cmp(&(b.signal as u8)))
     });
-    let total = reasons.iter().map(|r| r.points).sum();
+    let total = clamp(reasons.iter().map(|r| u64::from(r.points)).sum());
     (total, reasons)
+}
+
+/// 207 E6: a u64 sum or product as points, saturating at `u32::MAX`.
+fn clamp(points: u64) -> u32 {
+    u32::try_from(points).unwrap_or(u32::MAX)
 }
 
 /// 207 §3.4: `score` desc → `waiting_since_ms` asc (`None` last) → `at_ms` desc → `id` asc.
@@ -328,6 +338,40 @@ mod tests {
 
     fn signals(r: &[AttentionReason]) -> Vec<(AttentionSignal, u32)> {
         r.iter().map(|r| (r.signal, r.points)).collect()
+    }
+
+    /// 207 E6: huge configured weights saturate at `u32::MAX` instead of
+    /// overflowing (a debug-build panic, a wrapped score in release).
+    #[test]
+    fn huge_weights_saturate() {
+        let m = u32::MAX;
+        let huge = ScoreWeights {
+            stops_agent: m,
+            live: m,
+            blocks_each: m,
+            blocks_max: m,
+            deadline_max: m,
+            destructive: m,
+            task_per_weight: m,
+            task_ranked_project: m,
+            task_max: m,
+            age_per_min: m,
+            age_max: m,
+            ..w()
+        };
+        let mut i = it("approval:1", K::Approval, 3_600_000);
+        i.session_live = true;
+        i.blocks = m;
+        i.deadline_ms = Some(NOW - 1);
+        i.risk = Some(tools::Risk::Destructive);
+        i.priority = Some(tasks::Priority::Urgent);
+        i.rank = 199;
+        let (s, r) = score(&i, &huge, NOW);
+        assert_eq!(s, m);
+        let task = r.iter().find(|r| r.signal == S::Task).unwrap();
+        assert_eq!(task.points, m);
+        let blocks = r.iter().find(|r| r.signal == S::Blocks).unwrap();
+        assert_eq!(blocks.points, m);
     }
 
     #[test]
