@@ -3900,6 +3900,7 @@ pub(crate) mod tests {
                 id: req.id,
                 decision: Decision::Allow,
                 timed_out: false,
+                dismissed: false,
             }))
             .await;
         let calls = f.api.take_calls();
@@ -3996,6 +3997,7 @@ pub(crate) mod tests {
                 id: other.id,
                 dismissed: false,
                 timed_out: true,
+                left_to_agent: false,
             }))
             .await;
         assert_eq!(

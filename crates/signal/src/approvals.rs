@@ -298,6 +298,7 @@ mod tests {
             id: r.id,
             decision: Decision::Deny,
             timed_out: true,
+            dismissed: false,
         };
         assert_eq!(p.resolve(&res).map(|e| e.code), Some(code.clone()));
         assert_eq!(p.resolve(&res), None);
@@ -334,6 +335,7 @@ mod tests {
             id: ApprovalId(uuid::Uuid::new_v4()),
             decision: Decision::Allow,
             timed_out: false,
+            dismissed: false,
         };
         assert_eq!(reaction_for(&allow), "✅");
         assert_eq!(
@@ -380,6 +382,7 @@ mod tests {
             id: r.id,
             decision: Decision::Allow,
             timed_out: false,
+            dismissed: false,
         });
         assert_eq!(
             resolve_by_code(&mut p, &code.to_uppercase(), Decision::Deny).await,

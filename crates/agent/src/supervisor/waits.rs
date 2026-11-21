@@ -198,14 +198,22 @@ impl Agents {
                         }
                     }
                     QuestionState::Answered => {
-                        let decision: Option<Decision> =
-                            row.answer.and_then(|a| serde_json::from_value(a).ok());
-                        if let (Some(a), Some(decision)) = (approval, decision) {
+                        // 207: a dismissal is stored as `"dismissed"` and
+                        // replays as a dismissed deny.
+                        let stored = row.answer.and_then(|a| {
+                            if a.as_str() == Some("dismissed") {
+                                return Some((Decision::Deny, true));
+                            }
+                            let d: Decision = serde_json::from_value(a).ok()?;
+                            Some((d, false))
+                        });
+                        if let (Some(a), Some((decision, dismissed))) = (approval, stored) {
                             let _ = a
                                 .tell(HonourAnswer {
                                     session,
                                     call_id: call.call_id.clone(),
                                     decision,
+                                    dismissed,
                                 })
                                 .await;
                             n.honoured += 1;
@@ -587,7 +595,8 @@ mod tests {
     /// §6.2 at boot: a `pending` approval of a `planned` call is `superseded`
     /// (its gate invocation died with the process); an `answered` one is
     /// handed to the approval actor, which honours it on the replay without
-    /// publishing a card; rows of `started` calls and other kinds are left.
+    /// publishing a card (207: a stored `"dismissed"` replays as dismissed);
+    /// rows of `started` calls and other kinds are left.
     #[tokio::test]
     async fn superseded_on_reask_and_answered_row_honoured() {
         let (_scratch, mut a) = agents_with(true).await;
@@ -595,15 +604,21 @@ mod tests {
         let t = open_batch(
             &a.store,
             s,
-            &[("c1", "shell"), ("c2", "shell"), ("c3", "ask_user")],
+            &[
+                ("c1", "shell"),
+                ("c2", "shell"),
+                ("c3", "ask_user"),
+                ("c4", "shell"),
+            ],
             &["c3"],
         )
         .await;
         let pending = approval_row(s, "c1", QuestionState::Pending, None);
         let answered = approval_row(s, "c2", QuestionState::Answered, Some("allow"));
+        let dismissed = approval_row(s, "c4", QuestionState::Answered, Some("dismissed"));
         let mut ask_row = approval_row(s, "c3", QuestionState::Pending, None);
         ask_row.kind = QuestionKind::Ask;
-        for r in [&pending, &answered, &ask_row] {
+        for r in [&pending, &answered, &ask_row, &dismissed] {
             a.store.question_put(r).await.unwrap();
         }
         // The approval actor, as the engine registers it (handed in directly:
@@ -644,7 +659,25 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!((r.decision, r.timed_out), (Decision::Allow, false));
+        assert_eq!(
+            (r.decision, r.timed_out, r.dismissed),
+            (Decision::Allow, false, false)
+        );
+        // 207: the stored dismissal replays as one: not run, no card.
+        let r = approval
+            .ask(RequestApproval {
+                session: s,
+                tool: "shell".into(),
+                args: json!({}),
+                risk: Risk::Destructive,
+                call_id: Some("c4".into()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            (r.decision, r.timed_out, r.dismissed),
+            (Decision::Deny, false, true)
+        );
         // c1 was superseded, not answered: its replay asks for real.
         let r = approval
             .ask(RequestApproval {

@@ -2043,6 +2043,13 @@ async fn invoke(
             Ok(r) if r.decision == Decision::Allow => {}
             // Denied / timed out / unavailable: the suspension drops
             // unresumed and nothing runs.
+            // 207: left to the agent (Attention dismiss): not run.
+            Ok(r) if r.dismissed => {
+                return ToolOutput::err(format!(
+                    "{}: not run — the user left this call to you without approving it. Do not retry it as is; find a way that needs no approval, or say in your reply why it is needed.",
+                    spec.name
+                ));
+            }
             Ok(r) if r.timed_out => {
                 return ToolOutput::err(format!("{}: approval timed out", spec.name));
             }
@@ -4422,5 +4429,53 @@ pub(crate) mod tests {
         let errs = check("mermaid", "bad").await.unwrap().unwrap().unwrap();
         assert_eq!(errs[0].path, "line:1");
         assert!(check("openui", "bad").await.unwrap().is_none());
+    }
+
+    /// Bus subscriber standing in for the human who leaves every call to the
+    /// agent (207 Attention dismiss).
+    #[derive(kameo::Actor)]
+    struct Dismisser(ActorRef<Approval>);
+
+    impl Message<crate::approval::ApprovalRequested> for Dismisser {
+        type Reply = ();
+        async fn handle(
+            &mut self,
+            m: crate::approval::ApprovalRequested,
+            _: &mut Context<Self, ()>,
+        ) {
+            let _ = self.0.ask(crate::approval::Dismiss { id: m.id }).await;
+        }
+    }
+
+    /// 207: a call whose approval the user left to the agent is not run and
+    /// tells the model so, distinct from a denial or a timeout.
+    #[tokio::test]
+    async fn dismissed_approval_is_not_run() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let approval = Approval::spawn(Approval::new(rt.clone(), Duration::from_secs(5)));
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reg = registry_with(
+            vec![Arc::new(Wipe(runs.clone()))],
+            None,
+            Policy::default(),
+            Some(approval.clone()),
+        );
+        let dismisser = Dismisser::spawn(Dismisser(approval));
+        rt.subscribe::<Dismisser, crate::approval::ApprovalRequested>(&dismisser)
+            .await;
+        let out = reg
+            .ask(Invoke(app_call(
+                "wipe",
+                SessionId::new(),
+                serde_json::json!({"target": "db"}),
+            )))
+            .await
+            .unwrap();
+        assert!(out.is_error, "{out:?}");
+        assert_eq!(
+            out.content,
+            "wipe: not run — the user left this call to you without approving it. Do not retry it as is; find a way that needs no approval, or say in your reply why it is needed."
+        );
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }

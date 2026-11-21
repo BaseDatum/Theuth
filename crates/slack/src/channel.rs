@@ -4053,6 +4053,7 @@ pub(crate) mod tests {
                 id,
                 decision: Decision::Allow,
                 timed_out: false,
+                dismissed: false,
             }))
             .await;
         let updated = format!("update_blocks {DM} 7.7");
@@ -4342,6 +4343,7 @@ pub(crate) mod tests {
                 id,
                 dismissed: false,
                 timed_out: false,
+                left_to_agent: false,
             }))
             .await;
         assert!(f.chan.lock().asks.is_empty());
@@ -4386,6 +4388,7 @@ pub(crate) mod tests {
                 id,
                 dismissed: false,
                 timed_out: true,
+                left_to_agent: false,
             }))
             .await;
         assert_eq!(
