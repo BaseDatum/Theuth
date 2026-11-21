@@ -5,7 +5,7 @@ import '@/components/settings/test-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, createElement as h, Fragment } from 'react'
 import { createRoot } from 'react-dom/client'
-import { expect, test, vi } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import { useDrafts } from '@/lib/drafts'
 import type { BuiltinCategory } from '@/lib/builtins'
@@ -50,15 +50,27 @@ vi.mock('@/store/connection', async (original) => {
   return { ...m, useConnection: readyConnection(m.createConnection()) }
 })
 
+type Discovery = { document: { methods: { name: string }[] }; unavailable: Set<string> }
+const connection = useConnection as unknown as { getState(): { discovery: Discovery }; setState(p: object): void }
+/** The contract's discovery before a test overrode it; restored after each test. */
+let contract: Discovery | null = null
 /** Whether the engine answers `list_builtins` (206), whatever the exported contract of this checkout lists. */
 function builtins(on: boolean) {
-  const store = useConnection as unknown as { getState(): { discovery: Discovery }; setState(p: object): void }
-  type Discovery = { document: { methods: { name: string }[] }; unavailable: Set<string> }
-  const d = store.getState().discovery
+  const d = connection.getState().discovery
+  contract ??= d
   const methods = d.document.methods.filter((m) => m.name !== 'list_builtins' && m.name !== 'set_builtins_disabled')
   const added = on ? [{ name: 'list_builtins' }, { name: 'set_builtins_disabled' }] : []
-  store.setState({ discovery: { ...d, document: { ...d.document, methods: [...methods, ...added] } } })
+  connection.setState({ discovery: { ...d, document: { ...d.document, methods: [...methods, ...added] } } })
 }
+const ANSWERS = new Set(Object.keys(answers))
+afterEach(() => {
+  if (contract) connection.setState({ discovery: contract })
+  contract = null
+  for (const k of Object.keys(answers)) if (!ANSWERS.has(k)) delete answers[k]
+  listed.length = 0
+  useToolsSheet.setState({ session: null, tab: 'builtins' })
+  useDrafts.setState({ settings: {}, opening: null })
+})
 const dialog = () => document.querySelector('[role="dialog"]')
 const tabTrigger = (label: string) => [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find((t) => t.textContent === label)!
 
@@ -97,11 +109,9 @@ test('⋯ › Tools… opens the Tools sheet of that chat only, on Builtins; its
 })
 
 test('the draft menu edits pending messaging and approvals and opens its own Tools sheet without creating a chat', async () => {
-  useDrafts.setState({ settings: {}, opening: null })
-  // The sheet keeps the tab it was last on (the MCP servers tab, from the test above).
-  useToolsSheet.getState().hide()
-  expect(useToolsSheet.getState().tab).toBe('mcp')
-  listed.length = 0
+  builtins(true)
+  // The sheet keeps the tab it was last on: Tools… opens it on MCP servers here.
+  useToolsSheet.setState({ tab: 'mcp' })
   const setters = { set_approvals: vi.fn(), set_communication: vi.fn(), create_session: vi.fn(), new_session: vi.fn() }
   Object.assign(answers, setters)
   const host = document.body.appendChild(document.createElement('div'))
@@ -134,14 +144,15 @@ test('the draft menu edits pending messaging and approvals and opens its own Too
   await act(async () => tools.click())
   await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')?.textContent).toContain('fs'))
   expect(listed).toEqual([null])
+  expect(useToolsSheet.getState().tab).toBe('mcp')
   for (const setter of Object.values(setters)) expect(setter).not.toHaveBeenCalled()
   await act(async () => root.unmount())
   host.remove()
-  useDrafts.setState({ settings: {} })
 })
 
 test('show(session, tab) opens on that tab; an engine without list_builtins gets the MCP list alone, as before', async () => {
-  listed.length = 0
+  builtins(true)
+  useToolsSheet.setState({ tab: 'mcp' })
   const host = document.body.appendChild(document.createElement('div'))
   const root = createRoot(host)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })

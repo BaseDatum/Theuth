@@ -1,8 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useAction } from '@/components/settings/shared'
-import { type BuiltinCategory, categoryState, sessionCategoryOps, toolSwitch, withDraftHides } from '@/lib/builtins'
+import { type BuiltinCategory, categoryState, sessionCategoryOps, toolSwitch, useBuiltinsApply, withDraftHides } from '@/lib/builtins'
 import { useDrafts } from '@/lib/drafts'
-import { useMcpHide } from '@/lib/mcp-hide'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { MenuCheck } from './MenuCheck'
 
@@ -17,10 +16,9 @@ export function BuiltinsMenu({ session, enabled }: { session: string; enabled: b
     queryKey: queryKeys.builtins(session),
     queryFn: () => api.list_builtins(session || null),
   })
-  const hide = useMcpHide(session)
-  const toggle = useAction((v: { category: BuiltinCategory; hidden: boolean }) => hide(sessionCategoryOps(v.category, v.hidden)), {
-    keys: [queryKeys.builtins(session), queryKeys.builtins(null)],
-  })
+  // Through `useBuiltinsApply`, as the sheet's switches: it refetches every builtins list before the row re-enables.
+  const apply = useBuiltinsApply(session)
+  const toggle = useAction((v: { category: BuiltinCategory; hidden: boolean }) => apply({ session: sessionCategoryOps(v.category, v.hidden), always: [] }))
   const rows = session === '' ? withDraftHides(categories.data ?? [], draftHidden) : (categories.data ?? [])
   return (
     <div role="menu" aria-label="Builtin tools for this chat" className="max-h-72 overflow-y-auto">

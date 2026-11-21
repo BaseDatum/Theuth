@@ -37,14 +37,21 @@ const catalog = (flags: Partial<BuiltinTool> = {}): BuiltinCategory[] => [
   },
 ]
 let answer = catalog()
+/** How often the list was fetched, and whether `set_builtins_disabled` fails. */
+let fetched = 0
+let failAlways = false
 
 const calls: [string, unknown[]][] = []
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
   useApi: () => ({
-    list_builtins: async () => answer,
+    list_builtins: async () => {
+      fetched++
+      return answer
+    },
     set_builtins_disabled: async (...args: unknown[]) => {
       calls.push(['set_builtins_disabled', args])
+      if (failAlways) throw new Error('config.yaml is read-only')
       return null
     },
     set_mcp_hidden: async (...args: unknown[]) => {
@@ -63,13 +70,16 @@ beforeAll(() => {
   type Discovery = { document: { methods: { name: string }[] } }
   const store = useConnection as unknown as { getState(): { discovery: Discovery }; setState(p: object): void }
   const d = store.getState().discovery
-  const methods = [...d.document.methods, { name: 'list_builtins' }, { name: 'set_builtins_disabled' }]
+  const missing = ['list_builtins', 'set_builtins_disabled'].filter((name) => !d.document.methods.some((m) => m.name === name))
+  const methods = [...d.document.methods, ...missing.map((name) => ({ name }))]
   store.setState({ discovery: { ...d, document: { ...d.document, methods } } })
 })
 
 afterEach(() => {
   calls.length = 0
   answer = catalog()
+  fetched = 0
+  failAlways = false
   useDrafts.setState({ settings: {}, opening: null })
 })
 
@@ -167,5 +177,43 @@ test('a draft chat keeps "Off here" in the draft and calls no session RPC', asyn
   await vi.waitFor(() => expect(useDrafts.getState().settings.hidden).toEqual({ 'cat:files': true }))
   await vi.waitFor(() => expect(choice('Files', 'Off here').getAttribute('data-state')).toBe('on'))
   expect(calls).toEqual([])
+  unmount()
+})
+
+test('U-2: a multi-call switch whose second call fails still refetches the list, so the row shows the engine', async () => {
+  answer = catalog({ disabled: true })
+  failAlways = true
+  const { choice, unmount } = await mount('s1')
+  expect(fetched).toBe(1)
+  // Off here from Off always: this chat's key goes on first, then the harness-wide entries come off (and fail).
+  await act(async () => choice('Files', 'Off here').click())
+  await vi.waitFor(() =>
+    expect(calls).toEqual([
+      ['set_mcp_hidden', ['s1', ['cat:files'], true]],
+      ['set_builtins_disabled', [['cat:files', 'read_file', 'write_file', 'grep'], false]],
+    ]),
+  )
+  await vi.waitFor(() => expect(fetched).toBe(2))
+  unmount()
+})
+
+test('search also matches a category description and id; a row opened by the search can be closed', async () => {
+  const { el, search, expand, unmount } = await mount('s1')
+  await search('the web')
+  await vi.waitFor(() => expect(el.textContent).toContain('read_url'))
+  expect(el.textContent).not.toContain('read_file')
+  await search('files')
+  await vi.waitFor(() => expect(el.textContent).toContain('write_file'))
+  // The user's click wins over the search until the text changes.
+  await expand('Files')
+  await vi.waitFor(() => expect(el.textContent).not.toContain('write_file'))
+  await search('file')
+  await vi.waitFor(() => expect(el.textContent).toContain('write_file'))
+  unmount()
+})
+
+test('Settings without a chat says, in visible text, where "Off here" lives', async () => {
+  const { el, unmount } = await mount(null)
+  expect(el.textContent).toContain('"Off here" needs a chat. Open from a chat: ⋯ › Tools… or /tools')
   unmount()
 })

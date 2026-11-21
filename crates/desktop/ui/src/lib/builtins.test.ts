@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'vitest'
 import {
+  applyOrder,
+  type BuiltinOps,
+  type BuiltinSwitch,
   type BuiltinCategory,
   type BuiltinTool,
   categoryOps,
@@ -34,7 +37,9 @@ describe('switch states', () => {
     expect(categorySwitch(all({}))).toBe('on')
     expect(categorySwitch(all({ disabled: true }))).toBe('always')
     expect(categorySwitch(all({ hidden: true }))).toBe('session')
-    expect(categorySwitch(files(tool('a', { disabled: true }), tool('b', { hidden: true })))).toBe('session')
+    // Part off for every chat, part off here only: neither "Off here" nor "Off always".
+    expect(categorySwitch(files(tool('a', { disabled: true }), tool('b', { hidden: true })))).toBe('mixed')
+    expect(categorySwitch(files(tool('a', { disabled: true, hidden: true }), tool('b', { hidden: true })))).toBe('mixed')
     expect(categorySwitch(files(tool('a', { disabled: true }), tool('b')))).toBe('mixed')
   })
 
@@ -168,4 +173,75 @@ describe('withDraftHides', () => {
     const cats = [all({})]
     expect(withDraftHides(cats, undefined)).toBe(cats)
   })
+})
+
+// The engine's two sets as a tiny simulator: the harness-wide set and this chat's, each holding tool names and
+// `cat:files`. Every transition of a category or a tool, from every reachable state (per-tool entries or the key), is
+// applied in `useBuiltinsApply`'s order: it must end where asked, and no tool may be on between two calls when it is
+// off both before and after.
+describe('every transition, applied in order, against a simulated engine', () => {
+  type Sets = { always: Set<string>; session: Set<string> }
+  const NAMES = ['read_file', 'write_file', 'grep']
+  const view = (names: string[], s: Sets): BuiltinCategory =>
+    files(
+      ...names.map((n) =>
+        tool(n, { disabled: s.always.has(n) || s.always.has('cat:files'), hidden: s.session.has(n) || s.session.has('cat:files') }),
+      ),
+    )
+  const off = (c: BuiltinCategory) => new Map(c.tools.map((t) => [t.name, t.disabled || t.hidden]))
+  const switches = (c: BuiltinCategory) => new Map(c.tools.map((t) => [t.name, toolSwitch(t)]))
+
+  /** Every engine state a category of `names` can be in, with the key used wherever it could be. */
+  function states(names: string[]): Sets[] {
+    const out: Sets[] = []
+    const per = (i: number, acc: BuiltinSwitch[]): void => {
+      if (i === names.length) {
+        const always = names.filter((_, j) => acc[j] === 'always')
+        const session = names.filter((_, j) => acc[j] === 'session')
+        for (const aKey of always.length === names.length ? [false, true] : [false])
+          for (const alsoHidden of always.length ? [false, true] : [false]) {
+            const hidden = alsoHidden ? [...session, ...always] : session
+            for (const sKey of hidden.length === names.length ? [false, true] : [false])
+              out.push({ always: new Set(aKey ? ['cat:files'] : always), session: new Set(sKey ? ['cat:files'] : hidden) })
+          }
+        return
+      }
+      for (const s of ['on', 'session', 'always'] as const) per(i + 1, [...acc, s])
+    }
+    per(0, [])
+    return out
+  }
+
+  function run(names: string[], start: Sets, ops: BuiltinOps) {
+    const sets: Sets = { always: new Set(start.always), session: new Set(start.session) }
+    const before = off(view(names, sets))
+    const middles: Map<string, boolean>[] = []
+    for (const { scope, op } of applyOrder(ops)) {
+      for (const n of op.names) op.hidden ? sets[scope].add(n) : sets[scope].delete(n)
+      middles.push(off(view(names, sets)))
+    }
+    const after = off(view(names, sets))
+    for (const mid of middles)
+      for (const n of names) if (before.get(n) && after.get(n)) expect(mid.get(n), `${n} exposed between calls`).toBe(true)
+    return view(names, sets)
+  }
+
+  for (const size of [1, 2, 3]) {
+    const names = NAMES.slice(0, size)
+    test(`a category of ${size}`, () => {
+      for (const start of states(names)) {
+        const c = view(names, start)
+        for (const to of ['on', 'session', 'always'] as const) {
+          const end = run(names, start, categoryOps(c, to, true))
+          expect([...switches(end).values()].every((s) => s === to), `${categorySwitch(c)} -> ${to}`).toBe(true)
+          expect(categorySwitch(end)).toBe(to)
+          for (const name of names) {
+            const was = switches(c)
+            const now = switches(run(names, start, toolOps(c, name, to, true)))
+            for (const n of names) expect(now.get(n), `${name}: ${was.get(name)} -> ${to}; ${n}`).toBe(n === name ? to : was.get(n))
+          }
+        }
+      }
+    })
+  }
 })

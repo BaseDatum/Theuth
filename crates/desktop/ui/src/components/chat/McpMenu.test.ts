@@ -59,7 +59,10 @@ vi.mock('@/store/connection', async (original) => {
 })
 // The engine's methods: everything but `unsupported` (an older engine lacks `list_builtins`).
 const unsupported = new Set<string>()
-vi.mock('@/rpc/capabilities', () => ({ useQuerySupport: (methods: string[]) => methods.every((m) => !unsupported.has(m)) }))
+vi.mock('@/rpc/capabilities', () => {
+  const all = (methods: readonly string[] = []) => methods.every((m) => !unsupported.has(m))
+  return { useQuerySupport: all, useSupported: (r: { methods?: readonly string[] }) => all(r.methods) }
+})
 
 afterEach(() => {
   calls.length = 0
@@ -74,7 +77,9 @@ async function mount(session = 's1') {
   const root = createRoot(el)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   await act(async () => root.render(h(QueryClientProvider, { client: qc }, h(McpMenu, { session }))))
-  await act(async () => el.querySelector<HTMLButtonElement>('[aria-label="Tools and MCP servers"]')!.click())
+  // "Tools and MCP servers" with builtins, "MCP servers" as before without; no button when neither is supported.
+  const trigger = el.querySelector<HTMLButtonElement>('[aria-label="Tools and MCP servers"], [aria-label="MCP servers"]')
+  if (trigger) await act(async () => trigger.click())
   const rows = () => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemcheckbox"]')]
   const row = (label: string) => rows().find((r) => r.textContent?.includes(label))!
   const tab = (name: string) => [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find((t) => t.textContent === name)!
@@ -148,12 +153,36 @@ test('the MCP servers tab still switches a server, and the bottom button opens t
   unmount()
 })
 
-test('an engine without list_builtins gets the server list alone, no tabs', async () => {
+const allTools = () => [...document.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.includes('All tools & servers'))
+
+test('an engine without list_builtins gets exactly the old popover: the server list alone, "MCP servers", w-64', async () => {
   unsupported.add('list_builtins')
   const { row, rows, unmount } = await mount()
   await vi.waitFor(() => expect(row('fs')).toBeDefined())
   expect(rows()).toHaveLength(1)
   expect(document.querySelector('[role="tab"]')).toBeNull()
+  expect(document.querySelector('[aria-label="MCP servers"]')).not.toBeNull()
+  expect(document.querySelector('[role="dialog"]')?.className).toContain('w-64')
+  expect(allTools()).toBeDefined()
   expect(listed).toEqual([])
+  unmount()
+})
+
+test('an engine without the MCP methods gets the Builtins panel alone and no sheet button (no sheet is mounted)', async () => {
+  unsupported.add('list_mcp')
+  const { rows, unmount } = await mount()
+  await vi.waitFor(() => expect(rows()).toHaveLength(4))
+  expect(document.querySelector('[role="tab"]')).toBeNull()
+  expect(document.querySelector('[aria-label="Tools and MCP servers"]')).not.toBeNull()
+  expect(allTools()).toBeUndefined()
+  unmount()
+})
+
+test('an engine with neither shows no tools button at all', async () => {
+  unsupported.add('list_mcp')
+  unsupported.add('list_builtins')
+  const { rows, unmount } = await mount()
+  expect(document.querySelector('[aria-label="Tools and MCP servers"], [aria-label="MCP servers"]')).toBeNull()
+  expect(rows()).toHaveLength(0)
   unmount()
 })

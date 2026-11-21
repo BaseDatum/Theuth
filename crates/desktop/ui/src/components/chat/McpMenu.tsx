@@ -9,19 +9,22 @@ import { useDrafts } from '@/lib/drafts'
 import { serverOps, serverState, useMcpHide, withDraftHides } from '@/lib/mcp-hide'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import { useQuerySupport } from '@/rpc/capabilities'
+import { useQuerySupport, useSupported } from '@/rpc/capabilities'
 import type { McpServer } from '@/rpc/bindings/method.mcp_2dserver.output'
 import { BuiltinsMenu } from './BuiltinsMenu'
 import { MenuCheck } from './MenuCheck'
+import { toolsRequirements } from './requirements'
 import { useToolsSheet } from './tools-sheet'
 
 /** #4, 206: the composer's tools switch beside `+` — for this chat (`''`: the new-chat draft), one checkbox per
  * builtin category ("Builtins") and per MCP server ("MCP servers"), and the chat's full Tools… sheet (per-tool
  * switches) at the bottom, opened on the tab shown here. Hides go through `lib/mcp-hide`, like the sheet's. An engine
- * without `list_builtins` gets the server list alone, one without the MCP methods the Builtins panel alone. */
+ * without `list_builtins` gets the server list alone (today's popover), one without the MCP methods the Builtins panel
+ * alone; the bottom button only where the sheet is mounted (`Header` gates it on `toolsRequirements`). */
 export function McpMenu({ session, className }: { session: string; className?: string }) {
   const mcp = useQuerySupport(['list_mcp', 'set_mcp_hidden'])
   const builtins = useQuerySupport(['list_builtins', 'set_mcp_hidden'])
+  const sheet = useSupported(toolsRequirements)
   const [open, setOpen] = useState(false)
   const chosen = useToolsSheet((s) => s.tab)
   const setTab = useToolsSheet((s) => s.setTab)
@@ -32,11 +35,15 @@ export function McpMenu({ session, className }: { session: string; className?: s
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button variant="ghost" className={cn('size-9 shrink-0 rounded-full text-fg-secondary', className)} aria-label="Tools and MCP servers">
+        <Button
+          variant="ghost"
+          className={cn('size-9 shrink-0 rounded-full text-fg-secondary', className)}
+          aria-label={builtins ? 'Tools and MCP servers' : 'MCP servers'}
+        >
           <Plug className="size-5" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-72 p-1">
+      <PopoverContent align="start" className={cn('p-1', builtins ? 'w-72' : 'w-64')}>
         {mcp && builtins ? (
           <Tabs value={tab} onValueChange={(v) => setTab(v === 'mcp' ? 'mcp' : 'builtins')} className="gap-1">
             <TabsList className="w-full">
@@ -51,18 +58,20 @@ export function McpMenu({ session, className }: { session: string; className?: s
         ) : (
           categories
         )}
-        <div className="mt-1 border-t border-border-subtle pt-1">
-          <Button
-            variant="ghost"
-            className="w-full justify-start"
-            onClick={() => {
-              setOpen(false)
-              useToolsSheet.getState().show(session, tab)
-            }}
-          >
-            <Settings2 /> All tools & servers…
-          </Button>
-        </div>
+        {sheet && (
+          <div className="mt-1 border-t border-border-subtle pt-1">
+            <Button
+              variant="ghost"
+              className="w-full justify-start"
+              onClick={() => {
+                setOpen(false)
+                useToolsSheet.getState().show(session, tab)
+              }}
+            >
+              <Settings2 /> All tools & servers…
+            </Button>
+          </div>
+        )}
       </PopoverContent>
     </Popover>
   )

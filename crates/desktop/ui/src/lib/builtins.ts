@@ -6,6 +6,7 @@
 // A tool's `hidden`/`disabled` flags say only that it is off in that scope, not whether by its name or its category key,
 // so "every tool off" stands for "the category key may be set" (as `serverState` does for `mcp:` keys).
 
+import { useQueryClient } from '@tanstack/react-query'
 import { type HideOp, useMcpHide } from '@/lib/mcp-hide'
 import { useApi } from '@/lib/rpc'
 import type { BuiltinCategory, BuiltinTool } from '@/rpc/bindings/method.agent.output'
@@ -20,12 +21,13 @@ export type BuiltinSwitch = 'on' | 'session' | 'always'
 
 export const toolSwitch = (t: BuiltinTool): BuiltinSwitch => (t.disabled ? 'always' : t.hidden ? 'session' : 'on')
 
-/** A category's 3-way switch: every tool off always, every tool off (some only here), none off, or some of each. */
+/** A category's 3-way switch: every tool off always; every tool off here and none off always; none off; else mixed
+ * (part off always and part off here reads neither "Off here" nor "Off always"). */
 export function categorySwitch(c: BuiltinCategory): BuiltinSwitch | 'mixed' {
   const states = c.tools.map(toolSwitch)
   if (states.every((s) => s === 'on')) return 'on'
   if (states.every((s) => s === 'always')) return 'always'
-  if (states.every((s) => s !== 'on')) return 'session'
+  if (states.every((s) => s === 'session')) return 'session'
   return 'mixed'
 }
 
@@ -109,13 +111,33 @@ export function withDraftHides(cats: BuiltinCategory[], hidden: Record<string, b
   })
 }
 
-/** Apply ops: harness-wide first, then this chat's (`''`: the draft; `null`: no chat, which has no session ops). */
+/** One op and the scope it writes. */
+export type ScopedOp = { scope: 'session' | 'always'; op: HideOp }
+
+/** The order `useBuiltinsApply` sends ops in: every turning-off op of both scopes before any turning-on op, each group
+ * in its given order, so no tool is on between two calls that is off before and after (and a failed later call
+ * leaves things more off, never more on). */
+export function applyOrder(ops: BuiltinOps): ScopedOp[] {
+  const all: ScopedOp[] = [...ops.always.map((op) => ({ scope: 'always' as const, op })), ...ops.session.map((op) => ({ scope: 'session' as const, op }))]
+  return [...all.filter((o) => o.op.hidden), ...all.filter((o) => !o.op.hidden)]
+}
+
+/** Apply ops in `applyOrder` (session ops to `session`: `''` the draft, `null` no chat, which has none), then await
+ * the refetch of every `list_builtins` view, success or not: a multi-call op that fails halfway still shows the
+ * engine's state, and the controls only re-enable on fresh flags. "Off always" changes every chat's list. */
 export function useBuiltinsApply(session: string | null): (ops: BuiltinOps) => Promise<null> {
   const api = useApi()
+  const qc = useQueryClient()
   const hide = useMcpHide(session)
   return async (ops) => {
-    for (const op of ops.always) await api.set_builtins_disabled(op.names, op.hidden)
-    if (ops.session.length) await hide(ops.session)
+    try {
+      for (const { scope, op } of applyOrder(ops)) {
+        if (scope === 'always') await api.set_builtins_disabled(op.names, op.hidden)
+        else await hide([op])
+      }
+    } finally {
+      await qc.invalidateQueries({ queryKey: ['builtins'] })
+    }
     return null
   }
 }

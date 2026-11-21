@@ -34,12 +34,13 @@ export function BuiltinsTab() {
 /** One category as the search shows it: the whole category (its ops need every tool) and the tools that match. */
 type Shown = { category: BuiltinCategory; tools: BuiltinTool[] }
 
-/** A category whose label matches shows every tool; otherwise only tools whose name or description matches. */
+/** A category whose label, description or id matches shows every tool; otherwise only tools whose name or
+ * description matches. */
 function search(cats: BuiltinCategory[], query: string): Shown[] {
   const q = query.trim().toLowerCase()
   if (!q) return cats.map((category) => ({ category, tools: category.tools }))
   return cats.flatMap((category) => {
-    if (category.label.toLowerCase().includes(q)) return [{ category, tools: category.tools }]
+    if ([category.label, category.description, category.id].some((s) => s.toLowerCase().includes(q))) return [{ category, tools: category.tools }]
     const tools = category.tools.filter((t) => t.name.toLowerCase().includes(q) || t.description.toLowerCase().includes(q))
     return tools.length ? [{ category, tools }] : []
   })
@@ -56,13 +57,15 @@ export function Builtins({ session }: { session: string | null }) {
     queryKey: queryKeys.builtins(session),
     queryFn: () => api.list_builtins(session || null),
   })
-  const apply = useAction(useBuiltinsApply(session), { keys: [queryKeys.builtins(session), queryKeys.builtins(null)] })
+  // No `keys`: `useBuiltinsApply` itself awaits the refetch of every builtins list, success or failure.
+  const apply = useAction(useBuiltinsApply(session))
   const [query, setQuery] = useState('')
   const cats = session === '' ? withDraftHides(list.data ?? [], draft) : (list.data ?? [])
   const shown = search(cats, query)
-  const searching = query.trim() !== ''
+  const searching = query.trim()
   return (
     <Section title="Built-in tools">
+      {session === null && <p className="text-[13px] text-fg-tertiary">"Off here" needs a chat. {CHAT_HINT}</p>}
       <div className="relative py-2">
         <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-fg-tertiary" />
         <Input
@@ -75,11 +78,12 @@ export function Builtins({ session }: { session: string | null }) {
           spellCheck={false}
         />
       </div>
+      {canQuery && list.isPending && <p className="py-2 text-[13px] text-fg-tertiary">Loading…</p>}
       {list.error && <p className="py-2 text-[13px] break-words text-destructive">{errorText(list.error)}</p>}
       {list.data?.length === 0 && <Empty>This engine has no built-in tools to switch.</Empty>}
       {list.data && list.data.length > 0 && shown.length === 0 && <Empty>No built-in tool matches "{query.trim()}".</Empty>}
       {shown.map(({ category, tools }) => (
-        <CategoryRow key={category.id} category={category} tools={tools} expand={searching} session={session} apply={apply} />
+        <CategoryRow key={category.id} category={category} tools={tools} search={searching} session={session} apply={apply} />
       ))}
     </Section>
   )
@@ -88,27 +92,34 @@ export function Builtins({ session }: { session: string | null }) {
 function CategoryRow({
   category: c,
   tools,
-  expand,
+  search: q,
   session,
   apply,
 }: {
   category: BuiltinCategory
   /** The tools the search shows (all of them without a search). */
   tools: BuiltinTool[]
-  /** A search is active: the row is open. */
-  expand: boolean
+  /** The active search text: while it is set the row opens, until the user closes it for this very text. */
+  search: string
   session: string | null
   apply: Action<BuiltinOps, null>
 }) {
   const [open, setOpen] = useState(false)
+  // A click during a search wins until the search text changes.
+  const [during, setDuring] = useState<{ q: string; open: boolean } | null>(null)
+  const shown = q ? (during?.q === q ? during.open : true) : open
   const sw = categorySwitch(c)
   const on = c.tools.filter((t) => toolSwitch(t) === 'on').length
   return (
-    <Collapsible open={expand || open} onOpenChange={setOpen} className="border-b border-border-subtle py-3 last:border-0">
+    <Collapsible
+      open={shown}
+      onOpenChange={(o) => (q ? setDuring({ q, open: o }) : setOpen(o))}
+      className="border-b border-border-subtle py-3 last:border-0"
+    >
       <CollapsibleTrigger asChild>
         <button type="button" className="flex w-full min-w-0 items-start gap-2 text-left pointer-coarse:min-h-11">
           <ChevronRight
-            className={`mt-0.5 size-4 shrink-0 text-fg-tertiary transition-transform ${expand || open ? 'rotate-90' : ''}`}
+            className={`mt-0.5 size-4 shrink-0 text-fg-tertiary transition-transform ${shown ? 'rotate-90' : ''}`}
           />
           <span className="min-w-0 flex-1">
             <span className="flex flex-wrap items-baseline gap-x-2">
@@ -199,7 +210,9 @@ function SwitchGroup({
   compact?: boolean
   onChange: (to: BuiltinSwitch) => void
 }) {
-  const item = compact ? 'h-7 min-w-7 px-1.5 text-xs pointer-coarse:min-h-11' : 'pointer-coarse:min-h-11'
+  const item = compact
+    ? 'h-7 min-w-7 px-1.5 text-xs pointer-coarse:min-h-11 pointer-coarse:min-w-11'
+    : 'pointer-coarse:min-h-11 pointer-coarse:min-w-11'
   return (
     <span title={session === null ? CHAT_HINT : undefined} className="shrink-0">
       <ToggleGroup

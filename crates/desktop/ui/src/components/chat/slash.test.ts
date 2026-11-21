@@ -63,6 +63,22 @@ test('bare /skills carries the chat; /mcp and /tools open the current chat or dr
   await expect(run('/tools bogus', ctx)).rejects.toThrow('usage: /tools [add <url|json> | sync]')
 })
 
+test('206: /mcp opens the sheet on MCP servers, /builtins on Builtins, /tools on the tab last shown', async () => {
+  const ctx = { api: {} as Api, session: 'abc', parent: null, navigate: vi.fn(), reload: async () => {} } as unknown as Ctx
+  useToolsSheet.setState({ session: null, tab: 'builtins' })
+  await run('/mcp', ctx)
+  expect(useToolsSheet.getState()).toMatchObject({ session: 'abc', tab: 'mcp' })
+  await run('/builtins', { ...ctx, session: null })
+  expect(useToolsSheet.getState()).toMatchObject({ session: '', tab: 'builtins' })
+  await run('/tools', ctx)
+  expect(useToolsSheet.getState()).toMatchObject({ session: 'abc', tab: 'builtins' })
+  useToolsSheet.setState({ tab: 'mcp' })
+  await run('/tools', ctx)
+  expect(useToolsSheet.getState().tab).toBe('mcp')
+  await expect(run('/builtins off', ctx)).rejects.toThrow('usage: /builtins')
+  useToolsSheet.setState({ session: null, tab: 'builtins' })
+})
+
 // 87 COMPACT-NONBLOCK: `/compact` returns once the RPC is issued, so `submit` releases `busy` and the composer
 // stays usable (the session shows `compacting`, a send steers/queues) for the minutes a compaction may take.
 test('/compact snap returns before the RPC settles, flips compacting, toasts the epoch on success', async () => {
