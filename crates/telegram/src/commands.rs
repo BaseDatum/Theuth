@@ -1475,6 +1475,7 @@ pub(crate) mod testing {
             id,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            finished_at: None,
             title: title.to_owned(),
             tags: vec![],
             model: "openai/gpt-5".into(),

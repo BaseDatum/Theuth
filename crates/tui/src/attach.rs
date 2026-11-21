@@ -91,6 +91,7 @@ mod tests {
             id: runtime::SessionId::new(),
             created_at: now,
             updated_at: now,
+            finished_at: None,
             title: String::new(),
             tags: vec![],
             model: "m".into(),

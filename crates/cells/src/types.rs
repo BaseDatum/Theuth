@@ -109,12 +109,18 @@ wire! {
 }
 
 wire! {
-    /// Kernel key (§5.1): `(Scope, Spec)`.
+    /// Kernel key (§5.1): `(Scope, Spec, instance)`.
     pub struct KernelId {
         /// Session or doc.
         pub scope: Scope,
         /// The program.
         pub spec: KernelSpec,
+        /// Which instance of `(scope, spec)` (issue 6): 0 is the kernel every run uses; a
+        /// press while every instance is busy starts the next one (shells only), seeded with
+        /// the busy kernel's cwd and exported environment. The strip shows instance `n > 0`
+        /// as "zsh #n+1".
+        #[serde(default)]
+        pub instance: u32,
     }
 }
 

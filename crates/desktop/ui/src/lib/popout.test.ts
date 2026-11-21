@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest'
-import { canPopout, noteOpenMode, popoutLabel, popoutMeeting, popoutSession, popoutSize, popoutTarget, popoutUrl } from './popout'
+import { artifactsRail, canPopout, noteOpenMode, popoutLabel, popoutMeeting, popoutSession, popoutSize, popoutTarget, popoutUrl, soloPopout } from './popout'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -169,4 +169,23 @@ test('a sidebar page pops out alone at its own route; the `popout-page-` label i
   expect(popoutLabel(fresh)).toBe('popout-page-new-a1b2c3d4')
   expect(popoutUrl(fresh)).toBe('/new?window=popout-page-new-a1b2c3d4')
   expect(popoutTarget(popoutUrl(fresh))).toEqual({ kind: 'page', path: '/new' })
+})
+
+// The black Library window: the sidebar's Library button opens `/artifacts` as a page window, and `/artifacts` rendered
+// a bare outlet in every popout — with no `$callId` child, nothing at all.
+test('/artifacts keeps its Explorer in the main window and the Library page window; only an artifact window shows the viewer alone', () => {
+  const library = popoutTarget(popoutUrl({ kind: 'page', path: '/artifacts' }))
+  expect(library).toEqual({ kind: 'page', path: '/artifacts' })
+  expect(artifactsRail(null)).toBe(true)
+  expect(artifactsRail(library)).toBe(true)
+  expect(artifactsRail(popoutTarget(popoutUrl({ kind: 'artifact', callId: 'c1' })))).toBe(false)
+})
+
+test('a page window is not a solo popout — its pages render as in the main window; every single-subject window is one', () => {
+  expect(soloPopout(null)).toBe(false)
+  // Navigating inside the Library window (to a note, say) keeps it a page window.
+  expect(soloPopout(popoutTarget('/notes/n1?window=popout-page-artifacts'))).toBe(false)
+  for (const t of [{ kind: 'artifact', callId: 'c1' }, { kind: 'note', doc: 'n1' }, { kind: 'chat', session: 's1' }, { kind: 'meeting', meeting: 'm1' }, { kind: 'notebook', notebook: 'b1' }] as const) {
+    expect(soloPopout(popoutTarget(popoutUrl(t)))).toBe(true)
+  }
 })

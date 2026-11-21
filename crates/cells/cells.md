@@ -31,9 +31,9 @@ Options (a closed set; an unknown key is a warning):
 |---|---|---|
 | `cwd` | `~/…` or an absolute path in chat; in a note `~/…` or relative to the note's `cells` default | the folder it runs in; required in chat; must exist on the machine that presses it |
 | `name` | slug `[a-z0-9-]`, ≤ 48 | stable id; presenting the same name later replaces the older cell |
-| `label` | text ≤ 40 | the Run button's text: name the consequence ("Apply to ir-prod1") |
+| `label` | text, keep it ≤ 40 | the Run button's text: name the consequence ("Apply to ir-prod1"); a longer one shows truncated |
 | `danger` | bare | red outline, never in Run all, whole cell from its button only (no keyboard run); a line or selection ▶ asks the user to confirm first |
-| `after` | a `name` in the same chat or note | arms only when that cell's latest run exited 0 with every expect met, on its current code, on the machine that presses it (a run on another machine does not arm it); until then the cell warns and the user can still Run anyway |
+| `after` | a `name` in the same chat or note | advisory: arms when that cell's latest run exited 0 with every expect met, on its current code, on the machine that presses it; until then a press asks the user to confirm once and runs. Use sparingly |
 | `expect` | text or `/regex/`, repeatable | must appear in the output; met or missed per line |
 | `env` | `KEY=value`, repeatable | exported before the run; values may be `{{secret:NAME}}` |
 | `python` | `monty`, `auto`, `.venv`, `uv` or an absolute path | which interpreter runs a python cell |
@@ -64,7 +64,7 @@ The mode is sticky: once asked, every changing step of that work stays a cell un
 - `#| cwd:` on every cell: absolute or `~/…` in chat; in a note `~/…` or relative to the note's `cells` default, never one machine's absolute path (a note's cells run on whichever machine the reader presses them on). Never a `cd` line in place of `cwd`; never a `bash -c "…"` wrapper.
 - One action per cell. Checks before changes: export or back up, preview, then apply.
 - Explicit context on every command: `--profile`, `--context`, `-s <stack>`, `--region`. Never rely on the user's current default.
-- Every changing step: `#| label:` naming the consequence and `#| danger`. An apply gets `#| after:` naming its preview. Only an apply: `after:` is not an ordering hint, so a read-only or non-changing step never gets one.
+- Every changing step: `#| label:` naming the consequence in at most 40 characters and `#| danger`. An apply gets `#| after:` naming its preview — sparingly: it is advisory, the user can run any cell in any order. Only an apply: `after:` is not an ordering hint, so a read-only or non-changing step never gets one.
 - `#| expect:` is text the tool really prints ("3 to update", "Exported to"); take it from the run sheet's "You should see". Plain text beats a regex.
 - `#| review` when you promised to read the output. `#| private` when the output holds data you must not see. `#| timeout:` for anything that may hang.
 - Secrets: `#| env: TOKEN={{secret:NAME}}` and the code uses `$TOKEN`. A placeholder in the code is an error.
@@ -85,7 +85,7 @@ The mode is sticky: once asked, every changing step of that work stays a cell un
 - Up to five one-off steps go in chat, in one reply, in run order.
 - Longer or repeatable procedures go in a note (`doc_insert` the same fences) with one line in chat linking it.
 - A run sheet as a note: a heading per step, one cell per action under it, "You should see: …" becomes `#| expect:`, a stop line ("if it doesn't say exit 0, stop") needs nothing — Run all stops at a failed step and before every danger cell. A ```` ```cells ```` block under the title holds the shared folder and shell.
-- `doc_insert` refuses the whole insert when a cell does not validate and names each problem ("cell 2: after_unknown …"); fix the cells and retry.
+- `doc_insert` refuses the whole insert when a cell does not validate and names each problem ("cell 2: cwd_missing …"); fix the cells and retry. Warnings (an unknown option, a long label, an `after` naming no cell) never refuse.
 
 ## 6. After a result
 

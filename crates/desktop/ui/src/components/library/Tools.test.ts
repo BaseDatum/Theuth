@@ -121,12 +121,12 @@ test('Settings without a chat: "Off here" is greyed with the way to the chat’s
   unmount()
 })
 
-test('in a chat, "Off here" hides every tool of the server and a tool’s switch hides that tool, both for that chat', async () => {
+test('in a chat, "Off here" hides the whole server (its `mcp:` entry) and a tool’s switch hides that tool, both for that chat', async () => {
   const { el, button, unmount } = await mount('s1')
   const hides = () => calls.filter(([m]) => m === 'set_mcp_hidden')
   expect(button('Off here')[0]?.disabled).toBe(false)
   await act(async () => button('Off here')[0]!.click())
-  await vi.waitFor(() => expect(hides()).toEqual([['set_mcp_hidden', ['s1', ['read_file', 'write_file'], true]]]))
+  await vi.waitFor(() => expect(hides()).toEqual([['set_mcp_hidden', ['s1', ['mcp:fs'], true]]]))
   // The tools open under the row; the first one's switch turns it off here.
   await act(async () => [...el.querySelectorAll('button')].find((b) => b.textContent?.includes('fs'))!.click())
   const switches = () => [...el.querySelectorAll<HTMLButtonElement>('[role="switch"]')]
@@ -189,17 +189,18 @@ test('draft server and tool switches show persisted pending hides; Off always re
   const { el, button, unmount } = await mount('')
   expect(button('Off here')[0]?.disabled).toBe(false)
   await act(async () => button('Off here')[0]!.click())
-  await vi.waitFor(() => expect(useDrafts.getState().settings.hidden).toEqual({ read_file: true, write_file: true }))
+  await vi.waitFor(() => expect(useDrafts.getState().settings.hidden).toEqual({ 'mcp:fs': true }))
   expect(button('Off here')[0]?.getAttribute('data-state')).toBe('on')
   expect(calls).not.toContainEqual(expect.arrayContaining(['set_mcp_hidden']))
   await act(async () => [...el.querySelectorAll('button')].find((b) => b.textContent?.includes('fs'))!.click())
   const switches = [...el.querySelectorAll<HTMLButtonElement>('[role="switch"]')]
   expect(switches[0]?.getAttribute('aria-checked')).toBe('false')
   await act(async () => switches[0]!.click())
+  // One tool back on while the whole server is off: the server entry gives way to a hide of the other tool.
   await vi.waitFor(() => expect(useDrafts.getState().settings.hidden?.read_file).toBe(false))
   expect(switches[0]?.getAttribute('aria-checked')).toBe('true')
   await act(async () => button('Off always')[0]!.click())
   await vi.waitFor(() => expect(calls).toContainEqual(['set_mcp_gate', ['fs', null, 'off']]))
-  expect(useDrafts.getState().settings.hidden).toEqual({ read_file: false, write_file: true })
+  expect(useDrafts.getState().settings.hidden).toEqual({ 'mcp:fs': false, read_file: false, write_file: true })
   unmount()
 })

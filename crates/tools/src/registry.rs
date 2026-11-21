@@ -61,9 +61,13 @@ pub struct ToolRegistry {
     /// inherit the nearest ancestor's pin through `parents`.
     pin: HashMap<SessionId, bool>,
     /// Tool names a session (and its subagents) does not see: absent from
-    /// [`ListTools`], `unknown tool` on [`Invoke`]. In memory only; the
-    /// persistent switch is `off` in `mcp/config.yaml`.
+    /// [`ListTools`], `unknown tool` on [`Invoke`]. An [`mcp_server_key`]
+    /// entry hides every tool of that MCP server, including tools it registers
+    /// later. The persistent switch is `off` in `mcp/config.yaml`.
     hidden: HashMap<SessionId, HashSet<String>>,
+    /// Bumped whenever a [`SetHidden`] or [`RestoreHidden`] changes a hide set;
+    /// a running turn compares it before each model call ([`HiddenEpoch`]).
+    hidden_epoch: u64,
     /// child → parent, from [`SetParent`]; a session inherits its ancestors' pin and hidden set.
     parents: HashMap<SessionId, SessionId>,
     /// Risk ceiling per session from [`SetCap`]: a tool above it is neither
@@ -158,11 +162,27 @@ pub struct ListTools(pub Option<SessionId>);
 pub struct SetHidden {
     /// Session to switch (its subagents follow).
     pub session: SessionId,
-    /// Registered tool names.
+    /// Registered tool names, or [`mcp_server_key`]s for whole MCP servers.
     pub tools: Vec<String>,
     /// `true` hides.
     pub hidden: bool,
 }
+
+/// Prefix of a [`SetHidden`] entry naming a whole MCP server (see [`mcp_server_key`]).
+pub const MCP_SERVER_HIDE_PREFIX: &str = "mcp:";
+
+/// The [`SetHidden`] entry that hides every tool of MCP server `server` for a
+/// session and its subagents — tools the server registers later (reconnect,
+/// restart) included. MCP tool names cannot contain `:`, so it matches no tool.
+pub fn mcp_server_key(server: &str) -> String {
+    format!("{MCP_SERVER_HIDE_PREFIX}{server}")
+}
+
+/// `ask` → `u64`: the registry's hide generation. It changes whenever a
+/// session's hide set does, so a running turn re-lists its tools (prompt index,
+/// runtime function set, direct tools) before its next model call.
+#[derive(Clone, Copy, Debug)]
+pub struct HiddenEpoch;
 
 /// `ask` → `HashSet<String>`: what [`SetHidden`] hid for the session or an ancestor.
 #[derive(Clone, Copy, Debug)]
@@ -1017,15 +1037,31 @@ impl ToolRegistry {
         }
     }
 
-    /// `name` is hidden for the session or an ancestor, is an MCP tool the session's agent
-    /// may not see (67 §6.3), or is outside a contact session's allowlist (183 Z3-R2).
+    /// `name` is hidden for the session or an ancestor (by name, or its MCP server by
+    /// [`mcp_server_key`]), is an MCP tool the session's agent may not see (67 §6.3), or is
+    /// outside a contact session's allowlist (183 Z3-R2).
     fn is_hidden(&self, mut id: SessionId, name: &str) -> bool {
         if self.mcp_hidden(id, name) || !self.allowlist_admits(id, name) {
             return true;
         }
+        // The server key, resolved on the first set that names any server.
+        let mut server: Option<Option<String>> = None;
         loop {
-            if self.hidden.get(&id).is_some_and(|h| h.contains(name)) {
-                return true;
+            if let Some(h) = self.hidden.get(&id) {
+                if h.contains(name) {
+                    return true;
+                }
+                if h.iter().any(|k| k.starts_with(MCP_SERVER_HIDE_PREFIX)) {
+                    let key = server.get_or_insert_with(|| {
+                        self.tools.get(name).and_then(|t| match t.source() {
+                            ToolSource::Mcp { server, .. } => Some(mcp_server_key(&server)),
+                            ToolSource::Native { .. } => None,
+                        })
+                    });
+                    if key.as_ref().is_some_and(|k| h.contains(k)) {
+                        return true;
+                    }
+                }
             }
             match self.parents.get(&id) {
                 Some(p) => id = *p,
@@ -1526,7 +1562,16 @@ impl Message<SetHidden> for ToolRegistry {
         if names.is_empty() {
             self.hidden.remove(&m.session);
         }
+        self.hidden_epoch += 1;
         self.journal.hidden(m.session, names).await;
+    }
+}
+
+impl Message<HiddenEpoch> for ToolRegistry {
+    type Reply = u64;
+
+    async fn handle(&mut self, _: HiddenEpoch, _: &mut Context<Self, Self::Reply>) -> u64 {
+        self.hidden_epoch
     }
 }
 
@@ -1539,6 +1584,7 @@ impl Message<RestoreHidden> for ToolRegistry {
         } else {
             self.hidden.insert(m.session, m.tools.into_iter().collect());
         }
+        self.hidden_epoch += 1;
     }
 }
 
@@ -2252,6 +2298,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             approvals: cfg.approvals,
             pin: HashMap::new(),
             hidden: HashMap::new(),
+            hidden_epoch: 0,
             parents: HashMap::new(),
             cap: HashMap::new(),
             turn_cap: HashMap::new(),
@@ -2325,6 +2372,7 @@ pub(crate) mod tests {
             approvals: true,
             pin: HashMap::new(),
             hidden: HashMap::new(),
+            hidden_epoch: 0,
             parents: HashMap::new(),
             cap: HashMap::new(),
             turn_cap: HashMap::new(),
@@ -2752,6 +2800,71 @@ pub(crate) mod tests {
             ["echo"]
         );
         assert!(!reg.ask(Invoke(call(child))).await.unwrap().is_error);
+    }
+
+    /// An `mcp:<server>` hide covers every tool of that server for the session and its
+    /// subagents — one the server registers later (a reconnect) too — and nothing else;
+    /// each change moves [`HiddenEpoch`], and showing the server again restores its tools.
+    #[tokio::test]
+    async fn a_hidden_server_hides_its_tools_registered_now_or_later() {
+        let reg = registry_with(
+            vec![Arc::new(Echo), Arc::new(FilesMcp("search", Risk::ReadOnly))],
+            None,
+            Policy::default(),
+            None,
+        );
+        let (parent, child) = (SessionId::new(), SessionId::new());
+        reg.tell(SetParent {
+            session: child,
+            parent,
+        })
+        .await
+        .unwrap();
+        let names = |specs: Vec<ToolSpec>| specs.into_iter().map(|s| s.name).collect::<Vec<_>>();
+        let before = reg.ask(HiddenEpoch).await.unwrap();
+
+        reg.ask(SetHidden {
+            session: parent,
+            tools: vec![mcp_server_key("files")],
+            hidden: true,
+        })
+        .await
+        .unwrap();
+        assert_ne!(reg.ask(HiddenEpoch).await.unwrap(), before);
+        assert_eq!(
+            names(reg.ask(ListTools(Some(child))).await.unwrap()),
+            ["echo"]
+        );
+        // The server reconnects with a tool it did not offer before: hidden as well.
+        reg.ask(RegisterTool(Arc::new(FilesMcp("delete", Risk::ReadOnly))))
+            .await
+            .unwrap();
+        assert_eq!(
+            names(reg.ask(ListTools(Some(child))).await.unwrap()),
+            ["echo"]
+        );
+        assert!(
+            reg.ask(Invoke(call("delete", child)))
+                .await
+                .unwrap()
+                .is_error
+        );
+        assert_eq!(
+            names(reg.ask(ListTools(None)).await.unwrap()),
+            ["delete", "echo", "search"]
+        );
+
+        reg.ask(SetHidden {
+            session: parent,
+            tools: vec![mcp_server_key("files")],
+            hidden: false,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            names(reg.ask(ListTools(Some(child))).await.unwrap()),
+            ["delete", "echo", "search"]
+        );
     }
 
     /// A `Mutating` tool for the cap tests; changes nothing.

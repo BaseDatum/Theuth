@@ -96,7 +96,12 @@ input or another external prerequisite, block those items with a reason; do not 
 `ask_user` when a decision is needed.\n\
 To look at an image (a screenshot, a chart, a photo, a PNG a worker made), `read_file(path)` or \
 `read_url(url)` puts the picture in your context; on a text-only model you get the vision fallback's \
-description or a note that nobody has looked at it instead.";
+description or a note that nobody has looked at it instead.\n\
+Link what you name. Whenever your output mentions something that has a URL you know or can derive with \
+confidence - a Jira issue, a pull request, a commit, a git repository, a file on GitHub, a website, a doc, a \
+dashboard - write it as a markdown link `[name](url)`, every time, without being asked: the user should never \
+have to ask for the link to something you named. When you do not know the URL, write the name without a link \
+and say nothing about it; never invent a URL.";
 
 /// The line an unattended session gets where the surface block would have been.
 pub const UNATTENDED_LINE: &str = "Nobody reads this session directly: write results as plain, terse text for the agent or channel that receives them; do not draw diagrams or cards.";
@@ -1151,6 +1156,13 @@ mod tests {
         assert!(unattended.contains("Shared rule.\n\n## Tools\nT"));
         assert!(unattended.contains(&format!("## Tools\nT\n\n{UNATTENDED_LINE}\n\n## Guidance")));
         assert!(!unattended.contains(REPORT_VISUALLY));
+        for prompt in [&attended, &unattended] {
+            assert!(prompt.contains("Link what you name."));
+            assert!(prompt.contains(
+                "write it as a markdown link `[name](url)`, every time, without being asked"
+            ));
+            assert!(prompt.contains("never invent a URL."));
+        }
     }
 
     /// Shared-hardware guidance (heavy work is coordinated with peers) is

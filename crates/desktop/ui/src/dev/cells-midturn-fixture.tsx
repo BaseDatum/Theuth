@@ -56,7 +56,7 @@ const run = (ref: CellRef): CellRun => ({
   cell: ref,
   mode: { type: 'cell' },
   pass: null,
-  kernel: { scope: { type: 'session', id: S }, spec: { type: 'shell', kind: 'bash', path: '/bin/bash' } },
+  kernel: { scope: { type: 'session', id: S }, spec: { type: 'shell', kind: 'bash', path: '/bin/bash' }, instance: 0 },
   interpreter: 'bash 5.2 /bin/bash',
   cwd: '/tmp',
   env_names: [],

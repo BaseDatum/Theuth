@@ -20,7 +20,7 @@ import { ResizeHandle } from '@/components/ui/resize-handle'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { NOTES_MAX_RATIO, NOTES_MIN_PX, RAIL_PX, SIDE_PX, type Side, type Tab, clampNotesWidth, layout, useNotebookColumns } from '@/lib/notebook-columns'
 import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
-import { isPopout } from '@/lib/popout'
+import { isSoloPopout } from '@/lib/popout'
 import { PX_STEP } from '@/lib/resize-drag'
 import { cn } from '@/lib/utils'
 
@@ -107,7 +107,7 @@ function Notebook({ id, isNew, tab, ask, note }: { id: string; isNew: boolean; t
   const members = live.provider?.meta?.members.length ?? 0
   const chat = (composerOnly?: boolean) => <ChatColumn notebook={id} title={title || 'Untitled'} notes={notes} composerOnly={composerOnly} />
   // 143's pop-out rule: its own window has no band (SectionBand returns null) and no way back; the row is the drag bar.
-  const popped = isPopout()
+  const popped = isSoloPopout()
 
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">

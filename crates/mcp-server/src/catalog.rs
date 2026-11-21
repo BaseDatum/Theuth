@@ -251,6 +251,9 @@ struct DocCreate {
     title: String,
     /// Initial markdown body.
     markdown: Option<String>,
+    /// File it under this project (the chats' project label); omitted = ungrouped.
+    #[serde(default)]
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -259,6 +262,15 @@ struct Rename {
     id: String,
     /// New title.
     title: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct DocProject {
+    /// Document id (a note or board).
+    id: String,
+    /// Project label; omitted or empty clears it.
+    #[serde(default)]
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -481,8 +493,14 @@ fn table() -> Vec<Row> {
         ),
         (
             "doc_create",
-            "Create a note document with optional markdown.",
+            "Create a note document with optional markdown, optionally filed under a project.",
             schema_for_type::<DocCreate>(),
+            false,
+        ),
+        (
+            "doc_set_project",
+            "File a note or board under a project (the chats' project label), or clear it.",
+            schema_for_type::<DocProject>(),
             false,
         ),
         (
@@ -899,7 +917,17 @@ impl Catalog {
             "doc_create" => {
                 let a: DocCreate = args(req)?;
                 Json(
-                    self.rpc("doc_create", vec![json!(a.title), json!(a.markdown)])
+                    self.rpc(
+                        "doc_create",
+                        vec![json!(a.title), json!(a.markdown), json!(a.project)],
+                    )
+                    .await?,
+                )
+            }
+            "doc_set_project" => {
+                let a: DocProject = args(req)?;
+                Json(
+                    self.rpc("doc_set_project", vec![json!(a.id), json!(a.project)])
                         .await?,
                 )
             }

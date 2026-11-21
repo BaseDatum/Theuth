@@ -18,7 +18,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useOverviews } from '@/lib/ask-rpc'
-import { canPopout, isPopout, openPopout } from '@/lib/popout'
+import { canPopout, isSoloPopout, openPopout } from '@/lib/popout'
 import type { OverviewKind } from "@/rpc/bindings/method.agent.output"
 
 /** The notebook's three columns in their own window (`/notebooks/<id>?window=popout-notebook-<id>`); focus-if-open. */
@@ -32,7 +32,7 @@ export function NotebookHeaderActions({ notebook, ask, onAskChange, share }: { n
   const overviews = useOverviews(notebook).data ?? []
   const running = new Set(overviews.filter((o) => o.status === 'running').map((o) => o.kind))
   const run = useRunOverview(notebook)
-  const popout = canPopout() && !isPopout()
+  const popout = canPopout() && !isSoloPopout()
   const item = (kind: OverviewKind, label: string) => (
     <DropdownMenuItem key={kind} disabled={run.isPending || running.has(kind)} onSelect={() => run.mutate(kind)}>
       <span className="flex-1">{label}</span>

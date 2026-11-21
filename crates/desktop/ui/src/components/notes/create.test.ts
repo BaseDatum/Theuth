@@ -9,7 +9,7 @@ import { createNote } from './create'
 
 vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
 
-const row = (id: string, title = 'Old'): DocSummary => ({ id, kind: 'note', title, binding: 'note', created_ms: 1, updated_ms: 1, bytes: 0 })
+const row = (id: string, title = 'Old'): DocSummary => ({ id, kind: 'note', title, binding: 'note', created_ms: 1, updated_ms: 1, bytes: 0, project: null })
 const changed = (doc: string, over: Partial<DocumentChanged> = {}): DocumentChanged => ({
   type: 'DocumentChanged',
   doc,
@@ -26,19 +26,20 @@ const open = (n: DocSummary) => navigate({ to: '/notes/$id', params: { id: n.id 
 
 let qc: QueryClient
 let reply: PromiseWithResolvers<DocSummary>
-const api = { doc_create: vi.fn(() => reply.promise) }
+const api = { doc_create: vi.fn(() => reply.promise), doc_set_project: vi.fn(async () => row('x')) }
 
 beforeEach(() => {
   qc = new QueryClient()
   qc.setQueryData(queryKeys.notes, [row('old')])
   reply = Promise.withResolvers<DocSummary>()
   navigate.mockClear()
+  api.doc_set_project.mockClear()
   vi.mocked(toast.error).mockClear()
 })
 
 test('the bus event opens the note before the body import replies, and lists it at once', async () => {
   const p = createNote(api, qc, qc.getQueryData(queryKeys.notes)!).then(open)
-  expect(api.doc_create).toHaveBeenCalledWith('Untitled', null)
+  expect(api.doc_create).toHaveBeenCalledWith('Untitled', null, null)
   dispatch([{key: 'document.changed@1', event: changed('old', { title: 'Old' })}]) // an export of a listed note is not ours
   dispatch([{key: 'document.changed@1', event: changed('agent', { title: 'Plan' })}]) // nor a note the agent titled
   dispatch([{key: 'document.changed@1', event: changed('fresh')}])
@@ -51,6 +52,7 @@ test('the bus event opens the note before the body import replies, and lists it 
   await reply.promise.catch(() => undefined)
   expect(toast.error).toHaveBeenCalledWith('documents helper not found')
   expect(navigate).toHaveBeenCalledTimes(1)
+  expect(api.doc_set_project).not.toHaveBeenCalled()
 })
 
 test('the reply alone opens the note when no event arrived', async () => {
@@ -72,4 +74,15 @@ test('a create that fails before the note exists rejects and opens nothing', asy
   expect(navigate).not.toHaveBeenCalled()
   expect(toast.error).not.toHaveBeenCalled()
   expect(qc.getQueryData<DocSummary[]>(queryKeys.notes)).toHaveLength(1)
+})
+
+test('a note created in a project asks doc_create for it, lists it there at once, and files it itself when the import fails after the event', async () => {
+  const p = createNote(api, qc, [row('old')], 'alpha').then(open)
+  expect(api.doc_create).toHaveBeenLastCalledWith('Untitled', null, 'alpha')
+  dispatch([{key: 'document.changed@1', event: changed('inproj')}])
+  await p
+  expect(qc.getQueryData<DocSummary[]>(queryKeys.notes)!.find((n) => n.id === 'inproj')?.project).toBe('alpha')
+  reply.reject(new Error('documents helper not found'))
+  await reply.promise.catch(() => undefined)
+  expect(api.doc_set_project).toHaveBeenCalledWith('inproj', 'alpha')
 })

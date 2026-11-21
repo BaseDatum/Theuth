@@ -30,7 +30,7 @@ export function run(over: Partial<CellRun> = {}): CellRun {
     cell: chatRef(2),
     mode: { type: 'cell' },
     pass: null,
-    kernel: { scope: { type: 'session', id: SESSION }, spec: { type: 'shell', kind: 'bash', path: '/opt/homebrew/bin/bash' } },
+    kernel: { scope: { type: 'session', id: SESSION }, spec: { type: 'shell', kind: 'bash', path: '/opt/homebrew/bin/bash' }, instance: 0 },
     interpreter: 'bash 5.2 (Homebrew) /opt/homebrew/bin/bash',
     cwd: '~/dr-t6/frp-integration/stacks/sa-frp-integration',
     env_names: ['AWS_PROFILE'],

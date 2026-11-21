@@ -38,10 +38,49 @@ const MIRROR: &str = "mirror";
 const CREATE: &str = "CREATE TABLE IF NOT EXISTS docs (\
     id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, binding TEXT NOT NULL, \
     created_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL, bytes INTEGER NOT NULL DEFAULT 0, \
-    members_n INTEGER NOT NULL DEFAULT 0, deleted_ms INTEGER, hlc TEXT)";
+    members_n INTEGER NOT NULL DEFAULT 0, deleted_ms INTEGER, hlc TEXT, project TEXT)";
 const CREATE_BINDING: &str = "CREATE INDEX IF NOT EXISTS docs_binding ON docs(binding)";
 /// 69: the replica's clock column on a table created before it existed (a no-op error otherwise).
 const ADD_HLC: &str = "ALTER TABLE docs ADD COLUMN hlc TEXT";
+/// Notes and boards filed under a project (the sessions' and notebooks' label, one level). A plain
+/// `docs` column: the replica re-installs its triggers at every attach, so the column replicates
+/// per-column LWW like `notebooks.project`; `meta.json` (the mirror) never carries it.
+const ADD_PROJECT: &str = "ALTER TABLE docs ADD COLUMN project TEXT";
+
+/// The `docs` columns a [`DocSummary`] reads, in [`SummaryTuple`] order (a macro so it splices into `concat!`).
+macro_rules! summary_cols {
+    () => {
+        "id, kind, title, binding, created_ms, updated_ms, bytes, project"
+    };
+}
+
+/// One [`summary_cols!`] row.
+type SummaryTuple = (
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    Option<String>,
+);
+
+/// A [`SummaryTuple`] as `doc_list` shows it; `None` for an unparseable kind or binding.
+fn summary_row(
+    (id, kind, title, binding, created_ms, updated_ms, bytes, project): SummaryTuple,
+) -> Option<DocSummary> {
+    Some(DocSummary {
+        id: DocId(id),
+        kind: serde_json::from_value(serde_json::Value::String(kind)).ok()?,
+        title,
+        binding: serde_json::from_str(&binding).ok()?,
+        created_ms,
+        updated_ms,
+        bytes,
+        project,
+    })
+}
 
 /// 144 §3.3: the notebook's columns that are not the document (the document carries name + description).
 const CREATE_NOTEBOOKS: &str = "CREATE TABLE IF NOT EXISTS notebooks (id TEXT PRIMARY KEY, project TEXT, archived_ms INTEGER, hlc TEXT)";
@@ -213,7 +252,11 @@ impl Store {
         ] {
             sqlx::query(sql).execute(&db).await?;
         }
-        for (sql, what) in [(ADD_HLC, "docs.hlc"), (ADD_PAYLOAD, "cell_latest.payload")] {
+        for (sql, what) in [
+            (ADD_HLC, "docs.hlc"),
+            (ADD_PAYLOAD, "cell_latest.payload"),
+            (ADD_PROJECT, "docs.project"),
+        ] {
             if let Err(e) = sqlx::query(sql).execute(&db).await
                 && !e.to_string().contains("duplicate column")
             {
@@ -901,41 +944,48 @@ impl Store {
 
     /// Live documents, newest update first.
     pub async fn list(&self, kind: Option<DocKind>, limit: u32) -> anyhow::Result<Vec<DocSummary>> {
-        let rows: Vec<(String, String, String, String, i64, i64, i64)> = match kind {
+        let rows: Vec<SummaryTuple> = match kind {
             Some(k) => {
-                sqlx::query_as(
-                    "SELECT id, kind, title, binding, created_ms, updated_ms, bytes FROM docs WHERE deleted_ms IS NULL AND kind = ? ORDER BY updated_ms DESC, rowid DESC LIMIT ?",
-                )
+                sqlx::query_as(concat!(
+                    "SELECT ",
+                    summary_cols!(),
+                    " FROM docs WHERE deleted_ms IS NULL AND kind = ? ORDER BY updated_ms DESC, rowid DESC LIMIT ?"
+                ))
                 .bind(k.to_string())
                 .bind(limit)
                 .fetch_all(&self.db)
                 .await?
             }
             None => {
-                sqlx::query_as(
-                    "SELECT id, kind, title, binding, created_ms, updated_ms, bytes FROM docs WHERE deleted_ms IS NULL ORDER BY updated_ms DESC, rowid DESC LIMIT ?",
-                )
+                sqlx::query_as(concat!(
+                    "SELECT ",
+                    summary_cols!(),
+                    " FROM docs WHERE deleted_ms IS NULL ORDER BY updated_ms DESC, rowid DESC LIMIT ?"
+                ))
                 .bind(limit)
                 .fetch_all(&self.db)
                 .await?
             }
         };
-        Ok(rows
-            .into_iter()
-            .filter_map(
-                |(id, kind, title, binding, created_ms, updated_ms, bytes)| {
-                    Some(DocSummary {
-                        id: DocId(id),
-                        kind: serde_json::from_value(serde_json::Value::String(kind)).ok()?,
-                        title,
-                        binding: serde_json::from_str(&binding).ok()?,
-                        created_ms,
-                        updated_ms,
-                        bytes,
-                    })
-                },
-            )
-            .collect())
+        Ok(rows.into_iter().filter_map(summary_row).collect())
+    }
+
+    /// File a live document under `project` (`None` = ungrouped); `false` when there is no such
+    /// live row. A column write the replica merges (LWW), like `notebooks.project`.
+    pub async fn set_project(&self, id: &DocId, project: Option<&str>) -> anyhow::Result<bool> {
+        let n = sqlx::query(
+            "UPDATE docs SET project = ? WHERE id = ? AND deleted_ms IS NULL AND project IS NOT ?",
+        )
+        .bind(project)
+        .bind(id.as_str())
+        .bind(project)
+        .execute(&self.db)
+        .await?
+        .rows_affected();
+        if n > 0 {
+            return Ok(true);
+        }
+        Ok(self.summary(id).await?.is_some())
     }
 
     /// Move the directory to `.trash/<id>`, mark the row deleted (§7.1), drop the mirror files.
@@ -1246,25 +1296,15 @@ impl Store {
 
     /// The index row of a live document as `doc_list` shows it; `None` when absent or trashed.
     pub async fn summary(&self, id: &DocId) -> anyhow::Result<Option<DocSummary>> {
-        let row: Option<(String, String, String, String, i64, i64, i64)> = sqlx::query_as(
-            "SELECT id, kind, title, binding, created_ms, updated_ms, bytes FROM docs WHERE id = ? AND deleted_ms IS NULL",
-        )
+        let row: Option<SummaryTuple> = sqlx::query_as(concat!(
+            "SELECT ",
+            summary_cols!(),
+            " FROM docs WHERE id = ? AND deleted_ms IS NULL"
+        ))
         .bind(id.as_str())
         .fetch_optional(&self.db)
         .await?;
-        Ok(row.and_then(
-            |(id, kind, title, binding, created_ms, updated_ms, bytes)| {
-                Some(DocSummary {
-                    id: DocId(id),
-                    kind: serde_json::from_value(serde_json::Value::String(kind)).ok()?,
-                    title,
-                    binding: serde_json::from_str(&binding).ok()?,
-                    created_ms,
-                    updated_ms,
-                    bytes,
-                })
-            },
-        ))
+        Ok(row.and_then(summary_row))
     }
 
     /// Live notebooks (not trashed, not archived unless `archived`) holding `(kind, item)` through a live
@@ -2750,5 +2790,106 @@ mod tests {
         write_atomic(&p, b"x").unwrap();
         assert_eq!(read_opt(&p).unwrap().unwrap(), b"x");
         assert!(read_opt(&dir.path().join("nope")).unwrap().is_none());
+    }
+
+    /// An index from before `docs.project`: opening adds the column, every row reads ungrouped, and
+    /// `set_project` files and clears a live note (a trashed or unknown one answers `false`).
+    #[tokio::test]
+    async fn project_column_migrates_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = Store::open(dir.path()).await.unwrap();
+        let note = meta(Binding::Note);
+        old.create(&note).await.unwrap();
+        // Rebuild the table as a pre-project index had it, keeping the row (one connection: the
+        // pool's other one would race the schema change).
+        let mut conn = old.pool().acquire().await.unwrap();
+        for sql in [
+            "CREATE TABLE docs_old AS SELECT id, kind, title, binding, created_ms, updated_ms, bytes, members_n, deleted_ms, hlc FROM docs",
+            "DROP TABLE docs",
+            "ALTER TABLE docs_old RENAME TO docs",
+        ] {
+            sqlx::query(sql).execute(&mut *conn).await.unwrap();
+        }
+        drop(conn);
+        old.db.close().await;
+        let store = Store::open(dir.path()).await.unwrap();
+        let listed = store.list(Some(DocKind::Note), 10).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].project, None);
+        assert!(store.set_project(&note.id, Some("alpha")).await.unwrap());
+        assert!(
+            store.set_project(&note.id, Some("alpha")).await.unwrap(),
+            "unchanged is still found"
+        );
+        assert_eq!(
+            store
+                .summary(&note.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .project
+                .as_deref(),
+            Some("alpha")
+        );
+        assert_eq!(
+            store.list(None, 10).await.unwrap()[0].project.as_deref(),
+            Some("alpha")
+        );
+        assert!(store.set_project(&note.id, None).await.unwrap());
+        assert_eq!(
+            store.summary(&note.id).await.unwrap().unwrap().project,
+            None
+        );
+        assert!(!store.set_project(&DocId::new(), Some("x")).await.unwrap());
+        store.delete(&note.id).await.unwrap();
+        assert!(!store.set_project(&note.id, Some("x")).await.unwrap());
+        // Reopening an index that has the column is a no-op.
+        drop(store);
+        Store::open(dir.path()).await.unwrap();
+    }
+
+    /// `docs.project` is a replicated column (`TABLES`): a project set on one engine reaches the
+    /// other through the record replica, as `notebooks.project` does.
+    #[tokio::test]
+    async fn project_replicates_through_the_record_replica() {
+        async fn side() -> (
+            tempfile::TempDir,
+            Store,
+            Arc<replica::Engine>,
+            replica::ReplicaHandle,
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::open(dir.path()).await.unwrap();
+            let engine = replica::Engine::open(&dir.path().join("replica.sqlite"))
+                .await
+                .unwrap();
+            let handle = engine.attach(store.pool(), TABLES).await.unwrap();
+            (dir, store, engine, handle)
+        }
+        async fn ship(from: &replica::ReplicaHandle, to: &replica::Engine) {
+            while let Some(batch) = from.flush().await.unwrap() {
+                to.apply(&batch).await.unwrap();
+            }
+        }
+        let (_da, a, _ea, ha) = side().await;
+        let (_db, b, eb, _hb) = side().await;
+        let note = meta(Binding::Note);
+        a.create(&note).await.unwrap();
+        ship(&ha, &eb).await;
+        assert_eq!(b.summary(&note.id).await.unwrap().unwrap().project, None);
+        assert!(a.set_project(&note.id, Some("alpha")).await.unwrap());
+        ship(&ha, &eb).await;
+        assert_eq!(
+            b.summary(&note.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .project
+                .as_deref(),
+            Some("alpha")
+        );
+        assert!(a.set_project(&note.id, None).await.unwrap());
+        ship(&ha, &eb).await;
+        assert_eq!(b.summary(&note.id).await.unwrap().unwrap().project, None);
     }
 }

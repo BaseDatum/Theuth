@@ -7545,6 +7545,7 @@
             id,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            finished_at: None,
             title: String::new(),
             tags: Vec::new(),
             model: "m".into(),

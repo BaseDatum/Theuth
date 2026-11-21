@@ -22,8 +22,13 @@ export type KernelStripProps = {
 
 /** Kernels the strip shows: a process exists (§5.3 `starting`/`ready`/`busy`). */
 export const liveKernels = (ks: KernelState[]) => ks.filter((k) => k.phase === 'starting' || k.phase === 'ready' || k.phase === 'busy')
-
 const phaseText = (k: KernelState) => (k.phase === 'ready' ? 'idle' : k.phase)
+
+/**
+ * #6: the kernel's label with its instance — `zsh 5.9 #2` for the second instance of a shell (started for a run while
+ * the first was busy); the first instance is just its label.
+ */
+export const kernelName = (k: KernelState) => (k.id.instance > 0 ? `${k.label} #${k.id.instance + 1}` : k.label)
 
 function KernelRow({ kernel, api, onError }: { kernel: KernelState; api: Api; onError(text: string | null): void }) {
   const act = (f: () => Promise<unknown>) =>
@@ -39,7 +44,7 @@ function KernelRow({ kernel, api, onError }: { kernel: KernelState; api: Api; on
         className={cn('size-2 shrink-0 rounded-full', kernel.phase === 'busy' || kernel.phase === 'starting' ? 'bg-fg-accent motion-safe:animate-pulse' : 'bg-success')}
       />
       <span className="shrink-0 text-fg-secondary">
-        {kernel.label} · {phaseText(kernel)}
+        {kernelName(kernel)} · {phaseText(kernel)}
       </span>
       {kernel.cwd && (
         <span className="min-w-0 truncate font-mono text-fg-tertiary" title={kernel.cwd}>

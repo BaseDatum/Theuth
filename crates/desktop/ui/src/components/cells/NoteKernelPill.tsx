@@ -13,7 +13,7 @@ import type { Scope as CellScope } from "@/rpc/bindings/method.cells.output"
 import type { DocId } from "@/rpc/bindings/method.agent.output"
 import type { KernelState } from "@/rpc/bindings/method.cells.output"
 import type { PassEnd } from "@/rpc/bindings/method.cells.output"
-import { liveKernels } from './KernelStrip'
+import { kernelName, liveKernels } from './KernelStrip'
 import { mountedCells } from './NoteCell'
 import { digest } from './grammar'
 import type { MountedCell } from './note-edit'
@@ -23,10 +23,10 @@ export type NoteKernelPillProps = {
   doc: DocId
 }
 
-/** `python · .venv 3.12 · idle`: the kernel's family, the engine's label and the phase in the strip's words. */
+/** `python · .venv 3.12 · idle`: the kernel's family, the engine's label (with its instance, `zsh 5.9 #2`) and the phase in the strip's words. */
 export function pillText(k: KernelState): string {
   const family = k.id.spec.type === 'shell' ? k.id.spec.kind : k.id.spec.type
-  return [family, k.label, k.phase === 'ready' ? 'idle' : k.phase].join(' · ')
+  return [family, kernelName(k), k.phase === 'ready' ? 'idle' : k.phase].join(' · ')
 }
 
 /** Note Run all (§7.2, §11.5): one engine pass over the note's cells top to bottom; the engine applies the boundaries. */
@@ -112,7 +112,7 @@ export function NoteKernelPill({ doc }: NoteKernelPillProps) {
         kernels.map((k) => {
           const warning = k.env_warning
           return (
-            <span key={JSON.stringify(k.id.spec)} className="flex min-w-0 items-center gap-1 rounded-full border border-border-subtle py-px pr-0.5 pl-2 text-[11px] text-fg-secondary">
+            <span key={JSON.stringify(k.id)} className="flex min-w-0 items-center gap-1 rounded-full border border-border-subtle py-px pr-0.5 pl-2 text-[11px] text-fg-secondary">
               <span className={cn('size-1.5 shrink-0 rounded-full', k.phase === 'busy' ? 'bg-fg-accent' : 'bg-success')} aria-hidden />
               <span className="truncate">{pillText(k)}</span>
               {warning && (

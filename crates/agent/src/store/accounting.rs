@@ -348,8 +348,12 @@ pub(crate) async fn tombstone_root_in(
     Ok(())
 }
 
-/// A scheduler root's routine: its title before ` · ` (`routine` when empty).
-fn routine_name(title: &str) -> &str {
+/// A scheduler root's routine: its title before ` · ` (`routine` when empty);
+/// a title seeded from the fire's `<schedule name="…" …>` wrapper names its schedule.
+pub(crate) fn routine_name(title: &str) -> &str {
+    if let Some(name) = crate::attach::schedule_name(title) {
+        return name;
+    }
     let name = title.split(" · ").next().unwrap_or("").trim();
     if name.is_empty() { "routine" } else { name }
 }

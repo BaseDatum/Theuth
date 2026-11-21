@@ -161,7 +161,8 @@
           "type": "shell",
           "kind": "bash",
           "path": "sample"
-        }
+        },
+        "instance": 0
       }
     },
     "notification": {
@@ -180,7 +181,8 @@
               "type": "shell",
               "kind": "bash",
               "path": "sample"
-            }
+            },
+            "instance": 0
           }
         }
       }
@@ -198,7 +200,8 @@
           "type": "shell",
           "kind": "bash",
           "path": "sample"
-        }
+        },
+        "instance": 0
       }
     },
     "notification": {
@@ -217,7 +220,8 @@
               "type": "shell",
               "kind": "bash",
               "path": "sample"
-            }
+            },
+            "instance": 0
           }
         }
       }
@@ -235,7 +239,8 @@
           "type": "shell",
           "kind": "zsh",
           "path": "sample"
-        }
+        },
+        "instance": 0
       }
     },
     "notification": {
@@ -254,7 +259,8 @@
               "type": "shell",
               "kind": "zsh",
               "path": "sample"
-            }
+            },
+            "instance": 0
           }
         }
       }
@@ -272,7 +278,8 @@
           "type": "shell",
           "kind": "sh",
           "path": "sample"
-        }
+        },
+        "instance": 0
       }
     },
     "notification": {
@@ -291,7 +298,8 @@
               "type": "shell",
               "kind": "sh",
               "path": "sample"
-            }
+            },
+            "instance": 0
           }
         }
       }
@@ -309,7 +317,8 @@
           "type": "shell",
           "kind": "pwsh",
           "path": "sample"
-        }
+        },
+        "instance": 0
       }
     },
     "notification": {
@@ -328,7 +337,8 @@
               "type": "shell",
               "kind": "pwsh",
               "path": "sample"
-            }
+            },
+            "instance": 0
           }
         }
       }
@@ -345,7 +355,8 @@
         "spec": {
           "type": "python",
           "path": "sample"
-        }
+        },
+        "instance": 0
       }
     },
     "notification": {
@@ -363,7 +374,8 @@
             "spec": {
               "type": "python",
               "path": "sample"
-            }
+            },
+            "instance": 0
           }
         }
       }
@@ -379,7 +391,8 @@
         },
         "spec": {
           "type": "monty"
-        }
+        },
+        "instance": 0
       }
     },
     "notification": {
@@ -396,7 +409,8 @@
             },
             "spec": {
               "type": "monty"
-            }
+            },
+            "instance": 0
           }
         }
       }

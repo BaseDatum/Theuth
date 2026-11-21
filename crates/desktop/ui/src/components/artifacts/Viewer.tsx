@@ -29,7 +29,7 @@ import { parseCsv } from '@/lib/csv'
 import { extOf, fmtBytes, isLocal, readBytes } from '@/lib/files'
 import { touch } from '@/lib/platform'
 import { isMacDesktop } from '@/lib/hotkeys'
-import { isPopout, openPopout } from '@/lib/popout'
+import { isSoloPopout, openPopout } from '@/lib/popout'
 import { privateOwner } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { isSearchDestination, useSearchOrigin } from '@/lib/search'
@@ -414,7 +414,7 @@ export function Viewer() {
   const mobile = useIsMobile()
   const origin = useSearchOrigin()
   // Its own window: the details rail starts closed and there is no popout button (it is one); the window carries the title.
-  const popped = isPopout()
+  const popped = isSoloPopout()
   const [railOpen, setRailOpen] = useState(!popped)
   useEffect(() => {
     if (popped && record.data) document.title = record.data.title
@@ -536,7 +536,7 @@ export function Viewer() {
 function Frame({ title, actions, children }: { title?: ReactNode; actions?: ReactNode; children: ReactNode }) {
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {isPopout() ? (
+      {isSoloPopout() ? (
         <header
           data-tauri-drag-region={isMacDesktop() || undefined}
           className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3"

@@ -6,12 +6,12 @@ import type { CellState } from "@/rpc/bindings/method.cells.output"
 import type { Interpreter } from "@/rpc/bindings/method.cells.output"
 import { announce, Cell, CellExtras, ensureLiveRegion, trimBlankTail } from './Cell'
 import { gutterMark, keyRun } from './CellEditor'
-import { cellOf } from './grammar'
+import { cellOf, shortLabel } from './grammar'
 import { hoverAfter } from './line-run'
 import { refKey } from './store'
 import { chatRef, render, run, spec, state } from './test-fixtures'
 import type { CellViewState } from './types'
-import { chatEditable, interpreterText, viewOf } from './view'
+import { chatEditable, gateQuestion, interpreterText, viewOf } from './view'
 
 const noop = () => undefined
 const callbacks = { onRun: noop, onStop: noop, onInput: noop, onAsk: noop, onEdit: noop, onAttach: () => noop }
@@ -118,13 +118,16 @@ test('every §11.2 state renders its look and button', () => {
       'disarmed',
       cell(2, state(ref, { disarmed: 'the preview-ir-prod1 run is more than 1 h old — run it again' }), { extras: { afterLabel: 'Preview' } }),
       (x) => {
-        // CELLAFTER: the warning strip, and the button runs anyway (danger styling kept) with the reason as its description.
-        const b = button(x, 'Run anyway')
+        // #1: `after` is advisory — the cell keeps its own enabled button (a press asks once inline); the reason is its
+        // description and the `after:` chip's tooltip, never a dead cell or a danger strip.
+        const b = button(x, 'Apply to ir-prod1')
         expect(b).toBeDefined()
         expect(b).not.toContain('aria-disabled="true"')
         expect(b).toContain('aria-description="the preview-ir-prod1 run is more than 1 h old — run it again"')
         expect(b).toContain('data-variant="destructive"')
-        expect(x).toMatch(/bg-danger-bg text-danger">the preview-ir-prod1 run is more than 1 h old — run it again</)
+        expect(button(x, 'Run anyway')).toBeUndefined()
+        expect(x).not.toMatch(/bg-danger-bg text-danger">the preview-ir-prod1 run/)
+        expect(x).toContain('title="the preview-ir-prod1 run is more than 1 h old — run it again"')
       },
     ],
     [
@@ -232,13 +235,32 @@ test('CELLAFTER: a danger chat cell shows the ► on its hovered line, danger-to
   expect(gutterMark({ line: 2, phase: 'running', run: null, queued_ms: null }, 2, 2, true)).toMatchObject({ text: '◌' })
 })
 
-test('CELLAFTER F2: past an unarmed gate a member’s edit still names whose text runs — "Run Alice’s edit anyway"', () => {
+test('CELLAFTER F2: past an unarmed gate a member’s edit still names whose text runs — "Run Alice’s edit"', () => {
   const { html } = cell(2, state(ref, { disarmed: 'after: preview-ir-prod1 — run it first' }), { extras: { runText: "Run Alice's edit" } })
-  expect(button(html, 'Run Alice&#x27;s edit anyway')).not.toContain('aria-disabled="true"')
+  expect(button(html, 'Run Alice&#x27;s edit')).not.toContain('aria-disabled="true"')
   expect(button(html, 'Run anyway')).toBeUndefined()
-  // Armed again, the member's own label is back.
   const armed = cell(2, state(ref, { armed: { by: 'r_x', at_ms: 0, summary: 's' } }), { extras: { runText: "Run Alice's edit" } })
   expect(button(armed.html, 'Run Alice&#x27;s edit')).toBeDefined()
+})
+
+test('#1: the inline question a press of an unarmed cell asks names the preview and why', () => {
+  expect(gateQuestion('preview-ir-prod1', 'after: preview-ir-prod1 — run it first')).toBe('preview `preview-ir-prod1` hasn’t run — Run anyway?')
+  expect(gateQuestion('x', 'after: x is not armed')).toBe('preview `x` hasn’t run — Run anyway?')
+  expect(gateQuestion('x', 'after: x did not succeed — run it again')).toBe('preview `x` did not succeed — Run anyway?')
+  expect(gateQuestion('x', 'the x run is more than 1 h old — run it again')).toBe('the x run is more than 1 h old — Run anyway?')
+})
+
+test('#1: a long label shows cut to 40 characters with …, the whole label as the button’s tooltip', () => {
+  const label = 'Add 10.203 return route to west PostInspect in cent-net'
+  const c = cellOf('zsh', `#| cwd: /tmp\n#| label: ${label}\nip route add x`)
+  if (!c) throw new Error('cell')
+  const html = render(h(Cell, { cellRef: ref, cell: c, code: c.code, runnable: true, view: 'ready', state: state(ref), latest: null, host: null, callbacks, editor: null }))
+  const short = shortLabel(label)
+  expect([...short]).toHaveLength(40)
+  expect(short.endsWith('…')).toBe(true)
+  const b = button(html, short)
+  expect(b).toBeDefined()
+  expect(b).toContain(`title="${label}"`)
 })
 
 test('L11 fields render when present and nothing when absent', () => {

@@ -23,7 +23,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { type AttachRef, subtitle } from '@/lib/attach'
 import type { EngineProvider } from '@/lib/doc/provider'
 import { EMPTY, useNoteChat } from '@/lib/note-chat'
-import { canPopout, closePopout, isPopout, openPopout } from '@/lib/popout'
+import { canPopout, closePopout, isSoloPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { on } from '@/store/sessions'
 import { cn } from '@/lib/utils'
@@ -148,7 +148,7 @@ export function NoteView({ id, isNew = false, nb, embedded = false, meeting }: {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: queryKeys.notes })
       toast(`Deleted ${title || 'the note'}`)
-      if (isPopout()) closePopout()
+      if (isSoloPopout()) closePopout()
       else void navigate({ to: '/notes' })
     },
     onError: (e) => toast.error(e.message),
@@ -170,7 +170,7 @@ export function NoteView({ id, isNew = false, nb, embedded = false, meeting }: {
   }
   // Popped (`lib/popout.ts`): no second "new window"; the document is the one the main window edits, so both editors
   // follow each other through the document actor like two devices. The chat panel is there too (143 D8).
-  const popped = isPopout()
+  const popped = isSoloPopout()
   const kind = live.provider?.meta?.kind
 
   return (

@@ -64,6 +64,7 @@ const doc: DocSummary = {
   created_ms: new Date(2026, 8, 20, 9, 0).getTime(),
   updated_ms: new Date(2026, 8, 24, 9, 0).getTime(),
   bytes: 1024,
+  project: null,
 }
 const meta: Meta = {
   id: 'decisions/prod-dr',
@@ -222,4 +223,10 @@ test('183 R2: a chat seeded from a peer message never shows the wrapper', () => 
   expect(cleanTitle('<message from="peer:xeus" id="x">\nhello\n</message>')).toBe('Message from xeus: hello')
   expect(cleanTitle('Message from ops: P2 ping')).toBe('Message from ops: P2 ping')
   expect(cleanTitle('Gateway limits')).toBe('Gateway limits')
+})
+
+test('a chat seeded from a schedule fire is named for its schedule, never the wrapper', () => {
+  expect(cleanTitle('<schedule name="dreaming" at="2026-11-03T02:00:00+00:00" qu…')).toBe('dreaming')
+  expect(cleanTitle('<schedule name="morning-br…')).toBe('morning-br')
+  expect(chatName({ title: '<schedule name="" at="x">', created_at: '2026-11-09T01:55:00Z' })).toBe('<schedule name="" at="x">')
 })

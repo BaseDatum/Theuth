@@ -3089,6 +3089,12 @@ pub struct SessionSummary {
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Last activity: creation or the last appended message. The list order.
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// When this session's last turn finished (`sessions.finished_at`, persisted by `turn_finished`);
+    /// `None` before its first. Unlike `updated_at`, never moved by an edit, rename or move: clients use it
+    /// as "last active" (the sidebar keeps a recently active root in `Active` for a while).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Model-written name of what the session is about now (07 §15); the first input, truncated, until then.
     pub title: String,
     /// Keywords the title model assigned beside the title (`[a-z0-9-]`, at

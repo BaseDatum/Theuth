@@ -15,7 +15,7 @@ vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => vi.fn(),
   useRouterState: () => '/notebooks/nb1',
 }))
-vi.mock('@/lib/popout', async (original) => ({ ...(await original<typeof Popout>()), isPopout: () => env.popped }))
+vi.mock('@/lib/popout', async (original) => ({ ...(await original<typeof Popout>()), isPopout: () => env.popped, isSoloPopout: () => env.popped }))
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
 vi.mock('@/components/ui/sidebar', () => ({ useSidebar: () => ({ open: true, isMobile: false, toggleSidebar: () => {} }) }))
 vi.mock('@/components/sidebar/SearchTrigger', () => ({ SearchTrigger: () => null }))

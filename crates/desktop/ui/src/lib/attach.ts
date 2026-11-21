@@ -128,10 +128,13 @@ export function size(bytes: number | bigint): string {
 /** A chat's name: its title, else `Untitled chat · <created MMM d>` — the engine's own rule for search hits (§8). */
 /**
  * 183 R2: a title seeded from a peer message's wrapper (`<message from="…" …>`, before the engine named those
- * chats `Message from …`) reads `Message from <who>[: <first body line>]`, never the wrapper. Anything else as is.
+ * chats `Message from …`) reads `Message from <who>[: <first body line>]`, never the wrapper; one seeded from a
+ * schedule fire's wrapper (`<schedule name="…" at="…" …>`) reads as the schedule's name. Anything else as is.
  */
 export function cleanTitle(title: string): string {
   const t = title.trim()
+  const sched = /^<schedule name="([^"]*?)…?(?:"|$)/.exec(t)?.[1]?.trim()
+  if (sched) return sched
   const m = /^<message from="([^"]*)/.exec(t)
   if (!m) return title
   const from = m[1] ?? ''

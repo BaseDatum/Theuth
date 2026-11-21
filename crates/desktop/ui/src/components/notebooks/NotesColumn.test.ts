@@ -51,7 +51,7 @@ const estimate: ContextEstimate = {
   empty: false,
 }
 const item = (id: string, added: number): NotebookItem => ({ notebook: NB, kind: 'note', item: id, added_ms: added, added_by: 'owner', removed_ms: null })
-const note = (id: string, title: string): DocSummary => ({ id, kind: 'note', title, binding: 'note', created_ms: 1, updated_ms: Date.now() - 7_200_000, bytes: 0 })
+const note = (id: string, title: string): DocSummary => ({ id, kind: 'note', title, binding: 'note', created_ms: 1, updated_ms: Date.now() - 7_200_000, bytes: 0, project: null })
 
 const render = () => {
   const qc = new QueryClient()

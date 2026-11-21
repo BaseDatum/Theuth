@@ -219,6 +219,7 @@ mod tests {
             kernel: KernelId {
                 scope: Scope::Session(SessionId(uuid::Uuid::nil())),
                 spec: KernelSpec::Monty,
+                instance: 0,
             },
             interpreter: "monty".into(),
             cwd: "~".into(),

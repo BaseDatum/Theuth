@@ -45,7 +45,7 @@ const PROMPT = `${PLAN.replaceAll('\n', '\r\n')}\r\n\x1b[1mDo you want to perfor
 type Scenario = { title: string; session: string; text: string; states: (ref: CellRef, i: number) => Partial<CellState>; kernels?: KernelState['phase'] }
 const sid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
 const kernelOf = (session: string, phase: KernelState['phase']): KernelState => ({
-  id: { scope: { type: 'session', id: session }, spec: { type: 'shell', kind: 'bash', path: '/opt/homebrew/bin/bash' } },
+  id: { scope: { type: 'session', id: session }, spec: { type: 'shell', kind: 'bash', path: '/opt/homebrew/bin/bash' }, instance: 0 },
   phase,
   label: 'bash 5.2 (Homebrew)',
   cwd: '/Users/sky/dr-t6/frp-integration/stacks/sa-frp-integration',

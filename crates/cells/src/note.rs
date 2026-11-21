@@ -705,6 +705,7 @@ mod tests {
             kernel: KernelId {
                 scope: Scope::Doc(DocId(doc.into())),
                 spec: KernelSpec::Monty,
+                instance: 0,
             },
             interpreter: "Monty · sandboxed".into(),
             cwd: "/tmp".into(),

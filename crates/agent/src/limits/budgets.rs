@@ -199,18 +199,13 @@ async fn sessions(db: &SqlitePool) -> anyhow::Result<Vec<BudgetLimit>> {
         }
         let title = title.unwrap_or_default();
         let (key, label, period) = if unattended.unwrap_or(0) != 0 {
-            let name = title
-                .split(" · ")
-                .next()
-                .unwrap_or(&title)
-                .trim()
-                .to_owned();
+            let name = crate::store::accounting::routine_name(&title).to_owned();
             (format!("routine:{name}"), name, "night")
         } else {
-            let label = if title.is_empty() {
+            let label = if title.trim().is_empty() {
                 format!("Session {}", id.get(..8).unwrap_or(&id))
             } else {
-                title
+                crate::attach::session_title(&title, None, None)
             };
             (format!("session:{id}"), label, "run")
         };
@@ -334,11 +329,16 @@ mod tests {
         charge(&store, child, 0.75).await;
 
         // Two dreaming nights: only the latest is shown, spend since its stamp.
+        // The latest's title was seeded from the fire's `<schedule>` wrapper (the
+        // raw label once shown on the limits panel): it is still `dreaming`.
         let raw = sqlx::SqlitePool::connect(&format!("sqlite:{}", path.display()))
             .await
             .unwrap();
         let mut nights = Vec::new();
-        for _ in 0..2 {
+        for title in [
+            "dreaming · dreaming",
+            "<schedule name=\"dreaming\" at=\"2026-11-03T02:00:00+00:00\" qu…",
+        ] {
             let s = SessionId::new();
             store
                 .create_session(s, "m", None, None, None)
@@ -348,12 +348,17 @@ mod tests {
             charge(&store, s, 3.0).await;
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             let since = chrono::Utc::now().to_rfc3339();
-            sqlx::query("UPDATE sessions SET title = 'dreaming · dreaming', unattended = 1, budget = ?1 WHERE id = ?2")
-                .bind(format!(r#"{{"nanos":25000000000,"currency":"USD","since":"{since}"}}"#))
-                .bind(s.to_string())
-                .execute(&raw)
-                .await
-                .unwrap();
+            sqlx::query(
+                "UPDATE sessions SET title = ?3, unattended = 1, budget = ?1 WHERE id = ?2",
+            )
+            .bind(format!(
+                r#"{{"nanos":25000000000,"currency":"USD","since":"{since}"}}"#
+            ))
+            .bind(s.to_string())
+            .bind(title)
+            .execute(&raw)
+            .await
+            .unwrap();
             nights.push(s);
         }
         charge(&store, nights[1], 2.5).await;

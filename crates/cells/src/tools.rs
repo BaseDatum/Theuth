@@ -285,6 +285,7 @@ mod tests {
             kernel: crate::KernelId {
                 scope: Scope::Doc(doc),
                 spec: crate::KernelSpec::Monty,
+                instance: 0,
             },
             interpreter: "Monty".into(),
             cwd: "/tmp".into(),

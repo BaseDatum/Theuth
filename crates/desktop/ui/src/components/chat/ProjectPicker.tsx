@@ -19,9 +19,23 @@ const NONE = 'none'
 const NEW = 'new'
 const item = (label: string) => `p:${label}`
 
-/** Existing project, none, or a new label typed inline. `value` is the label as typed (untrimmed) or `null`. */
-export function ProjectPicker({ id, value, onChange }: { id?: string; value: string | null; onChange(v: string | null): void }) {
-  const projects = useProjects()
+/**
+ * Existing project, none, or a new label typed inline. `value` is the label as typed (untrimmed) or `null`.
+ * `extra`: labels known only outside the sessions (the notes list's), offered beside theirs.
+ */
+export function ProjectPicker({
+  id,
+  value,
+  onChange,
+  extra = [],
+}: {
+  id?: string
+  value: string | null
+  onChange(v: string | null): void
+  extra?: readonly string[]
+}) {
+  const sessions = useProjects()
+  const projects = extra.length ? [...new Set([...sessions, ...extra])].sort() : sessions
   const [creating, setCreating] = useState(false)
   const selected = creating ? NEW : value === null ? NONE : item(value)
   return (

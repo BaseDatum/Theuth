@@ -33,28 +33,55 @@ export type RunbookBarProps = {
   runnable?: boolean
 }
 
-/** Why Run all would stop before this cell (§7.2), seen in advance; `null` = it runs. An `after` gate on a cell earlier in this pass arms during the pass. */
-function boundary(step: Step, before: Step[]): string | null {
+/**
+ * Why Run all would stop before this cell (§7.2), seen in advance; `null` = it runs. `after:` is advisory: the pass runs
+ * an unarmed `after` cell (recording `ran_past`), so it is never a boundary.
+ */
+function boundary(step: Step): string | null {
   const o = step.spec.options
   const s = step.state
   if (o.danger) return 'danger'
   if (s?.problems.some((p) => p.severity === 'error')) return 'invalid'
   if (s?.problems.some((p) => p.code === 'cwd_not_found')) return 'folder not found'
   if (s?.chips.some((c) => c.stops_run_all)) return 'lint'
-  if (o.after && !s?.armed && !before.some((b) => b.spec.options.name === o.after)) return 'not armed'
   return null
 }
 
 /**
  * 171F B8: a step a newer reply replaced stands for its replacement once the replacement's state is loaded (`next[i]`,
- * the state of `superseded_by`): its ref, state and spec (`specOf`, else the old spec). Until then it stays as it is
- * and Run all skips it.
+ * the newest version's state, `replacementOf`): its ref, state and spec (`specOf`, else the old spec). Until then it
+ * stays as it is and Run all skips it.
  */
 export function followSuperseded(steps: Step[], next: (CellState | null)[], specOf: (ref: CellRef) => CellSpec | null): Step[] {
   return steps.map((s, i) => {
     const n = next[i]
     return s.state?.superseded_by && n ? { ref: n.cell, state: n, spec: specOf(n.cell) ?? s.spec, seen: n.digest } : s
   })
+}
+
+/**
+ * Item (c): the newest version of `ref` along `superseded_by`, as far as `states` (the scope's record) holds it — `ref`'s
+ * own state when nothing replaced it, the newest loaded version's otherwise (still `superseded_by` while the next one is
+ * not read yet). `chain`: the refs past `ref` along the way, which the caller watches so the next read brings them.
+ */
+export function newestOf(states: Record<string, CellState>, ref: CellRef | null): { state: CellState | null; chain: CellRef[] } {
+  let state = ref ? (states[refKey(ref)] ?? null) : null
+  const chain: CellRef[] = []
+  const seen = new Set(ref ? [refKey(ref)] : [])
+  for (let next = state?.superseded_by; next && !seen.has(refKey(next)); next = state?.superseded_by) {
+    seen.add(refKey(next))
+    chain.push(next)
+    const s = states[refKey(next)]
+    if (!s) break
+    state = s
+  }
+  return { state, chain }
+}
+
+/** The replacement `ref` stands for: the newest version once read and live (no `superseded_by`), else `null`. */
+export function replacementOf(states: Record<string, CellState>, ref: CellRef | null): CellState | null {
+  const { state } = newestOf(states, ref)
+  return ref && state && !state.superseded_by && refKey(state.cell) !== refKey(ref) ? state : null
 }
 
 /** Run all's `(ref, seen)` pairs: a followed replacement as the engine presented it, the reply's own cells with the digest of their text. */
@@ -76,7 +103,7 @@ export function runAllLabel(steps: Step[], pass: PassEnd | null = null): { label
     const where = stop.before ? `stopped before ${titleOf((live[stoppedAt] as Step).spec, stoppedAt + 1)}` : 'stopped at a failed step'
     return { label: `Run all · ${where} (${stoppedAt + 1}/${total})`, done, total, stop: { at: stoppedAt, reason: stop.why } }
   }
-  const at = live.findIndex((s, i) => boundary(s, live.slice(0, i)) !== null)
+  const at = live.findIndex((s) => boundary(s) !== null)
   const next = live[at]
   return { label: next ? `Run all · stops before ${titleOf(next.spec, at + 1)}` : 'Run all', done, total, stop: null }
 }

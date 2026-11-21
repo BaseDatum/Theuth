@@ -434,6 +434,7 @@ mod tests {
             id: KernelId {
                 scope: Scope::Session(SessionId(uuid::Uuid::nil())),
                 spec: spec.clone(),
+                instance: 0,
             },
             owner: SessionId(uuid::Uuid::nil()),
             login_env: Arc::new(BTreeMap::new()),

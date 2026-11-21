@@ -6,7 +6,7 @@ import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { type AnyRouter, useRouter } from '@tanstack/react-router'
 import { BookOpen, FileText, type LucideIcon, MessageSquare, Mic, StickyNote } from 'lucide-react'
-import { type ComponentProps, type ReactNode, createContext, useContext, useEffect, useMemo } from 'react'
+import { type ComponentProps, type MouseEvent, type ReactNode, createContext, useContext, useEffect, useMemo } from 'react'
 import { useNotebookChat } from '@/components/notebooks/NotebookContext'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -15,6 +15,7 @@ import { notebookKeys, notebooksApi } from '@/lib/notebooks-rpc'
 import type { Citation } from "@/rpc/bindings/method.agent.output"
 import type { CiteKind } from "@/rpc/bindings/method.agent.output"
 import { cn } from '@/lib/utils'
+import { openExternal } from '@/lib/platform'
 import { useConnection } from '@/store/connection'
 import { useScopedDisclosure } from './disclosure'
 
@@ -65,7 +66,8 @@ const KIND_WORD: Record<CiteKind, string> = { notes: 'note', sources: 'source', 
 const driftNote = (c: Citation | undefined): string | null =>
   c?.status === 'changed' ? 'source changed since this was cited' : c?.status === 'moved' ? 'passage moved — opens the document' : null
 
-/** Markdown `a`: a `theuth://` href becomes a chip; anything else stays a plain anchor. A dangling chip's card is a
+/** Markdown `a`: a `theuth://` href becomes a chip; an http(s)/mailto href opens in the user's browser (the webview
+ * would otherwise navigate itself away); anything else stays a plain anchor. A dangling chip's card is a
  * disclosure of the message, keyed by the href (171F B13). */
 export function CitationLink({ node: _node, href, children, ...rest }: ComponentProps<'a'> & { node?: unknown }) {
   const cite = href ? parseTheuthHref(href) : null
@@ -73,8 +75,23 @@ export function CitationLink({ node: _node, href, children, ...rest }: Component
   const open = useOpenCite()
   const [shown, setShown] = useScopedDisclosure(`cite|${href ?? ''}`)
   if (!cite) {
+    const external = href !== undefined && /^(https?:|mailto:)/i.test(href) ? href : null
     return (
-      <a href={href} {...rest}>
+      <a
+        href={href}
+        {...rest}
+        {...(external
+          ? {
+              target: '_blank',
+              rel: 'noopener noreferrer',
+              onClick: (e: MouseEvent<HTMLAnchorElement>) => {
+                e.preventDefault()
+                e.stopPropagation()
+                openExternal(external)
+              },
+            }
+          : {})}
+      >
         {children}
       </a>
     )

@@ -36,6 +36,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
 import { useDrafts } from '@/lib/drafts'
+import { type HideOp, serverOps, toolOps, useMcpHide, withDraftHides } from '@/lib/mcp-hide'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { LOCAL, useEngines } from '@/link/engines'
 import type { Gate } from "@/rpc/bindings/method.mcp_2dserver.output"
@@ -74,7 +75,7 @@ const RISK_NAME: Record<Risk, string> = {
 /** The mutations every server and tool row shares; owned by `Tools`. */
 type Actions = {
   gate: Action<{ server: string; tool: string | null; gate: Gate | null }, null>
-  hidden: Action<{ names: string[]; hidden: boolean }, null>
+  hidden: Action<HideOp[], null>
   switchTo: Action<{ server: McpServer; to: SwitchState }, void>
   /** The sign-in URL the engine opened on its host, and whether that host is this machine (`local`). */
   login: Action<string, { url: string; local: boolean }>
@@ -89,32 +90,23 @@ function useMcpActions(session: string | null): Actions {
   const api = useApi()
   const active = useEngines((s) => s.active)
   const keys = [queryKeys.mcp(session), queryKeys.mcp(null)]
-  const hide = async (names: string[], hidden: boolean) => {
-    if (session === null) throw new Error('Open a chat first')
-    if (session === '') useDrafts.getState().setHidden(names, hidden)
-    else await api.set_mcp_hidden(session, names, hidden)
-    return null
-  }
+  const hide = useMcpHide(session)
   return {
     gate: useAction(
       (v: { server: string; tool: string | null; gate: Gate | null }) =>
         api.set_mcp_gate(v.server, v.tool, v.gate),
       { keys },
     ),
-    hidden: useAction(
-      (v: { names: string[]; hidden: boolean }) => hide(v.names, v.hidden),
-      { keys },
-    ),
+    hidden: useAction(hide, { keys }),
     // ⏎ in the TUI: turning on undoes whichever switch is off; off asks for the scope.
     switchTo: useAction(
       async (v: { server: McpServer; to: SwitchState }) => {
         const from = serverSwitch(v.server)
-        const names = v.server.tools.flatMap((t) => (t.registered === null ? [] : [t.registered]))
         if (v.to === 'on') {
-          if (from === 'session') await hide(names, false)
+          if (from === 'session') await hide(serverOps(v.server, false))
           else if (from === 'always') await api.set_mcp_gate(v.server.name, null, null)
         } else if (v.to === 'session') {
-          await hide(names, true)
+          await hide(serverOps(v.server, true))
         } else if (from !== 'always') await api.set_mcp_gate(v.server.name, null, 'off')
       },
       { keys },
@@ -197,7 +189,7 @@ export function Tools({ session }: { session: string | null }) {
         </Empty>
       )}
       {servers.data?.map((server) => {
-        const s = session === '' ? { ...server, tools: server.tools.map((t) => ({ ...t, hidden: t.registered ? hidden?.[t.registered] ?? t.hidden : t.hidden })) } : server
+        const s = session === '' ? withDraftHides(server, hidden) : server
         return <ServerRow key={s.name} server={s} session={session} machines={machines} act={act} />
       })}
     </Section>
@@ -376,7 +368,7 @@ function ServerRow({
       )}
       <CollapsibleContent className="mt-2 ml-6">
         {s.tools.map((t) => (
-          <ToolRow key={t.name} server={s.name} tool={t} session={session} act={act} />
+          <ToolRow key={t.name} server={s} tool={t} session={session} act={act} />
         ))}
       </CollapsibleContent>
     </Collapsible>
@@ -405,7 +397,7 @@ function ToolRow({
   session,
   act,
 }: {
-  server: string
+  server: McpServer
   tool: McpToolInfo
   session: string | null
   act: Actions
@@ -433,15 +425,13 @@ function ToolRow({
         <GateSelect
           value={t.gate}
           off
-          onChange={(gate) => act.gate.mutate({ server, tool: t.name, gate })}
+          onChange={(gate) => act.gate.mutate({ server: server.name, tool: t.name, gate })}
         />
         <Switch
           checked={!t.hidden}
           disabled={session === null || t.registered === null}
           title={session === null ? CHAT_HINT : undefined}
-          onCheckedChange={(v) =>
-            t.registered && act.hidden.mutate({ names: [t.registered], hidden: !v })
-          }
+          onCheckedChange={(v) => t.registered && act.hidden.mutate(toolOps(server, t.registered, !v))}
         />
       </div>
     </div>

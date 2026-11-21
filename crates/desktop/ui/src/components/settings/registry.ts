@@ -6,13 +6,14 @@ import { learning } from '@/components/settings/categories/learning'
 import { meetings } from '@/components/settings/categories/meetings'
 import { models } from '@/components/settings/categories/models'
 import { network } from '@/components/settings/categories/network'
+import { suffixes } from '@/components/settings/categories/suffixes'
 import { tools } from '@/components/settings/categories/tools'
 import { voice } from '@/components/settings/categories/voice'
 import type { SettingsCategory, SettingsTab } from '@/components/settings/types'
 import { supports, type Discovery } from '@/rpc/discovery'
 
 /** 188: the categories column, top to bottom. */
-export const CATEGORIES: readonly SettingsCategory[] = [general, models, agent, learning, voice, meetings, calendar, network, channels, tools]
+export const CATEGORIES: readonly SettingsCategory[] = [general, models, agent, suffixes, learning, voice, meetings, calendar, network, channels, tools]
 
 /** A tab id and the category it belongs to. */
 export type Placed = { category: SettingsCategory; tab: SettingsTab }
@@ -33,6 +34,7 @@ export const TAB_IDS = [
   'appearance', 'app', 'shortcuts',
   'models', 'helpers', 'providers',
   'loop', 'memory', 'approvals', 'advisor', 'autoresearch', 'harnesses',
+  'suffixes',
   'dreaming', 'double', 'decision',
   'voice', 'dictation', 'voice-key', 'voice-history',
   'meetings', 'detection', 'live', 'speakers', 'templates',
