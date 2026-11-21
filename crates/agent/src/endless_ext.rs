@@ -6,7 +6,9 @@
 
 use runtime::SessionId;
 
-use crate::endless::{Backfill, Endless, MemoryMode, SessionMemory, ViewBlock, ViewLine};
+use crate::endless::{
+    Backfill, Endless, MemoryMode, SessionMemory, TailOverride, ViewBlock, ViewLine,
+};
 
 /// What `/endless on` tells the user (R1-D3, R1-D4), from the service's
 /// [`Backfill`] (`usd` is the service's remaining × measured $ per unit) and
@@ -77,6 +79,23 @@ pub async fn set_view_bytes(
     }
     endless
         .set_view_bytes(session, bytes)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    endless.memory(session).await.map_err(|e| format!("{e:#}"))
+}
+
+/// 201 §4.2: the per-session tail override (`None` clears it), validated
+/// against the §12.1 ranges and high above low; returns the state after the write.
+pub async fn set_tail(
+    endless: &Endless,
+    session: SessionId,
+    tail: Option<TailOverride>,
+) -> Result<SessionMemory, String> {
+    if let Some(t) = &tail {
+        t.validate()?;
+    }
+    endless
+        .set_tail(session, tail)
         .await
         .map_err(|e| format!("{e:#}"))?;
     endless.memory(session).await.map_err(|e| format!("{e:#}"))
@@ -221,6 +240,7 @@ mod tests {
             effort: None,
             effort_override: None,
             spend_today_usd: 0.0,
+            ..Default::default()
         }
     }
 

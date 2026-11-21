@@ -1149,6 +1149,9 @@ impl Roster {
         // 137 R1-D7 / D14: a reopened desk whose session is in the other
         // mode switches at its next idle moment (backfill, then flip); a
         // per-agent `view_bytes:` is applied the same way.
+        // 201 §4.2 / §7.1 seam: the per-agent `tail_*:` and `profile:` keys
+        // are parsed and carried on the file; phases P2 (tail) and P3
+        // (profile) apply them to the desk session.
         let memory = agents
             .ask(agent::SessionMemoryQuery { session })
             .await
@@ -2946,6 +2949,12 @@ impl Message<ListAgents> for Roster {
                             memory: None,
                             isolated_memory: false,
                             view_bytes: None,
+                            tail_mode: None,
+                            tail_low_bytes: None,
+                            tail_high_bytes: None,
+                            tail_low_share: None,
+                            tail_high_share: None,
+                            profile: None,
                             memory_model: None,
                             memory_effort: None,
                             body: String::new(),

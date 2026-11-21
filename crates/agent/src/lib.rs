@@ -249,8 +249,9 @@ pub use dreaming_ledger::{
     LedgerStop, LedgerToolError, LedgerUserMessage,
 };
 pub use endless::{
-    Backfill, Backlog, Endless, EndlessConfig, EndlessProgress, EndlessStats, GuardTrips,
-    MemoryMode, SessionMemory, SetMode, Stalled, UnitFilter, ViewLine, resolved_compactor_model,
+    Backfill, Backlog, DescribeImages, Endless, EndlessConfig, EndlessProgress, EndlessStats,
+    GuardTrips, MemoryMode, Profile, SessionMemory, SetMode, Stalled, TailMode, TailOverride,
+    UnitFilter, ViewLine, resolved_compactor_model,
 };
 pub use lifecycle::{
     Authorize, Authorized, CreateSession, LeaveSession, PrivateTrees, ResumePrivate, TreeOpened,
@@ -1369,6 +1370,17 @@ pub struct SetSessionViewBytes {
     pub session: SessionId,
     /// View budget in bytes.
     pub bytes: u32,
+}
+
+/// `ask` → `Result<SessionMemory, String>` (201 §4.2): the session's tail
+/// override (mode and both marks); `None` clears it (inherit the agent's,
+/// else `agent.endless`). Validated against the §12.1 ranges.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetSessionTail {
+    /// Target session.
+    pub session: SessionId,
+    /// The override; `None` clears it.
+    pub tail: Option<TailOverride>,
 }
 
 /// `ask` → `Result<EndlessConfig, String>` (137 §11.3): the live `agent.endless` section (never `Err`).

@@ -719,9 +719,9 @@ const ROOT_HOPS: usize = 32;
 /// decodes such a mask with both fields ignored and would replay the surface
 /// fences and page/app sources the user removed, the one thing
 /// [`crate::context::Mask::decode`] exists to prevent; so it must not take or
-/// apply these rows. The next migration that changes a replicated column
-/// bumps past 67 (to its own number, or 68 if that is 0067).
-pub const SESSIONS_WIRE_SCHEMA: u32 = 67;
+/// apply these rows. **69 (201 PC):** `0069_endless_tail` adds the
+/// per-session tail override columns to `sessions`.
+pub const SESSIONS_WIRE_SCHEMA: u32 = 69;
 
 impl Store {
     /// Open (creating) the database in WAL mode and run migrations. Two
@@ -4527,8 +4527,8 @@ mod tests {
     #[tokio::test]
     async fn sessions_wire_schema_tracks_the_replicated_columns() {
         const SNAPSHOT: (u32, &str) = (
-            67,
-            "sessions: id,created_at,title,model,parent,name,effort,cut_at,agent,acp_session,cwd,updated_at,pinned,todo_version,context_revision,scope,alias,project,archived,tags,harness_model,unattended,owner,epoch,desk,harness_commands,context_size,acp_skills,last_stop,finished_at,kind,memory,endless_base,endless_filter,endless_view_bytes,budget,observed_source,observed_state,observed_stop,observed_cancel,observed_description,observed_tool_call,observed_detail,observed_cursor,observed_cost_rule,notebook,acp_previous,endless_paused,endless_spend_override,endless_model,endless_agent_model,approvals,communication,contact_inbox,hidden_tools,endless_effort,endless_agent_effort,knowledge_identity
+            69,
+            "sessions: id,created_at,title,model,parent,name,effort,cut_at,agent,acp_session,cwd,updated_at,pinned,todo_version,context_revision,scope,alias,project,archived,tags,harness_model,unattended,owner,epoch,desk,harness_commands,context_size,acp_skills,last_stop,finished_at,kind,memory,endless_base,endless_filter,endless_view_bytes,budget,observed_source,observed_state,observed_stop,observed_cancel,observed_description,observed_tool_call,observed_detail,observed_cursor,observed_cost_rule,notebook,acp_previous,endless_paused,endless_spend_override,endless_model,endless_agent_model,approvals,communication,contact_inbox,hidden_tools,endless_effort,endless_agent_effort,knowledge_identity,endless_tail_mode,endless_tail_low,endless_tail_high
 messages: session_id,seq,body,excluded,vision,at,thinking_ms,advisory,channel,moved,peer
 epochs: session_id,n,at_seq,tail_from,head,created_at,excluded
 todo_snapshots: session_id,at_seq,k,source,items
@@ -4590,7 +4590,8 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
             .unwrap();
         assert_eq!(done, 0, "`done` defaults to 0");
         assert!(!capture::ATTACHED.iter().any(|(t, _)| *t == "contact_files"));
-        assert_eq!(SESSIONS_WIRE_SCHEMA, 67);
+        // 0068 did not bump it (a later migration, 0069, did).
+        assert_ne!(SESSIONS_WIRE_SCHEMA, 68);
     }
 
     /// 199 D17: a repeat of one error id leaves one row.

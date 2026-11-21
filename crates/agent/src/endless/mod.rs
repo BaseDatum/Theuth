@@ -93,6 +93,49 @@ pub struct EndlessConfig {
     /// 137G G11: USD a chat's compactor may spend per UTC day (0..=1000, 0 = no cap); reaching it pauses settling (`paused_by: "spend"`).
     #[cfg_attr(feature = "ts", ts(as = "Option<f64>", optional))]
     pub max_usd_per_session_day: f64,
+    /// 201 §4.2: how the verbatim tail is sized (`fixed` | `scaled`).
+    #[cfg_attr(feature = "ts", ts(as = "Option<TailMode>", optional))]
+    pub tail_mode: TailMode,
+    /// 201 §4.2 fixed mode: verbatim context kept after a trim (8_000..=256_000).
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub tail_low_bytes: u32,
+    /// 201 §4.2 fixed mode: where a trim is due (16_000..=512_000); above the low mark.
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub tail_high_bytes: u32,
+    /// 201 §4.2 scaled mode: low mark as a share of the session model's turn allowance (0.02..=0.40).
+    #[cfg_attr(feature = "ts", ts(as = "Option<f64>", optional))]
+    pub tail_low_share: f64,
+    /// 201 §4.2 scaled mode: high mark as a share (0.05..=0.60); above the low share.
+    #[cfg_attr(feature = "ts", ts(as = "Option<f64>", optional))]
+    pub tail_high_share: f64,
+    /// 201 §4.3: idle seconds after which a trim is taken early (0..=86_400);
+    /// 0 = the transport's cache lifetime.
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub cold_after_secs: u32,
+    /// 201 §7.1: compactor profile (`auto` | `standard` | `small`).
+    #[cfg_attr(feature = "ts", ts(as = "Option<Profile>", optional))]
+    pub profile: Profile,
+    /// 201 §6: share of `view_bytes` at which merges start being built (0.50..=1.00).
+    #[cfg_attr(feature = "ts", ts(as = "Option<f64>", optional))]
+    pub merge_at: f64,
+    /// 201 §9: the state ledger and its tool.
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub ledger: bool,
+    /// 201 §9: ledger snapshot budget in bytes (1_000..=16_000).
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub ledger_bytes: u32,
+    /// 201 §9: summary-model flags shown as unconfirmed suggestions.
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub ledger_suggestions: bool,
+    /// 201 §10: recall hits appended to the input, in bytes (0..=8_000); 0 = off.
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub prefetch_bytes: u32,
+    /// 201 §10: a zoomed line stays unmerged for one generation.
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub age_by_use: bool,
+    /// 201 §8: one-line description when an image leaves the tail (`auto` | `off`).
+    #[cfg_attr(feature = "ts", ts(as = "Option<DescribeImages>", optional))]
+    pub describe_images: DescribeImages,
 }
 
 impl Default for EndlessConfig {
@@ -122,6 +165,20 @@ impl Default for EndlessConfig {
             batch_units: 16,
             max_usd_per_call: 0.10,
             max_usd_per_session_day: 5.0,
+            tail_mode: TailMode::Fixed,
+            tail_low_bytes: 24_000,
+            tail_high_bytes: 64_000,
+            tail_low_share: 0.10,
+            tail_high_share: 0.25,
+            cold_after_secs: 0,
+            profile: Profile::Auto,
+            merge_at: 0.75,
+            ledger: true,
+            ledger_bytes: 4_000,
+            ledger_suggestions: true,
+            prefetch_bytes: 2_000,
+            age_by_use: true,
+            describe_images: DescribeImages::Auto,
         }
     }
 }
@@ -139,6 +196,287 @@ impl EndlessConfig {
             slack: self.slack.clamp(0.0, 0.5),
             raw_bytes: self.raw_bytes.clamp(4_000, 128_000),
         }
+    }
+
+    /// 201 §12.1: this config with every 201 range applied (the clamp at
+    /// use; the 137 keys clamp where they are read, as before).
+    pub fn clamped(&self) -> Self {
+        let mut c = self.clone();
+        c.tail_low_bytes = c.tail_low_bytes.clamp(TAIL_LOW_BYTES.0, TAIL_LOW_BYTES.1);
+        c.tail_high_bytes = c
+            .tail_high_bytes
+            .clamp(TAIL_HIGH_BYTES.0, TAIL_HIGH_BYTES.1);
+        c.tail_low_share = clamp_f(c.tail_low_share, TAIL_LOW_SHARE);
+        c.tail_high_share = clamp_f(c.tail_high_share, TAIL_HIGH_SHARE);
+        c.cold_after_secs = c.cold_after_secs.min(86_400);
+        c.merge_at = clamp_f(c.merge_at, (0.50, 1.00));
+        c.ledger_bytes = c.ledger_bytes.clamp(1_000, 16_000);
+        c.prefetch_bytes = c.prefetch_bytes.min(8_000);
+        c
+    }
+
+    /// 201 §12.1: what `endless_settings_set` refuses among the 201 keys —
+    /// a value out of its range, or a pair whose high mark is not above its low one.
+    pub fn validate_201(&self) -> Result<(), String> {
+        let u = |key: &str, v: u32, (lo, hi): (u32, u32)| {
+            if (lo..=hi).contains(&v) {
+                Ok(())
+            } else {
+                Err(format!("{key} {v} out of range {lo}..={hi}"))
+            }
+        };
+        let f = |key: &str, v: f64, (lo, hi): (f64, f64)| {
+            if (lo..=hi).contains(&v) {
+                Ok(())
+            } else {
+                Err(format!("{key} {v} out of range {lo}..={hi}"))
+            }
+        };
+        u("tail_low_bytes", self.tail_low_bytes, TAIL_LOW_BYTES)?;
+        u("tail_high_bytes", self.tail_high_bytes, TAIL_HIGH_BYTES)?;
+        f("tail_low_share", self.tail_low_share, TAIL_LOW_SHARE)?;
+        f("tail_high_share", self.tail_high_share, TAIL_HIGH_SHARE)?;
+        u("cold_after_secs", self.cold_after_secs, (0, 86_400))?;
+        f("merge_at", self.merge_at, (0.50, 1.00))?;
+        u("ledger_bytes", self.ledger_bytes, (1_000, 16_000))?;
+        u("prefetch_bytes", self.prefetch_bytes, (0, 8_000))?;
+        tail_pair_ok(
+            f64::from(self.tail_low_bytes),
+            f64::from(self.tail_high_bytes),
+            "tail_low_bytes",
+            "tail_high_bytes",
+        )?;
+        tail_pair_ok(
+            self.tail_low_share,
+            self.tail_high_share,
+            "tail_low_share",
+            "tail_high_share",
+        )
+    }
+
+    /// This config with a per-agent or per-session tail override applied
+    /// (201 §4.2: the mode and its two marks, in that mode's unit).
+    pub fn with_tail(&self, o: Option<&TailOverride>) -> Self {
+        let mut c = self.clone();
+        if let Some(o) = o {
+            c.tail_mode = o.mode;
+            match o.mode {
+                TailMode::Fixed => {
+                    c.tail_low_bytes = o.low as u32;
+                    c.tail_high_bytes = o.high as u32;
+                }
+                TailMode::Scaled => {
+                    c.tail_low_share = o.low;
+                    c.tail_high_share = o.high;
+                }
+            }
+        }
+        c
+    }
+
+    /// 201 §4.2: the tail's (low, high) marks in bytes for a session whose
+    /// model allows `allowance_bytes` per turn. `fixed` takes the byte keys,
+    /// `scaled` the shares of `allowance_bytes`; both clamped to
+    /// 8_000..=512_000 with high above low, and scaled down together
+    /// (keeping their ratio) when high exceeds half of `allowance_bytes`.
+    /// Pure; phase P2 calls it.
+    pub fn tail_marks(&self, allowance_bytes: u64) -> (u32, u32) {
+        let c = self.clamped();
+        let (low, high) = match c.tail_mode {
+            TailMode::Fixed => (f64::from(c.tail_low_bytes), f64::from(c.tail_high_bytes)),
+            TailMode::Scaled => {
+                let a = allowance_bytes as f64;
+                (a * c.tail_low_share, a * c.tail_high_share)
+            }
+        };
+        let low = low.clamp(TAIL_MARK.0, TAIL_MARK.1 - 1.0);
+        let high = high.clamp(low + 1.0, TAIL_MARK.1);
+        let half = allowance_bytes as f64 / 2.0;
+        let (low, high) = if high > half {
+            let k = half / high;
+            (low * k, high * k)
+        } else {
+            (low, high)
+        };
+        let low = low.floor() as u32;
+        (low, (high.floor() as u32).max(low + 1))
+    }
+}
+
+/// 201 §12.1 ranges.
+const TAIL_LOW_BYTES: (u32, u32) = (8_000, 256_000);
+const TAIL_HIGH_BYTES: (u32, u32) = (16_000, 512_000);
+const TAIL_LOW_SHARE: (f64, f64) = (0.02, 0.40);
+const TAIL_HIGH_SHARE: (f64, f64) = (0.05, 0.60);
+/// 201 §4.2: both marks, in bytes, before the allowance scale-down.
+const TAIL_MARK: (f64, f64) = (8_000.0, 512_000.0);
+
+/// Clamp; a NaN reads as the low end.
+fn clamp_f(v: f64, (lo, hi): (f64, f64)) -> f64 {
+    if v.is_nan() { lo } else { v.clamp(lo, hi) }
+}
+
+/// 201 §12.1: a high mark not above its low mark is refused, naming both.
+fn tail_pair_ok(low: f64, high: f64, low_key: &str, high_key: &str) -> Result<(), String> {
+    if high > low {
+        Ok(())
+    } else {
+        Err(format!("{high_key} {high} must be above {low_key} {low}"))
+    }
+}
+
+/// 201 §4.2: how the verbatim tail is sized.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum TailMode {
+    /// `tail_low_bytes` / `tail_high_bytes`.
+    #[default]
+    Fixed,
+    /// `tail_low_share` / `tail_high_share` of the session model's turn allowance.
+    Scaled,
+}
+
+impl TailMode {
+    /// The stored string form.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fixed => "fixed",
+            Self::Scaled => "scaled",
+        }
+    }
+}
+
+impl std::fmt::Display for TailMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for TailMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "fixed" => Ok(Self::Fixed),
+            "scaled" => Ok(Self::Scaled),
+            _ => Err(format!("unknown tail mode: {s:?}")),
+        }
+    }
+}
+
+/// 201 §7.1: the compactor profile. Named `CompactorProfile` on the wire
+/// (TypeScript, JSON schema): `meeting` already exports a `Profile`.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, rename = "CompactorProfile")
+)]
+#[serde(rename = "CompactorProfile", rename_all = "snake_case")]
+pub enum Profile {
+    /// `small` for a local model or a known window of at most 32_000 tokens, else `standard`.
+    #[default]
+    Auto,
+    /// 137G as built, with fixes.
+    Standard,
+    /// One unit per call, short prompt and reply (§7.2).
+    Small,
+}
+
+impl Profile {
+    /// The stored string form.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Standard => "standard",
+            Self::Small => "small",
+        }
+    }
+}
+
+impl std::fmt::Display for Profile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for Profile {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "auto" => Ok(Self::Auto),
+            "standard" => Ok(Self::Standard),
+            "small" => Ok(Self::Small),
+            _ => Err(format!("unknown compactor profile: {s:?}")),
+        }
+    }
+}
+
+/// 201 §8: whether an image leaving the tail gets a one-line description.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum DescribeImages {
+    /// Described by the compactor chain.
+    #[default]
+    Auto,
+    /// Never described; the unit keeps its name only.
+    Off,
+}
+
+impl DescribeImages {
+    /// The stored string form.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Off => "off",
+        }
+    }
+}
+
+/// 201 §4.2: a per-session (or per-agent) tail override: the mode and its two
+/// marks in that mode's unit — bytes for `fixed`, shares of the turn
+/// allowance for `scaled`. Stored on the session row beside `endless_view_bytes`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct TailOverride {
+    /// How the tail is sized.
+    pub mode: TailMode,
+    /// Low mark: bytes (8_000..=256_000) or share (0.02..=0.40).
+    pub low: f64,
+    /// High mark: bytes (16_000..=512_000) or share (0.05..=0.60); above `low`.
+    pub high: f64,
+}
+
+impl TailOverride {
+    /// The §12.1 ranges of `mode` and high above low; `Err` names the values.
+    pub fn validate(&self) -> Result<(), String> {
+        let (lk, hk, lr, hr) = match self.mode {
+            TailMode::Fixed => (
+                "tail_low_bytes",
+                "tail_high_bytes",
+                (f64::from(TAIL_LOW_BYTES.0), f64::from(TAIL_LOW_BYTES.1)),
+                (f64::from(TAIL_HIGH_BYTES.0), f64::from(TAIL_HIGH_BYTES.1)),
+            ),
+            TailMode::Scaled => (
+                "tail_low_share",
+                "tail_high_share",
+                TAIL_LOW_SHARE,
+                TAIL_HIGH_SHARE,
+            ),
+        };
+        for (k, v, (lo, hi)) in [(lk, self.low, lr), (hk, self.high, hr)] {
+            if !(lo..=hi).contains(&v) {
+                return Err(format!("{k} {v} out of range {lo}..={hi}"));
+            }
+        }
+        tail_pair_ok(self.low, self.high, lk, hk)
     }
 }
 
@@ -431,6 +769,51 @@ pub struct SessionMemory {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(as = "Option<f64>", optional))]
     pub spend_today_usd: f64,
+    /// 201 §4.2: the tail sizing in force for this session (the session's
+    /// override, else `agent.endless.tail_mode`).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<TailMode>", optional))]
+    pub tail_mode: TailMode,
+    /// 201 §4.2: the low mark in force, in bytes ([`EndlessConfig::tail_marks`]).
+    /// In `scaled` mode 0 until phase P2 knows the session model's allowance.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub tail_low: u32,
+    /// 201 §4.2: the high mark in force, in bytes; as `tail_low`.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub tail_high: u32,
+    /// 201 §4.2: this chat's own tail override (`set_session_tail`); `None` = inherit.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub tail_override: Option<TailOverride>,
+    /// 201 §4.1: bytes of the verbatim tail now. Phase P2 fills it; 0 until then.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub tail_bytes: u32,
+    /// 201 §4.3: trims taken so far (the view's generation). Phase P2 fills it; 0 until then.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub generation: u32,
+    /// 201 §5: units whose line is still a draft. Phase P1 fills it; 0 until then.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub drafts: u32,
+    /// 201 §7.1: the resolved compactor profile, never `auto`. Phase P3
+    /// resolves it; `standard` until then.
+    #[serde(default = "standard_profile")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Profile>", optional))]
+    pub profile: Profile,
+    /// 201 §7.1: why `profile` was chosen, short text ("the model is local").
+    /// Phase P3 fills it; `""` until then.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<String>", optional))]
+    pub profile_reason: String,
+}
+
+/// [`SessionMemory::profile`] when absent on the wire: the resolved profile is never `auto`.
+fn standard_profile() -> Profile {
+    Profile::Standard
 }
 
 /// Bus event on the session stream, ≤ 1 per 500 ms per session (§11.2).
@@ -684,6 +1067,18 @@ impl Endless {
     /// larger one re-folds at the new budget (never cuts text).
     pub async fn set_view_bytes(&self, session: SessionId, bytes: u32) -> anyhow::Result<()> {
         pump::set_view_bytes(&self.inner, session, Some(bytes)).await
+    }
+
+    /// 201 §4.2: the session's tail override (persisted in
+    /// `sessions.endless_tail_mode/low/high`); `None` clears it. Validated by
+    /// the caller ([`TailOverride::validate`]). Nothing reads it for the
+    /// frame until phase P2.
+    pub async fn set_tail(
+        &self,
+        session: SessionId,
+        tail: Option<TailOverride>,
+    ) -> anyhow::Result<()> {
+        pump::set_tail(&self.inner, session, tail).await
     }
 
     /// R1-D1: the same render as the turn's, without freezing a context —

@@ -11,7 +11,7 @@ use crate::{
     ContextItems, ContextRemoval, ContextSnapshot, ContextTarget, Delivery, EditTurn,
     ForkSession, GetTodos, ListActivity, ListQueued, MemoryMode, PeerDeliver, PeerEnvelope,
     PeerReceipt, QueuedInput, Redo, Regenerate, RemoveContext, SendInput, SessionContextBreakdown,
-    SessionMemory, Steer, Undo, ViewLine, Withdraw,
+    SessionMemory, Steer, TailOverride, Undo, ViewLine, Withdraw,
 };
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
@@ -171,6 +171,15 @@ pub trait TurnsApi {
         &self,
         session: SessionId,
         bytes: u32,
+    ) -> RpcResult<SessionMemory>;
+    /// 201 §4.2: the session's tail override — the mode and its two marks
+    /// (bytes for `fixed`, shares for `scaled`); `null` clears it. Ranges as
+    /// `agent.endless`; a high mark not above the low one is refused.
+    #[method(name = "set_session_tail", with_extensions)]
+    async fn set_session_tail(
+        &self,
+        session: SessionId,
+        tail: Option<TailOverride>,
     ) -> RpcResult<SessionMemory>;
     /// Remove `targets` from the active context at `expected_revision`
     /// (design doc 48 §3.2). Atomic: stale revision, unknown targets or an
@@ -673,6 +682,19 @@ impl TurnsApiServer for Server {
             agent::SetSessionViewBytes { session, bytes },
         )
         .await
+    }
+
+    async fn set_session_tail(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        tail: Option<TailOverride>,
+    ) -> RpcResult<SessionMemory> {
+        self.authorize_fwd(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "set_session_tail", (session, tail)).await? {
+            return Ok(r);
+        }
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::SetSessionTail { session, tail }).await
     }
 
     async fn remove_context(

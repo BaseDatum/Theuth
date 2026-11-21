@@ -252,6 +252,30 @@ pub struct AgentFile {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub view_bytes: Option<u32>,
+    /// 201 §4.2: per-agent tail sizing; `None` = `agent.endless.tail_mode`.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub tail_mode: Option<agent::TailMode>,
+    /// 201 §4.2: per-agent fixed low mark in bytes (8_000..=256_000).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub tail_low_bytes: Option<u32>,
+    /// 201 §4.2: per-agent fixed high mark in bytes (16_000..=512_000), above the low one.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub tail_high_bytes: Option<u32>,
+    /// 201 §4.2: per-agent scaled low share (0.02..=0.40).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub tail_low_share: Option<f64>,
+    /// 201 §4.2: per-agent scaled high share (0.05..=0.60), above the low one.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub tail_high_share: Option<f64>,
+    /// 201 §7.1: per-agent compactor profile; `None` = `agent.endless.profile`.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub profile: Option<agent::Profile>,
     /// 137G: the compactor model of its desk sessions (the chain's agent link,
     /// below a chat's own pick); `None` = `agent.endless.model` → title → session.
     #[serde(default)]

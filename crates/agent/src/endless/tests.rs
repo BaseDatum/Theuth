@@ -2392,3 +2392,200 @@ fn an_endless_section_without_effort_loads() {
     let c: EndlessConfig = serde_json::from_value(serde_json::json!({ "model": "p/m" })).unwrap();
     assert_eq!((c.model.as_deref(), c.effort), (Some("p/m"), None));
 }
+
+/// 201 §12.1: the defaults are the table's.
+#[test]
+fn the_201_defaults_are_the_table() {
+    use super::{DescribeImages, Profile, TailMode};
+    let c = EndlessConfig::default();
+    assert_eq!(c.tail_mode, TailMode::Fixed);
+    assert_eq!((c.tail_low_bytes, c.tail_high_bytes), (24_000, 64_000));
+    assert_eq!((c.tail_low_share, c.tail_high_share), (0.10, 0.25));
+    assert_eq!(c.cold_after_secs, 0);
+    assert_eq!(c.profile, Profile::Auto);
+    assert_eq!(c.merge_at, 0.75);
+    assert_eq!(
+        (c.ledger, c.ledger_bytes, c.ledger_suggestions),
+        (true, 4_000, true)
+    );
+    assert_eq!((c.prefetch_bytes, c.age_by_use), (2_000, true));
+    assert_eq!(c.describe_images, DescribeImages::Auto);
+    assert!(!c.default_chat, "201 PC does not change default_chat");
+    assert_eq!(c.validate_201(), Ok(()));
+    // Lowercase on the wire.
+    let v = serde_json::to_value(&c).unwrap();
+    assert_eq!(
+        (&v["tail_mode"], &v["profile"], &v["describe_images"]),
+        (
+            &serde_json::json!("fixed"),
+            &serde_json::json!("auto"),
+            &serde_json::json!("auto")
+        )
+    );
+}
+
+/// 201 §12.1: a section written before 201 (with the retired 137 keys) loads with the new defaults.
+#[test]
+fn a_pre_201_section_loads_with_the_new_defaults() {
+    let c: EndlessConfig =
+        serde_yaml::from_str("view_bytes: 96000\nsettle_secs: 30\nraw_bytes: 16000\njobs: 4\n")
+            .unwrap();
+    assert_eq!(
+        (c.view_bytes, c.settle_secs, c.raw_bytes),
+        (96_000, 30, 16_000)
+    );
+    let d = EndlessConfig::default();
+    assert_eq!(
+        EndlessConfig {
+            view_bytes: d.view_bytes,
+            settle_secs: d.settle_secs,
+            raw_bytes: d.raw_bytes,
+            jobs: d.jobs,
+            ..c
+        },
+        d
+    );
+    let c: EndlessConfig =
+        serde_yaml::from_str("tail_mode: scaled\nprofile: small\ndescribe_images: off\n").unwrap();
+    assert_eq!(
+        (c.tail_mode, c.profile, c.describe_images),
+        (
+            super::TailMode::Scaled,
+            super::Profile::Small,
+            super::DescribeImages::Off
+        )
+    );
+}
+
+/// 201 §12.1: out-of-range values clamp at use.
+#[test]
+fn the_201_keys_clamp_at_use() {
+    let c = EndlessConfig {
+        tail_low_bytes: 1,
+        tail_high_bytes: 9_000_000,
+        tail_low_share: 0.0,
+        tail_high_share: 5.0,
+        cold_after_secs: 1_000_000,
+        merge_at: 0.1,
+        ledger_bytes: 99_999,
+        prefetch_bytes: 99_999,
+        ..EndlessConfig::default()
+    }
+    .clamped();
+    assert_eq!((c.tail_low_bytes, c.tail_high_bytes), (8_000, 512_000));
+    assert_eq!((c.tail_low_share, c.tail_high_share), (0.02, 0.60));
+    assert_eq!((c.cold_after_secs, c.merge_at), (86_400, 0.50));
+    assert_eq!((c.ledger_bytes, c.prefetch_bytes), (16_000, 8_000));
+}
+
+/// 201 §12.1: `endless_settings_set` refuses a pair whose high is not above its low, naming both.
+#[test]
+fn a_tail_pair_with_high_not_above_low_is_refused() {
+    let bytes = EndlessConfig {
+        tail_low_bytes: 64_000,
+        tail_high_bytes: 64_000,
+        ..EndlessConfig::default()
+    };
+    let e = bytes.validate_201().unwrap_err();
+    assert!(
+        e.contains("tail_high_bytes 64000") && e.contains("tail_low_bytes 64000"),
+        "{e}"
+    );
+    let shares = EndlessConfig {
+        tail_low_share: 0.3,
+        tail_high_share: 0.2,
+        ..EndlessConfig::default()
+    };
+    let e = shares.validate_201().unwrap_err();
+    assert!(
+        e.contains("tail_high_share 0.2") && e.contains("tail_low_share 0.3"),
+        "{e}"
+    );
+    let range = EndlessConfig {
+        ledger_bytes: 100,
+        ..EndlessConfig::default()
+    };
+    assert!(
+        range
+            .validate_201()
+            .unwrap_err()
+            .starts_with("ledger_bytes 100")
+    );
+    // The per-session override refuses the same way.
+    let o = super::TailOverride {
+        mode: super::TailMode::Fixed,
+        low: 40_000.0,
+        high: 30_000.0,
+    };
+    assert!(o.validate().unwrap_err().contains("must be above"));
+}
+
+/// 201 §4.2: `tail_marks` for both modes and the allowance scale-down.
+#[test]
+fn tail_marks_fixed_scaled_and_scaled_down() {
+    let fixed = EndlessConfig::default();
+    assert_eq!(fixed.tail_marks(1_000_000), (24_000, 64_000));
+    let scaled = EndlessConfig {
+        tail_mode: super::TailMode::Scaled,
+        ..EndlessConfig::default()
+    };
+    assert_eq!(scaled.tail_marks(800_000), (80_000, 200_000));
+    // Clamped to 8_000..=512_000: a huge allowance caps high, a small one lifts low.
+    assert_eq!(scaled.tail_marks(4_000_000).1, 512_000);
+    assert_eq!(scaled.tail_marks(60_000), (8_000, 15_000));
+    // High above half the allowance: both scale down, keeping their ratio.
+    assert_eq!(fixed.tail_marks(64_000), (12_000, 32_000));
+    let (lo, hi) = fixed.tail_marks(10_000);
+    assert_eq!((lo, hi), (1_875, 5_000));
+    // An override replaces the mode and both marks.
+    let o = super::TailOverride {
+        mode: super::TailMode::Fixed,
+        low: 16_000.0,
+        high: 32_000.0,
+    };
+    assert_eq!(
+        fixed.with_tail(Some(&o)).tail_marks(1_000_000),
+        (16_000, 32_000)
+    );
+}
+
+/// 201 §4.2: the per-session tail override persists, shows in `SessionMemory`, survives a restart and clears.
+#[tokio::test]
+async fn session_tail_override_round_trips_and_clears() {
+    let (_dir, endless, store, _echo, id) = harness().await;
+    let m = endless.memory(id).await.unwrap();
+    assert_eq!(
+        (m.tail_mode, m.tail_low, m.tail_high, m.tail_override),
+        (super::TailMode::Fixed, 24_000, 64_000, None)
+    );
+    assert_eq!(
+        (m.tail_bytes, m.generation, m.drafts, m.profile),
+        (0, 0, 0, super::Profile::Standard)
+    );
+    let o = super::TailOverride {
+        mode: super::TailMode::Fixed,
+        low: 16_000.0,
+        high: 48_000.0,
+    };
+    endless.set_tail(id, Some(o)).await.unwrap();
+    assert_eq!(store.endless_meta(id).await.unwrap().tail, Some(o));
+    let m = endless.memory(id).await.unwrap();
+    assert_eq!(
+        (m.tail_low, m.tail_high, m.tail_override),
+        (16_000, 48_000, Some(o))
+    );
+    endless.detach(id);
+    endless.attach(id, attached()).await.unwrap();
+    assert_eq!(
+        endless.memory(id).await.unwrap().tail_override,
+        Some(o),
+        "survives a restart"
+    );
+    endless.set_tail(id, None).await.unwrap();
+    let m = endless.memory(id).await.unwrap();
+    assert_eq!(
+        (m.tail_low, m.tail_high, m.tail_override),
+        (24_000, 64_000, None)
+    );
+    assert_eq!(store.endless_meta(id).await.unwrap().tail, None);
+}

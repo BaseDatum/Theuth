@@ -113,7 +113,8 @@ use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{
     EndlessConfigChanged, EndlessFold, EndlessPause, EndlessRecall, EndlessRetry, EndlessZoom,
     GetEndlessSettings, RenderMemoryView, SessionMemoryQuery, SetAgentCompactorModel,
-    SetEndlessSettings, SetSessionCompactorModel, SetSessionMemory, SetSessionViewBytes,
+    SetEndlessSettings, SetSessionCompactorModel, SetSessionMemory, SetSessionTail,
+    SetSessionViewBytes,
 };
 use crate::{GetFavoriteModels, SetModelFavorite};
 use crate::{GetSubagentEffort, SetDeskEffort, SetSubagentEffort, ValidateEffort};
@@ -9469,6 +9470,20 @@ impl Message<SetSessionViewBytes> for Agents {
     }
 }
 
+impl Message<SetSessionTail> for Agents {
+    type Reply = Result<SessionMemory, String>;
+
+    /// 201 §4.2: idle or running — phase P2 reads it at the next trim.
+    async fn handle(
+        &mut self,
+        m: SetSessionTail,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.stored(m.session).await?;
+        crate::endless_ext::set_tail(&self.endless, m.session, m.tail).await
+    }
+}
+
 impl Message<GetEndlessSettings> for Agents {
     type Reply = Result<EndlessConfig, String>;
 
@@ -9495,6 +9510,8 @@ impl Message<SetEndlessSettings> for Agents {
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let mut c = m.config;
+        // 201 §12.1: the new keys' ranges and the two high-above-low pairs.
+        c.validate_201()?;
         if !(16_000..=256_000).contains(&c.view_bytes) {
             return Err(format!(
                 "view_bytes {} out of range 16000..=256000",
@@ -9570,7 +9587,7 @@ impl Message<SetEndlessSettings> for Agents {
                 c.max_usd_per_session_day
             ));
         }
-        let keys: [(&str, String); 24] = [
+        let keys: [(&str, String); 38] = [
             ("default_chat", c.default_chat.to_string()),
             ("default_desk", c.default_desk.to_string()),
             ("default_meeting", c.default_meeting.to_string()),
@@ -9596,6 +9613,21 @@ impl Message<SetEndlessSettings> for Agents {
                 "max_usd_per_session_day",
                 c.max_usd_per_session_day.to_string(),
             ),
+            // 201 §12.1.
+            ("tail_mode", c.tail_mode.as_str().to_owned()),
+            ("tail_low_bytes", c.tail_low_bytes.to_string()),
+            ("tail_high_bytes", c.tail_high_bytes.to_string()),
+            ("tail_low_share", c.tail_low_share.to_string()),
+            ("tail_high_share", c.tail_high_share.to_string()),
+            ("cold_after_secs", c.cold_after_secs.to_string()),
+            ("profile", c.profile.as_str().to_owned()),
+            ("merge_at", c.merge_at.to_string()),
+            ("ledger", c.ledger.to_string()),
+            ("ledger_bytes", c.ledger_bytes.to_string()),
+            ("ledger_suggestions", c.ledger_suggestions.to_string()),
+            ("prefetch_bytes", c.prefetch_bytes.to_string()),
+            ("age_by_use", c.age_by_use.to_string()),
+            ("describe_images", c.describe_images.as_str().to_owned()),
             (
                 "model",
                 c.model.clone().unwrap_or_else(|| "null".to_owned()),

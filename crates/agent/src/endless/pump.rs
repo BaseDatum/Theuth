@@ -21,8 +21,8 @@ use super::fold::ViewBlock;
 use super::fold::{self, Fold, FoldCfg, Part, ViewRender};
 use super::tree::{self, Node, Tree, Unit, exists, id_n};
 use super::{
-    Attached, Backfill, Backlog, EndlessProgress, Inner, MemoryMode, SessionMemory, SetMode,
-    Stalled, UnitFilter, ViewLine, units,
+    Attached, Backfill, Backlog, EndlessConfig, EndlessProgress, Inner, MemoryMode, Profile,
+    SessionMemory, SetMode, Stalled, TailMode, TailOverride, UnitFilter, ViewLine, units,
 };
 use crate::backend::Backend;
 use crate::cost::{CallKind, CallStatus};
@@ -369,6 +369,8 @@ struct Live {
     base: u64,
     /// R1-D2: per-session view budget override.
     view_bytes: Option<u32>,
+    /// 201 §4.2: per-session tail override (persisted); read by phase P2.
+    tail: Option<TailOverride>,
     /// 137G `endless_pause`: `user` | `spend`; no compactor calls while set (persisted).
     paused_by: Option<String>,
     /// 137G: the compactor chain's first two links — this chat's pick, the desk agent's default.
@@ -613,6 +615,7 @@ impl Live {
             filter: meta.filter,
             base: meta.base,
             view_bytes: meta.view_bytes,
+            tail: meta.tail,
             paused_by: meta.paused_by,
             picks,
             units: Vec::new(),
@@ -1014,6 +1017,7 @@ pub(crate) async fn attach(
             live.filter = meta.filter;
             live.base = meta.base;
             live.view_bytes = meta.view_bytes;
+            live.tail = meta.tail;
             live.paused_by = meta.paused_by.clone();
             live.picks = Picks::of(&meta);
             live.invalidate();
@@ -2248,6 +2252,55 @@ pub(crate) async fn set_view_bytes(
     Ok(())
 }
 
+/// 201 §4.2: persist the session's tail override (`None` clears it) and
+/// carry it on the live state. Takes effect when phase P2 reads it.
+pub(crate) async fn set_tail(
+    inner: &Inner,
+    session: SessionId,
+    tail: Option<TailOverride>,
+) -> anyhow::Result<()> {
+    inner
+        .store_for(session)
+        .set_endless_tail(session, tail)
+        .await?;
+    if let Some(state) = state_of(inner, session) {
+        state.live.lock().tail = tail;
+    }
+    Ok(())
+}
+
+/// 201 §4.2 seam, filled by phase P2: the session model's turn allowance in
+/// bytes, which sizes a `scaled` tail. `None` until P2 wires it.
+fn turn_allowance_bytes(_inner: &Inner, _session: SessionId) -> Option<u64> {
+    None
+}
+
+/// 201 §12.2: the tail and profile fields of [`SessionMemory`] — the mode
+/// and marks in force after the session's override. `tail_bytes`,
+/// `generation` (P2), `drafts` (P1) stay 0 and `profile` `standard` (P3)
+/// until those phases fill them.
+fn tail_status(
+    m: SessionMemory,
+    cfg: &EndlessConfig,
+    tail: Option<TailOverride>,
+    allowance: Option<u64>,
+) -> SessionMemory {
+    let c = cfg.with_tail(tail.as_ref());
+    let (tail_low, tail_high) = match (c.tail_mode, allowance) {
+        (TailMode::Fixed, a) => c.tail_marks(a.unwrap_or(u64::MAX)),
+        (TailMode::Scaled, Some(a)) => c.tail_marks(a),
+        (TailMode::Scaled, None) => (0, 0),
+    };
+    SessionMemory {
+        tail_mode: c.tail_mode,
+        tail_low,
+        tail_high,
+        tail_override: tail,
+        profile: Profile::Standard,
+        ..m
+    }
+}
+
 /// R1-D1: the view rendered now under the session's budget, without
 /// freezing a context or counting a turn (a native child's first message).
 pub(crate) async fn render_snapshot(
@@ -2598,11 +2651,18 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
     let store = inner.store_for(session);
     let mode = store.session_memory(session).await?;
     let Some(state) = state_of(inner, session) else {
-        return Ok(SessionMemory {
-            mode,
-            view_bytes: inner.cfg.read().view_bytes,
-            ..Default::default()
-        });
+        let tail = store.endless_meta(session).await?.tail;
+        let cfg = inner.cfg.read().clone();
+        return Ok(tail_status(
+            SessionMemory {
+                mode,
+                view_bytes: cfg.view_bytes,
+                ..Default::default()
+            },
+            &cfg,
+            tail,
+            turn_allowance_bytes(inner, session),
+        ));
     };
     let stats = store.endless_stats(session).await?;
     let spend_today_usd = store.endless_spend_since(session, &utc_day_start()).await?;
@@ -2615,7 +2675,8 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
         Vec::new()
     };
     let unbuilt = f.unbuilt(&live.tree);
-    Ok(SessionMemory {
+    let full_cfg = state.cfg.read().clone();
+    let m = SessionMemory {
         mode,
         view,
         settling: unbuilt > 0,
@@ -2644,7 +2705,16 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
         effort: usable_effort(state.compactor().model(), chosen(inner, &live.picks).2),
         effort_override: live.picks.chat_effort.clone(),
         spend_today_usd,
-    })
+        ..Default::default()
+    };
+    let tail = live.tail;
+    drop(live);
+    Ok(tail_status(
+        m,
+        &full_cfg,
+        tail,
+        turn_allowance_bytes(inner, session),
+    ))
 }
 
 /// RFC 3339 start of the current UTC day (`model_calls.created_at` is UTC RFC 3339).

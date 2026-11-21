@@ -12,10 +12,10 @@ use super::Store;
 use crate::context::Mask;
 use crate::endless::compactor::CallRow;
 use crate::endless::tree::{Kind, Node};
-use crate::endless::{EndlessStats, GuardTrips, MemoryMode, UnitFilter};
+use crate::endless::{EndlessStats, GuardTrips, MemoryMode, TailOverride, UnitFilter};
 
 /// The session's endless columns (R1-D4 base, R1-D6 filter, 137G pause and models).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct EndlessMeta {
     /// `sessions.memory`.
     pub mode: MemoryMode,
@@ -37,6 +37,9 @@ pub struct EndlessMeta {
     pub effort_override: Option<String>,
     /// `sessions.endless_agent_effort` (194): the desk agent's `memory_effort`.
     pub agent_effort: Option<String>,
+    /// `sessions.endless_tail_mode/low/high` (201 §4.2): the user's
+    /// per-session tail override; `None` = inherit.
+    pub tail: Option<TailOverride>,
 }
 
 /// One `endless_units` row (the unit without its text).
@@ -129,28 +132,40 @@ impl Store {
             Option<String>,
             Option<String>,
             Option<String>,
+            Option<String>,
+            Option<f64>,
+            Option<f64>,
         );
         let row: Option<Row> = sqlx::query_as(
             "SELECT memory, endless_filter, endless_base, endless_view_bytes, endless_paused, \
              endless_spend_override, endless_model, endless_agent_model, endless_effort, \
-             endless_agent_effort FROM sessions WHERE id = ?",
+             endless_agent_effort, endless_tail_mode, endless_tail_low, endless_tail_high \
+             FROM sessions WHERE id = ?",
         )
         .bind(id.to_string())
         .fetch_optional(&self.read)
         .await?;
         Ok(row
-            .map(|(m, f, b, v, p, o, cm, am, ce, ae)| EndlessMeta {
-                mode: m.parse().unwrap_or_default(),
-                filter: f.parse().unwrap_or_default(),
-                base: u64::try_from(b).unwrap_or(0),
-                view_bytes: v.and_then(|v| u32::try_from(v).ok()),
-                paused_by: p.filter(|p| !p.is_empty()),
-                spend_override: o,
-                model_override: cm.filter(|m| !m.is_empty()),
-                agent_model: am.filter(|m| !m.is_empty()),
-                effort_override: ce.filter(|e| !e.is_empty()),
-                agent_effort: ae.filter(|e| !e.is_empty()),
-            })
+            .map(
+                |(m, f, b, v, p, o, cm, am, ce, ae, tm, tl, th)| EndlessMeta {
+                    mode: m.parse().unwrap_or_default(),
+                    filter: f.parse().unwrap_or_default(),
+                    base: u64::try_from(b).unwrap_or(0),
+                    view_bytes: v.and_then(|v| u32::try_from(v).ok()),
+                    paused_by: p.filter(|p| !p.is_empty()),
+                    spend_override: o,
+                    model_override: cm.filter(|m| !m.is_empty()),
+                    agent_model: am.filter(|m| !m.is_empty()),
+                    effort_override: ce.filter(|e| !e.is_empty()),
+                    agent_effort: ae.filter(|e| !e.is_empty()),
+                    tail: match (tm.and_then(|m| m.parse().ok()), tl, th) {
+                        (Some(mode), Some(low), Some(high)) => {
+                            Some(TailOverride { mode, low, high })
+                        }
+                        _ => None,
+                    },
+                },
+            )
             .unwrap_or_default())
     }
 
@@ -268,6 +283,26 @@ impl Store {
             .bind(id.to_string())
             .execute(&mut *tx)
             .await?;
+        tx.commit().await
+    }
+
+    /// 201 §4.2: the per-session tail override (mode and both marks); `None` clears it.
+    pub async fn set_endless_tail(
+        &self,
+        id: SessionId,
+        tail: Option<TailOverride>,
+    ) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "UPDATE sessions SET endless_tail_mode = ?, endless_tail_low = ?, \
+             endless_tail_high = ? WHERE id = ?",
+        )
+        .bind(tail.map(|t| t.mode.as_str()))
+        .bind(tail.map(|t| t.low))
+        .bind(tail.map(|t| t.high))
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await
     }
 
@@ -708,6 +743,12 @@ mod tests {
             .set_endless_model(id, Some("p/desk"), Some("low"), true)
             .await
             .unwrap();
+        let tail = TailOverride {
+            mode: crate::endless::TailMode::Scaled,
+            low: 0.08,
+            high: 0.3,
+        };
+        store.set_endless_tail(id, Some(tail)).await.unwrap();
         assert_eq!(
             store.endless_meta(id).await.unwrap(),
             EndlessMeta {
@@ -721,6 +762,7 @@ mod tests {
                 agent_model: Some("p/desk".into()),
                 effort_override: Some("high".into()),
                 agent_effort: Some("low".into()),
+                tail: Some(tail),
             }
         );
         store
@@ -729,6 +771,9 @@ mod tests {
             .unwrap();
         let meta = store.endless_meta(id).await.unwrap();
         assert_eq!((meta.model_override, meta.effort_override), (None, None));
+        // 201 §4.2: clearing the tail override reads back as inherit.
+        store.set_endless_tail(id, None).await.unwrap();
+        assert_eq!(store.endless_meta(id).await.unwrap().tail, None);
         assert_eq!(meta.agent_effort.as_deref(), Some("low"));
         store
             .set_endless_effort(id, Some("high"), false)
