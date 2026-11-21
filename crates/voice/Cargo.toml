@@ -44,6 +44,10 @@ serde_json = { workspace = true }
 flate2 = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+# 202: Parakeet TDT on MLX in-process; stubs itself off macOS aarch64. Behind `mlx` until it builds.
+voice-mlx = { workspace = true, optional = true }
+# 202 §4: the explicit MLX weights download.
+reqwest = { workspace = true }
 
 # 76 §0.5: Apple's VoiceProcessingIO mic unit (AEC + AGC + NS), moved here from the meeting crate.
 # `metal`: Pocket TTS on the GPU (`DeviceKind::Auto` picks it; CPU if Metal fails to start) —
@@ -54,9 +58,12 @@ ptts = { workspace = true, features = ["metal"] }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts"]
+# 202: the in-process MLX engine. TODO(202): on by default for macOS aarch64 once crates/voice-mlx is green.
+mlx = ["dep:voice-mlx"]
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 figment = { workspace = true }
+wiremock = { workspace = true }

@@ -345,10 +345,8 @@ impl Transcriber {
         let pcm = resample(pcm, rate, MODEL_RATE)?;
         let duration_ms = pcm.len() as u64 * 1000 / MODEL_RATE as u64;
         if let Some(m) = self.mlx.as_ref().filter(|m| m.installed()) {
-            let parts: anyhow::Result<Vec<String>> = pcm
-                .chunks(PIECE)
-                .map(|p| m.transcribe_piece(p, false).map(|p| p.text))
-                .collect();
+            let parts: anyhow::Result<Vec<String>> =
+                pcm.chunks(PIECE).map(|p| m.transcribe_clip(p)).collect();
             match parts {
                 Ok(parts) => {
                     return Ok(Transcript {

@@ -52,11 +52,8 @@ impl TalkHubApiServer for Server {
             | voice::mlx::MlxState::Downloading { .. }) => return Ok(s),
             _ => {}
         }
-        let dir = data_dir.clone();
-        tokio::task::spawn_blocking(move || {
-            if let Err(e) = voice::mlx::install(&dir, |_| {}) {
-                tracing::warn!("voice: mlx download: {e:#}");
-            }
+        tokio::spawn(async move {
+            let _ = voice::mlx::install(&data_dir).await;
         });
         Ok(voice::mlx::MlxState::Downloading {
             done_bytes: 0,

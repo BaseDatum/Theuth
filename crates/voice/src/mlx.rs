@@ -1,38 +1,38 @@
 //! The optional "mlx" whole-utterance STT engine (`docs/design/202-stt-mlx-engine.md`):
-//! Parakeet TDT 0.6B v3 at the published precision on the Apple GPU through MLX, run by a
-//! Python sidecar (`sidecar/parakeet_mlx_server.py`, embedded here) in a uv-made venv under
-//! `<data_dir>/engines/parakeet-mlx/`, weights under `<data_dir>/models/parakeet-tdt-mlx/`.
-//! Nothing here downloads implicitly: [`install`] is the one explicit fetch.
+//! Parakeet TDT 0.6B v3 (`mlx-community/parakeet-tdt-0.6b-v3`, the published weights) in-process
+//! on the Apple GPU through MLX (`voice_mlx`, behind this crate's `mlx` feature), beside the
+//! built-in ONNX int8 engine. Weights live under `<data_dir>/models/parakeet-tdt-mlx/`; nothing
+//! here downloads implicitly: [`install`] is the one explicit fetch.
 //!
-//! Protocol (§2): newline-delimited JSON on the sidecar's stdin/stdout, one
-//! `{ready, model, backend}` line once loaded, then `{id, op, ...}` → `{id, text, ms}` |
-//! `{id, error}`, served serially; logs on stderr. [`Client`] owns the process: spawned
-//! lazily, killed on a hung request, restarted once after a crash, dropped after `idle`,
-//! killed on drop.
+//! MLX state is thread-bound (202 §3): one [`Engine`] owns one OS thread that loads the model,
+//! warms it and serves every call; requests go in on a channel, replies come back on a per-call
+//! channel with a deadline. A late reply is discarded, the thread lives on. The thread exits (and
+//! drops the model) after `idle`; a load error, a panic or [`MAX_FAILURES`] errors in a row mark
+//! the engine failed and every caller falls back (streaming final / ONNX).
 
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Arc, LazyLock, Weak};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
-use base64::Engine as _;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use crate::stt::{Piece, Word};
-
-/// The sidecar script, written to `<data_dir>/engines/parakeet-mlx/server.py` before each spawn.
-const SCRIPT: &str = include_str!("../sidecar/parakeet_mlx_server.py");
 /// Weights directory under `<data_dir>/models/`.
 pub const MLX_MODEL_SUBDIR: &str = "parakeet-tdt-mlx";
-/// Hugging Face repo [`install`] fetches.
+/// Hugging Face repo [`install`] fetches from.
 pub const MLX_REPO: &str = "mlx-community/parakeet-tdt-0.6b-v3";
-/// `parakeet-mlx` requirement of the venv.
-const PACKAGE: &str = "parakeet-mlx>=0.7.0";
-/// Model load (cold weights from disk + one warm clip).
-const LOAD_TIMEOUT: Duration = Duration::from_secs(180);
+/// The repo files the model loads (`voice_mlx::FILES`).
+#[cfg(feature = "mlx")]
+pub const FILES: &[&str] = voice_mlx::FILES;
+/// The repo files the model loads; mirrors `voice_mlx::FILES` while the `mlx` feature is off.
+#[cfg(not(feature = "mlx"))]
+pub const FILES: &[&str] = &["config.json", "model.safetensors"];
+/// Written last by [`install`]; its presence is "downloaded".
+const COMPLETE: &str = ".complete";
+/// Errors in a row (not deadlines) that retire the engine.
+pub const MAX_FAILURES: u32 = 3;
 const MODEL_RATE: usize = 16_000;
 
 /// `voice.stt_engine` (202 §5): which model makes whole-utterance text.
@@ -54,85 +54,37 @@ pub enum SttEngine {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum MlxState {
-    /// Cannot run here: not Apple silicon, or no `uv` to build the environment.
+    /// Not compiled into this build (only macOS on Apple silicon has it).
     Unavailable { reason: String },
     /// Runnable, not downloaded.
     Absent,
-    /// [`install`] running; bytes so far of the weights.
+    /// [`install`] running; bytes so far.
     Downloading { done_bytes: u64, total_bytes: u64 },
-    /// Environment and verified weights on disk.
+    /// Verified weights on disk.
     Ready,
     /// The last [`install`] failed.
     Failed { reason: String },
 }
 
-/// The layout under one data dir.
-#[derive(Clone, Debug)]
-pub struct Paths {
-    pub data_dir: PathBuf,
+/// The MLX model is compiled into this build.
+#[cfg(feature = "mlx")]
+pub fn compiled() -> bool {
+    voice_mlx::available()
 }
 
-impl Paths {
-    pub fn new(data_dir: &Path) -> Paths {
-        Paths {
-            data_dir: data_dir.to_owned(),
-        }
-    }
-    pub fn model_dir(&self) -> PathBuf {
-        self.data_dir.join("models").join(MLX_MODEL_SUBDIR)
-    }
-    pub fn env_dir(&self) -> PathBuf {
-        self.data_dir.join("engines").join("parakeet-mlx")
-    }
-    pub fn python(&self) -> PathBuf {
-        self.env_dir().join("bin").join("python")
-    }
-    pub fn script(&self) -> PathBuf {
-        self.env_dir().join("server.py")
-    }
-    /// Venv and verified weights (the `.complete` marker [`install`] writes last) present.
-    pub fn installed(&self) -> bool {
-        self.python().is_file() && self.model_dir().join(".complete").is_file()
-    }
-    /// Write the embedded script (idempotent; keeps it in step with the binary).
-    fn write_script(&self) -> anyhow::Result<PathBuf> {
-        let path = self.script();
-        if std::fs::read_to_string(&path).ok().as_deref() != Some(SCRIPT) {
-            std::fs::create_dir_all(self.env_dir())?;
-            std::fs::write(&path, SCRIPT)?;
-        }
-        Ok(path)
-    }
-    /// The serving command: the venv's python, offline, from the local weights.
-    fn serve_command(&self) -> anyhow::Result<Command> {
-        let mut cmd = Command::new(self.python());
-        cmd.arg(self.write_script()?)
-            .arg("serve")
-            .arg(self.model_dir())
-            .env("HF_HUB_OFFLINE", "1")
-            .env("HF_HOME", self.env_dir().join("hf-home"))
-            .env("PYTHONUNBUFFERED", "1");
-        Ok(cmd)
-    }
+/// The MLX model is compiled into this build.
+#[cfg(not(feature = "mlx"))]
+pub fn compiled() -> bool {
+    false
 }
 
-/// `None` when the platform can run MLX, else why not.
-pub fn unsupported() -> Option<&'static str> {
-    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        None
-    } else {
-        Some("the MLX engine needs an Apple-silicon Mac")
-    }
+pub fn model_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("models").join(MLX_MODEL_SUBDIR)
 }
 
-/// `uv` on `PATH` (never installed for the user).
-pub fn has_uv() -> bool {
-    Command::new("uv")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+/// Every file in [`FILES`] verified and the marker written.
+pub fn downloaded(data_dir: &Path) -> bool {
+    model_dir(data_dir).join(COMPLETE).is_file()
 }
 
 /// Progress of the one [`install`] that may run per process.
@@ -140,31 +92,27 @@ static INSTALL: LazyLock<Mutex<Option<MlxState>>> = LazyLock::new(|| Mutex::new(
 
 /// The engine's state under `data_dir`.
 pub fn state(data_dir: &Path) -> MlxState {
-    if let Some(r) = unsupported() {
-        return MlxState::Unavailable { reason: r.into() };
+    if !compiled() {
+        return MlxState::Unavailable {
+            reason: "this build has no MLX engine (macOS on Apple silicon only)".into(),
+        };
     }
     if let Some(s @ (MlxState::Downloading { .. } | MlxState::Failed { .. })) =
         INSTALL.lock().clone()
     {
         return s;
     }
-    if Paths::new(data_dir).installed() {
-        return MlxState::Ready;
+    if downloaded(data_dir) {
+        MlxState::Ready
+    } else {
+        MlxState::Absent
     }
-    if !has_uv() {
-        return MlxState::Unavailable {
-            reason:
-                "`uv` is not on PATH; install it (https://docs.astral.sh/uv/) to use the MLX engine"
-                    .into(),
-        };
-    }
-    MlxState::Absent
 }
 
-/// The explicit download (202 §4): venv with `parakeet-mlx` via `uv`, then the weights via the
-/// sidecar's `download` mode, verified against the hub's sha256. Blocking (minutes);
-/// `on` hears every state change. One at a time per process.
-pub fn install(data_dir: &Path, mut on: impl FnMut(&MlxState)) -> anyhow::Result<()> {
+/// The explicit download (202 §4): every file in [`FILES`] from the hub into
+/// `<data_dir>/models/parakeet-tdt-mlx/`. One at a time per process; progress in [`state`].
+pub async fn install(data_dir: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(compiled(), "this build has no MLX engine");
     {
         let mut g = INSTALL.lock();
         anyhow::ensure!(
@@ -176,419 +124,388 @@ pub fn install(data_dir: &Path, mut on: impl FnMut(&MlxState)) -> anyhow::Result
             total_bytes: 0,
         });
     }
-    let mut set = |s: MlxState| {
-        *INSTALL.lock() = Some(s.clone());
-        on(&s);
-    };
-    set(MlxState::Downloading {
-        done_bytes: 0,
-        total_bytes: 0,
-    });
-    let r = install_inner(data_dir, &mut set);
-    match &r {
-        Ok(()) => {
-            *INSTALL.lock() = None;
-            on(&MlxState::Ready);
+    let base = format!("https://huggingface.co/{MLX_REPO}/resolve/main");
+    let r = download(&base, &model_dir(data_dir), |done, total| {
+        *INSTALL.lock() = Some(MlxState::Downloading {
+            done_bytes: done,
+            total_bytes: total,
+        });
+    })
+    .await;
+    *INSTALL.lock() = match &r {
+        Ok(()) => None,
+        Err(e) => {
+            tracing::warn!("voice: mlx download: {e:#}");
+            Some(MlxState::Failed {
+                reason: format!("{e:#}"),
+            })
         }
-        Err(e) => set(MlxState::Failed {
-            reason: format!("{e:#}"),
-        }),
-    }
+    };
     r
 }
 
-fn install_inner(data_dir: &Path, set: &mut impl FnMut(MlxState)) -> anyhow::Result<()> {
-    if let Some(r) = unsupported() {
-        anyhow::bail!(r);
-    }
-    anyhow::ensure!(has_uv(), "`uv` is not on PATH");
-    let p = Paths::new(data_dir);
-    let run = |cmd: &mut Command, what: &str| -> anyhow::Result<()> {
-        let out = cmd.output()?;
-        anyhow::ensure!(
-            out.status.success(),
-            "{what}: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-        Ok(())
-    };
-    if !p.python().is_file() {
-        tracing::info!("voice: mlx: creating {}", p.env_dir().display());
-        run(
-            Command::new("uv")
-                .args(["venv", "--quiet", "--python", "3.12"])
-                .arg(p.env_dir()),
-            "uv venv",
-        )?;
-    }
-    run(
-        Command::new("uv")
-            .args(["pip", "install", "--quiet", "--python"])
-            .arg(p.python())
-            .args([PACKAGE, "huggingface_hub"]),
-        "uv pip install",
-    )?;
-    let mut child = Command::new(p.python())
-        .arg(p.write_script()?)
-        .arg("download")
-        .arg(p.model_dir())
-        .arg(MLX_REPO)
-        .env("HF_HOME", p.env_dir().join("hf-home"))
-        .env("PYTHONUNBUFFERED", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()?;
-    let mut error = None;
-    for line in BufReader::new(child.stdout.take().expect("piped")).lines() {
-        let line = line?;
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-        if let (Some(d), Some(t)) = (v["done_bytes"].as_u64(), v["total_bytes"].as_u64()) {
-            set(MlxState::Downloading {
-                done_bytes: d,
-                total_bytes: t,
-            });
-        } else if let Some(e) = v["error"].as_str() {
-            error = Some(e.to_owned());
+/// What the hub says a file is: size, and sha256 for LFS files.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Expect {
+    size: Option<u64>,
+    sha256: Option<String>,
+}
+
+/// From the headers of an un-followed `HEAD <base>/<file>`: LFS files answer with
+/// `x-linked-size` and `x-linked-etag` (the sha256, quoted); others with `content-length`.
+fn expect_from(h: &reqwest::header::HeaderMap) -> Expect {
+    let get = |k: &str| h.get(k).and_then(|v| v.to_str().ok());
+    let size = get("x-linked-size")
+        .or_else(|| get("content-length"))
+        .and_then(|v| v.parse().ok());
+    let sha256 = get("x-linked-etag")
+        .map(|v| {
+            v.trim_start_matches("W/")
+                .trim_matches('"')
+                .to_ascii_lowercase()
+        })
+        .filter(|v| v.len() == 64 && v.chars().all(|c| c.is_ascii_hexdigit()));
+    Expect { size, sha256 }
+}
+
+/// `<dest>.part`.
+fn part_of(dest: &Path) -> PathBuf {
+    let mut p = dest.as_os_str().to_owned();
+    p.push(".part");
+    PathBuf::from(p)
+}
+
+/// sha256 of a whole file, hex.
+fn sha256_file(path: &Path) -> anyhow::Result<String> {
+    use std::io::Read as _;
+    let mut f = std::fs::File::open(path)?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
         }
+        h.update(&buf[..n]);
     }
-    let status = child.wait()?;
-    if let Some(e) = error {
-        anyhow::bail!("download: {e}");
+    Ok(hex::encode(h.finalize()))
+}
+
+/// `part` matches `e`; else why not.
+fn check(part: &Path, e: &Expect) -> anyhow::Result<()> {
+    let n = std::fs::metadata(part)?.len();
+    if let Some(size) = e.size {
+        anyhow::ensure!(n == size, "{}: {n} bytes, hub says {size}", part.display());
     }
-    anyhow::ensure!(status.success(), "download exited with {status}");
-    anyhow::ensure!(p.installed(), "download finished without a verified model");
+    if let Some(want) = &e.sha256 {
+        let got = sha256_file(part)?;
+        anyhow::ensure!(
+            &got == want,
+            "{}: sha256 {got}, hub says {want}",
+            part.display()
+        );
+    }
     Ok(())
 }
 
-/// One sidecar reply.
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct Reply {
-    #[serde(default)]
-    pub text: String,
-    #[serde(default)]
-    pub ms: u64,
-    #[serde(default)]
-    pub words: Vec<TokenTime>,
-}
-
-/// A token with its times in seconds (`AlignedToken`).
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct TokenTime {
-    pub text: String,
-    pub start: f64,
-    pub end: f64,
-}
-
-#[derive(Debug)]
-enum CallError {
-    /// No reply in time; the process is presumed hung.
-    Timeout,
-    /// The process exited or its pipes broke.
-    Gone(String),
-    /// The sidecar answered `{error}`.
-    Reply(String),
-}
-
-impl std::fmt::Display for CallError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CallError::Timeout => f.write_str("sidecar timed out"),
-            CallError::Gone(e) => write!(f, "sidecar gone: {e}"),
-            CallError::Reply(e) => write!(f, "sidecar: {e}"),
-        }
+/// Fetch every file in [`FILES`] from `base/<file>` into `dir`: `.part` files resumed with
+/// `Range` when the server allows, size and (LFS) sha256 checked, renamed into place, and the
+/// marker written last. `progress(done, total)` after each chunk.
+async fn download(
+    base: &str,
+    dir: &Path,
+    mut progress: impl FnMut(u64, u64),
+) -> anyhow::Result<()> {
+    use tokio::io::AsyncWriteExt as _;
+    tokio::fs::create_dir_all(dir).await?;
+    let _ = tokio::fs::remove_file(dir.join(COMPLETE)).await;
+    let head = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let get = reqwest::Client::new();
+    let mut expects = Vec::new();
+    for f in FILES {
+        let r = head.head(format!("{base}/{f}")).send().await?;
+        anyhow::ensure!(
+            r.status().is_success() || r.status().is_redirection(),
+            "HEAD {f}: {}",
+            r.status()
+        );
+        expects.push(expect_from(r.headers()));
     }
-}
-
-/// One running sidecar process; killed on drop.
-struct Sidecar {
-    child: Child,
-    stdin: ChildStdin,
-    lines: Receiver<String>,
-    next_id: u64,
-}
-
-impl Sidecar {
-    /// Spawn `cmd` and wait up to `load` for its `ready` line.
-    fn spawn(mut cmd: Command, load: Duration) -> anyhow::Result<Sidecar> {
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let stdin = child.stdin.take().expect("piped");
-        let stdout = child.stdout.take().expect("piped");
-        let stderr = child.stderr.take().expect("piped");
-        std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                tracing::debug!("voice: mlx sidecar: {line}");
-            }
-        });
-        let (tx, lines) = mpsc::channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-        let mut s = Sidecar {
-            child,
-            stdin,
-            lines,
-            next_id: 1,
+    let total: u64 = expects.iter().filter_map(|e| e.size).sum();
+    let mut done = 0u64;
+    for (f, e) in FILES.iter().zip(&expects) {
+        let dest = dir.join(f);
+        if dest.is_file() && check(&dest, e).is_ok() {
+            done += e.size.unwrap_or(0);
+            progress(done, total);
+            continue;
+        }
+        let part = part_of(&dest);
+        let have = tokio::fs::metadata(&part).await.map_or(0, |m| m.len());
+        let mut req = get.get(format!("{base}/{f}"));
+        if have > 0 {
+            req = req.header(reqwest::header::RANGE, format!("bytes={have}-"));
+        }
+        let mut resp = req.send().await?.error_for_status()?;
+        let resumed = have > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+        let mut file = if resumed {
+            done += have;
+            tokio::fs::OpenOptions::new()
+                .append(true)
+                .open(&part)
+                .await?
+        } else {
+            tokio::fs::File::create(&part).await?
         };
-        let until = Instant::now() + load;
-        loop {
-            let line = match s
-                .lines
-                .recv_timeout(until.saturating_duration_since(Instant::now()))
-            {
-                Ok(l) => l,
-                Err(RecvTimeoutError::Timeout) => anyhow::bail!("sidecar not ready in {load:?}"),
-                Err(RecvTimeoutError::Disconnected) => {
-                    anyhow::bail!("sidecar exited while loading ({:?})", s.child.wait().ok())
-                }
-            };
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
-                continue;
-            };
-            if v["ready"].as_bool() == Some(true) {
-                tracing::info!(
-                    "voice: mlx sidecar ready ({}, {})",
-                    v["backend"].as_str().unwrap_or("?"),
-                    v["model"].as_str().unwrap_or("?")
-                );
-                return Ok(s);
-            }
-            if let Some(e) = v["error"].as_str() {
-                anyhow::bail!("sidecar failed to load: {e}");
-            }
+        while let Some(chunk) = resp.chunk().await? {
+            file.write_all(&chunk).await?;
+            done += chunk.len() as u64;
+            progress(done, total);
         }
-    }
-
-    fn request(
-        &mut self,
-        mut req: serde_json::Value,
-        timeout: Duration,
-    ) -> Result<Reply, CallError> {
-        let id = self.next_id;
-        self.next_id += 1;
-        req["id"] = id.into();
-        let mut line = req.to_string();
-        line.push('\n');
-        self.stdin
-            .write_all(line.as_bytes())
-            .and_then(|()| self.stdin.flush())
-            .map_err(|e| CallError::Gone(e.to_string()))?;
-        let until = Instant::now() + timeout;
-        loop {
-            let line = match self
-                .lines
-                .recv_timeout(until.saturating_duration_since(Instant::now()))
-            {
-                Ok(l) => l,
-                Err(RecvTimeoutError::Timeout) => return Err(CallError::Timeout),
-                Err(RecvTimeoutError::Disconnected) => {
-                    return Err(CallError::Gone("stdout closed".into()));
-                }
-            };
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
-                continue;
-            };
-            // A reply to an earlier, abandoned request is skipped.
-            if v["id"].as_u64() != Some(id) {
-                continue;
-            }
-            if let Some(e) = v["error"].as_str() {
-                return Err(CallError::Reply(e.to_owned()));
-            }
-            return serde_json::from_value(v).map_err(|e| CallError::Reply(e.to_string()));
+        file.flush().await?;
+        drop(file);
+        let (p, e2) = (part.clone(), e.clone());
+        if let Err(err) = tokio::task::spawn_blocking(move || check(&p, &e2)).await? {
+            let _ = tokio::fs::remove_file(&part).await;
+            return Err(err);
         }
+        tokio::fs::rename(&part, &dest).await?;
+    }
+    tokio::fs::write(dir.join(COMPLETE), MLX_REPO).await?;
+    Ok(())
+}
+
+/// The model behind the engine thread; built on that thread by the loader, never leaves it.
+pub trait Model {
+    fn warm(&mut self) -> anyhow::Result<()>;
+    /// Text of 16 kHz mono f32.
+    fn transcribe(&mut self, pcm16k: &[f32]) -> anyhow::Result<String>;
+}
+
+#[cfg(feature = "mlx")]
+impl Model for voice_mlx::ParakeetMlx {
+    fn warm(&mut self) -> anyhow::Result<()> {
+        voice_mlx::ParakeetMlx::warm(self)
+    }
+    fn transcribe(&mut self, pcm16k: &[f32]) -> anyhow::Result<String> {
+        Ok(voice_mlx::ParakeetMlx::transcribe(self, pcm16k)?.text)
     }
 }
 
-impl Drop for Sidecar {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
+/// Builds the model, on the engine thread.
+pub type Loader = Arc<dyn Fn() -> anyhow::Result<Box<dyn Model>> + Send + Sync>;
+
+struct Job {
+    pcm: Vec<f32>,
+    reply: mpsc::Sender<anyhow::Result<String>>,
 }
 
-struct Slot {
-    proc: Option<Sidecar>,
-    last_used: Instant,
+/// What the engine thread is doing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Phase {
+    /// No thread (never started, or exited after idle).
+    Stopped,
+    Loading,
+    Ready,
+    /// Load error, panic, or [`MAX_FAILURES`] errors in a row; sticky.
+    Failed(String),
 }
 
-/// The sidecar's owner: lazy spawn, one restart after a crash, kill on timeout, idle drop.
-pub struct Client {
-    launch: Box<dyn Fn() -> anyhow::Result<Command> + Send + Sync>,
-    load: Duration,
-    slot: Mutex<Slot>,
+struct Inner {
+    jobs: Option<mpsc::Sender<Job>>,
+    phase: Arc<Mutex<Phase>>,
+    /// Bumped per thread, so an exiting old thread does not stop a new one.
+    generation: u64,
+    failures: u32,
 }
 
-impl Client {
-    /// `launch` builds the serving command; `idle` zero keeps the process forever.
-    pub fn new(
-        launch: impl Fn() -> anyhow::Result<Command> + Send + Sync + 'static,
-        load: Duration,
-        idle: Duration,
-    ) -> Arc<Client> {
-        let c = Arc::new(Client {
-            launch: Box::new(launch),
-            load,
-            slot: Mutex::new(Slot {
-                proc: None,
-                last_used: Instant::now(),
+/// One engine thread over a [`Model`] (202 §3).
+pub struct Engine {
+    loader: Loader,
+    idle: Duration,
+    inner: Mutex<Inner>,
+}
+
+fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
+    p.downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "panic".into())
+}
+
+impl Engine {
+    /// `idle` zero: the thread never exits on its own.
+    pub fn new(loader: Loader, idle: Duration) -> Engine {
+        Engine {
+            loader,
+            idle,
+            inner: Mutex::new(Inner {
+                jobs: None,
+                phase: Arc::new(Mutex::new(Phase::Stopped)),
+                generation: 0,
+                failures: 0,
             }),
-        });
-        if !idle.is_zero() {
-            let weak: Weak<Client> = Arc::downgrade(&c);
-            let tick = (idle / 4).clamp(Duration::from_millis(20), Duration::from_secs(60));
-            std::thread::spawn(move || {
-                loop {
-                    std::thread::sleep(tick);
-                    let Some(c) = weak.upgrade() else { return };
-                    // Busy (a request or a load in flight) is not idle.
-                    let Some(mut s) = c.slot.try_lock() else {
-                        continue;
-                    };
-                    if s.proc.is_some() && s.last_used.elapsed() > idle {
-                        s.proc = None;
-                        tracing::info!(
-                            "voice: mlx sidecar stopped after {} s idle",
-                            idle.as_secs()
-                        );
-                    }
-                }
-            });
         }
-        c
     }
 
-    fn start(&self, slot: &mut Slot) -> anyhow::Result<()> {
-        if slot.proc.is_none() {
-            slot.proc = Some(Sidecar::spawn((self.launch)()?, self.load)?);
-        }
-        Ok(())
+    pub fn phase(&self) -> Phase {
+        self.inner.lock().phase.lock().clone()
     }
 
-    /// The process is up.
-    pub fn running(&self) -> bool {
-        self.slot.lock().proc.is_some()
+    /// Start the thread unless running or failed; never blocks on the load.
+    pub fn prewarm(&self) {
+        let _ = self.sender();
     }
 
-    /// Spawn now (blocking) unless running.
-    pub fn prewarm(&self) -> anyhow::Result<()> {
-        let mut s = self.slot.lock();
-        self.start(&mut s)?;
-        s.last_used = Instant::now();
-        Ok(())
-    }
-
-    /// Spawn in the background unless running or loading.
-    pub fn prewarm_background(self: &Arc<Self>) {
-        let c = self.clone();
-        std::thread::spawn(move || {
-            if let Err(e) = c.prewarm() {
-                tracing::warn!("voice: mlx sidecar: {e:#}");
+    /// The running thread's queue, starting one if stopped; `Err` once failed.
+    fn sender(&self) -> anyhow::Result<mpsc::Sender<Job>> {
+        let mut g = self.inner.lock();
+        let phase = g.phase.lock().clone();
+        match phase {
+            Phase::Failed(r) => anyhow::bail!("mlx engine failed: {r}"),
+            Phase::Loading | Phase::Ready if g.jobs.is_some() => {
+                return Ok(g.jobs.clone().expect("checked"));
             }
-        });
+            _ => {}
+        }
+        let (tx, rx) = mpsc::channel::<Job>();
+        g.generation += 1;
+        let phase = Arc::new(Mutex::new(Phase::Loading));
+        g.phase = phase.clone();
+        g.jobs = Some(tx.clone());
+        let (loader, idle) = (self.loader.clone(), self.idle);
+        std::thread::Builder::new()
+            .name("voice-mlx".into())
+            .spawn(move || serve(&*loader, idle, rx, &phase))?;
+        Ok(tx)
     }
 
-    /// One request; spawns when not running when `spawn`, else fails at once. Waits at most
-    /// `timeout` for the reply (and for the slot); a timeout kills the process, a crash
-    /// restarts it once and retries.
-    pub fn call(
+    /// One transcription, waiting at most `deadline` (including a load when `wait_load`;
+    /// without it, a loading engine fails at once). A late result is discarded; the thread lives on.
+    pub fn transcribe(
         &self,
-        req: serde_json::Value,
-        timeout: Duration,
-        spawn: bool,
-    ) -> anyhow::Result<Reply> {
-        let mut s = self
-            .slot
-            .try_lock_for(timeout)
-            .ok_or_else(|| anyhow::anyhow!("mlx sidecar busy"))?;
-        if s.proc.is_none() && !spawn {
-            anyhow::bail!("mlx sidecar not running yet");
+        pcm16k: &[f32],
+        deadline: Duration,
+        wait_load: bool,
+    ) -> anyhow::Result<String> {
+        let tx = self.sender()?;
+        if !wait_load && self.phase() == Phase::Loading {
+            anyhow::bail!("mlx engine still loading");
         }
-        let mut restarted = false;
-        loop {
-            self.start(&mut s)?;
-            let r = s
-                .proc
-                .as_mut()
-                .expect("started")
-                .request(req.clone(), timeout);
-            s.last_used = Instant::now();
-            match r {
-                Ok(r) => return Ok(r),
-                Err(CallError::Reply(e)) => anyhow::bail!("mlx sidecar: {e}"),
-                Err(CallError::Timeout) => {
-                    s.proc = None;
-                    anyhow::bail!("mlx sidecar gave no reply in {timeout:?}; killed");
-                }
-                Err(CallError::Gone(e)) if !restarted => {
-                    tracing::warn!("voice: mlx sidecar crashed ({e}); restarting once");
-                    s.proc = None;
-                    restarted = true;
-                }
-                Err(e @ CallError::Gone(_)) => {
-                    s.proc = None;
-                    anyhow::bail!("{e}");
+        let (reply, rx) = mpsc::channel();
+        tx.send(Job {
+            pcm: pcm16k.to_vec(),
+            reply,
+        })
+        .map_err(|_| anyhow::anyhow!("mlx engine thread gone"))?;
+        let r = match rx.recv_timeout(deadline) {
+            Ok(r) => r,
+            Err(RecvTimeoutError::Timeout) => {
+                anyhow::bail!("mlx engine gave no text in {deadline:?}; the late result is dropped")
+            }
+            Err(RecvTimeoutError::Disconnected) => Err(anyhow::anyhow!(
+                "mlx engine thread ended: {:?}",
+                self.phase()
+            )),
+        };
+        let mut g = self.inner.lock();
+        match &r {
+            Ok(_) => g.failures = 0,
+            Err(e) => {
+                g.failures += 1;
+                if g.failures >= MAX_FAILURES {
+                    let mut p = g.phase.lock();
+                    if !matches!(*p, Phase::Failed(_)) {
+                        *p = Phase::Failed(format!("{MAX_FAILURES} errors in a row, last: {e:#}"));
+                    }
+                    drop(p);
+                    // Dropping the queue ends the thread once it is idle.
+                    g.jobs = None;
                 }
             }
         }
+        r
     }
 }
 
-/// Little-endian pcm16 of `pcm`, base64.
-fn pcm16_b64(pcm: &[f32]) -> String {
-    let mut bytes = Vec::with_capacity(pcm.len() * 2);
-    for &x in pcm {
-        bytes.extend_from_slice(&((x.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
-    }
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
-/// The engine `voice.stt_engine` picks (§5): `None` = ONNX. `mlx` where MLX cannot run falls
-/// back to ONNX with a warning; `mlx` not yet downloaded is returned anyway (each call checks
-/// [`Mlx::installed`], so a download made while running takes effect) and runs on ONNX until
-/// then. Publishes the engine to the live paths and prewarms it when installed.
-pub fn select(engine: SttEngine, data_dir: &Path, idle: Duration) -> Option<Arc<Mlx>> {
-    let m = match engine {
-        SttEngine::Onnx => None,
-        SttEngine::Mlx => match unsupported() {
-            Some(r) => {
-                tracing::warn!("voice: stt_engine mlx: {r}; using the ONNX engine");
-                None
-            }
-            None => {
-                let m = Mlx::new(data_dir, idle);
-                if m.installed() {
-                    tracing::info!("voice: stt_engine mlx: whole-utterance text on MLX");
-                    m.prewarm();
-                } else {
-                    tracing::warn!(
-                        "voice: stt_engine mlx: model not downloaded ({}); using the ONNX engine until it is",
-                        m.paths.model_dir().display()
-                    );
-                }
-                Some(m)
-            }
-        },
+/// The engine thread: load, warm, serve until idle or failed.
+fn serve(
+    loader: &(dyn Fn() -> anyhow::Result<Box<dyn Model>> + Send + Sync),
+    idle: Duration,
+    rx: mpsc::Receiver<Job>,
+    phase: &Mutex<Phase>,
+) {
+    let t = Instant::now();
+    let loaded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut m = loader()?;
+        m.warm()?;
+        anyhow::Ok(m)
+    }));
+    let mut model = match loaded {
+        Ok(Ok(m)) => m,
+        Ok(Err(e)) => {
+            tracing::warn!("voice: mlx model failed to load: {e:#}; using ONNX");
+            *phase.lock() = Phase::Failed(format!("{e:#}"));
+            return;
+        }
+        Err(p) => {
+            let e = panic_text(&*p);
+            tracing::warn!("voice: mlx model load panicked: {e}; using ONNX");
+            *phase.lock() = Phase::Failed(format!("load panicked: {e}"));
+            return;
+        }
     };
-    set_live(m.clone().map(|m| m as Arc<dyn Whole>));
-    m
+    tracing::info!("voice: mlx model loaded and warm in {:?}", t.elapsed());
+    {
+        let mut p = phase.lock();
+        if *p == Phase::Loading {
+            *p = Phase::Ready;
+        }
+    }
+    loop {
+        let job = if idle.is_zero() {
+            rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        } else {
+            rx.recv_timeout(idle)
+        };
+        let job = match job {
+            Ok(j) => j,
+            Err(RecvTimeoutError::Timeout) => {
+                tracing::info!("voice: mlx model unloaded after {} s idle", idle.as_secs());
+                let mut p = phase.lock();
+                if *p == Phase::Ready {
+                    *p = Phase::Stopped;
+                }
+                return;
+            }
+            Err(RecvTimeoutError::Disconnected) => return,
+        };
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| model.transcribe(&job.pcm)))
+        {
+            // A send error is a caller past its deadline: the result is dropped.
+            Ok(r) => {
+                let _ = job.reply.send(r);
+            }
+            Err(p) => {
+                let e = panic_text(&*p);
+                tracing::warn!("voice: mlx transcribe panicked: {e}; engine retired, using ONNX");
+                *phase.lock() = Phase::Failed(format!("panicked: {e}"));
+                let _ = job
+                    .reply
+                    .send(Err(anyhow::anyhow!("mlx transcribe panicked: {e}")));
+                return;
+            }
+        }
+    }
 }
 
 /// A whole-utterance transcriber for live finals (202 §5). Blocking.
 pub trait Whole: Send + Sync {
     /// Start loading in the background if not loaded; never blocks.
     fn prewarm(&self) {}
-    /// Usable now; `false` (model not downloaded) skips without a warning.
+    /// Usable now; `false` (model not downloaded, engine failed) skips without a warning.
     fn ready(&self) -> bool {
         true
     }
@@ -602,7 +519,8 @@ pub fn deadline_for(samples: usize) -> Duration {
 }
 
 /// The utterance's final text (202 §5): `whole`'s text of `audio` when it answers within
-/// [`deadline_for`], else the streaming text, with a warning.
+/// [`deadline_for`] with something, else the streaming text, with a warning (an empty MLX
+/// text never replaces a non-empty streaming one).
 pub fn final_text(whole: Option<&dyn Whole>, audio: &[f32], streaming: String) -> String {
     let Some(w) = whole.filter(|w| w.ready()) else {
         return streaming;
@@ -610,20 +528,24 @@ pub fn final_text(whole: Option<&dyn Whole>, audio: &[f32], streaming: String) -
     let deadline = deadline_for(audio.len());
     let t = Instant::now();
     match w.transcribe(audio, deadline) {
-        Ok(text) if t.elapsed() <= deadline => {
+        Ok(text) if t.elapsed() > deadline => {
+            tracing::warn!(
+                "voice: mlx final took {:?} (deadline {deadline:?}); keeping the streaming text {text:?}",
+                t.elapsed()
+            );
+            streaming
+        }
+        Ok(text) if text.trim().is_empty() && !streaming.trim().is_empty() => {
+            tracing::warn!("voice: mlx final empty; keeping the streaming text {streaming:?}");
+            streaming
+        }
+        Ok(text) => {
             tracing::debug!(
                 "voice: mlx final in {:?} for {} ms of audio",
                 t.elapsed(),
                 audio.len() * 1000 / MODEL_RATE
             );
             text.trim().to_owned()
-        }
-        Ok(_) => {
-            tracing::warn!(
-                "voice: mlx final took {:?} (deadline {deadline:?}); keeping the streaming text",
-                t.elapsed()
-            );
-            streaming
         }
         Err(e) => {
             tracing::warn!("voice: mlx final failed ({e:#}); keeping the streaming text");
@@ -634,45 +556,51 @@ pub fn final_text(whole: Option<&dyn Whole>, audio: &[f32], streaming: String) -
 
 /// The MLX engine of one data dir.
 pub struct Mlx {
-    paths: Paths,
-    client: Arc<Client>,
+    data_dir: PathBuf,
+    engine: Engine,
+}
+
+/// The real model loader.
+#[cfg(feature = "mlx")]
+fn loader(dir: PathBuf) -> Loader {
+    Arc::new(move || Ok(Box::new(voice_mlx::ParakeetMlx::load(&dir)?) as Box<dyn Model>))
+}
+
+/// Without the `mlx` feature every load fails (the engine is never selected then).
+#[cfg(not(feature = "mlx"))]
+fn loader(dir: PathBuf) -> Loader {
+    Arc::new(move || anyhow::bail!("built without the MLX engine ({})", dir.display()))
 }
 
 impl Mlx {
     pub fn new(data_dir: &Path, idle: Duration) -> Arc<Mlx> {
-        let paths = Paths::new(data_dir);
-        let p = paths.clone();
         Arc::new(Mlx {
-            paths,
-            client: Client::new(move || p.serve_command(), LOAD_TIMEOUT, idle),
+            data_dir: data_dir.to_owned(),
+            engine: Engine::new(loader(model_dir(data_dir)), idle),
         })
     }
 
-    /// Runnable here and downloaded.
+    /// Compiled in, downloaded, not failed.
     pub fn installed(&self) -> bool {
-        unsupported().is_none() && self.paths.installed()
+        compiled() && downloaded(&self.data_dir) && !matches!(self.engine.phase(), Phase::Failed(_))
     }
 
-    /// Start the sidecar in the background when installed.
+    /// Start loading in the background when installed.
     pub fn prewarm(&self) {
-        if self.installed() && !self.client.running() {
-            self.client.prewarm_background();
+        if self.installed() {
+            self.engine.prewarm();
         }
     }
 
-    /// One piece (≤ [`crate::stt::PIECE`]) for whole clips: spawns as needed and waits.
-    pub fn transcribe_piece(&self, pcm16k: &[f32], words: bool) -> anyhow::Result<Piece> {
-        anyhow::ensure!(self.installed(), "the MLX model is not downloaded");
-        let timeout = Duration::from_secs(30) + deadline_for(pcm16k.len()) * 2;
-        let r = self.client.call(request(pcm16k, words), timeout, true)?;
-        Ok(Piece {
-            text: r.text.trim().to_owned(),
-            words: if words {
-                join_words(&r.words)
-            } else {
-                Vec::new()
-            },
-        })
+    /// One piece (≤ [`crate::stt::PIECE`]) of a whole clip: waits for a load.
+    pub fn transcribe_clip(&self, pcm16k: &[f32]) -> anyhow::Result<String> {
+        anyhow::ensure!(self.installed(), "the MLX model is not ready");
+        let timeout = Duration::from_secs(120) + deadline_for(pcm16k.len()) * 2;
+        Ok(self
+            .engine
+            .transcribe(pcm16k, timeout, true)?
+            .trim()
+            .to_owned())
     }
 }
 
@@ -683,51 +611,39 @@ impl Whole for Mlx {
     fn prewarm(&self) {
         Mlx::prewarm(self);
     }
-    /// Never waits for a model load: not yet running → starts it and fails this one.
+    /// Never waits for a model load: still loading → this one fails (streaming final).
     fn transcribe(&self, pcm16k: &[f32], deadline: Duration) -> anyhow::Result<String> {
-        if !self.client.running() {
-            self.client.prewarm_background();
-            anyhow::bail!("mlx sidecar still loading");
-        }
-        Ok(self
-            .client
-            .call(request(pcm16k, false), deadline, false)?
-            .text)
+        self.engine.transcribe(pcm16k, deadline, false)
     }
 }
 
-fn request(pcm16k: &[f32], words: bool) -> serde_json::Value {
-    serde_json::json!({
-        "op": "transcribe",
-        "pcm16_b64": pcm16_b64(pcm16k),
-        "sample_rate": MODEL_RATE,
-        "words": words,
-    })
-}
-
-/// SentencePiece tokens (a leading space starts a word) → words with ms times.
-fn join_words(tokens: &[TokenTime]) -> Vec<Word> {
-    let ms = |s: f64| (s.max(0.0) * 1000.0).round() as u64;
-    let mut out: Vec<Word> = Vec::new();
-    for t in tokens {
-        let starts = t.text.starts_with(' ') || out.is_empty();
-        let text = t.text.trim();
-        if text.is_empty() {
-            continue;
+/// The engine `voice.stt_engine` picks (202 §5): `None` = ONNX. `mlx` in a build without MLX
+/// falls back to ONNX with a warning; `mlx` not yet downloaded is returned anyway (each call
+/// checks [`Mlx::installed`], so a download made while running takes effect) and runs on ONNX
+/// until then. Publishes the engine to the live paths and prewarms it when installed.
+pub fn select(engine: SttEngine, data_dir: &Path, idle: Duration) -> Option<Arc<Mlx>> {
+    let m = match engine {
+        SttEngine::Onnx => None,
+        SttEngine::Mlx if !compiled() => {
+            tracing::warn!("voice: stt_engine mlx: not in this build; using the ONNX engine");
+            None
         }
-        match out.last_mut() {
-            Some(prev) if !starts => {
-                prev.text.push_str(text);
-                prev.t1_ms = prev.t1_ms.max(ms(t.end));
+        SttEngine::Mlx => {
+            let m = Mlx::new(data_dir, idle);
+            if m.installed() {
+                tracing::info!("voice: stt_engine mlx: whole-utterance text on MLX");
+                m.prewarm();
+            } else {
+                tracing::warn!(
+                    "voice: stt_engine mlx: model not downloaded ({}); using the ONNX engine until it is",
+                    model_dir(data_dir).display()
+                );
             }
-            _ => out.push(Word {
-                text: text.to_owned(),
-                t0_ms: ms(t.start),
-                t1_ms: ms(t.end).max(ms(t.start)),
-            }),
+            Some(m)
         }
-    }
-    out
+    };
+    set_live(m.clone().map(|m| m as Arc<dyn Whole>));
+    m
 }
 
 /// The engine live paths use for finals ([`crate::live::Utterer::open`] reads it); set by the
@@ -748,129 +664,126 @@ mod tests {
 
     use super::*;
 
-    /// A fake sidecar: `sh -c script`. Request ids count from 1 per process, so `$n` echoes them.
-    fn fake(script: &'static str) -> impl Fn() -> anyhow::Result<Command> + Send + Sync {
-        move || {
-            let mut c = Command::new("sh");
-            c.arg("-c").arg(script);
-            Ok(c)
+    /// Answers `text`, or an error for audio of length 1, sleeps for length 2, panics for 3.
+    struct FakeModel {
+        text: &'static str,
+        sleep: Duration,
+    }
+    impl Model for FakeModel {
+        fn warm(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn transcribe(&mut self, pcm: &[f32]) -> anyhow::Result<String> {
+            match pcm.len() {
+                1 => anyhow::bail!("bad audio"),
+                2 => std::thread::sleep(self.sleep),
+                3 => panic!("model blew up"),
+                _ => {}
+            }
+            Ok(self.text.to_owned())
         }
     }
 
-    const READY: &str = r#"echo '{"ready":true,"model":"fake","backend":"sh"}'"#;
-
-    fn req() -> serde_json::Value {
-        request(&[0.0; 160], false)
+    fn engine(idle: Duration, loads: Arc<AtomicUsize>) -> Engine {
+        Engine::new(
+            Arc::new(move || {
+                loads.fetch_add(1, Ordering::SeqCst);
+                Ok(Box::new(FakeModel {
+                    text: "hello",
+                    sleep: Duration::from_millis(400),
+                }) as Box<dyn Model>)
+            }),
+            idle,
+        )
     }
 
+    const LONG: Duration = Duration::from_secs(5);
+
     #[test]
-    fn ready_then_ok_and_error_replies() {
-        let c = Client::new(
-            fake(concat!(
-                r#"echo 'loading' >&2; echo '{"ready":true,"model":"fake","backend":"sh"}'; n=0; "#,
-                r#"while read -r l; do n=$((n+1)); "#,
-                r#"if [ $n = 2 ]; then echo "{\"id\":$n,\"error\":\"bad audio\"}"; "#,
-                r#"else echo "noise"; echo "{\"id\":$n,\"text\":\" hello \",\"ms\":7}"; fi; done"#
-            )),
-            Duration::from_secs(5),
-            Duration::ZERO,
+    fn ok_and_error_replies() {
+        let e = engine(Duration::ZERO, Arc::default());
+        assert_eq!(e.phase(), Phase::Stopped);
+        assert_eq!(e.transcribe(&[0.0; 8], LONG, true).unwrap(), "hello");
+        assert_eq!(e.phase(), Phase::Ready);
+        assert!(
+            format!("{:#}", e.transcribe(&[0.0], LONG, true).unwrap_err()).contains("bad audio")
         );
-        assert!(!c.running());
-        let r = c.call(req(), Duration::from_secs(5), true).unwrap();
-        assert_eq!((r.text.as_str(), r.ms), (" hello ", 7));
-        let e = c.call(req(), Duration::from_secs(5), true).unwrap_err();
-        assert!(format!("{e}").contains("bad audio"), "{e}");
-        // An error reply keeps the process.
-        assert!(c.running());
-        assert_eq!(c.call(req(), Duration::from_secs(5), false).unwrap().ms, 7);
+        // One error does not retire it.
+        assert_eq!(e.transcribe(&[0.0; 8], LONG, false).unwrap(), "hello");
     }
 
     #[test]
-    fn not_running_without_spawn_fails_fast() {
-        let c = Client::new(fake(READY), Duration::from_secs(5), Duration::ZERO);
-        assert!(c.call(req(), Duration::from_secs(1), false).is_err());
-        assert!(!c.running());
-    }
-
-    #[test]
-    fn hung_request_times_out_and_kills() {
-        let c = Client::new(
-            fake(concat!(
-                r#"echo '{"ready":true,"model":"fake","backend":"sh"}'; "#,
-                r#"while read -r l; do sleep 3; done"#
-            )),
-            Duration::from_secs(5),
-            Duration::ZERO,
-        );
+    fn deadline_drops_the_late_result_and_keeps_the_engine() {
+        let loads = Arc::new(AtomicUsize::new(0));
+        let e = engine(Duration::ZERO, loads.clone());
+        e.transcribe(&[0.0; 8], LONG, true).unwrap();
         let t = Instant::now();
-        let e = c.call(req(), Duration::from_millis(300), true).unwrap_err();
-        assert!(format!("{e}").contains("no reply"), "{e}");
-        assert!(t.elapsed() < Duration::from_secs(2));
-        assert!(!c.running());
+        let err = e
+            .transcribe(&[0.0; 2], Duration::from_millis(50), false)
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("late result"), "{err:#}");
+        assert!(t.elapsed() < Duration::from_millis(300));
+        // The thread finishes the late job, then serves the next one; no reload.
+        assert_eq!(e.transcribe(&[0.0; 8], LONG, false).unwrap(), "hello");
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+        assert_eq!(e.phase(), Phase::Ready);
     }
 
     #[test]
-    fn crash_restarts_once() {
-        let spawns = Arc::new(AtomicUsize::new(0));
-        let n = spawns.clone();
-        let c = Client::new(
-            move || {
-                // First process dies on its first request; the second answers.
-                let script = if n.fetch_add(1, Ordering::SeqCst) == 0 {
-                    r#"echo '{"ready":true,"model":"f","backend":"sh"}'; read -r l; exit 3"#
-                } else {
-                    r#"echo '{"ready":true,"model":"f","backend":"sh"}'; while read -r l; do echo '{"id":1,"text":"again","ms":1}'; done"#
-                };
-                let mut cmd = Command::new("sh");
-                cmd.arg("-c").arg(script);
-                Ok(cmd)
-            },
-            Duration::from_secs(5),
+    fn panic_retires_the_engine() {
+        let e = engine(Duration::ZERO, Arc::default());
+        assert!(e.transcribe(&[0.0; 3], LONG, true).is_err());
+        assert!(matches!(e.phase(), Phase::Failed(r) if r.contains("blew up")));
+        assert!(e.transcribe(&[0.0; 8], LONG, true).is_err());
+    }
+
+    #[test]
+    fn repeated_errors_retire_the_engine() {
+        let e = engine(Duration::ZERO, Arc::default());
+        for _ in 0..MAX_FAILURES {
+            assert!(e.transcribe(&[0.0], LONG, true).is_err());
+        }
+        assert!(matches!(e.phase(), Phase::Failed(_)));
+        assert!(e.transcribe(&[0.0; 8], LONG, true).is_err());
+    }
+
+    #[test]
+    fn load_error_and_load_panic_fail() {
+        let e = Engine::new(Arc::new(|| anyhow::bail!("no weights")), Duration::ZERO);
+        assert!(e.transcribe(&[0.0; 8], LONG, true).is_err());
+        assert!(matches!(e.phase(), Phase::Failed(r) if r.contains("no weights")));
+        let e = Engine::new(Arc::new(|| panic!("metal")), Duration::ZERO);
+        assert!(e.transcribe(&[0.0; 8], LONG, true).is_err());
+        assert!(matches!(e.phase(), Phase::Failed(r) if r.contains("metal")));
+    }
+
+    #[test]
+    fn loading_engine_fails_fast_without_wait_load() {
+        let e = Engine::new(
+            Arc::new(|| {
+                std::thread::sleep(Duration::from_millis(300));
+                Ok(Box::new(FakeModel {
+                    text: "x",
+                    sleep: Duration::ZERO,
+                }) as Box<dyn Model>)
+            }),
             Duration::ZERO,
         );
-        assert_eq!(
-            c.call(req(), Duration::from_secs(5), true).unwrap().text,
-            "again"
-        );
-        assert_eq!(spawns.load(Ordering::SeqCst), 2);
+        e.prewarm();
+        let err = e.transcribe(&[0.0; 8], LONG, false).unwrap_err();
+        assert!(format!("{err:#}").contains("loading"), "{err:#}");
+        assert_eq!(e.transcribe(&[0.0; 8], LONG, true).unwrap(), "x");
     }
 
     #[test]
-    fn crash_twice_fails() {
-        let c = Client::new(
-            fake(r#"echo '{"ready":true,"model":"f","backend":"sh"}'; read -r l; exit 3"#),
-            Duration::from_secs(5),
-            Duration::ZERO,
-        );
-        assert!(c.call(req(), Duration::from_secs(5), true).is_err());
-        assert!(!c.running());
-    }
-
-    #[test]
-    fn exit_before_ready_is_a_load_error() {
-        let c = Client::new(
-            fake("echo boom >&2; exit 1"),
-            Duration::from_secs(5),
-            Duration::ZERO,
-        );
-        let e = c.call(req(), Duration::from_secs(5), true).unwrap_err();
-        assert!(format!("{e:#}").contains("exited while loading"), "{e:#}");
-    }
-
-    #[test]
-    fn idle_process_is_dropped() {
-        let c = Client::new(
-            fake(concat!(
-                r#"echo '{"ready":true,"model":"f","backend":"sh"}'; "#,
-                r#"while read -r l; do echo '{"id":1,"text":"x","ms":1}'; done"#
-            )),
-            Duration::from_secs(5),
-            Duration::from_millis(100),
-        );
-        c.prewarm().unwrap();
-        assert!(c.running());
+    fn idle_unloads_and_the_next_call_reloads() {
+        let loads = Arc::new(AtomicUsize::new(0));
+        let e = engine(Duration::from_millis(100), loads.clone());
+        e.transcribe(&[0.0; 8], LONG, true).unwrap();
         std::thread::sleep(Duration::from_millis(400));
-        assert!(!c.running());
+        assert_eq!(e.phase(), Phase::Stopped);
+        assert_eq!(e.transcribe(&[0.0; 8], LONG, true).unwrap(), "hello");
+        assert_eq!(loads.load(Ordering::SeqCst), 2);
     }
 
     struct Fake(Result<&'static str, &'static str>, Duration, bool);
@@ -896,6 +809,9 @@ mod tests {
         assert_eq!(final_text(Some(&err), &audio, s()), "streaming text");
         let absent = Fake(Ok("x"), Duration::ZERO, false);
         assert_eq!(final_text(Some(&absent), &audio, s()), "streaming text");
+        let empty = Fake(Ok("  "), Duration::ZERO, true);
+        assert_eq!(final_text(Some(&empty), &audio, s()), "streaming text");
+        assert_eq!(final_text(Some(&empty), &audio, String::new()), "");
         // Late past 2.5 s + 0.5 × 0.01 s.
         let late = Fake(Ok("x"), Duration::from_millis(2_600), true);
         assert_eq!(
@@ -911,27 +827,7 @@ mod tests {
     }
 
     #[test]
-    fn tokens_join_into_words() {
-        let t = |text: &str, start, end| TokenTime {
-            text: text.into(),
-            start,
-            end,
-        };
-        let w = join_words(&[
-            t(" Ship", 0.1, 0.3),
-            t(" t", 0.4, 0.5),
-            t("onight", 0.5, 0.8),
-            t(".", 0.8, 0.9),
-        ]);
-        let got: Vec<_> = w
-            .iter()
-            .map(|w| (w.text.as_str(), w.t0_ms, w.t1_ms))
-            .collect();
-        assert_eq!(got, [("Ship", 100, 300), ("tonight.", 400, 900)]);
-    }
-
-    #[test]
-    fn engine_selection_defaults_to_onnx() {
+    fn engine_selection_and_fallback() {
         #[derive(Deserialize)]
         struct C {
             #[serde(default)]
@@ -941,42 +837,156 @@ mod tests {
         assert_eq!(c.stt_engine, SttEngine::Onnx);
         let c: C = serde_json::from_str(r#"{"stt_engine":"mlx"}"#).unwrap();
         assert_eq!(c.stt_engine, SttEngine::Mlx);
-        // Not installed under an empty dir: the live engine is skipped, the Transcriber uses ONNX.
         let dir = std::env::temp_dir().join(format!("theuth-mlx-{}", uuid::Uuid::now_v7()));
+        assert!(select(SttEngine::Onnx, &dir, Duration::ZERO).is_none());
+        assert!(live().is_none());
+        // Not downloaded (and, without the feature, not compiled): nothing is ready, ONNX runs.
         let m = Mlx::new(&dir, Duration::ZERO);
         assert!(!m.installed());
         assert!(!Whole::ready(&*m));
-        assert!(m.transcribe_piece(&[0.0; 160], false).is_err());
+        assert!(m.transcribe_clip(&[0.0; 160]).is_err());
         assert!(matches!(
             state(&dir),
             MlxState::Absent | MlxState::Unavailable { .. }
         ));
     }
 
-    /// The real sidecar on a real dictation clip (`$THEUTH_MLX_DATA_DIR` with the venv and
-    /// model installed, e.g. by [`install`]; `$THEUTH_MLX_CLIP` a 16 kHz `.pcm16`).
     #[test]
-    #[ignore = "runs the MLX sidecar (~2.5 GB model); set THEUTH_MLX_DATA_DIR and THEUTH_MLX_CLIP"]
-    fn real_sidecar_transcribes_a_clip() {
+    fn hub_headers_give_size_and_sha() {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert("content-length", "1234".parse().unwrap());
+        assert_eq!(
+            expect_from(&h),
+            Expect {
+                size: Some(1234),
+                sha256: None
+            }
+        );
+        let sha = "a".repeat(64);
+        h.insert("x-linked-size", "2509044141".parse().unwrap());
+        h.insert("x-linked-etag", format!("\"{sha}\"").parse().unwrap());
+        assert_eq!(
+            expect_from(&h),
+            Expect {
+                size: Some(2_509_044_141),
+                sha256: Some(sha)
+            }
+        );
+        // A git (sha1) etag is not a sha256.
+        h.insert(
+            "x-linked-etag",
+            "\"0123456789abcdef0123456789abcdef01234567\""
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(expect_from(&h).sha256, None);
+    }
+
+    #[test]
+    fn check_compares_size_and_hash() {
+        let dir = std::env::temp_dir().join(format!("theuth-mlx-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("x.part");
+        std::fs::write(&f, b"abc").unwrap();
+        let sha = hex::encode(Sha256::digest(b"abc"));
+        assert_eq!(part_of(&dir.join("x")), f);
+        check(
+            &f,
+            &Expect {
+                size: Some(3),
+                sha256: Some(sha.clone()),
+            },
+        )
+        .unwrap();
+        assert!(
+            check(
+                &f,
+                &Expect {
+                    size: Some(4),
+                    sha256: None
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            check(
+                &f,
+                &Expect {
+                    size: None,
+                    sha256: Some("0".repeat(64))
+                }
+            )
+            .is_err()
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The download against a local hub: LFS headers on HEAD, a resumed `.part`, the marker last.
+    #[tokio::test]
+    async fn download_resumes_verifies_and_marks_complete() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let body = |f: &str| format!("contents of {f}").into_bytes();
+        for f in FILES {
+            let b = body(f);
+            Mock::given(method("HEAD"))
+                .and(path(format!("/{f}")))
+                .respond_with(
+                    ResponseTemplate::new(302)
+                        .insert_header("x-linked-size", b.len().to_string())
+                        .insert_header(
+                            "x-linked-etag",
+                            format!("\"{}\"", hex::encode(Sha256::digest(&b))),
+                        ),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("/{f}")))
+                .and(header("range", "bytes=5-"))
+                .respond_with(ResponseTemplate::new(206).set_body_bytes(b[5..].to_vec()))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("/{f}")))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(b))
+                .mount(&server)
+                .await;
+        }
+        let dir = std::env::temp_dir().join(format!("theuth-mlx-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A half-done first file resumes from byte 5.
+        std::fs::write(part_of(&dir.join(FILES[0])), &body(FILES[0])[..5]).unwrap();
+        let mut last = (0, 0);
+        download(&server.uri(), &dir, |d, t| last = (d, t))
+            .await
+            .unwrap();
+        for f in FILES {
+            assert_eq!(std::fs::read(dir.join(f)).unwrap(), body(f));
+            assert!(!part_of(&dir.join(f)).exists());
+        }
+        assert!(dir.join(COMPLETE).is_file());
+        assert_eq!(last.0, last.1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The real model on a real dictation clip (`$THEUTH_MLX_DATA_DIR` with the weights under
+    /// `models/parakeet-tdt-mlx/`, `$THEUTH_MLX_CLIP` a 16 kHz `.pcm16`). Needs `--features mlx`.
+    #[test]
+    #[ignore = "loads the MLX model (~2.5 GB); set THEUTH_MLX_DATA_DIR and THEUTH_MLX_CLIP, --features mlx"]
+    fn real_model_transcribes_a_clip() {
         let data_dir = PathBuf::from(std::env::var("THEUTH_MLX_DATA_DIR").unwrap());
         let clip = std::fs::read(std::env::var("THEUTH_MLX_CLIP").unwrap()).unwrap();
         let pcm: Vec<f32> = clip
             .chunks_exact(2)
             .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32768.0)
             .collect();
-        if !Paths::new(&data_dir).installed() {
-            eprintln!("installing into {}", data_dir.display());
-            install(&data_dir, |s| eprintln!("{s:?}")).unwrap();
-        }
         let m = Mlx::new(&data_dir, Duration::ZERO);
         let t = Instant::now();
-        m.client.prewarm().unwrap();
-        eprintln!("sidecar up in {:?}", t.elapsed());
-        let t = Instant::now();
-        let text = m.transcribe_piece(&pcm, false).unwrap().text;
+        let text = m.transcribe_clip(&pcm).unwrap();
         eprintln!(
-            "mlx: {:?} in {:?} for {:.1} s of audio",
-            text,
+            "mlx (load + warm + first): {text:?} in {:?} for {:.1} s of audio",
             t.elapsed(),
             pcm.len() as f64 / 16_000.0
         );
