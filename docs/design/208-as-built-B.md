@@ -61,6 +61,27 @@ Script `/tmp/theuth-208-b-gate.sh`, log `/tmp/theuth-208-b-gate.log`; each step'
 
 `cargo fmt -p agent -p rpc-compose` also reformatted about 40 files B does not own; those changes were reverted, not committed. `lib.rs`, `client_mirror.rs` and `wire_golden.rs` carry only B's lines, so the agent and rpc-compose trees are still not `cargo fmt` clean, as on main. The new files are formatted. Rule breaches: the 21:24 rerun of hold 1 started 17 s after the aborted 21:22 run released the lock, short of the 45 s spacing rule. One `graph.rs` edit (the coalescer fix) went in while hold 1 was still compiling the rpc-compose tests; hold 2 re-ran every affected step.
 
+Final `git diff --stat 98bc9b58b HEAD` (no `cargo fmt` is run any more; the step was removed from the gate script):
+
+```
+crates/agent/migrations/0073_graph.sql             |   11 +
+crates/agent/src/communication.rs                  |   11 +-
+crates/agent/src/graph.rs                          | 2114 ++++++++++++++
+crates/agent/src/graph/tests.rs                    |  640 +++++
+crates/agent/src/lib.rs                            |   17 +-
+crates/agent/src/rpc_graph.rs                      |   52 +
+crates/agent/src/store/communication.rs            |  245 ++
+crates/agent/src/supervisor.rs                     |   17 +-
+crates/rpc-compose/src/client_mirror.rs            |    1 +
+.../tests/fixtures/wire/agent.graph.json           |  184 ++
+.../tests/fixtures/wire/agent.peer-message.json    |   70 +-
+crates/rpc-compose/tests/wire_golden.rs            |    1 +
+crates/rpc-compose/tests/wire_parity_inc4.rs       |    3 +-
+crates/sessionsync/src/events.rs                   |    3 +
+crates/theuth/tests/fixtures/wire/openrpc-v1.json  | 2954 ++++++++++++++++++--
+docs/design/208-as-built-B.md                      |   (this file)
+```
+
 ## Reds
 
 - `rpc-compose` `wire_golden::legacy_event_families` and `wire_parity_inc4::agent_golden_parity`: the known stale `agent.events` sample (pre-existing, not fixed). Both stop before they reach `agent.graph` or `agent.peer-message`, which is why `graph::tests::wire_fixtures_round_trip` exists.
