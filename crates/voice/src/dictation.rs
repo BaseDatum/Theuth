@@ -213,7 +213,7 @@ pub enum DictionaryReply {
 pub enum Setting {
     /// `voice.shape.<surface>`.
     Shape(Surface, Preset),
-    /// `voice.shape.enabled` (201): `false` bypasses the shaper on every surface.
+    /// `voice.shape.enabled` (203): `false` bypasses the shaper on every surface.
     ShapeEnabled(bool),
     /// `voice.end_commands`.
     EndPhrases(EndPhrases),
@@ -923,7 +923,7 @@ impl Message<Correction> for Dictation {
     type Reply = Result<(), String>;
     async fn handle(&mut self, m: Correction, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.open_stores(ctx.actor_ref().clone()).await;
-        // 201: with the shaper off nothing is learned into the dictionary from corrections.
+        // 203: with the shaper off nothing is learned into the dictionary from corrections.
         let learn = self.cfg.history.learn && self.cfg.shape.enabled;
         let Some(store) = self.store.clone().filter(|_| learn) else {
             return Ok(());

@@ -372,7 +372,7 @@ resolve conservatively on a partial (leave the word) and finally at `is_final`. 
 ```yaml
 voice:
   shape:            # preset per surface: full | plain | off   (plain = punctuation + literals + numbers, no dictionary/end commands)
-    enabled: true   # 201: false bypasses the shaper on every surface (model text verbatim, no end commands, nothing learned); wins over the presets
+    enabled: true   # 203: false bypasses the shaper on every surface (model text verbatim, no end commands, nothing learned); wins over the presets
     composer: full
     tui: full
     companion: full
@@ -1123,7 +1123,7 @@ Events on `subscribe_events`: `DictationText` (+ `shaped`, `command`, `actions`)
 `computer` prompt block gains the command paragraph (§10.2).
 
 ### 14.3 Settings keys (engine `config.yaml`; written by the RPCs above)
-`voice.shape.{enabled,composer,tui,companion,phone,any_app}` (`enabled`: 201's global off switch, `set_shape_enabled`), `voice.stt_engine` (`onnx` | `mlx`, 202 §5, `set_stt_engine`), `voice.end_commands.{send,scratch,literal}`, `voice.input_devices`,
+`voice.shape.{enabled,composer,tui,companion,phone,any_app}` (`enabled`: 203's global off switch, `set_shape_enabled`), `voice.stt_engine` (`onnx` | `mlx`, 202 §5, `set_stt_engine`), `voice.end_commands.{send,scratch,literal}`, `voice.input_devices`,
 `voice.standby_secs`, `voice.duck_media`, `voice.polish_model`, `voice.polish_profiles.<destination>`, `voice.rewrite_template`,
 `voice.history.{enabled,rows,audio_mib,learn}`, `computer.native`. Companion-local (`UserDefaults` / the C# settings store, the
 `VoiceKeySettings` pattern, `COMP/Companion/PointAndSay/PointController.swift:529-538`): `dictateAnywhereEnabled`, `commandKeyEnabled`,

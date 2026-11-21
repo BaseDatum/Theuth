@@ -1,4 +1,4 @@
-# 201 — Shaper audit: what the dictation shaper did to speech-to-text output
+# 203 — Shaper audit: what the dictation shaper did to speech-to-text output
 
 Status: built on `feat/stt-shaper-mlx` (2026-11-21). Scope: `crates/voice/src/shape/**`, the packaged-dictionary
 gate in `crates/voice/src/dictionary/mod.rs`, and the global off switch `voice.shape.enabled`.

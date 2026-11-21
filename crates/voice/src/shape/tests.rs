@@ -586,7 +586,7 @@ fn shaper_builders_reach_the_stages() {
     );
 }
 
-/// 201: the real packaged dictionary, Full preset, the owner's dictations (voice.db rows
+/// 203: the real packaged dictionary, Full preset, the owner's dictations (voice.db rows
 /// where shaped != raw were all damage): plain prose comes back unchanged.
 #[test]
 fn history_prose_is_unchanged_with_the_packaged_dictionary() {
@@ -611,7 +611,7 @@ fn history_prose_is_unchanged_with_the_packaged_dictionary() {
     assert_eq!(s.shape("", "git hub actions", true).text, "GitHub actions");
 }
 
-/// 201: a lone number word stays a word unless a spoken symbol, "point", "percent" or
+/// 203: a lone number word stays a word unless a spoken symbol, "point", "percent" or
 /// "number" says it is a quantity.
 #[test]
 fn lone_number_words_stay_prose() {
@@ -623,7 +623,7 @@ fn lone_number_words_stay_prose() {
     assert_eq!(h.text("twenty three files"), "23 files");
 }
 
-/// 201: `voice.shape.enabled: false` wins over every preset; trigger words pass byte for byte.
+/// 203: `voice.shape.enabled: false` wins over every preset; trigger words pass byte for byte.
 #[test]
 fn disabled_shaper_passes_the_model_text_through() {
     let off = ShapePresets {

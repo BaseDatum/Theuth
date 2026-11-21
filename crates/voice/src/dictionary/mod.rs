@@ -273,7 +273,7 @@ impl Dictionary {
         if e.canonical == core || (case_only && (keep_case || !casing_informative)) {
             return None;
         }
-        // 201 (shaper audit): a packaged term rewrites prose only on positive evidence — a
+        // 203 (shaper audit): a packaged term rewrites prose only on positive evidence — a
         // recase (gated above) or a multi-word window joined into a curated / mixed-case name
         // ("git hub" → GitHub). Joining ordinary words into a lowercase or Title-case name
         // ("a lot" → alot, "go to" → goto, "be an" → Bean, "up dog" → updog), dropping the

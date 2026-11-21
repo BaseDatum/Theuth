@@ -159,7 +159,7 @@ impl From<Preset> for ShapeConfig {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(default)]
 pub struct ShapePresets {
-    /// `false` bypasses the shaper on every surface (201): the model's text verbatim, no end
+    /// `false` bypasses the shaper on every surface (203): the model's text verbatim, no end
     /// commands, nothing learned into the dictionary. Wins over the presets below.
     pub enabled: bool,
     /// Desktop Composer and per-field mics.
@@ -361,7 +361,7 @@ impl Ctx<'_> {
         is_final: bool,
     ) -> Shaped {
         let cfg = self.cfg;
-        // `Preset::Off` / `voice.shape.enabled: false` (201): the model's text, byte for byte —
+        // `Preset::Off` / `voice.shape.enabled: false` (203): the model's text, byte for byte —
         // the tokenize/render round trip alone respaces and recases at piece boundaries.
         if cfg == Preset::Off.into() {
             return Shaped {

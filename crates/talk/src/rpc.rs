@@ -116,7 +116,7 @@ pub trait SpeechApi {
     /// 153 §4.5: persist `voice.shape.<surface>`.
     #[method(name = "set_shape")]
     async fn set_shape(&self, surface: voice::Surface, preset: voice::Preset) -> RpcResult<()>;
-    /// 201: persist `voice.shape.enabled`; `false` bypasses the shaper on every surface.
+    /// 203: persist `voice.shape.enabled`; `false` bypasses the shaper on every surface.
     #[method(name = "set_shape_enabled")]
     async fn set_shape_enabled(&self, enabled: bool) -> RpcResult<()>;
     /// 202 §5: persist `voice.stt_engine` and apply it at once; utterances already running keep

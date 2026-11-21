@@ -171,7 +171,7 @@ pub(super) fn numbers(toks: &mut Vec<Tok>) {
             continue;
         }
         let words: Vec<&str> = toks[i..j].iter().map(|t| t.text.as_str()).collect();
-        // 201 (shaper audit): a lone number word is prose ("one or two of them", "for one
+        // 203 (shaper audit): a lone number word is prose ("one or two of them", "for one
         // thing", "the two of us"); the model writes real quantities as digits itself. It
         // converts only after "number" or beside a spoken symbol (`#`, `.`, an operator),
         // "point" or "percent".

@@ -112768,7 +112768,7 @@
           },
           "enabled": {
             "default": true,
-            "description": "`false` bypasses the shaper on every surface (201): the model's text verbatim, no end\ncommands, nothing learned into the dictionary. Wins over the presets below.",
+            "description": "`false` bypasses the shaper on every surface (203): the model's text verbatim, no end\ncommands, nothing learned into the dictionary. Wins over the presets below.",
             "type": "boolean"
           },
           "phone": {
@@ -114013,7 +114013,7 @@
           },
           "enabled": {
             "default": true,
-            "description": "`false` bypasses the shaper on every surface (201): the model's text verbatim, no end\ncommands, nothing learned into the dictionary. Wins over the presets below.",
+            "description": "`false` bypasses the shaper on every surface (203): the model's text verbatim, no end\ncommands, nothing learned into the dictionary. Wins over the presets below.",
             "type": "boolean"
           },
           "phone": {
