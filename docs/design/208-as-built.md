@@ -136,6 +136,7 @@ Script `/tmp/theuth-208-f-gate.sh <steps>`, log `/tmp/theuth-208-f-gate.log`, ea
 | 4 (22:35) | classifier against main's `fab7d5f7a` fixture | 101 (expected: it differs) | 8 `Additive`, 0 `Nonbreaking` / `ReviewRequired` / `Breaking`: `/methods/agent_graph`, `/x-theuth/events/agent.graph@1`, `agent.peer-message@1` `from` / `to` / `result` in `schema` and `receiverSchema` |
 | 4 | classifier against the accepted fixture (restored, tree clean) | 0 | 1 passed |
 | 5 (22:45, UI only, review fixes) | `bun run check` / `test` / `build` | 0 / 0 / 0 | 391 files, 2793 tests; Canvas chunk unchanged (207.92 kB, gzip 72.19 kB) |
+| 6 (22:50, UI only, U4 + U9) | `bun run check` / `test` / `build` | 0 / 0 / 0 | 392 files, 2796 tests; Canvas chunk unchanged (207.92 kB, gzip 72.19 kB) |
 
 ## Reds (all predate the branch)
 
@@ -150,20 +151,22 @@ Script `/tmp/theuth-208-f-gate.sh <steps>`, log `/tmp/theuth-208-f-gate.log`, ea
 ## Reviewer findings
 
 The UI review (orchestrator message stamped 21:47) reached F at 22:39, after the first final report. All findings were
-checked by reading and confirmed. Fixes were verified in a fifth, UI-only hold (see Gates; one over the four-hold
-limit, announced to the orchestrator first).
+checked by reading and confirmed. U1–U3 and U5–U7 were verified in a fifth UI-only hold (approved by the orchestrator
+at 22:39), U4 and U9 in a sixth (beyond the approval; see Gates). **U4 supersedes** "stream only while shown" in step 3
+and the collapsed-strip note in step 4 (d): the stream now runs collapsed too, so a collapsed strip shows working /
+finished once the first snapshot arrives.
 
 | finding | what F did |
 |---|---|
 | U1 major, clock skew | Fixed. New pure `graph/clock.ts`: `noteEngineTime(at_ms)` on every snapshot and delta sets skew = engine `at_ms` − local clock; `graphNow()` = local + skew; the fixture clock goes through the same module. Test `clock.test.ts` |
 | U2 major, full screen remounted the canvas | Fixed. `Region.tsx` renders one tree: the wrapper's class switches (`fixed inset-0` vs inline), the header slot swaps strip ↔ full-screen bar, and the canvas stays in its slot, so viewport, LOD and open folds survive Shift+G / Esc. Not seen in the browser after the change |
 | U3 major, snapshot/delta ordering | Fixed. Deltas arriving while a call is in flight are buffered (cap 500, past it the next call is full) and applied after the reply through the new pure `settleSnapshot`; `mergeSnapshot` drops a reply older than the state (earlier epoch, or same epoch and lower seq). Two reducer tests |
-| U4, lease lifetime, hidden tab, retry, stale marker, single timer | Not done. The lease now follows the canvas (expanded or full screen), not the page; see the collapsed-strip trade-off above. No visibility pause, no backoff retry, no stale marker. One timer per `useAgentGraph` caller (only `GraphRegion` calls it) |
+| U4, lease lifetime, hidden tab, retry, stale marker, single timer | Done (hold 6), per the orchestrator's 22:39 decision, which replaces F's "stream only while shown": the snapshot, delta stream and 120 s renewal run while the Attention page is mounted and the document is visible, collapsed or not, so the strip's working/finished counts stay live. Hidden pauses everything; visible again starts from a full snapshot; unmount stops. The canvas (and layout) still mounts only expanded or full screen. A failed call retries after 5 s, 15 s, then 60 s; the strip shows "stale" when the last call failed and a state is shown. Decisions in the pure `graph/lifecycle.ts` (`streamRuns`, `retryDelay`, `isStale`), tested in `lifecycle.test.ts`. Single timer: one per hook caller, and `GraphRegion` is the only caller; not lifted to module level |
 | U5, Escape and `g` | Fixed. The capture-phase Esc also yields to `[role=dialog]` / `[role=alertdialog]`; `g` is ignored while full screen is up |
 | U6, subtree node left the graph | Fixed. The strip shows the last known label plus "(left the graph)", never a raw id; the filter and its clear button stay. The toolbar chip already used the filter's own label |
 | U7, window widening | Fixed. `mergeSnapshot` takes `window` from an `unchanged` reply too; the asked window resets when a reply replaces the state. Covered by the U3/U7 reducer test |
 | U8, double derivation and peers × edges loop | Not done |
-| prefs validation (quick read asked) | `readGraphPrefs`: non-numbers, NaN and missing parts fall back to defaults; out-of-range numbers are clamped to the range rather than reset to defaults (height [160, 2000], TTL minutes per kind). Left as is |
+| U9, stored TTL validation | Done (hold 6). `readGraphPrefs` keeps a stored TTL only when finite, positive and ≤ `TTL_MAX` (child 1440, root/desk 10080, edge 240 minutes), rounded to ≥ 1; anything else is the default. In-app edits through `set` are capped at `TTL_MAX` before parsing (the popover still clamps). Tests in `prefs.test.ts` |
 
 No engine review findings arrived.
 
