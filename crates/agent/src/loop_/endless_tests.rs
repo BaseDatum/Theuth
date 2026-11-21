@@ -376,7 +376,8 @@ async fn scenario_bounded_view() {
             "the backlog line repeats here ".repeat(20)
         );
         h.store
-            .append(h.id, &ChatMessage::user(text))
+            // 201 P3: talk units (a long user message needs no model, D8).
+            .append(h.id, &ChatMessage::assistant(text))
             .await
             .unwrap();
     }
@@ -432,7 +433,7 @@ async fn scenario_bounded_view() {
     let view_bytes = |b: &Value| -> usize {
         texts(b)
             .iter()
-            .filter(|t| t.contains("+1|user: message"))
+            .filter(|t| t.contains("+1|talk: message"))
             .map(String::len)
             .sum()
     };
@@ -454,12 +455,10 @@ async fn scenario_bounded_view() {
             || all.contains("older unsummarized lines were folded to fit"),
         "the G10 note"
     );
+    // 201 P3: a paused session still builds its draft merges, so the old
+    // lines fold into merged lines (or, without merges, the prefix line).
     assert!(
-        all.contains("older lines folded to fit the view"),
-        "the folded prefix line (201 P1: every unit has its draft)"
-    );
-    assert!(
-        !all.contains("user: message 0:"),
-        "the oldest lines are folded, not sent"
+        !all.contains("0+1|talk: message 0:"),
+        "the oldest lines are folded, not sent one by one"
     );
 }

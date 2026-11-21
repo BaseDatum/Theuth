@@ -18405,7 +18405,8 @@ pub(crate) mod tests {
             store
                 .append(
                     session,
-                    &ChatMessage::user(format!("long message {k}: {}", "x ".repeat(400))),
+                    // 201 P3: talk units (a long user message needs no model).
+                    &ChatMessage::assistant(format!("long message {k}: {}", "x ".repeat(400))),
                 )
                 .await
                 .unwrap();

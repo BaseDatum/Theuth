@@ -70,19 +70,25 @@ fn tool_line(text: &str, max: usize) -> String {
     line
 }
 
-/// A line of tool output that reports a failure.
+/// A line of tool output that reports a failure: `error:` / `error[…]` /
+/// `error ` at its start, or a failure word anywhere (`error_log` is not one).
 fn is_error(line: &str) -> bool {
     let l = line.to_ascii_lowercase();
-    [
-        "error",
-        "panicked",
-        "failed",
-        "fatal",
-        "exception",
-        "traceback",
-    ]
-    .iter()
-    .any(|w| l.contains(w))
+    let starts = l
+        .strip_prefix("error")
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '[', ' ', '(']));
+    starts
+        || [
+            "error:",
+            " error ",
+            "panicked",
+            " failed",
+            "fatal:",
+            "exception",
+            "traceback",
+        ]
+        .iter()
+        .any(|w| l.contains(w))
 }
 
 fn error_lines(text: &str) -> Vec<&str> {
@@ -244,7 +250,7 @@ mod tests {
         assert!(l.starts_with("echo: Compiling agent"), "{l}");
         assert!(l.contains("error[E0308]"), "{l}");
         assert!(l.contains("Finished in 3.2s"), "{l}");
-        assert!(l.ends_with("(404 lines, 2 errors)"), "{l}");
+        assert!(l.ends_with("(405 lines, 2 errors)"), "{l}");
         assert!(
             !needs_model(&unit(Kind::Echo, &text)),
             "an error echo is final"

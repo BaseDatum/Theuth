@@ -304,8 +304,9 @@ async fn pump_builds_tree_and_tools_answer() {
         6 + 2,
         "six units, one line each under budget"
     );
+    // 201 P3: the two long units refine in one batch; merges are lazy.
     assert!(
-        *echo.calls.lock() >= 2,
+        *echo.calls.lock() >= 1,
         "the two long units needed the model"
     );
 
@@ -315,9 +316,9 @@ async fn pump_builds_tree_and_tools_answer() {
     assert!(mem.view.iter().all(|l| l.built));
     assert_eq!(mem.model, "fake/compactor");
     assert!(
-        mem.stats.calls >= 2
-            && mem.stats.input_tokens >= 2000
-            && mem.stats.cache_read_tokens >= 1800
+        mem.stats.calls >= 1
+            && mem.stats.input_tokens >= 1000
+            && mem.stats.cache_read_tokens >= 900
     );
     assert!(mem.backfill.is_none());
 
@@ -871,7 +872,8 @@ async fn built_by(store: &Store, id: SessionId) -> Vec<Option<String>> {
         .await
         .unwrap()
         .into_iter()
-        .filter(|n| !n.free)
+        // 201 P3: a draft merge waits for `merge_at` (lazy); not a model's line.
+        .filter(|n| !n.free && !(n.l > 0 && n.mechanical))
         .map(|n| n.model)
         .collect()
 }
@@ -1168,7 +1170,11 @@ async fn local_compactor_receives_the_capped_view() {
             "note {k}: {}",
             "rotate the nginx worker and check error_log ".repeat(15)
         );
-        store.append(id, &ChatMessage::user(text)).await.unwrap();
+        // 201 P3: talk units (a long user message needs no model, D8).
+        store
+            .append(id, &ChatMessage::assistant(text))
+            .await
+            .unwrap();
     }
     endless.attach(id, attached()).await.unwrap();
     assert!(endless.quiet_for_tests(id, Duration::from_secs(20)).await);
@@ -1188,18 +1194,23 @@ async fn local_compactor_receives_the_capped_view() {
 #[tokio::test]
 async fn queued_merge_does_not_hold_back_the_frontier() {
     let p = Probe::with("fake/a", Act::Echo, Some("ep"), Duration::ZERO);
-    let (_dir, endless, store, id) = harness_for(cfg_137f(None), p.clone()).await;
+    let cfg = EndlessConfig {
+        merge_at: 0.5,
+        ..cfg_137f(None)
+    };
+    let (_dir, endless, store, id) = harness_for(cfg, p.clone()).await;
     let gate = super::pump::gate_for_tests(&endless.inner, "ep");
     let held = gate.acquire(1, runtime::SessionId(uuid::Uuid::nil())).await;
     store
         .set_session_memory(id, MemoryMode::Endless)
         .await
         .unwrap();
-    // Two free level-0 lines (≤ 512 B each) whose merge needs the model.
-    for tag in ["alpha", "beta"] {
+    // 24 free level-0 lines (≤ 512 B each) whose merges need the model; 201
+    // P3: together over `merge_at` × `view_bytes`, so merges are due.
+    for k in 0..24 {
         let text = format!(
-            "{tag}: {}",
-            "keep the nginx worker_processes line ".repeat(7)
+            "tag{k}: {}",
+            "keep the nginx worker_processes line ".repeat(11)
         );
         store.append(id, &ChatMessage::user(text)).await.unwrap();
     }
@@ -1212,10 +1223,14 @@ async fn queued_merge_does_not_hold_back_the_frontier() {
         "UNIT2 {}",
         "rotate the error_log and reload nginx now ".repeat(20)
     );
-    store.append(id, &ChatMessage::user(unit)).await.unwrap();
+    // A talk unit: a long user message needs no model (201 P3, D8).
+    store
+        .append(id, &ChatMessage::assistant(unit))
+        .await
+        .unwrap();
     endless.on_rows_committed(id);
     until("the frontier spawned beside the merge", || {
-        super::pump::running_for_tests(&endless.inner, id) == [(0, 2), (1, 0)]
+        super::pump::running_for_tests(&endless.inner, id) == [(0, 24), (1, 0)]
     })
     .await;
     assert_eq!(p.calls(), 0, "both wait at the held gate");
@@ -1253,7 +1268,9 @@ async fn fold_turns_the_backlog_into_mechanical_nodes_at_once() {
     for l in &mech {
         assert!(l.built && l.text.len() <= node_bytes, "{}", l.text.len());
         assert!(
-            l.text.contains(" … ") && l.text.contains("line 59"),
+            // 201 P3: the talk unit's mechanical cut, the echo's per-kind line.
+            (l.text.contains(" … ") || l.text.contains("(60 lines, 0 errors)"))
+                && l.text.contains("line 59"),
             "{}",
             l.text
         );
@@ -1591,33 +1608,18 @@ async fn batches_settle_200_units_in_parallel_and_retry_a_bad_line_alone() {
     endless.attach(id, attached()).await.unwrap();
     let m = endless.memory(id).await.unwrap();
     let b = m.backlog.expect("a backlog");
-    // 201 P1: every unit has its draft at ingest — no unsummarized run;
-    // with merges paused the view stays bounded by the hard-cap prefix.
     assert_eq!((b.lines, b.paused, b.eta_secs), (200, true, 0), "{b:?}");
-    let folded_line = m
-        .view
-        .iter()
-        .find(|l| l.n > 1 && !l.built)
-        .expect("one folded line");
-    assert!(
-        m.view.iter().all(|l| l.built || l.id == folded_line.id),
-        "every other line is a draft"
-    );
-    assert!(
-        folded_line
-            .text
-            .contains("older lines folded to fit the view"),
-        "{}",
-        folded_line.text
-    );
-    // R1-5: a folded run is no tree node — zoom refuses it, its text names recall only.
-    assert!(
-        endless
-            .zoom(id, folded_line.id, folded_line.n)
-            .await
-            .is_err()
-    );
-    assert!(folded_line.text.contains("recall") && !folded_line.text.contains("zoom"));
+    // 201 P1: every unit has its draft at ingest — no unsummarized run.
+    // 201 P3: a paused session still builds its draft merges, so the view
+    // folds with them instead of the hard-cap prefix line.
+    eventually("the paused view folds with draft merges", || async {
+        let m = endless.memory(id).await.unwrap();
+        m.view.iter().all(|l| l.built) && m.view.iter().any(|l| l.n > 1)
+    })
+    .await;
+    let m = endless.memory(id).await.unwrap();
+    let bytes: usize = m.view.iter().map(|l| l.text.len()).sum();
+    assert!(bytes <= 2 * 16_000, "bounded view: {bytes} B");
 
     endless.pause(id, false).await.unwrap();
     eventually("200 refined level-0 nodes", || async {
@@ -1925,7 +1927,10 @@ async fn over_cost_batch_splits_and_only_an_over_cost_unit_folds() {
         "message huge: {}",
         "the rollout notes repeat here ".repeat(400)
     );
-    store.append(id, &ChatMessage::user(big)).await.unwrap();
+    store
+        .append(id, &ChatMessage::assistant(big))
+        .await
+        .unwrap();
     endless.attach(id, attached()).await.unwrap();
     eventually("four units refined", || async {
         level0(&store, id)
@@ -1995,7 +2000,7 @@ async fn long_unit_is_map_reduced_into_one_node() {
     let long: String = (0..10_000).map(|k| format!("w{k:04}_x ")).collect();
     assert!(long.len() >= 80_000);
     store
-        .append(id, &ChatMessage::user(long.clone()))
+        .append(id, &ChatMessage::assistant(long.clone()))
         .await
         .unwrap();
     endless.attach(id, attached()).await.unwrap();
@@ -2859,15 +2864,15 @@ async fn load_drafts_node_less_units() {
             "the cache keeps these rows ".repeat(30)
         );
         let seq = store
-            .append(id, &ChatMessage::user(text.clone()))
+            .append(id, &ChatMessage::assistant(text.clone()))
             .await
             .unwrap();
         rows.push(crate::store::endless::UnitRow {
             i: k,
             seq,
             part: 0,
-            kind: super::tree::Kind::User,
-            size: (text.len() + "user: ".len()) as u32,
+            kind: super::tree::Kind::Talk,
+            size: (text.len() + "talk: ".len()) as u32,
             turn: 0,
         });
     }
@@ -2914,7 +2919,8 @@ async fn failing_unit_blocks_nothing() {
         let nodes = store.endless_nodes(id).await.unwrap();
         let q = |l: u8, i: u64| nodes.iter().find(|n| (n.l, n.i) == (l, i)).map(quality);
         (1..4).all(|i| q(0, i) == Some(super::tree::Quality::Model))
-            && q(1, 1).is_some_and(|q| q != super::tree::Quality::Draft)
+            // 201 P3: model merges are lazy; the line over 2..4 exists.
+            && q(1, 1).is_some()
     })
     .await;
     let nodes = level0(&store, id).await;

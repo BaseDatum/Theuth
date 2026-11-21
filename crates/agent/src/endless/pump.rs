@@ -1505,7 +1505,9 @@ fn schedule(state: &Arc<State>) {
     if paused {
         slots = 0;
     }
-    let merge_due = merges_due(state, &mut live, cfg);
+    // 201 §6 (P3): measured once, and only when a model merge is a candidate
+    // (the fold rebuild is O(T); instant merges land one by one).
+    let mut merge_due: Option<bool> = None;
     let mut work: Vec<Work> = Vec::new();
     let mut instant: Vec<(u8, u64)> = Vec::new();
     let mut batch: Vec<u64> = Vec::new();
@@ -1608,6 +1610,7 @@ fn schedule(state: &Arc<State>) {
     } else {
         slots
     };
+    let mut inline: Vec<Node> = Vec::new();
     let mut l = 1u8;
     while (1u64 << l) <= t && (drafting || merges > 0) {
         let n = 1u64 << l;
@@ -1634,8 +1637,31 @@ fn schedule(state: &Arc<State>) {
                     || b.quality() == Quality::Draft
                     || tree::free_merge(&a.text, &b.text, node_bytes).is_some());
             if cheap {
-                instant.push(key);
-            } else if merges > 0 && merge_due {
+                // 201 P3: a deterministic merge is built here, in the same
+                // pass (its parent can follow at once), and persisted in one
+                // write below — no task, no slot, independent of the pause.
+                let draft = a.quality() == Quality::Draft || b.quality() == Quality::Draft;
+                let text = if draft {
+                    tree::draft_merge(&a.text, &b.text, node_bytes)
+                } else {
+                    tree::free_merge(&a.text, &b.text, node_bytes).unwrap_or_default()
+                };
+                let node = Node {
+                    l,
+                    i,
+                    size: text.len() as u32,
+                    text,
+                    free: !draft,
+                    model: None,
+                    tries: 0,
+                    mechanical: draft,
+                };
+                live.failed.remove(&key);
+                live.put(node.clone());
+                inline.push(node);
+            } else if merges > 0
+                && *merge_due.get_or_insert_with(|| merges_due(state, &mut live, cfg))
+            {
                 merges -= 1;
                 work.push(Work::Node(key));
             }
@@ -1645,6 +1671,16 @@ fn schedule(state: &Arc<State>) {
     for key in instant {
         live.running.insert(key);
         spawn_build(state.clone(), key, &mut live, false);
+    }
+    if !inline.is_empty() {
+        live.dirty = true;
+        let state = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = state.store.endless_nodes_put(state.session, &inline).await {
+                tracing::warn!(session = %state.session, error = %e, "endless: draft merges");
+            }
+            state.built_tx.send_modify(|v| *v += 1);
+        });
     }
     for w in work {
         live.jobs += 1;
