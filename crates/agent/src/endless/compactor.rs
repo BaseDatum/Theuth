@@ -525,10 +525,8 @@ impl<'a> Tally<'a> {
     fn record(&self, reply: &Result<Reply, String>) {
         if let Ok(r) = reply {
             *self.last.lock() = Some(r.clone());
-            let mut rows = self.rows.lock();
-            let try_no = rows.len() as u32;
-            rows.push(CallRow {
-                try_no,
+            self.rows.lock().push(CallRow {
+                line: None,
                 bytes: Some(r.text.trim().len() as u32),
                 // R3-3: the build never judged it (dropped or panicked).
                 guard: Some("unknown"),
@@ -615,14 +613,18 @@ pub fn batch_reply_tokens(single: u32, lines: u32) -> u32 {
     (single + MAX_TOKENS * lines.saturating_sub(1)).min(16_000)
 }
 
-/// One attempt's ledger row (`endless_calls`).
+/// One attempt's ledger row (`endless_calls`). The store numbers it
+/// (`try`): the attempt's 0-based ordinal on its node across the session.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CallRow {
-    /// 0-based attempt number.
-    pub try_no: u32,
-    /// Reply bytes before any cut.
+    /// 137G G6, a batch only: the 0-based line (unit) of the batch this row
+    /// judges; `None` = the node the call was made for.
+    pub line: Option<u32>,
+    /// Reply bytes before any cut. `None` on a batch line after the first:
+    /// that row shares the call of line 0's row, which alone carries its
+    /// bytes, usage, cost and latency (a call is counted and charged once).
     pub bytes: Option<u32>,
-    /// The guard that refused it; `None` = accepted.
+    /// The guard that refused it (a batch row: its own line); `None` = accepted.
     pub guard: Option<&'static str>,
     /// Provider usage, when reported.
     pub usage: Option<Usage>,
@@ -934,7 +936,7 @@ async fn small_once(
         }
     };
     let row = |raw: &str, guard: Option<&'static str>| CallRow {
-        try_no: 0,
+        line: None,
         bytes: Some(raw.len() as u32),
         guard,
         usage: reply.usage.clone(),
@@ -1036,8 +1038,10 @@ pub fn chunks(text: &str, max: usize) -> Vec<&str> {
 /// forced for a local compactor (as [`build_one`]); otherwise, or again,
 /// the whole batch fails with [`thinking_error`], and an empty reply fails
 /// it as "returned nothing": its units keep their drafts and backoff
-/// instead of each going solo. R2-4: every reply is a [`CallRow`] of the
-/// result, failed or not, so its usage is charged. R2-5: a meeting batch
+/// instead of each going solo. R2-4: every reply is charged once, as rows
+/// of the result, failed or not: one row per unit line carrying that line's
+/// guard (a reply spent on thinking or empty: `empty` on every line), the
+/// call's bytes, usage and cost on line 0's row only. R2-5: a meeting batch
 /// (`!drafting`) keeps the pre-201 path — one call, an empty or
 /// thinking-spent reply trips every line, and its units run solo at once.
 async fn build_batch(
@@ -1063,22 +1067,40 @@ async fn build_batch(
             Err(_) => Err(format!("timed out after {}s", attempt.as_secs()).into()),
         }
     };
-    let row = |reply: &Reply, try_no: u32| CallRow {
-        try_no,
-        bytes: Some(reply.text.trim().len() as u32),
-        guard: None,
-        usage: reply.usage.clone(),
-        usd_estimate: reply
-            .usage
-            .as_ref()
-            .and_then(|u| c.rates().map(|r| estimate_usd(u, &r))),
-        latency_ms: reply.latency.as_millis() as u64,
+    // One row per line; line 0's row carries the call (bytes, usage, cost,
+    // latency), the others only their line's guard.
+    let rows = |reply: &Reply, guards: Vec<Option<&'static str>>| -> Vec<CallRow> {
+        guards
+            .into_iter()
+            .enumerate()
+            .map(|(k, guard)| {
+                let call = k == 0;
+                CallRow {
+                    line: Some(k as u32),
+                    bytes: call.then(|| reply.text.trim().len() as u32),
+                    guard,
+                    usage: reply.usage.clone().filter(|_| call),
+                    usd_estimate: reply
+                        .usage
+                        .as_ref()
+                        .filter(|_| call)
+                        .and_then(|u| c.rates().map(|r| estimate_usd(u, &r))),
+                    latency_ms: if call {
+                        reply.latency.as_millis() as u64
+                    } else {
+                        0
+                    },
+                }
+            })
+            .collect()
     };
+    // `max(1)`: a call is charged even with no line to judge.
+    let empty = || vec![Some(guards::Trip::Empty.as_str()); units.len().max(1)];
     let fail = |error: String, calls: Vec<CallRow>| Failed { error, calls };
     let mut calls = Vec::new();
     let mut reply = send(false).await?;
     if drafting && reply.spent_on_thinking() {
-        calls.push(row(&reply, 0));
+        calls.extend(rows(&reply, empty()));
         if c.local().is_none() || !c.can_grow(ctx, convo) {
             return Err(fail(thinking_error(c.model_id(), &reply), calls));
         }
@@ -1087,18 +1109,17 @@ async fn build_batch(
             Err(f) => return Err(fail(f.error, calls)),
         };
         if reply.spent_on_thinking() {
-            calls.push(row(&reply, 1));
+            calls.extend(rows(&reply, empty()));
             return Err(fail(thinking_error(c.model_id(), &reply), calls));
         }
     }
     if drafting && reply.text.trim().is_empty() {
-        calls.push(row(&reply, calls.len() as u32));
+        calls.extend(rows(&reply, empty()));
         return Err(fail("compactor returned nothing".to_owned(), calls));
     }
-    calls.push(row(&reply, calls.len() as u32));
     let raw = reply.text.trim();
     let ruler = guards::ruler(node_bytes);
-    let lines = units
+    let lines: Vec<Result<String, &'static str>> = units
         .iter()
         .zip(batch_lines(raw, units.len()))
         .map(|((kind, text), line)| match line {
@@ -1112,6 +1133,12 @@ async fn build_batch(
             .map_err(guards::Trip::as_str),
         })
         .collect();
+    let mut judged: Vec<Option<&'static str>> =
+        lines.iter().map(|l| l.as_ref().err().copied()).collect();
+    if judged.is_empty() {
+        judged.push(None);
+    }
+    calls.extend(rows(&reply, judged));
     Ok(Built {
         text: String::new(),
         tries: 1,
@@ -1163,18 +1190,17 @@ async fn build_one(
     let mut used = 0i32;
     // 177 E3: thinking off forced (after a local reply spent on thinking).
     let mut forced = false;
-    let row =
-        |calls: &Vec<CallRow>, reply: &Reply, raw: &str, guard: Option<&'static str>| CallRow {
-            try_no: calls.len() as u32,
-            bytes: Some(raw.len() as u32),
-            guard,
-            usage: reply.usage.clone(),
-            usd_estimate: reply
-                .usage
-                .as_ref()
-                .and_then(|u| c.rates().map(|r| estimate_usd(u, &r))),
-            latency_ms: reply.latency.as_millis() as u64,
-        };
+    let row = |reply: &Reply, raw: &str, guard: Option<&'static str>| CallRow {
+        line: None,
+        bytes: Some(raw.len() as u32),
+        guard,
+        usage: reply.usage.clone(),
+        usd_estimate: reply
+            .usage
+            .as_ref()
+            .and_then(|u| c.rates().map(|r| estimate_usd(u, &r))),
+        latency_ms: reply.latency.as_millis() as u64,
+    };
     for _ in 0..tries.max(1) as u32 {
         used += 1;
         let send = |forced: bool| {
@@ -1193,7 +1219,7 @@ async fn build_one(
         // local model gets one retry with thinking off forced and twice the
         // cap; otherwise (or again) it is the node's error.
         if reply.spent_on_thinking() {
-            calls.push(row(&calls, &reply, "", Some(guards::Trip::Empty.as_str())));
+            calls.push(row(&reply, "", Some(guards::Trip::Empty.as_str())));
             if forced || c.local().is_none() || !c.can_grow(ctx, &convo) {
                 return Err(Failed {
                     error: thinking_error(c.model_id(), &reply),
@@ -1208,7 +1234,7 @@ async fn build_one(
                 Err(error) => return Err(Failed { error, calls }),
             };
             if reply.spent_on_thinking() {
-                calls.push(row(&calls, &reply, "", Some(guards::Trip::Empty.as_str())));
+                calls.push(row(&reply, "", Some(guards::Trip::Empty.as_str())));
                 return Err(Failed {
                     error: thinking_error(c.model_id(), &reply),
                     calls,
@@ -1217,12 +1243,7 @@ async fn build_one(
         }
         let raw = reply.text.trim().to_owned();
         let check = accept(&raw, &input, &ruler, node_bytes);
-        calls.push(row(
-            &calls,
-            &reply,
-            &raw,
-            check.as_ref().err().map(|t| t.as_str()),
-        ));
+        calls.push(row(&reply, &raw, check.as_ref().err().map(|t| t.as_str())));
         let candidate = guards::cut_utf8(&raw, node_bytes as usize).to_owned();
         if !candidate.is_empty() && shortest.as_ref().is_none_or(|s| candidate.len() < s.len()) {
             shortest = Some(candidate.clone());
@@ -2406,7 +2427,13 @@ mod tests {
             (1, 1)
         );
         assert!(b.lines.iter().all(Result::is_ok), "{:?}", b.lines);
-        assert_eq!(b.calls.len(), 2, "the thinking reply is charged too");
+        // Two calls × two lines; each call counted (bytes) once.
+        assert_eq!(b.calls.len(), 4, "the thinking reply is charged too");
+        assert_eq!(b.calls.iter().filter(|c| c.bytes.is_some()).count(), 2);
+        assert_eq!(
+            b.calls.iter().map(|c| c.guard).collect::<Vec<_>>(),
+            [Some("empty"), Some("empty"), None, None]
+        );
         let c = thinker();
         let b = build(&c, "ctx", &batch_step(false), 240, 2, SECS)
             .await
@@ -2465,7 +2492,14 @@ mod tests {
         .await
         .unwrap_err();
         assert!(f.error.contains("returned nothing"), "{}", f.error);
-        assert_eq!(f.calls.len(), 1, "the empty reply is a call row");
+        assert_eq!(
+            f.calls
+                .iter()
+                .map(|c| (c.line, c.guard))
+                .collect::<Vec<_>>(),
+            [(Some(0), Some("empty")), (Some(1), Some("empty"))],
+            "the empty reply is a call row per line"
+        );
         let fake = Fake::new(&["", "never sent"]);
         let b = build(
             &fake,
@@ -2479,8 +2513,147 @@ mod tests {
         .unwrap();
         assert_eq!(b.lines.len(), 2);
         assert!(b.lines.iter().all(Result::is_err), "every line trips");
-        assert_eq!(b.calls.len(), 1);
+        assert_eq!(b.calls.len(), 2, "one row per line");
+        assert!(b.calls.iter().all(|c| c.guard == Some("format")));
         assert_eq!(fake.sent.lock().len(), 1, "no retry");
+    }
+
+    /// A compactor answering one batch reply with a usage and a price.
+    struct Priced {
+        model: Resolved,
+        reply: &'static str,
+    }
+
+    impl Compactor for Priced {
+        fn compress<'a>(
+            &'a self,
+            _ctx: &'a str,
+            _convo: &'a [ChatMessage],
+        ) -> BoxFuture<'a, Result<Reply, String>> {
+            let text = self.reply.to_owned();
+            Box::pin(async move {
+                Ok(Reply {
+                    text,
+                    usage: serde_json::from_str(r#"{"prompt_tokens":1000,"completion_tokens":90}"#)
+                        .ok(),
+                    latency: Duration::from_millis(40),
+                    ..Default::default()
+                })
+            })
+        }
+        fn model(&self) -> &Resolved {
+            &self.model
+        }
+        fn rates(&self) -> Option<models::Cost> {
+            Some(models::Cost {
+                input: 3.0,
+                output: 15.0,
+                cache_read: None,
+                cache_write: None,
+            })
+        }
+    }
+
+    /// G6: a batch reply records one row per unit with that unit's own
+    /// guard, landing on the unit's `i`; the call's usage and cost are
+    /// charged once (the stats equal the single call's), and `try` counts
+    /// on per node across later puts (a solo retry).
+    #[tokio::test]
+    async fn endless_batch_rows_carry_each_lines_guard_and_charge_once() {
+        let step = Step::Batch {
+            units: vec![
+                (
+                    Kind::Talk,
+                    "the agent ran cargo test in crates/agent".into(),
+                ),
+                (
+                    Kind::Talk,
+                    "the agent edited pump.rs and the retry delay".into(),
+                ),
+                (
+                    Kind::Talk,
+                    "the agent opened compactor.rs and read build_batch".into(),
+                ),
+            ],
+            earlier: vec![],
+            drafting: true,
+        };
+        let c = Priced {
+            model: super::super::pump::resolved_for_tests("priced"),
+            reply: "1| the agent ran cargo test in crates/agent\n\
+                    2| deploy the marketing website tonight with a new banner\n\
+                    3| the agent opened compactor.rs and read build_batch",
+        };
+        let b = build(&c, "ctx", &step, 240, 2, SECS).await.unwrap();
+        assert_eq!(
+            b.lines
+                .iter()
+                .map(|l| l.as_ref().err().copied())
+                .collect::<Vec<_>>(),
+            [None, Some("grounding"), None]
+        );
+        let usage: Usage =
+            serde_json::from_str(r#"{"prompt_tokens":1000,"completion_tokens":90}"#).unwrap();
+        let single = estimate_usd(&usage, &c.rates().unwrap());
+        assert_eq!(b.usage(), Some(usage));
+
+        let dir = crate::TestDir::new("endless-batch-rows");
+        let store = crate::store::Store::open(&dir.0.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let id = runtime::SessionId::new();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        store
+            .endless_calls_put(id, 0, 7, &[7, 8, 9], &b.calls)
+            .await
+            .unwrap();
+        // Unit 8 retried alone, one attempt.
+        let solo = CallRow {
+            line: None,
+            bytes: Some(40),
+            guard: Some("grounding"),
+            usage: None,
+            usd_estimate: None,
+            latency_ms: 5,
+        };
+        store
+            .endless_calls_put(id, 0, 8, &[], std::slice::from_ref(&solo))
+            .await
+            .unwrap();
+        let rows: Vec<(i64, i64, Option<String>, Option<f64>)> = sqlx::query_as(
+            "SELECT i, try, guard, usd_estimate FROM endless_calls WHERE session_id = ? \
+             ORDER BY i, try",
+        )
+        .bind(id.to_string())
+        .fetch_all(store.pool())
+        .await
+        .unwrap();
+        let shape: Vec<(i64, i64, Option<&str>)> = rows
+            .iter()
+            .map(|(i, t, g, _)| (*i, *t, g.as_deref()))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (7, 0, None),
+                (8, 0, Some("grounding")),
+                (8, 1, Some("grounding")),
+                (9, 0, None)
+            ]
+        );
+        assert_eq!(rows.iter().filter(|r| r.3.is_some()).count(), 1);
+        let stats = store.endless_stats(id).await.unwrap();
+        assert_eq!(stats.calls, 2, "the batch call once, the solo call once");
+        assert_eq!(stats.guard_trips.grounding, 2);
+        assert!(
+            (stats.usd_estimate - single).abs() < 1e-12,
+            "{}",
+            stats.usd_estimate
+        );
+        assert_eq!((stats.input_tokens, stats.output_tokens), (1000, 90));
     }
 
     /// R2-2: each reduce stage at least halves the lines and every group

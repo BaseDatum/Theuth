@@ -2,7 +2,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
-import { answerPayload } from '@/components/chat/SecretRequestCard'
 import type * as Popout from '@/lib/popout'
 import type * as Rpc from '@/lib/rpc'
 import type { Preflight } from "@/rpc/bindings/method.sandbox.output"
@@ -145,16 +144,4 @@ test('a starting row shows the `start` progress lines of its log (F2 streams the
   expect(html).toContain('waiting for the guest agent (70%)')
   // A running row never shows a log.
   expect(html).not.toContain('snapshot lab:')
-})
-
-test('the secret card sends answer_secret positionally: one field → value, a form → values, decline → both null', () => {
-  const token = { name: 'GITHUB_TOKEN', label: 'token', masked: true, current: null }
-  const form = [
-    { name: 'PGUSER', label: 'User', masked: false, current: null },
-    { name: 'PGPASSWORD', label: 'Password', masked: true, current: null },
-  ]
-  expect(answerPayload([token], { GITHUB_TOKEN: 'ghp_x' }, false)).toEqual(['ghp_x', null])
-  expect(answerPayload(form, { PGUSER: 'app', PGPASSWORD: 'pw' }, false)).toEqual([null, { PGUSER: 'app', PGPASSWORD: 'pw' }])
-  expect(answerPayload(form, { PGUSER: 'app' }, false)).toEqual([null, { PGUSER: 'app', PGPASSWORD: '' }])
-  expect(answerPayload(form, { PGUSER: 'app' }, true)).toEqual([null, null])
 })

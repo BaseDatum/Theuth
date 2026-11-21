@@ -62,6 +62,11 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     desc: 'MCP servers: on/off (this session or always), risk lines',
   },
   {
+    name: '/builtins',
+    hint: '',
+    desc: 'Built-in tools: on/off for this chat or always',
+  },
+  {
     name: '/acp',
     hint: '[add <registry-id>|remove <name>]',
     desc: 'External harnesses (ACP) and the registry',
@@ -317,9 +322,10 @@ export const FRESH: LoadedPage = receiveComponent("method.agent.output.Loaded", 
   retention: 'durable',
 })
 
-/** Park `name` (and any `words` typed after it) on `session`'s composer — creating and opening the session when
- * there is none (`openDraftSession`: a draft model/effort pick rides along, 148 R1) — and show that chat. No turn
- * starts: the next send hands the skill over with the user's words (`use_skill`). Returns the session shown. */
+/** Park `name` (and any `words` typed after it) on `session`'s composer, after any skills already parked there —
+ * creating and opening the session when there is none (`openDraftSession`: a draft model/effort pick rides along,
+ * 148 R1) — and show that chat. No turn starts: the next send hands the skills over with the user's words
+ * (`sendSkills`). Returns the session shown. */
 export async function draftSkill(
   api: Api,
   navigate: Navigate,
@@ -329,7 +335,7 @@ export async function draftSkill(
 ): Promise<string> {
   const id = session ?? (await openDraftSession(api)).id
   if (!session) useSessions.getState().loadHistory(id, FRESH, 'replace')
-  useSkillDraft.getState().set(id, name)
+  useSkillDraft.getState().add(id, name)
   // Before `navigate`: the chat's composer reads its text from the draft store as it mounts.
   useDrafts.getState().set(id, { text: words, pastes: EMPTY.pastes })
   await navigate({ to: '/c/$session', params: { session: id } })
@@ -483,10 +489,14 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       )
       return
     }
-    // Both an open chat and the draft have their own pending "Off here" switches.
+    // Both an open chat and the draft have their own pending "Off here" switches. /mcp opens the MCP tab, /tools the
+    // tab last shown, /builtins the Builtins tab.
+    case '/builtins':
+      if (arg) throw new Error('usage: /builtins')
+      return useToolsSheet.getState().show(session ?? '', 'builtins')
     case '/mcp':
     case '/tools':
-      if (!arg) return useToolsSheet.getState().show(session ?? '')
+      if (!arg) return useToolsSheet.getState().show(session ?? '', cmd === '/mcp' ? 'mcp' : undefined)
       if (sub === 'sync') return synced(await api.sync_mcp())
       if (sub === 'add' && rest) {
         if (gitUrl(rest)) {

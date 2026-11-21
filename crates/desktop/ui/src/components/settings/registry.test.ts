@@ -37,10 +37,11 @@ test('every old id redirects to a tab and is no tab itself', () => {
   }
 })
 
-test('Sky 2026-11-11: Tools opens on MCP (the servers theuth uses, at `tools`); Serve over MCP keeps `mcp`', () => {
+test('Sky 2026-11-11: Tools opens on MCP (the servers theuth uses, at `tools`), then 206 Builtins; Serve over MCP keeps `mcp`', () => {
   const tools = CATEGORIES.find((category) => category.id === 'tools')
   expect(tools?.tabs.map((tab) => [tab.id, tab.label])).toEqual([
     ['tools', 'MCP'],
+    ['builtins', 'Builtins'],
     ['search', 'Web search'],
     ['mcp', 'Serve over MCP'],
     ['computer', 'Computer use'],

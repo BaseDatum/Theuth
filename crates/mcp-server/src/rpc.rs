@@ -9,8 +9,8 @@ use rpc_core::{Server, ask, stub_err};
 use runtime::SessionId;
 use tools::git::SyncResult;
 use tools::{
-    AddRepo, AddServer, Gate, ListServers, Mcp, McpHomeAction, McpLogin, McpLogout,
-    McpProgress, McpServer, Progress, RemoveServer, RepoInfo, SetGate, SetMcpHome, SyncMcp,
+    AddRepo, AddServer, Gate, ListServers, Mcp, McpHomeAction, McpLogin, McpLogout, McpProgress,
+    McpServer, Progress, RemoveServer, RepoInfo, SetGate, SetMcpHome, StartServer, SyncMcp,
 };
 
 #[rpc_core_macros::rpc_descriptors(owner = "mcp-server", descriptors = rpc_descriptors, audience = "owner")]
@@ -23,6 +23,12 @@ pub trait McpApi {
     /// MCP connection progress snapshot (`McpProgress`), for a UI attaching after startup.
     #[method(name = "mcp_status")]
     async fn mcp_status(&self) -> RpcResult<McpProgress>;
+    /// Start one server this engine runs and wait for it to connect and
+    /// register its tools (a failed one is retried now). Err with the connect
+    /// error, or why it does not run here (`off`: turn it on with
+    /// `set_mcp_gate(server, null, null)` first). Writes nothing.
+    #[method(name = "mcp_start")]
+    async fn mcp_start(&self, server: String) -> RpcResult<()>;
     /// Set (or clear with `None`) a server or tool risk line
     /// (`read_only | mutating | destructive | off`); persists to `mcp/config.yaml`.
     #[method(name = "set_mcp_gate")]
@@ -83,7 +89,6 @@ pub trait McpApi {
 
 #[async_trait]
 impl McpApiServer for Server {
-
     async fn list_mcp(
         &self,
         ext: &Extensions,
@@ -103,6 +108,10 @@ impl McpApiServer for Server {
 
     async fn mcp_status(&self) -> RpcResult<McpProgress> {
         ask::<Mcp, _>(tools::MCP_ACTOR, Progress).await
+    }
+
+    async fn mcp_start(&self, server: String) -> RpcResult<()> {
+        ask::<Mcp, _>(tools::MCP_ACTOR, StartServer { name: server }).await
     }
 
     async fn set_mcp_gate(

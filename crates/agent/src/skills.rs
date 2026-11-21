@@ -241,10 +241,39 @@ pub fn load_text(dir: &Path, name: &str) -> Result<String, String> {
     Ok(s)
 }
 
+/// The one input [`UseSkill`](crate::UseSkill) sends: every named skill's
+/// [`load_text`] in its own block, in order, then `args`. `Err` names the
+/// first unknown skill; no names is an error.
+pub fn use_text(dir: &Path, names: &[String], args: &str) -> Result<String, String> {
+    if names.is_empty() {
+        return Err("no skill named".into());
+    }
+    let bodies = names
+        .iter()
+        .map(|n| load_text(dir, n))
+        .collect::<Result<Vec<_>, _>>()?;
+    let pairs: Vec<(&str, &str)> = names
+        .iter()
+        .zip(&bodies)
+        .map(|(n, b)| (n.as_str(), b.as_str()))
+        .collect();
+    Ok(inject_many(&pairs, args))
+}
+
 /// A user-injected skill as one input (design doc 04 §2.4): the body in a
 /// `<skill name="…">` wrapper UIs card, then the user's words.
 pub fn inject_text(name: &str, text: &str, args: &str) -> String {
-    let mut s = format!("<skill name=\"{name}\">\n{}\n</skill>", text.trim());
+    inject_many(&[(name, text)], args)
+}
+
+/// Several skills as one input: each `(name, body)` in its own `<skill>`
+/// block, in order, then the user's words.
+pub fn inject_many(skills: &[(&str, &str)], args: &str) -> String {
+    let mut s = skills
+        .iter()
+        .map(|(name, text)| format!("<skill name=\"{name}\">\n{}\n</skill>", text.trim()))
+        .collect::<Vec<_>>()
+        .join("\n\n");
     if !args.trim().is_empty() {
         s.push_str("\n\n");
         s.push_str(args.trim());
@@ -252,15 +281,35 @@ pub fn inject_text(name: &str, text: &str, args: &str) -> String {
     s
 }
 
-/// Split an input made by [`inject_text`]: `(name, body, rest)`, `rest`
-/// being the user's words (possibly empty). `None` for anything else.
-pub fn injected(text: &str) -> Option<(&str, &str, &str)> {
-    let rest = crate::clock::strip(text)
-        .trim_start()
-        .strip_prefix("<skill name=\"")?;
+/// One leading `<skill>` block of `text`: `(name, body, after)`.
+fn skill_block(text: &str) -> Option<(&str, &str, &str)> {
+    let rest = text.trim_start().strip_prefix("<skill name=\"")?;
     let (name, after) = rest.split_once("\">")?;
     let (body, rest) = after.split_once("</skill>")?;
-    Some((name, body.trim(), rest.trim()))
+    Some((name, body.trim(), rest))
+}
+
+/// Split an input made by [`inject_text`] or [`inject_many`]: `(name, body,
+/// rest)` of the first skill, `rest` being the user's words after every
+/// skill block (possibly empty). `None` for anything else.
+pub fn injected(text: &str) -> Option<(&str, &str, &str)> {
+    let (name, body, mut rest) = skill_block(crate::clock::strip(text))?;
+    while let Some((_, _, after)) = skill_block(rest) {
+        rest = after;
+    }
+    Some((name, body, rest.trim()))
+}
+
+/// Every skill name of an input made by [`inject_many`], in order; empty
+/// for anything else.
+pub fn injected_names(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = crate::clock::strip(text);
+    while let Some((name, _, after)) = skill_block(rest) {
+        out.push(name);
+        rest = after;
+    }
+    out
 }
 
 /// Skills whose body is in these messages: user injections and `load_skill`
@@ -271,7 +320,7 @@ pub fn in_frame(messages: &[(i64, ChatMessage)]) -> BTreeSet<String> {
     for (_, m) in messages {
         match m.role {
             ChatRole::User => {
-                if let Some((name, _, _)) = injected(&text_of(&m.content)) {
+                for name in injected_names(&text_of(&m.content)) {
                     out.insert(name.to_owned());
                 }
             }
@@ -935,6 +984,36 @@ mod tests {
         ];
         let got: Vec<String> = in_frame(&messages).into_iter().collect();
         assert_eq!(got, ["caveman", "ponytail"]);
+    }
+
+    /// `use_skills`: one input holding every skill's body, in the order
+    /// named, then the words; the parser finds every name and the words.
+    #[test]
+    fn several_skills_make_one_input_in_order() {
+        let scratch = tmp();
+        let dir = scratch.0.clone();
+        std::fs::write(dir.join("caveman.md"), "Grunt short.\n").unwrap();
+        std::fs::write(dir.join("ponytail.md"), "Tie it back.\n").unwrap();
+        let names = ["ponytail".to_owned(), "caveman".to_owned()];
+        let text = use_text(&dir, &names, " go now ").unwrap();
+        assert_eq!(
+            text,
+            "<skill name=\"ponytail\">\nTie it back.\n</skill>\n\n\
+             <skill name=\"caveman\">\nGrunt short.\n</skill>\n\ngo now"
+        );
+        assert_eq!(injected_names(&text), ["ponytail", "caveman"]);
+        assert_eq!(
+            injected(&text),
+            Some(("ponytail", "Tie it back.", "go now"))
+        );
+        let one = use_text(&dir, &names[1..], "").unwrap();
+        assert_eq!(one, inject_text("caveman", "Grunt short.\n", ""));
+        let frame = [(1, ChatMessage::user(text))];
+        let got: Vec<String> = in_frame(&frame).into_iter().collect();
+        assert_eq!(got, ["caveman", "ponytail"]);
+        // An unknown skill sends nothing.
+        assert!(use_text(&dir, &["caveman".into(), "nope".into()], "").is_err());
+        assert!(use_text(&dir, &[], "x").is_err());
     }
 
     #[test]

@@ -3899,8 +3899,7 @@ impl Message<UseSkill> for Agents {
     type Reply = Result<SessionId, String>;
 
     async fn handle(&mut self, m: UseSkill, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let text = skills::load_text(&self.skills_dir(), &m.name)?;
-        let text = skills::inject_text(&m.name, &text, &m.args);
+        let text = skills::use_text(&self.skills_dir(), &m.names, &m.args)?;
         // Routed, never a waiter's answer: a skill body is not a reply. The
         // id makes the queue/inject lifecycle visible to UIs (they did not type it).
         // The user asked for it: a fresh request (47 §4.5).

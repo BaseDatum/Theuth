@@ -51,6 +51,8 @@ export const queryKeys = {
     ['search', q, categories, limit, gen] as const,
   models: ['models'] as const,
   mcp: (s: string | null) => ['mcp', s] as const,
+  /** 206: `list_builtins(session)`; every builtins switch invalidates it for the session and for `null`. */
+  builtins: (s: string | null) => ['builtins', s] as const,
   skills: ['skills'] as const,
   skill: (name: string) => ['skill', name] as const,
   logins: ['logins'] as const,

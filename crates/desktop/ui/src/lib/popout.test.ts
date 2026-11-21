@@ -189,3 +189,14 @@ test('a page window is not a solo popout — its pages render as in the main win
     expect(soloPopout(popoutTarget(popoutUrl(t)))).toBe(true)
   }
 })
+
+test('205 D6: a web view pops out at /web/$id with its address and title in the query and label popout-web-<id>', () => {
+  const t = { kind: 'web', id: '0123456789abcdef', url: 'http://localhost:3000/a?b=1&c=2#d', title: 'Dev & docs' } as const
+  expect(popoutLabel(t)).toBe('popout-web-0123456789abcdef')
+  expect(popoutUrl(t)).toBe('/web/0123456789abcdef?url=http%3A%2F%2Flocalhost%3A3000%2Fa%3Fb%3D1%26c%3D2%23d&title=Dev%20%26%20docs&window=popout-web-0123456789abcdef')
+  expect(popoutTarget(popoutUrl(t))).toEqual(t)
+  expect(popoutTarget(`tauri://localhost${popoutUrl(t)}`)).toEqual(t)
+  expect(soloPopout(t)).toBe(true)
+  expect(popoutSession(t)).toBeNull()
+  expect(popoutTarget('/web/0123456789abcdef')).toBeNull()
+})

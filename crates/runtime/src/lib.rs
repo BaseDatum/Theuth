@@ -253,7 +253,9 @@ fn extent(lines: &[String], start: usize, parent: usize) -> (usize, usize) {
 }
 
 /// Rewrite the direct child `key:` line of the block `start..end`, or insert
-/// one right after the header.
+/// one right after the header. A block value under the old line (a `- x`
+/// list, possibly at the key's own indent, or a nested mapping) is dropped
+/// with it; comments and blank lines after its last entry stay.
 fn set_key(
     lines: &mut Vec<String>,
     start: usize,
@@ -271,10 +273,28 @@ fn set_key(
     });
     match hit {
         Some(i) => {
-            let line = &mut lines[start + 1 + i];
+            let at = start + 1 + i;
+            let line = &lines[at];
             let rest = &line[child + prefix.len()..];
+            let block = rest.trim_start().is_empty() || rest.trim_start().starts_with('#');
             let comment = rest.find(" #").map(|c| &rest[c..]).unwrap_or("");
-            *line = format!("{}{prefix} {value}{comment}", &line[..child]);
+            let new = format!("{}{prefix} {value}{comment}", &line[..child]);
+            lines[at] = new;
+            if block {
+                let entries = lines[at + 1..end]
+                    .iter()
+                    .take_while(|l| {
+                        let t = l.trim_start();
+                        !is_content(l)
+                            || indent_of(l) > child
+                            || (indent_of(l) == child && (t == "-" || t.starts_with("- ")))
+                    })
+                    .enumerate()
+                    .filter(|(_, l)| is_content(l))
+                    .last()
+                    .map_or(0, |(n, _)| n + 1);
+                lines.drain(at + 1..at + 1 + entries);
+            }
         }
         None => lines.insert(start + 1, format!("{}{prefix} {value}", " ".repeat(child))),
     }
@@ -725,6 +745,36 @@ mod tests {
         let err = write_config_value(&path, "agent", "model", "\"unterminated").unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         assert_eq!(text(&path), before);
+    }
+
+    /// 206 (B-9): a key holding a block value (a `- x` list at the key's indent or deeper,
+    /// a nested mapping) is replaced whole; comments after it and siblings stay.
+    #[test]
+    fn t11_block_value_is_replaced_whole() {
+        let path = tmp();
+        std::fs::write(
+            &path,
+            "tools:\n  builtins:\n    disabled: # c\n    - a\n    # inner\n    - b\n    # after\n    other: 1\n  approvals: true\n",
+        )
+        .unwrap();
+        write_nested_config_value(&path, "tools", "builtins", "disabled", "[\"x\"]").unwrap();
+        assert_eq!(
+            text(&path),
+            "tools:\n  builtins:\n    disabled: [\"x\"] # c\n    # after\n    other: 1\n  approvals: true\n"
+        );
+        assert_eq!(get::<Vec<String>>(&path, "tools.builtins.disabled"), ["x"]);
+
+        std::fs::write(
+            &path,
+            "agent:\n  model:\n      - a\n      - b\n  effort: max\n",
+        )
+        .unwrap();
+        write_config_value(&path, "agent", "model", "m").unwrap();
+        assert_eq!(text(&path), "agent:\n  model: m\n  effort: max\n");
+
+        std::fs::write(&path, "agent:\n  model:\n  effort: max\n").unwrap();
+        write_config_value(&path, "agent", "model", "m").unwrap();
+        assert_eq!(text(&path), "agent:\n  model: m\n  effort: max\n");
     }
 
     #[test]

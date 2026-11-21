@@ -9956,6 +9956,100 @@
         "format": "uuid",
         "type": "string"
       },
+      "event.artifact_2eweb_2dview_2dopened.output.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2eweb_2dview_2dopened.output.WebViewOpened": {
+        "description": "Event: a `show_web` call opened (or re-targeted) a web view tile (205 §4.2).\nWire shape `{ \"type\": \"WebViewOpened\", \"session\", \"call_id\", \"id\", \"url\", \"title\" }`.",
+        "properties": {
+          "call_id": {
+            "description": "The tool call (joins the card).",
+            "type": "string"
+          },
+          "id": {
+            "description": "Frame identity: first 16 hex of `sha256(session ‖ \"\\n\" ‖ origin)` (205 D4).",
+            "type": "string"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dopened.output.SessionId"
+              }
+            ],
+            "description": "Calling session."
+          },
+          "title": {
+            "description": "Tile and card title.",
+            "type": "string"
+          },
+          "type": {
+            "const": "WebViewOpened",
+            "type": "string"
+          },
+          "url": {
+            "description": "The normalised address.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "call_id",
+          "id",
+          "url",
+          "title",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2eweb_2dview_2dopened.receiver.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2eweb_2dview_2dopened.receiver.WebViewOpened": {
+        "description": "Event: a `show_web` call opened (or re-targeted) a web view tile (205 §4.2).\nWire shape `{ \"type\": \"WebViewOpened\", \"session\", \"call_id\", \"id\", \"url\", \"title\" }`.",
+        "properties": {
+          "call_id": {
+            "description": "The tool call (joins the card).",
+            "type": "string"
+          },
+          "id": {
+            "description": "Frame identity: first 16 hex of `sha256(session ‖ \"\\n\" ‖ origin)` (205 D4).",
+            "type": "string"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dopened.receiver.SessionId"
+              }
+            ],
+            "description": "Calling session."
+          },
+          "title": {
+            "description": "Tile and card title.",
+            "type": "string"
+          },
+          "type": {
+            "const": "WebViewOpened",
+            "type": "string"
+          },
+          "url": {
+            "description": "The normalised address.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "call_id",
+          "id",
+          "url",
+          "title",
+          "type"
+        ],
+        "type": "object"
+      },
       "event.autoresearch_2eevents.output.PauseReason": {
         "description": "Why a study paused (140 §4.2, §8.4).",
         "oneOf": [
@@ -20728,6 +20822,13 @@
           "name": {
             "description": "Vault name the answer is stored under.",
             "type": "string"
+          },
+          "note": {
+            "description": "Stored as the secret's note (shown in `secret_list`); `None` = the label. Absent on\nthe wire when `None`, so a field without one looks as it did before.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -20763,6 +20864,13 @@
                 "minimum": 0,
                 "type": [
                   "integer",
+                  "null"
+                ]
+              },
+              "expires": {
+                "description": "The agent's expiry suggestion for the card's control ([`SecretRequest::expires`]);\nabsent on the wire when `None`.",
+                "type": [
+                  "string",
                   "null"
                 ]
               },
@@ -21370,6 +21478,13 @@
           "name": {
             "description": "Vault name the answer is stored under.",
             "type": "string"
+          },
+          "note": {
+            "description": "Stored as the secret's note (shown in `secret_list`); `None` = the label. Absent on\nthe wire when `None`, so a field without one looks as it did before.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -21404,6 +21519,13 @@
                 "minimum": 0,
                 "type": [
                   "integer",
+                  "null"
+                ]
+              },
+              "expires": {
+                "description": "The agent's expiry suggestion for the card's control ([`SecretRequest::expires`]);\nabsent on the wire when `None`.",
+                "type": [
+                  "string",
                   "null"
                 ]
               },
@@ -23266,6 +23388,13 @@
           "name": {
             "description": "Vault name the answer is stored under.",
             "type": "string"
+          },
+          "note": {
+            "description": "Stored as the secret's note (shown in `secret_list`); `None` = the label. Absent on\nthe wire when `None`, so a field without one looks as it did before.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -23301,6 +23430,13 @@
                 "minimum": 0,
                 "type": [
                   "integer",
+                  "null"
+                ]
+              },
+              "expires": {
+                "description": "The agent's expiry suggestion for the card's control ([`SecretRequest::expires`]);\nabsent on the wire when `None`.",
+                "type": [
+                  "string",
                   "null"
                 ]
               },
@@ -23657,6 +23793,13 @@
           "name": {
             "description": "Vault name the answer is stored under.",
             "type": "string"
+          },
+          "note": {
+            "description": "Stored as the secret's note (shown in `secret_list`); `None` = the label. Absent on\nthe wire when `None`, so a field without one looks as it did before.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -23691,6 +23834,13 @@
                 "minimum": 0,
                 "type": [
                   "integer",
+                  "null"
+                ]
+              },
+              "expires": {
+                "description": "The agent's expiry suggestion for the card's control ([`SecretRequest::expires`]);\nabsent on the wire when `None`.",
+                "type": [
+                  "string",
                   "null"
                 ]
               },
@@ -34043,6 +34193,79 @@
         ],
         "type": "object"
       },
+      "method.agent.output.BuiltinCategory": {
+        "description": "One category of builtin tools as an app shows it.",
+        "properties": {
+          "description": {
+            "description": "One line on what the category does.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Category id; [`category_key`] of it is the switch entry.",
+            "type": "string"
+          },
+          "label": {
+            "description": "Display name.",
+            "type": "string"
+          },
+          "tools": {
+            "description": "Registered builtins of the category, sorted by name.",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.output.BuiltinTool"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "description",
+          "tools"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.BuiltinTool": {
+        "description": "One registered builtin tool as an app shows it.",
+        "properties": {
+          "description": {
+            "description": "What the model sees.",
+            "type": "string"
+          },
+          "direct": {
+            "description": "Offered as a direct tool definition (`ToolSpec::direct`).",
+            "type": "boolean"
+          },
+          "disabled": {
+            "description": "Off always: the tool's name or its category key is in `tools.builtins.disabled`.",
+            "type": "boolean"
+          },
+          "hidden": {
+            "description": "Off for `session`: the tool's name or its category key is in the hidden set of the session or an ancestor. Always false when no session is given.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Registered name.",
+            "type": "string"
+          },
+          "risk": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.Risk"
+              }
+            ],
+            "description": "Risk class."
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "risk",
+          "direct",
+          "disabled",
+          "hidden"
+        ],
+        "type": "object"
+      },
       "method.agent.output.Cell": {
         "description": "One cell. `wide`/`continuation` are omitted on the wire when false.",
         "properties": {
@@ -44306,6 +44529,79 @@
           "period",
           "cap_usd",
           "spent_usd"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.BuiltinCategory": {
+        "description": "One category of builtin tools as an app shows it.",
+        "properties": {
+          "description": {
+            "description": "One line on what the category does.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Category id; [`category_key`] of it is the switch entry.",
+            "type": "string"
+          },
+          "label": {
+            "description": "Display name.",
+            "type": "string"
+          },
+          "tools": {
+            "description": "Registered builtins of the category, sorted by name.",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.receiver.BuiltinTool"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "description",
+          "tools"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.BuiltinTool": {
+        "description": "One registered builtin tool as an app shows it.",
+        "properties": {
+          "description": {
+            "description": "What the model sees.",
+            "type": "string"
+          },
+          "direct": {
+            "description": "Offered as a direct tool definition (`ToolSpec::direct`).",
+            "type": "boolean"
+          },
+          "disabled": {
+            "description": "Off always: the tool's name or its category key is in `tools.builtins.disabled`.",
+            "type": "boolean"
+          },
+          "hidden": {
+            "description": "Off for `session`: the tool's name or its category key is in the hidden set of the session or an ancestor. Always false when no session is given.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Registered name.",
+            "type": "string"
+          },
+          "risk": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.Risk"
+              }
+            ],
+            "description": "Risk class."
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "risk",
+          "direct",
+          "disabled",
+          "hidden"
         ],
         "type": "object"
       },
@@ -110411,6 +110707,14 @@
             "minimum": 0,
             "type": "integer"
           },
+          "expires": {
+            "default": null,
+            "description": "When the current version expires and the secret is deleted (RFC 3339 UTC); `None` = never.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "name": {
             "description": "`[A-Za-z0-9_.-]{1,64}`.",
             "type": "string"
@@ -110441,7 +110745,8 @@
           "source",
           "current",
           "versions",
-          "updated"
+          "updated",
+          "expires"
         ],
         "type": "object"
       },
@@ -110466,6 +110771,14 @@
           "engine": {
             "description": "Engine the session runs on.",
             "type": "string"
+          },
+          "expires": {
+            "default": null,
+            "description": "The agent's expiry suggestion that pre-fills the card's control: `30m` / `2h` / `3d`\n(counted from when the user stores) or an RFC 3339 instant. `None` = Never.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "fields": {
             "description": "The `fields` JSON column.",
@@ -110517,7 +110830,8 @@
           "created_ms",
           "answered_ms",
           "outcome",
-          "hlc"
+          "hlc",
+          "expires"
         ],
         "type": "object"
       },
@@ -110544,6 +110858,13 @@
           "name": {
             "description": "Vault name the answer is stored under.",
             "type": "string"
+          },
+          "note": {
+            "description": "Stored as the secret's note (shown in `secret_list`); `None` = the label. Absent on\nthe wire when `None`, so a field without one looks as it did before.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -110614,6 +110935,14 @@
             "minimum": 0,
             "type": "integer"
           },
+          "expires": {
+            "default": null,
+            "description": "When the current version expires and the secret is deleted (RFC 3339 UTC); `None` = never.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "name": {
             "description": "`[A-Za-z0-9_.-]{1,64}`.",
             "type": "string"
@@ -110669,6 +110998,14 @@
           "engine": {
             "description": "Engine the session runs on.",
             "type": "string"
+          },
+          "expires": {
+            "default": null,
+            "description": "The agent's expiry suggestion that pre-fills the card's control: `30m` / `2h` / `3d`\n(counted from when the user stores) or an RFC 3339 instant. `None` = Never.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "fields": {
             "description": "The `fields` JSON column.",
@@ -110743,6 +111080,13 @@
           "name": {
             "description": "Vault name the answer is stored under.",
             "type": "string"
+          },
+          "note": {
+            "description": "Stored as the secret's note (shown in `secret_list`); `None` = the label. Absent on\nthe wire when `None`, so a field without one looks as it did before.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -118852,6 +119196,21 @@
             ]
           },
           "x-theuth-aliases": []
+        },
+        {
+          "name": "expires_ms",
+          "required": false,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "expiresMs"
+          ]
         }
       ],
       "result": {
@@ -127103,6 +127462,45 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "list_builtins",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.output.BuiltinCategory"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.receiver.BuiltinCategory"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "list_input_devices",
       "paramStructure": "by-position",
       "params": [],
@@ -128053,6 +128451,32 @@
         },
         "x-theuth-receiverSchema": {
           "$ref": "#/components/schemas/method.mcp_2dserver.receiver.McpServerStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "mcp-server"
+    },
+    {
+      "name": "mcp_start",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "server",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
         }
       },
       "x-theuth-audience": "owner",
@@ -133571,6 +133995,58 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "set_builtins_disabled",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "names",
+          "required": true,
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "disabled",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "set_communication",
       "paramStructure": "by-position",
       "params": [
@@ -137322,6 +137798,58 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "use_skills",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "names",
+          "required": true,
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "args",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.SessionId"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.SessionId"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "vault_rotate",
       "paramStructure": "by-position",
       "params": [],
@@ -137711,6 +138239,16 @@
           "$ref": "#/components/schemas/event.artifact_2eshown.output.ArtifactShown"
         },
         "topic": "artifact.shown",
+        "version": 1
+      },
+      {
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dopened.receiver.WebViewOpened"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dopened.output.WebViewOpened"
+        },
+        "topic": "artifact.web-view-opened",
         "version": 1
       },
       {

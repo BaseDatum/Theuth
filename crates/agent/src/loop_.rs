@@ -4419,7 +4419,8 @@ impl Turn {
 
     /// 201 §10/§11 (P6b): after the turn's input, beside the `<ledger>`
     /// note: a `<tools>` note naming the tools added since the request's
-    /// tool part was frozen (callable through the runtime now), and the
+    /// tool part was frozen (callable through the runtime now) and, 206,
+    /// those switched off for this chat since (told once), and the
     /// `<recall>` prefetch for the input's rare words. Only on the endless
     /// frame (never a meeting); neither is a unit; nothing before the input
     /// changes.
@@ -4436,19 +4437,41 @@ impl Turn {
             && let Ok(specs) = registry.ask(ListTools(Some(id))).await
         {
             let names: BTreeSet<String> = specs.iter().map(|s| s.name.clone()).collect();
+            // 206: a name gone from the session's list but still registered
+            // (the unfiltered list) was switched off for this chat.
+            let registered: BTreeSet<String> = if pin.lost(&names) {
+                registry
+                    .ask(ListTools(None))
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|s| s.name)
+                    .collect()
+            } else {
+                BTreeSet::new()
+            };
+            let off = pin.switch_offs(&names, |n| registered.contains(n));
             let new = pin.announce(&names);
+            e.set_tool_pin(id, Some(pin));
+            let mut parts = Vec::new();
             if !new.is_empty() {
                 let lines: Vec<String> = specs
                     .iter()
                     .filter(|s| new.contains(&s.name))
                     .map(repl::signature)
                     .collect();
-                e.set_tool_pin(id, Some(pin));
-                let body = format!(
+                parts.push(format!(
                     "New tools since this conversation's tool list was fixed. Call them from the python runtime now; they join the direct tool list at the next memory trim:\n{}",
                     crate::endless_ext::quoted(&lines.join("\n"))
-                );
-                self.note("tools", &body).await;
+                ));
+            }
+            if !off.is_empty() {
+                parts.push(crate::endless_ext::quoted(
+                    &crate::endless::tool_pin::switched_off_line(&off),
+                ));
+            }
+            if !parts.is_empty() {
+                self.note("tools", &parts.join("\n")).await;
             }
         }
         if let Some(body) = e.prefetch(id, &texts.join("\n")).await {
@@ -4545,17 +4568,16 @@ impl Turn {
             .cloned()
             .chain(self.tools.iter().map(|t| t.name.as_str().to_owned()))
             .collect();
-        let held = e.tool_pin(id).filter(|p| self.tool_pin_holds(p));
-        let Some(mut pin) = held else {
-            let fresh = Fresh {
-                index: &index,
-                tools: &self.tools,
-                names: &names,
-            };
+        let fresh = Fresh {
+            index: &index,
+            tools: &self.tools,
+            names: &names,
+        };
+        let Some(mut pin) = e.tool_pin(id) else {
             e.set_tool_pin(id, Some(ToolPin::new(generation, &fresh)));
             return;
         };
-        let registered: BTreeSet<String> = if pin.names.difference(&names).next().is_some() {
+        let registered: BTreeSet<String> = if pin.lost(&names) {
             registry
                 .ask(ListTools(None))
                 .await
@@ -4566,12 +4588,15 @@ impl Turn {
         } else {
             BTreeSet::new()
         };
+        if !self.tool_pin_holds(&pin) {
+            // 206: a switch-off not told yet is told in the new generation.
+            let off = pin.switch_offs(&names, |n| registered.contains(n));
+            let mut pin = ToolPin::new(generation, &fresh);
+            pin.switched_off.extend(off);
+            e.set_tool_pin(id, Some(pin));
+            return;
+        }
         let old_index = pin.index.clone();
-        let fresh = Fresh {
-            index: &index,
-            tools: &self.tools,
-            names: &names,
-        };
         if pin.reconcile(&fresh, |n| registered.contains(n)) {
             // A hide: the index is taken fresh now.
             self.state.baseline = self.state.baseline.replacen(&old_index, &pin.index, 1);
@@ -6136,8 +6161,12 @@ impl Turn {
     /// consumed durably through [`Turn::consume_peer`] instead. `true` when the
     /// input is in the frame; `false` only for a peer exchange that was not.
     async fn take_input(&mut self, mut input: Input) -> bool {
-        if let Some((name, _, _)) = skills::injected(&input.text) {
-            self.note_skill(name.to_owned()).await;
+        let names: Vec<String> = skills::injected_names(&input.text)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        for name in names {
+            self.note_skill(name).await;
         }
         let ticket = input.ticket;
         let peer = input.peer.take();

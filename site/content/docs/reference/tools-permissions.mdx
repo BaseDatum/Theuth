@@ -103,7 +103,7 @@ See [Browser and desktop](/docs/automation/browser-desktop) for usage.
 
 | Group | Tools | Risk |
 |---|---|---|
-| secrets | `secret_list`, `secret_request` (direct), `secret_request_form` (direct), `secret_capture`, `secret_restore` | read_only; none returns a value |
+| secrets | `secret_list`, `secret_request` (direct; one value or several on one card), `secret_request_form` (direct; older name for the several-values shape), `secret_capture`, `secret_restore` | read_only; none returns a value |
 | schedule | `schedule` | mutating |
 | schedule | `schedule_done`, `schedule_status` | read_only |
 | sandbox | `sandbox_list` | read_only |
@@ -272,6 +272,6 @@ and [Agents](/docs/automation/agents).
 swapped for the vault value after approval and scrubbed from the output
 (exact value and its base64, values of 8+ characters). Tools that take
 literal sources or queries (`app`, `task_draft`, `agent_draft`, `search`,
-`code_*`, `project_profile`, `sandbox_*`, `secret_request_form`,
+`code_*`, `project_profile`, `sandbox_*`, `secret_request`, `secret_request_form`,
 `desktop_handoff`) do not expand placeholders and do not raise the gate. See
 [Secrets](/docs/reference/secrets).

@@ -19,6 +19,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use futures::future::BoxFuture;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
+use kameo::reply::{DelegatedReply, ReplySender};
 use notify::Watcher;
 use rmcp::model::{CallToolRequestParams, ContentBlock, ProtocolVersion};
 use rmcp::service::{
@@ -838,6 +839,8 @@ struct State {
     unreadable_retry: Option<tokio::time::Instant>,
     /// 187: servers running here while their home is not paired (logged once each).
     adopted: HashSet<String>,
+    /// [`StartServer`] callers waiting for a pending connect to settle.
+    waiters: HashMap<String, Vec<ReplySender<Result<(), String>>>>,
 }
 
 /// 187: a failed start and when the next one may run.
@@ -930,6 +933,19 @@ pub struct SetGate {
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Restart {
+    /// Server name.
+    pub name: String,
+}
+
+/// `ask` → `Result<(), String>`: (re)start one server this engine runs and wait
+/// for it: a failed start waiting out its backoff is tried now, a pending one
+/// awaited (bounded by [`CONNECT_TIMEOUT`]). `Ok` once it runs; Err with the
+/// connect error, or why it does not run here (`off` in `mcp/config.yaml`,
+/// homed elsewhere). Writes nothing: turning a server on or off for every chat
+/// is [`SetGate`] (`off` stops it).
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct StartServer {
     /// Server name.
     pub name: String,
 }
@@ -1226,6 +1242,38 @@ impl Mcp {
             Err(format!("unknown mcp server `{name}`"))
         }
     }
+
+    /// Answer the [`StartServer`] callers of every server no longer connecting:
+    /// `Ok` when it runs, else why not (its last error, or its state).
+    fn wake(&mut self) {
+        let done: Vec<String> = self
+            .state
+            .waiters
+            .keys()
+            .filter(|n| !self.state.pending.contains(*n))
+            .cloned()
+            .collect();
+        for name in done {
+            let outcome = self.started(&name);
+            for tx in self.state.waiters.remove(&name).unwrap_or_default() {
+                tx.send(outcome.clone());
+            }
+        }
+    }
+
+    /// `Ok` when `name` runs here; else why not.
+    fn started(&self, name: &str) -> Result<(), String> {
+        if self.state.running.contains_key(name) {
+            return Ok(());
+        }
+        let want = desired(&self.dir);
+        let s = self.server(name.to_owned(), want.get(name), &HashSet::new());
+        Err(s.reason.unwrap_or_else(|| match s.state {
+            McpState::Off => format!("{name} is off"),
+            McpState::Elsewhere => format!("{name} runs on another engine"),
+            other => format!("{name} did not start ({other:?})"),
+        }))
+    }
 }
 
 /// The clone under `<dir>/repos/` containing the entry's `cwd`.
@@ -1308,6 +1356,37 @@ impl Message<Restart> for Mcp {
         self.known(&m.name)?;
         self.restart(ctx.actor_ref(), &[m.name]).await;
         Ok(())
+    }
+}
+
+impl Message<StartServer> for Mcp {
+    type Reply = DelegatedReply<Result<(), String>>;
+
+    async fn handle(
+        &mut self,
+        m: StartServer,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let outcome = match self.known(&m.name) {
+            Err(e) => Err(e),
+            Ok(()) => {
+                // A failed start waiting out its backoff is tried again now.
+                self.state.retry.remove(&m.name);
+                self.reconcile(ctx.actor_ref()).await;
+                if self.state.pending.contains(&m.name) {
+                    if let Some(tx) = tx {
+                        self.state.waiters.entry(m.name).or_default().push(tx);
+                    }
+                    return reply;
+                }
+                self.started(&m.name)
+            }
+        };
+        if let Some(tx) = tx {
+            tx.send(outcome);
+        }
+        reply
     }
 }
 
@@ -1730,6 +1809,7 @@ impl Mcp {
             register(&mut self.state, &self.dir, &self.registry, orphans).await;
             self.rt.publish(progress(&self.state)).await;
         }
+        self.wake();
     }
 
     /// 187: home every wanted server `homes.yaml` has no home for and whose
@@ -2010,6 +2090,7 @@ impl Message<Settled> for Mcp {
     async fn handle(&mut self, m: Settled, ctx: &mut Context<Self, Self::Reply>) {
         // An explicit add/reconnect may already have superseded this attempt.
         if !self.state.pending.remove(&m.name) {
+            self.wake();
             return;
         }
         let wanted = desired(&self.dir).get(&m.name) == Some(&m.spec)
@@ -2032,6 +2113,7 @@ impl Message<Settled> for Mcp {
             register(&mut self.state, &self.dir, &self.registry, Vec::new()).await;
         }
         self.rt.publish(progress(&self.state)).await;
+        self.wake();
     }
 }
 
@@ -3416,6 +3498,112 @@ mod tests {
             !root.0.join("mcp/live.json").exists(),
             "reconnect must not create a duplicate entry"
         );
+    }
+
+    /// The popover's switch: `set_mcp_gate(server, null, null)` + `mcp_start` starts an
+    /// `off` server for every chat and waits for its tools; a chat's `mcp:<server>` hide
+    /// still hides it from that chat (and its subagent) alone; `off` stops it and its
+    /// tools leave every session. `mcp_start` writes nothing and refuses an `off` server.
+    #[tokio::test]
+    async fn mcp_live_switch_starts_and_stops_a_server_for_every_chat() {
+        use crate::registry::{SetHidden, SetParent};
+        let root = crate::TestDir::new("mcp-live-switch");
+        std::fs::create_dir_all(root.0.join("mcp")).unwrap();
+        let registry = crate::registry::tests::registry(Vec::new(), None);
+        let mcp = Mcp::spawn(Mcp {
+            state: State::default(),
+            dir: root.0.join("mcp"),
+            auth_dir: root.0.join("oauth"),
+            registry: registry.clone(),
+            policy: Policy::default(),
+            rt: Runtime::new(figment::Figment::new(), root.0.clone()),
+            machine: None,
+            origin: None,
+            paired: || None,
+        });
+        let entry = serde_json::json!({"command": "python3", "args": [
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/mcp_live.py")
+        ]})
+        .to_string();
+        std::fs::write(root.0.join("mcp/live.json"), &entry).unwrap();
+        std::fs::write(
+            root.0.join("mcp/config.yaml"),
+            "servers:\n  live:\n    risk: off\n",
+        )
+        .unwrap();
+        mcp.ask(Reconcile).await.unwrap();
+        assert_eq!(listed(&mcp, "live").await.state, McpState::Off);
+        let start = || {
+            mcp.ask(StartServer {
+                name: "live".into(),
+            })
+        };
+        let off = start().await.unwrap_err().to_string();
+        assert!(off.contains("live is off"), "{off}");
+
+        let (chat, sub, other) = (
+            runtime::SessionId::new(),
+            runtime::SessionId::new(),
+            runtime::SessionId::new(),
+        );
+        registry
+            .ask(SetParent {
+                session: sub,
+                parent: chat,
+            })
+            .await
+            .unwrap();
+        let sees = |s| {
+            let registry = registry.clone();
+            async move {
+                registry
+                    .ask(ListTools(Some(s)))
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|t| t.name == "live_echo")
+            }
+        };
+        assert!(!sees(chat).await && !sees(other).await);
+
+        // Switch on: clear the `off` line, then wait for the connect.
+        let gate = |gate| SetGate {
+            server: "live".into(),
+            tool: None,
+            gate,
+        };
+        mcp.ask(gate(None)).await.unwrap();
+        start().await.unwrap();
+        let s = listed(&mcp, "live").await;
+        assert!(s.connected && s.state == McpState::Running, "{s:?}");
+        for s in [chat, sub, other] {
+            assert!(sees(s).await, "registered for every session");
+        }
+        start().await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.0.join("mcp/live.json")).unwrap(),
+            entry
+        );
+
+        // The per-chat checkbox still hides it in that chat (and its subagent) only.
+        let hide = |hidden| SetHidden {
+            session: chat,
+            tools: vec![crate::registry::mcp_server_key("live")],
+            hidden,
+        };
+        registry.ask(hide(true)).await.unwrap();
+        assert!(!sees(chat).await && !sees(sub).await && sees(other).await);
+        registry.ask(hide(false)).await.unwrap();
+        assert!(sees(chat).await);
+
+        // Switch off: the process stops and its tools leave every session.
+        mcp.ask(gate(Some(Gate::Off))).await.unwrap();
+        let s = listed(&mcp, "live").await;
+        assert!(!s.connected && s.state == McpState::Off, "{s:?}");
+        for s in [chat, sub, other] {
+            assert!(!sees(s).await, "unregistered everywhere");
+        }
+        assert!(start().await.is_err());
     }
 
     fn engine(id: &str) -> Machine {

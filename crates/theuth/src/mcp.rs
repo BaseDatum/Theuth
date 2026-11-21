@@ -188,10 +188,28 @@ impl ServerHandler for Shim {
             eprintln!("t mcp: list_tools failed: {e}");
             Vec::new()
         });
+        // 206: a builtin switched off for this session (either scope) is not offered; a failed
+        // `list_builtins` leaves the listing as it was (a call then says it is turned off).
+        let off: std::collections::HashSet<String> = match self.session.parse() {
+            Ok(session) => tokio::time::timeout(
+                LIST_TOOLS_TIMEOUT,
+                AgentToolingApiClient::list_builtins(&*client, Some(session)),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .into_iter()
+            .flatten()
+            .flat_map(|c| c.tools)
+            .filter(|t| t.disabled || t.hidden)
+            .map(|t| t.name)
+            .collect(),
+            Err(_) => Default::default(),
+        };
         // 193 §7: the six registry tools, with the registry's own descriptions and schemas.
         let registry = specs
             .into_iter()
-            .filter(|s| SESSION_TOOLS.contains(&s.name.as_str()))
+            .filter(|s| SESSION_TOOLS.contains(&s.name.as_str()) && !off.contains(&s.name))
             .filter_map(|s| match s.schema {
                 serde_json::Value::Object(o) => Some(Tool::new(s.name, s.description, Arc::new(o))),
                 _ => None,

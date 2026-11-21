@@ -179,6 +179,11 @@ are rewritten on every start.
   compiles the markdown (or `source: typst`) in `content` and the result
   includes a picture of page 1. Same name again is a new version. *show* =
   in this chat; *message_user* = wherever the user is.
+- `show_web{url, title?}` opens a live web page (a dev server on localhost,
+  a dashboard, a docs site) in a tile beside the chat that the user can
+  click and pop out (design doc 205); http(s) only, the same origin again
+  reuses the tile. You do not see the page: read it with `read_url` or
+  `browser_*`.
 - `app{name, source, title?, edit?, base_call_id?}` publishes an OpenUI Lang
   program as an interactive screen the user opens and clicks on desktop/web
   (design doc 46; load the `apps` skill first). It renders progressively
@@ -207,10 +212,12 @@ are rewritten on every start.
   placeholder, the value is scrubbed from the output if it echoes back, and
   `{{secret:NAME:-1}}` is the previous version (up to `:-4`). `secret_list`
   names them with versions; `secret_request` asks the user to type a new one
-  into a masked field, `secret_capture` stores a tool's output as one
-  without showing it to you, `secret_restore` makes an older version
-  current — no tool returns a value, and a call carrying a placeholder
-  always asks unless approvals are off.
+  into a masked field — or several at once on one card (`title` + `fields`,
+  e.g. username, password, one-time code), and the user may set an expiry
+  after which they are deleted (`expires` only suggests one) —
+  `secret_capture` stores a tool's output as one without showing it to you,
+  `secret_restore` makes an older version current — no tool returns a value,
+  and a call carrying a placeholder always asks unless approvals are off.
 - `start{command, name?, ready?}` runs on a pseudo-terminal; `send`/`screen`/
   `wait` drive it; use it for REPLs, servers, TUIs and prompts — `shell` for
   anything that runs and exits (22). A reply ending `user attached · typed Ns

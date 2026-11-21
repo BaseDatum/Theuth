@@ -31,9 +31,12 @@ export type PopoutTarget =
    * (New chat: one per press) makes the label `popout-page-<route>-<key>`, a new window instead of focusing the open
    * one; like `note.fresh` it lives in the label only, never in the parsed target. */
   | { kind: 'page'; path: string; key?: string }
+  /** `/web/$id?url=…&title=…` (205 D6): one web view frame alone; it hosts the shell's `web-<id>` child web view. */
+  | { kind: 'web'; id: string; url: string; title: string }
 
 const idOf = (t: PopoutTarget): string =>
   t.kind === 'page' ? `${t.path.replace(/^\//, '')}${t.key ? `-${t.key}` : ''}` :
+  t.kind === 'web' ? t.id :
   t.kind === 'chat' || t.kind === 'talk'
     ? t.session
     : t.kind === 'artifact'
@@ -52,6 +55,7 @@ const idOf = (t: PopoutTarget): string =>
 
 const pathOf = (t: PopoutTarget): string =>
   t.kind === 'page' ? t.path :
+  t.kind === 'web' ? `/web/${encodeURIComponent(t.id)}?url=${encodeURIComponent(t.url)}&title=${encodeURIComponent(t.title)}` :
   t.kind === 'chat' || t.kind === 'talk'
     ? `/${t.kind === 'chat' ? 'c' : 'talk'}/${encodeURIComponent(t.session)}`
     : t.kind === 'artifact'
@@ -91,6 +95,7 @@ export function popoutTarget(href: string): PopoutTarget | null {
   if (!id) return null
   if (head === 'pty') return sub ? { kind: 'pty', session: decodeURIComponent(id), job: decodeURIComponent(sub) } : null
   if (head === 'codemap') return sub ? { kind: 'codemap', session: decodeURIComponent(id), root: decodeURIComponent(sub) } : null
+  if (head === 'web') return { kind: 'web', id: decodeURIComponent(id), url: url.searchParams.get('url') ?? '', title: url.searchParams.get('title') ?? '' }
   if (head === 'c') return { kind: 'chat', session: decodeURIComponent(id) }
   if (head === 'talk') return { kind: 'talk', session: decodeURIComponent(id) }
   if (head === 'vm') return { kind: 'vm', name: decodeURIComponent(id) }

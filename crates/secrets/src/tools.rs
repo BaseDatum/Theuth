@@ -17,7 +17,7 @@ use tools::{
 };
 
 use crate::vault::{self, MIN_REDACT, SecretInfo, Vault};
-use crate::{Outcome, Request, RequestId, SecretRequestField, SecretsActor};
+use crate::{Outcome, Request, RequestId, SecretRequestField, SecretsActor, expiry};
 
 /// The plugin's system-prompt block (37 §4). Static, so it never busts the
 /// system cache.
@@ -27,10 +27,11 @@ inside any tool argument — a shell command, a header, a URL, file content, an 
 swaps in the value when the tool runs; you, the transcript and the user's approval card see only the placeholder, \
 and the value is scrubbed from tool output if it echoes back. `{{secret:NAME:-1}}` is the previous version (a token \
 you just rotated). In Python keep the placeholder in a plain string, not an f-string (`{{` becomes `{`). Need a \
-secret that does not exist? `secret_request` asks the user to type it into a masked field; `secret_capture()` runs a \
-tool and stores its output (a fresh token from a login command, a key from a file) without showing it to you — \
-`replace: true` to update one that exists; `secret_restore()` undoes a bad update. Never ask the user to paste a \
-secret into the chat, and never try to print one.";
+secret that does not exist? `secret_request` asks the user to type it into a masked field — or several at once \
+(username, password, one-time code) on one card with `title` + `fields`; the user may give them an expiry, after \
+which they are deleted. `secret_capture()` runs a tool and stores its output (a fresh token from a login command, \
+a key from a file) without showing it to you — `replace: true` to update one that exists; `secret_restore()` undoes \
+a bad update. Never ask the user to paste a secret into the chat, and never try to print one.";
 
 /// Register the five tools and the prompt block on `reg`. `timeout` is the
 /// actor's `request_timeout_secs`, for the `no answer after N s` receipt.
@@ -102,37 +103,161 @@ impl Tool for SecretListTool {
                  or call secret_request",
             ));
         }
-        let lines: Vec<String> = list
-            .iter()
-            .map(|s| {
-                let note = if s.note.is_empty() {
-                    String::new()
-                } else {
-                    format!(" · {}", s.note)
-                };
-                format!(
-                    "{} · v{} ({} kept){note} · {} · {}",
-                    s.name,
-                    s.current,
-                    s.versions.len(),
-                    s.updated,
-                    s.source
-                )
-            })
-            .collect();
+        let now = crate::now_ms();
+        let lines: Vec<String> = list.iter().map(|s| list_line(s, now)).collect();
         let mut out = ToolOutput::ok(lines.join("\n"));
         out.structured = serde_json::to_value(&list).ok();
         Ok(out)
     }
 }
 
-/// `secret_request`: ask the user to type a secret into a masked field.
+/// One `secret_list` line: `NAME · vN (K kept) · note · updated · source`, then
+/// ` · expires in 40 min` (or the date) when the current version expires.
+fn list_line(s: &SecretInfo, now_ms: u64) -> String {
+    let note = if s.note.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", s.note)
+    };
+    let expires = s
+        .expires
+        .as_deref()
+        .and_then(expiry::from_rfc3339)
+        .map(|t| format!(" · {}", expiry::describe(t, now_ms)))
+        .unwrap_or_default();
+    format!(
+        "{} · v{} ({} kept){note} · {} · {}{expires}",
+        s.name,
+        s.current,
+        s.versions.len(),
+        s.updated,
+        s.source
+    )
+}
+
+/// One value of a `secret_request` with `fields` (79 §6.6).
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct RequestArgs {
-    /// Name to store it under. An existing name gets a new version; the user is told.
+pub struct FormField {
+    /// Name to store it under (`github.alice.password`; `[A-Za-z0-9_.-]`, no `/`). An existing name gets a new version.
     pub name: String,
-    /// What it is for, shown to the user (`GitHub personal access token with repo scope`).
-    pub note: String,
+    /// Label on the card (`Password`).
+    pub label: String,
+    /// Masked input; default true. `false` for a username or an e-mail.
+    #[serde(default)]
+    pub masked: Option<bool>,
+    /// What it is for, kept as the secret's note in `secret_list`; default the label.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// `secret_request`: one value (`name` + `note`) or several on one card (`title` + `fields`).
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct RequestArgs {
+    /// One value: the name to store it under. An existing name gets a new version; the user is told.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// One value: what it is for, shown to the user (`GitHub personal access token with repo scope`).
+    #[serde(default)]
+    pub note: Option<String>,
+    /// Several values: the card title (`Log in to GitHub as alice`).
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Several values: the fields, in card order, 1 to 16.
+    #[serde(default)]
+    pub fields: Option<Vec<FormField>>,
+    /// Optional suggested expiry the card pre-fills: `30m`, `2h`, `3d`, `2026-12-01` or
+    /// `2026-12-01T18:00` (ISO-8601, local time unless it has an offset). The user decides;
+    /// once it passes the values are deleted. Omit unless the value is short-lived.
+    #[serde(default)]
+    pub expires: Option<String>,
+}
+
+/// At most this many fields on one card.
+pub const MAX_FIELDS: usize = 16;
+
+/// A validated `secret_request`: what [`Request`] carries.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Ask {
+    /// Card title; `None` for one value.
+    pub title: Option<String>,
+    /// In card order.
+    pub fields: Vec<SecretRequestField>,
+    /// [`expiry::normalize`]d suggestion.
+    pub expires: Option<String>,
+}
+
+/// Check `a` against the two shapes — `name` + `note`, or `title` + `fields` (1..=16,
+/// valid and unique names) — and the `expires` grammar (a past time is an error).
+pub fn parse_request(a: RequestArgs, now_ms: u64) -> Result<Ask, String> {
+    let single = a.name.is_some() || a.note.is_some();
+    let form = a.title.is_some() || a.fields.is_some();
+    let (title, fields) = match (single, form) {
+        (true, true) => {
+            return Err(
+                "pass either name + note (one value) or title + fields (several), not both".into(),
+            );
+        }
+        (false, false) => {
+            return Err("pass name + note for one value, or title + fields for several".into());
+        }
+        (true, false) => {
+            let (Some(name), Some(note)) = (a.name, a.note) else {
+                return Err("one value needs both name and note".into());
+            };
+            if !vault::valid_name(&name) {
+                return Err("name: [A-Za-z0-9_.-]{1,64}".into());
+            }
+            let field = SecretRequestField {
+                name,
+                label: note,
+                masked: true,
+                current: None,
+                note: None,
+            };
+            (None, vec![field])
+        }
+        (false, true) => {
+            let (Some(title), Some(fields)) = (a.title, a.fields) else {
+                return Err("several values need both title and fields".into());
+            };
+            if fields.is_empty() || fields.len() > MAX_FIELDS {
+                return Err(format!("fields: 1 to {MAX_FIELDS}"));
+            }
+            let mut seen = std::collections::HashSet::new();
+            for f in &fields {
+                if !vault::valid_name(&f.name) {
+                    return Err(format!(
+                        "fields[].name {:?}: [A-Za-z0-9_.-]{{1,64}}",
+                        f.name
+                    ));
+                }
+                if !seen.insert(f.name.as_str()) {
+                    return Err(format!("fields[].name {:?} appears twice", f.name));
+                }
+            }
+            let fields = fields
+                .into_iter()
+                .map(|f| SecretRequestField {
+                    name: f.name,
+                    label: f.label,
+                    masked: f.masked.unwrap_or(true),
+                    current: None,
+                    note: f.note.filter(|n| !n.is_empty()),
+                })
+                .collect();
+            (Some(title), fields)
+        }
+    };
+    let expires = a
+        .expires
+        .filter(|e| !e.trim().is_empty())
+        .map(|e| expiry::normalize(&e, now_ms))
+        .transpose()?;
+    Ok(Ask {
+        title,
+        fields,
+        expires,
+    })
 }
 
 /// The `secret_request` tool: hands the ask to the actor and reports the receipt.
@@ -148,6 +273,7 @@ impl Tool for SecretRequestTool {
     const NAME: &'static str = "secret_request";
     const RISK: Risk = Risk::ReadOnly;
     const DIRECT: bool = true;
+    const CONSUMES_SECRETS: bool = false;
     type Args = RequestArgs;
 
     /// A human wait (145 §0.4).
@@ -156,37 +282,59 @@ impl Tool for SecretRequestTool {
     }
 
     fn description(&self) -> String {
-        "Ask the user to type a secret into a masked field and store it under `name`; you never see \
-         the value. Say in `note` what it is for. Returns `stored NAME vN`, `declined` or `no answer`. \
-         Never ask the user to paste a secret into the chat instead."
+        "Ask the user for secrets on a card in their app and store them in the vault; you never \
+         see the values. One value: `name` + `note` (what it is for) — one masked field. Several \
+         at once (username, password, one-time code): `title` + `fields: [{name, label, masked?, \
+         note?}]` (up to 16; `masked` defaults to true) — one card, one answer. The user may set \
+         an expiry on the card, after which the values are deleted; `expires` (`30m`, `2h`, `3d` \
+         or an ISO-8601 date / date-time) only pre-fills it. Then use `{{secret:NAME}}` \
+         placeholders. Returns `stored a v1, b v2` (and the expiry, if set), `declined` or `no \
+         answer`. Never ask the user to paste a secret into the chat instead."
             .into()
     }
 
     async fn call(&self, a: RequestArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        if !vault::valid_name(&a.name) {
-            return Ok(ToolOutput::err("name: [A-Za-z0-9_.-]{1,64}"));
-        }
-        let name = a.name;
-        let fields = vec![SecretRequestField {
-            name: name.clone(),
-            label: a.note,
-            masked: true,
-            current: None,
-        }];
-        let out = match request(&self.actor, self.timeout, &cx, None, fields).await {
-            Ok(o) => o,
-            Err(SendError::HandlerError(e)) => return Ok(ToolOutput::err(e)),
-            Err(e) => return Ok(ToolOutput::err(format!("secrets actor: {e}"))),
+        let ask = match parse_request(a, crate::now_ms()) {
+            Ok(ask) => ask,
+            Err(e) => return Ok(ToolOutput::err(e)),
         };
-        Ok(match out.stored.first() {
-            Some((_, v)) if *v > 1 => ToolOutput::ok(format!(
-                "stored {name} v{v} (v{} is {{{{secret:{name}:-1}}}})",
-                v - 1
-            )),
-            Some((_, v)) => ToolOutput::ok(format!("stored {name} v{v}")),
-            None => not_stored(&out, self.timeout),
-        })
+        Ok(run(&self.actor, self.timeout, &cx, ask).await)
     }
+}
+
+/// Raise the card and turn the [`Outcome`] into the result line.
+async fn run(
+    actor: &ActorRef<SecretsActor>,
+    timeout: Duration,
+    cx: &ToolCx,
+    ask: Ask,
+) -> ToolOutput {
+    let single = ask.title.is_none() && ask.fields.len() == 1;
+    match request(actor, timeout, cx, ask.title, ask.fields, ask.expires).await {
+        Ok(out) => receipt(&out, single, timeout),
+        Err(SendError::HandlerError(e)) => ToolOutput::err(e),
+        Err(e) => ToolOutput::err(format!("secrets actor: {e}")),
+    }
+}
+
+/// `stored a v1, b v2` (one value also names its previous version's placeholder),
+/// `; expires <local time>` when the user set one; else `declined` / `no answer`.
+fn receipt(out: &Outcome, single: bool, timeout: Duration) -> ToolOutput {
+    if out.stored.is_empty() {
+        return not_stored(out, timeout);
+    }
+    let list: Vec<String> = out.stored.iter().map(|(n, v)| format!("{n} v{v}")).collect();
+    let mut line = format!("stored {}", list.join(", "));
+    if single
+        && let [(name, v)] = &out.stored[..]
+        && *v > 1
+    {
+        line.push_str(&format!(" (v{} is {{{{secret:{name}:-1}}}})", v - 1));
+    }
+    if let Some(t) = out.expires_ms {
+        line.push_str(&format!("; expires {}", expiry::local_time(t)));
+    }
+    ToolOutput::ok(line)
 }
 
 /// The receipt when nothing was stored.
@@ -209,9 +357,10 @@ async fn request(
     cx: &ToolCx,
     title: Option<String>,
     fields: Vec<SecretRequestField>,
+    expires: Option<String>,
 ) -> Result<Outcome, SendError<Request, String>> {
     let journal = tools::registry::journal();
-    let (row, title, fields) = match tools::registry::take_republish(cx.session, &cx.call_id) {
+    let (row, title, fields, expires) = match tools::registry::take_republish(cx.session, &cx.call_id) {
         Some(row) if row.state == QuestionState::Pending => {
             let title = row
                 .payload
@@ -223,17 +372,23 @@ async fn request(
                 .get("fields")
                 .and_then(|f| serde_json::from_value(f.clone()).ok())
                 .unwrap_or(fields);
-            (row, title, fields)
+            let expires = row
+                .payload
+                .get("expires")
+                .and_then(|e| serde_json::from_value(e.clone()).ok())
+                .unwrap_or(expires);
+            (row, title, fields, expires)
         }
         Some(row) if row.state == QuestionState::Answered => {
             // The answer landed before the kill; the `secret_requests` row
             // already holds it and the actor resolves at once.
-            (row, title, fields)
+            (row, title, fields, expires)
         }
         Some(row) => {
             return Ok(Outcome {
                 stored: Vec::new(),
                 timed_out: row.state == QuestionState::TimedOut,
+                expires_ms: None,
             });
         }
         None => {
@@ -244,7 +399,7 @@ async fn request(
                 session: cx.session,
                 tool_call_id: Some(cx.call_id.clone()),
                 kind: QuestionKind::Secret,
-                payload: serde_json::json!({ "id": id, "title": title, "fields": fields }),
+                payload: serde_json::json!({ "id": id, "title": title, "fields": fields, "expires": expires }),
                 state: QuestionState::Pending,
                 asked_at,
                 deadline: asked_at + timeout,
@@ -252,7 +407,7 @@ async fn request(
                 answer: None,
                 answered_by: None,
             };
-            (row, title, fields)
+            (row, title, fields, expires)
         }
     };
     let id =
@@ -282,6 +437,7 @@ async fn request(
             title,
             fields,
             id: Some(id),
+            expires,
         })
         .await;
     if row.state == QuestionState::Pending {
@@ -304,28 +460,20 @@ async fn request(
     out
 }
 
-/// One field of a `secret_request_form`.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct FormField {
-    /// Name to store it under (`github.alice.password`; `[A-Za-z0-9_.-]`, no `/`). An existing name gets a new version.
-    pub name: String,
-    /// Label on the card (`Password`).
-    pub label: String,
-    /// Masked input; default true. `false` for a username or an e-mail.
-    #[serde(default)]
-    pub masked: Option<bool>,
-}
-
-/// `secret_request_form`: several secrets on one card (79 §6.6).
+/// `secret_request_form`: the older name for `secret_request` with `title` + `fields`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FormArgs {
     /// Card title (`Log in to GitHub as alice`).
     pub title: String,
-    /// The fields, in card order.
+    /// The fields, in card order, 1 to 16.
     pub fields: Vec<FormField>,
+    /// Optional suggested expiry, as `secret_request`'s.
+    #[serde(default)]
+    pub expires: Option<String>,
 }
 
-/// The `secret_request_form` tool: one card, several masked fields, one vault row each.
+/// `secret_request_form`, kept for older prompts and transcripts: `secret_request`'s
+/// `title` + `fields` shape under another name, the same code path.
 pub struct SecretRequestFormTool {
     /// The secrets actor.
     pub actor: ActorRef<SecretsActor>,
@@ -347,43 +495,23 @@ impl Tool for SecretRequestFormTool {
     }
 
     fn description(&self) -> String {
-        "Ask the user for several secrets on one card (username, password, one-time code) and store \
-         each under its `name`; you never see the values. Then use `{{secret:NAME}}` placeholders, \
-         e.g. in `computer_type`. Returns `stored a, b, c`, `declined` or `no answer`. The card \
-         reaches the user on whatever engine their app is attached to."
+        "Older name for `secret_request` with `title` + `fields` — use `secret_request` instead; \
+         same card, same result."
             .into()
     }
 
     async fn call(&self, a: FormArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        if a.fields.is_empty() {
-            return Ok(ToolOutput::err("fields: at least one"));
-        }
-        if let Some(f) = a.fields.iter().find(|f| !vault::valid_name(&f.name)) {
-            return Ok(ToolOutput::err(format!(
-                "fields[].name {:?}: [A-Za-z0-9_.-]{{1,64}}",
-                f.name
-            )));
-        }
-        let fields = a
-            .fields
-            .into_iter()
-            .map(|f| SecretRequestField {
-                name: f.name,
-                label: f.label,
-                masked: f.masked.unwrap_or(true),
-                current: None,
-            })
-            .collect();
-        let out = match request(&self.actor, self.timeout, &cx, Some(a.title), fields).await {
-            Ok(o) => o,
-            Err(SendError::HandlerError(e)) => return Ok(ToolOutput::err(e)),
-            Err(e) => return Ok(ToolOutput::err(format!("secrets actor: {e}"))),
+        let args = RequestArgs {
+            title: Some(a.title),
+            fields: Some(a.fields),
+            expires: a.expires,
+            ..RequestArgs::default()
         };
-        if out.stored.is_empty() {
-            return Ok(not_stored(&out, self.timeout));
-        }
-        let names: Vec<&str> = out.stored.iter().map(|(n, _)| n.as_str()).collect();
-        Ok(ToolOutput::ok(format!("stored {}", names.join(", "))))
+        let ask = match parse_request(args, crate::now_ms()) {
+            Ok(ask) => ask,
+            Err(e) => return Ok(ToolOutput::err(e)),
+        };
+        Ok(run(&self.actor, self.timeout, &cx, ask).await)
     }
 }
 
@@ -562,7 +690,7 @@ impl Tool for SecretRestoreTool {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_exit_code;
+    use super::*;
 
     #[test]
     fn exit_code_line_is_stripped_only_when_present() {
@@ -570,5 +698,164 @@ mod tests {
         assert_eq!(strip_exit_code("exit code: 1"), "");
         assert_eq!(strip_exit_code("plain text"), "plain text");
         assert_eq!(strip_exit_code("exit code: soon\n"), "exit code: soon\n");
+    }
+
+    const NOW: u64 = 1_790_000_000_000;
+
+    fn args(v: serde_json::Value) -> RequestArgs {
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn one_value_shape_is_unchanged() {
+        let ask = parse_request(
+            args(serde_json::json!({"name": "TOKEN", "note": "GitHub PAT"})),
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(ask.title, None);
+        assert_eq!(
+            ask.fields,
+            [SecretRequestField {
+                name: "TOKEN".into(),
+                label: "GitHub PAT".into(),
+                masked: true,
+                current: None,
+                note: None,
+            }]
+        );
+        assert_eq!(ask.expires, None);
+    }
+
+    #[test]
+    fn several_values_shape() {
+        let ask = parse_request(
+            args(serde_json::json!({
+                "title": "Log in to GitHub",
+                "fields": [
+                    {"name": "gh.user", "label": "Username", "masked": false},
+                    {"name": "gh.pass", "label": "Password", "note": "alice's GitHub password"},
+                ],
+                "expires": "2h",
+            })),
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(ask.title.as_deref(), Some("Log in to GitHub"));
+        assert_eq!(
+            ask.fields
+                .iter()
+                .map(|f| (f.name.as_str(), f.masked, f.note.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                ("gh.user", false, None),
+                ("gh.pass", true, Some("alice's GitHub password"))
+            ]
+        );
+        assert_eq!(ask.expires.as_deref(), Some("2h"));
+    }
+
+    #[test]
+    fn expires_is_normalized_and_validated() {
+        let one = |e: &str| {
+            parse_request(
+                args(serde_json::json!({"name": "T", "note": "n", "expires": e})),
+                NOW,
+            )
+        };
+        assert_eq!(one("30m").unwrap().expires.as_deref(), Some("30m"));
+        assert_eq!(one("3d").unwrap().expires.as_deref(), Some("3d"));
+        assert_eq!(
+            one("2030-01-02T14:30:00Z").unwrap().expires.as_deref(),
+            Some("2030-01-02T14:30:00Z")
+        );
+        assert!(one("2030-01-02").unwrap().expires.unwrap().starts_with("20"));
+        assert_eq!(one("").unwrap().expires, None, "empty = no suggestion");
+        assert!(one("0h").is_err());
+        assert!(one("next week").is_err());
+        assert!(one("2020-01-01").unwrap_err().contains("in the past"));
+    }
+
+    #[test]
+    fn exactly_one_shape_and_valid_unique_bounded_fields() {
+        let err = |v: serde_json::Value| parse_request(args(v), NOW).unwrap_err();
+        assert!(err(serde_json::json!({})).contains("name + note"));
+        assert!(
+            err(serde_json::json!({"name": "A", "note": "n", "title": "t", "fields": []}))
+                .contains("not both")
+        );
+        assert!(err(serde_json::json!({"name": "A"})).contains("both name and note"));
+        assert!(err(serde_json::json!({"fields": [{"name": "a", "label": "a"}]})).contains("title"));
+        assert!(err(serde_json::json!({"name": "a/b", "note": "n"})).contains("name"));
+        assert!(err(serde_json::json!({"title": "t", "fields": []})).contains("1 to 16"));
+        let many: Vec<_> = (0..17)
+            .map(|i| serde_json::json!({"name": format!("f{i}"), "label": "x"}))
+            .collect();
+        assert!(err(serde_json::json!({"title": "t", "fields": many})).contains("1 to 16"));
+        assert!(
+            err(serde_json::json!({"title": "t", "fields": [{"name": "a b", "label": "x"}]}))
+                .contains("[A-Za-z0-9_.-]")
+        );
+        assert!(
+            err(serde_json::json!({"title": "t", "fields": [
+                {"name": "a", "label": "x"}, {"name": "a", "label": "y"}
+            ]}))
+            .contains("twice")
+        );
+    }
+
+    #[test]
+    fn receipt_lines() {
+        let t = Duration::from_secs(60);
+        let out = |stored: &[(&str, u32)], expires_ms| Outcome {
+            stored: stored.iter().map(|(n, v)| ((*n).to_owned(), *v)).collect(),
+            timed_out: false,
+            expires_ms,
+        };
+        assert_eq!(
+            receipt(&out(&[("a", 1), ("b", 2)], None), false, t).content,
+            "stored a v1, b v2"
+        );
+        assert_eq!(
+            receipt(&out(&[("a", 2)], None), true, t).content,
+            "stored a v2 (v1 is {{secret:a:-1}})"
+        );
+        let at = NOW + 3_600_000;
+        assert_eq!(
+            receipt(&out(&[("a", 1)], Some(at)), true, t).content,
+            format!("stored a v1; expires {}", expiry::local_time(at))
+        );
+        assert_eq!(receipt(&out(&[], None), false, t).content, "declined");
+        let timed = Outcome {
+            stored: vec![],
+            timed_out: true,
+            expires_ms: None,
+        };
+        assert_eq!(receipt(&timed, false, t).content, "no answer after 60 s");
+    }
+
+    #[test]
+    fn list_line_describes_the_expiry() {
+        let info = |expires: Option<String>| SecretInfo {
+            name: "TOKEN".into(),
+            note: "GitHub PAT".into(),
+            source: "local".into(),
+            current: 2,
+            versions: vec![],
+            updated: "2026-09-21T10:00:00Z".into(),
+            expires,
+        };
+        let base = "TOKEN · v2 (0 kept) · GitHub PAT · 2026-09-21T10:00:00Z · local";
+        assert_eq!(list_line(&info(None), NOW), base);
+        let soon = NOW + 40 * 60_000;
+        assert_eq!(
+            list_line(&info(Some(expiry::rfc3339(soon))), NOW),
+            format!("{base} · expires in 40 min")
+        );
+        let far = NOW + 3 * 86_400_000;
+        assert_eq!(
+            list_line(&info(Some(expiry::rfc3339(far))), NOW),
+            format!("{base} · expires {}", expiry::local_time(far))
+        );
     }
 }

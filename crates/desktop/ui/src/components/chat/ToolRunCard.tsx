@@ -21,8 +21,9 @@ export type Run = Entry[]
  * full-width artifact cards `MessageTool` draws. `routine_draft` is named ahead of its tool so that wave needs no change here.
  * `ask_user` (Sky, 2026-10-07): "answered questions shouldn't be folded in collapsed tool cards, they should always be
  * visible, like show tool calls." Only `ask_user` — not `secret_request`, `desktop_handoff` or approvals.
- * `send_message` (Sky, 2026-11-10): every send is its own card with its delivery track (`SendCard`). */
-const DELIVERABLE_TOOLS: Record<string, true> = { show: true, app: true, agent_draft: true, task_draft: true, routine_draft: true, ask_user: true, send_message: true }
+ * `send_message` (Sky, 2026-11-10): every send is its own card with its delivery track (`SendCard`). `show_web` (205): its
+ * card reopens the web view tile. */
+const DELIVERABLE_TOOLS: Record<string, true> = { show: true, show_web: true, app: true, agent_draft: true, task_draft: true, routine_draft: true, ask_user: true, send_message: true }
 export function isDeliverable(tool: Tool): boolean {
   return DELIVERABLE_TOOLS[tool.name] === true || isBoardCreate(tool)
 }

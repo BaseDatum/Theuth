@@ -2824,12 +2824,14 @@ mod tests {
                     label: (*n).to_owned(),
                     masked: true,
                     current: None,
+                    note: None,
                 })
                 .collect(),
             created_ms,
             answered_ms: None,
             outcome: None,
             hlc: None,
+            expires: None,
         }
     }
 

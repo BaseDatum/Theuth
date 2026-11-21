@@ -4,6 +4,7 @@ import { ResizeHandle } from '@/components/ui/resize-handle'
 import { useSidebar } from '@/components/ui/sidebar'
 import { usePressDrag } from '@/hooks/use-press-drag'
 import { isDraft, type Node, newDraft, type Path, shown, usePanes, zone } from '@/lib/panes'
+import { isWeb } from '@/lib/web-views'
 import { clampRatio, RATIO_MAX, RATIO_MIN, RATIO_STEP } from '@/lib/resize-drag'
 import { cn } from '@/lib/utils'
 
@@ -49,7 +50,8 @@ export function DragOverlay() {
   )
 }
 
-/** One leaf: the drop target for the pane it shows; a press inside focuses it (and moves the URL there; a draft has no URL). */
+/** One leaf: the drop target for the pane it shows; a press inside focuses it (and moves the URL there; a draft has no
+ * URL). A web frame (205 D5) is never focused or dimmed: the URL stays on the chat beside it. */
 function Leaf({ session, first, render }: { session: string; first: boolean; render(session: string, first: boolean): ReactNode }) {
   const navigate = useNavigate()
   const focused = usePanes((s) => s.focused)
@@ -57,9 +59,9 @@ function Leaf({ session, first, render }: { session: string; first: boolean; ren
   return (
     <div
       data-pane={session}
-      className={cn('relative flex min-h-0 min-w-0 flex-1 flex-col', split && focused !== session && 'opacity-80')}
+      className={cn('relative flex min-h-0 min-w-0 flex-1 flex-col', split && focused !== session && !isWeb(session) && 'opacity-80')}
       onPointerDownCapture={() => {
-        if (focused === session) return
+        if (focused === session || isWeb(session)) return
         usePanes.getState().focus(session)
         if (!isDraft(session)) void navigate({ to: '/c/$session', params: { session } })
       }}

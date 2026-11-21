@@ -4,7 +4,7 @@ import { PanelLeft } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { Composer } from '@/components/chat/Composer'
 import { DoubleChip, DoubleUndo } from '@/components/chat/DoubleChip'
-import { SecretRequestCard } from '@/components/chat/SecretRequestCard'
+import { SecretRequestCard, eventFields } from '@/components/chat/SecretRequestCard'
 import { simFlag, useSandboxes } from '@/components/settings/sandbox-queries'
 import { useRoutines } from '@/components/routines/queries'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
@@ -218,9 +218,9 @@ function AttentionCard({ item }: { item: AttentionItem }) {
     return (
       <li className="px-3 py-1 text-[13px]">
         {row ? (
-          <SecretRequestCard id={row.id} title={row.title} note={one && one.label !== one.name ? one.label : undefined} fields={row.fields} origin={origin} onAnswered={answered} />
+          <SecretRequestCard id={row.id} title={row.title} note={one && one.label !== one.name ? one.label : undefined} fields={row.fields} expires={row.expires} origin={origin} onAnswered={answered} />
         ) : local ? (
-          <SecretRequestCard id={local.id} note={local.note} fields={[{ name: local.name, label: local.name, masked: true, current: local.current }]} origin={origin} onAnswered={answered} />
+          <SecretRequestCard id={local.id} title={local.title} note={local.title ? undefined : local.note} fields={eventFields(local)} expires={local.expires} origin={origin} onAnswered={answered} />
         ) : null}
       </li>
     )
