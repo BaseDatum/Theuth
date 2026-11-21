@@ -176,7 +176,9 @@ pub(super) fn numbers(toks: &mut Vec<Tok>) {
         // converts only after "number" or beside a spoken symbol (`#`, `.`, an operator),
         // "point" or "percent".
         let beside_sym = |t: &Tok| t.kind == Kind::Sym && !t.asr && (t.glue_right || !t.glue_left);
+        // A hyphenated compound ("twenty-three") is two number words in one token, not a lone one.
         let lone = words.len() == 1
+            && !words[0].contains('-')
             && !(i > 0
                 && ((toks[i - 1].kind == Kind::Sym && !toks[i - 1].asr)
                     || toks[i - 1].is("number")))
