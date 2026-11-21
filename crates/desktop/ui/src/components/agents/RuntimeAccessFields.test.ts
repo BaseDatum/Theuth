@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
-import { RuntimeFields } from './RuntimeAccessFields'
+import { RuntimeFields, tailWire } from './RuntimeAccessFields'
 import { type Draft, emptyDraft, toFile, validate } from './wizard'
 
 type Effort = { levels: string[]; current?: string | null; onSelect(level: string | null): void }
@@ -17,7 +17,8 @@ vi.mock('@/components/chat/ModelCombobox', () => ({
   },
 }))
 const models = vi.hoisted(() => ({ data: [] as { id: string; efforts: string[] }[] }))
-vi.mock('./queries', () => ({ useModels: () => models, useHarnesses: () => ({ data: [] }), useMcpServers: () => ({ data: [] }) }))
+const tails = vi.hoisted(() => ({ data: undefined as { tail_low_bytes?: number; tail_high_bytes?: number } | undefined }))
+vi.mock('./queries', () => ({ useModels: () => models, useHarnesses: () => ({ data: [] }), useMcpServers: () => ({ data: [] }), useEndlessSettings: () => tails }))
 vi.mock('@/components/settings/sandbox-queries', () => ({ useSandboxes: () => ({ data: [] }) }))
 vi.mock('@tanstack/react-router', () => ({ Link: ({ children }: { children: unknown }) => children }))
 
@@ -81,4 +82,24 @@ test("201: the agent's tail sizing shows only the chosen mode's pair, names a re
   expect(validate('runtime', { ...base, tail_mode: 'scaled', tail_low_share: 0.1, tail_high_share: 0.25 }, [])).toEqual({})
   const file = JSON.parse(JSON.stringify(toFile({ ...fixed, tail_high_bytes: 128_000 }, false)))
   expect([file.tail_mode, file.tail_low_bytes, file.tail_high_bytes, file.profile]).toEqual(['fixed', 64_000, 128_000, 'small'])
+})
+
+test('201 R3-12: a KB entry lands as whole bytes; a lone mark is checked against Settings › Context and says so inline', () => {
+  const base: Draft = { ...emptyDraft(), name: 'ops', title: 'Ops', body: 'x', tail_mode: 'fixed' }
+  expect(tailWire('24.0005', true)).toBe(24_001)
+  expect(tailWire('24.0004', true)).toBe(24_000)
+  expect(Number.isInteger(tailWire('0.1', true))).toBe(true)
+  expect(tailWire('12.5', false)).toBe(0.125)
+  expect(tailWire(' ', true)).toBeUndefined()
+  // Lone low mark above the global high (64 KB default): refused, the reason names the inherited mark.
+  const lone: Draft = { ...base, tail_low_bytes: 100_000 }
+  expect(validate('runtime', lone, []).tail_mode).toBe("Trim at (64 KB) must be above Kept after a trim (100 KB). Trim at is empty, so it is Settings › Context's 64 KB; set it here too.")
+  expect(validate('runtime', lone, [], { tail_high_bytes: 128_000 })).toEqual({})
+  tails.data = { tail_high_bytes: 96_000 }
+  expect(renderToStaticMarkup(createElement(RuntimeFields, { d: lone, set: () => {} }))).toContain("Settings › Context&#x27;s 96 KB; set it here too.")
+  tails.data = undefined
+  // A lone high mark below the global low.
+  expect(validate('runtime', { ...base, tail_high_bytes: 20_000 }, [], { tail_low_bytes: 24_000 }).tail_mode).toContain("Kept after a trim is empty, so it is Settings › Context's 24 KB")
+  // Out of its own range: the range reason only.
+  expect(validate('runtime', { ...base, tail_low_bytes: 4_000 }, []).tail_mode).toBe('Kept after a trim must be 8 KB–256 KB.')
 })

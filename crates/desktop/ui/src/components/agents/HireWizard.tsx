@@ -15,7 +15,7 @@ import { CharterDoc, useCharterDoc } from './CharterDoc'
 import { AccessFields, Field, RuntimeFields, type Setter } from './RuntimeAccessFields'
 import { AgentAvatar } from './identity'
 import { managerNames } from './hiring'
-import { useAgentActions } from './queries'
+import { useAgentActions, useEndlessSettings } from './queries'
 import {
   type Draft,
   STEPS,
@@ -46,6 +46,8 @@ export function HireWizard() {
   const navigate = useNavigate()
   const agents = useAgents()
   const { put } = useAgentActions()
+  // R3-12: a lone per-agent tail mark is validated against Settings › Context's other mark.
+  const tails = useEndlessSettings().data
   const api = useApi()
   const [saved] = useState(loadDraft)
   const [step, setStep] = useState<Step>(saved?.step ?? 'identity')
@@ -53,7 +55,7 @@ export function HireWizard() {
   const [touched, setTouched] = useState(false)
   const taken = agents.data?.map((a) => a.file.name) ?? []
   const [memoryError, setMemoryError] = useState<string>()
-  const errors = validate(step, d, taken)
+  const errors = validate(step, d, taken, tails)
   useEffect(() => saveDraft({ step, draft: d }), [step, d])
   const set: Setter = (k, v) => {
     if (k === 'isolated_memory') setMemoryError(undefined)
@@ -61,7 +63,7 @@ export function HireWizard() {
   }
   const at = STEPS.indexOf(step)
   // Forward jumps stop at the first incomplete step; back is always allowed.
-  const bad = firstInvalid(d, taken)
+  const bad = firstInvalid(d, taken, tails)
   const reachable = bad === null ? STEPS.length : STEPS.indexOf(bad)
   const go = (s: Step) => {
     setTouched(false)
@@ -83,12 +85,12 @@ export function HireWizard() {
   }
   const next = async () => {
     const draft = step === 'charter' ? await fromDoc() : d
-    if (Object.keys(validate(step, draft, taken)).length > 0) return setTouched(true)
+    if (Object.keys(validate(step, draft, taken, tails)).length > 0) return setTouched(true)
     go(STEPS[at + 1] ?? 'review')
   }
   const hire = async (paused: boolean) => {
     const draft = await fromDoc()
-    const bad = firstInvalid(draft, taken)
+    const bad = firstInvalid(draft, taken, tails)
     if (bad) return go(bad)
     put.mutate(toFile(draft, paused), {
       onSuccess: () => {
@@ -136,7 +138,7 @@ export function HireWizard() {
         <nav aria-label="Hire steps" className="shrink-0 border-b border-border-subtle p-3 md:w-52 md:border-r md:border-b-0">
           <ol className="flex gap-1 overflow-x-auto md:flex-col">
             {STEPS.map((s, i) => {
-              const complete = i < at && Object.keys(validate(s, d, taken)).length === 0
+              const complete = i < at && Object.keys(validate(s, d, taken, tails)).length === 0
               return (
                 <li key={s}>
                   <button

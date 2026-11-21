@@ -1,6 +1,7 @@
 import { THEUTH } from '@/components/tasks/helpers'
 import type { AgentInput as AgentFile } from '@/lib/agent-memory'
-import { tailPairError } from '@/lib/endless'
+import { ENDLESS_DEFAULTS, tailMark, tailPairError } from '@/lib/endless'
+import type { EndlessConfig } from '@/rpc/bindings/method.agent.output'
 
 /** `/agents/new` in paperclip's order: who → where in the org → how it runs → what it may reach → what it may spend → its charter → review. */
 export const STEPS = ['identity', 'role', 'runtime', 'access', 'budget', 'charter', 'review'] as const
@@ -53,8 +54,9 @@ export function suggestName(title: string): string {
     .slice(0, 32)
 }
 
-/** Field errors for one step; empty = the step is complete. `taken` is every roster name. */
-export function validate(step: Step, d: Draft, taken: readonly string[]): Partial<Record<keyof Draft, string>> {
+/** Field errors for one step; empty = the step is complete. `taken` is every roster name; `tails` is Settings › Context
+ * (`endless_settings_get`), which a lone per-agent tail mark pairs with (engine defaults while unknown). */
+export function validate(step: Step, d: Draft, taken: readonly string[], tails?: TailDefaults | null): Partial<Record<keyof Draft, string>> {
   const e: Partial<Record<keyof Draft, string>> = {}
   switch (step) {
     case 'identity':
@@ -74,7 +76,7 @@ export function validate(step: Step, d: Draft, taken: readonly string[]): Partia
       }
       break
     case 'runtime': {
-      const tail = tailError(d)
+      const tail = tailError(d, tails)
       if (tail) e.tail_mode = tail
       break
     }
@@ -82,7 +84,7 @@ export function validate(step: Step, d: Draft, taken: readonly string[]): Partia
       if (!d.body.trim()) e.body = 'the charter is the desk\u2019s system prompt; it cannot be empty'
       break
     case 'review':
-      for (const s of STEPS) if (s !== 'review') Object.assign(e, validate(s, d, taken))
+      for (const s of STEPS) if (s !== 'review') Object.assign(e, validate(s, d, taken, tails))
       break
     default:
   }
@@ -90,15 +92,29 @@ export function validate(step: Step, d: Draft, taken: readonly string[]): Partia
 }
 
 /** The first step with an error, or `null` when the whole draft is hireable. */
-export function firstInvalid(d: Draft, taken: readonly string[]): Step | null {
-  return STEPS.find((s) => s !== 'review' && Object.keys(validate(s, d, taken)).length > 0) ?? null
+export function firstInvalid(d: Draft, taken: readonly string[], tails?: TailDefaults | null): Step | null {
+  return STEPS.find((s) => s !== 'review' && Object.keys(validate(s, d, taken, tails)).length > 0) ?? null
 }
 
-/** 201 §12.1: a per-agent tail pair given in full must be in range with the high mark above the low one (roster `file::parse` refuses it otherwise). */
-export function tailError(d: Pick<Draft, 'tail_mode' | 'tail_low_bytes' | 'tail_high_bytes' | 'tail_low_share' | 'tail_high_share'>): string | null {
+/** 201 R3-12: Settings › Context's tail marks, the other half of a pair the agent file gives only one mark of. */
+export type TailDefaults = Partial<Pick<EndlessConfig, 'tail_low_bytes' | 'tail_high_bytes' | 'tail_low_share' | 'tail_high_share'>>
+
+/** 201 §12.1: a per-agent tail pair must be in range with the high mark above the low one (roster `file::parse` refuses
+ * it otherwise). R3-12: a lone mark is checked against `tails`' other mark (engine defaults while unknown), since the
+ * engine pairs it with that one; the reason then names the setting it met. */
+export function tailError(d: Pick<Draft, 'tail_mode' | 'tail_low_bytes' | 'tail_high_bytes' | 'tail_low_share' | 'tail_high_share'>, tails?: TailDefaults | null): string | null {
   if (!d.tail_mode) return null
-  const [low, high] = d.tail_mode === 'fixed' ? [d.tail_low_bytes, d.tail_high_bytes] : [d.tail_low_share, d.tail_high_share]
-  return low != null && high != null ? tailPairError(d.tail_mode, low, high) : null
+  const fixed = d.tail_mode === 'fixed'
+  const [low, high] = fixed ? [d.tail_low_bytes, d.tail_high_bytes] : [d.tail_low_share, d.tail_high_share]
+  if (low == null && high == null) return null
+  const mark = <K extends keyof TailDefaults>(k: K): number => tails?.[k] ?? ENDLESS_DEFAULTS[k]
+  const [gLow, gHigh] = fixed ? [mark('tail_low_bytes'), mark('tail_high_bytes')] : [mark('tail_low_share'), mark('tail_high_share')]
+  const err = tailPairError(d.tail_mode, low ?? gLow, high ?? gHigh)
+  // Only the order can fail because of the inherited mark; a lone mark out of its own range reads as it is.
+  if (err === null || (low != null && high != null) || !err.startsWith('Trim at (')) return err
+  return low == null
+    ? `${err} Kept after a trim is empty, so it is Settings › Context's ${tailMark(d.tail_mode, gLow)}; set it here too.`
+    : `${err} Trim at is empty, so it is Settings › Context's ${tailMark(d.tail_mode, gHigh)}; set it here too.`
 }
 
 export function toFile(d: Draft, paused: boolean): AgentFile {

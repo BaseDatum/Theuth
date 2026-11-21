@@ -9,7 +9,7 @@ import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 import type { CompactorProfile, TailMode } from '@/rpc/bindings/method.roster.input'
-import { useHarnesses, useMcpServers, useModels } from './queries'
+import { useEndlessSettings, useHarnesses, useMcpServers, useModels } from './queries'
 import { type Draft, EFFORTS, TOOLS, tailError } from './wizard'
 
 // Radix Select refuses '' as a value.
@@ -141,14 +141,18 @@ export function RuntimeFields({ d, set, memoryError }: { d: Draft; set: Setter; 
   )
 }
 
+/** A tail mark field's text on the wire: KB as whole bytes (R3-12: a fraction makes the agent file unparsable), a
+ * percent as a share; `undefined` when empty or not a number. */
+export const tailWire = (raw: string, fixed: boolean): number | undefined =>
+  raw.trim() === '' || !Number.isFinite(Number(raw)) ? undefined : fixed ? Math.round(Number(raw) * 1000) : Number(raw) / 100
+
 /** 201 §12.1: the agent's own tail sizing — the mode, then that mode's two marks (KB or percent); empty = the default. Only the chosen mode's marks stay on file. */
 function TailFields({ d, set }: { d: Draft; set: Setter }) {
   const mode = d.tail_mode ?? null
   const fixed = mode === 'fixed'
   const [lowKey, highKey] = fixed ? (['tail_low_bytes', 'tail_high_bytes'] as const) : (['tail_low_share', 'tail_high_share'] as const)
   const toUi = (v: number | null | undefined) => (v == null ? '' : fixed ? String(v / 1000) : String(Math.round(v * 100)))
-  const toWire = (raw: string) => (raw.trim() === '' || !Number.isFinite(Number(raw)) ? undefined : fixed ? Number(raw) * 1000 : Number(raw) / 100)
-  const error = tailError(d) ?? undefined
+  const error = tailError(d, useEndlessSettings().data) ?? undefined
   const unit = fixed ? 'KB' : '%'
   return (
     <>
@@ -181,9 +185,9 @@ function TailFields({ d, set }: { d: Draft; set: Setter }) {
       {mode && (
         <Field label={`Kept after a trim · Trim at (${unit})`} id="rt-tail-low" hint={fixed ? 'Word for word after a trim, and where a trim is due. 8–256 and 16–512 KB; empty = default.' : "Shares of the model's turn allowance. 2–40 and 5–60 %; empty = default."} error={error}>
           <div className="flex items-center gap-2">
-            <Input id="rt-tail-low" type="number" aria-label={`Kept after a trim in ${unit}`} className="h-8" value={toUi(d[lowKey])} onChange={(e) => set(lowKey, toWire(e.target.value))} aria-invalid={!!error} />
+            <Input id="rt-tail-low" type="number" aria-label={`Kept after a trim in ${unit}`} className="h-8" value={toUi(d[lowKey])} onChange={(e) => set(lowKey, tailWire(e.target.value, fixed))} aria-invalid={!!error} />
             <span className="text-fg-tertiary">–</span>
-            <Input type="number" aria-label={`Trim at in ${unit}`} className="h-8" value={toUi(d[highKey])} onChange={(e) => set(highKey, toWire(e.target.value))} aria-invalid={!!error} />
+            <Input type="number" aria-label={`Trim at in ${unit}`} className="h-8" value={toUi(d[highKey])} onChange={(e) => set(highKey, tailWire(e.target.value, fixed))} aria-invalid={!!error} />
           </div>
         </Field>
       )}
