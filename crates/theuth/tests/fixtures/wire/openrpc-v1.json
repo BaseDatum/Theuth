@@ -43104,9 +43104,38 @@
         ],
         "type": "object"
       },
+      "method.agent.output.UsageSample": {
+        "description": "One observed reading of a usage window.",
+        "properties": {
+          "at_ms": {
+            "description": "When the reading was observed (Unix ms).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "used_fraction": {
+            "description": "0.0 = unused, 1.0 = exhausted; may exceed 1.0.",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "at_ms",
+          "used_fraction"
+        ],
+        "type": "object"
+      },
       "method.agent.output.UsageWindow": {
         "description": "A subscription usage window (Codex primary/secondary, Claude 5-hour/weekly…).",
         "properties": {
+          "history": {
+            "default": [],
+            "description": "Readings of the current window, oldest first, newest last (may be empty).",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.output.UsageSample"
+            },
+            "type": "array"
+          },
           "id": {
             "description": "`primary` | `secondary` | `five_hour` | `seven_day` | `seven_day_opus` | …",
             "type": "string"
@@ -43144,7 +43173,8 @@
           "label",
           "used_fraction",
           "resets_at_ms",
-          "window_secs"
+          "window_secs",
+          "history"
         ],
         "type": "object"
       },
@@ -53183,9 +53213,38 @@
         ],
         "type": "object"
       },
+      "method.agent.receiver.UsageSample": {
+        "description": "One observed reading of a usage window.",
+        "properties": {
+          "at_ms": {
+            "description": "When the reading was observed (Unix ms).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "used_fraction": {
+            "description": "0.0 = unused, 1.0 = exhausted; may exceed 1.0.",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "at_ms",
+          "used_fraction"
+        ],
+        "type": "object"
+      },
       "method.agent.receiver.UsageWindow": {
         "description": "A subscription usage window (Codex primary/secondary, Claude 5-hour/weekly…).",
         "properties": {
+          "history": {
+            "default": [],
+            "description": "Readings of the current window, oldest first, newest last (may be empty).",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.receiver.UsageSample"
+            },
+            "type": "array"
+          },
           "id": {
             "description": "`primary` | `secondary` | `five_hour` | `seven_day` | `seven_day_opus` | …",
             "type": "string"
