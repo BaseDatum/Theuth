@@ -124,7 +124,9 @@ export function applyOrder(ops: BuiltinOps): ScopedOp[] {
 
 /** Apply ops in `applyOrder` (session ops to `session`: `''` the draft, `null` no chat, which has none), then await
  * the refetch of every `list_builtins` view, success or not: a multi-call op that fails halfway still shows the
- * engine's state, and the controls only re-enable on fresh flags. "Off always" changes every chat's list. */
+ * engine's state, and the controls only re-enable on fresh flags. "Off always" changes every chat's list. A real chat
+ * id goes with the harness-wide call, so it lands on the engine that owns the chat (the one the list came from); no
+ * chat and the draft send two arguments: the local engine. */
 export function useBuiltinsApply(session: string | null): (ops: BuiltinOps) => Promise<null> {
   const api = useApi()
   const qc = useQueryClient()
@@ -132,7 +134,7 @@ export function useBuiltinsApply(session: string | null): (ops: BuiltinOps) => P
   return async (ops) => {
     try {
       for (const { scope, op } of applyOrder(ops)) {
-        if (scope === 'always') await api.set_builtins_disabled(op.names, op.hidden)
+        if (scope === 'always') await (session ? api.set_builtins_disabled(op.names, op.hidden, session) : api.set_builtins_disabled(op.names, op.hidden))
         else await hide([op])
       }
     } finally {
