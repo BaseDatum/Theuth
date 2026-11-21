@@ -2449,6 +2449,7 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live, counted: bool
                 let job = Job {
                     l,
                     i,
+                    units: &[],
                     priority,
                     cancel: &cancel,
                     lines: 1,
@@ -2536,6 +2537,7 @@ fn spawn_batch(state: Arc<State>, units: Vec<u64>, live: &mut Live) {
         let job = Job {
             l: 0,
             i: first,
+            units: &units,
             priority,
             cancel: &cancel,
             lines: units.len() as u32,
@@ -2559,6 +2561,8 @@ fn spawn_batch(state: Arc<State>, units: Vec<u64>, live: &mut Live) {
 struct Job<'a> {
     l: u8,
     i: u64,
+    /// G6: a batch's units (its call rows land on their lines' units).
+    units: &'a [u64],
     /// E9 queue priority (R1-8).
     priority: u8,
     /// Cancelled by a switch, a retry, a detach or a pause.
@@ -2695,6 +2699,7 @@ async fn call(
     let Job {
         l,
         i,
+        units,
         priority,
         cancel,
         lines,
@@ -2874,7 +2879,7 @@ async fn call(
             if !f.calls.is_empty()
                 && let Err(e) = state
                     .store
-                    .endless_calls_put(state.session, l, i, &f.calls)
+                    .endless_calls_put(state.session, l, i, units, &f.calls)
                     .await
             {
                 tracing::warn!(error = %e, "endless: endless_calls");
@@ -2884,7 +2889,7 @@ async fn call(
     };
     if let Err(e) = state
         .store
-        .endless_calls_put(state.session, l, i, &built.calls)
+        .endless_calls_put(state.session, l, i, units, &built.calls)
         .await
     {
         tracing::warn!(error = %e, "endless: endless_calls");

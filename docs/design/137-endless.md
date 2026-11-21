@@ -196,6 +196,8 @@ Applied to every candidate line before it is accepted; a failure triggers a same
 
 The size check (§5.3) is a sixth retry reason. Every attempt is recorded in `endless_calls(session_id, l, i, try, bytes, guard, usage_json, usd_estimate, latency_ms, created_at)`; the Memory panel shows per-session totals (calls, guard trips by kind, tokens, cost). A node that exhausts `tries` with no passing candidate takes the shortest candidate and is flagged `tries = -tries` so the panel can list "lines that failed a guard" for the user to zoom and judge.
 
+Rows of a batch call (G6) and `try` (2026-11-21): a batch reply is one row per unit line, on that unit's `i`, carrying that line's own guard (`empty` on every line for a reply spent on thinking or empty); line 0's row alone carries the call's `bytes`, usage, cost and latency, the others have `bytes` NULL, so the panel's `calls` (`COUNT(bytes)`) and spend count the call once. `try` is the store-assigned 0-based ordinal of the attempt on its node across the session, so chunk calls of a map-reduce/small-profile unit, a G5 retry and every later retry of a node each get the next number.
+
 ## 7. Fold, view, cache marks
 
 ### 7.1 Fold (`agent::endless::fold`, pure)
