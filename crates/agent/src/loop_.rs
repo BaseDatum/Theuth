@@ -2963,6 +2963,10 @@ struct Turn {
     reset_this_round: bool,
     /// The overflow retry was used this turn (07 §8.5).
     overflowed: bool,
+    /// 201 §4.3 (P5): a "too long" refusal ran its one in-turn trim.
+    refusal_trimmed: bool,
+    /// 201 §11 (P5): `zoom` / `recall` / `date` are in this turn's tool list.
+    endless_listed: bool,
     /// `history[since..]` was appended since the last call (07 §8.1).
     since: usize,
     /// Logged `window == 0` this turn.
@@ -3876,6 +3880,8 @@ impl Turn {
             runtime_names: HashSet::new(),
             reset_this_round: false,
             overflowed: false,
+            refusal_trimmed: false,
+            endless_listed: false,
             window_logged: false,
             repl: None,
             input_text: String::new(),
@@ -4766,18 +4772,7 @@ impl Turn {
         let rebuilt = self.state.last_view.as_ref() != Some(&blocks);
         self.state.last_view = Some(blocks);
         if trimmed {
-            // A new generation: the per-epoch sets start over with the frame.
-            self.state.used = 0;
-            self.state.last_after = None;
-            self.state.pressure_sent = false;
-            self.state.compaction_off = None;
-            self.state.hinted.clear();
-            self.state.knowledge_read.clear();
-            self.state.files_written.clear();
-            if !self.state.skills.is_empty() {
-                self.state.skills.clear();
-                self.publish_skills().await;
-            }
+            self.generation_reset().await;
         }
         self.since = self.state.history.len();
         self.hint_since = self.state.history.len();
@@ -4799,6 +4794,21 @@ impl Turn {
             tail_bytes,
             trimmed,
         });
+    }
+
+    /// 201 §3: a new generation — the per-epoch sets start over with the frame.
+    async fn generation_reset(&mut self) {
+        self.state.used = 0;
+        self.state.last_after = None;
+        self.state.pressure_sent = false;
+        self.state.compaction_off = None;
+        self.state.hinted.clear();
+        self.state.knowledge_read.clear();
+        self.state.files_written.clear();
+        if !self.state.skills.is_empty() {
+            self.state.skills.clear();
+            self.publish_skills().await;
+        }
     }
 
     /// 137G G1: what the turn's budget leaves for the view — the turn target
@@ -4992,6 +5002,118 @@ impl Turn {
                 false
             }
         }
+    }
+
+    /// 201 §11 (P5): the session's stored memory mode is `endless` (the
+    /// service runs in this process), attached or not, tree or not.
+    async fn stored_endless(&self) -> bool {
+        match &self.shared.endless {
+            Some(e) => e.mode(self.shared.id).await.ok() == Some(MemoryMode::Endless),
+            None => false,
+        }
+    }
+
+    /// 201 §4.3 "In turn" (P5): this turn may trim its tail at a round
+    /// boundary — a chat on the endless frame of the real service, not
+    /// already cut by 07 §8.5 this turn (the head is in place then).
+    fn in_turn_trim_on(&self) -> bool {
+        #[cfg(test)]
+        if self.shared.test_view.lock().is_some() {
+            return false;
+        }
+        self.shared.kind == SessionKind::Chat
+            && self.view.is_some()
+            && self.state.head.is_none()
+            && !self.shared.meeting_filter.load(Ordering::Relaxed)
+            && self
+                .shared
+                .endless
+                .as_ref()
+                .is_some_and(|e| e.active(self.shared.id))
+    }
+
+    /// 201 §4.3 (P5): what the frame carries beside the system prompt and
+    /// tools — the frozen view and the tail — in the trim's byte measure.
+    fn endless_frame_bytes(&self) -> u64 {
+        self.view
+            .as_ref()
+            .map_or(0, |v| v.render.text().len() as u64)
+            + crate::endless::tail::bytes(&self.state.history)
+    }
+
+    /// 201 §4.3 "In turn" (P5): cut the tail's oldest whole rounds down to
+    /// the low mark ([`crate::endless::tail::trim_rounds`]: a call stays with
+    /// its results, the current round stays), then start and freeze the next
+    /// generation exactly as a turn-boundary trim does; the turn goes on
+    /// with the new view. `false` when nothing before the current round can
+    /// be cut, when `fit` is given and the kept rounds beside a view of at
+    /// most its budget would still pass it (one enormous round: the caller
+    /// cuts the classic way over the untouched tail), or when the generation
+    /// could not start (nothing changed then).
+    async fn trim_in_turn(&mut self, why: &'static str, fit: Option<u64>) -> bool {
+        use crate::endless::tail;
+        let Some(endless) = self.shared.endless.clone() else {
+            return false;
+        };
+        let id = self.shared.id;
+        let allowance = self.view_allowance();
+        let (low, high) = endless.tail_marks(id, allowance as u64);
+        let view_max = allowance.saturating_sub(high as usize);
+        let Some(cut) = tail::trim_rounds(&self.state.history, u64::from(low)) else {
+            tracing::info!(session = %id, why, low, high, "endless: in-turn trim found nothing before the current round to cut");
+            return false;
+        };
+        let view_now = self.view.as_ref().map_or(0, |v| v.render.text().len());
+        if let Some(fit) = fit
+            && view_now.min(view_max) as u64 + cut.kept > fit
+        {
+            tracing::info!(session = %id, why, kept_bytes = cut.kept, fit, "endless: in-turn trim cannot fit the frame");
+            return false;
+        }
+        let first_seq = self.state.history[cut.keep_from].0;
+        let left_from = self.view.as_ref().map_or(first_seq, |v| v.first_seq);
+        let g = match endless
+            .start_generation(id, Some(first_seq), view_max, false)
+            .await
+        {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::warn!(session = %id, why, "endless in-turn trim: {e:#}");
+                return false;
+            }
+        };
+        endless.describe_left(id, left_from, g.first_seq, self.vision_model());
+        self.state.history.drain(..cut.keep_from);
+        self.state.tail_gen = Some(g.n);
+        self.since = self.state.history.len();
+        self.hint_since = self.hint_since.saturating_sub(cut.keep_from);
+        self.generation_reset().await;
+        let tail_bytes = u32::try_from(cut.kept).unwrap_or(u32::MAX);
+        endless.turn_opened(id, tail_bytes, allowance as u64);
+        let blocks: Vec<String> = g.render.blocks.iter().map(|b| b.text.clone()).collect();
+        let (changed_from_byte, blocks_hit) = match &self.state.last_view {
+            Some(prev) => (
+                Some(common_prefix(&prev.concat(), &blocks.concat())),
+                prev.iter().zip(&blocks).take_while(|(a, b)| a == b).count(),
+            ),
+            None => (None, 0),
+        };
+        self.state.last_view = Some(blocks);
+        self.reset_this_round = true;
+        let view_bytes = g.render.text().len();
+        if let Some(v) = self.view.as_mut() {
+            v.render = g.render;
+            v.changed_from_byte = changed_from_byte;
+            v.blocks_hit = blocks_hit;
+            v.logged = false;
+            v.max_bytes = view_max;
+            v.generation = g.n;
+            v.first_seq = g.first_seq;
+            v.tail_bytes = tail_bytes;
+            v.trimmed = true;
+        }
+        tracing::info!(session = %id, why, cut_bytes = cut.cut, kept_bytes = cut.kept, generation = g.n, low, high, view_bytes, "endless: in-turn trim");
+        true
     }
 
     /// §9: this turn may run `zoom` / `recall` / `date` — the fresh-turn frame
@@ -5254,12 +5376,14 @@ impl Turn {
             specs.push(advisor::consult::spec());
             specs.sort_by(|a, b| a.name.cmp(&b.name));
         }
-        // 137 §9: `zoom`, `recall`, `date` exist only while the session has a
-        // tree — the fresh-turn frame (`view`) or an attached endless session
-        // whose frame stays epochs-shaped (a meeting, R1-D6; a backfilling
-        // chat). A toolset is an allowlist: each spec only when it lists it.
-        // The list stays sorted so an epochs session's tools are untouched.
-        if self.endless_tools_on() {
+        // 137 §9 / 201 §11 (P5): `zoom`, `recall`, `date` are defined for
+        // every endless session from its creation — tree or not, attached or
+        // not, backfilling or not (they refuse while there is nothing to
+        // search), so the list never changes mid-session. A toolset is an
+        // allowlist: each spec only when it lists it. The list stays sorted
+        // so an epochs session's tools are untouched.
+        self.endless_listed = self.endless_tools_on() || self.stored_endless().await;
+        if self.endless_listed {
             let listed = |name: &str| {
                 toolset
                     .as_ref()
@@ -6558,6 +6682,36 @@ impl Turn {
             }
         };
 
+        // 201 §4.3 "In turn" (P5): an endless chat's frame past 90 % of the
+        // allowance trims its oldest whole rounds at this round boundary;
+        // the 07 §8.5 cut (137 D11) runs only when the trim cannot bring the
+        // frame under the allowance (one enormous round), once per turn.
+        if self.in_turn_trim_on() {
+            let allowance = self.view_allowance() as u64;
+            let before = self.endless_frame_bytes();
+            if before * 10 > allowance * 9 {
+                let trimmed = self.trim_in_turn("pressure", Some(allowance)).await;
+                let after = self.endless_frame_bytes();
+                if after > allowance && !self.overflowed {
+                    self.overflowed = true;
+                    tracing::info!(session = %self.shared.id, before, after, allowance, trimmed, "endless: in-turn trim cannot fit the frame; 07 §8.5 cut");
+                    let projected = self.est_frame();
+                    if let Err(e) = self
+                        .compact(
+                            &current,
+                            transport,
+                            projected,
+                            None,
+                            None,
+                            compact::CompactReason::Overflow,
+                        )
+                        .await
+                    {
+                        tracing::warn!(session = %self.shared.id, "endless fallback cut failed: {e}");
+                    }
+                }
+            }
+        }
         // 07 §8.1 trigger, §8.7 pressure note, §9 todo reminder — all before the call.
         let window = self.window(&current.model);
         // 136 §2.2: the note a refused call queued rides the next input.
@@ -6842,6 +6996,14 @@ impl Turn {
                 // round once with the images on the 52 path.
                 if Box::pin(self.image_failure(&current, &e)).await {
                     return Round::Retry;
+                }
+                // 201 §4.3 (P5): an endless chat refused as too long runs
+                // the in-turn trim once first, then the round retries.
+                if compact::is_overflow(&e) && !self.refusal_trimmed && self.in_turn_trim_on() {
+                    self.refusal_trimmed = true;
+                    if self.trim_in_turn("refusal", None).await {
+                        return Round::Retry;
+                    }
                 }
                 // 137G G5: an endless view that made the request too long is
                 // re-rendered smaller once (window / prompt × 0.85; a shape
@@ -7190,7 +7352,7 @@ impl Turn {
         // (86 RUNTIME-BRIDGE); anything else is refused.
         let advisor = self.shared.kind == SessionKind::Advisor;
         let consulting = self.consult.is_some();
-        let endless = self.endless_tools_on();
+        let endless = self.endless_listed;
         let local = |name: &str| {
             name == todo::NAME
                 || name == repl::NAME
@@ -7282,11 +7444,16 @@ impl Turn {
                     out = self.consult_advisor(&call.fn_arguments) => out,
                 }
             } else if endless && endless_tools::is_local(&call.fn_name) {
-                // 137 §9: the view's tools; `self.view` implies the service is attached.
+                // 137 §9 / 201 §11: defined for every endless session; a
+                // plain refusal while there is no tree to search.
                 match &self.shared.endless {
-                    Some(e) => {
+                    Some(e) if e.served(session) => {
                         endless_tools::run(e, session, &call.fn_name, &call.fn_arguments).await
                     }
+                    Some(_) => ToolOutput::err(format!(
+                        "{}: nothing to search yet — this session's memory has no lines.",
+                        call.fn_name
+                    )),
                     None => ToolOutput::err("fractal context is not available in this process"),
                 }
             } else if call.fn_name == todo::NAME {

@@ -447,6 +447,11 @@ impl Harness {
                 // 137G R1-10: the endless turn-budget test's own model id, so no
                 // other scenario's learned bytes/token reaches it.
                 "bounded": model("bounded", false),
+                // 201 P5: the in-turn trim scenarios' own ids (learned ratios stay apart).
+                "inturn": model("inturn", false),
+                "onebig": model("onebig", false),
+                "listed": model("listed", false),
+                "boundary": model("boundary", false),
             }}})
             .to_string(),
         )

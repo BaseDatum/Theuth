@@ -462,3 +462,303 @@ async fn scenario_bounded_view() {
         "the oldest lines are folded, not sent one by one"
     );
 }
+
+/// 201 P5: answers each of the first `rounds` main calls with one `todo`
+/// call whose arguments carry `pad` bytes (a large round), then like [`Fake`].
+struct Rounds {
+    inner: Fake,
+    rounds: usize,
+    pad: usize,
+    n: std::sync::atomic::AtomicUsize,
+}
+
+impl Rounds {
+    fn new(rounds: usize, pad: usize) -> Self {
+        Self {
+            inner: Fake::compact_held(Duration::ZERO),
+            rounds,
+            pad,
+            n: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+impl wiremock::Respond for Rounds {
+    fn respond(&self, r: &wiremock::Request) -> wiremock::ResponseTemplate {
+        if super::vision_fallback_tests::body(r)["tools"].is_array() {
+            let k = self.n.fetch_add(1, Ordering::SeqCst);
+            if k < self.rounds {
+                let args = json!({"op": "view", "pad": format!("{k} {}", "p".repeat(self.pad))});
+                return super::vision_fallback_tests::sse_tool_call(
+                    &format!("call_{k}"),
+                    "todo",
+                    &args.to_string(),
+                );
+            }
+        }
+        self.inner.respond(r)
+    }
+}
+
+/// 201 P5: the session actor on the real endless service (memory
+/// `endless`), attached with `openai/<model>` and paused (drafts, no
+/// compactor call) when `attach`.
+async fn real_endless(h: &Harness, model: &str, attach: bool) -> (Endless, ActorRef<Session>) {
+    let id = format!("openai/{model}");
+    crate::tokens::forget_for_tests(&id);
+    let endless = Endless::new(
+        h.store.clone(),
+        h.rt.clone(),
+        h.client.clone(),
+        Auth::stub(&h.dir),
+        h.catalog.clone(),
+        crate::endless::EndlessConfig::default(),
+        None,
+    );
+    h.store
+        .set_session_memory(h.id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    if attach {
+        attach_paused(h, &endless, &id).await;
+    }
+    let (epoch, head, history) = h.store.frame(h.id).await.unwrap();
+    let mut session = Session::new(
+        h.id,
+        0,
+        (h.resolve(&id), None),
+        None,
+        SessionState::resume(epoch, head, history),
+        // The 200-round scenario runs past the default `max_tool_rounds` (32).
+        Arc::new(AgentConfig {
+            max_tool_rounds: 250,
+            ..AgentConfig::default()
+        }),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+        h.store.clone(),
+        h.client.clone(),
+        Auth::stub(&h.dir),
+        h.rt.clone(),
+        h.catalog.clone(),
+        None,
+        Arc::new(Semaphore::new(1)),
+        SessionResources::durable_arc(&h.dir),
+    );
+    session.shared.endless = Some(endless.clone());
+    (endless, Session::spawn(session))
+}
+
+async fn attach_paused(h: &Harness, endless: &Endless, model: &str) {
+    let attached = crate::endless::Attached {
+        model: h.resolve(model),
+        effort: None,
+        agent: "theuth".into(),
+        store: None,
+    };
+    endless.attach(h.id, attached).await.unwrap();
+    endless.render_for_turn(h.id).await.unwrap();
+    endless.pause(h.id, true).await.unwrap();
+}
+
+/// One turn's events, through its `settled`.
+async fn turn(h: &mut Harness, actor: &ActorRef<Session>, text: &str) -> Vec<AgentEvent> {
+    actor
+        .tell(UserInput {
+            channel: None,
+            id: None,
+            text: text.into(),
+            files: Vec::new(),
+            ticket: None,
+            scope: None,
+            defer: false,
+        })
+        .await
+        .unwrap();
+    h.drain_until(|e| matches!(e, AgentEvent::ContextChanged { reason, .. } if reason == "settled"))
+        .await
+}
+
+fn compactions(events: &[AgentEvent]) -> Vec<CompactStyle> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Compacted { style, .. } => Some(*style),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `(tool call ids of assistant messages, tool_call_ids of tool messages)`.
+fn call_ids(b: &Value) -> (Vec<String>, Vec<String>) {
+    let msgs = b["messages"].as_array().cloned().unwrap_or_default();
+    let calls = msgs
+        .iter()
+        .filter(|m| m["role"] == "assistant")
+        .flat_map(|m| m["tool_calls"].as_array().cloned().unwrap_or_default())
+        .filter_map(|c| c["id"].as_str().map(str::to_owned))
+        .collect();
+    let results = msgs
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .filter_map(|m| m["tool_call_id"].as_str().map(str::to_owned))
+        .collect();
+    (calls, results)
+}
+
+#[test]
+fn a_long_turn_completes_through_in_turn_trims_without_the_classic_cut() {
+    crate::with_test_registry(scenario_in_turn());
+}
+
+/// 201 §4.3 "In turn" (P5) through the real loop and service (the §14 P5
+/// gate): 200 rounds of 6 KB each overrun the turn allowance several times; every overrun trims
+/// the oldest whole rounds into a new generation and the turn goes on — no
+/// 07 §8.5 cut, a call never without its results, the current round always
+/// sent, and the last request carries the newest generation's frozen view.
+async fn scenario_in_turn() {
+    let _reg_dir = registry().await;
+    let rounds = 200;
+    let mut h = Harness::new(Rounds::new(rounds, 6_000)).await;
+    let (endless, actor) = real_endless(&h, "inturn", true).await;
+    let events = turn(&mut h, &actor, "Run the long job.").await;
+    assert_eq!(compactions(&events), [], "no classic cut");
+    let calls = main_calls(&h).await;
+    assert_eq!(calls.len(), rounds + 1, "every round ran");
+    for (i, b) in calls.iter().enumerate() {
+        let (c, r) = call_ids(b);
+        assert_eq!(c, r, "request {i}: every call with its results, in order");
+        if i > 0 {
+            assert!(
+                c.contains(&format!("call_{}", i - 1)),
+                "request {i}: the current round is sent: {c:?}"
+            );
+        }
+        assert!(!texts(b).iter().any(|t| t.contains("<context_summary")));
+    }
+    let last = calls.last().unwrap();
+    assert!(
+        !call_ids(last).0.contains(&"call_0".to_owned()),
+        "the oldest rounds left the tail"
+    );
+    let g = endless.generation(h.id).await.unwrap().unwrap();
+    assert!(g.n >= 3, "several in-turn trims: generation {}", g.n);
+    let sent = texts(last);
+    for b in &g.render.blocks {
+        assert!(
+            sent.iter().any(|t| t == &b.text),
+            "the frozen view of generation {} is sent",
+            g.n
+        );
+    }
+    // The next turn boundary keeps the generation (the tail is under the high mark).
+    let (_, head, _) = h.store.frame(h.id).await.unwrap();
+    assert!(head.is_none(), "no epoch head was written");
+}
+
+#[test]
+fn one_round_too_large_for_any_trim_falls_back_to_the_classic_cut() {
+    crate::with_test_registry(scenario_one_big_round());
+}
+
+/// 201 P5: a single round over the whole allowance cannot be trimmed (the
+/// current round is never cut): the 07 §8.5 cut (137 D11, style `cut`, the
+/// view as head) still runs, once, and the turn completes.
+async fn scenario_one_big_round() {
+    let _reg_dir = registry().await;
+    // Over the turn allowance (≤ 64k tokens × 4 B), under the window's preflight.
+    let mut h = Harness::new(Rounds::new(1, 300_000)).await;
+    let (_endless, actor) = real_endless(&h, "onebig", true).await;
+    let events = turn(&mut h, &actor, "Read the huge file.").await;
+    // Exactly one fallback cut (the D11 view head, else the summary when
+    // the fresh generation's view is still empty).
+    assert_eq!(compactions(&events).len(), 1, "{events:?}");
+    let calls = main_calls(&h).await;
+    assert_eq!(calls.len(), 2);
+    assert!(
+        texts(&calls[1])
+            .iter()
+            .any(|t| t.starts_with("<context_summary")),
+        "the retried round runs on the head"
+    );
+}
+
+#[test]
+fn a_turn_boundary_trim_through_the_loop_starts_a_generation() {
+    crate::with_test_registry(scenario_boundary_trim());
+}
+
+/// 201 §4.3 (P2, carried to P5): turns of 20 KB inputs through the real loop
+/// and service: once the tail passes the high mark the next turn starts a
+/// new generation, carries the last turn word for word, not the first, and
+/// its view covers what was cut.
+async fn scenario_boundary_trim() {
+    let _reg_dir = registry().await;
+    let mut h = Harness::new(Fake::compact_held(Duration::ZERO)).await;
+    let (endless, actor) = real_endless(&h, "boundary", true).await;
+    let big = |k: usize| format!("INPUT-{k} {}", "word ".repeat(4_000));
+    for k in 0..5 {
+        let events = turn(&mut h, &actor, &big(k)).await;
+        assert_eq!(compactions(&events), []);
+    }
+    let g = endless.generation(h.id).await.unwrap().unwrap();
+    assert!(g.n >= 2, "a trim happened: generation {}", g.n);
+    let calls = main_calls(&h).await;
+    let last = texts(calls.last().unwrap()).concat();
+    assert!(last.contains(&big(4)), "the input");
+    assert!(
+        last.contains(&big(3)),
+        "the last turn is kept word for word"
+    );
+    assert!(!last.contains(&big(0)), "the first turn left the tail");
+    let tail_bytes = endless.memory(h.id).await.unwrap().tail_bytes;
+    assert!(
+        tail_bytes > 0 && tail_bytes <= 24_000,
+        "the tail opened at or under the low mark: {tail_bytes}"
+    );
+    for b in &g.render.blocks {
+        assert!(last.contains(&b.text), "the frozen view is sent");
+    }
+    assert!(
+        g.render.text().contains("INPUT-0"),
+        "the view covers the cut turn"
+    );
+}
+
+#[test]
+fn endless_tools_are_listed_from_creation_and_refuse_without_a_tree() {
+    crate::with_test_registry(scenario_listed());
+}
+
+/// 201 §11 (P5): an epochs session lists no `zoom`/`recall`/`date`; an
+/// endless one lists them before it is attached (no tree) and the list is
+/// byte-identical once its tree exists.
+async fn scenario_listed() {
+    let _reg_dir = registry().await;
+    let mut h = Harness::new(Fake::compact_held(Duration::ZERO)).await;
+    let (endless, actor) = real_endless(&h, "listed", false).await;
+    h.store
+        .set_session_memory(h.id, MemoryMode::Epochs)
+        .await
+        .unwrap();
+    send(&mut h, &actor, "Epochs first.").await;
+    h.store
+        .set_session_memory(h.id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    send(&mut h, &actor, "No tree yet.").await;
+    attach_paused(&h, &endless, "openai/listed").await;
+    send(&mut h, &actor, "Now with a tree.").await;
+    let calls = main_calls(&h).await;
+    assert_eq!(calls.len(), 3);
+    let epochs = tool_names(&calls[0]);
+    assert!(!epochs.iter().any(|n| n == "zoom"), "{epochs:?}");
+    assert!(tool_names(&calls[1]).iter().any(|n| n == "zoom"));
+    assert_eq!(
+        calls[1]["tools"], calls[2]["tools"],
+        "same list before and after the tree"
+    );
+}

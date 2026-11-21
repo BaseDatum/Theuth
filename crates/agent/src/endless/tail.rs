@@ -81,6 +81,57 @@ pub fn trim(history: &[(i64, ChatMessage)], low: u64, high: u64, cold: bool) -> 
     })
 }
 
+/// 201 §4.3 "In turn" (P5): the positions an in-turn trim may cut at, in
+/// order — every turn start and every assistant message that opens a round
+/// (one not preceded by another assistant message), at most the current
+/// round's start: the last assistant message (else the last turn start).
+/// A tool result is never a position, so a call stays with its results;
+/// the current round is not found by [`turn_starts`]' inference alone (a
+/// recovery note after a partial reply reads as a turn start).
+pub fn round_starts(history: &[(i64, ChatMessage)]) -> Vec<usize> {
+    let mut out = turn_starts(history);
+    for (i, (_, m)) in history.iter().enumerate() {
+        let after_assistant = i
+            .checked_sub(1)
+            .is_some_and(|p| history[p].1.role == ChatRole::Assistant);
+        if m.role == ChatRole::Assistant && !after_assistant {
+            out.push(i);
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    let current = history
+        .iter()
+        .rposition(|(_, m)| m.role == ChatRole::Assistant)
+        .or_else(|| out.last().copied());
+    out.retain(|&s| current.is_some_and(|c| s <= c));
+    out
+}
+
+/// 201 §4.3 "In turn" (P5): cut the oldest whole rounds until the rest is
+/// at most `low` bytes ([`round_starts`]: never index 0, never past the
+/// current round's start, so the last round is always kept). `None` when
+/// there is nothing before the current round to cut.
+pub fn trim_rounds(history: &[(i64, ChatMessage)], low: u64) -> Option<Trim> {
+    let starts = round_starts(history);
+    let last = *starts.last()?;
+    let keep_from = starts
+        .iter()
+        .copied()
+        .find(|&s| s > 0 && bytes(&history[s..]) <= low)
+        .unwrap_or(last);
+    if keep_from == 0 {
+        return None;
+    }
+    let total = bytes(history);
+    let kept = bytes(&history[keep_from..]);
+    Some(Trim {
+        keep_from,
+        cut: total - kept,
+        kept,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +248,47 @@ mod tests {
         let t = trim(&h, total - 1, total + 1, true).expect("cold over low");
         assert!(t.kept <= total - 1);
         assert_eq!(trim(&h, total, total + 1, true), None, "cold but under low");
+    }
+
+    #[test]
+    fn a_round_trim_keeps_calls_with_results_and_the_current_round() {
+        let big = "x".repeat(4_000);
+        // One long turn: input, five rounds of call + result, the current
+        // round last (its results not yet answered).
+        let mut v = vec![user("t0"), reply(&big), user("t1")];
+        for k in 0..5 {
+            let id = format!("c{k}");
+            v.push(call(&id));
+            v.push(result(&id, &big));
+        }
+        let h: Vec<(i64, ChatMessage)> = v
+            .into_iter()
+            .enumerate()
+            .map(|(i, m)| (i as i64, m))
+            .collect();
+        let current = h.len() - 2;
+        assert_eq!(round_starts(&h), [0, 1, 2, 3, 5, 7, 9, current]);
+        for low in [0, 1_000, 5_000, 9_000, 13_000, 30_000] {
+            let t = trim_rounds(&h, low).expect("rounds to cut");
+            assert_ne!(h[t.keep_from].1.role, ChatRole::Tool, "low {low}");
+            assert!(
+                t.keep_from <= current,
+                "low {low}: the current round is kept"
+            );
+            assert!(t.kept <= low || t.keep_from == current, "low {low}: {t:?}");
+            assert_eq!(t.cut + t.kept, bytes(&h));
+        }
+        assert_eq!(trim_rounds(&h, 0).unwrap().keep_from, current);
+        // A recovery note after a partial reply in the current turn is no
+        // place to cut: the partial reply's round is the current one.
+        let mut r = h.clone();
+        r.push((99, reply("partial")));
+        r.push((100, user("recovery: continue")));
+        assert_eq!(*round_starts(&r).last().unwrap(), r.len() - 2);
+        // Only the current round: nothing before it to cut.
+        let one: Vec<(i64, ChatMessage)> =
+            vec![(0, user("t0")), (1, call("c")), (2, result("c", &big))];
+        assert_eq!(trim_rounds(&one, 0).map(|t| t.keep_from), Some(1));
+        assert_eq!(trim_rounds(&one[1..], 0), None);
     }
 }
