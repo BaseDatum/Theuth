@@ -184,14 +184,18 @@ impl Tool for SecretRequestTool {
                 v - 1
             )),
             Some((_, v)) => ToolOutput::ok(format!("stored {name} v{v}")),
-            None => not_stored(&out, self.timeout),
+            None => not_stored(&out, self.timeout, &name),
         })
     }
 }
 
-/// The receipt when nothing was stored.
-fn not_stored(out: &Outcome, timeout: Duration) -> ToolOutput {
-    if out.timed_out {
+/// The receipt when nothing was stored; `names` = the requested field names joined by ", ".
+fn not_stored(out: &Outcome, timeout: Duration, names: &str) -> ToolOutput {
+    if out.waived {
+        ToolOutput::ok(format!(
+            "no secret is coming: the user left this to you — proceed without {names}, and say in your reply what you could not do."
+        ))
+    } else if out.timed_out {
         ToolOutput::err(format!("no answer after {} s", timeout.as_secs()))
     } else {
         ToolOutput::err("declined")
@@ -234,6 +238,7 @@ async fn request(
             return Ok(Outcome {
                 stored: Vec::new(),
                 timed_out: row.state == QuestionState::TimedOut,
+                waived: false,
             });
         }
         None => {
@@ -291,9 +296,14 @@ async fn request(
             Ok(o) if o.timed_out => row.state = QuestionState::TimedOut,
             Ok(o) => {
                 row.state = QuestionState::Answered;
-                row.answer = Some(serde_json::json!({
-                    "outcome": if o.stored.is_empty() { "declined" } else { "stored" },
-                }));
+                let outcome = if o.waived {
+                    crate::PROCEED_WITHOUT
+                } else if o.stored.is_empty() {
+                    "declined"
+                } else {
+                    "stored"
+                };
+                row.answer = Some(serde_json::json!({ "outcome": outcome }));
             }
             // The actor refused or died: the question was never raised.
             Err(_) => row.state = QuestionState::Superseded,
@@ -364,7 +374,7 @@ impl Tool for SecretRequestFormTool {
                 f.name
             )));
         }
-        let fields = a
+        let fields: Vec<SecretRequestField> = a
             .fields
             .into_iter()
             .map(|f| SecretRequestField {
@@ -374,13 +384,18 @@ impl Tool for SecretRequestFormTool {
                 current: None,
             })
             .collect();
+        let names = fields
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         let out = match request(&self.actor, self.timeout, &cx, Some(a.title), fields).await {
             Ok(o) => o,
             Err(SendError::HandlerError(e)) => return Ok(ToolOutput::err(e)),
             Err(e) => return Ok(ToolOutput::err(format!("secrets actor: {e}"))),
         };
         if out.stored.is_empty() {
-            return Ok(not_stored(&out, self.timeout));
+            return Ok(not_stored(&out, self.timeout, &names));
         }
         let names: Vec<&str> = out.stored.iter().map(|(n, _)| n.as_str()).collect();
         Ok(ToolOutput::ok(format!("stored {}", names.join(", "))))
@@ -562,7 +577,10 @@ impl Tool for SecretRestoreTool {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_exit_code;
+    use std::time::Duration;
+
+    use super::{not_stored, strip_exit_code};
+    use crate::Outcome;
 
     #[test]
     fn exit_code_line_is_stripped_only_when_present() {
@@ -570,5 +588,26 @@ mod tests {
         assert_eq!(strip_exit_code("exit code: 1"), "");
         assert_eq!(strip_exit_code("plain text"), "plain text");
         assert_eq!(strip_exit_code("exit code: soon\n"), "exit code: soon\n");
+    }
+
+    /// 207: a waived request is ok, names every requested field and says to proceed without them.
+    #[test]
+    fn waived_request_says_proceed_without() {
+        let out = Outcome {
+            stored: Vec::new(),
+            timed_out: false,
+            waived: true,
+        };
+        let o = not_stored(&out, Duration::from_secs(60), "gh.user, gh.pass");
+        assert!(!o.is_error);
+        assert_eq!(
+            o.content,
+            "no secret is coming: the user left this to you — proceed without gh.user, gh.pass, and say in your reply what you could not do."
+        );
+        let declined = Outcome {
+            waived: false,
+            ..out
+        };
+        assert!(not_stored(&declined, Duration::from_secs(60), "x").is_error);
     }
 }

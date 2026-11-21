@@ -244,6 +244,10 @@ pub struct Packet {
     /// required for a decision to the user, optional on a review, inherited on forward.
     #[serde(default)]
     pub if_wrong: Option<String>,
+    /// 207 §5.2: ms since epoch the user left this decision to the agent (Attention dismiss).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number | null"))]
+    pub left_to_agent_ms: Option<u64>,
 }
 
 /// The `escalate` request as the ledger takes it (the packet before the key,
@@ -761,6 +765,7 @@ mod tests {
             items: vec![],
             to: None,
             if_wrong: None,
+            left_to_agent_ms: None,
         }
     }
 

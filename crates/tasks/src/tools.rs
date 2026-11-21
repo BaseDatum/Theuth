@@ -921,6 +921,7 @@ async fn review_gate(
         if_wrong: if_wrong
             .map(|w| w.trim().to_owned())
             .filter(|w| !w.is_empty()),
+        left_to_agent_ms: None,
     };
     if who == Owner::User {
         packet::require_for_user(&p)?;
