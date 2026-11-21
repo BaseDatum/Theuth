@@ -47,7 +47,7 @@ test('183 R1: a card that came from a snapshot has no deadline; resolving or wit
   const st = active().approvals
   dispatch([{key: 'tools.approval-requested@1', event: approval('live')}])
   expect(st.getState().arrived.has('ap-live')).toBe(true)
-  dispatch([{key: 'tools.approval-resolved@1', event: { type: 'ApprovalResolved', id: 'ap-live', decision: 'allow', timed_out: false }}])
+  dispatch([{key: 'tools.approval-resolved@1', event: { type: 'ApprovalResolved', id: 'ap-live', decision: 'allow', timed_out: false, dismissed: false }}])
   expect(st.getState().arrived.has('ap-live')).toBe(false)
   dispatch([{key: 'tools.approval-requested@1', event: approval('gone')}])
   st.getState().withdraw(new Set(['gone']))
