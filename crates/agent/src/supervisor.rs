@@ -139,6 +139,7 @@ pub mod pause; // 179
 mod resume;
 pub mod transfer; // 139 W2
 mod view; // 176 E1
+pub(crate) use view::observed_state; // 208: the graph's node state
 mod waits;
 pub use acp_resume::LastBootPass; // 146 D4
 pub use drain::{Drain, DrainReport, OpenTurns, drain_engine, draining}; // 109 W5

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::store::Store;
+use crate::supervisor::observed_state;
 use crate::{
     ActivityOf, AgentEvent, AgentInfo, AgentState, Agents, ListActivity, ListSessions,
     ObservedMeta, ObservedState, PeerDelivered, PeerMessageChanged, PeerMessageState,
@@ -611,26 +612,6 @@ pub(crate) fn aggregate(
             .collect(),
         peers,
     )
-}
-
-/// 141 §5.2: a watch-only child's state from the harness, unless an approval is pending on it. The same table as
-/// `supervisor::view::View::state_of_row`, which is private to the supervisor (see 208-as-built-B).
-fn observed_state(o: &ObservedMeta, live: &AgentState) -> AgentState {
-    if matches!(live, AgentState::Approval { .. }) {
-        return live.clone();
-    }
-    match o.state {
-        ObservedState::Running => AgentState::Running,
-        ObservedState::RequiresAction => AgentState::Approval {
-            tool: o.description.clone().unwrap_or_default(),
-        },
-        ObservedState::Failed => AgentState::Error,
-        ObservedState::Cancelled => AgentState::Cancelled,
-        ObservedState::Pending
-        | ObservedState::Idle
-        | ObservedState::Completed
-        | ObservedState::Unknown => AgentState::Idle,
-    }
 }
 
 fn observed_outcome(o: &ObservedMeta) -> Option<GraphOutcome> {
@@ -1377,13 +1358,15 @@ type Waiter = (Snapshot, Option<ReplySender<anyhow::Result<AgentGraph>>>);
 
 /// An input buffered while a seed runs.
 enum Buffered {
-    Agent(AgentEvent),
+    Agent(Box<AgentEvent>),
     Peer(PeerMessageChanged),
 }
 
 struct Seeding {
     waiters: Vec<Waiter>,
     buffered: Vec<Buffered>,
+    /// The epoch of the model this seed replaces (0 = none): the new one must be later.
+    prev_epoch: u64,
 }
 
 /// 208 §4: the graph actor. Dormant: only the clock; leased: the model and the delta stream.
@@ -1400,6 +1383,8 @@ pub struct Graph {
     lease_until_ms: u64,
     seeding: Option<Seeding>,
     flushing: bool,
+    /// The model epoch the flush in flight began on.
+    flush_epoch: u64,
     again: bool,
 }
 
@@ -1417,6 +1402,7 @@ impl Graph {
             lease_until_ms: 0,
             seeding: None,
             flushing: false,
+            flush_epoch: 0,
             again: false,
         }
     }
@@ -1543,7 +1529,7 @@ impl Graph {
         }
         if let Some(s) = self.seeding.as_mut() {
             if s.buffered.len() < MAX_BUFFERED {
-                s.buffered.push(Buffered::Agent(ev));
+                s.buffered.push(Buffered::Agent(Box::new(ev)));
             }
             return;
         }
@@ -1697,8 +1683,7 @@ impl Graph {
             .model
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("graph: no model"))?;
-        let window = m.window_ms.unwrap_or(DEFAULT_WINDOW_MS).min(MAX_WINDOW_MS);
-        model.window_ms = model.window_ms.max(window);
+        // `window_of(&m) <= model.window_ms` here: a wider ask re-seeds (`Message<Snapshot>`).
         let include: Vec<SessionId> = m.include.into_iter().take(MAX_INCLUDE).collect();
         let missing = model.include(&include);
         let reply = model.reply(m.cursor, now);
@@ -1831,25 +1816,58 @@ impl Message<Snapshot> for Graph {
             s.waiters.push((m, tx));
             return reply;
         }
-        if self.model.is_some() {
-            let me = ctx.actor_ref().clone();
-            let r = self.answer(m, &me, now);
-            if let Some(tx) = tx {
-                tx.send(r);
+        let window = window_of(&m);
+        let mut include: Vec<SessionId> = m.include.iter().copied().take(MAX_INCLUDE).collect();
+        let mut prev_epoch = 0;
+        if let Some(model) = self.model.as_ref() {
+            if window <= model.window_ms {
+                let me = ctx.actor_ref().clone();
+                let r = self.answer(m, &me, now);
+                if let Some(tx) = tx {
+                    tx.send(r);
+                }
+                return reply;
             }
-            return reply;
+            // A wider window than the seed read: older trees are only in the store, so seed again (a new epoch;
+            // every client re-snapshots on its next delta or renewal).
+            prev_epoch = model.epoch_ms;
+            for s in model.include.iter().filter_map(|s| s.parse().ok()) {
+                if include.len() < MAX_INCLUDE && !include.contains(&s) {
+                    include.push(s);
+                }
+            }
+            self.model = None;
         }
-        let window = m.window_ms.unwrap_or(DEFAULT_WINDOW_MS).min(MAX_WINDOW_MS);
-        let include: Vec<SessionId> = m.include.iter().copied().take(MAX_INCLUDE).collect();
-        self.seeding = Some(Seeding {
+        let seeding = Seeding {
             waiters: vec![(m, tx)],
             buffered: Vec::new(),
-        });
-        let (store, agents, mem, me) = (
+            prev_epoch,
+        };
+        self.start_seed(seeding, include, window, now, ctx.actor_ref().clone());
+        reply
+    }
+}
+
+/// The window a `Snapshot` asks for (null = default; clamped).
+fn window_of(m: &Snapshot) -> u64 {
+    m.window_ms.unwrap_or(DEFAULT_WINDOW_MS).min(MAX_WINDOW_MS)
+}
+
+impl Graph {
+    /// Run a seed over `window` in the background; its reads arrive as [`Seeded`].
+    fn start_seed(
+        &mut self,
+        seeding: Seeding,
+        include: Vec<SessionId>,
+        window: u64,
+        now: u64,
+        me: ActorRef<Self>,
+    ) {
+        self.seeding = Some(seeding);
+        let (store, agents, mem) = (
             self.store.clone(),
             self.agents.clone(),
             self.last_event.clone(),
-            ctx.actor_ref().clone(),
         );
         tokio::spawn(async move {
             let seed = Self::seed(store, agents, mem, include.clone(), now, window).await;
@@ -1862,7 +1880,6 @@ impl Message<Snapshot> for Graph {
                 })
                 .await;
         });
-        reply
     }
 }
 
@@ -1874,13 +1891,23 @@ impl Message<Seeded> for Graph {
             return;
         };
         let me = ctx.actor_ref().clone();
+        // A caller asked a wider window while this seed ran: seed again for it before answering anyone.
+        let wider = seeding.waiters.iter().map(|(s, _)| window_of(s)).max();
+        if m.seed.is_ok()
+            && let Some(w) = wider.filter(|w| *w > m.window)
+        {
+            self.start_seed(seeding, m.include, w, now_ms(), me);
+            return;
+        }
         match m.seed {
             Ok(seed) => {
-                self.model = Some(Model::build(seed, m.now, m.window, &m.include));
+                let mut model = Model::build(seed, m.now, m.window, &m.include);
+                model.epoch_ms = model.epoch_ms.max(seeding.prev_epoch + 1);
+                self.model = Some(model);
                 let now = now_ms();
                 for b in seeding.buffered {
                     match b {
-                        Buffered::Agent(ev) => self.apply_agent(ev, &me, now),
+                        Buffered::Agent(ev) => self.apply_agent(*ev, &me, now),
                         Buffered::Peer(ev) => {
                             let at = self.model.as_mut().and_then(|md| md.peer(&ev, now));
                             self.arm(at, &me, now);
@@ -1923,6 +1950,7 @@ impl Message<FlushTick> for Graph {
         let batch = model.begin_flush(now);
         let ids = batch.sessions(model);
         self.flushing = true;
+        self.flush_epoch = model.epoch_ms;
         let (store, agents, me) = (
             self.store.clone(),
             self.agents.clone(),
@@ -1965,7 +1993,12 @@ impl Message<Flushed> for Graph {
         let Some(model) = self.model.as_mut() else {
             return;
         };
-        let ev = model.finish_flush(m.batch, &m.activity, &m.waits, &self.last_event, now);
+        // A flush begun on a model a wider-window re-seed replaced: its batch names the old model's state.
+        let ev = if model.epoch_ms == self.flush_epoch {
+            model.finish_flush(m.batch, &m.activity, &m.waits, &self.last_event, now)
+        } else {
+            None
+        };
         let again = std::mem::take(&mut self.again).then(|| {
             model.flush_at = None;
             model.schedule(now)

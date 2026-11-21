@@ -638,3 +638,147 @@ fn wire_fixtures_round_trip() {
     check::<AgentGraphChanged>("agent.graph");
     check::<PeerMessageChanged>("agent.peer-message");
 }
+
+/// A later `agent_graph` asking a wider window than the seed read re-seeds: the older tree appears, in a new epoch.
+#[tokio::test]
+async fn wider_window_reads_older_trees() {
+    let scratch = crate::TestDir::new("graph-wider");
+    let rt = Runtime::new(figment::Figment::new(), scratch.0.clone());
+    let a = crate::supervisor::bare_agents(rt.clone(), None, false).await;
+    let store = a.store.clone();
+    let agents = Agents::spawn(a);
+    let (fresh, old) = (SessionId::new(), SessionId::new());
+    for s in [fresh, old] {
+        store
+            .create_session(s, "m", None, None, None)
+            .await
+            .unwrap();
+    }
+    store
+        .upsert_last_events(&[(old, now_ms() - 3 * H)])
+        .await
+        .unwrap();
+    let graph = Graph::spawn_with_mailbox(
+        Graph::new(rt.clone(), store.clone(), agents),
+        runtime::subscriber_mailbox(),
+    );
+    let ask = |window_ms: u64, cursor: Option<GraphCursor>| Snapshot {
+        window_ms: Some(window_ms),
+        include: vec![],
+        cursor,
+    };
+    let ids =
+        |g: &AgentGraph| -> HashSet<String> { g.nodes.iter().map(|n| n.id.clone()).collect() };
+
+    let first = graph.ask(ask(H, None)).await.unwrap();
+    assert!(ids(&first).contains(&fresh.to_string()));
+    assert!(
+        !ids(&first).contains(&old.to_string()),
+        "outside the 1 h window"
+    );
+    let cursor = GraphCursor {
+        epoch_ms: first.epoch_ms,
+        seq: first.seq,
+    };
+    // Same or narrower window with a current cursor: unchanged, no re-read.
+    let same = graph.ask(ask(H / 2, Some(cursor))).await.unwrap();
+    assert!(same.unchanged);
+
+    let wide = graph.ask(ask(4 * H, Some(cursor))).await.unwrap();
+    assert!(!wide.unchanged);
+    assert!(wide.epoch_ms > first.epoch_ms, "a new epoch");
+    assert_eq!(wide.window_ms, 4 * H);
+    assert!(
+        ids(&wide).contains(&old.to_string()),
+        "the older tree is read"
+    );
+    assert!(ids(&wide).contains(&fresh.to_string()));
+}
+
+/// `Agents::peer_changed` (the publisher every send / delivery / reply path calls) fills `from`, `to` and `result`
+/// from the stored exchange, for a normal message and a child's final result, to both local parties.
+#[tokio::test]
+async fn peer_changed_fills_ends_and_result() {
+    use crate::store::communication::AcceptExchange;
+    use std::sync::{Arc, Mutex};
+    #[derive(kameo::Actor)]
+    struct Seen(Arc<Mutex<Vec<PeerMessageChanged>>>);
+    impl Message<PeerMessageChanged> for Seen {
+        type Reply = ();
+        async fn handle(&mut self, ev: PeerMessageChanged, _: &mut Context<Self, ()>) {
+            self.0.lock().unwrap().push(ev);
+        }
+    }
+    let scratch = crate::TestDir::new("graph-peer-changed");
+    let rt = Runtime::new(figment::Figment::new(), scratch.0.clone());
+    let a = crate::supervisor::bare_agents(rt.clone(), None, false).await;
+    let (p, c) = (SessionId::new(), SessionId::new());
+    a.store
+        .create_session(p, "m", None, None, None)
+        .await
+        .unwrap();
+    a.store
+        .create_session(c, "m", Some(p), Some("kid"), None)
+        .await
+        .unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sub = Seen::spawn(Seen(seen.clone()));
+    rt.subscribe::<Seen, PeerMessageChanged>(&sub).await;
+    let (sp, sc) = (format!("session:{p}"), format!("session:{c}"));
+    let accept = |sender: &str,
+                  recipient: &str,
+                  from: SessionId,
+                  to: SessionId,
+                  request_id: Option<&str>| {
+        let store = a.store.clone();
+        let (sender, recipient, request_id) = (
+            sender.to_owned(),
+            recipient.to_owned(),
+            request_id.map(str::to_owned),
+        );
+        async move {
+            store
+                .accept_exchange(&AcceptExchange {
+                    sender: &sender,
+                    recipient: &recipient,
+                    sender_session: Some(from),
+                    recipient_session: Some(to),
+                    request_id: request_id.as_deref(),
+                    reply_to: None,
+                    request_scope: None,
+                    generation: 1,
+                    body: "hi",
+                })
+                .await
+                .unwrap()
+        }
+    };
+    let message = accept(&sp, &sc, p, c, Some("r1")).await;
+    let result = accept(&sc, &sp, c, p, Some("result:t1")).await;
+    a.peer_changed(&message).await;
+    a.peer_changed(&result).await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let got = seen.lock().unwrap().clone();
+    let of = |id: Uuid| -> Vec<&PeerMessageChanged> { got.iter().filter(|e| e.id == id).collect() };
+
+    let m = of(message.id);
+    assert_eq!(
+        m.iter().map(|e| e.session).collect::<HashSet<_>>(),
+        HashSet::from([p, c]),
+        "both local parties"
+    );
+    for e in &m {
+        assert_eq!(
+            (e.from.as_str(), e.to.as_str(), e.result),
+            (sp.as_str(), sc.as_str(), false)
+        );
+    }
+    let r = of(result.id);
+    assert_eq!(r.len(), 2);
+    for e in &r {
+        assert_eq!(
+            (e.from.as_str(), e.to.as_str(), e.result),
+            (sc.as_str(), sp.as_str(), true)
+        );
+    }
+}
