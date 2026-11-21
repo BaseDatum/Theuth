@@ -343,6 +343,7 @@ mod desktop {
                         paint_page_background(&win);
                     }
                 }
+                WindowEvent::Destroyed => crate::webview::on_window_destroyed(window),
                 _ => {}
             })
             .setup(|app| {
