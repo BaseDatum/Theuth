@@ -320,7 +320,7 @@ impl ParakeetMlx {
             None,
             None,
         )?;
-        let halves = y.split(2, -1)?;
+        let halves = y.split_equal(2, -1)?;
         let y = halves[0].multiply(ops::sigmoid(&halves[1])?)?;
         let pad = (self.cfg.conv_kernel - 1) / 2;
         let y = ops::pad(&y, &[(0, 0), (pad, pad), (0, 0)][..], None, None)?;
@@ -371,7 +371,7 @@ impl ParakeetMlx {
             let gates = ops::matmul(&x, self.p(&format!("{pre}.Wx"))?.t())?
                 .add(self.p(&format!("{pre}.bias"))?)?
                 .add(ops::matmul(h, self.p(&format!("{pre}.Wh"))?.t())?)?;
-            let g = gates.split(4, -1)?;
+            let g = gates.split_equal(4, -1)?;
             let (i, f, gg, o) = (
                 ops::sigmoid(&g[0])?,
                 ops::sigmoid(&g[1])?,
@@ -411,7 +411,7 @@ impl ParakeetMlx {
             let tok = argmax_axis(logits.index(..vocab + 1), 0, None)?;
             let dur = argmax_axis(logits.index(vocab + 1..), 0, None)?;
             mlx_rs::transforms::eval([&tok, &dur])?;
-            let (tok, dur) = (tok.item::<u32>() as usize, dur.item::<u32>() as usize);
+            let (tok, dur) = (tok.item_exact::<u32>() as usize, dur.item_exact::<u32>() as usize);
             let Some(&duration) = self.cfg.durations.get(dur) else {
                 bail!("duration index {dur} out of range")
             };
