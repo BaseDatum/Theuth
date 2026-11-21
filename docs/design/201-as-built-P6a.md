@@ -24,4 +24,4 @@ D10, §9, §12.1 `ledger` / `ledger_bytes` / `ledger_suggestions`, phase row P6.
 
 - `ledger::marker_of` for a later phase that sends `user` units to the standard compactor (prompt sentence not added; `compact_prompt.txt` untouched).
 - No loop-level test (real turn with the note row); covered at pump level and by `units::tests::ledger_notes_are_not_units`.
-- Bindings: regenerate with `just ts-desktop` (see report for whether it ran). New TS: `LedgerStatus`, `SessionMemory.ledger?: LedgerStatus | null`.
+- Bindings NOT regenerated (time): run `just ts-desktop` once. New TS: `LedgerStatus`, `SessionMemory.ledger?: LedgerStatus | null`.
