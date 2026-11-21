@@ -208,10 +208,18 @@ impl BundleJs {
             ModuleCodeString::from_static(POLYFILL),
             false,
         )?;
-        this.run(bundle.name, ModuleCodeString::from_static(bundle.source), false)?;
+        this.run(
+            bundle.name,
+            ModuleCodeString::from_static(bundle.source),
+            false,
+        )?;
         let entry = serde_json::to_string(bundle.global)
             .map_err(|e| Error::Crashed(format!("bundle global: {e}")))?;
-        this.run("<theuth:pump>", PUMP.replace("__ENTRY__", &entry).into(), false)?;
+        this.run(
+            "<theuth:pump>",
+            PUMP.replace("__ENTRY__", &entry).into(),
+            false,
+        )?;
         this.limits.deadline = deadline;
         Ok(this)
     }

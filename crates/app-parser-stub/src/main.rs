@@ -32,7 +32,10 @@ fn main() {
                 if line.trim().is_empty() {
                     continue;
                 }
-                if writeln!(stdout, "{ERROR}").and_then(|()| stdout.flush()).is_err() {
+                if writeln!(stdout, "{ERROR}")
+                    .and_then(|()| stdout.flush())
+                    .is_err()
+                {
                     break;
                 }
             }

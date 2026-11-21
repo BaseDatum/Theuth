@@ -173,7 +173,10 @@ async fn js_exception_is_an_error_reply_and_the_runtime_survives() {
     )
     .await
     .expect("install the throwing entry point");
-    let r = t.request(check_line("x7", "root = Stack([])")).await.expect("reply");
+    let r = t
+        .request(check_line("x7", "root = Stack([])"))
+        .await
+        .expect("reply");
     let v = parse(&r.reply);
     assert_eq!(v["ok"], false);
     assert_eq!(v["id"], "x7");
@@ -357,7 +360,10 @@ async fn cancelling_the_token_ends_the_thread() {
     round_trip(&t, "d").await;
     token.cancel();
     wait_until("thread exit", || !t.is_running()).await;
-    assert_eq!(t.request(check_line("1", PROTOTYPE)).await, Err(Error::Stopped));
+    assert_eq!(
+        t.request(check_line("1", PROTOTYPE)).await,
+        Err(Error::Stopped)
+    );
 }
 
 /// The request's own promise is still pending when an unrelated rejection fails the event loop: fatal, the
@@ -429,7 +435,10 @@ async fn restart_fails_the_queued_requests_and_the_next_one_runs_fresh() {
         "{busy:?}"
     );
     let queued = queued.settled().await;
-    assert!(matches!(queued.result, Err(Error::Crashed(_))), "{queued:?}");
+    assert!(
+        matches!(queued.result, Err(Error::Crashed(_))),
+        "{queued:?}"
+    );
     round_trip(&t, "after").await;
     assert_eq!(t.generation(), 2);
 }

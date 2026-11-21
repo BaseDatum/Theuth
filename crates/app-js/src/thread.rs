@@ -361,8 +361,7 @@ fn serve(
     let stale = |job_epoch: u64, ended: &Option<(u64, Error)>| match ended {
         Some((epoch, e)) if *epoch == job_epoch => e.clone(),
         _ => Error::Crashed(
-            "the JS runtime was given up before this request was answered; it is rebuilt"
-                .into(),
+            "the JS runtime was given up before this request was answered; it is rebuilt".into(),
         ),
     };
     loop {

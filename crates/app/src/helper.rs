@@ -337,14 +337,24 @@ mod tests {
         assert_eq!(r.diagnostics[0].at, "sync");
         // A patch onto the base; the merged program is what is validated.
         let r = h
-            .merge_check("b = Button(\"Go\", Action([@Run(sync)]))", SOURCE, &[sync_tool()])
+            .merge_check(
+                "b = Button(\"Go\", Action([@Run(sync)]))",
+                SOURCE,
+                &[sync_tool()],
+            )
             .await
             .unwrap();
         assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
         assert!(r.source.contains("Button(\"Go\""), "{}", r.source);
         // Many requests, in order, one runtime.
         for _ in 0..5 {
-            assert!(h.check("root = Stack([])", &[]).await.unwrap().diagnostics.is_empty());
+            assert!(
+                h.check("root = Stack([])", &[])
+                    .await
+                    .unwrap()
+                    .diagnostics
+                    .is_empty()
+            );
         }
     }
 
@@ -352,7 +362,9 @@ mod tests {
     async fn oversized_requests_are_refused_before_the_runtime() {
         let h = helper();
         let big = "x".repeat(MAX_LINE);
-        assert!(matches!(h.check(&big, &[]).await, Err(Error::Protocol(m)) if m.contains("the helper accepts")));
+        assert!(
+            matches!(h.check(&big, &[]).await, Err(Error::Protocol(m)) if m.contains("the helper accepts"))
+        );
         assert!(h.check("root = Stack([])", &[]).await.is_ok());
     }
 
@@ -360,21 +372,35 @@ mod tests {
     async fn a_hang_is_terminated_at_the_deadline_and_the_next_request_is_served() {
         let h = helper();
         assert!(h.check("root = Stack([])", &[]).await.is_ok());
-        let Backend::Js(js) = &h.backend else { unreachable!() };
+        let Backend::Js(js) = &h.backend else {
+            unreachable!()
+        };
         js.eval_raw("globalThis.theuthApps.call = () => { for (;;) {} };".into())
             .await
             .unwrap();
         let t = std::time::Instant::now();
-        assert_eq!(h.check("root = Stack([])", &[]).await.unwrap_err(), Error::Timeout);
-        assert!(t.elapsed() >= DEADLINE && t.elapsed() < DEADLINE * 5, "{:?}", t.elapsed());
-        assert!(h.check("root = Stack([])", &[]).await.is_ok(), "fresh runtime serves");
+        assert_eq!(
+            h.check("root = Stack([])", &[]).await.unwrap_err(),
+            Error::Timeout
+        );
+        assert!(
+            t.elapsed() >= DEADLINE && t.elapsed() < DEADLINE * 5,
+            "{:?}",
+            t.elapsed()
+        );
+        assert!(
+            h.check("root = Stack([])", &[]).await.is_ok(),
+            "fresh runtime serves"
+        );
     }
 
     #[tokio::test]
     async fn a_reply_for_another_request_fails_it_and_the_runtime_is_rebuilt() {
         let h = helper();
         assert!(h.check("root = Stack([])", &[]).await.is_ok());
-        let Backend::Js(js) = &h.backend else { unreachable!() };
+        let Backend::Js(js) = &h.backend else {
+            unreachable!()
+        };
         js.eval_raw(
             "const orig = globalThis.theuthApps.call;
              globalThis.theuthApps.call = (line) => { globalThis.theuthApps.call = orig; return orig(line).replace(/^\\{\"id\":\"[^\"]*\"/, '{\"id\":\"999\"'); };"
@@ -383,7 +409,9 @@ mod tests {
         .await
         .unwrap();
         let generation = js.generation();
-        assert!(matches!(h.check("root = Stack([])", &[]).await, Err(Error::Crashed(m)) if m.contains("999")));
+        assert!(
+            matches!(h.check("root = Stack([])", &[]).await, Err(Error::Crashed(m)) if m.contains("999"))
+        );
         assert!(h.check("root = Stack([])", &[]).await.is_ok());
         assert_eq!(js.generation(), generation + 1);
     }
@@ -394,7 +422,10 @@ mod tests {
             let v: serde_json::Value = serde_json::from_str(line).unwrap();
             serde_json::json!({ "id": v["id"], "error": "bad" }).to_string()
         }));
-        assert_eq!(h.check("x", &[]).await.unwrap_err(), Error::Protocol("bad".into()));
+        assert_eq!(
+            h.check("x", &[]).await.unwrap_err(),
+            Error::Protocol("bad".into())
+        );
         let h = Helper::canned(Arc::new(|_: &str| "not json".to_owned()));
         assert!(matches!(h.check("x", &[]).await, Err(Error::Protocol(_))));
     }
@@ -403,9 +434,12 @@ mod tests {
     async fn more_than_pending_queued_requests_are_busy_not_queued() {
         let h = Arc::new(helper());
         assert!(h.check("root = Stack([])", &[]).await.is_ok());
-        let Backend::Js(js) = &h.backend else { unreachable!() };
+        let Backend::Js(js) = &h.backend else {
+            unreachable!()
+        };
         // Occupy the runtime thread (no admission permit), then admit PENDING + 1.
-        let busy = js.eval_raw("{ const t0 = Date.now(); while (Date.now() - t0 < 1000) {} }".into());
+        let busy =
+            js.eval_raw("{ const t0 = Date.now(); while (Date.now() - t0 < 1000) {} }".into());
         let waiting: Vec<_> = (0..=PENDING)
             .map(|_| {
                 let h = h.clone();
@@ -414,10 +448,16 @@ mod tests {
             .collect();
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while h.admission.available_permits() > 0 {
-            assert!(std::time::Instant::now() < deadline, "admission never filled");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "admission never filled"
+            );
             tokio::task::yield_now().await;
         }
-        assert_eq!(h.check("root = Stack([])", &[]).await.unwrap_err(), Error::Busy);
+        assert_eq!(
+            h.check("root = Stack([])", &[]).await.unwrap_err(),
+            Error::Busy
+        );
         busy.await.unwrap();
         for w in waiting {
             assert!(w.await.unwrap().is_ok(), "admitted requests are served");
@@ -431,7 +471,9 @@ mod tests {
         let h = Helper::new(token.clone());
         assert!(h.check("root = Stack([])", &[]).await.is_ok());
         token.cancel();
-        let Backend::Js(js) = &h.backend else { unreachable!() };
+        let Backend::Js(js) = &h.backend else {
+            unreachable!()
+        };
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while js.is_running() {
             assert!(std::time::Instant::now() < deadline, "thread never stopped");
@@ -443,6 +485,9 @@ mod tests {
     #[tokio::test]
     async fn check_mermaid_fails_open_in_phase_1() {
         assert_eq!(MERMAID, MermaidBackend::FailOpen);
-        assert_eq!(helper().check_mermaid("graph TD\nA-->B[").await.unwrap(), vec![]);
+        assert_eq!(
+            helper().check_mermaid("graph TD\nA-->B[").await.unwrap(),
+            vec![]
+        );
     }
 }
