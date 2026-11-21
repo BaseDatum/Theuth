@@ -764,7 +764,7 @@ impl wire::WireEvent for CommunicationChanged {
 
 /// Event: a participant's receipt changed state (§10). No body; reload the
 /// durable record when needed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[schemars(transform = wire::serde_type_tag::<Self>)]
 #[serde(tag = "type")]
@@ -775,6 +775,15 @@ pub struct PeerMessageChanged {
     pub id: Uuid,
     /// New state.
     pub state: PeerMessageState,
+    /// 208 D6: the sender endpoint (`session:<uuid>` | `peer:<name>`).
+    #[serde(default)]
+    pub from: String,
+    /// 208 D6: the recipient endpoint, as addressed.
+    #[serde(default)]
+    pub to: String,
+    /// 208 D6: the exchange is a child's final result to its parent (request id `result:*`).
+    #[serde(default)]
+    pub result: bool,
 }
 
 impl wire::WireEvent for PeerMessageChanged {

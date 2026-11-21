@@ -51,7 +51,7 @@ async fn family<E: WireEvent + DeserializeOwned>(
                 "ToolCallProgress" | "VisionProgress" => expected.delta = Delta::Replace,
                 _ => {}
             }
-        } else if topic == "agent.communication" {
+        } else if topic == "agent.communication" || topic == "agent.graph" {
             expected.always_wanted = true;
         }
         assert_eq!(frame.policy, expected, "{topic}[{i}]");
@@ -68,6 +68,7 @@ async fn agent_golden_parity() {
     family::<agent::CommunicationChanged>(&rt, &mut feed, "agent.communication").await;
     family::<agent::PeerMessageChanged>(&rt, &mut feed, "agent.peer-message").await;
     family::<agent::PeerDelivered>(&rt, &mut feed, "agent.peer-delivered").await;
+    family::<agent::AgentGraphChanged>(&rt, &mut feed, "agent.graph").await;
     family::<agent::ask::NotebookAsk>(&rt, &mut feed, "agent.notebook-ask").await;
     family::<agent::EndlessProgress>(&rt, &mut feed, "agent.endless-progress").await;
     family::<agent::CostCubeChanged>(&rt, &mut feed, "agent.cost-cube").await;

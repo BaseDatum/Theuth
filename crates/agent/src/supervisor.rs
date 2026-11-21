@@ -2201,17 +2201,21 @@ impl Agents {
         }
     }
 
-    /// Publish [`PeerMessageChanged`] to each local participant of `receipt`.
+    /// Publish [`PeerMessageChanged`] to each local participant of `receipt`, with the exchange's ends and whether
+    /// it is a child's final result (208 D6).
     pub(crate) async fn peer_changed(&self, receipt: &PeerReceipt) {
         let mut parties: Vec<SessionId> = PeerAddress::local(&receipt.to).into_iter().collect();
-        match self.store.exchange_record(receipt.id).await {
-            Ok(Some(rec)) => {
-                if let Some(s) = PeerAddress::local(&rec.from).filter(|s| !parties.contains(s)) {
+        let (mut from, mut result) = (String::new(), false);
+        match self.store.exchange_sender(receipt.id).await {
+            Ok(Some((sender, request_id))) => {
+                if let Some(s) = PeerAddress::local(&sender).filter(|s| !parties.contains(s)) {
                     parties.push(s);
                 }
+                result = request_id.starts_with("result:");
+                from = sender;
             }
             Ok(None) => {}
-            Err(e) => tracing::error!(id = %receipt.id, "exchange_record: {e:#}"),
+            Err(e) => tracing::error!(id = %receipt.id, "exchange_sender: {e:#}"),
         }
         for session in parties {
             self.rt
@@ -2219,6 +2223,9 @@ impl Agents {
                     session,
                     id: receipt.id,
                     state: receipt.state,
+                    from: from.clone(),
+                    to: receipt.to.clone(),
+                    result,
                 })
                 .await;
         }
