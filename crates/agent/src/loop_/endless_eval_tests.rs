@@ -1180,6 +1180,7 @@ fn normalise(h: &Harness, b: &Value) -> String {
         (r#"now=\\"[^\\]*\\""#, "now=<T>"),
         (r"\d{4}-\d{2}-\d{2}[T ][0-9:.]+(Z|[+-]\d{2}:?\d{2})?", "<TS>"),
         (r"Date: [^\\]*", "Date: <D>"),
+        (r"Working directory: [^\\]*", "Working directory: <CWD>"),
         (r"theuth-[a-z-]+-<UUID>", "<SCRATCH>"),
     ] {
         s = regex::Regex::new(re).unwrap().replace_all(&s, to).into_owned();
@@ -1280,6 +1281,7 @@ fn eval_s4_epochs_and_meeting_frames_match_the_base() {
             return;
         }
         let want: Value = serde_json::from_str(include_str!("eval_golden_s4.json")).unwrap();
+        let mut diffs = Vec::new();
         for kind in ["epochs-bare", "epochs-service", "meeting"] {
             let (g, w) = (&got[kind], &want[kind]);
             assert_eq!(
@@ -1294,13 +1296,28 @@ fn eval_s4_epochs_and_meeting_frames_match_the_base() {
                 .zip(w.as_array().unwrap())
                 .enumerate()
             {
-                assert_eq!(
-                    a.as_str().unwrap(),
-                    b.as_str().unwrap(),
-                    "{kind}: request {i} differs from the base"
-                );
+                // The golden was captured in the base worktree: its working
+                // directory line is masked like this run's.
+                let cwd = regex::Regex::new(r"Working directory: [^\\]*").unwrap();
+                let base = cwd
+                    .replace_all(b.as_str().unwrap(), "Working directory: <CWD>")
+                    .into_owned();
+                let (a, b): (Vec<&str>, Vec<&str>) =
+                    (a.as_str().unwrap().lines().collect(), base.lines().collect());
+                let (sa, sb): (HashSet<&str>, HashSet<&str>) =
+                    (a.iter().copied().collect(), b.iter().copied().collect());
+                let removed: Vec<&&str> = b.iter().filter(|l| !sa.contains(*l)).collect();
+                let added: Vec<&&str> = a.iter().filter(|l| !sb.contains(*l)).collect();
+                if !removed.is_empty() || !added.is_empty() || a.len() != b.len() {
+                    diffs.push(format!(
+                        "{kind} request {i}: {} lines at base, {} now\n  base only: {removed:?}\n  head only: {added:?}",
+                        b.len(),
+                        a.len()
+                    ));
+                }
             }
         }
+        assert!(diffs.is_empty(), "frames differ from the base:\n{}", diffs.join("\n"));
     });
 }
 
