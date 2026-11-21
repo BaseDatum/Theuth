@@ -70,7 +70,11 @@ fn watch(s: &Shared) {
             .min();
         guard = match next {
             None => s.cv.wait(guard).unwrap_or_else(|e| e.into_inner()),
-            Some(d) => s.cv.wait_timeout(guard, d).unwrap_or_else(|e| e.into_inner()).0,
+            Some(d) => {
+                s.cv.wait_timeout(guard, d)
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0
+            }
         };
     }
 }

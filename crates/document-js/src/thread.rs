@@ -257,12 +257,13 @@ fn serve(
             continue;
         }
         let Some(runtime) = js.as_mut() else { continue };
-        let result = catch_unwind(AssertUnwindSafe(|| run(runtime, job.work))).unwrap_or_else(|p| {
-            Err(Error::Crashed(format!(
-                "panic on the documents-js thread: {}",
-                panic_message(&*p)
-            )))
-        });
+        let result =
+            catch_unwind(AssertUnwindSafe(|| run(runtime, job.work))).unwrap_or_else(|p| {
+                Err(Error::Crashed(format!(
+                    "panic on the documents-js thread: {}",
+                    panic_message(&*p)
+                )))
+            });
         let fatal = result.as_ref().err().filter(|e| e.is_fatal()).cloned();
         let _ = job.reply.send(result);
         if let Some(e) = fatal {

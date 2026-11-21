@@ -35,7 +35,8 @@ const PUMP: &str = r#"globalThis.__theuthPump = () => {
     fail(e);
   }
 };"#;
-const VERSION: &str = "Deno.core.ops.op_documents_reply(String(globalThis.theuthDocuments.version))";
+const VERSION: &str =
+    "Deno.core.ops.op_documents_reply(String(globalThis.theuthDocuments.version))";
 /// What the near-heap-limit callback grants so V8 can unwind the terminated script instead of aborting.
 const HEAP_HEADROOM: usize = 64 * 1024 * 1024;
 
@@ -170,8 +171,16 @@ impl DocumentsJs {
             limits,
             failure: None,
         };
-        this.run("<theuth:polyfill>", ModuleCodeString::from_static(POLYFILL), false)?;
-        this.run("<theuth:documents>", ModuleCodeString::from_static(BUNDLE), false)?;
+        this.run(
+            "<theuth:polyfill>",
+            ModuleCodeString::from_static(POLYFILL),
+            false,
+        )?;
+        this.run(
+            "<theuth:documents>",
+            ModuleCodeString::from_static(BUNDLE),
+            false,
+        )?;
         this.run("<theuth:pump>", ModuleCodeString::from_static(PUMP), false)?;
         Ok(this)
     }
@@ -202,22 +211,31 @@ impl DocumentsJs {
         }
         self.exchange(|x| x.request = Some(line));
         let out = self
-            .run("<theuth:call>", ModuleCodeString::from_static("globalThis.__theuthPump()"), true)?
+            .run(
+                "<theuth:call>",
+                ModuleCodeString::from_static("globalThis.__theuthPump()"),
+                true,
+            )?
             .ok_or_else(|| Error::Js("the request settled without a reply".into()))?;
         Ok(out.split('\n').map(str::to_owned).collect())
     }
 
     /// The bundle's `theuth-documents <protocol>` string (`protocol.ts` `PROTOCOL_VERSION`).
     pub fn version(&mut self) -> Result<String, Error> {
-        self.run("<theuth:version>", ModuleCodeString::from_static(VERSION), true)?
-            .ok_or_else(|| Error::Js("no version".into()))
+        self.run(
+            "<theuth:version>",
+            ModuleCodeString::from_static(VERSION),
+            true,
+        )?
+        .ok_or_else(|| Error::Js("no version".into()))
     }
 
     /// Run a raw classic script (and the event loop until idle) under the same guards as a request. For the
     /// containment tests: `for(;;){}`, a heap that grows forever, a panicking op.
     #[doc(hidden)]
     pub fn eval_raw(&mut self, script: &str) -> Result<(), Error> {
-        self.run("<theuth:raw>", script.to_owned().into(), false).map(|_| ())
+        self.run("<theuth:raw>", script.to_owned().into(), false)
+            .map(|_| ())
     }
 
     fn exchange<R>(&mut self, f: impl FnOnce(&mut Exchange) -> R) -> R {
@@ -233,7 +251,9 @@ impl DocumentsJs {
         until_reply: bool,
     ) -> Result<Option<String>, Error> {
         if let Some(e) = &self.failure {
-            return Err(Error::Crashed(format!("runtime unusable after an earlier failure: {e}")));
+            return Err(Error::Crashed(format!(
+                "runtime unusable after an earlier failure: {e}"
+            )));
         }
         let started = Instant::now();
         let armed = watchdog::arm(self.isolate.clone(), self.limits.deadline);
@@ -277,7 +297,9 @@ impl DocumentsJs {
                     return Poll::Ready(Ok(Some(reply)));
                 }
                 match js.poll_event_loop(cx, PollEventLoopOptions::default()) {
-                    Poll::Ready(Ok(())) => Poll::Ready(Ok(if until_reply { take_reply() } else { None })),
+                    Poll::Ready(Ok(())) => {
+                        Poll::Ready(Ok(if until_reply { take_reply() } else { None }))
+                    }
                     Poll::Ready(Err(e)) => Poll::Ready(Err(Error::Js(e.to_string()))),
                     Poll::Pending => Poll::Pending,
                 }

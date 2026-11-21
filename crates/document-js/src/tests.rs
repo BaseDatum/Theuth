@@ -48,7 +48,14 @@ async fn req(t: &DocumentsThread, id: u64, op: &str, doc: &str, extra: Value) ->
 /// open → import → markdown → close on a fresh document; panics unless every step succeeds.
 async fn round_trip(t: &DocumentsThread, doc: &str) {
     ok(&req(t, 1, "open", doc, json!({ "state": EMPTY_STATE })).await);
-    let import = req(t, 2, "import", doc, json!({ "markdown": "# Title\n\nBody **bold**.", "mode": "replace" })).await;
+    let import = req(
+        t,
+        2,
+        "import",
+        doc,
+        json!({ "markdown": "# Title\n\nBody **bold**.", "mode": "replace" }),
+    )
+    .await;
     ok(&import);
     assert!(!import.events.is_empty(), "import pushed no update");
     let md = ok(&req(t, 3, "markdown", doc, json!({})).await);
@@ -67,7 +74,11 @@ async fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
 #[test]
 fn documents_js_serves_requests_directly() {
     let mut js = DocumentsJs::new(Limits::default()).expect("runtime");
-    assert!(js.version().expect("version").starts_with("theuth-documents "));
+    assert!(
+        js.version()
+            .expect("version")
+            .starts_with("theuth-documents ")
+    );
     let open = js
         .call(&json!({ "id": 1, "op": "open", "doc": "d", "state": EMPTY_STATE }).to_string())
         .expect("open");
@@ -114,7 +125,10 @@ async fn round_trip_open_import_markdown_outline_edit_close() {
     )
     .await;
     let result = ok(&edit);
-    assert_eq!(result["result"]["inserted"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        result["result"]["inserted"].as_array().map(Vec::len),
+        Some(1)
+    );
     assert_eq!(edit.events.len(), 1);
     let md = ok(&req(&t, 6, "markdown", "d", json!({})).await);
     assert_eq!(
@@ -131,7 +145,14 @@ async fn round_trip_open_import_markdown_outline_edit_close() {
 async fn update_events_come_before_the_reply() {
     let t = thread(limits());
     ok(&req(&t, 1, "open", "d", json!({ "state": EMPTY_STATE })).await);
-    let import = req(&t, 9, "import", "d", json!({ "markdown": "a\n\nb\n\nc", "mode": "replace" })).await;
+    let import = req(
+        &t,
+        9,
+        "import",
+        "d",
+        json!({ "markdown": "a\n\nb\n\nc", "mode": "replace" }),
+    )
+    .await;
     ok(&import);
     assert!(!import.events.is_empty());
     for e in &import.events {
@@ -151,7 +172,14 @@ async fn concurrent_requests_from_several_handles_run_in_enqueue_order() {
     ok(&req(&t, 1, "open", "d", json!({ "state": EMPTY_STATE })).await);
     // Each task takes the next item number and enqueues under one lock, so item order = enqueue order;
     // tasks await their tickets concurrently.
-    ok(&req(&t, 2, "import", "d", json!({ "markdown": "start", "mode": "replace" })).await);
+    ok(&req(
+        &t,
+        2,
+        "import",
+        "d",
+        json!({ "markdown": "start", "mode": "replace" }),
+    )
+    .await);
     let order = Arc::new(std::sync::Mutex::new(0u32));
     let mut tasks = Vec::new();
     for _ in 0..4 {
@@ -179,7 +207,10 @@ async fn concurrent_requests_from_several_handles_run_in_enqueue_order() {
         task.await.expect("task");
     }
     let md = ok(&req(&t, 2, "markdown", "d", json!({})).await);
-    let items = (0..20).map(|i| format!("item {i}\n")).collect::<Vec<_>>().join("\n");
+    let items = (0..20)
+        .map(|i| format!("item {i}\n"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let expected = format!("start\n\n{items}");
     assert_eq!(md["result"]["markdown"], expected);
 }
@@ -204,15 +235,37 @@ async fn js_exception_is_an_error_reply_and_the_runtime_survives() {
     let v = parse(&r.reply);
     assert_eq!(v["ok"], false);
     assert_eq!(v["id"], 7);
-    assert!(v["error"].as_str().is_some_and(|e| e.contains("boom from js")), "{v}");
+    assert!(
+        v["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("boom from js")),
+        "{v}"
+    );
     // An exception inside a conversion (an edit naming no block) is an error reply from the helper itself.
     ok(&req(&t, 8, "open", "e", json!({ "state": EMPTY_STATE })).await);
-    let bad = parse(&req(&t, 9, "edit", "e", json!({ "edits": [{ "op": "delete", "blocks": ["nope"] }] })).await.reply);
+    let bad = parse(
+        &req(
+            &t,
+            9,
+            "edit",
+            "e",
+            json!({ "edits": [{ "op": "delete", "blocks": ["nope"] }] }),
+        )
+        .await
+        .reply,
+    );
     assert_eq!(bad["ok"], false);
     // An uncaught exception in a raw script is `Error::Js`, not fatal.
     let raw = t.eval_raw("throw new Error('raw boom')".into()).await;
-    assert!(matches!(&raw, Err(Error::Js(m)) if m.contains("raw boom")), "{raw:?}");
-    assert_eq!(t.generation(), 1, "a JS exception must not rebuild the runtime");
+    assert!(
+        matches!(&raw, Err(Error::Js(m)) if m.contains("raw boom")),
+        "{raw:?}"
+    );
+    assert_eq!(
+        t.generation(),
+        1,
+        "a JS exception must not rebuild the runtime"
+    );
     round_trip(&t, "after").await;
 }
 
@@ -227,8 +280,16 @@ async fn deadline_terminates_a_runaway_script_and_rebuilds() {
     let spin = t.eval_raw("for (;;) {}".into());
     let queued = t.enqueue(json!({ "id": 5, "op": "outline", "doc": "d" }).to_string());
     assert_eq!(spin.await, Err(Error::Timeout));
-    assert_eq!(queued.await, Err(Error::Timeout), "a job queued behind the hang fails with it");
-    assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    assert_eq!(
+        queued.await,
+        Err(Error::Timeout),
+        "a job queued behind the hang fails with it"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
     generations.changed().await.expect("generation");
     assert_eq!(*generations.borrow_and_update(), 2);
     round_trip(&t, "after spin").await;
@@ -309,16 +370,26 @@ async fn oversized_line_is_rejected_before_js() {
     });
     let big = json!({ "id": 1, "op": "import", "doc": "d", "markdown": "x".repeat(2000), "mode": "replace" }).to_string();
     let len = big.len();
-    assert_eq!(t.request(big.clone()).await, Err(Error::TooLarge { len, max: 1024 }));
+    assert_eq!(
+        t.request(big.clone()).await,
+        Err(Error::TooLarge { len, max: 1024 })
+    );
     assert!(!t.is_running(), "rejected before the thread started");
     round_trip(&t, "d").await;
-    assert_eq!(t.request(big).await, Err(Error::TooLarge { len, max: 1024 }));
+    assert_eq!(
+        t.request(big).await,
+        Err(Error::TooLarge { len, max: 1024 })
+    );
     assert_eq!(t.generation(), 1);
     round_trip(&t, "d2").await;
     // The runtime enforces the same cap when called directly.
     // `DocumentsJs` drives its own tokio runtime, so it runs off this async test's runtime.
     let direct = std::thread::spawn(|| {
-        let mut js = DocumentsJs::new(Limits { max_line: 16, ..limits() }).expect("runtime");
+        let mut js = DocumentsJs::new(Limits {
+            max_line: 16,
+            ..limits()
+        })
+        .expect("runtime");
         js.call(&"y".repeat(17))
     })
     .join()

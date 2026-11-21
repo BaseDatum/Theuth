@@ -13,7 +13,10 @@ const APPENDED: &str = "\n\nAppended paragraph with *emphasis*.\n";
 /// JSON with object keys sorted, as `canon` in golden-inproc.ts writes it.
 fn canon(v: &Value) -> String {
     match v {
-        Value::Array(items) => format!("[{}]", items.iter().map(canon).collect::<Vec<_>>().join(",")),
+        Value::Array(items) => format!(
+            "[{}]",
+            items.iter().map(canon).collect::<Vec<_>>().join(",")
+        ),
         Value::Object(map) => {
             let mut keys: Vec<&String> = map.keys().collect();
             keys.sort();
@@ -72,7 +75,10 @@ impl Run<'_> {
         for (k, v) in extra.as_object().expect("object") {
             body[k] = v.clone();
         }
-        let lines = self.js.call(&body.to_string()).unwrap_or_else(|e| panic!("{op}: {e}"));
+        let lines = self
+            .js
+            .call(&body.to_string())
+            .unwrap_or_else(|e| panic!("{op}: {e}"));
         for l in &lines {
             let mut v: Value = serde_json::from_str(l).expect("json line");
             if v.get("ev").is_some()
@@ -88,9 +94,17 @@ impl Run<'_> {
 }
 
 fn run_script(js: &mut DocumentsJs, text: &str, frontmatter: bool) -> Vec<String> {
-    let mut run = Run { js, id: 0, ids: Vec::new(), transcript: Vec::new() };
+    let mut run = Run {
+        js,
+        id: 0,
+        ids: Vec::new(),
+        transcript: Vec::new(),
+    };
     run.r("open", json!({ "state": EMPTY_STATE }));
-    run.r("import", json!({ "markdown": text, "mode": "replace", "frontmatter": frontmatter }));
+    run.r(
+        "import",
+        json!({ "markdown": text, "mode": "replace", "frontmatter": frontmatter }),
+    );
     run.r("markdown", json!({}));
     let outline = run.r("outline", json!({}));
     let body: Vec<String> = outline["result"]["blocks"]
@@ -141,7 +155,11 @@ fn golden_transcripts_match_the_jsdom_helper() {
             .collect();
         let got = run_script(&mut js, text, frontmatter);
         if got != expected {
-            let at = got.iter().zip(&expected).position(|(g, e)| g != e).unwrap_or(got.len().min(expected.len()));
+            let at = got
+                .iter()
+                .zip(&expected)
+                .position(|(g, e)| g != e)
+                .unwrap_or(got.len().min(expected.len()));
             failures.push(format!(
                 "{name}: line {at}\n  helper:  {}\n  inproc:  {}",
                 expected.get(at).unwrap_or(&"<none>"),
@@ -149,5 +167,11 @@ fn golden_transcripts_match_the_jsdom_helper() {
             ));
         }
     }
-    assert!(failures.is_empty(), "{} of {} cases differ:\n{}", failures.len(), cases.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} of {} cases differ:\n{}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n")
+    );
 }

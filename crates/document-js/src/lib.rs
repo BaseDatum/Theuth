@@ -76,7 +76,10 @@ impl Reply {
         let reply = lines
             .pop()
             .ok_or_else(|| Error::Js("the request produced no output".into()))?;
-        Ok(Self { events: lines, reply })
+        Ok(Self {
+            events: lines,
+            reply,
+        })
     }
 }
 
@@ -92,7 +95,9 @@ pub enum Error {
         max: usize,
     },
     /// [`Limits::deadline`] passed; execution was terminated and the runtime is rebuilt.
-    #[error("documents runtime did not answer within its deadline; it was terminated and is rebuilt")]
+    #[error(
+        "documents runtime did not answer within its deadline; it was terminated and is rebuilt"
+    )]
     Timeout,
     /// The V8 heap reached [`Limits::heap_limit`]; execution was terminated and the runtime is rebuilt.
     #[error("documents runtime reached its heap limit; it was terminated and is rebuilt")]
@@ -121,6 +126,10 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     payload
         .downcast_ref::<String>()
         .cloned()
-        .or_else(|| payload.downcast_ref::<&'static str>().map(|s| (*s).to_owned()))
+        .or_else(|| {
+            payload
+                .downcast_ref::<&'static str>()
+                .map(|s| (*s).to_owned())
+        })
         .unwrap_or_else(|| "unknown panic".to_owned())
 }
