@@ -273,6 +273,18 @@ impl Dictionary {
         if e.canonical == core || (case_only && (keep_case || !casing_informative)) {
             return None;
         }
+        // 201 (shaper audit): a packaged term rewrites prose only on positive evidence — a
+        // recase (gated above) or a multi-word window joined into a curated / mixed-case name
+        // ("git hub" → GitHub). Joining ordinary words into a lowercase or Title-case name
+        // ("a lot" → alot, "go to" → goto, "be an" → Bean, "up dog" → updog), dropping the
+        // canonical's punctuation ("agent" → Agent!) and single-word respellings ("node" →
+        // Node.js) rewrote correctly heard speech. User and learned entries are unaffected.
+        if e.source == Source::Packaged
+            && !case_only
+            && !(core.split_whitespace().count() > 1 && casing_informative)
+        {
+            return None;
+        }
         let mut canonical = e.canonical.clone();
         let lower = canonical == canonical.to_lowercase();
         let heard_capital = core.chars().next().is_some_and(char::is_uppercase);

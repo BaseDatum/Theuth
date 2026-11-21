@@ -171,13 +171,19 @@ pub(super) fn numbers(toks: &mut Vec<Tok>) {
             continue;
         }
         let words: Vec<&str> = toks[i..j].iter().map(|t| t.text.as_str()).collect();
-        // ponytail: a lone "one" is usually a pronoun ("one of them"); it converts only beside `#`, `.`, "point" or an operator.
+        // 201 (shaper audit): a lone number word is prose ("one or two of them", "for one
+        // thing", "the two of us"); the model writes real quantities as digits itself. It
+        // converts only after "number" or beside a spoken symbol (`#`, `.`, an operator),
+        // "point" or "percent".
         let beside_sym = |t: &Tok| t.kind == Kind::Sym && !t.asr && (t.glue_right || !t.glue_left);
-        let lone_one = words.len() == 1
-            && words[0].eq_ignore_ascii_case("one")
-            && !(i > 0 && toks[i - 1].kind == Kind::Sym && !toks[i - 1].asr)
-            && !toks.get(j).is_some_and(|t| beside_sym(t) || t.is("point"));
-        let Some(n) = compose(&words).filter(|_| !lone_one) else {
+        let lone = words.len() == 1
+            && !(i > 0
+                && ((toks[i - 1].kind == Kind::Sym && !toks[i - 1].asr)
+                    || toks[i - 1].is("number")))
+            && !toks
+                .get(j)
+                .is_some_and(|t| beside_sym(t) || t.is("point") || t.is("percent"));
+        let Some(n) = compose(&words).filter(|_| !lone) else {
             i = j;
             continue;
         };
