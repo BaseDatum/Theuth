@@ -516,14 +516,24 @@ fn reply_cursor_children_lease_and_prune() {
 #[test]
 fn observed_state_is_the_harness_view_unless_approval() {
     let o = observed_meta(ObservedState::Running);
-    assert_eq!(observed_state(&o, &AgentState::Idle), AgentState::Running);
+    assert_eq!(
+        observed_row_state(Some(&o), AgentState::Idle),
+        AgentState::Running
+    );
     let a = AgentState::Approval {
         tool: "bash".into(),
     };
-    assert_eq!(observed_state(&o, &a), a);
+    assert_eq!(observed_row_state(Some(&o), a.clone()), a);
     assert_eq!(
-        observed_state(&observed_meta(ObservedState::Failed), &AgentState::Idle),
+        observed_row_state(
+            Some(&observed_meta(ObservedState::Failed)),
+            AgentState::Idle
+        ),
         AgentState::Error
+    );
+    assert_eq!(
+        observed_row_state(None, AgentState::Running),
+        AgentState::Running
     );
 }
 
@@ -637,4 +647,488 @@ fn wire_fixtures_round_trip() {
     }
     check::<AgentGraphChanged>("agent.graph");
     check::<PeerMessageChanged>("agent.peer-message");
+}
+
+// ---- review fixes ----
+
+use std::sync::{Arc, Mutex};
+
+#[derive(kameo::Actor)]
+struct PeerSeen(Arc<Mutex<Vec<PeerMessageChanged>>>);
+
+impl Message<PeerMessageChanged> for PeerSeen {
+    type Reply = ();
+    async fn handle(&mut self, ev: PeerMessageChanged, _: &mut Context<Self, ()>) {
+        self.0.lock().unwrap().push(ev);
+    }
+}
+
+/// Wait (bounded) until `n` items arrived.
+async fn settle<T: Clone>(seen: &Arc<Mutex<Vec<T>>>, n: usize) -> Vec<T> {
+    for _ in 0..300 {
+        if seen.lock().unwrap().len() >= n {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    seen.lock().unwrap().clone()
+}
+
+fn turn_started(session: SessionId) -> AgentEvent {
+    AgentEvent::TurnStarted {
+        session,
+        turn: crate::TurnId::new(),
+        text: "go".into(),
+        model: "m".into(),
+        turn_seq: 0,
+        channel: None,
+    }
+}
+
+/// A live `Agents`, its store, and the runtime.
+async fn engine(name: &str) -> (crate::TestDir, Runtime, Store, ActorRef<Agents>) {
+    let scratch = crate::TestDir::new(name);
+    let rt = Runtime::new(figment::Figment::new(), scratch.0.clone());
+    let a = crate::supervisor::bare_agents(rt.clone(), None, false).await;
+    let store = a.store.clone();
+    (scratch, rt, store, Agents::spawn(a))
+}
+
+/// Review 1: a later call with a wider window than the seed's re-seeds (a new epoch) and serves the older trees;
+/// a narrower call is then answered from the wider model.
+#[tokio::test]
+async fn a_wider_window_reseeds_with_the_older_trees() {
+    let (_scratch, rt, store, agents) = engine("graph-wider").await;
+    let (recent, old) = (SessionId::new(), SessionId::new());
+    for s in [recent, old] {
+        store
+            .create_session(s, "m", None, None, None)
+            .await
+            .unwrap();
+    }
+    store
+        .upsert_last_events(&[(old, now_ms() - 3 * 24 * H)])
+        .await
+        .unwrap();
+    let graph = Graph::spawn_with_mailbox(
+        Graph::new(rt.clone(), store.clone(), agents),
+        runtime::subscriber_mailbox(),
+    );
+    let snap = |window_ms, cursor| Snapshot {
+        window_ms,
+        include: vec![],
+        cursor,
+    };
+    let ids =
+        |g: &AgentGraph| -> HashSet<String> { g.nodes.iter().map(|n| n.id.clone()).collect() };
+    let day = graph.ask(snap(None, None)).await.unwrap();
+    assert!(ids(&day).contains(&recent.to_string()));
+    assert!(!ids(&day).contains(&old.to_string()));
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let week = graph.ask(snap(Some(7 * 24 * H), None)).await.unwrap();
+    assert!(ids(&week).contains(&old.to_string()), "the wider read");
+    assert_eq!(week.window_ms, 7 * 24 * H);
+    assert!(week.epoch_ms > day.epoch_ms, "a new activation");
+    let narrow = graph
+        .ask(snap(
+            None,
+            Some(GraphCursor {
+                epoch_ms: week.epoch_ms,
+                seq: week.seq,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(narrow.unchanged && narrow.epoch_ms == week.epoch_ms);
+}
+
+/// Review 2: only real activity moves the clock; renames, model and owner changes and deletion do not.
+#[test]
+fn metadata_events_do_not_move_the_clock() {
+    let s = SessionId::new();
+    let meta = [
+        AgentEvent::TitleChanged {
+            session: s,
+            title: "renamed".into(),
+            tags: vec![],
+        },
+        AgentEvent::ModelChanged {
+            session: s,
+            model: "m2".into(),
+        },
+        AgentEvent::SessionOwnerChanged {
+            session: s,
+            owner: "e2".into(),
+            epoch: 2,
+            here: false,
+            moved_from: None,
+        },
+        AgentEvent::SessionDeleted { session: s },
+    ];
+    for ev in &meta {
+        assert!(activity_sessions(ev).is_empty(), "{ev:?}");
+    }
+    assert_eq!(activity_sessions(&turn_started(s)), [s]);
+    let (p, c) = (SessionId::new(), SessionId::new());
+    let spawned = AgentEvent::SubagentSpawned {
+        parent: p,
+        child: c,
+        name: "b".into(),
+        cap: None,
+        agent: None,
+        model: None,
+    };
+    assert_eq!(activity_sessions(&spawned), [c, p]);
+}
+
+/// Review 3: `peer_changed` fills `from`/`to`/`result` for a normal message and a child's result off the actor,
+/// keeps one exchange's changes in call order, and an exchange it cannot read publishes no guessed end.
+#[tokio::test]
+async fn peer_changed_fills_ends_in_order_off_the_actor() {
+    let scratch = crate::TestDir::new("graph-peer");
+    let rt = Runtime::new(figment::Figment::new(), scratch.0.clone());
+    let a = crate::supervisor::bare_agents(rt.clone(), None, false).await;
+    let store = a.store.clone();
+    let (p, c) = (SessionId::new(), SessionId::new());
+    store
+        .create_session(p, "m", None, None, None)
+        .await
+        .unwrap();
+    store
+        .create_session(c, "m", Some(p), Some("kid"), None)
+        .await
+        .unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sub = PeerSeen::spawn(PeerSeen(seen.clone()));
+    rt.subscribe::<PeerSeen, PeerMessageChanged>(&sub).await;
+    let (sp, sc) = (format!("session:{p}"), format!("session:{c}"));
+    let (msg, res) = (Uuid::now_v7(), Uuid::now_v7());
+    let t = chrono::Utc::now().to_rfc3339();
+    store
+        .insert_exchange_for_test(&msg.to_string(), &sp, &sc, c, "r1", "accepted", &t)
+        .await;
+    store
+        .insert_exchange_for_test(&res.to_string(), &sc, &sp, p, "result:t1", "accepted", &t)
+        .await;
+    let receipt = |id, to: &str, state| crate::communication::PeerReceipt {
+        id,
+        to: to.into(),
+        state,
+        reply_to: None,
+        reply: None,
+        task_id: None,
+        error: None,
+        answered_by: None,
+    };
+    a.peer_changed(&receipt(msg, &sc, PeerMessageState::Accepted))
+        .await;
+    a.peer_changed(&receipt(msg, &sc, PeerMessageState::Consumed))
+        .await;
+    a.peer_changed(&receipt(res, &sp, PeerMessageState::Accepted))
+        .await;
+    let got = settle(&seen, 6).await;
+    assert_eq!(got.len(), 6, "{got:?}");
+    let m: Vec<&PeerMessageChanged> = got.iter().filter(|e| e.id == msg).collect();
+    assert!(m.iter().all(|e| e.from == sp && e.to == sc && !e.result));
+    for s in [p, c] {
+        let states: Vec<PeerMessageState> = m
+            .iter()
+            .filter(|e| e.session == s)
+            .map(|e| e.state)
+            .collect();
+        assert_eq!(
+            states,
+            [PeerMessageState::Accepted, PeerMessageState::Consumed],
+            "both participants, in call order"
+        );
+    }
+    let r: Vec<&PeerMessageChanged> = got.iter().filter(|e| e.id == res).collect();
+    assert_eq!(r.len(), 2);
+    assert!(r.iter().all(|e| e.from == sc && e.to == sp && e.result));
+
+    let lost = Uuid::now_v7();
+    a.peer_changed(&receipt(lost, &sp, PeerMessageState::Accepted))
+        .await;
+    let got = settle(&seen, 7).await;
+    let l = got
+        .iter()
+        .find(|e| e.id == lost)
+        .expect("still a refetch trigger");
+    assert_eq!((l.session, l.from.as_str()), (p, ""));
+    let mut model = model_with(&[gnode(&p.to_string(), None)]);
+    assert_eq!(model.peer(l, NOW), None);
+    assert!(
+        model.edges.is_empty() && model.ex.is_empty(),
+        "no guessed edge, nothing remembered"
+    );
+}
+
+/// Review 4: a seed that never completes or panics becomes an error (the waiters get it; the next call retries).
+#[tokio::test]
+async fn a_seed_that_hangs_or_panics_fails() {
+    let short = std::time::Duration::from_millis(50);
+    let hang = guarded(std::future::pending::<anyhow::Result<u8>>(), short).await;
+    assert!(format!("{:#}", hang.unwrap_err()).contains("timed out"));
+    let boom = guarded(
+        async {
+            if std::hint::black_box(true) {
+                panic!("boom");
+            }
+            Ok(1u8)
+        },
+        short,
+    )
+    .await;
+    assert!(format!("{:#}", boom.unwrap_err()).contains("seed task failed"));
+    assert_eq!(guarded(async { Ok(7u8) }, short).await.unwrap(), 7);
+    assert_eq!(SEED_TIMEOUT, std::time::Duration::from_secs(20));
+}
+
+/// Review 5: past the lease, a peer change, an agent event and a mark drop the model instead of applying.
+#[tokio::test]
+async fn an_expired_lease_drops_the_model_on_every_entry() {
+    let (_scratch, rt, store, agents) = engine("graph-lease").await;
+    let me = Graph::spawn(Graph::new(rt.clone(), store.clone(), agents.clone()));
+    let mut g = Graph::new(rt, store, agents);
+    let (p, c) = (SessionId::new(), SessionId::new());
+    let (ps, cs) = (p.to_string(), c.to_string());
+    let model = || model_with(&[gnode(&ps, None), gnode(&cs, Some(&ps))]);
+    let ev = |id| PeerMessageChanged {
+        session: p,
+        id,
+        state: PeerMessageState::Accepted,
+        from: format!("session:{c}"),
+        to: format!("session:{p}"),
+        result: false,
+    };
+    g.model = Some(model());
+    g.lease_until_ms = NOW + 10;
+    g.apply_peer(&ev(Uuid::now_v7()), &me, NOW);
+    assert!(
+        g.model.as_ref().is_some_and(|m| m.edges.len() == 1),
+        "leased: applied"
+    );
+    g.apply_peer(&ev(Uuid::now_v7()), &me, NOW + 11);
+    assert!(g.model.is_none(), "expired: a peer change drops the model");
+    g.model = Some(model());
+    g.apply_agent(turn_started(p), &me, NOW + 11);
+    assert!(g.model.is_none(), "expired: an agent event drops the model");
+    g.model = Some(model());
+    g.mark(p, false, &me, NOW + 11);
+    assert!(g.model.is_none(), "expired: a mark drops the model");
+}
+
+/// Review 6: an exchange counted by the seed is not counted again by its buffered `Accepted`, a `held` row is not
+/// counted again when accepted, and a change of an exchange the seed saw closed does not decrement `open`.
+#[test]
+fn seed_and_live_count_each_exchange_once() {
+    let parent = row(None, NOW - H);
+    let child = row(Some(parent.id), NOW - H);
+    let (p, c) = (parent.id, child.id);
+    let (sp, sc) = (format!("session:{p}"), format!("session:{c}"));
+    let (acc, held, done) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    let seed = Seed {
+        sessions: vec![parent, child],
+        last: HashMap::new(),
+        activity: HashMap::new(),
+        waits: HashMap::new(),
+        stops: HashMap::new(),
+        rows: vec![
+            ex(&acc.to_string(), &sc, &sp, "r1", "accepted", 30),
+            ex(&held.to_string(), &sc, &sp, "r2", "held", 20),
+            ex(&done.to_string(), &sc, &sp, "r3", "consumed", 10),
+        ],
+        chosen: vec![p, c],
+        older: None,
+    };
+    let mut m = Model::build(seed, NOW, 24 * H, &[]);
+    let edge = pair(&p.to_string(), &c.to_string()).0;
+    let counts = |m: &Model| {
+        let e = &m.edges[&edge];
+        (e.ab + e.ba, e.open)
+    };
+    assert_eq!(counts(&m), (3, 2));
+    let ev = |id, state| PeerMessageChanged {
+        session: p,
+        id,
+        state,
+        from: sc.clone(),
+        to: sp.clone(),
+        result: false,
+    };
+    m.peer(&ev(acc, PeerMessageState::Accepted), NOW);
+    assert_eq!(counts(&m), (3, 2), "a seeded exchange's Accepted");
+    m.peer(&ev(held, PeerMessageState::Accepted), NOW);
+    assert_eq!(counts(&m), (3, 2), "a held row accepted");
+    m.peer(&ev(done, PeerMessageState::Replied), NOW);
+    assert_eq!(counts(&m), (3, 2), "closed in the seed: open untouched");
+    m.peer(&ev(acc, PeerMessageState::Consumed), NOW);
+    m.peer(&ev(acc, PeerMessageState::Replied), NOW);
+    assert_eq!(counts(&m), (3, 1), "closed once");
+    let fresh = Uuid::now_v7();
+    m.peer(&ev(fresh, PeerMessageState::Consumed), NOW);
+    assert_eq!(counts(&m), (4, 1), "first seen closing: counted, not open");
+    // The prune forgets closed exchanges older than the window and keeps open ones.
+    m.prune(NOW + 30 * H);
+    assert!(m.ex.contains_key(&held));
+    assert!(!m.ex.contains_key(&fresh) && !m.ex.contains_key(&done));
+}
+
+/// Review 7: past the node cap, children, adopted rows and boundary peers fold into `older` (once per id), and
+/// the next delta carries the stub.
+#[test]
+fn nodes_past_the_cap_fold_into_older() {
+    let p = SessionId::new();
+    let ps = p.to_string();
+    let mut m = model_with(&[gnode(&ps, None)]);
+    m.max_nodes = 2;
+    assert!(m.child(p, SessionId::new(), "a", None, None, None, NOW));
+    let extra = SessionId::new();
+    assert!(m.child(p, extra, "b", None, None, None, NOW));
+    assert!(m.child(p, extra, "b", None, None, None, NOW + 1));
+    m.adopt(&[row(None, NOW)], &HashMap::new(), &HashMap::new(), NOW);
+    m.peer(
+        &PeerMessageChanged {
+            session: p,
+            id: Uuid::now_v7(),
+            state: PeerMessageState::Accepted,
+            from: format!("session:{p}"),
+            to: "peer:alice".into(),
+            result: false,
+        },
+        NOW,
+    );
+    assert_eq!(m.nodes.len(), 2);
+    let older = Some(GraphOlder {
+        roots: 2,
+        nodes: 3,
+        newest_ms: NOW,
+    });
+    assert_eq!(m.older, older);
+    let b = m.begin_flush(NOW);
+    let d = m
+        .finish_flush(b, &HashMap::new(), &HashMap::new(), &HashMap::new(), NOW)
+        .unwrap();
+    assert_eq!(d.older, older);
+}
+
+/// Review 8: one read in flight per unknown id, misses cached for `UNKNOWN_TTL_MS`, the cache bounded.
+#[test]
+fn adoptions_read_once_and_remember_misses() {
+    let mut a = Adoptions::default();
+    let (x, y) = (SessionId::new(), SessionId::new());
+    assert_eq!(a.want(vec![x, x, y], NOW), [x, y]);
+    assert!(a.want(vec![x], NOW).is_empty(), "in flight");
+    a.done(&[x, y], |id| *id == y, NOW);
+    assert!(a.want(vec![x], NOW + 1).is_empty(), "a miss is cached");
+    assert_eq!(a.want(vec![y], NOW + 1), [y], "a found id is not cached");
+    assert_eq!(
+        a.want(vec![x], NOW + UNKNOWN_TTL_MS),
+        [x],
+        "the miss expires"
+    );
+    a.forget(&[x, y]);
+    assert!(a.adopting.is_empty());
+    let mut b = Adoptions::default();
+    let many: Vec<SessionId> = (0..MAX_UNKNOWN + 10).map(|_| SessionId::new()).collect();
+    let w = b.want(many, NOW);
+    b.done(&w, |_| false, NOW);
+    assert!(b.unknown.len() <= MAX_UNKNOWN && b.adopting.is_empty());
+}
+
+/// Review 9 (and 2 on the actor): a deleted session's clock is never written back by the next persist, a rename
+/// does not touch the clock, and the cleanup removes rows without a session, `limit` at a time.
+#[tokio::test]
+async fn persist_skips_deleted_sessions_and_cleanup_drops_orphans() {
+    let (_scratch, rt, store, agents) = engine("graph-persist").await;
+    let me = Graph::spawn(Graph::new(rt.clone(), store.clone(), agents.clone()));
+    let mut g = Graph::new(rt, store.clone(), agents);
+    let (kept, gone, renamed) = (SessionId::new(), SessionId::new(), SessionId::new());
+    store
+        .create_session(kept, "m", None, None, None)
+        .await
+        .unwrap();
+    g.on_agent(turn_started(kept), &me, NOW);
+    g.on_agent(turn_started(gone), &me, NOW);
+    g.on_agent(
+        AgentEvent::TitleChanged {
+            session: renamed,
+            title: "new".into(),
+            tags: vec![],
+        },
+        &me,
+        NOW,
+    );
+    assert!(
+        !g.last_event.contains_key(&renamed),
+        "a rename is not activity"
+    );
+    g.on_agent(AgentEvent::SessionDeleted { session: gone }, &me, NOW + 1);
+    g.touch(gone, NOW + 2); // a late event of the deleted session
+    let (rows, deleted) = g.persist_batch().unwrap();
+    assert_eq!(rows, [(kept, NOW)]);
+    assert_eq!(deleted, [gone]);
+    assert!(g.persist_batch().is_none());
+
+    store
+        .upsert_last_events(&[(kept, NOW), (gone, NOW)])
+        .await
+        .unwrap();
+    assert_eq!(store.prune_last_events(500).await.unwrap(), 1);
+    let left = store.last_events(&[kept, gone]).await.unwrap();
+    assert!(left.contains_key(&kept) && !left.contains_key(&gone));
+    let orphans: Vec<(SessionId, u64)> = (0..3).map(|_| (SessionId::new(), NOW)).collect();
+    store.upsert_last_events(&orphans).await.unwrap();
+    assert_eq!(store.prune_last_events(2).await.unwrap(), 2);
+    assert_eq!(store.prune_last_events(2).await.unwrap(), 1);
+}
+
+/// Review 10: the seed's millisecond bound against rows in the writer's format (`now()` = `to_rfc3339`, more
+/// fraction digits): a row just before the bound is out, just after is in, newest first.
+#[tokio::test]
+async fn exchanges_since_bound_matches_the_writer_format() {
+    let scratch = crate::TestDir::new("graph-bound");
+    let store = Store::open(&scratch.0.join("sessions.sqlite"), None)
+        .await
+        .unwrap();
+    let (p, c) = (SessionId::new(), SessionId::new());
+    store
+        .create_session(p, "m", None, None, None)
+        .await
+        .unwrap();
+    store
+        .create_session(c, "m", Some(p), Some("kid"), None)
+        .await
+        .unwrap();
+    let bound = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(
+        i64::try_from(now_ms() - H).unwrap(),
+    )
+    .unwrap();
+    let half = chrono::Duration::microseconds(500);
+    let rows = [
+        ("before", bound - half),
+        ("after", bound + half),
+        ("later", bound + half * 4),
+    ];
+    let mut ids = HashMap::new();
+    for (name, at) in rows {
+        let id = Uuid::now_v7().to_string();
+        ids.insert(id.clone(), name);
+        store
+            .insert_exchange_for_test(
+                &id,
+                &format!("session:{c}"),
+                &format!("session:{p}"),
+                p,
+                name,
+                "accepted",
+                &at.to_rfc3339(),
+            )
+            .await;
+    }
+    let got = store.exchanges_since(bound, 10).await.unwrap();
+    assert_eq!(
+        got.iter().map(|r| ids[&r.id]).collect::<Vec<_>>(),
+        ["later", "after"]
+    );
 }
