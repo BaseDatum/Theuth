@@ -75,7 +75,7 @@ impl Tool for ShowWebTool {
         };
         let title = args
             .title
-            .map(|t| t.trim().to_owned())
+            .map(|t| clean_title(&t))
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| host_port(&url));
         let id = frame_id(cx.session, &url);
@@ -134,14 +134,58 @@ fn host_port(url: &Url) -> String {
     }
 }
 
+/// Longest title kept, in chars (the `…` included).
+const MAX_TITLE: usize = 120;
+/// Longest accepted address, in bytes.
+const MAX_URL: usize = 2048;
+
+/// One line: control characters and whitespace runs become one space, trimmed, capped at
+/// [`MAX_TITLE`] chars with `…` when cut. The receipt's first line must stay one line.
+fn clean_title(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        if c.is_whitespace() || c.is_control() {
+            if !out.is_empty() && !out.ends_with(' ') {
+                out.push(' ');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    let out = out.trim_end();
+    if out.chars().count() <= MAX_TITLE {
+        return out.to_owned();
+    }
+    let mut cut: String = out.chars().take(MAX_TITLE - 1).collect();
+    cut.truncate(cut.trim_end().len());
+    cut.push('…');
+    cut
+}
+
+/// Whether `s` starts with `scheme://` (RFC 3986 scheme characters).
+fn has_scheme(s: &str) -> bool {
+    let Some((scheme, _)) = s.split_once("://") else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
 /// Normalise and validate `raw` (205 §4.1, D8). `lan` is the call's local-network grant.
 fn check(raw: &str, lan: bool) -> Result<Url, String> {
     let raw = raw.trim();
     if raw.is_empty() {
         return Err("url is empty".into());
     }
-    // `localhost:3000` parses as scheme `localhost`; only an explicit `scheme://` is kept.
-    let url = if raw.contains("://") {
+    if raw.len() > MAX_URL {
+        return Err(format!(
+            "url is {} bytes; at most {MAX_URL} are allowed",
+            raw.len()
+        ));
+    }
+    // `localhost:3000` parses as scheme `localhost`; only an explicit `scheme://` prefix is kept.
+    let url = if has_scheme(raw) {
         Url::parse(raw)
     } else {
         Url::parse(&format!("http://{raw}"))
@@ -155,10 +199,7 @@ fn check(raw: &str, lan: bool) -> Result<Url, String> {
     }
     let local = match url.host() {
         None => return Err("the URL has no host".into()),
-        Some(Host::Domain(d)) => {
-            let d = d.trim_end_matches('.').to_ascii_lowercase();
-            d == "localhost" || d.ends_with(".localhost") || d.ends_with(".local")
-        }
+        Some(Host::Domain(d)) => local_name(d),
         Some(Host::Ipv4(ip)) => classify(IpAddr::V4(ip))?,
         Some(Host::Ipv6(ip)) => classify(IpAddr::V6(ip))?,
     };
@@ -168,37 +209,76 @@ fn check(raw: &str, lan: bool) -> Result<Url, String> {
     Ok(url)
 }
 
-/// `Ok(true)` for a local-network address, `Err` for a link-local one (always refused).
+/// Suffixes of names that only resolve on a local network.
+const LOCAL_SUFFIXES: &[&str] = &[
+    ".localhost",
+    ".local",
+    ".lan",
+    ".home.arpa",
+    ".internal",
+    ".localdomain",
+    ".intranet",
+    ".corp",
+    ".home",
+];
+
+/// A single-label name (`nas`, `localhost`) or one under a local-only suffix.
+fn local_name(d: &str) -> bool {
+    let d = d.trim_end_matches('.').to_ascii_lowercase();
+    !d.contains('.') || LOCAL_SUFFIXES.iter().any(|s| d.ends_with(s))
+}
+
+/// `Ok(true)` for a local-network address, `Err` for a link-local one (always refused, also
+/// when embedded in an IPv4-mapped, NAT64 or 6to4 address).
 fn classify(ip: IpAddr) -> Result<bool, String> {
-    let v4 = match ip {
+    let embedded = match ip {
         IpAddr::V4(v4) => Some(v4),
-        IpAddr::V6(v6) => v6.to_ipv4_mapped(),
+        IpAddr::V6(v6) => embedded_v4(v6),
     };
-    if let Some(v4) = v4 {
-        return local_v4(v4);
-    }
-    let IpAddr::V6(v6) = ip else {
-        unreachable!("IPv4 handled above")
-    };
-    local_v6(v6)
-}
-
-fn local_v4(ip: Ipv4Addr) -> Result<bool, String> {
-    if ip.is_link_local() {
+    let link_local = match ip {
+        IpAddr::V4(v4) => v4.is_link_local(),
+        IpAddr::V6(v6) => v6.is_unicast_link_local(),
+    } || embedded.is_some_and(|v4| v4.is_link_local());
+    if link_local {
         return Err(format!("link-local address {ip} is not allowed"));
     }
+    Ok(match (ip, embedded) {
+        (_, Some(v4)) => local_v4(v4),
+        (IpAddr::V6(v6), None) => local_v6(v6),
+        (IpAddr::V4(_), None) => unreachable!("an IPv4 address embeds itself"),
+    })
+}
+
+/// The IPv4 address carried by an IPv4-mapped (`::ffff:0:0/96`), NAT64 (`64:ff9b::/96`) or
+/// 6to4 (`2002::/16`) address.
+fn embedded_v4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    let s = ip.segments();
+    let v4 = |hi: u16, lo: u16| Ipv4Addr::from((u32::from(hi) << 16) | u32::from(lo));
+    if let Some(v4) = ip.to_ipv4_mapped() {
+        Some(v4)
+    } else if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        Some(v4(s[6], s[7]))
+    } else if s[0] == 0x2002 {
+        Some(v4(s[1], s[2]))
+    } else {
+        None
+    }
+}
+
+fn local_v4(ip: Ipv4Addr) -> bool {
     let o = ip.octets();
-    Ok(ip.is_loopback()
+    ip.is_loopback()
         || ip.is_private()
-        || ip.is_unspecified()
-        || (o[0] == 100 && (64..128).contains(&o[1]))) // CGNAT 100.64.0.0/10
+        || ip.is_broadcast()
+        || ip.is_multicast() // 224.0.0.0/4
+        || o[0] == 0 // 0.0.0.0/8
+        || (o[0] == 100 && (64..128).contains(&o[1])) // CGNAT 100.64.0.0/10
+        || (o[0] == 198 && (18..20).contains(&o[1])) // 198.18.0.0/15
+        || (o[0], o[1], o[2]) == (192, 0, 0) // 192.0.0.0/24
 }
 
-fn local_v6(ip: Ipv6Addr) -> Result<bool, String> {
-    if ip.is_unicast_link_local() {
-        return Err(format!("link-local address {ip} is not allowed"));
-    }
-    Ok(ip.is_loopback() || ip.is_unspecified() || ip.is_unique_local())
+fn local_v6(ip: Ipv6Addr) -> bool {
+    ip.is_loopback() || ip.is_unspecified() || ip.is_unique_local() || ip.is_multicast()
 }
 
 #[cfg(test)]
@@ -213,6 +293,11 @@ mod tests {
         assert_eq!(u.as_str(), "http://127.0.0.1:3000/x");
         let u = check("https://example.com/docs?q=1", false).unwrap();
         assert_eq!(u.as_str(), "https://example.com/docs?q=1");
+        // `://` later in the address is not a scheme.
+        let u = check("localhost:3000/?u=http://x", true).unwrap();
+        assert_eq!(u.as_str(), "http://localhost:3000/?u=http://x");
+        let u = check("example.com/p?next=https://x", false).unwrap();
+        assert_eq!(u.as_str(), "http://example.com/p?next=https://x");
     }
 
     #[test]
@@ -246,28 +331,108 @@ mod tests {
                 .unwrap_err()
                 .contains("link-local")
         );
+        let long = format!("https://example.com/{}", "a".repeat(MAX_URL));
+        assert!(check(&long, false).unwrap_err().contains("at most 2048"));
+        let edge = format!("https://example.com/{}", "a".repeat(MAX_URL - 20));
+        assert_eq!(edge.len(), MAX_URL);
+        assert!(check(&edge, false).is_ok());
     }
 
     #[test]
-    fn local_hosts_need_lan() {
-        for local in [
-            "localhost:3000",
-            "http://app.localhost/",
-            "http://printer.local/",
-            "http://127.0.0.1:8080/",
-            "http://10.0.0.2/",
-            "http://192.168.1.1/",
-            "http://100.64.1.1/",
-            "http://[::1]:3000/",
-            "http://[fd00::1]/",
-        ] {
-            assert!(check(local, true).is_ok(), "{local} refused with lan");
-            assert!(
-                check(local, false).unwrap_err().contains("local network"),
-                "{local} allowed without lan"
-            );
+    fn titles_stay_one_line() {
+        assert_eq!(clean_title("  Dev\nserver \r\n\t 3000 "), "Dev server 3000");
+        assert_eq!(clean_title("bell\u{7}here"), "bell here");
+        assert_eq!(clean_title("\u{7}\n"), "");
+        let long = clean_title(&"é".repeat(500));
+        assert_eq!(long.chars().count(), MAX_TITLE);
+        assert!(long.ends_with('…'));
+        assert_eq!(clean_title(&"x".repeat(MAX_TITLE)), "x".repeat(MAX_TITLE));
+        let r = receipt(
+            &clean_title("a\nb · c"),
+            "http://x/",
+            "0123456789abcdef",
+            true,
+        );
+        let first = r.lines().next().unwrap();
+        assert_eq!(
+            first,
+            "web view opened · a b · c · http://x/ · tile web:0123456789abcdef"
+        );
+    }
+
+    #[test]
+    fn lan_classification() {
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        enum K {
+            Public,
+            Local,
+            LinkLocal,
         }
-        assert!(check("https://example.com/", false).is_ok());
+        use K::*;
+        let table = [
+            ("https://example.com/", Public),
+            ("http://8.8.8.8/", Public),
+            ("http://198.20.0.1/", Public),
+            ("http://192.0.1.1/", Public),
+            ("http://[2606:4700::1111]/", Public),
+            ("http://[64:ff9b::808:808]/", Public),
+            ("http://[2002:808:808::1]/", Public),
+            ("localhost:3000", Local),
+            ("http://app.localhost/", Local),
+            ("http://printer.local/", Local),
+            ("http://nas/", Local),
+            ("router:8080", Local),
+            ("http://nas.lan/", Local),
+            ("http://hub.home.arpa/", Local),
+            ("http://svc.internal/", Local),
+            ("http://box.localdomain/", Local),
+            ("http://wiki.intranet/", Local),
+            ("http://git.corp/", Local),
+            ("http://tv.home/", Local),
+            ("http://127.0.0.1:8080/", Local),
+            ("http://10.0.0.2/", Local),
+            ("http://172.16.0.1/", Local),
+            ("http://192.168.1.1/", Local),
+            ("http://100.64.1.1/", Local),
+            ("http://0.0.0.0/", Local),
+            ("http://0.1.2.3/", Local),
+            ("http://198.18.0.1/", Local),
+            ("http://198.19.255.1/", Local),
+            ("http://192.0.0.8/", Local),
+            ("http://224.0.0.1/", Local),
+            ("http://239.1.1.1/", Local),
+            ("http://255.255.255.255/", Local),
+            ("http://[::1]:3000/", Local),
+            ("http://[::]/", Local),
+            ("http://[fd00::1]/", Local),
+            ("http://[ff02::1]/", Local),
+            ("http://[::ffff:10.0.0.1]/", Local),
+            ("http://[64:ff9b::a00:1]/", Local),
+            ("http://[2002:c0a8:101::1]/", Local),
+            ("http://169.254.169.254/", LinkLocal),
+            ("http://169.254.0.1/", LinkLocal),
+            ("http://[fe80::1]/", LinkLocal),
+            ("http://[::ffff:169.254.169.254]/", LinkLocal),
+            ("http://[64:ff9b::a9fe:a9fe]/", LinkLocal),
+            ("http://[2002:a9fe:a9fe::1]/", LinkLocal),
+        ];
+        for (url, kind) in table {
+            let (with, without) = (check(url, true), check(url, false));
+            match kind {
+                Public => assert!(with.is_ok() && without.is_ok(), "{url}: {without:?}"),
+                Local => {
+                    assert!(with.is_ok(), "{url} refused with lan: {with:?}");
+                    let e = without.unwrap_err();
+                    assert!(e.contains("local network"), "{url} without lan: {e}");
+                }
+                LinkLocal => {
+                    for r in [with, without] {
+                        let e = r.unwrap_err();
+                        assert!(e.contains("link-local"), "{url}: {e}");
+                    }
+                }
+            }
+        }
     }
 
     #[tokio::test]
