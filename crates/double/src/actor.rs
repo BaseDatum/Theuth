@@ -94,7 +94,8 @@ pub struct SetCap {
 pub struct Republish;
 
 /// `ask` → `Vec<AttentionItem>`: the `AttentionKind::Double` items — a card in
-/// grace ("double answers Allow in 14 s — take over") and the cards answered
+/// grace ("double answers Allow for … — take over"; the countdown is the
+/// item's `deadline_ms`) and the cards answered
 /// in the last [`ACTED_TTL`]. The roster's inbox merges them (hand-off).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ListAttention;
@@ -743,7 +744,7 @@ impl Double {
         let item = self
             .pending
             .get(qid)
-            .and_then(|pc| self.item(pc, now, true));
+            .and_then(|pc| self.item(pc, true));
         if let Some(item) = item {
             self.acted.push(Acted { item, at: now });
         }
@@ -759,8 +760,10 @@ impl Double {
         self.rt.publish(ev).await;
     }
 
-    /// The inbox row for a card in grace or just answered.
-    fn item(&self, pc: &PendingCard, now: DateTime<Utc>, answered: bool) -> Option<AttentionItem> {
+    /// The inbox row for a card in grace or just answered. 207 E5: the title
+    /// carries no countdown (the deadline is `deadline_ms`), so a recheck
+    /// during grace sees the same item, not new content every second.
+    fn item(&self, pc: &PendingCard, answered: bool) -> Option<AttentionItem> {
         let pred = pc.predicted.as_ref()?;
         let what = match &pc.payload {
             Payload::Approval(a) => format!(
@@ -779,11 +782,7 @@ impl Double {
         let title = if answered {
             format!("double answered {} for {what}", pred.choice)
         } else {
-            let left = pc.grace_until.map_or(0, |t| (t - now).num_seconds().max(0));
-            format!(
-                "double answers {} for {what} in {left} s — take over",
-                pred.choice
-            )
+            format!("double answers {} for {what} — take over", pred.choice)
         };
         let (approval, ask) = match &pc.payload {
             Payload::Approval(a) => (Some(a.id), None),
@@ -1375,7 +1374,7 @@ impl Message<ListAttention> for Double {
             .pending
             .values()
             .filter(|pc| pc.grace_until.is_some() && !pc.acted && !pc.taken_over)
-            .filter_map(|pc| self.item(pc, now, false))
+            .filter_map(|pc| self.item(pc, false))
             .collect();
         out.extend(self.acted.iter().rev().map(|a| a.item.clone()));
         out
@@ -1761,6 +1760,15 @@ mod tests {
         assert_eq!(items[0].kind, AttentionKind::Double);
         assert_eq!(items[0].approval, Some(id));
         assert!(items[0].title.contains("take over"), "{}", items[0].title);
+        // 207 E5: no countdown in the title (it changed every derive); the
+        // deadline is `deadline_ms`.
+        assert!(
+            !items[0].title.contains(" s — "),
+            "countdown in the title: {}",
+            items[0].title
+        );
+        assert!(items[0].deadline_ms.is_some());
+        assert_eq!(items[0].detail, ev.will_act_at);
         wait_for(|| (!h.probe.answered.lock().is_empty()).then_some(())).await;
         let a = h.probe.answered.lock()[0].clone();
         assert_eq!(a.question_id, id.0.to_string());
