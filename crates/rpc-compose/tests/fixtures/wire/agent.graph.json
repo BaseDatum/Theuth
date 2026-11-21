@@ -1,0 +1,184 @@
+[
+  {
+    "input": {
+      "epoch_ms": 1700000000000,
+      "seq": 1,
+      "at_ms": 1700000000250,
+      "nodes": [],
+      "removed": [],
+      "edges": [],
+      "edges_removed": [],
+      "pulses": [],
+      "older": null,
+      "resync": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AgentGraphChanged",
+          "epoch_ms": 1700000000000,
+          "seq": 1,
+          "at_ms": 1700000000250,
+          "nodes": [],
+          "removed": [],
+          "edges": [],
+          "edges_removed": [],
+          "pulses": [],
+          "older": null,
+          "resync": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "epoch_ms": 1700000000000,
+      "seq": 2,
+      "at_ms": 1700000000500,
+      "nodes": [
+        {
+          "id": "00000000-0000-0000-0000-000000000002",
+          "kind": "child",
+          "parent": "00000000-0000-0000-0000-000000000001",
+          "root": "00000000-0000-0000-0000-000000000001",
+          "title": "builder",
+          "name": "builder",
+          "agent": null,
+          "model": "anthropic/claude-opus-5-5",
+          "project": "theuth",
+          "desk": null,
+          "activity": {
+            "state": {
+              "state": "idle"
+            },
+            "last_active": null,
+            "turn_started_at": null,
+            "jobs": 1,
+            "ptys": 0,
+            "children": 0,
+            "asks": null,
+            "live": true,
+            "waiting_since_ms": null
+          },
+          "waits": [
+            "job"
+          ],
+          "outcome": null,
+          "observed": null,
+          "owner": "",
+          "remote": false,
+          "started_ms": 1700000000000,
+          "last_event_ms": 1700000000200
+        }
+      ],
+      "removed": [],
+      "edges": [
+        {
+          "id": "00000000-0000-0000-0000-000000000001|00000000-0000-0000-0000-000000000002",
+          "a": "00000000-0000-0000-0000-000000000001",
+          "b": "00000000-0000-0000-0000-000000000002",
+          "ab": 0,
+          "ba": 1,
+          "results": 1,
+          "open": 1,
+          "last_ms": 1700000000200,
+          "last_from": "00000000-0000-0000-0000-000000000002",
+          "last_id": "00000000-0000-0000-0000-000000000009"
+        }
+      ],
+      "edges_removed": [],
+      "pulses": [
+        {
+          "edge": "00000000-0000-0000-0000-000000000001|00000000-0000-0000-0000-000000000002",
+          "from": "00000000-0000-0000-0000-000000000002",
+          "to": "00000000-0000-0000-0000-000000000001",
+          "kind": "result",
+          "id": "00000000-0000-0000-0000-000000000009",
+          "at_ms": 1700000000200
+        }
+      ],
+      "older": null,
+      "resync": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AgentGraphChanged",
+          "epoch_ms": 1700000000000,
+          "seq": 2,
+          "at_ms": 1700000000500,
+          "nodes": [
+            {
+              "id": "00000000-0000-0000-0000-000000000002",
+              "kind": "child",
+              "parent": "00000000-0000-0000-0000-000000000001",
+              "root": "00000000-0000-0000-0000-000000000001",
+              "title": "builder",
+              "name": "builder",
+              "agent": null,
+              "model": "anthropic/claude-opus-5-5",
+              "project": "theuth",
+              "desk": null,
+              "activity": {
+                "state": {
+                  "state": "idle"
+                },
+                "last_active": null,
+                "turn_started_at": null,
+                "jobs": 1,
+                "ptys": 0,
+                "children": 0,
+                "asks": null,
+                "live": true,
+                "waiting_since_ms": null
+              },
+              "waits": [
+                "job"
+              ],
+              "outcome": null,
+              "observed": null,
+              "owner": "",
+              "remote": false,
+              "started_ms": 1700000000000,
+              "last_event_ms": 1700000000200
+            }
+          ],
+          "removed": [],
+          "edges": [
+            {
+              "id": "00000000-0000-0000-0000-000000000001|00000000-0000-0000-0000-000000000002",
+              "a": "00000000-0000-0000-0000-000000000001",
+              "b": "00000000-0000-0000-0000-000000000002",
+              "ab": 0,
+              "ba": 1,
+              "results": 1,
+              "open": 1,
+              "last_ms": 1700000000200,
+              "last_from": "00000000-0000-0000-0000-000000000002",
+              "last_id": "00000000-0000-0000-0000-000000000009"
+            }
+          ],
+          "edges_removed": [],
+          "pulses": [
+            {
+              "edge": "00000000-0000-0000-0000-000000000001|00000000-0000-0000-0000-000000000002",
+              "from": "00000000-0000-0000-0000-000000000002",
+              "to": "00000000-0000-0000-0000-000000000001",
+              "kind": "result",
+              "id": "00000000-0000-0000-0000-000000000009",
+              "at_ms": 1700000000200
+            }
+          ],
+          "older": null,
+          "resync": false
+        }
+      }
+    }
+  }
+]
