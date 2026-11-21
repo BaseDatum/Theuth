@@ -102,6 +102,14 @@ Other tests: `documents_js_serves_requests_directly`, `round_trip_open_import_ma
 - Golden expectations come from `bun src/helper.ts` (the shipped jsdom helper run from source), not from the compiled 69 MB binary (not built in this worktree); same code.
 - Obscura serialises isolate creation behind private locks (`ISOLATE_CREATE_LOCK`); this crate does not share them. Concurrent `JsRuntime::new` on the documents thread and an obscura thread is plain V8 multi-isolate use; not stress-tested.
 
+## Verification (2026-11-21, dev profile, shared machine, under `/tmp/theuth-build.lock`)
+
+- `CARGO_TARGET_DIR=<worktree>/target CARGO_BUILD_JOBS=4 cargo test --offline -p document-js` — run 1 (17:55): aborted (the timer-op panic above; plus two wrong test expectations: outline heading text is `[h1] Heading`, and a `DocumentsJs` called inside `#[tokio::test]` `block_on`-panics). Run 2 (18:03) after the fixes: `test result: ok. 13 passed; 0 failed` (unit, 3.27 s), `test result: ok. 1 passed; 0 failed` (golden, 28 cases), doc-tests `ok. 0 passed`.
+- `cargo clippy --offline -p document-js --all-targets` (18:04, workspace `clippy::all = deny`): no warnings. Then `rustfmt --edition 2024` on the crate's files only (formatting only, not rebuilt).
+- `cargo tree --offline -i v8`: one `v8 v150.4.0` ← `deno_v8 v0.4.0` ← `deno_core v0.412.0` ← {`document-js`, `obscura-js`}.
+- `bun test` in packages/documents: 83 pass, 1 fail (`markdown round trip per block type > code: link`, the known stale test).
+- `just documents-bundle` reproduces the committed bundle (same hash); `just documents-bundle-check` passes, and fails after appending a line to `src/yaml.ts` (reverted).
+
 ## Not built in phase 1
 
 - No change to `crates/document`, `crates/theuth`, packaging, `helper.ts`, `build-helper.ts`, jsdom/server-util deps.
