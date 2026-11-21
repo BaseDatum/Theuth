@@ -55,15 +55,26 @@ pub enum SttEngine {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum MlxState {
     /// Not compiled into this build (only macOS on Apple silicon has it).
-    Unavailable { reason: String },
+    Unavailable {
+        /// Why, for the settings UI.
+        reason: String,
+    },
     /// Runnable, not downloaded.
     Absent,
     /// [`install`] running; bytes so far.
-    Downloading { done_bytes: u64, total_bytes: u64 },
+    Downloading {
+        /// Bytes on disk so far.
+        done_bytes: u64,
+        /// Bytes of every file together (0 until the hub answered).
+        total_bytes: u64,
+    },
     /// Verified weights on disk.
     Ready,
     /// The last [`install`] failed.
-    Failed { reason: String },
+    Failed {
+        /// The error.
+        reason: String,
+    },
 }
 
 /// The MLX model is compiled into this build.
@@ -78,6 +89,7 @@ pub fn compiled() -> bool {
     false
 }
 
+/// `<data_dir>/models/parakeet-tdt-mlx`.
 pub fn model_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("models").join(MLX_MODEL_SUBDIR)
 }
@@ -279,6 +291,7 @@ async fn download(
 
 /// The model behind the engine thread; built on that thread by the loader, never leaves it.
 pub trait Model {
+    /// One short clip so the first real call does not pay for kernel compilation.
     fn warm(&mut self) -> anyhow::Result<()>;
     /// Text of 16 kHz mono f32.
     fn transcribe(&mut self, pcm16k: &[f32]) -> anyhow::Result<String>;
@@ -294,8 +307,9 @@ impl Model for voice_mlx::ParakeetMlx {
     }
 }
 
-/// Builds the model, on the engine thread.
+/// What a [`Loader`] returns.
 pub type Loaded = anyhow::Result<Box<dyn Model>>;
+/// Builds the model, on the engine thread.
 pub type Loader = Arc<dyn Fn() -> Loaded + Send + Sync>;
 
 struct Job {
@@ -308,7 +322,9 @@ struct Job {
 pub enum Phase {
     /// No thread (never started, or exited after idle).
     Stopped,
+    /// Loading and warming the model.
     Loading,
+    /// Serving.
     Ready,
     /// Load error, panic, or [`MAX_FAILURES`] errors in a row; sticky.
     Failed(String),
@@ -351,6 +367,7 @@ impl Engine {
         }
     }
 
+    /// What the thread is doing now.
     pub fn phase(&self) -> Phase {
         self.inner.lock().phase.lock().clone()
     }
@@ -578,6 +595,7 @@ fn loader(dir: PathBuf) -> Loader {
 }
 
 impl Mlx {
+    /// The engine for `data_dir`'s weights; the thread exits after `idle` unused (zero: never).
     pub fn new(data_dir: &Path, idle: Duration) -> Arc<Mlx> {
         Arc::new(Mlx {
             data_dir: data_dir.to_owned(),
@@ -655,6 +673,7 @@ pub fn select(engine: SttEngine, data_dir: &Path, idle: Duration) -> Option<Arc<
 /// plugin when `voice.stt_engine: mlx`.
 static LIVE: LazyLock<RwLock<Option<Arc<dyn Whole>>>> = LazyLock::new(|| RwLock::new(None));
 
+/// Publish (or clear) the live-final engine.
 pub fn set_live(engine: Option<Arc<dyn Whole>>) {
     *LIVE.write() = engine;
 }
