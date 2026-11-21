@@ -120,10 +120,10 @@ it:
 THEUTH_RPC__LISTEN=127.0.0.1:7791 ./target/debug/t --headless --data-dir /tmp/theuth-x
 ```
 
-Debug builds find the app-parser helper at `packages/apps/dist/` and the
-documents helper at `packages/documents/dist/`; `THEUTH_APP_PARSER` and
-`THEUTH_DOCUMENTS_HELPER` override. Release layouts look beside `t` for
-`theuth-app-parser-<hash>` and `theuth-documents-<protocol>`.
+The app parser runs inside `t` (its bundle is committed under `crates/app-js/js`;
+`just apps-bundle` rebuilds it after a `packages/apps` change). Debug builds find the
+documents helper at `packages/documents/dist/`; `THEUTH_DOCUMENTS_HELPER` overrides.
+Release layouts look beside `t` for `theuth-documents-<protocol>`.
 
 ### Desktop
 
