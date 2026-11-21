@@ -148,7 +148,7 @@ impl DockerSandbox {
                     .ok_or_else(|| anyhow::anyhow!("pull {r}: image missing after pull"));
             }
             Image::Release => {
-                let tag = format!("theuth-engine:{}", env!("CARGO_PKG_VERSION"));
+                let tag = format!("theuth-engine:{}", platform::version::get());
                 (tag, tar_context(DOCKERFILE, None))
             }
             Image::Dev(p) => {
@@ -169,7 +169,7 @@ impl DockerSandbox {
         let args = HashMap::from([
             (
                 "THEUTH_VERSION".to_owned(),
-                env!("CARGO_PKG_VERSION").to_owned(),
+                platform::version::get().to_owned(),
             ),
             ("THEUTH_PUBKEY".to_owned(), update::PUBKEY.trim().to_owned()),
         ]);

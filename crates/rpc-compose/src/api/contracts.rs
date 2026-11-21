@@ -11,7 +11,7 @@ use wire::EventPolicy;
 /// the in-process TUI reads the same things off the [`runtime::Runtime`] directly.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Info {
-    /// Harness version (`CARGO_PKG_VERSION`).
+    /// Harness version (the product version, `platform::version`).
     pub version: String,
     /// Host OS (`std::env::consts::OS`: `linux`, `macos`, `windows`, …); a
     /// parent shows it beside a node's name (32 §6.2).

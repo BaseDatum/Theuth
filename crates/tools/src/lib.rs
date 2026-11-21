@@ -227,7 +227,7 @@ impl ToolSource {
     /// This build's native origin.
     pub fn native() -> Self {
         Self::Native {
-            version: env!("CARGO_PKG_VERSION").to_owned(),
+            version: platform::version::get().to_owned(),
         }
     }
 }
@@ -400,7 +400,7 @@ pub trait ErasedTool: Send + Sync + 'static {
     /// credential conservatively rebinds. Natives: this build's version, so
     /// a rebuilt native with the same name and schema is a new binding.
     fn origin(&self) -> String {
-        format!("native:{}", env!("CARGO_PKG_VERSION"))
+        format!("native:{}", platform::version::get())
     }
     /// [`Tool::CONSUMES_SECRETS`]: `false` only for tools that take an
     /// inert artifact as arguments. MCP tools always consume.

@@ -407,7 +407,7 @@ async fn get_json(
         .get(url)
         .timeout(TIMEOUT)
         .header("accept", "application/json")
-        .header("user-agent", concat!("theuth/", env!("CARGO_PKG_VERSION")));
+        .header("user-agent", format!("theuth/{}", platform::version::get()));
     for (k, v) in headers {
         req = req.header(*k, v);
     }

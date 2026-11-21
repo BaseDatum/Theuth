@@ -64,7 +64,7 @@ pub struct Record {
     pub started: DateTime<Utc>,
     /// Which frontend started it.
     pub host: Host,
-    /// The engine's `CARGO_PKG_VERSION`.
+    /// The engine's product version (`platform::version`).
     pub version: String,
     /// This engine instance.
     pub id: Uuid,
@@ -214,7 +214,7 @@ pub fn acquire(data_dir: &Path, host: Host, listen: Option<String>) -> Result<Le
         listen,
         started: Utc::now(),
         host,
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        version: platform::version::get().to_owned(),
         id: Uuid::now_v7(),
     };
     let lease = Lease {

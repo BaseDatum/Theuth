@@ -545,7 +545,7 @@ fn card(rpc_url: &str, title: &str, description: &str) -> AgentCard {
     AgentCard {
         name: title.to_owned(),
         description: description.to_owned(),
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        version: platform::version::get().to_owned(),
         supported_interfaces: vec![AgentInterface::new(rpc_url, TRANSPORT_PROTOCOL_JSONRPC)],
         capabilities: AgentCapabilities {
             streaming: Some(true),

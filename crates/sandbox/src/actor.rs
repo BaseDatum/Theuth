@@ -719,7 +719,7 @@ impl SandboxActor {
         check_ceilings(&pf.host, resources.max_cpus, resources.max_memory_mib)?;
         let shares = validate_shares(&spec.shares, &self.rt.data_dir, &self.cfg.vm.home)?;
         let image = spec.image.clone().unwrap_or_else(|| ImageRef::Oci {
-            r#ref: format!("{}:{}", self.cfg.vm.image, env!("CARGO_PKG_VERSION")),
+            r#ref: format!("{}:{}", self.cfg.vm.image, platform::version::get()),
         });
         // A reused name may still own snapshot groups from a destroyed record that kept them:
         // its `auto-*` ones are worthless now (they belong to a disk that is gone); named ones

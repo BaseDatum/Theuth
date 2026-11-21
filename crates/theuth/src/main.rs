@@ -1414,6 +1414,7 @@ fn upgrade_communication_line(config_path: &Path) -> std::io::Result<bool> {
 }
 
 fn main() -> anyhow::Result<()> {
+    platform::version::set(env!("CARGO_PKG_VERSION"));
     // Before clap, tokio, logging or anything that could touch stdout: the
     // worker's stdout is the protocol channel (08 §9).
     if std::env::args().nth(1).as_deref() == Some("subprocess") {

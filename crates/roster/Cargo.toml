@@ -1,6 +1,6 @@
 [package]
 name = "roster"
-version.workspace = true
+version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
 description = "Agents as files: agents/ directory, desks and episodes, journal, budgets, proposals; delivers wakes to desks (design doc 67 §6)"

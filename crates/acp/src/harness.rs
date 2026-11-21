@@ -1221,7 +1221,7 @@ fn initialize_request() -> InitializeRequest {
                     serde_json::Value::Bool(true),
                 )])),
         )
-        .client_info(Implementation::new("theuth", env!("CARGO_PKG_VERSION")))
+        .client_info(Implementation::new("theuth", platform::version::get()))
 }
 
 /// The command line the user must run for a terminal-type auth method: our

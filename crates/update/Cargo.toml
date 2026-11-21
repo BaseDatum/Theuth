@@ -1,6 +1,6 @@
 [package]
 name = "update"
-version.workspace = true
+version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
 description = "Self-update: check the release manifest, verify, replace the running binary on disk; never ask (design doc 39)"

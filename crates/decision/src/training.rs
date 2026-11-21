@@ -106,7 +106,7 @@ impl Example {
             id: ExampleId::new(),
             ts: Utc::now(),
             family: family.to_owned(),
-            harness: env!("CARGO_PKG_VERSION").to_owned(),
+            harness: platform::version::get().to_owned(),
             model_sha: String::new(),
             gate_version: questions.first().map_or(0, |q| q.gate_version),
             mode,
@@ -802,7 +802,7 @@ mod tests {
         );
         assert_eq!(serde_json::from_str::<Row>(&line).unwrap(), row);
         assert_eq!(ex.gate_version, 7);
-        assert_eq!(ex.harness, env!("CARGO_PKG_VERSION"));
+        assert_eq!(ex.harness, platform::version::get());
         assert_eq!(ex.questions[0].probabilities["true"], 0.1);
         assert_eq!(ex.questions[0].disposition, "shadow");
 

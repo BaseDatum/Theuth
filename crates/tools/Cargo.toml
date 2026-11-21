@@ -1,6 +1,6 @@
 [package]
 name = "tools"
-version.workspace = true
+version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
 description = "Tool registry, approval gate, builtin tools (shell, fs), MCP tool source"

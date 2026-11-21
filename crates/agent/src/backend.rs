@@ -225,7 +225,7 @@ fn go_headers(session: SessionId, key: &str, opts: ChatOptions) -> ChatOptions {
         ("Authorization", format!("Bearer {key}")),
         (
             "User-Agent",
-            concat!("theuth/", env!("CARGO_PKG_VERSION")).to_owned(),
+            format!("theuth/{}", platform::version::get()),
         ),
         ("x-opencode-session", session.to_string()),
     ]);
@@ -1014,7 +1014,7 @@ mod tests {
         let client = Client::new().unwrap();
         let cat = catalog();
         let session = SessionId::new();
-        let ua = format!("theuth/{}", env!("CARGO_PKG_VERSION"));
+        let ua = format!("theuth/{}", platform::version::get());
         for (id, want_path, native) in [
             (
                 "opencode-go/claude-haiku-5-5",

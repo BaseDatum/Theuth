@@ -125,7 +125,7 @@ impl Default for WebConfig {
             feature_max_chars: 600,
             max_fetch_bytes: 2_097_152,
             max_redirects: 5,
-            user_agent: engines::USER_AGENT.to_owned(),
+            user_agent: engines::user_agent().to_owned(),
             accept_language: "en-US,en;q=0.9".to_owned(),
             header_ladder: true,
             impersonate: fetch::client::Impersonate::default(),

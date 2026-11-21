@@ -1,6 +1,6 @@
 [package]
 name = "meeting"
-version.workspace = true
+version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
 description = "Meeting recorder: the meeting app's audio and the microphone as live Opus tracks, a manifest and index, the meeting's own session (design doc 53)"

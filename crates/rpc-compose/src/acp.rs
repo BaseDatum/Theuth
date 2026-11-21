@@ -334,7 +334,7 @@ async fn serve(
                                     PromptCapabilities::new().embedded_context(true).image(true),
                                 ),
                         )
-                        .agent_info(Implementation::new("theuth", env!("CARGO_PKG_VERSION"))),
+                        .agent_info(Implementation::new("theuth", platform::version::get())),
                 )
             },
             agent_client_protocol::on_receive_request!(),
