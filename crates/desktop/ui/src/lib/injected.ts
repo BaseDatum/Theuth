@@ -21,6 +21,7 @@ export const ENGINE_NOTICES = {
 
 /** One card an engine-wrapped input renders as. */
 export type Injected =
+  /** `name`: every injected skill in order, joined by `, ` (skill names never hold a comma or space). */
   | { kind: 'skill'; name: string; words: string }
   | { kind: 'peer'; from: string; text: string }
   | { kind: 'subagent'; name: string; text: string }
@@ -445,11 +446,17 @@ export function classify(text: string): Injected[] | null {
   // 199: a `<message_file …/>` (a message row's placeholders, a notice row, an ended share's row) is a self-closing note.
   let rest = text.trimStart()
   if (rest.startsWith('<skill name="')) {
-    // `indexOf`, not `split(sep, 2)`: JS's limit drops the remainder, and a body with `">` in it (`<input type="date">`) is common.
-    const at = rest.indexOf('">')
-    const end = rest.indexOf('</skill>', at)
-    if (at < 0 || end < 0) return null
-    return [{ kind: 'skill', name: rest.slice('<skill name="'.length, at), words: rest.slice(end + '</skill>'.length).trim() }]
+    // `use_skills`: several blocks in a row, one card naming them all in order; the words follow the last.
+    const names: string[] = []
+    while (rest.startsWith('<skill name="')) {
+      // `indexOf`, not `split(sep, 2)`: JS's limit drops the remainder, and a body with `">` in it (`<input type="date">`) is common.
+      const at = rest.indexOf('">')
+      const end = rest.indexOf('</skill>', at)
+      if (at < 0 || end < 0) return null
+      names.push(rest.slice('<skill name="'.length, at))
+      rest = rest.slice(end + '</skill>'.length).trimStart()
+    }
+    return [{ kind: 'skill', name: names.join(', '), words: rest.trim() }]
   }
   const out: Injected[] = []
   while (rest) {
