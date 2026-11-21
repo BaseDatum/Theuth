@@ -427,10 +427,13 @@ async fn restart_fails_the_running_request_and_the_queued_ones_run_fresh() {
     t.eval_raw("globalThis.__mark = 'old';".into())
         .await
         .expect("mark");
-    let busy = t.eval_raw("{ const t0 = Date.now(); while (Date.now() - t0 < 300) {} }".into());
+    let busy = t.eval_raw("{ const t0 = Date.now(); while (Date.now() - t0 < 1000) {} }".into());
     let queued = t.eval_raw(
         "if (globalThis.__mark !== undefined) throw new Error('queued ran on the abandoned runtime');".into(),
     );
+    // `restart` must hit the busy job while it runs (a job not yet started simply runs on the fresh
+    // runtime); it spins for 1 s, so 200 ms after enqueueing it is running.
+    tokio::time::sleep(Duration::from_millis(200)).await;
     let old = queued.epoch();
     let epoch = t.restart();
     assert!(epoch > old);

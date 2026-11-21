@@ -415,9 +415,10 @@ fn serve(
             // Before the reply: whoever reacts to this failure enqueues into the new epoch.
             let epoch = shared.epoch.fetch_add(1, Ordering::SeqCst);
             ended = Some((epoch, e.clone()));
-        } else if shared.epoch.load(Ordering::SeqCst) > job.epoch {
-            // `restart` while this job ran: its output came from the runtime the client gave up.
-            result = Err(stale(job.epoch, &ended));
+        } else if shared.epoch.load(Ordering::SeqCst) > now {
+            // `restart` while this job ran (`now` = the epoch it started in, on a runtime of that epoch):
+            // its output came from the runtime the client gave up.
+            result = Err(stale(now, &ended));
         }
         let _ = job.reply.send(Settled { result, rebuilt });
         if js

@@ -423,3 +423,78 @@ Same environment as phase 1, 2026-11-21:
 Not verified (phase 2): RSS of `t` with and without a mermaid fence (the spike measured ~60 MB after load,
 ~110 MB after every diagram type, in its own harness); a real model reply with mermaid fences through
 `agent::loop_::check_fences`; release-build timings; packaging (not run by rule).
+
+# Review fixes (2026-11-21)
+
+Commit `cacd530b7` unless noted. Results of the verification commands are at the end of this section.
+
+- **M1 — library hash vs embedded bundle: fixed.** Verified against the code first: before this, only
+  `cargo test -p app` (`check_and_merge_check_against_the_real_validator` compares `library_hash`) and
+  `just check` (bundle input hash) caught a mismatch. Now (a) app test
+  `helper::tests::the_bundle_embeds_this_binarys_library_hash` asserts the bundle's `version()` is
+  `theuth-app-parser <app::HASH>`; (b) `scripts/apps-bundle-hash.sh` (bash + shasum, no bun) is the one
+  implementation behind `just apps-bundle-check`, `app-parser-env.sh` `check_apps_bundle` (first step of
+  `build_helper`, so every packaging path that builds the stub checks the bundles; it also greps the bundle for
+  the hash) and `release-s3.sh` gate 0; `package-windows.ps1` only does the plain-text check (bundle file
+  contains `library-hash.txt`'s hash) with a marked TODO for porting the full input hash; (c) `crates/app/build.rs`
+  fails `cargo build` of anything depending on `app` (so `t`) when the committed OpenUI bundle does not contain
+  the hash from `library-hash.txt`. Not covered: the Dockerfile path builds the stub without `build_helper`; the
+  build.rs check still applies there (it builds `t`). Unverified: `shasum` availability on the Ubuntu build box
+  (perl's `shasum`; `setup-ubuntu-build.sh` calls `build_helper`).
+- **M2 — first isolate off the main thread: fixed, segfault not reproduced.** `app_js::init_platform()` now
+  initialises the platform and builds + drops one bare `JsRuntime` on the calling thread, once (`Once`). Inside
+  an async context (where `t` calls it) the isolate is built under the current tokio handle, as
+  `browser::warmup` does with obscura's runtime; outside one, a throwaway current-thread runtime is entered and
+  disposed with `shutdown_background()` (no runtime is dropped in an async context). A process-wide mutex
+  (`runtime.rs` `isolate_lock`) is held only around `JsRuntime::new` in `BundleJs::new` and `init_platform`;
+  obscura's own isolate-creation lock is private to obscura-js and cannot be shared, so the two are independent
+  and the ordering comes from `init_platform` running on the main thread before any plugin starts. Tests:
+  `init_platform_builds_an_isolate_inside_a_multi_thread_async_context`,
+  `..._inside_a_current_thread_async_context`, `..._on_a_plain_thread`. Reproduction: not attempted with a real
+  `t` (it needs a full `cargo build -p theuth` binary and a run with the browser disabled, which I did not do);
+  note that the app-js test binaries build their first isolate off the main thread in every run without a
+  crash, so the segfault is not reproduced in that setting — the `t` scenario is unverified either way.
+- **m1 — one runaway fails everything queued: fixed.** `thread.rs` no longer fails older-epoch jobs: after a
+  fatal failure only the executing job fails; queued jobs run on the rebuilt runtime (both bundles are stateless).
+  Epochs still guarantee that no job runs on, and no reply comes from, a given-up runtime (`restart` still
+  discards the running job's output). Tests: `one_runaway_does_not_fail_the_checks_queued_behind_it`
+  (1 runaway + 5 queued checks → Timeout, then 5 OK), and the updated
+  `deadline_terminates_a_runaway_script_and_rebuilds`, `panic_on_the_thread_fails_that_job_and_a_fresh_runtime_serves_the_queue`,
+  `restart_fails_the_running_request_and_the_queued_ones_run_fresh`,
+  `after_a_fatal_failure_no_job_runs_on_the_abandoned_runtime`.
+- **m2 — stubbed render-only library turns a valid diagram invalid: fixed.** `src/inproc/stub.ts` throws
+  `RenderOnlyUnavailable` carrying the `RENDER_ONLY_UNAVAILABLE` symbol (`Symbol.for`); `mermaid-core.ts`
+  `answer` rethrows it, so `call` rejects, the pump answers `{id, ok:false, error}`, `helper.rs` maps that to
+  `Error::Protocol` and `fence.rs` fails open. Test: `test/inproc-mermaid.test.ts` "render-only stub" (a fake
+  parser calling into the stub → `answer` rejects; `use` stays a no-op; a real parse error is still a verdict).
+  Mermaid bundle rebuilt: 2,860,655 bytes; corpus still 147 exact + 1 engine wording in the bun vm run and in
+  `crates/app-js/tests/mermaid_golden.rs` (see results).
+- **m3/m4 — notes, not implemented.** (i) The stub and the old Bun helper share the file name
+  `theuth-app-parser-<hash>` while the library hash is unchanged: an updater keeps an existing file of that
+  name, so a later *old-style* (Bun-helper) payload at a higher version would leave the stub in place and that
+  `t` would get protocol errors from it. Any re-cut of an old-style release must bump the library hash. (ii)
+  Existing installs keep their ~71 MB Bun helper beside `t` forever: the updater never sweeps old helpers.
+  Follow-up (not done here): a sweep from the newest binary (the `t --gc-helpers` idea in `crates/update`).
+- **m5 — over-broad bundle inputs: fixed.** `scripts/build-inproc.ts` / `build-inproc-mermaid.ts` write
+  `<bundle>.inputs` (package-local files from the unminified build's module banners, via
+  `scripts/bundle-inputs.ts`), committed in `crates/app-js/js/`. The hashes cover exactly those files plus
+  `package.json`, `bun.lock`, `tsconfig.json`, `patches/*`, the build scripts and (OpenUI only) `generated/*`.
+  OpenUI: `generated/library.json`, `src/check.ts`, `src/inproc.ts`; mermaid: `src/inproc-mermaid.ts`,
+  `src/inproc/dompurify-shim.ts`, `src/inproc/stub.ts`, `src/mermaid-core.ts`. Type-only imports
+  (`protocol.ts`) emit no code and are not inputs. `apps-bundle-check` still needs only shasum.
+- **m6 — SELECT_AT parity: fixed.** `test/select-at.test.ts` imports `SELECT_AT` (now exported from
+  `check.ts`) and `DIAGRAMS` and asserts equality (16 entries).
+- **m7 — Timeout text: fixed.** `helper::Error::Timeout(Duration)` carries the isolate's warm deadline (2 s
+  OpenUI, 5 s mermaid); test `timeout_text_names_the_isolates_own_deadline`. The first request of a mermaid
+  runtime runs under 10 s but would still be reported with 5 s (the warm deadline).
+- **m8 — HELPER_SRC: fixed.** `"${CARGO_TARGET_DIR:-target}/release/theuth-app-parser-stub"`.
+- **m9 — stale text: fixed** in `app-parser-env.sh`, `package-windows.ps1` (stale message, Build-Helper
+  comment, THEUTH_SKIP_BUN_INSTALL), `entitlements-app-parser.plist` (now documents the documents helper; the
+  stub is signed without it), `install-macos.sh`, `package-linux.sh` (ldd comment, THEUTH_SKIP_BUN_INSTALL),
+  `package-macos.sh` (THEUTH_SKIP_BUN_INSTALL), `packages/apps/src/index.ts`, `docs/plugins.md`,
+  `docs/update-setup.md` step 2, site `development.mdx` (packages table, `just helper`/`apps-bundle`/`install`),
+  `installation.mdx` (§ "Two things", helper versioning), `cli.mdx` (`--app-parser-hash`); `46-apps.md` got a
+  dated marker before the pre-in-process "As built" paragraph.
+
+## Review fixes: verification
+
