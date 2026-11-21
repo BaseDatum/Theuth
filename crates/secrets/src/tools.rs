@@ -849,28 +849,30 @@ mod tests {
         let out = |stored: &[(&str, u32)], expires_ms| Outcome {
             stored: stored.iter().map(|(n, v)| ((*n).to_owned(), *v)).collect(),
             timed_out: false,
+            waived: false,
             expires_ms,
         };
         assert_eq!(
-            receipt(&out(&[("a", 1), ("b", 2)], None), false, t).content,
+            receipt(&out(&[("a", 1), ("b", 2)], None), false, t, "a, b").content,
             "stored a v1, b v2"
         );
         assert_eq!(
-            receipt(&out(&[("a", 2)], None), true, t).content,
+            receipt(&out(&[("a", 2)], None), true, t, "a").content,
             "stored a v2 (v1 is {{secret:a:-1}})"
         );
         let at = NOW + 3_600_000;
         assert_eq!(
-            receipt(&out(&[("a", 1)], Some(at)), true, t).content,
+            receipt(&out(&[("a", 1)], Some(at)), true, t, "a").content,
             format!("stored a v1; expires {}", expiry::local_time(at))
         );
-        assert_eq!(receipt(&out(&[], None), false, t).content, "declined");
+        assert_eq!(receipt(&out(&[], None), false, t, "a").content, "declined");
         let timed = Outcome {
             stored: vec![],
             timed_out: true,
+            waived: false,
             expires_ms: None,
         };
-        assert_eq!(receipt(&timed, false, t).content, "no answer after 60 s");
+        assert_eq!(receipt(&timed, false, t, "a").content, "no answer after 60 s");
     }
 
     #[test]
