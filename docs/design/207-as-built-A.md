@@ -52,6 +52,13 @@ Gate script `/tmp/theuth-207-a-gate.sh test` (17:15–):
 
 ## Not done / not verified
 
+- `just ts-desktop` not run (orchestrator's step; UI bindings are git-ignored).
+- Only crate-scoped gates ran (shared machine): no `just clippy` / `just test` over the workspace. Crates whose sources changed only by a struct-literal field (`sessionsync`, `signal`, `slack`, `telegram`, `tui`) were clippy-built with `--all-targets` (test code compiled) but their tests were not run.
+- No actor-level test drives `DismissMany` through a running `Attention` actor with live `Approval`/`AskUser`/tasks/secrets actors; each resolver is tested in its owning crate and the dispatch (`dismiss_one`) was checked by reading. "One `AttentionChanged` per batch" rests on `DismissMany` calling `recheck_quietly` once after the loop (reading) and the pure diff test `attention_changed_tracks_ids_order_content_and_alerts`.
+- `TurnStarted` deletion and the TTL prune are tested on the store helpers (`clear_finished`, `prune_finished` in `stopped_rows_roundtrip_expire_and_clear`), not through the actor's `AgentEvent` handler / `RescoreTick`.
+- Deviation 12's risk (a `left_to_agent:` last disposition vs `episode_closing`) is not covered by a test.
+- History: the checkpoint was split into five commits by area; the intermediate commits were not built one by one (only the tip was gated).
+
 ## Pre-existing reds (not caused by this branch, not fixed)
 
 - clippy `large_enum_variant` at `crates/tui/src/components/mcp.rs:24`: the branch touches only `crates/tui/src/model/tests.rs` (two literal fields); tui is clippy-gated with `-A clippy::large_enum_variant`.
