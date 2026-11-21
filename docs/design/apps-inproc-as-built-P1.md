@@ -407,4 +407,19 @@ the jsdom devDependency (tests); the `theuth-app-parser-<hash>` payload stub (se
 
 ## Verification (phase 2)
 
-See the final report of phase 2 for the commands and `test result:` lines; recorded below once run.
+Same environment as phase 1, 2026-11-21:
+
+- `bun test` (packages/apps): 231 pass / 0 fail, 25 files (229 before + 2 in `test/inproc-mermaid.test.ts`).
+  `tsc --noEmit`: exit 0. `just apps-bundle-check`: ok (both bundles). Both bundles rebuild byte-identical.
+- `cargo test -p app-js`: unit `20 passed; 0 failed`, `tests/golden.rs` `1 passed`, `tests/mermaid_golden.rs`
+  `1 passed` (148 cases, 147 exact + 1 engine wording, 1.08 s).
+- `cargo test -p app -p update`: app unit `52 passed; 0 failed`, `tests/publish.rs` `1 passed`, update `5 passed`.
+  (A first run failed `mermaid_failures_are_contained_on_their_own_isolate` because pie + 1M quotes ended at
+  the heap ceiling, not in a Timeout; the test now accepts that contained outcome.)
+- `cargo check -p theuth`: Finished, exit 0.
+- `cargo clippy -p app -p app-js -p app-parser-stub -p update --all-targets --no-deps`: clean.
+- `cargo tree -i v8 -p app-js`: one `v8 v150.4.0` via `deno_core 0.412.0`.
+
+Not verified (phase 2): RSS of `t` with and without a mermaid fence (the spike measured ~60 MB after load,
+~110 MB after every diagram type, in its own harness); a real model reply with mermaid fences through
+`agent::loop_::check_fences`; release-build timings; packaging (not run by rule).
