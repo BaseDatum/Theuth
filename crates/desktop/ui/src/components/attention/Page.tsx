@@ -29,6 +29,7 @@ import {
   kindCounts,
   moveFocus,
   nextTick,
+  opensFirst,
   projectsOf,
   pruneFilter,
   selectEntries,
@@ -229,7 +230,7 @@ export function Page() {
         if (approvals.length === 0) return
         handled()
         // Review 3: a collapsed stack opens first, so N commands are never decided unseen.
-        if (focused.type === 'stack' && !expanded.has(focused.key)) expand(focused.key, true)
+        if (opensFirst(focused, expanded, false)) expand(focused.key, true)
         else void bulk.resolve(approvals, key === 'a' ? 'allow' : 'deny')
         return
       }
@@ -238,6 +239,11 @@ export function Page() {
         const ids = selection.size > 0 ? selected : focused ? entryIds(focused) : []
         if (ids.length === 0) return
         handled()
+        // The same guard for snooze and dismiss on a focused stack (a selection was chosen on purpose).
+        if (focused && opensFirst(focused, expanded, selection.size > 0)) {
+          expand(focused.key, true)
+          return
+        }
         const call = key === 's' ? bulk.snooze(ids, snoozeUntil('tomorrow')) : bulk.dismiss(ids)
         if (selection.size > 0) void call.then((outs) => keepFailed(outs.filter((o) => o.resolution === 'failed').map((o) => o.id)))
         return
@@ -332,7 +338,7 @@ export function Page() {
                     aria-keyshortcuts="J K Enter A D S E X Shift+X / Escape"
                     onKeyDown={onKeyDown}
                     onFocus={onFocus}
-                    className="min-h-0 flex-1 overflow-y-auto outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset"
+                    className="min-h-0 flex-1 overflow-y-auto outline-none focus-visible:ring-1 focus-visible:ring-border-strong focus-visible:ring-inset"
                   >
                     <ul className="relative w-full" style={{ height: v.getTotalSize() }}>
                       {v.getVirtualItems().map((row) => {

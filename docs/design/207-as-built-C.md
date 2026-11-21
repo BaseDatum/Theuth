@@ -198,6 +198,8 @@ tested in `model.test.ts`.
     `Card` / `StackCard` are memoised; cards without a countdown get a 15 s clock and stable keyed callbacks, so a
     per-second tick re-renders only cards that count down.
 
+Follow-up: `opensFirst` extends the item 3 guard to every key action — A, D, S and E on a collapsed stack open it and act on the next press (a selection acts at once); the list's focus ring is a 1 px inset `border-strong` line on focus-visible only (checked light and dark: `e` then `s` on the ×3 stack expanded, then snoozed 34 → 31).
+
 Exercised in headless Chromium on `src/dev/attention-fixture.html` (1280 x 900): Tab to the first card's Allow + Enter
 allowed that approval (34 → 33), focus moved to the next card and the scroller got DOM focus back; Tab to the next
 card's Snooze, Enter, ArrowDown, Enter snoozed that card only (33 → 32); `e` three times dismissed the focused card each

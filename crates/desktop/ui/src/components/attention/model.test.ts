@@ -31,6 +31,7 @@ import {
   restoreItems,
   selectEntries,
   stackRisk,
+  opensFirst,
   entrySelection,
   focusAfter,
   outcomeSummary,
@@ -366,6 +367,15 @@ test('nextTick: every second while something counts down, else at the next expir
   expect(nextTick(quiet, NOW)).toBe(30_000)
   expect(nextTick(quiet, NOW + 290_000)).toBe(10_050)
   expect(nextTick([], NOW)).toBe(30_000)
+})
+
+test('opensFirst: A, D, S, E on a collapsed stack only open it; an open stack, a single card or a selection act at once', () => {
+  const entries = stackEntries(F)
+  const stack = entries[3]!
+  expect(opensFirst(stack, new Set(), false)).toBe(true)
+  expect(opensFirst(stack, new Set([stack.key]), false)).toBe(false)
+  expect(opensFirst(stack, new Set(), true)).toBe(false)
+  expect(opensFirst(entries[0]!, new Set(), false)).toBe(false)
 })
 
 test('stackRisk: the highest risk of the members', () => {

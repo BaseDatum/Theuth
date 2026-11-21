@@ -176,6 +176,14 @@ export function selectEntries(selection: ReadonlySet<string>, entries: readonly 
 
 const RISK_RANK: Record<string, number> = { destructive: 2, mutating: 1, read_only: 0 }
 
+/**
+ * 207 review 3: whether a keyboard action (A, D, S, E) on the focused entry only opens it — a collapsed stack shows its
+ * members first and the next press acts; a single card, an open stack, or a selection the user built acts at once.
+ */
+export function opensFirst(entry: Entry, expanded: ReadonlySet<string>, selecting: boolean): boolean {
+  return !selecting && entry.type === 'stack' && !expanded.has(entry.key)
+}
+
 /** A stack's card shows its highest risk, whichever member carries it. */
 export function stackRisk(items: readonly AttentionItem[]): AttentionItem['risk'] {
   let best: AttentionItem['risk'] = null
