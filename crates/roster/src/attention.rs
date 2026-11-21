@@ -83,10 +83,12 @@ pub enum AttentionKind {
 }
 
 /// One inbox item. `id` is stable across derivations (dismiss / snooze key).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct AttentionItem {
-    /// `approval:<id>` | `decision:<task>:<decision>` | `hire:<agent>` | `blocked:<task>` | `review:<task>` | `budget:<agent>` | `node:<id>` | `misplaced:<task>` | `handoff:<id>` | `secret:<id>` | `ask:<id>` | `show:<call_id>` | `resume:<session>:<turn>`.
+    /// `approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.
     pub id: String,
     /// What.
     pub kind: AttentionKind,
@@ -150,6 +152,319 @@ pub struct AttentionItem {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub alert: Option<crate::alert::Alert>,
+    /// 207 D3: the engine's score — the sum of `reasons`; the list is ordered by it (§3.4).
+    #[serde(default)]
+    pub score: u32,
+    /// 207 D3: the score's contributors, points desc (ties in `AttentionSignal` order); `base` always present.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<AttentionReason>>", optional))]
+    pub reasons: Vec<AttentionReason>,
+    /// 207 R5: approvals — `ApprovalRequested.risk`; `None` for other kinds.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub risk: Option<tools::Risk>,
+    /// 207 R5: approvals — the tool name (`ApprovalRequested.tool`); `None` for other kinds.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub tool: Option<String>,
+    /// 207 R5: ms since epoch the request resolves itself (approval/ask/hand-off/secret timeout, a double's grace end).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number | null"))]
+    pub deadline_ms: Option<u64>,
+    /// 207 R4: ms since epoch the item leaves the list on its own (`finished`: stop + `stopped_ttl_mins`).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number | null"))]
+    pub expires_ms: Option<u64>,
+    /// 207 D5: sessions stopped behind this item (transitive `awaiting` on its session).
+    #[serde(default)]
+    pub blocks: u32,
+    /// 207 R3: the item's session is running / awaiting / in approval right now.
+    #[serde(default)]
+    pub session_live: bool,
+    /// 207 R5: the session's effective project (its root's), else the task's; `None` when neither.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub project: Option<String>,
+    /// 207 R5: the root of the item's session tree (itself for a root).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub root_session: Option<String>,
+    /// 207 R5: the item's session's parent; `None` for a root.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub parent_session: Option<String>,
+    /// 207 R5: display path, root first: the root's title, then each child's peer name; empty when the session is unknown.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub path: Vec<String>,
+    /// 207 R4: `finished` items — how the turn stopped.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub stop: Option<AttentionStop>,
+}
+
+impl AttentionItem {
+    /// An item with every optional field at its default: `waiting_since_ms =
+    /// Some(at_ms)`, `rank = Priority::Medium.weight()`, the rest empty. Sources
+    /// build theirs as `AttentionItem { field: …, ..AttentionItem::new(…) }`.
+    #[must_use]
+    pub fn new(
+        id: String,
+        kind: AttentionKind,
+        title: String,
+        detail: Option<String>,
+        at_ms: u64,
+    ) -> Self {
+        Self {
+            id,
+            kind,
+            title,
+            detail,
+            at_ms,
+            task: None,
+            agent: None,
+            session: None,
+            approval: None,
+            decision: None,
+            packet: None,
+            ask: None,
+            turn: None,
+            // 130 E2: every kind waits since it arose unless it knows better (asks) or waits on nobody (finished).
+            waiting_since_ms: Some(at_ms),
+            summary: None,
+            next_steps: Vec::new(),
+            context: None,
+            priority: None,
+            rank: tasks::Priority::Medium.weight(),
+            alert: None,
+            score: 0,
+            reasons: Vec::new(),
+            risk: None,
+            tool: None,
+            deadline_ms: None,
+            expires_ms: None,
+            blocks: 0,
+            session_live: false,
+            project: None,
+            root_session: None,
+            parent_session: None,
+            path: Vec::new(),
+            stop: None,
+        }
+    }
+}
+
+/// 207 D3: one contributor to an item's score.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionSignal {
+    /// The kind's base (207 §3.1).
+    Base,
+    /// The item's session is live right now.
+    Live,
+    /// Sessions stopped behind the item.
+    Blocks,
+    /// The request resolves itself soon.
+    Deadline,
+    /// The approval's risk class.
+    Risk,
+    /// The task's priority and project rank.
+    Task,
+    /// Minutes waited.
+    Age,
+}
+
+/// 207 D3: one line of an item's score breakdown.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AttentionReason {
+    /// Which signal.
+    pub signal: AttentionSignal,
+    /// Its points (> 0, except `base` which is always listed).
+    pub points: u32,
+    /// Short text for the card ("blocks 3 agents", "denies itself in 1:42"); a snapshot at derive time.
+    pub text: String,
+}
+
+/// 207 D5: how a session's turn stopped (`finished` items).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum StopOutcome {
+    /// Any provider stop reason that is not one of the three below (`end_turn`, `stop`, `max_tokens`, …).
+    Finished,
+    /// `stop_reason == "error"`.
+    Failed,
+    /// `stop_reason == "cancelled"` (Stop, a parent's cancel, `max_runtime`).
+    Cancelled,
+    /// `stop_reason == "timed_out"` (the peer-work deadline).
+    TimedOut,
+}
+
+impl StopOutcome {
+    /// 207 §4: the outcome of a `TurnFinished.stop_reason` (not `interrupted` / `suspended`).
+    #[must_use]
+    pub fn of(stop_reason: &str) -> Self {
+        match stop_reason {
+            "error" => Self::Failed,
+            "cancelled" => Self::Cancelled,
+            "timed_out" => Self::TimedOut,
+            _ => Self::Finished,
+        }
+    }
+
+    /// The `attention_finished.outcome` column value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Finished => "finished",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::TimedOut => "timed_out",
+        }
+    }
+
+    /// The inverse of [`Self::as_str`]; anything else reads as `Finished`.
+    #[must_use]
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "failed" => Self::Failed,
+            "cancelled" => Self::Cancelled,
+            "timed_out" => Self::TimedOut,
+            _ => Self::Finished,
+        }
+    }
+}
+
+/// 207 D5: the stop behind a `finished` item.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AttentionStop {
+    /// Outcome class.
+    pub outcome: StopOutcome,
+    /// The raw `TurnFinished.stop_reason`.
+    pub reason: String,
+    /// The turn's last `AgentEvent::Error` message, cut to `SUMMARY_MAX` chars; `None` when there was none.
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub error: Option<String>,
+}
+
+/// 207 §5.3: what a bulk call acts on — exactly one of `ids` (non-empty) or `filter`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AttentionTarget {
+    /// Item ids, in the caller's order.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub ids: Vec<String>,
+    /// Every listed item matching this, in engine order.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub filter: Option<AttentionFilter>,
+}
+
+/// 207 §5.3: a filter over the current list. Every part that is set must match.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AttentionFilter {
+    /// Any of these kinds; empty = every kind.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub kinds: Vec<AttentionKind>,
+    /// Any of these projects; `""` matches items without a project; empty = every project.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub projects: Vec<String>,
+    /// Only items with `at_ms <= before_ms` (the newest the caller had seen); `None` = no bound.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number | null"))]
+    pub before_ms: Option<u64>,
+}
+
+impl AttentionFilter {
+    /// Whether `item` matches every part that is set.
+    #[must_use]
+    pub fn matches(&self, item: &AttentionItem) -> bool {
+        (self.kinds.is_empty() || self.kinds.contains(&item.kind))
+            && (self.projects.is_empty()
+                || self
+                    .projects
+                    .iter()
+                    .any(|p| item.project.as_deref().unwrap_or("") == p.as_str()))
+            && self.before_ms.is_none_or(|b| item.at_ms <= b)
+    }
+}
+
+impl AttentionTarget {
+    /// 207 §5.1: the ids this target names in `items` (the current list, engine
+    /// order): `ids` as given, or every item matching `filter`. `Err` unless exactly one is set.
+    pub fn resolve(&self, items: &[AttentionItem]) -> Result<Vec<String>, String> {
+        match (self.ids.is_empty(), &self.filter) {
+            (false, None) => Ok(self.ids.clone()),
+            (true, Some(f)) => Ok(items
+                .iter()
+                .filter(|i| f.matches(i))
+                .map(|i| i.id.clone())
+                .collect()),
+            (false, Some(_)) => Err("attention target: give ids or a filter, not both".into()),
+            (true, None) => Err("attention target: give ids or a filter".into()),
+        }
+    }
+}
+
+/// 207 §5.2: what a bulk call did to one id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionResolution {
+    /// Hidden (119, versioned): review, hire, budget, node, home, blocked, show, finished, double, resume, contact_first, autoresearch:*.
+    Hidden,
+    /// Snoozed until the given time.
+    Snoozed,
+    /// A live tool call was told to decide itself (ask, live decision).
+    LeftToAgent,
+    /// Recorded for the agent's next wake; nothing woken (parked decision).
+    LeftForLater,
+    /// An approval the user left to the agent: the call was not run.
+    NotRun,
+    /// A secret request or hand-off resolved "none is coming, proceed without".
+    ProceedWithout,
+    /// Not in the list any more, or already resolved elsewhere.
+    Gone,
+    /// The resolver failed; nothing was written. See `error`.
+    Failed,
+}
+
+/// 207 §5.3: one id's result of a bulk call.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AttentionOutcome {
+    /// The item id.
+    pub id: String,
+    /// What happened.
+    pub resolution: AttentionResolution,
+    /// The resolver's message when `resolution` is `failed`.
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub error: Option<String>,
+}
+
+impl AttentionOutcome {
+    fn of(id: &str, resolution: AttentionResolution) -> Self {
+        Self {
+            id: id.to_owned(),
+            resolution,
+            error: None,
+        }
+    }
+
+    fn failed(id: &str, error: impl std::fmt::Display) -> Self {
+        Self {
+            id: id.to_owned(),
+            resolution: AttentionResolution::Failed,
+            error: Some(error.to_string()),
+        }
+    }
 }
 
 /// 149 E6: the two bubbles behind an item — the user's last input to the
@@ -169,8 +484,9 @@ pub struct ItemContext {
 /// 149 E6: cap of each [`ItemContext`] text in chars.
 pub const CONTEXT_MAX: usize = 280;
 
-/// 130 E1: bus event the [`Attention`] actor publishes after a derive whose
-/// result differs from the previous one by id set; `count` is the new badge.
+/// 130 E1 / 207 §5.5: bus event the [`Attention`] actor publishes after a
+/// derive whose result differs from the last published one (ids, order,
+/// content, alerts); `count` is the new badge.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[schemars(transform = wire::serde_type_tag::<Self>)]
@@ -185,26 +501,50 @@ pub struct AttentionChanged {
     /// ms since epoch of the derive.
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub at_ms: u64,
+    /// 207 §7: every item added or changed (content other than `score`/`reasons`/`alert`) since the previous
+    /// event, with `alert` set to `None` (alerts are per connection; see `alerts_changed`).
+    #[serde(default)]
+    pub items: Vec<AttentionItem>,
+    /// 207 §7: every listed id in engine order after this derive.
+    #[serde(default)]
+    pub order: Vec<String>,
+    /// 207 §7: 1-based per engine run, +1 per published event; 0 = an engine before 207.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub seq: u64,
+    /// 207 §7: ms since epoch the `Attention` actor started (a new value = a new run; `seq` restarts).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub epoch_ms: u64,
+    /// 207 §7: some item's `alert` appeared, changed or went away: refetch `attention_list` (masked per connection).
+    #[serde(default)]
+    pub alerts_changed: bool,
 }
 
 impl wire::WireEvent for AttentionChanged {
     const TOPIC: &'static str = "roster.attention";
 }
 
-/// 130 E3: one `attention_finished` row — a root / desk session's last clean
-/// turn; the item id is `finished:<session>:<turn>`.
+/// 130 E3 / 207 §4: one `attention_finished` row — a root / desk session's
+/// last stopped turn; the item id is `finished:<session>:<turn>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finished {
     /// Owning session (one row per session: the newest turn replaces the last).
     pub session: String,
-    /// The turn that finished.
+    /// The turn that stopped.
     pub turn: String,
-    /// ms since epoch: when it finished.
+    /// ms since epoch: when it stopped.
     pub at_ms: u64,
-    /// First line of the final text (≤ 160 chars), else the session title.
+    /// First line of the final text (≤ 160 chars), else the error (failed / timed out), else the session title.
     pub summary: Option<String>,
     /// The `## Next` list, ≤ 2 × 80 chars.
     pub next_steps: Vec<String>,
+    /// 207 §4: how the turn stopped.
+    pub outcome: StopOutcome,
+    /// 207 §4: the raw `TurnFinished.stop_reason`.
+    pub stop_reason: String,
+    /// 207 §4: the turn's last `AgentEvent::Error` message (≤ [`SUMMARY_MAX`] chars).
+    pub error: Option<String>,
 }
 
 /// 130 E3: `summary` cap in chars.
@@ -268,22 +608,9 @@ pub struct ResolveHandoff {
     pub outcome: String,
 }
 
-/// `ask` → `Result<Vec<AttentionItem>, String>`: undismissed, unsnoozed, newest first.
+/// `ask` → `Result<Vec<AttentionItem>, String>`: undismissed, unsnoozed, in engine order (207 §3.4).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct ListAttention;
-
-/// `ask` → `Result<(), String>`: hide `id` until `until_ms`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SnoozeAttention {
-    /// Item id.
-    pub id: String,
-    /// ms since epoch.
-    pub until_ms: u64,
-}
-
-/// `ask` → `Result<(), String>`: hide `id` for good.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DismissAttention(pub String);
 
 /// 126: another plugin's inbox items, pulled on every `ListAttention` (the
 /// double's "answers Allow in 14 s — take over" rows). Items are shaped by the
@@ -345,6 +672,154 @@ pub struct Inputs {
     pub homes_offline: Vec<tasks::HomeOffline>,
     /// 182 S1: open tasks homed here whose agent this engine lacks.
     pub misplaced: Vec<Misplaced>,
+    /// 207: session id → where it sits (from `ListSessions`).
+    pub lineage: HashMap<String, Lineage>,
+    /// 207: sessions live now (`ListActivity` state running/awaiting/approval, or `SessionSummary.running`).
+    pub live: HashSet<String>,
+    /// 207 D5: session id → sessions stopped behind it.
+    pub blocks: HashMap<String, u32>,
+    /// 207: item id → deadline ms (approval, ask, hand-off, secret).
+    pub deadlines: HashMap<String, u64>,
+    /// 207: weights and timers.
+    pub config: crate::config::AttentionConfig,
+}
+
+/// 207: where a session sits in its tree.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Lineage {
+    /// The effective project (the root's).
+    pub project: Option<String>,
+    /// The root session's id (itself for a root).
+    pub root: String,
+    /// The parent session's id; `None` for a root.
+    pub parent: Option<String>,
+    /// Display path, root first.
+    pub path: Vec<String>,
+}
+
+/// 207: lineage of every listed session; `desks` = session → desk agent name (for a desk root's title).
+/// Path segments: the root's trimmed title, else `<desk> desk` for a desk root, else the first 8
+/// chars of its id; every child's peer name, else its title, else 8 chars. Bounded walk (32 hops).
+pub fn lineage_map(
+    sessions: &[agent::SessionSummary],
+    desks: &HashMap<String, String>,
+) -> HashMap<String, Lineage> {
+    let by_id: HashMap<runtime::SessionId, &agent::SessionSummary> =
+        sessions.iter().map(|s| (s.id, s)).collect();
+    let short = |s: &agent::SessionSummary| s.id.to_string().chars().take(8).collect::<String>();
+    let nonempty = |t: &str| Some(t.trim().to_owned()).filter(|t| !t.is_empty());
+    sessions
+        .iter()
+        .map(|s| {
+            let mut chain: Vec<&agent::SessionSummary> = vec![s];
+            let mut cur = s;
+            // ponytail: bounded walk; the tree is shallow and a parent cycle is a store bug.
+            for _ in 0..32 {
+                let Some(&p) = cur.parent.and_then(|p| by_id.get(&p)) else {
+                    break;
+                };
+                chain.push(p);
+                cur = p;
+            }
+            chain.reverse();
+            let root = chain[0];
+            let id = root.id.to_string();
+            let mut path = vec![
+                nonempty(&root.title)
+                    .or_else(|| {
+                        root.desk
+                            .clone()
+                            .or_else(|| desks.get(&id).cloned())
+                            .map(|d| format!("{d} desk"))
+                    })
+                    .unwrap_or_else(|| short(root)),
+            ];
+            path.extend(chain[1..].iter().map(|&c| {
+                c.name
+                    .as_deref()
+                    .and_then(nonempty)
+                    .or_else(|| nonempty(&c.title))
+                    .unwrap_or_else(|| short(c))
+            }));
+            (
+                s.id.to_string(),
+                Lineage {
+                    project: s.project.clone(),
+                    root: id,
+                    parent: s.parent.map(|p| p.to_string()),
+                    path,
+                },
+            )
+        })
+        .collect()
+}
+
+/// 207 D5: session → count of distinct sessions transitively awaiting it.
+/// An `Awaiting { from }` row waits on its parent (`"parent"`), a child or a
+/// sibling of that peer name, or `session:<uuid>`; anything else is unresolved.
+pub fn blocks_map(rows: &[agent::AgentInfo]) -> HashMap<String, u32> {
+    let mut edges: HashMap<runtime::SessionId, Vec<runtime::SessionId>> = HashMap::new();
+    for t in rows {
+        let agent::AgentState::Awaiting { from } = &t.state else {
+            continue;
+        };
+        let target = if from == "parent" {
+            (t.parent != t.id).then_some(t.parent)
+        } else if let Some(id) = from.strip_prefix("session:") {
+            id.parse::<runtime::SessionId>().ok()
+        } else {
+            rows.iter()
+                .find(|r| r.parent == t.id && r.id != t.id && r.name == *from)
+                .or_else(|| {
+                    rows.iter().find(|r| {
+                        t.parent != t.id && r.parent == t.parent && r.id != t.id && r.name == *from
+                    })
+                })
+                .map(|r| r.id)
+        };
+        if let Some(target) = target {
+            edges.entry(t.id).or_default().push(target);
+        }
+    }
+    let mut reached: HashMap<runtime::SessionId, HashSet<runtime::SessionId>> = HashMap::new();
+    for &start in edges.keys() {
+        let mut seen: HashSet<runtime::SessionId> = HashSet::new();
+        let mut stack = edges[&start].clone();
+        while let Some(s) = stack.pop() {
+            if s == start || !seen.insert(s) {
+                continue;
+            }
+            reached.entry(s).or_default().insert(start);
+            if let Some(next) = edges.get(&s) {
+                stack.extend(next.iter().copied());
+            }
+        }
+    }
+    reached
+        .into_iter()
+        .map(|(s, by)| (s.to_string(), by.len() as u32))
+        .collect()
+}
+
+/// 207: the live set — rows running, awaiting or in approval, and every session the store marks running.
+pub fn live_set(rows: &[agent::AgentInfo], sessions: &[agent::SessionSummary]) -> HashSet<String> {
+    rows.iter()
+        .filter(|r| {
+            matches!(
+                r.state,
+                agent::AgentState::Running
+                    | agent::AgentState::Awaiting { .. }
+                    | agent::AgentState::Approval { .. }
+            )
+        })
+        .map(|r| r.id.to_string())
+        .chain(
+            sessions
+                .iter()
+                .filter(|s| s.running)
+                .map(|s| s.id.to_string()),
+        )
+        .collect()
 }
 
 /// 182 S1: a task homed on this engine whose owner agent lives elsewhere.
@@ -377,33 +852,11 @@ impl State {
     }
 }
 
-/// The inbox from its inputs: pure, hidden items removed, ordered rank desc →
-/// waiting_since asc (None last) → at_ms desc (132 D4).
+/// The inbox from its inputs: pure, hidden and expired items removed, every
+/// item scored and the list ordered by score (207 §3.4).
 pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> Vec<AttentionItem> {
     let mut out = Vec::new();
-    let item = |id: String, kind, title: String, detail: Option<String>, at_ms| AttentionItem {
-        id,
-        kind,
-        title,
-        detail,
-        at_ms,
-        task: None,
-        agent: None,
-        session: None,
-        approval: None,
-        decision: None,
-        packet: None,
-        ask: None,
-        turn: None,
-        // 130 E2: every kind waits since it arose unless it knows better (asks) or waits on nobody (finished).
-        waiting_since_ms: Some(at_ms),
-        summary: None,
-        next_steps: Vec::new(),
-        context: None,
-        priority: None,
-        rank: tasks::Priority::Medium.weight(),
-        alert: None,
-    };
+    let item = AttentionItem::new;
     // 132 D4: a task's (priority, rank); session items borrow their checkout task's.
     let ranked = |t: &tasks::Task| {
         (
@@ -423,12 +876,18 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
     };
     // 104 A3: the desk a session belongs to (itself or an ancestor), when the roster knows it.
     let desk = |session: &str| inputs.desks.get(session).cloned();
-    // 79 §6.6: who = the agent's title, else the session's short id.
+    // 79 §6.6: who = the agent's title, else the session's place in its tree (207), else its short id.
     let who = |agent: Option<&str>, session: &str| -> String {
         agent
             .and_then(|n| inputs.agents.iter().find(|a| a.file.name.as_str() == n))
             .map(|a| a.file.title.clone())
             .or_else(|| agent.map(str::to_owned))
+            .or_else(|| {
+                inputs
+                    .lineage
+                    .get(session)
+                    .and_then(|l| l.path.last().cloned())
+            })
             .unwrap_or_else(|| session.chars().take(8).collect())
     };
 
@@ -440,17 +899,24 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             _ => None,
         };
         let session = a.session.to_string();
+        let agent = desk(&session);
         let (priority, rank) = by_session(&session);
         out.push(AttentionItem {
-            agent: desk(&session),
-            session: Some(session),
+            agent: agent.clone(),
+            session: Some(session.clone()),
             approval: Some(a.id),
             priority,
             rank,
+            risk: Some(a.risk),
+            tool: Some(a.tool.clone()),
             ..item(
                 format!("approval:{}", a.id.0),
                 AttentionKind::Approval,
-                format!("{} wants to run {}", a.session, a.tool),
+                format!(
+                    "{} wants to run {}",
+                    who(agent.as_deref(), &session),
+                    a.tool
+                ),
                 args,
                 *at_ms,
             )
@@ -483,11 +949,12 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             )
         };
         let (priority, rank) = by_session(&session);
+        // 207 / 119: the first-seen time, stable across derives, so a dismissal sticks.
+        let since = inputs.ask_since.get(&a.id).copied().unwrap_or(now_ms);
         out.push(AttentionItem {
             agent: agent.clone(),
             session: Some(session.clone()),
             ask: Some(a.clone()),
-            waiting_since_ms: Some(inputs.ask_since.get(&a.id).copied().unwrap_or(now_ms)),
             priority,
             rank,
             ..item(
@@ -499,7 +966,7 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                     tasks::packet::head(first.map_or("", |q| q.question.as_str()))
                 ),
                 Some(detail).filter(|d| !d.is_empty()),
-                now_ms,
+                since,
             )
         });
     }
@@ -602,7 +1069,11 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                             t.updated_ms,
                         )
                     });
-                } else if t.blockers.iter().any(|b| !b.starts_with("decision:")) {
+                } else if t
+                    .blockers
+                    .iter()
+                    .any(|b| !b.starts_with("decision:") && !b.starts_with(tasks::LEFT_PREFIX))
+                {
                     out.push(AttentionItem {
                         task: Some(t.id.clone()),
                         agent: owner_agent.clone(),
@@ -926,13 +1397,33 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             )
         });
     }
-    out.extend(inputs.external.iter().cloned());
+    // 207 §8: a Source that left `priority` empty borrows its session's checkout task.
+    out.extend(inputs.external.iter().cloned().map(|mut i| {
+        if i.priority.is_none()
+            && let Some(s) = i.session.as_deref()
+        {
+            (i.priority, i.rank) = by_session(s);
+        }
+        i
+    }));
 
-    // 130 E3: one receipt per root / desk session; waits on nobody.
+    // 130 E3 / 207 §4: one receipt per root / desk session for every stop; waits on nobody.
+    let ttl_ms = inputs.config.stopped_ttl_mins.saturating_mul(60_000);
     for f in &inputs.finished {
         let agent = desk(&f.session);
         let name = who(agent.as_deref(), &f.session);
         let (priority, rank) = by_session(&f.session);
+        let title = match f.outcome {
+            StopOutcome::Finished => format!("{name} finished"),
+            StopOutcome::Failed => format!("{name} failed"),
+            StopOutcome::Cancelled => format!("{name} was cancelled"),
+            StopOutcome::TimedOut => format!("{name} timed out"),
+        };
+        let detail = f.summary.clone().or_else(|| {
+            (f.outcome == StopOutcome::Failed)
+                .then(|| f.error.clone())
+                .flatten()
+        });
         out.push(AttentionItem {
             agent,
             session: Some(f.session.clone()),
@@ -941,11 +1432,17 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             next_steps: f.next_steps.clone(),
             priority,
             rank,
+            expires_ms: Some(f.at_ms.saturating_add(ttl_ms)),
+            stop: Some(AttentionStop {
+                outcome: f.outcome,
+                reason: f.stop_reason.clone(),
+                error: f.error.clone(),
+            }),
             ..item(
                 format!("finished:{}:{}", f.session, f.turn),
                 AttentionKind::Finished,
-                format!("{name} finished"),
-                f.summary.clone(),
+                title,
+                detail,
                 f.at_ms,
             )
         });
@@ -961,25 +1458,60 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             .cloned();
     }
 
+    // 207 R3/R5/D5: where each item sits, whether its session is live, what waits on it, its deadline.
+    let task_project: HashMap<&str, Option<&str>> = inputs
+        .tasks
+        .iter()
+        .chain(inputs.misplaced.iter().map(|m| &m.task))
+        .map(|t| (t.id.0.as_str(), t.project.as_deref()))
+        .collect();
+    for i in &mut out {
+        if let Some(d) = inputs.deadlines.get(&i.id) {
+            i.deadline_ms = Some(*d);
+        }
+        let Some(s) = i.session.as_deref() else {
+            i.project = i
+                .task
+                .as_ref()
+                .and_then(|t| task_project.get(t.0.as_str()).copied().flatten())
+                .map(str::to_owned);
+            continue;
+        };
+        match inputs.lineage.get(s) {
+            Some(l) => {
+                i.project = l.project.clone();
+                i.root_session = Some(l.root.clone());
+                i.parent_session = l.parent.clone();
+                i.path = l.path.clone();
+            }
+            None => {
+                i.project = i
+                    .task
+                    .as_ref()
+                    .and_then(|t| task_project.get(t.0.as_str()).copied().flatten())
+                    .map(str::to_owned);
+            }
+        }
+        // Task-born items are live only through the task's own checkout session.
+        i.session_live = inputs.live.contains(s)
+            && i.task
+                .as_ref()
+                .is_none_or(|t| checkouts.get(s).is_some_and(|c| c.id == *t));
+        i.blocks = inputs.blocks.get(s).copied().unwrap_or(0);
+    }
+
     out.retain(|i| {
         !states
             .get(&i.id)
             .copied()
             .unwrap_or_default()
             .hidden(now_ms, i.at_ms)
+            && i.expires_ms.is_none_or(|e| e > now_ms)
     });
-    // 132 D4: rank desc → waiting_since asc (None last) → at_ms desc.
-    out.sort_by(|a, b| {
-        b.rank
-            .cmp(&a.rank)
-            .then_with(|| match (a.waiting_since_ms, b.waiting_since_ms) {
-                (Some(x), Some(y)) => x.cmp(&y),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            })
-            .then_with(|| b.at_ms.cmp(&a.at_ms))
-    });
+    for i in &mut out {
+        (i.score, i.reasons) = crate::score::score(i, &inputs.config.weights, now_ms);
+    }
+    crate::score::order(&mut out);
     out
 }
 
@@ -1150,8 +1682,16 @@ pub struct Attention {
     sources: Vec<std::sync::Arc<dyn Source>>,
     /// 130 E1: the bus, for `AttentionChanged`.
     rt: Runtime,
-    /// 130 E1: the id set of the last derive; `announce` diffs against it.
-    last_ids: HashSet<String>,
+    /// 207 §5.5: the list as last published (alerts included); the next derive diffs against it.
+    last: Vec<AttentionItem>,
+    /// 207 §5.5: events published by this run; the next one carries `seq + 1`.
+    seq: u64,
+    /// 207 §5.5: ms since epoch this actor started (the run's identity on the wire).
+    epoch_ms: u64,
+    /// 207 §4: the last `AgentEvent::Error` message of each running turn.
+    errors: HashMap<runtime::SessionId, String>,
+    /// 207 §3.5: item id → deadline ms, cached per item and retained to listed ids.
+    deadlines: HashMap<String, u64>,
     /// 130 E2: when each pending ask was first seen.
     ask_since: HashMap<tools::AskId, (runtime::SessionId, u64)>,
     /// 130 E3: assistant text of each running turn since its last tool call —
@@ -1185,7 +1725,11 @@ impl Attention {
                 resume_ask,
                 sources: Vec::new(),
                 rt: rt.clone(),
-                last_ids: HashSet::new(),
+                last: Vec::new(),
+                seq: 0,
+                epoch_ms: now_ms(),
+                errors: HashMap::new(),
+                deadlines: HashMap::new(),
                 ask_since: HashMap::new(),
                 texts: HashMap::new(),
                 boot: None,
@@ -1212,6 +1756,27 @@ impl Attention {
         {
             let _ = actor.tell(pass).await;
         }
+        // 207 §4/§5.5: the coarse tick — expire stopped rows, re-score, publish only on change.
+        let every = rt
+            .section::<crate::config::RosterConfig>("roster")
+            .unwrap_or_default()
+            .attention
+            .rescore_secs
+            .max(1);
+        let weak = actor.downgrade();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(every));
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let Some(me) = weak.upgrade() else {
+                    break;
+                };
+                if me.tell(RescoreTick).await.is_err() {
+                    break;
+                }
+            }
+        });
         Ok(actor)
     }
 
@@ -1361,10 +1926,19 @@ impl Attention {
             .collect();
         let mut resumes: Vec<ResumeNeed> = self.reports.values().cloned().collect();
         let mut session_context = HashMap::new();
+        let mut sessions: Vec<agent::SessionSummary> = Vec::new();
+        let mut activity: Vec<agent::AgentInfo> = Vec::new();
+        let mut store: Option<agent::store::Store> = None;
         if let Ok(Some(ag)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
-            if let Ok(sessions) = ag.ask(agent::ListSessions).await {
-                desks.extend(desk_map(&sessions));
+            if let Ok(list) = ag.ask(agent::ListSessions).await {
+                desks.extend(desk_map(&list));
+                sessions = list;
             }
+            // 207 R3 / D5: the live set and the awaiting edges.
+            if let Ok(rows) = ag.ask(agent::ListActivity).await {
+                activity = rows;
+            }
+            store = ag.ask(agent::DurableStore).await.ok();
             // 109 §4.6: under `ask` every open turn waits for the button;
             // 139 §5.1 item 13: only the turns this engine owns (its button
             // is `resume_turn`, which must run on the owner).
@@ -1400,7 +1974,7 @@ impl Attention {
                     }),
             );
             if !wanted.is_empty()
-                && let Ok(store) = ag.ask(agent::DurableStore).await
+                && let Some(store) = store.as_ref()
             {
                 for s in wanted {
                     let Ok(id) = s.parse::<runtime::SessionId>() else {
@@ -1421,6 +1995,70 @@ impl Attention {
                 }
             }
         }
+        // 207 §3.5: each request's deadline — the journal row's, else arrival + the
+        // configured timeout; cached per item id, retained to the pending ids.
+        let tools_cfg = self
+            .rt
+            .section::<tools::ToolsConfig>("tools")
+            .unwrap_or_default();
+        let secret_ms = self
+            .rt
+            .section::<secrets::SecretsConfig>("secrets")
+            .unwrap_or_default()
+            .request_timeout_secs
+            .saturating_mul(1000);
+        let handoff_ms = crate::handoff::timeout(&self.rt).as_millis() as u64;
+        // (item id, journal row id, fallback deadline ms)
+        let mut wanted_deadlines: Vec<(String, Option<String>, u64)> = Vec::new();
+        for (a, at) in self.pending.values() {
+            wanted_deadlines.push((
+                format!("approval:{}", a.id.0),
+                Some(a.id.0.to_string()),
+                at.saturating_add(tools_cfg.approval_timeout_secs.saturating_mul(1000)),
+            ));
+        }
+        for a in &asks {
+            let at = self.ask_since.get(&a.id).map_or(now, |(_, at)| *at);
+            wanted_deadlines.push((
+                format!("ask:{}", a.id.0),
+                Some(a.id.0.to_string()),
+                at.saturating_add(tools_cfg.ask_timeout_secs.saturating_mul(1000)),
+            ));
+        }
+        for h in &handoffs {
+            wanted_deadlines.push((
+                format!("handoff:{}", h.id),
+                Some(h.id.clone()),
+                h.created_ms.saturating_add(handoff_ms),
+            ));
+        }
+        for r in &secrets {
+            wanted_deadlines.push((
+                format!("secret:{}", r.id.0),
+                None,
+                r.created_ms.saturating_add(secret_ms),
+            ));
+        }
+        self.deadlines
+            .retain(|id, _| wanted_deadlines.iter().any(|(w, _, _)| w == id));
+        for (id, row, fallback) in wanted_deadlines {
+            if self.deadlines.contains_key(&id) {
+                continue;
+            }
+            let mut deadline = fallback;
+            if let (Some(row), Some(store)) = (row, store.as_ref())
+                && let Ok(Some(q)) = store.question_get(&row).await
+            {
+                deadline = q.deadline.timestamp_millis().max(0) as u64;
+            }
+            self.deadlines.insert(id, deadline);
+        }
+        let config = self
+            .rt
+            .section::<crate::config::RosterConfig>("roster")
+            .unwrap_or_default()
+            .attention;
+        let lineage = lineage_map(&sessions, &desks);
         Inputs {
             tasks,
             packets,
@@ -1461,10 +2099,15 @@ impl Attention {
                 _ => vec![],
             },
             misplaced,
+            lineage,
+            live: live_set(&activity, &sessions),
+            blocks: blocks_map(&activity),
+            deadlines: self.deadlines.clone(),
+            config,
         }
     }
 
-    /// 130 E1: derive now and announce the difference from the last derive.
+    /// 207 §5.5: derive now and publish what changed since the last published list.
     /// 155 §7.4: then decorate every item's `alert` through the episode map
     /// and arm one [`AlertDue`] at the earliest delay still open.
     async fn recheck(&mut self) -> Result<Vec<AttentionItem>, String> {
@@ -1492,8 +2135,9 @@ impl Attention {
                 });
             }
         }
-        if let Some(ev) = changed(&self.last_ids, &items, now) {
-            self.last_ids = items.iter().map(|i| i.id.clone()).collect();
+        if let Some(ev) = changed(&self.last, &items, now, self.seq + 1, self.epoch_ms) {
+            self.seq += 1;
+            self.last = items.clone();
             self.rt.publish(ev).await;
         }
         Ok(items)
@@ -1506,10 +2150,19 @@ impl Attention {
         }
     }
 
-    /// 130 E3: a root / desk turn ended cleanly with nothing pending → one
+    /// 130 E3 / 207 §4: a root / desk turn stopped with nothing pending → one
     /// `attention_finished` row for the session (the previous turn's is replaced).
-    async fn finish_turn(&mut self, session: runtime::SessionId, turn: runtime::TurnId) {
+    async fn finish_turn(
+        &mut self,
+        session: runtime::SessionId,
+        turn: runtime::TurnId,
+        stop_reason: String,
+    ) {
         let text = self.texts.remove(&session).unwrap_or_default();
+        let error = self.errors.remove(&session).map(|e| clip(&e, SUMMARY_MAX));
+        let Some(outcome) = stop_card(&stop_reason) else {
+            return;
+        };
         if self.pending.values().any(|(a, _)| a.session == session)
             || self.ask_since.values().any(|(s, _)| *s == session)
         {
@@ -1524,19 +2177,46 @@ impl Attention {
         if !reports_finished(&chain) {
             return;
         }
-        let (summary, next_steps) = parse_finished(&text, chain[0].title.as_deref());
+        let fallback = match outcome {
+            StopOutcome::Failed | StopOutcome::TimedOut => {
+                error.as_deref().or(chain[0].title.as_deref())
+            }
+            _ => chain[0].title.as_deref(),
+        };
+        let (summary, next_steps) = parse_finished(&text, fallback);
         let row = Finished {
             session: session.to_string(),
             turn: turn.to_string(),
             at_ms: now_ms(),
             summary,
             next_steps,
+            outcome,
+            stop_reason,
+            error,
         };
         if let Err(e) = record_finished(&self.pool, &row).await {
             tracing::warn!("attention: record finished {session}: {e:#}");
         }
         self.recheck_quietly().await;
     }
+}
+
+/// `s` trimmed and cut to `max` chars (an ellipsis replaces the cut).
+fn clip(s: &str, max: usize) -> String {
+    let s = s.trim();
+    if s.chars().count() <= max {
+        s.to_owned()
+    } else {
+        let mut out: String = s.chars().take(max - 1).collect();
+        out.push('\u{2026}');
+        out
+    }
+}
+
+/// 207 §4: the outcome a turn's stop earns a card with; `None` for the resume
+/// path's own stops (`interrupted`, `suspended`).
+pub fn stop_card(stop_reason: &str) -> Option<StopOutcome> {
+    (!matches!(stop_reason, "interrupted" | "suspended")).then(|| StopOutcome::of(stop_reason))
 }
 
 /// Whether a session's clean turn end earns a `finished:` row: roots only (a subagent has
@@ -1551,24 +2231,61 @@ fn reports_finished(chain: &[agent::AncestorInfo]) -> bool {
             .is_some_and(|t| t.starts_with("autoresearch-"))
 }
 
-/// 130 E1: the `AttentionChanged` a derive raises against the previous id set; `None` when equal.
+/// 207 §5.5: the `AttentionChanged` a derive raises against the last published
+/// list (`prev`); `None` when no id, order, content (other than `score`,
+/// `reasons`, `alert`) or alert changed. `seq` is the number the event carries.
 pub fn changed(
-    prev: &HashSet<String>,
+    prev: &[AttentionItem],
     items: &[AttentionItem],
     at_ms: u64,
+    seq: u64,
+    epoch_ms: u64,
 ) -> Option<AttentionChanged> {
+    let content = |i: &AttentionItem| AttentionItem {
+        score: 0,
+        reasons: Vec::new(),
+        alert: None,
+        ..i.clone()
+    };
+    let before: HashMap<&str, &AttentionItem> = prev.iter().map(|i| (i.id.as_str(), i)).collect();
     let now: HashSet<&str> = items.iter().map(|i| i.id.as_str()).collect();
-    let mut ids_added: Vec<String> = now
-        .iter()
-        .filter(|id| !prev.contains(**id))
-        .map(|id| (*id).to_owned())
-        .collect();
-    let mut ids_removed: Vec<String> = prev
-        .iter()
-        .filter(|id| !now.contains(id.as_str()))
-        .cloned()
-        .collect();
-    if ids_added.is_empty() && ids_removed.is_empty() {
+    let mut ids_added = Vec::new();
+    let mut out = Vec::new();
+    let mut alerts_changed = false;
+    for i in items {
+        match before.get(i.id.as_str()) {
+            None => {
+                ids_added.push(i.id.clone());
+                alerts_changed |= i.alert.is_some();
+                out.push(AttentionItem {
+                    alert: None,
+                    ..i.clone()
+                });
+            }
+            Some(p) => {
+                alerts_changed |= p.alert != i.alert;
+                if content(p) != content(i) {
+                    out.push(AttentionItem {
+                        alert: None,
+                        ..i.clone()
+                    });
+                }
+            }
+        }
+    }
+    let mut ids_removed: Vec<String> = Vec::new();
+    for p in prev.iter().filter(|p| !now.contains(p.id.as_str())) {
+        alerts_changed |= p.alert.is_some();
+        ids_removed.push(p.id.clone());
+    }
+    let order_changed =
+        prev.len() != items.len() || prev.iter().zip(items).any(|(a, b)| a.id != b.id);
+    if ids_added.is_empty()
+        && ids_removed.is_empty()
+        && out.is_empty()
+        && !order_changed
+        && !alerts_changed
+    {
         return None;
     }
     ids_added.sort();
@@ -1578,31 +2295,73 @@ pub fn changed(
         ids_added,
         ids_removed,
         at_ms,
+        items: out,
+        order: items.iter().map(|i| i.id.clone()).collect(),
+        seq,
+        epoch_ms,
+        alerts_changed,
     })
 }
 
 /// 130 E3: upsert the session's receipt (one row per session; the newest turn wins).
 pub async fn record_finished(pool: &SqlitePool, f: &Finished) -> anyhow::Result<()> {
     sqlx::query(
-        "INSERT INTO attention_finished (session, turn, at_ms, summary, next_steps) \
-         VALUES (?, ?, ?, ?, ?) \
+        "INSERT INTO attention_finished (session, turn, at_ms, summary, next_steps, outcome, stop_reason, error) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(session) DO UPDATE SET turn = excluded.turn, at_ms = excluded.at_ms, \
-         summary = excluded.summary, next_steps = excluded.next_steps",
+         summary = excluded.summary, next_steps = excluded.next_steps, outcome = excluded.outcome, \
+         stop_reason = excluded.stop_reason, error = excluded.error",
     )
     .bind(&f.session)
     .bind(&f.turn)
     .bind(f.at_ms as i64)
     .bind(&f.summary)
     .bind(serde_json::to_string(&f.next_steps)?)
+    .bind(f.outcome.as_str())
+    .bind(&f.stop_reason)
+    .bind(&f.error)
     .execute(pool)
     .await?;
     Ok(())
 }
 
+/// 207 §4: drop a session's receipt (a new turn started); `true` when a row went.
+pub async fn clear_finished(pool: &SqlitePool, session: &str) -> anyhow::Result<bool> {
+    let n = sqlx::query("DELETE FROM attention_finished WHERE session = ?")
+        .bind(session)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(n > 0)
+}
+
+/// 207 §4: drop receipts older than `ttl_ms` at `now_ms`; `true` when a row went.
+pub async fn prune_finished(pool: &SqlitePool, now_ms: u64, ttl_ms: u64) -> anyhow::Result<bool> {
+    let n = sqlx::query("DELETE FROM attention_finished WHERE at_ms <= ?")
+        .bind(now_ms.saturating_sub(ttl_ms) as i64)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(n > 0)
+}
+
+/// One `attention_finished` row: session, turn, at_ms, summary, next_steps, outcome, stop_reason, error.
+type FinishedRow = (
+    String,
+    String,
+    i64,
+    Option<String>,
+    String,
+    String,
+    String,
+    Option<String>,
+);
+
 /// 130 E3: undismissed `attention_finished` rows, newest first (snooze is `derive`'s job).
 pub async fn finished(pool: &SqlitePool) -> anyhow::Result<Vec<Finished>> {
-    let rows: Vec<(String, String, i64, Option<String>, String)> = sqlx::query_as(
-        "SELECT f.session, f.turn, f.at_ms, f.summary, f.next_steps FROM attention_finished f \
+    let rows: Vec<FinishedRow> = sqlx::query_as(
+        "SELECT f.session, f.turn, f.at_ms, f.summary, f.next_steps, f.outcome, f.stop_reason, f.error \
+         FROM attention_finished f \
          LEFT JOIN attention_state st ON st.id = 'finished:' || f.session || ':' || f.turn \
          WHERE st.dismissed_ms IS NULL ORDER BY f.at_ms DESC",
     )
@@ -1610,13 +2369,18 @@ pub async fn finished(pool: &SqlitePool) -> anyhow::Result<Vec<Finished>> {
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(session, turn, at_ms, summary, next_steps)| Finished {
-            session,
-            turn,
-            at_ms: at_ms as u64,
-            summary,
-            next_steps: serde_json::from_str(&next_steps).unwrap_or_default(),
-        })
+        .map(
+            |(session, turn, at_ms, summary, next_steps, outcome, stop_reason, error)| Finished {
+                session,
+                turn,
+                at_ms: at_ms as u64,
+                summary,
+                next_steps: serde_json::from_str(&next_steps).unwrap_or_default(),
+                outcome: StopOutcome::parse(&outcome),
+                stop_reason,
+                error,
+            },
+        )
         .collect())
 }
 
@@ -1881,13 +2645,27 @@ impl Message<agent::AgentEvent> for Attention {
         }
         // 130 E3: the final text is what streamed after the last tool call.
         match m {
-            agent::AgentEvent::TurnStarted { session, .. }
-            | agent::AgentEvent::ToolCallStarted { session, .. } => {
+            agent::AgentEvent::TurnStarted { session, .. } => {
+                self.texts.insert(session, String::new());
+                self.errors.remove(&session);
+                // 207 §4: the session is live again — its stopped card goes.
+                match clear_finished(&self.pool, &session.to_string()).await {
+                    Ok(true) => self.recheck_quietly().await,
+                    Ok(false) => {}
+                    Err(e) => tracing::warn!("attention: clear finished {session}: {e:#}"),
+                }
+            }
+            agent::AgentEvent::ToolCallStarted { session, .. } => {
                 self.texts.insert(session, String::new());
             }
             agent::AgentEvent::TextDelta { session, text, .. } => {
                 // ponytail: unbounded per running turn; a model's final answer is tens of KB at most.
                 self.texts.entry(session).or_default().push_str(&text);
+            }
+            agent::AgentEvent::Error {
+                session, message, ..
+            } => {
+                self.errors.insert(session, message);
             }
             agent::AgentEvent::TurnFinished {
                 session,
@@ -1895,11 +2673,8 @@ impl Message<agent::AgentEvent> for Attention {
                 stop_reason,
                 ..
             } => {
-                if stop_reason == "end_turn" {
-                    self.finish_turn(session, turn).await;
-                } else {
-                    self.texts.remove(&session);
-                }
+                // 207 §4: every stop but the resume path's own gets a card.
+                self.finish_turn(session, turn, stop_reason).await;
             }
             _ => {}
         }
@@ -1919,11 +2694,10 @@ impl Message<ApprovalResolved> for Attention {
     }
 }
 
-/// 146 D4: the boot pass's counts, re-sent as respawns settle. The item id
-/// is stable (`resume:boot:<at_ms>`), so a count change alone does not move
-/// the id set: the HUD is nudged with an empty-diff `AttentionChanged`. A
-/// settled pass that lost nothing clears itself 60 s later; one with losses
-/// stays until dismissed.
+/// 146 D4: the boot pass's counts, re-sent as respawns settle. A count change
+/// moves the item's title, which `changed` publishes (207 §5.5). A settled
+/// pass that lost nothing clears itself 60 s later; one with losses stays
+/// until dismissed.
 impl Message<agent::durability::BootPass> for Attention {
     type Reply = ();
 
@@ -1936,19 +2710,7 @@ impl Message<agent::durability::BootPass> for Attention {
         let clean = b.lost.is_empty();
         let at_ms = b.at_ms;
         self.boot = Some(b);
-        let before = self.last_ids.clone();
-        if let Ok(items) = self.recheck().await
-            && before == self.last_ids
-        {
-            self.rt
-                .publish(AttentionChanged {
-                    count: items.len() as u32,
-                    ids_added: Vec::new(),
-                    ids_removed: Vec::new(),
-                    at_ms: now_ms(),
-                })
-                .await;
-        }
+        self.recheck_quietly().await;
         if settled && clean {
             let me = ctx.actor_ref().clone();
             tokio::spawn(async move {
@@ -2027,56 +2789,212 @@ impl Message<ListAttention> for Attention {
 impl Message<AlertDue> for Attention {
     type Reply = ();
 
-    /// 155 §7.4: a delay window closed; derive again so the alert shows, and
-    /// nudge clients with an empty-diff `AttentionChanged` when the id set
-    /// alone would not have (the item is the same, its `alert` is new).
+    /// 155 §7.4: a delay window closed; derive again so the alert shows — the
+    /// new `alert` sets `alerts_changed` on the published event (207 §5.5).
     async fn handle(&mut self, _: AlertDue, _: &mut Context<Self, Self::Reply>) {
         self.alert_due = None;
-        let before = self.last_ids.clone();
-        if let Ok(items) = self.recheck().await
-            && before == self.last_ids
-        {
-            self.rt
-                .publish(AttentionChanged {
-                    count: items.len() as u32,
-                    ids_added: Vec::new(),
-                    ids_removed: Vec::new(),
-                    at_ms: now_ms(),
-                })
-                .await;
+        self.recheck_quietly().await;
+    }
+}
+
+/// `ask` → `Result<Vec<AttentionOutcome>, String>`: 207 §5 per kind; one recheck after the batch.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DismissMany {
+    /// Which items.
+    pub target: AttentionTarget,
+    /// Who (`rpc_core::Client::actor`).
+    pub actor: String,
+}
+
+/// `ask` → `Result<Vec<AttentionOutcome>, String>`: hide every target id until `until_ms` (every kind; outcome `snoozed`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SnoozeMany {
+    /// Which items.
+    pub target: AttentionTarget,
+    /// ms since epoch.
+    pub until_ms: u64,
+}
+
+/// `tell` (internal): the coarse tick (207 §4, §5.5) — prune stopped rows past
+/// `stopped_ttl_mins`, re-derive, publish only when something changed.
+#[derive(Clone, Copy, Debug)]
+pub struct RescoreTick;
+
+impl Attention {
+    /// 207 §5.1: the current list (no publish) and the ids `target` names in it.
+    async fn targets(
+        &mut self,
+        target: &AttentionTarget,
+    ) -> Result<(HashMap<String, AttentionItem>, Vec<String>), String> {
+        let inputs = self.gather().await;
+        let states = states(&self.pool).await.map_err(|e| e.to_string())?;
+        let items = derive(&inputs, &states, now_ms());
+        let ids = target.resolve(&items)?;
+        Ok((items.into_iter().map(|i| (i.id.clone(), i)).collect(), ids))
+    }
+
+    /// 207 §5.2: leave one item to its agent, per kind. Never wakes a session.
+    async fn dismiss_one(&mut self, item: &AttentionItem, actor: &str) -> AttentionOutcome {
+        use AttentionResolution as R;
+        let id = item.id.as_str();
+        let now = now_ms();
+        match item.kind {
+            AttentionKind::Approval if id.starts_with("approval:") => {
+                let Some(approval) = item.approval else {
+                    return AttentionOutcome::of(id, R::Gone);
+                };
+                let Ok(Some(a)) = ActorRef::<tools::Approval>::lookup(tools::APPROVAL_ACTOR) else {
+                    return AttentionOutcome::failed(id, "the approval actor is not running");
+                };
+                match a.ask(tools::approval::Dismiss { id: approval }).await {
+                    Ok(true) => {
+                        self.pending.remove(&approval);
+                        tasks::activity::record(
+                            &self.rt,
+                            tasks::activity::ActivityKind::ApprovalResolved,
+                            actor,
+                            item.session.as_deref().unwrap_or(id),
+                            format!("left approval {} to the agent (not run)", approval.0),
+                        )
+                        .await;
+                        AttentionOutcome::of(id, R::NotRun)
+                    }
+                    Ok(false) => AttentionOutcome::of(id, R::Gone),
+                    Err(e) => AttentionOutcome::failed(id, e),
+                }
+            }
+            AttentionKind::Ask if id.starts_with("ask:") => {
+                let Some(ask) = item.ask.as_ref().map(|a| a.id) else {
+                    return AttentionOutcome::of(id, R::Gone);
+                };
+                let Ok(Some(a)) = ActorRef::<tools::AskUser>::lookup(tools::ASK_ACTOR) else {
+                    return AttentionOutcome::failed(id, "the ask actor is not running");
+                };
+                match a.ask(tools::LeaveAsk { id: ask }).await {
+                    Ok(Some(_)) => {
+                        self.ask_since.remove(&ask);
+                        AttentionOutcome::of(id, R::LeftToAgent)
+                    }
+                    Ok(None) => AttentionOutcome::of(id, R::Gone),
+                    Err(e) => AttentionOutcome::failed(id, e),
+                }
+            }
+            AttentionKind::Decision if id.starts_with("decision:") => {
+                let Some(decision) = item.decision.clone() else {
+                    return AttentionOutcome::of(id, R::Gone);
+                };
+                let Some(t) = tasks::actor() else {
+                    return AttentionOutcome::failed(id, "the tasks actor is not running");
+                };
+                let m = tasks::LeaveDecision {
+                    decision,
+                    actor: actor.to_owned(),
+                };
+                match t.ask(m).await {
+                    Ok(l) if l.live => AttentionOutcome::of(id, R::LeftToAgent),
+                    Ok(_) => AttentionOutcome::of(id, R::LeftForLater),
+                    Err(kameo::error::SendError::HandlerError(e))
+                        if e.starts_with("no task is blocked") =>
+                    {
+                        AttentionOutcome::of(id, R::Gone)
+                    }
+                    Err(e) => AttentionOutcome::failed(id, e),
+                }
+            }
+            AttentionKind::Secret if id.starts_with("secret:") => {
+                let Some(rid) = id
+                    .strip_prefix("secret:")
+                    .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                else {
+                    return AttentionOutcome::of(id, R::Gone);
+                };
+                let Some(s) = secrets::actor() else {
+                    return AttentionOutcome::failed(id, "the secrets actor is not running");
+                };
+                match s
+                    .ask(secrets::Waive {
+                        id: secrets::RequestId(rid),
+                    })
+                    .await
+                {
+                    Ok(true) => AttentionOutcome::of(id, R::ProceedWithout),
+                    Ok(false) => AttentionOutcome::of(id, R::Gone),
+                    Err(e) => AttentionOutcome::failed(id, e),
+                }
+            }
+            AttentionKind::Handoff if id.starts_with("handoff:") => {
+                let hid = &id["handoff:".len()..];
+                match crate::handoff::resolve(&self.pool, hid, crate::handoff::PROCEED_WITHOUT, now)
+                    .await
+                {
+                    Ok(true) => AttentionOutcome::of(id, R::ProceedWithout),
+                    Ok(false) => AttentionOutcome::of(id, R::Gone),
+                    Err(e) => AttentionOutcome::failed(id, format!("{e:#}")),
+                }
+            }
+            // 119: everything else (Source items with their own prefixes too) is hidden, versioned.
+            _ => match set_state(&self.pool, id, None, now).await {
+                Ok(()) => AttentionOutcome::of(id, R::Hidden),
+                Err(e) => AttentionOutcome::failed(id, format!("{e:#}")),
+            },
         }
     }
 }
 
-impl Message<SnoozeAttention> for Attention {
-    type Reply = Result<(), String>;
+impl Message<DismissMany> for Attention {
+    type Reply = Result<Vec<AttentionOutcome>, String>;
 
-    async fn handle(
-        &mut self,
-        m: SnoozeAttention,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        set_state(&self.pool, &m.id, Some(m.until_ms), now_ms())
-            .await
-            .map_err(|e| e.to_string())?;
+    async fn handle(&mut self, m: DismissMany, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (items, ids) = self.targets(&m.target).await?;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in &ids {
+            out.push(match items.get(id) {
+                Some(item) => self.dismiss_one(item, &m.actor).await,
+                None => AttentionOutcome::of(id, AttentionResolution::Gone),
+            });
+        }
         self.recheck_quietly().await;
-        Ok(())
+        Ok(out)
     }
 }
 
-impl Message<DismissAttention> for Attention {
-    type Reply = Result<(), String>;
+impl Message<SnoozeMany> for Attention {
+    type Reply = Result<Vec<AttentionOutcome>, String>;
 
-    async fn handle(
-        &mut self,
-        m: DismissAttention,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        set_state(&self.pool, &m.0, None, now_ms())
-            .await
-            .map_err(|e| e.to_string())?;
+    async fn handle(&mut self, m: SnoozeMany, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (items, ids) = self.targets(&m.target).await?;
+        let now = now_ms();
+        let mut out = Vec::with_capacity(ids.len());
+        for id in &ids {
+            out.push(if items.contains_key(id) {
+                match set_state(&self.pool, id, Some(m.until_ms), now).await {
+                    Ok(()) => AttentionOutcome::of(id, AttentionResolution::Snoozed),
+                    Err(e) => AttentionOutcome::failed(id, format!("{e:#}")),
+                }
+            } else {
+                AttentionOutcome::of(id, AttentionResolution::Gone)
+            });
+        }
         self.recheck_quietly().await;
-        Ok(())
+        Ok(out)
+    }
+}
+
+impl Message<RescoreTick> for Attention {
+    type Reply = ();
+
+    async fn handle(&mut self, _: RescoreTick, _: &mut Context<Self, Self::Reply>) {
+        let ttl_ms = self
+            .rt
+            .section::<crate::config::RosterConfig>("roster")
+            .unwrap_or_default()
+            .attention
+            .stopped_ttl_mins
+            .saturating_mul(60_000);
+        if let Err(e) = prune_finished(&self.pool, now_ms(), ttl_ms).await {
+            tracing::warn!("attention: prune finished: {e:#}");
+        }
+        self.recheck_quietly().await;
     }
 }
 
@@ -2297,15 +3215,17 @@ mod tests {
         );
         let items = derive(&inputs, &HashMap::new(), 100);
         let kinds: Vec<_> = items.iter().map(|i| i.kind).collect();
-        // 132 D4: equal rank → the longest-waiting first; budgets without a filed task wait since `now`.
+        // 207 §3: score order — a decision stops an agent (600 + medium 50), a node is a mesh
+        // notice (450), hire / review / blocked are yours (300 + 50, then the longest-waiting
+        // first), a paused budget is yours (300), a budget at 80 % a notice (120).
         assert_eq!(
             kinds,
             [
+                AttentionKind::Decision,
                 AttentionKind::Node,
                 AttentionKind::Hire,
                 AttentionKind::Review,
                 AttentionKind::Blocked,
-                AttentionKind::Decision,
                 AttentionKind::Budget,
                 AttentionKind::Budget
             ]
@@ -2346,7 +3266,7 @@ mod tests {
                 .filter(|i| i.kind == AttentionKind::Budget)
                 .map(|i| i.agent.clone().unwrap())
                 .collect::<Vec<_>>(),
-            ["ops", "cap"]
+            ["cap", "ops"]
         );
 
         let mut states = HashMap::new();
@@ -2403,6 +3323,7 @@ mod tests {
             items: vec![],
             to: None,
             if_wrong: None,
+            left_to_agent_ms: None,
         }
     }
 
@@ -2431,20 +3352,20 @@ mod tests {
             tasks: vec![d.clone(), r.clone()],
             ..Default::default()
         };
-        // 132 D4 order: the review (waiting since 40) before the decision (50); legacy strings stay.
+        // 207 §3 order: the decision (600 + 50) before the review (300 + 50); legacy strings stay.
         let items = derive(&bare, &HashMap::new(), 100);
-        assert_eq!(items[1].packet, None);
+        assert_eq!(items[0].packet, None);
         assert_eq!(
-            items[1].title,
+            items[0].title,
             "agent:ops asks for a decision on \u{201c}deploy\u{201d}"
         );
         assert_eq!(
-            items[1].detail.as_deref(),
+            items[0].detail.as_deref(),
             Some("the question is in the task thread")
         );
-        assert_eq!(items[0].packet, None);
-        assert_eq!(items[0].title, "\u{201c}migrate\u{201d} awaits your review");
-        assert_eq!(items[0].detail.as_deref(), Some("by agent:ops"));
+        assert_eq!(items[1].packet, None);
+        assert_eq!(items[1].title, "\u{201c}migrate\u{201d} awaits your review");
+        assert_eq!(items[1].detail.as_deref(), Some("by agent:ops"));
 
         let review_key = format!("review:{}", r.id);
         let with = Inputs {
@@ -2459,18 +3380,18 @@ mod tests {
         // 132 D1: the decision row leads with the question, the byline is the detail;
         // the review row leads with the outcome (summary clipped to ROW_BUDGET), the task and author follow.
         let items = derive(&with, &HashMap::new(), 100);
-        assert_eq!(items[1].kind, AttentionKind::Decision);
-        assert_eq!(items[1].packet.as_deref(), Some("decision:d1"));
-        assert_eq!(items[1].title, "Cap retries at 3?");
-        assert_eq!(items[1].detail.as_deref(), Some("agent:ops \u{b7} deploy"));
-        assert_eq!(items[0].kind, AttentionKind::Review);
-        assert_eq!(items[0].packet.as_deref(), Some(review_key.as_str()));
-        let title = items[0].title.as_str();
+        assert_eq!(items[0].kind, AttentionKind::Decision);
+        assert_eq!(items[0].packet.as_deref(), Some("decision:d1"));
+        assert_eq!(items[0].title, "Cap retries at 3?");
+        assert_eq!(items[0].detail.as_deref(), Some("agent:ops \u{b7} deploy"));
+        assert_eq!(items[1].kind, AttentionKind::Review);
+        assert_eq!(items[1].packet.as_deref(), Some(review_key.as_str()));
+        let title = items[1].title.as_str();
         assert!(title.starts_with("Summary line sss"), "{title}");
         assert_eq!(title.chars().count(), tasks::packet::ROW_BUDGET);
         assert!(title.ends_with('…'));
         assert_eq!(
-            items[0].detail.as_deref(),
+            items[1].detail.as_deref(),
             Some("\u{201c}migrate\u{201d} \u{b7} by agent:ops")
         );
         assert_eq!(items.len(), 2, "a stray packet makes no item");
@@ -3228,8 +4149,8 @@ mod tests {
         let kinds: Vec<_> = items.iter().map(|i| i.kind).collect();
         assert_eq!(
             kinds,
-            [AttentionKind::Show, AttentionKind::Ask, AttentionKind::Ask],
-            "the show has waited since 50, the asks since now"
+            [AttentionKind::Ask, AttentionKind::Ask, AttentionKind::Show],
+            "asks stop an agent (600), a show is shown (120)"
         );
         let a = items
             .iter()
@@ -3252,7 +4173,7 @@ mod tests {
             "session short id: {}",
             m.title
         );
-        let s = &items[0];
+        let s = &items[2];
         assert_eq!(s.id, "show:c1");
         assert_eq!(s.title, "OPS showed you Report");
         assert_eq!(s.detail.as_deref(), Some("pdf \u{b7} 1.2 MB \u{b7} v2"));
@@ -3329,7 +4250,8 @@ mod tests {
         };
         let items = derive(&inputs, &HashMap::new(), 100);
         let sessions: Vec<_> = items.iter().map(|i| i.session.as_deref()).collect();
-        assert_eq!(sessions, [None, Some("work-2"), Some("work-1")]);
+        // 207 §3: the decision (600) first, then the yours-to-do items longest-waiting first.
+        assert_eq!(sessions, [Some("work-1"), None, Some("work-2")]);
     }
 
     #[test]
@@ -3405,44 +4327,90 @@ mod tests {
         );
     }
 
-    /// 130 E1: equal id sets are silent; an added id, a dismissed id each announce once.
+    /// 207 §5.5: ids, order, content (not score / reasons / alert) and alerts
+    /// each announce; a score-only drift is silent; `seq` / `epoch_ms` ride along.
     #[test]
-    fn attention_changed_diffs_id_sets() {
+    fn attention_changed_tracks_ids_order_content_and_alerts() {
         let desk = runtime::SessionId::new();
         let one = ask(desk, &[("Ship?", &["Yes"])]);
         let two = ask(desk, &[("Deploy?", &["Yes"])]);
+        let (id_one, id_two) = (format!("ask:{}", one.id.0), format!("ask:{}", two.id.0));
         let mut inputs = Inputs {
             asks: vec![one.clone()],
+            ask_since: HashMap::from([(one.id, 10), (two.id, 20)]),
             ..Default::default()
         };
         let first = derive(&inputs, &HashMap::new(), 100);
-        let ev = changed(&HashSet::new(), &first, 100).expect("first derive announces");
+        let ev = changed(&[], &first, 100, 1, 7).expect("first derive announces");
         assert_eq!(
             (ev.count, ev.ids_added.len(), ev.ids_removed.len()),
             (1, 1, 0)
         );
-        let prev: HashSet<String> = first.iter().map(|i| i.id.clone()).collect();
+        assert_eq!((ev.seq, ev.epoch_ms, ev.alerts_changed), (1, 7, false));
+        assert_eq!(ev.order, std::slice::from_ref(&id_one));
+        assert_eq!(ev.items.len(), 1);
+
+        // The ask's `at_ms` is its first-seen time: stable across derives; only the age drifts.
+        let later = derive(&inputs, &HashMap::new(), 100 + 120_000);
+        assert_eq!(later[0].at_ms, 10);
+        assert_ne!(later[0].score, first[0].score);
         assert_eq!(
-            changed(&prev, &derive(&inputs, &HashMap::new(), 101), 101),
+            changed(&first, &later, 2, 2, 7),
             None,
-            "same ids: nothing"
+            "score-only: nothing"
         );
+
+        let mut retitled = first.clone();
+        retitled[0].title = "other".into();
+        let ev = changed(&first, &retitled, 3, 2, 7).expect("content announces");
+        assert!(ev.ids_added.is_empty() && ev.ids_removed.is_empty());
+        assert_eq!(ev.items.len(), 1);
+        assert!(!ev.alerts_changed);
+
+        let mut alerted = first.clone();
+        alerted[0].alert = Some(crate::alert::Alert {
+            id: format!("{id_one}@10"),
+            class: crate::alert::AlertClass::NeedsYou,
+            why: "a session asked you a question".into(),
+            at_ms: 10,
+        });
+        let ev = changed(&first, &alerted, 4, 2, 7).expect("an alert announces");
+        assert!(ev.alerts_changed);
+        assert!(ev.items.is_empty(), "an alert alone is no content change");
+        let ev = changed(&alerted, &first, 4, 3, 7).expect("an alert going away announces");
+        assert!(ev.alerts_changed);
+
         inputs.asks.push(two.clone());
         let more = derive(&inputs, &HashMap::new(), 102);
-        let ev = changed(&prev, &more, 102).unwrap();
-        assert_eq!(ev.ids_added, [format!("ask:{}", two.id.0)]);
+        let ev = changed(&first, &more, 102, 2, 7).unwrap();
+        assert_eq!(ev.ids_added, std::slice::from_ref(&id_two));
         assert!(ev.ids_removed.is_empty());
         assert_eq!(ev.count, 2);
-        let prev: HashSet<String> = more.iter().map(|i| i.id.clone()).collect();
+        assert_eq!(
+            ev.order,
+            [id_one.clone(), id_two.clone()],
+            "longest waiting first"
+        );
+        assert_eq!(
+            ev.items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            [id_two.as_str()],
+            "only the new item rides along"
+        );
+
+        let swapped: Vec<AttentionItem> = more.iter().rev().cloned().collect();
+        let ev = changed(&more, &swapped, 103, 3, 7).expect("order announces");
+        assert!(ev.items.is_empty() && ev.ids_added.is_empty() && ev.ids_removed.is_empty());
+        assert_eq!(ev.order, [id_two.clone(), id_one.clone()]);
+
         let states = HashMap::from([(
-            format!("ask:{}", one.id.0),
+            id_one.clone(),
             State {
                 dismissed_ms: Some(200),
                 snoozed_until_ms: None,
             },
         )]);
-        let ev = changed(&prev, &derive(&inputs, &states, 103), 103).unwrap();
-        assert_eq!(ev.ids_removed, [format!("ask:{}", one.id.0)]);
+        let ev = changed(&more, &derive(&inputs, &states, 103), 103, 4, 7).unwrap();
+        assert_eq!(ev.ids_removed, [id_one]);
         assert!(ev.ids_added.is_empty());
         assert_eq!(ev.count, 1);
     }
@@ -3469,6 +4437,15 @@ mod tests {
         let by = |id: String| items.iter().find(|i| i.id == id).unwrap().waiting_since_ms;
         assert_eq!(by(format!("approval:{}", a.id.0)), Some(40));
         assert_eq!(by(format!("ask:{}", q.id.0)), Some(70));
+        // 207 §3.5: an ask's `at_ms` is its first sighting, stable across derives.
+        let at = |now: u64| {
+            derive(&inputs, &HashMap::new(), now)
+                .into_iter()
+                .find(|i| i.id == format!("ask:{}", q.id.0))
+                .unwrap()
+                .at_ms
+        };
+        assert_eq!((at(100), at(5_000)), (70, 70));
     }
 
     /// 149 E6: every session-born kind carries the exchange of its session;
@@ -3492,6 +4469,9 @@ mod tests {
                 at_ms: 50,
                 summary: None,
                 next_steps: vec![],
+                outcome: StopOutcome::Finished,
+                stop_reason: "end_turn".into(),
+                error: None,
             }],
             resumes: vec![ResumeNeed {
                 session: s.to_string(),
@@ -3636,6 +4616,9 @@ mod tests {
             at_ms,
             summary: Some("done".into()),
             next_steps: vec!["Reply ok".into()],
+            outcome: StopOutcome::Finished,
+            stop_reason: "end_turn".into(),
+            error: None,
         };
         record_finished(store.pool(), &row("t1", 5)).await.unwrap();
         record_finished(store.pool(), &row("t2", 6)).await.unwrap();
@@ -3661,12 +4644,167 @@ mod tests {
         assert!(finished(store.pool()).await.unwrap().is_empty());
     }
 
-    // ---- 132 ATTENTION-ROWS-AND-ORDER ---------------------------------------------
-
-    /// D4: rank desc (project order step, then priority) → waiting_since asc (None
-    /// last) → at_ms desc; a session item borrows its checkout task's priority/rank.
+    /// 207 §4: every stop reason but the resume path's own earns a card, classed by outcome.
     #[test]
-    fn order_is_rank_then_waiting_then_newest() {
+    fn stop_reasons_map_to_cards() {
+        assert_eq!(stop_card("end_turn"), Some(StopOutcome::Finished));
+        assert_eq!(stop_card("stop"), Some(StopOutcome::Finished));
+        assert_eq!(stop_card("max_tokens"), Some(StopOutcome::Finished));
+        assert_eq!(stop_card("error"), Some(StopOutcome::Failed));
+        assert_eq!(stop_card("cancelled"), Some(StopOutcome::Cancelled));
+        assert_eq!(stop_card("timed_out"), Some(StopOutcome::TimedOut));
+        assert_eq!(stop_card("interrupted"), None);
+        assert_eq!(stop_card("suspended"), None);
+        for o in [
+            StopOutcome::Finished,
+            StopOutcome::Failed,
+            StopOutcome::Cancelled,
+            StopOutcome::TimedOut,
+        ] {
+            assert_eq!(StopOutcome::parse(o.as_str()), o);
+        }
+    }
+
+    /// 207 §4: a row per stop with its outcome, reason and error; the title and
+    /// detail follow the outcome; `expires_ms` = stop + ttl, and an expired row
+    /// is gone from the list; a new turn deletes the row; the tick prunes by ttl.
+    #[tokio::test]
+    async fn stopped_rows_roundtrip_expire_and_clear() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("r.sqlite")).await.unwrap();
+        let pool = store.pool();
+        let row = |session: &str,
+                   at_ms: u64,
+                   outcome,
+                   reason: &str,
+                   summary: Option<&str>,
+                   error: Option<&str>| Finished {
+            session: session.into(),
+            turn: "t1".into(),
+            at_ms,
+            summary: summary.map(str::to_owned),
+            next_steps: vec![],
+            outcome,
+            stop_reason: reason.into(),
+            error: error.map(str::to_owned),
+        };
+        record_finished(
+            pool,
+            &row(
+                "s-fail",
+                1_000,
+                StopOutcome::Failed,
+                "error",
+                None,
+                Some("rate limited"),
+            ),
+        )
+        .await
+        .unwrap();
+        record_finished(
+            pool,
+            &row(
+                "s-cancel",
+                2_000,
+                StopOutcome::Cancelled,
+                "cancelled",
+                Some("half"),
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+        record_finished(
+            pool,
+            &row(
+                "s-late",
+                3_000,
+                StopOutcome::TimedOut,
+                "timed_out",
+                Some("drafted"),
+                Some("deadline"),
+            ),
+        )
+        .await
+        .unwrap();
+        let rows = finished(pool).await.unwrap();
+        assert_eq!(rows.len(), 3);
+        let fail = rows.iter().find(|r| r.session == "s-fail").unwrap();
+        assert_eq!(
+            (
+                fail.outcome,
+                fail.stop_reason.as_str(),
+                fail.error.as_deref()
+            ),
+            (StopOutcome::Failed, "error", Some("rate limited"))
+        );
+
+        let ttl_ms = 45 * 60_000;
+        let inputs = Inputs {
+            finished: rows.clone(),
+            ..Default::default()
+        };
+        let items = derive(&inputs, &HashMap::new(), 5_000);
+        let by = |s: &str| {
+            items
+                .iter()
+                .find(|i| i.session.as_deref() == Some(s))
+                .unwrap()
+        };
+        let f = by("s-fail");
+        assert_eq!(f.title, "s-fail failed");
+        assert_eq!(
+            f.detail.as_deref(),
+            Some("rate limited"),
+            "no summary: the error"
+        );
+        assert_eq!(f.expires_ms, Some(1_000 + ttl_ms));
+        assert_eq!(
+            f.stop,
+            Some(AttentionStop {
+                outcome: StopOutcome::Failed,
+                reason: "error".into(),
+                error: Some("rate limited".into()),
+            })
+        );
+        assert_eq!(f.reasons[0].text, "failed");
+        assert_eq!(by("s-cancel").title, "s-cancel was cancelled");
+        assert_eq!(by("s-cancel").detail.as_deref(), Some("half"));
+        assert_eq!(by("s-late").title, "s-late timed out");
+        assert_eq!(
+            by("s-late").score,
+            150,
+            "failed and timed out share the higher base"
+        );
+
+        // Past the ttl the item leaves the list before the tick deletes the row.
+        let late = derive(&inputs, &HashMap::new(), 2_000 + ttl_ms);
+        assert_eq!(
+            late.iter()
+                .map(|i| i.session.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            ["s-late"]
+        );
+
+        assert!(clear_finished(pool, "s-cancel").await.unwrap());
+        assert!(!clear_finished(pool, "s-cancel").await.unwrap());
+        assert!(prune_finished(pool, 1_000 + ttl_ms, ttl_ms).await.unwrap());
+        let left: Vec<String> = finished(pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.session)
+            .collect();
+        assert_eq!(left, ["s-late"]);
+        assert!(!prune_finished(pool, 2_999 + ttl_ms, ttl_ms).await.unwrap());
+    }
+
+    // ---- 207 ATTENTION-FLAT-LIST ----------------------------------------------------
+
+    /// 207 §3.4: score desc → waiting_since asc → at_ms desc; `rank` is still filled
+    /// (132) but sorts nothing; a session item borrows its checkout task's priority.
+    #[test]
+    fn order_is_score_then_waiting_then_newest() {
         let ops = tasks::Owner::Agent("ops".into());
         let mut urgent = task(
             "urgent one",
@@ -3726,6 +4864,9 @@ mod tests {
             at_ms: 99,
             summary: Some("done".into()),
             next_steps: vec![],
+            outcome: StopOutcome::Finished,
+            stop_reason: "end_turn".into(),
+            error: None,
         };
         let inputs = Inputs {
             tasks: vec![
@@ -3746,30 +4887,442 @@ mod tests {
         assert_eq!(
             ids,
             [
-                format!("blocked:{}", ranked.id).as_str(), // 102: project step beats priority
-                format!("blocked:{}", urgent.id).as_str(), // 9
-                "show:c1",                                 // 7: borrowed from the checkout task
-                format!("blocked:{}", old.id).as_str(),    // 5, waiting since 10
-                "handoff:h-checked", // 5, waiting since 50 (no checkout on its session)
-                format!("blocked:{}", new.id).as_str(), // 5, waiting since 80
-                "finished:root-1:t1", // 5, waits on nobody → last
+                "handoff:h-checked",                       // 600: stops an agent
+                format!("blocked:{}", urgent.id).as_str(), // 300 + 90
+                format!("blocked:{}", old.id).as_str(),    // 300 + 50, waiting since 10
+                format!("blocked:{}", new.id).as_str(),    // 300 + 50, waiting since 80
+                format!("blocked:{}", ranked.id).as_str(), // 300 + 2 × 10 + 10
+                "show:c1",            // 120 + 70 borrowed from the checkout task
+                "finished:root-1:t1", // 80
             ],
             "{items:#?}"
         );
+        let scores: Vec<u32> = items.iter().map(|i| i.score).collect();
+        assert_eq!(scores, [600, 390, 350, 350, 330, 190, 80]);
         assert_eq!(
-            (items[0].priority, items[0].rank),
+            (items[4].priority, items[4].rank),
             (Some(tasks::Priority::Low), 102)
         );
         assert_eq!(
-            (items[1].priority, items[1].rank),
-            (Some(tasks::Priority::Urgent), 9)
-        );
-        assert_eq!(
-            (items[2].priority, items[2].rank),
+            (items[5].priority, items[5].rank),
             (Some(tasks::Priority::High), 7)
         );
-        assert_eq!((items[4].priority, items[4].rank), (None, 5));
-        assert_eq!((items[6].priority, items[6].rank), (None, 5));
+        assert_eq!((items[0].priority, items[0].rank), (None, 5));
+        // Equal score, wait and time: the id decides, so every client shows one order.
+        let twins = Inputs {
+            handoffs: vec![
+                handoff("h-b", None, 50, false),
+                handoff("h-a", None, 50, false),
+            ],
+            ..Default::default()
+        };
+        let ids: Vec<String> = derive(&twins, &HashMap::new(), 100)
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(ids, ["handoff:h-a", "handoff:h-b"]);
+    }
+
+    fn summary(
+        id: runtime::SessionId,
+        parent: Option<runtime::SessionId>,
+        title: &str,
+        name: Option<&str>,
+        desk: Option<&str>,
+        project: Option<&str>,
+    ) -> agent::SessionSummary {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+            "title": title, "model": "m", "parent": parent, "name": name, "effort": null,
+            "agent": null, "cwd": null, "desk": desk, "project": project,
+        }))
+        .unwrap()
+    }
+
+    /// 207 §3.5: root, desk root, child, grandchild, unknown parent.
+    #[test]
+    fn lineage_map_paths_roots_and_projects() {
+        let ids: Vec<runtime::SessionId> = (0..6).map(|_| runtime::SessionId::new()).collect();
+        let (root, child, grandchild, desk, orphan, missing) =
+            (ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]);
+        let map = lineage_map(
+            &[
+                summary(
+                    root,
+                    None,
+                    " Ship 2.5 release ",
+                    None,
+                    None,
+                    Some("release-2.5"),
+                ),
+                summary(
+                    child,
+                    Some(root),
+                    "child title",
+                    Some("builder"),
+                    None,
+                    Some("release-2.5"),
+                ),
+                summary(
+                    grandchild,
+                    Some(child),
+                    "lint it",
+                    None,
+                    None,
+                    Some("release-2.5"),
+                ),
+                summary(desk, None, "", None, Some("ops"), Some("theuth")),
+                summary(orphan, Some(missing), "", None, None, None),
+            ],
+            &HashMap::new(),
+        );
+        let l = |s: runtime::SessionId| map[&s.to_string()].clone();
+        assert_eq!(
+            l(root),
+            Lineage {
+                project: Some("release-2.5".into()),
+                root: root.to_string(),
+                parent: None,
+                path: vec!["Ship 2.5 release".into()],
+            }
+        );
+        assert_eq!(
+            l(grandchild),
+            Lineage {
+                project: Some("release-2.5".into()),
+                root: root.to_string(),
+                parent: Some(child.to_string()),
+                path: vec![
+                    "Ship 2.5 release".into(),
+                    "builder".into(),
+                    "lint it".into()
+                ],
+            }
+        );
+        assert_eq!(l(desk).path, ["ops desk"]);
+        assert_eq!(l(desk).project.as_deref(), Some("theuth"));
+        let o = l(orphan);
+        assert_eq!(
+            o.root,
+            orphan.to_string(),
+            "an unknown parent ends the walk"
+        );
+        assert_eq!(o.parent, Some(missing.to_string()));
+        assert_eq!(o.path, [orphan.to_string()[..8].to_owned()]);
+    }
+
+    fn row(
+        id: runtime::SessionId,
+        parent: runtime::SessionId,
+        name: &str,
+        state: agent::AgentState,
+    ) -> agent::AgentInfo {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "name": name, "parent": parent, "depth": 1, "agent": null, "model": "m",
+            "state": state, "started_at": null, "finished_at": null, "last": "",
+        }))
+        .unwrap()
+    }
+
+    /// 207 D5: parent chain, child name, sibling name, `session:` id, a cycle, unresolved names.
+    #[test]
+    fn blocks_map_counts_transitive_waiters() {
+        use agent::AgentState as A;
+        let await_ = |from: &str| A::Awaiting { from: from.into() };
+        let ids: Vec<runtime::SessionId> = (0..8).map(|_| runtime::SessionId::new()).collect();
+        let (root, builder, linter, tester, x, y, other, lone) = (
+            ids[0], ids[1], ids[2], ids[3], ids[4], ids[5], ids[6], ids[7],
+        );
+        let rows = [
+            // the root waits on its child `builder` (child name)
+            row(root, root, "", await_("builder")),
+            // builder runs; its child linter waits on it (parent)
+            row(builder, root, "builder", A::Running),
+            row(linter, builder, "linter", await_("parent")),
+            // tester waits on its sibling `builder`
+            row(tester, root, "tester", await_("builder")),
+            // a cycle through `session:` ids
+            row(x, x, "", await_(&format!("session:{y}"))),
+            row(y, y, "", await_(&format!("session:{x}"))),
+            // unresolved: nobody is called `ghost`; a root's `parent` is itself
+            row(other, other, "", await_("ghost")),
+            row(lone, lone, "", await_("parent")),
+        ];
+        let m = blocks_map(&rows);
+        assert_eq!(
+            m.get(&builder.to_string()),
+            Some(&3),
+            "root, linter, tester"
+        );
+        assert_eq!(
+            m.get(&x.to_string()),
+            Some(&1),
+            "a cycle counts the other side once"
+        );
+        assert_eq!(m.get(&y.to_string()), Some(&1));
+        assert_eq!(m.get(&root.to_string()), None);
+        assert_eq!(m.get(&other.to_string()), None);
+        assert_eq!(m.get(&lone.to_string()), None);
+        // A chain: c waits on b, b waits on a → a blocks 2.
+        let (a, b, c) = (ids[0], ids[1], ids[2]);
+        let chain = [
+            row(a, a, "", A::Running),
+            row(b, b, "", await_(&format!("session:{a}"))),
+            row(c, c, "", await_(&format!("session:{b}"))),
+        ];
+        let m = blocks_map(&chain);
+        assert_eq!((m[&a.to_string()], m[&b.to_string()]), (2, 1));
+    }
+
+    /// 207: running / awaiting / approval rows and store-running sessions are live.
+    #[test]
+    fn live_set_from_activity_and_sessions() {
+        use agent::AgentState as A;
+        let ids: Vec<runtime::SessionId> = (0..6).map(|_| runtime::SessionId::new()).collect();
+        let rows = [
+            row(ids[0], ids[0], "", A::Running),
+            row(
+                ids[1],
+                ids[0],
+                "a",
+                A::Awaiting {
+                    from: "parent".into(),
+                },
+            ),
+            row(
+                ids[2],
+                ids[0],
+                "b",
+                A::Approval {
+                    tool: "shell".into(),
+                },
+            ),
+            row(ids[3], ids[0], "c", A::Idle),
+            row(ids[4], ids[0], "d", A::Error),
+        ];
+        let mut remote = summary(ids[5], None, "t", None, None, None);
+        remote.running = true;
+        let live = live_set(&rows, &[remote]);
+        let want: HashSet<String> = [0, 1, 2, 5].iter().map(|i| ids[*i].to_string()).collect();
+        assert_eq!(live, want);
+    }
+
+    /// 207 §3.5: derive puts lineage, liveness, blocks, deadlines, risk and tool on
+    /// items; task-born items are live only through their checkout session.
+    #[test]
+    fn derive_fills_the_207_fields() {
+        let s = runtime::SessionId::new();
+        let a = ApprovalRequested {
+            id: ApprovalId(uuid::Uuid::now_v7()),
+            session: s,
+            tool: "shell".into(),
+            args: serde_json::json!({ "command": "kubectl delete deployment x" }),
+            risk: tools::Risk::Destructive,
+        };
+        let approval_id = format!("approval:{}", a.id.0);
+        let ops = tasks::Owner::Agent("ops".into());
+        let mut blocked = task(
+            "b",
+            tasks::TaskState::Blocked,
+            ops.clone(),
+            &["person:x"],
+            None,
+            40,
+        );
+        blocked.project = Some("tasks-proj".into());
+        let inputs = Inputs {
+            approvals: vec![(a.clone(), 40)],
+            tasks: vec![blocked.clone()],
+            // The blocked task's session is known from its events, not a checkout.
+            task_sessions: HashMap::from([(blocked.id.0.clone(), s.to_string())]),
+            lineage: HashMap::from([(
+                s.to_string(),
+                Lineage {
+                    project: Some("release-2.5".into()),
+                    root: "root-1".into(),
+                    parent: Some("root-1".into()),
+                    path: vec!["Ship 2.5 release".into(), "builder".into()],
+                },
+            )]),
+            live: HashSet::from([s.to_string()]),
+            blocks: HashMap::from([(s.to_string(), 2)]),
+            deadlines: HashMap::from([(approval_id.clone(), 40 + 300_000)]),
+            ..Default::default()
+        };
+        let items = derive(&inputs, &HashMap::new(), 100);
+        let ap = items.iter().find(|i| i.id == approval_id).unwrap();
+        assert_eq!(
+            ap.title, "builder wants to run shell",
+            "who falls back to the path"
+        );
+        assert_eq!(
+            (ap.risk, ap.tool.as_deref()),
+            (Some(tools::Risk::Destructive), Some("shell"))
+        );
+        assert_eq!(ap.deadline_ms, Some(300_040));
+        assert_eq!(ap.project.as_deref(), Some("release-2.5"));
+        assert_eq!(ap.root_session.as_deref(), Some("root-1"));
+        assert_eq!(ap.parent_session.as_deref(), Some("root-1"));
+        assert_eq!(ap.path, ["Ship 2.5 release", "builder"]);
+        assert!(ap.session_live);
+        assert_eq!(ap.blocks, 2);
+        assert_eq!(ap.score, 600 + 300 + 100 + 80);
+        let b = items
+            .iter()
+            .find(|i| i.kind == AttentionKind::Blocked)
+            .unwrap();
+        assert!(
+            !b.session_live,
+            "a task-born item is live only through its checkout"
+        );
+        assert_eq!(
+            b.project.as_deref(),
+            Some("release-2.5"),
+            "the session's project wins"
+        );
+        // Without a known session the task's project stands in.
+        let bare = Inputs {
+            tasks: vec![blocked],
+            ..Default::default()
+        };
+        let items = derive(&bare, &HashMap::new(), 100);
+        assert_eq!(items[0].project.as_deref(), Some("tasks-proj"));
+        assert!(items[0].path.is_empty());
+    }
+
+    /// 207 §5.2 / D7: a blocker the user left to the agent makes no item.
+    #[test]
+    fn left_blocker_makes_no_item() {
+        let ops = tasks::Owner::Agent("ops".into());
+        let left = task(
+            "t",
+            tasks::TaskState::Blocked,
+            ops.clone(),
+            &["left:decision:d1"],
+            None,
+            40,
+        );
+        let both = task(
+            "u",
+            tasks::TaskState::Blocked,
+            ops,
+            &["left:decision:d2", "person:x"],
+            None,
+            40,
+        );
+        let inputs = Inputs {
+            tasks: vec![left, both.clone()],
+            ..Default::default()
+        };
+        let ids: Vec<String> = derive(&inputs, &HashMap::new(), 100)
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(ids, [format!("blocked:{}", both.id)]);
+    }
+
+    /// 207 §8: a Source item without a priority borrows its session's checkout task.
+    #[test]
+    fn source_items_borrow_the_checkout_priority() {
+        let ops = tasks::Owner::Agent("ops".into());
+        let mut t = task("t", tasks::TaskState::Doing, ops, &[], None, 5);
+        t.priority = tasks::Priority::Urgent;
+        t.checkout = Some(tasks::Checkout {
+            session: "work-1".into(),
+            engine: "e1".into(),
+            epoch: 1,
+            progress_at_ms: 5,
+            orphaned: false,
+            taken: false,
+        });
+        let ext = AttentionItem {
+            session: Some("work-1".into()),
+            ..AttentionItem::new(
+                "double:q".into(),
+                AttentionKind::Double,
+                "d".into(),
+                None,
+                50,
+            )
+        };
+        let inputs = Inputs {
+            tasks: vec![t],
+            external: vec![ext],
+            ..Default::default()
+        };
+        let items = derive(&inputs, &HashMap::new(), 100);
+        let d = items.iter().find(|i| i.id == "double:q").unwrap();
+        assert_eq!((d.priority, d.rank), (Some(tasks::Priority::Urgent), 9));
+    }
+
+    /// 207 §5.1: ids xor filter; a filter matches kinds any-of, projects any-of
+    /// (`""` = no project) and `at_ms <= before_ms`, in list order.
+    #[test]
+    fn target_validation_and_filter_matching() {
+        let it = |id: &str, kind, project: Option<&str>, at_ms| AttentionItem {
+            project: project.map(str::to_owned),
+            ..AttentionItem::new(id.into(), kind, "t".into(), None, at_ms)
+        };
+        let items = [
+            it("show:a", AttentionKind::Show, Some("p1"), 10),
+            it("show:b", AttentionKind::Show, None, 20),
+            it("finished:c:t", AttentionKind::Finished, Some("p2"), 30),
+            it("show:d", AttentionKind::Show, Some("p2"), 40),
+        ];
+        let ids = AttentionTarget {
+            ids: vec!["show:d".into(), "gone:x".into()],
+            filter: None,
+        };
+        assert_eq!(
+            ids.resolve(&items).unwrap(),
+            ["show:d", "gone:x"],
+            "caller's order, unknown kept"
+        );
+        let both = AttentionTarget {
+            ids: vec!["show:a".into()],
+            filter: Some(AttentionFilter::default()),
+        };
+        assert_eq!(
+            both.resolve(&items).unwrap_err(),
+            "attention target: give ids or a filter, not both"
+        );
+        assert_eq!(
+            AttentionTarget::default().resolve(&items).unwrap_err(),
+            "attention target: give ids or a filter"
+        );
+        let filter = |f: AttentionFilter| {
+            AttentionTarget {
+                ids: vec![],
+                filter: Some(f),
+            }
+            .resolve(&items)
+            .unwrap()
+        };
+        assert_eq!(
+            filter(AttentionFilter::default()).len(),
+            4,
+            "an empty filter matches all"
+        );
+        assert_eq!(
+            filter(AttentionFilter {
+                kinds: vec![AttentionKind::Show],
+                projects: vec!["".into(), "p2".into()],
+                before_ms: None,
+            }),
+            ["show:b", "show:d"]
+        );
+        assert_eq!(
+            filter(AttentionFilter {
+                before_ms: Some(30),
+                ..Default::default()
+            }),
+            ["show:a", "show:b", "finished:c:t"]
+        );
+        // The wire form: both parts optional.
+        let t: AttentionTarget =
+            serde_json::from_value(serde_json::json!({ "filter": { "kinds": ["show"] } })).unwrap();
+        assert_eq!(t.ids, Vec::<String>::new());
+        assert_eq!(t.filter.unwrap().kinds, [AttentionKind::Show]);
     }
 
     /// D8: a budget item's time is the crossing — the budget task the roster
