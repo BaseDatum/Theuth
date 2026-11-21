@@ -2,14 +2,20 @@
 //! started on the first request) owns a current-thread tokio runtime for waiting on jobs and the `JsRuntime`;
 //! jobs run to completion in enqueue order; a fatal failure fails the job and every job queued behind it,
 //! then the runtime is dropped and rebuilt and [`DocumentsThread::generation`] bumps.
+//!
+//! Every job carries the *epoch* it was enqueued under. The epoch moves on when the runtime it served is
+//! given up: a job failed fatally (bumped by the thread before that job's reply is sent), or the client
+//! called [`DocumentsThread::restart`]. A job from an older epoch never runs on a newer runtime: it fails
+//! with the error that ended its epoch. So whatever a client enqueues after it has seen a fatal failure runs
+//! on the fresh runtime, and nothing enqueued before it does.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::{DocumentsJs, Error, Limits, Reply, panic_message};
@@ -21,11 +27,38 @@ enum Work {
     Call(String),
     Eval(String),
     Panic,
+    /// End the thread as if `serve` had returned early (test hook for the respawn path).
+    #[cfg(test)]
+    Exit,
 }
 
 struct Job {
     work: Work,
-    reply: oneshot::Sender<Result<Reply, Error>>,
+    /// [`Shared::epoch`] when the job was enqueued.
+    epoch: u64,
+    /// The thread that served earlier jobs died before this one; it is the first job of a new thread.
+    lost: bool,
+    reply: oneshot::Sender<Settled>,
+}
+
+/// What a job's ticket resolves to.
+#[derive(Debug)]
+pub struct Settled {
+    /// The output, or why there is none.
+    pub result: Result<Reply, Error>,
+    /// The runtime that served the jobs before this one is gone, with every mirror it held: this job's own
+    /// failure gave it up, or the thread had died and this job respawned it. True for exactly one job per
+    /// lost runtime (the jobs queued behind a failure fail with the same error but `false`); a runtime given
+    /// up through [`DocumentsThread::restart`] is reported by the caller of `restart`.
+    pub rebuilt: bool,
+}
+
+/// State the handles and the thread share.
+struct Shared {
+    epoch: AtomicU64,
+    generation: AtomicU64,
+    /// Runtime threads currently running (a respawned thread can overlap the end of the dead one).
+    alive: AtomicUsize,
 }
 
 struct Inner {
@@ -33,8 +66,7 @@ struct Inner {
     shutdown: CancellationToken,
     /// `None` until the first request starts the thread.
     tx: Mutex<Option<mpsc::UnboundedSender<Job>>>,
-    generation: Arc<watch::Sender<u64>>,
-    alive: Arc<AtomicBool>,
+    shared: Arc<Shared>,
 }
 
 /// Handle to the in-process documents runtime; cheap to clone, `Send + Sync`. The thread starts on the first
@@ -48,7 +80,8 @@ pub struct DocumentsThread {
 /// resolves to its [`Reply`].
 #[must_use = "the request runs regardless; await the ticket for its reply"]
 pub struct Ticket {
-    rx: oneshot::Receiver<Result<Reply, Error>>,
+    epoch: u64,
+    rx: oneshot::Receiver<Settled>,
 }
 
 impl Future for Ticket {
@@ -57,7 +90,7 @@ impl Future for Ticket {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         Pin::new(&mut self.rx)
             .poll(cx)
-            .map(|r| r.unwrap_or(Err(Error::Stopped)))
+            .map(|r| r.map_or(Err(Error::Stopped), |s| s.result))
     }
 }
 
@@ -65,15 +98,29 @@ impl Ticket {
     /// A ticket already settled with `result` (lets a client substitute canned replies in its tests).
     #[doc(hidden)]
     pub fn ready(result: Result<Reply, Error>) -> Self {
-        let (tx, rx) = oneshot::channel();
-        let _ = tx.send(result);
-        Self { rx }
+        Self::settled_with(0, result)
     }
 
-    fn failed(e: Error) -> Self {
+    fn settled_with(epoch: u64, result: Result<Reply, Error>) -> Self {
         let (tx, rx) = oneshot::channel();
-        let _ = tx.send(Err(e));
-        Self { rx }
+        let _ = tx.send(Settled {
+            result,
+            rebuilt: false,
+        });
+        Self { epoch, rx }
+    }
+
+    /// The epoch the request was enqueued under; compare with what [`DocumentsThread::restart`] returned.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// The result together with whether this request's failure gave up the runtime.
+    pub async fn settled(self) -> Settled {
+        self.rx.await.unwrap_or(Settled {
+            result: Err(Error::Stopped),
+            rebuilt: false,
+        })
     }
 }
 
@@ -85,8 +132,11 @@ impl DocumentsThread {
                 limits,
                 shutdown,
                 tx: Mutex::new(None),
-                generation: Arc::new(watch::channel(0).0),
-                alive: Arc::new(AtomicBool::new(false)),
+                shared: Arc::new(Shared {
+                    epoch: AtomicU64::new(0),
+                    generation: AtomicU64::new(0),
+                    alive: AtomicUsize::new(0),
+                }),
             }),
         }
     }
@@ -100,10 +150,13 @@ impl DocumentsThread {
     /// fails with [`Error::TooLarge`] without reaching the thread.
     pub fn enqueue(&self, line: String) -> Ticket {
         if line.len() > self.inner.limits.max_line {
-            return Ticket::failed(Error::TooLarge {
-                len: line.len(),
-                max: self.inner.limits.max_line,
-            });
+            return Ticket::settled_with(
+                self.epoch(),
+                Err(Error::TooLarge {
+                    len: line.len(),
+                    max: self.inner.limits.max_line,
+                }),
+            );
         }
         self.send(Work::Call(line))
     }
@@ -116,17 +169,29 @@ impl DocumentsThread {
     /// How many runtimes have been built: 0 before the first request, 1 once serving, +1 per rebuild after a
     /// fatal failure (every mirror the previous runtime held is gone).
     pub fn generation(&self) -> u64 {
-        *self.inner.generation.borrow()
+        self.inner.shared.generation.load(Ordering::SeqCst)
     }
 
-    /// Watch [`Self::generation`]: a change to a value above 1 means "runtime was rebuilt; reopen mirrors".
-    pub fn subscribe(&self) -> watch::Receiver<u64> {
-        self.inner.generation.subscribe()
+    /// The current epoch (see the module docs): what a request enqueued now is stamped with.
+    pub fn epoch(&self) -> u64 {
+        self.inner.shared.epoch.load(Ordering::SeqCst)
+    }
+
+    /// Give up the current runtime although no request failed fatally: the client saw output it cannot
+    /// trust (a reply naming another request). Every request already enqueued fails with
+    /// [`Error::Crashed`] instead of running (one that is running now has its result replaced), and the next
+    /// one runs on a fresh runtime. Returns the new epoch: tickets with a lower [`Ticket::epoch`] belong to
+    /// the abandoned runtime. Reporting the lost mirrors is the caller's job ([`Settled::rebuilt`] stays
+    /// false for these requests).
+    pub fn restart(&self) -> u64 {
+        // Under the queue lock: no enqueue interleaves with the bump.
+        let _tx = self.inner.tx.lock().unwrap_or_else(|e| e.into_inner());
+        self.inner.shared.epoch.fetch_add(1, Ordering::SeqCst) + 1
     }
 
     /// Whether the runtime thread is currently running.
     pub fn is_running(&self) -> bool {
-        self.inner.alive.load(Ordering::SeqCst)
+        self.inner.shared.alive.load(Ordering::SeqCst) > 0
     }
 
     /// Run a raw classic script on the runtime under the request guards (containment tests).
@@ -141,61 +206,90 @@ impl DocumentsThread {
         self.send(Work::Panic)
     }
 
-    /// The thread's liveness flag, observable after every handle is dropped (shutdown tests).
+    /// Whether a runtime thread is running, observable after every handle is dropped (shutdown tests).
     #[doc(hidden)]
-    pub fn liveness(&self) -> Arc<AtomicBool> {
-        self.inner.alive.clone()
+    pub fn liveness(&self) -> impl Fn() -> bool + Send + Sync + 'static {
+        let shared = self.inner.shared.clone();
+        move || shared.alive.load(Ordering::SeqCst) > 0
+    }
+
+    /// End the runtime thread the way an early return from its loop would (respawn test).
+    #[cfg(test)]
+    pub(crate) fn exit_thread(&self) -> Ticket {
+        self.send(Work::Exit)
     }
 
     fn send(&self, work: Work) -> Ticket {
         let (reply, rx) = oneshot::channel();
         // Held across the send: one total order of jobs over every handle.
         let mut tx = self.inner.tx.lock().unwrap_or_else(|e| e.into_inner());
-        if tx.is_none() {
-            if self.inner.shutdown.is_cancelled() {
-                return Ticket::failed(Error::Stopped);
+        let epoch = self.epoch();
+        let mut job = Job {
+            work,
+            epoch,
+            lost: false,
+            reply,
+        };
+        // A thread that ended without shutdown (its loop returned early) left a closed queue: respawn once.
+        for _ in 0..2 {
+            if tx.is_none() {
+                if self.inner.shutdown.is_cancelled() {
+                    break;
+                }
+                match self.spawn() {
+                    Ok(sender) => *tx = Some(sender),
+                    Err(e) => {
+                        let _ = job.reply.send(Settled {
+                            result: Err(e),
+                            rebuilt: false,
+                        });
+                        return Ticket { epoch, rx };
+                    }
+                }
             }
-            match self.spawn() {
-                Ok(sender) => *tx = Some(sender),
-                Err(e) => return Ticket::failed(e),
+            match tx.as_ref().map(|sender| sender.send(job)) {
+                Some(Ok(())) => return Ticket { epoch, rx },
+                Some(Err(mpsc::error::SendError(back))) => {
+                    job = back;
+                    // Its runtime (if it had built one) went with it.
+                    job.lost = self.generation() > 0;
+                    *tx = None;
+                }
+                None => unreachable!("a sender was just installed"),
             }
         }
-        if let Some(sender) = tx.as_ref()
-            && let Err(mpsc::error::SendError(job)) = sender.send(Job { work, reply })
-        {
-            let _ = job.reply.send(Err(Error::Stopped));
-        }
-        Ticket { rx }
+        let _ = job.reply.send(Settled {
+            result: Err(Error::Stopped),
+            rebuilt: false,
+        });
+        Ticket { epoch, rx }
     }
 
     fn spawn(&self) -> Result<mpsc::UnboundedSender<Job>, Error> {
         let (tx, rx) = mpsc::unbounded_channel();
         let limits = self.inner.limits.clone();
         let shutdown = self.inner.shutdown.clone();
-        let generation = self.inner.generation.clone();
-        let alive = self.inner.alive.clone();
-        alive.store(true, Ordering::SeqCst);
+        let shared = self.inner.shared.clone();
+        shared.alive.fetch_add(1, Ordering::SeqCst);
+        let alive = Alive(shared.clone());
         std::thread::Builder::new()
             .name("documents-js".into())
             .stack_size(STACK)
             .spawn(move || {
-                let _alive = Alive(alive);
-                serve(rx, &limits, &shutdown, &generation);
+                let alive = alive;
+                serve(rx, &limits, &shutdown, &alive.0);
             })
-            .map_err(|e| {
-                self.inner.alive.store(false, Ordering::SeqCst);
-                Error::Crashed(format!("spawn the documents-js thread: {e}"))
-            })?;
+            .map_err(|e| Error::Crashed(format!("spawn the documents-js thread: {e}")))?;
         Ok(tx)
     }
 }
 
-/// Clears the liveness flag however the thread ends.
-struct Alive(Arc<AtomicBool>);
+/// Counts a runtime thread out however it ends (also when it never started: the closure is dropped).
+struct Alive(Arc<Shared>);
 
 impl Drop for Alive {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
+        self.0.alive.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -223,16 +317,20 @@ fn run(js: &mut DocumentsJs, work: Work) -> Result<Reply, Error> {
             reply: String::new(),
         }),
         Work::Panic => panic!("test: panic on the documents-js thread"),
+        #[cfg(test)]
+        Work::Exit => unreachable!("handled by serve"),
     }
 }
 
-/// The thread body: wait for a job (or shutdown), build the runtime if there is none, run the job with
-/// panics caught, and after a fatal failure fail the queued jobs, drop the runtime and build a fresh one.
+/// The thread body: wait for a job (or shutdown); fail a job from an older epoch with the error that ended
+/// it; drop a runtime the epoch has moved past; build the runtime if there is none; run the job with panics
+/// caught. A fatal failure moves the epoch on *before* its reply is sent, then the runtime is dropped and a
+/// fresh one built.
 fn serve(
     mut rx: mpsc::UnboundedReceiver<Job>,
     limits: &Limits,
     shutdown: &CancellationToken,
-    generation: &watch::Sender<u64>,
+    shared: &Shared,
 ) {
     let waiter = match tokio::runtime::Builder::new_current_thread().build() {
         Ok(rt) => rt,
@@ -241,12 +339,23 @@ fn serve(
             return;
         }
     };
-    let mut js: Option<DocumentsJs> = None;
-    let built = |js: &mut Option<DocumentsJs>| -> Result<(), Error> {
+    // The runtime and the epoch it was built in.
+    let mut js: Option<(DocumentsJs, u64)> = None;
+    // The last epoch the thread ended itself, and why: the error its queued jobs fail with.
+    let mut ended: Option<(u64, Error)> = None;
+    let build_now = |js: &mut Option<(DocumentsJs, u64)>| -> Result<(), Error> {
+        let epoch = shared.epoch.load(Ordering::SeqCst);
         let fresh = build(limits)?;
-        *js = Some(fresh);
-        generation.send_modify(|n| *n += 1);
+        *js = Some((fresh, epoch));
+        shared.generation.fetch_add(1, Ordering::SeqCst);
         Ok(())
+    };
+    let stale = |job_epoch: u64, ended: &Option<(u64, Error)>| match ended {
+        Some((epoch, e)) if *epoch == job_epoch => e.clone(),
+        _ => Error::Crashed(
+            "the documents runtime was given up before this request was answered; it is rebuilt"
+                .into(),
+        ),
     };
     loop {
         let job = waiter.block_on(async {
@@ -257,15 +366,43 @@ fn serve(
             }
         });
         let Some(job) = job else { break };
-        if js.is_none()
-            && let Err(e) = built(&mut js)
+        #[cfg(test)]
         {
-            tracing::warn!(error = %e, "documents runtime could not be built");
-            let _ = job.reply.send(Err(e));
+            if matches!(job.work, Work::Exit) {
+                // Close the queue before the job's ticket resolves, as a returning `serve` would.
+                drop(rx);
+                drop(job);
+                break;
+            }
+        }
+        let now = shared.epoch.load(Ordering::SeqCst);
+        if job.epoch < now {
+            let _ = job.reply.send(Settled {
+                result: Err(stale(job.epoch, &ended)),
+                rebuilt: false,
+            });
             continue;
         }
-        let Some(runtime) = js.as_mut() else { continue };
-        let result =
+        if js.as_ref().is_some_and(|(_, built)| *built < now)
+            && let Some((dead, _)) = js.take()
+        {
+            discard(dead);
+        }
+        if js.is_none()
+            && let Err(e) = build_now(&mut js)
+        {
+            tracing::warn!(error = %e, "documents runtime could not be built");
+            let _ = job.reply.send(Settled {
+                result: Err(e),
+                rebuilt: job.lost,
+            });
+            continue;
+        }
+        let Some((runtime, _)) = js.as_mut() else {
+            continue;
+        };
+        let lost = job.lost;
+        let mut result =
             catch_unwind(AssertUnwindSafe(|| run(runtime, job.work))).unwrap_or_else(|p| {
                 Err(Error::Crashed(format!(
                     "panic on the documents-js thread: {}",
@@ -273,22 +410,32 @@ fn serve(
                 )))
             });
         let fatal = result.as_ref().err().filter(|e| e.is_fatal()).cloned();
-        let _ = job.reply.send(result);
-        if let Some(e) = fatal {
-            tracing::warn!(error = %e, "documents runtime failed; failing queued requests and rebuilding");
-            if let Some(dead) = js.take() {
+        let rebuilt = fatal.is_some() || lost;
+        if let Some(e) = &fatal {
+            // Before the reply: whoever reacts to this failure enqueues into the new epoch.
+            let epoch = shared.epoch.fetch_add(1, Ordering::SeqCst);
+            ended = Some((epoch, e.clone()));
+        } else if shared.epoch.load(Ordering::SeqCst) > job.epoch {
+            // `restart` while this job ran: its output came from the runtime the client gave up.
+            result = Err(stale(job.epoch, &ended));
+        }
+        let _ = job.reply.send(Settled { result, rebuilt });
+        if js
+            .as_ref()
+            .is_some_and(|(_, built)| *built < shared.epoch.load(Ordering::SeqCst))
+        {
+            if let Some(e) = &fatal {
+                tracing::warn!(error = %e, "documents runtime failed; failing queued requests and rebuilding");
+            }
+            if let Some((dead, _)) = js.take() {
                 discard(dead);
             }
-            // Like a crashed child: whatever was queued behind the failure fails with it.
-            while let Ok(queued) = rx.try_recv() {
-                let _ = queued.reply.send(Err(e.clone()));
-            }
-            if let Err(e) = built(&mut js) {
+            if let Err(e) = build_now(&mut js) {
                 tracing::warn!(error = %e, "documents runtime could not be rebuilt; retrying on the next request");
             }
         }
     }
-    if let Some(runtime) = js.take() {
+    if let Some((runtime, _)) = js.take() {
         discard(runtime);
     }
 }

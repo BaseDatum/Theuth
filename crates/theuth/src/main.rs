@@ -1813,8 +1813,12 @@ async fn run() -> anyhow::Result<()> {
         .extract_inner::<browser::BrowserConfig>("browser")
         .unwrap_or_default();
     browser::warmup(&browser_cfg);
-    // The documents helper runs in-process on its own thread (document-js): make sure V8 is up on the
-    // main thread before it, also when the browser (and so its warmup) is disabled.
+    // The documents helper runs in-process on its own thread (document-js): initialise V8 here, also when
+    // the browser (and so its warmup) is disabled. Here = synchronously in this future, which `main`'s
+    // `block_on` drives on the main thread, before `Runtime::new` starts any plugin; a spawned task would
+    // race the plugins, and the `documents-js` thread would initialise V8 on its first request instead. The
+    // call builds no isolate and no tokio runtime (none may be dropped inside this async context), and is
+    // a no-op after `browser::warmup` (deno_core's process-wide `Once`).
     document::helper::init_js_platform();
 
     let rt = Runtime::new(config, data_dir);

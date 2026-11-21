@@ -109,25 +109,19 @@ fn extension() -> Extension {
     }
 }
 
-/// Initialise the V8 platform on the calling thread unless a runtime already did (deno_core's `init_v8` is
-/// behind a process-wide `Once`): builds and drops one bare `JsRuntime`. `t` calls it on the main thread so
-/// the `documents-js` thread never initialises V8, whether or not the browser warmup ran.
+/// Initialise the V8 platform (flags + platform; deno_core's `init_v8`, behind a process-wide `Once`) with
+/// the settings every `JsRuntime::new` uses, without building an isolate or a tokio runtime. A no-op when a
+/// runtime already did it, e.g. `browser::warmup`'s obscura runtime.
+///
+/// Call it from `t`'s startup sequence before any plugin starts, i.e. synchronously in the main future
+/// that `main`'s `block_on` drives, not from a spawned task: a spawned task gives no ordering against the
+/// plugin threads, so the `documents-js` thread could initialise V8 on its first request instead (with
+/// the same settings, but on a request's latency, and after browser isolates may already exist), which
+/// this call exists to prevent. It is safe in any thread or async context: it builds nothing that must
+/// be dropped outside one (the earlier version built and dropped a current-thread tokio runtime, which
+/// tokio refuses to drop inside an async context such as `main`'s `block_on`).
 pub fn init_platform() {
-    static DONE: std::sync::Once = std::sync::Once::new();
-    DONE.call_once(|| {
-        match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(tokio) => {
-                let _guard = tokio.enter();
-                drop(JsRuntime::new(RuntimeOptions::default()));
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "V8 platform not initialised early: no tokio runtime")
-            }
-        }
-    });
+    JsRuntime::init_platform(None);
 }
 
 /// One in-process documents helper: a `JsRuntime` with the bundle loaded. `!Send`, and it drives its own
@@ -184,12 +178,18 @@ impl DocumentsJs {
             state.put(Exchange::default());
             state.put(isolate.clone());
         }
+        // Loading the bundle is construction, not a request: it runs under at least the default deadline, so
+        // a short request deadline (tests) does not also have to cover a debug build parsing the bundle.
+        let deadline = limits.deadline;
         let mut this = Self {
             js,
             tokio,
             isolate,
             heap_tripped,
-            limits,
+            limits: Limits {
+                deadline: deadline.max(crate::DEFAULT_DEADLINE),
+                ..limits
+            },
             failure: None,
         };
         this.run(
@@ -203,6 +203,7 @@ impl DocumentsJs {
             false,
         )?;
         this.run("<theuth:pump>", ModuleCodeString::from_static(PUMP), false)?;
+        this.limits.deadline = deadline;
         Ok(this)
     }
 
@@ -231,13 +232,20 @@ impl DocumentsJs {
             });
         }
         self.exchange(|x| x.request = Some(line));
-        let out = self
-            .run(
-                "<theuth:call>",
-                ModuleCodeString::from_static("globalThis.__theuthPump()"),
-                true,
-            )?
-            .ok_or_else(|| Error::Js("the request settled without a reply".into()))?;
+        let out = self.run(
+            "<theuth:call>",
+            ModuleCodeString::from_static("globalThis.__theuthPump()"),
+            true,
+        );
+        // The slot is per request: a pump that never took its line must not hand it to the next one.
+        self.exchange(|x| x.request = None);
+        let Some(out) = out? else {
+            // Idle loop, no reply: the request's own promise is orphaned; whatever it does later must
+            // not answer another request, so this runtime is done.
+            let e = Error::Crashed("the request ended without its reply".into());
+            self.failure = Some(e.clone());
+            return Err(e);
+        };
         Ok(out.split('\n').map(str::to_owned).collect())
     }
 
@@ -287,7 +295,8 @@ impl DocumentsJs {
         } else if fired || matches!(result, Err(Error::Timeout)) {
             Some(Error::Timeout)
         } else {
-            None
+            // An event-loop error (`Crashed`, see `drive`) leaves promises of the request pending.
+            result.as_ref().err().filter(|e| e.is_fatal()).cloned()
         };
         if let Some(e) = failure {
             self.failure = Some(e.clone());
@@ -321,7 +330,11 @@ impl DocumentsJs {
                     Poll::Ready(Ok(())) => {
                         Poll::Ready(Ok(if until_reply { take_reply() } else { None }))
                     }
-                    Poll::Ready(Err(e)) => Poll::Ready(Err(Error::Js(e.to_string()))),
+                    // Fatal: e.g. an unrelated unhandled rejection while the request's own promise is still
+                    // pending; that promise would answer a later request with this one's reply.
+                    Poll::Ready(Err(e)) => {
+                        Poll::Ready(Err(Error::Crashed(format!("event loop failed: {e}"))))
+                    }
                     Poll::Pending => Poll::Pending,
                 }
             });

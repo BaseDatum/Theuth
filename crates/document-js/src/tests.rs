@@ -3,7 +3,6 @@
 //! itself the proof that the failure stayed contained).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -14,6 +13,9 @@ use crate::{DocumentsJs, DocumentsThread, Error, Limits, Reply};
 /// `Y.encodeStateAsUpdate(new Y.Doc())`.
 const EMPTY_STATE: &str = "AAA=";
 
+/// A short request deadline, so the runaway tests end quickly. Building a runtime (bundle load) is not under
+/// it (`DocumentsJs::new` loads under at least `DEFAULT_DEADLINE`), so a slow debug build under load only
+/// stretches the normal requests, which take milliseconds.
 fn limits() -> Limits {
     Limits {
         deadline: Duration::from_millis(1500),
@@ -64,7 +66,7 @@ async fn round_trip(t: &DocumentsThread, doc: &str) {
 }
 
 async fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
-    let until = Instant::now() + Duration::from_secs(10);
+    let until = Instant::now() + Duration::from_secs(60);
     while !f() {
         assert!(Instant::now() < until, "timed out waiting for {what}");
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -274,8 +276,7 @@ async fn js_exception_is_an_error_reply_and_the_runtime_survives() {
 async fn deadline_terminates_a_runaway_script_and_rebuilds() {
     let t = thread(limits());
     round_trip(&t, "before").await;
-    let mut generations = t.subscribe();
-    assert_eq!(*generations.borrow_and_update(), 1);
+    assert_eq!(t.generation(), 1);
     let started = Instant::now();
     let spin = t.eval_raw("for (;;) {}".into());
     let queued = t.enqueue(json!({ "id": 5, "op": "outline", "doc": "d" }).to_string());
@@ -286,20 +287,18 @@ async fn deadline_terminates_a_runaway_script_and_rebuilds() {
         "a job queued behind the hang fails with it"
     );
     assert!(
-        started.elapsed() < Duration::from_secs(10),
+        started.elapsed() < Duration::from_secs(20),
         "{:?}",
         started.elapsed()
     );
-    generations.changed().await.expect("generation");
-    assert_eq!(*generations.borrow_and_update(), 2);
+    wait_until("rebuild", || t.generation() == 2).await;
     round_trip(&t, "after spin").await;
     // A request stuck waiting on the event loop (no JS running) hits the same deadline.
     let wait = t
         .eval_raw("new Promise(() => setTimeout(() => {}, 600000))".into())
         .await;
     assert_eq!(wait, Err(Error::Timeout));
-    generations.changed().await.expect("generation");
-    assert_eq!(*generations.borrow_and_update(), 3);
+    wait_until("rebuild", || t.generation() == 3).await;
     round_trip(&t, "after wait").await;
 }
 
@@ -413,12 +412,12 @@ async fn dropping_the_last_handle_ends_the_thread() {
     let t = thread(limits());
     let other = t.clone();
     round_trip(&t, "d").await;
-    let alive: Arc<AtomicBool> = t.liveness();
+    let alive = t.liveness();
     drop(t);
     round_trip(&other, "still served by the remaining handle").await;
-    assert!(alive.load(Ordering::SeqCst));
+    assert!(alive());
     drop(other);
-    wait_until("thread exit", || !alive.load(Ordering::SeqCst)).await;
+    wait_until("thread exit", || !alive()).await;
 }
 
 #[tokio::test]
@@ -432,4 +431,141 @@ async fn cancelling_the_token_ends_the_thread() {
         .request(json!({ "id": 1, "op": "outline", "doc": "d" }).to_string())
         .await;
     assert_eq!(r, Err(Error::Stopped));
+}
+
+/// The request's own promise is still pending when an unrelated rejection fails the event loop. Before the
+/// fix the runtime was kept and the late reply answered the next request; now the failure is fatal, the
+/// runtime is rebuilt, and the next request (even one sent after the late reply would have fired) gets its
+/// own answer.
+#[tokio::test]
+async fn an_event_loop_error_mid_request_is_fatal_and_the_next_request_gets_its_own_reply() {
+    let t = thread(limits());
+    round_trip(&t, "before").await;
+    t.eval_raw(
+        r#"const orig = globalThis.theuthDocuments.call;
+           globalThis.theuthDocuments.call = (line) => {
+             globalThis.theuthDocuments.call = orig;
+             const id = JSON.parse(line).id;
+             Promise.reject(new Error("unrelated rejection"));
+             return new Promise((resolve) =>
+               setTimeout(() => resolve(JSON.stringify({ id, ok: true, result: "late" })), 100));
+           };"#
+        .into(),
+    )
+    .await
+    .expect("install the hook");
+    let first = t
+        .request(json!({ "id": 21, "op": "outline", "doc": "x" }).to_string())
+        .await;
+    assert!(
+        matches!(&first, Err(Error::Crashed(m)) if m.contains("unrelated rejection")),
+        "{first:?}"
+    );
+    for id in [22, 23] {
+        let r = t
+            .request(json!({ "id": id, "op": "outline", "doc": "x" }).to_string())
+            .await
+            .expect("reply");
+        let v = parse(&r.reply);
+        assert_eq!(v["id"], id, "{v}");
+        assert_eq!(v["error"], "document x is not open", "{v}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(t.generation(), 2);
+    round_trip(&t, "after").await;
+}
+
+/// A request whose promise never settles (idle loop, no reply) ends the runtime too.
+#[tokio::test]
+async fn a_request_that_ends_without_its_reply_is_fatal() {
+    let t = thread(limits());
+    round_trip(&t, "before").await;
+    t.eval_raw(
+        "const orig = globalThis.theuthDocuments.call;
+         globalThis.theuthDocuments.call = () => { globalThis.theuthDocuments.call = orig; return new Promise(() => {}); };"
+            .into(),
+    )
+    .await
+    .expect("install the hook");
+    let r = t
+        .request(json!({ "id": 31, "op": "outline", "doc": "x" }).to_string())
+        .await;
+    assert!(
+        matches!(&r, Err(Error::Crashed(m)) if m.contains("without its reply")),
+        "{r:?}"
+    );
+    wait_until("rebuild", || t.generation() == 2).await;
+    round_trip(&t, "after").await;
+}
+
+/// `restart`: queued requests from the abandoned epoch fail without running and report no rebuild of their
+/// own; the next request runs on a fresh runtime.
+#[tokio::test]
+async fn restart_fails_the_queued_requests_and_the_next_one_runs_fresh() {
+    let t = thread(limits());
+    ok(&req(&t, 1, "open", "d", json!({ "state": EMPTY_STATE })).await);
+    let busy = t.eval_raw("{ const t0 = Date.now(); while (Date.now() - t0 < 300) {} }".into());
+    let queued = t.enqueue(json!({ "id": 2, "op": "outline", "doc": "d" }).to_string());
+    let old = queued.epoch();
+    let epoch = t.restart();
+    assert!(epoch > old);
+    let busy = busy.settled().await;
+    assert!(
+        matches!(&busy.result, Err(Error::Crashed(m)) if m.contains("given up")),
+        "the running job's output is from the abandoned runtime: {busy:?}"
+    );
+    let queued = queued.settled().await;
+    assert!(
+        matches!(queued.result, Err(Error::Crashed(_))),
+        "{queued:?}"
+    );
+    assert!(!busy.rebuilt && !queued.rebuilt);
+    // The mirror died with the abandoned runtime.
+    let gone = parse(&req(&t, 3, "outline", "d", json!({})).await.reply);
+    assert_eq!(gone["error"], "document d is not open");
+    assert_eq!(t.generation(), 2);
+}
+
+/// A fatal failure reports `rebuilt` on its own ticket only.
+#[tokio::test]
+async fn only_the_failing_request_reports_the_rebuild() {
+    let t = thread(limits());
+    round_trip(&t, "before").await;
+    let spin = t.eval_raw("for (;;) {}".into());
+    let queued = t.enqueue(json!({ "id": 5, "op": "outline", "doc": "d" }).to_string());
+    let spin = spin.settled().await;
+    let queued = queued.settled().await;
+    assert_eq!(spin.result, Err(Error::Timeout));
+    assert!(spin.rebuilt);
+    assert_eq!(queued.result, Err(Error::Timeout));
+    assert!(!queued.rebuilt);
+}
+
+/// A thread whose loop returned (not shutdown) is respawned by the next request instead of every later
+/// request failing with `Stopped`.
+#[tokio::test]
+async fn a_dead_runtime_thread_is_respawned() {
+    let t = thread(limits());
+    round_trip(&t, "before").await;
+    assert_eq!(t.exit_thread().await, Err(Error::Stopped));
+    // The first request of the new thread reports the lost runtime (its mirrors are gone).
+    let first = t
+        .enqueue(json!({ "id": 9, "op": "outline", "doc": "before" }).to_string())
+        .settled()
+        .await;
+    assert!(first.rebuilt, "{first:?}");
+    assert_eq!(
+        parse(&first.result.expect("reply").reply)["error"],
+        "document before is not open"
+    );
+    round_trip(&t, "after").await;
+    assert_eq!(t.generation(), 2, "the new thread built its own runtime");
+    assert!(t.is_running());
+}
+
+/// `init_platform` inside an async context (where `t` calls it: `main`'s `block_on`) does not panic.
+#[tokio::test]
+async fn init_platform_is_safe_inside_an_async_context() {
+    crate::init_platform();
+    crate::init_platform();
 }

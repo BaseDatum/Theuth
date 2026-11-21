@@ -5,10 +5,17 @@
 //! the reply of the `import`/`edit` that caused them; those reach the actor as [`HelperEvent`]s, in request
 //! order, before the request's [`Pending`] resolves.
 //!
-//! A request past [`DEADLINE`], a runtime that reaches its heap limit or a panic on the runtime thread fails
-//! that request and every one queued behind it ([`Error::Timeout`] / [`Error::Crashed`]); the runtime is
-//! rebuilt at once and the actor learns of it through [`HelperEvent::Restarted`] (its mirrors are gone and
-//! must be reopened). [`helper_status`] reports the runtime for Settings.
+//! A request past [`DEADLINE`], a runtime that reaches its heap limit, a panic on the runtime thread, an
+//! event-loop error or a request that ends without its reply fails that request and every one queued
+//! behind it ([`Error::Timeout`] / [`Error::Crashed`]); so does a reply whose `id` is not the pending
+//! request's (the runtime is given up through [`DocumentsThread::restart`]). The runtime is rebuilt and the
+//! actor learns of it through [`HelperEvent::Restarted`], sent by the one task that also delivers every
+//! request's update events, right after the failed request's answer: every update of an earlier request
+//! reaches the actor before it reopens its mirrors. [`helper_status`] reports the runtime for Settings.
+//!
+//! Not closed: a request enqueued after the failure but before the actor has handled `Restarted` runs on
+//! the fresh runtime before the reopen and fails with "document X is not open" ([`Error::Protocol`]).
+//! Requests enqueued before the failure fail with it instead (document-js epochs).
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,7 +27,7 @@ use base64::Engine as _;
 use document_js::{DocumentsThread, Limits, Ticket};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::meta::DocId;
@@ -44,9 +51,9 @@ pub fn protocol_version() -> &'static str {
     &V
 }
 
-/// Initialise the V8 platform on the calling thread (idempotent: deno_core's `init_v8` sits behind a
-/// process-wide `Once`). `t` calls it on the main thread right after `browser::warmup`, so the documents
-/// thread never initialises V8 itself, browser enabled or not.
+/// Initialise the V8 platform (idempotent: deno_core's `init_v8` sits behind a process-wide `Once`; see
+/// [`document_js::init_platform`] for why `t` calls it synchronously at startup, right after
+/// `browser::warmup`, before any plugin starts).
 pub fn init_js_platform() {
     document_js::init_platform();
 }
@@ -61,6 +68,7 @@ pub fn init_js_platform() {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct HelperStatus {
+    #[allow(rustdoc::broken_intra_doc_links)] // the text is in the wire snapshot; `helper_path` is gone
     /// Where [`helper_path`] points.
     pub path: String,
     /// The file exists there.
@@ -345,8 +353,9 @@ type Respond = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
 pub struct Helper {
     backend: Backend,
     next: Arc<AtomicU64>,
-    /// Tickets in enqueue order → the forwarder, which emits each one's events then answers it.
-    forward: mpsc::UnboundedSender<(Ticket, Answer)>,
+    /// Tickets in enqueue order, with their request ids → the forwarder, which emits each one's events then
+    /// answers it.
+    forward: mpsc::UnboundedSender<(Ticket, Answer, u64)>,
     /// Held across "enqueue on the runtime" + "enqueue on the forwarder": one order for both.
     order: Arc<Mutex<()>>,
 }
@@ -360,9 +369,8 @@ impl Helper {
                 max_line: MAX_LINE,
                 ..Limits::default()
             },
-            shutdown.clone(),
+            shutdown,
         );
-        tokio::spawn(restarts(docs.subscribe(), events.clone(), shutdown));
         Self::with_backend(Backend::Js(docs), events)
     }
 
@@ -378,7 +386,11 @@ impl Helper {
 
     fn with_backend(backend: Backend, events: mpsc::UnboundedSender<HelperEvent>) -> Self {
         let (forward, rx) = mpsc::unbounded_channel();
-        tokio::spawn(forwarder(rx, events));
+        let docs = match &backend {
+            Backend::Js(docs) => Some(docs.clone()),
+            Backend::Fake(_) => None,
+        };
+        tokio::spawn(forwarder(rx, events, docs));
         Self {
             backend,
             next: Arc::new(AtomicU64::new(1)),
@@ -404,7 +416,7 @@ impl Helper {
             Backend::Fake(respond) => Ticket::ready(fake_reply(respond(&line))),
         };
         // Forwarder gone = every handle dropped; the receiver then sees a closed channel.
-        let _ = self.forward.send((ticket, reply));
+        let _ = self.forward.send((ticket, reply, id));
         Pending { id, rx }
     }
 
@@ -537,20 +549,48 @@ fn b64(bytes: &[u8]) -> String {
 }
 
 /// Settle tickets in enqueue order (= the runtime's completion order): each request's update events reach
-/// `events` before its reply resolves, and events never interleave across requests.
+/// `events` before its reply resolves, and events never interleave across requests. The only writer of
+/// [`HelperEvent::Restarted`]: sent right after answering the request whose failure gave up the runtime
+/// (`Settled::rebuilt`), or whose reply named another request (then this task gives the runtime up), so it
+/// follows every update of the requests before it and is sent once per lost runtime.
 async fn forwarder(
-    mut rx: mpsc::UnboundedReceiver<(Ticket, Answer)>,
+    mut rx: mpsc::UnboundedReceiver<(Ticket, Answer, u64)>,
     events: mpsc::UnboundedSender<HelperEvent>,
+    docs: Option<DocumentsThread>,
 ) {
-    while let Some((ticket, answer)) = rx.recv().await {
-        let result = match ticket.await {
-            Ok(reply) => {
-                set_process(HelperProcess::Running);
-                for line in &reply.events {
-                    handle_event(line, &events);
+    // Tickets below this epoch belong to a runtime given up here; their output is not trusted.
+    let mut floor = 0;
+    while let Some((ticket, answer, id)) = rx.recv().await {
+        let epoch = ticket.epoch();
+        let settled = ticket.settled().await;
+        let mut restarted = settled.rebuilt;
+        let result = match settled.result {
+            Ok(_) if epoch < floor => Err(Error::Crashed(
+                "the documents runtime was given up before this request was answered".into(),
+            )),
+            Ok(reply) => match parse_reply(&reply.reply, id) {
+                Ok(result) => {
+                    set_process(HelperProcess::Running);
+                    for line in &reply.events {
+                        handle_event(line, &events);
+                    }
+                    result
                 }
-                parse_reply(&reply.reply)
-            }
+                Err(other) => {
+                    // Positional pipeline out of step: this runtime's output can no longer be matched to
+                    // requests. Drop it (and the events that came with the reply) and rebuild.
+                    let e = format!(
+                        "documents runtime answered request {id} with the reply to request {other}; it is rebuilt"
+                    );
+                    tracing::error!("{e}");
+                    if let Some(docs) = &docs {
+                        floor = docs.restart();
+                        restarted = true;
+                    }
+                    set_process(HelperProcess::Crashed { stderr: e.clone() });
+                    Err(Error::Crashed(e))
+                }
+            },
             Err(e) => {
                 if e.is_fatal() {
                     set_process(HelperProcess::Crashed {
@@ -562,31 +602,10 @@ async fn forwarder(
             }
         };
         let _ = answer.send(result);
-    }
-}
-
-/// Every rebuilt runtime (generation 2, 3, …) is a fresh helper: report it running and tell the actor.
-async fn restarts(
-    mut generations: watch::Receiver<u64>,
-    events: mpsc::UnboundedSender<HelperEvent>,
-    shutdown: CancellationToken,
-) {
-    loop {
-        tokio::select! {
-            () = shutdown.cancelled() => break,
-            changed = generations.changed() => {
-                if changed.is_err() {
-                    break;
-                }
-                if *generations.borrow_and_update() > 1 {
-                    tracing::info!("documents runtime running again");
-                    set_process(HelperProcess::Running);
-                    let _ = events.send(HelperEvent::Restarted);
-                }
-            }
+        if restarted {
+            let _ = events.send(HelperEvent::Restarted);
         }
     }
-    set_process(HelperProcess::Starting);
 }
 
 /// One pushed `{"ev":"update"}` line → [`HelperEvent::Update`].
@@ -639,11 +658,18 @@ fn handle_event(line: &str, events: &mpsc::UnboundedSender<HelperEvent>) {
     }
 }
 
-/// The reply line → its `result`, or the helper's `error` as [`Error::Protocol`].
-fn parse_reply(line: &str) -> Result<Value, Error> {
-    let v: Value = serde_json::from_str(line)
-        .map_err(|e| Error::Protocol(format!("unreadable reply: {e}")))?;
-    if v.get("ok").and_then(Value::as_bool) == Some(true) {
+/// The reply line to request `id` → its `result`, or the helper's `error` as [`Error::Protocol`]. The outer
+/// `Err` carries the id the reply names when it is not `id` (an unreadable line has none and is a
+/// protocol error).
+fn parse_reply(line: &str, id: u64) -> Result<Result<Value, Error>, Value> {
+    let v: Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(e) => return Ok(Err(Error::Protocol(format!("unreadable reply: {e}")))),
+    };
+    if v.get("id").and_then(Value::as_u64) != Some(id) {
+        return Err(v.get("id").cloned().unwrap_or(Value::Null));
+    }
+    Ok(if v.get("ok").and_then(Value::as_bool) == Some(true) {
         Ok(v.get("result").cloned().unwrap_or(Value::Null))
     } else {
         Err(Error::Protocol(
@@ -652,7 +678,7 @@ fn parse_reply(line: &str) -> Result<Value, Error> {
                 .unwrap_or("error without message")
                 .to_owned(),
         ))
-    }
+    })
 }
 
 fn fake_reply(mut lines: Vec<String>) -> Result<document_js::Reply, document_js::Error> {
@@ -748,20 +774,48 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_timeout_fails_the_request_then_restarts_and_documents_reopen() {
-        let (tx, mut ev) = mpsc::unbounded_channel();
-        let token = CancellationToken::new();
-        // A runtime of our own with a short deadline, behind the same forwarder/restart plumbing as `new`.
+    /// A runtime of our own with a short deadline, behind the same forwarder as `new`.
+    fn short() -> (
+        Helper,
+        DocumentsThread,
+        mpsc::UnboundedReceiver<HelperEvent>,
+    ) {
+        let (tx, ev) = mpsc::unbounded_channel();
         let docs = DocumentsThread::new(
             Limits {
                 deadline: Duration::from_millis(1500),
                 ..Limits::default()
             },
-            token.clone(),
+            CancellationToken::new(),
         );
-        tokio::spawn(restarts(docs.subscribe(), tx.clone(), token.clone()));
         let h = Helper::with_backend(Backend::Js(docs.clone()), tx);
+        (h, docs, ev)
+    }
+
+    /// Route a test-hook ticket (`eval_raw`, `panic_on_thread`) through the forwarder like a request.
+    fn through(h: &Helper, ticket: Ticket) -> Pending {
+        let (reply, rx) = oneshot::channel();
+        let id = h.next.fetch_add(1, Ordering::Relaxed);
+        let _ = h.forward.send((ticket, reply, id));
+        Pending { id, rx }
+    }
+
+    async fn next_event(ev: &mut mpsc::UnboundedReceiver<HelperEvent>) -> HelperEvent {
+        tokio::time::timeout(Duration::from_secs(60), ev.recv())
+            .await
+            .expect("an event")
+            .expect("events open")
+    }
+
+    /// Nothing more arrives (in particular no second `Restarted`).
+    async fn quiet(ev: &mut mpsc::UnboundedReceiver<HelperEvent>) {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(ev.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_timeout_fails_the_request_then_restarts_and_documents_reopen() {
+        let (h, docs, mut ev) = short();
         let doc = DocId::new();
         h.open(&doc, &EMPTY, "document-store").await.unwrap();
         h.import(&doc, "before", ImportMode::Replace, false)
@@ -769,16 +823,12 @@ mod tests {
             .await
             .unwrap();
         while ev.try_recv().is_ok() {}
-        let hang = docs.eval_raw("for (;;) {}".into());
+        let hang = through(&h, docs.eval_raw("for (;;) {}".into()));
         let queued = h.request("markdown", &doc, json!({}));
-        assert_eq!(hang.await, Err(document_js::Error::Timeout));
+        assert_eq!(hang.await, Err(Error::Timeout));
         assert_eq!(queued.await, Err(Error::Timeout));
-        assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(10), ev.recv())
-                .await
-                .unwrap(),
-            Some(HelperEvent::Restarted)
-        ));
+        assert!(matches!(next_event(&mut ev).await, HelperEvent::Restarted));
+        quiet(&mut ev).await;
         // The mirror died with the runtime; reopened from state, it is readable again.
         assert!(
             matches!(h.markdown(&doc).await, Err(Error::Protocol(m)) if m.contains("not open"))
@@ -793,23 +843,76 @@ mod tests {
 
     #[tokio::test]
     async fn a_panic_on_the_runtime_thread_is_a_crash_then_a_restart() {
-        let (tx, mut ev) = mpsc::unbounded_channel();
-        let token = CancellationToken::new();
-        let docs = DocumentsThread::new(Limits::default(), token.clone());
-        tokio::spawn(restarts(docs.subscribe(), tx.clone(), token.clone()));
-        let h = Helper::with_backend(Backend::Js(docs.clone()), tx);
+        let (h, docs, mut ev) = short();
         let doc = DocId::new();
         h.open(&doc, &EMPTY, "document-store").await.unwrap();
-        let panicked = docs.panic_on_thread().await;
-        assert!(matches!(panicked, Err(document_js::Error::Crashed(_))));
-        assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(10), ev.recv())
-                .await
-                .unwrap(),
-            Some(HelperEvent::Restarted)
-        ));
+        let panicked = through(&h, docs.panic_on_thread()).await;
+        assert!(matches!(panicked, Err(Error::Crashed(_))), "{panicked:?}");
+        assert!(matches!(next_event(&mut ev).await, HelperEvent::Restarted));
         h.open(&doc, &EMPTY, "document-store").await.unwrap();
         assert!(h.markdown(&doc).await.is_ok());
+    }
+
+    /// M2: one writer, in ticket order: the updates of request A, then B's fatal failure, then exactly one
+    /// `Restarted` (C, queued behind B, fails with it but reports no restart of its own).
+    #[tokio::test]
+    async fn restarted_follows_the_updates_of_earlier_requests() {
+        let (h, docs, mut ev) = short();
+        let doc = DocId::new();
+        h.open(&doc, &EMPTY, "document-store").await.unwrap();
+        let a = h.import(&doc, "# A\n\npara", ImportMode::Replace, false);
+        let a_id = a.id();
+        let b = through(&h, docs.eval_raw("for (;;) {}".into()));
+        let c = h.request("markdown", &doc, json!({}));
+        let (a, b, c) = tokio::join!(a.import_result(), b, c);
+        assert_eq!(a.unwrap().changed, 2);
+        assert_eq!(b, Err(Error::Timeout));
+        assert_eq!(c, Err(Error::Timeout));
+        let mut updates = 0;
+        while let HelperEvent::Update { req, .. } = next_event(&mut ev).await {
+            assert_eq!(req, a_id);
+            updates += 1;
+        }
+        // The loop ended on the only other event: `Restarted`, after every update of A.
+        assert!(updates > 0, "A's updates arrive, and before Restarted");
+        quiet(&mut ev).await;
+    }
+
+    /// M1: a reply naming another request is never taken as this one's answer: the request fails as
+    /// `Crashed`, the runtime is given up (requests queued behind fail too), `Restarted` follows once, and
+    /// the next request is answered by a fresh runtime with its own reply.
+    #[tokio::test]
+    async fn a_reply_for_another_request_is_fatal_and_rebuilds() {
+        let (h, docs, mut ev) = short();
+        let doc = DocId::new();
+        h.open(&doc, &EMPTY, "document-store").await.unwrap();
+        assert_eq!(docs.generation(), 1);
+        docs.eval_raw(
+            r#"const orig = globalThis.theuthDocuments.call;
+               globalThis.theuthDocuments.call = async () => {
+                 globalThis.theuthDocuments.call = orig;
+                 return JSON.stringify({ id: 999999, ok: true, result: { markdown: "stolen" } });
+               };"#
+            .into(),
+        )
+        .await
+        .unwrap();
+        let stolen = h.request("markdown", &doc, json!({}));
+        let queued = h.request("outline", &doc, json!({}));
+        match stolen.await {
+            Err(Error::Crashed(m)) => assert!(m.contains("999999"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(queued.await, Err(Error::Crashed(_))));
+        assert!(matches!(next_event(&mut ev).await, HelperEvent::Restarted));
+        quiet(&mut ev).await;
+        h.open(&doc, &EMPTY, "document-store").await.unwrap();
+        h.import(&doc, "mine", ImportMode::Replace, false)
+            .import_result()
+            .await
+            .unwrap();
+        assert_eq!(h.markdown(&doc).await.unwrap(), "mine\n");
+        assert_eq!(docs.generation(), 2);
     }
 
     #[tokio::test]

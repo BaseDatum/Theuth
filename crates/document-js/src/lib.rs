@@ -8,14 +8,25 @@
 //! - [`DocumentsJs`] owns one runtime (`!Send`); [`DocumentsJs::call`] serves one request.
 //! - [`DocumentsThread`] is the `Send + Clone` handle: one lazily started `documents-js` OS thread owns the
 //!   runtime, requests run to completion in enqueue order, and a failure that leaves the runtime unusable
-//!   (deadline, heap limit, panic) fails the request, drops the runtime and builds a fresh one, bumping
-//!   [`DocumentsThread::generation`].
+//!   (deadline, heap limit, panic, an event-loop error or a request that ended without its own reply) fails
+//!   the request and every one queued behind it, drops the runtime and builds a fresh one, bumping
+//!   [`DocumentsThread::generation`]. A reply is therefore only ever taken from the request it answers.
 //!
 //! Containment (a JS failure must not take down the process): a JS exception is an `ok:false` reply;
 //! a request past [`Limits::deadline`] is terminated from the watchdog thread ([`Error::Timeout`]); the heap is
 //! capped at [`Limits::heap_limit`] and a near-limit callback terminates instead of letting V8 abort
-//! ([`Error::OutOfMemory`]); a Rust panic in an op or on the thread is caught ([`Error::Crashed`]); a line over
-//! [`Limits::max_line`] never reaches JS ([`Error::TooLarge`]). A V8 internal fatal error still aborts the process.
+//! ([`Error::OutOfMemory`]); a Rust panic in one of our ops or on the thread is caught ([`Error::Crashed`]); a
+//! line over [`Limits::max_line`] never reaches JS ([`Error::TooLarge`]).
+//!
+//! Not containable; each of these aborts the whole process:
+//! - a V8 internal fatal error (`V8_Fatal`/`FatalProcessOutOfMemory` outside the heap-limit path, a failed
+//!   V8 `CHECK`);
+//! - a single allocation larger than the headroom the near-heap-limit callback grants (64 MB above the
+//!   current limit): V8 aborts before the terminated script can unwind;
+//! - memory outside the V8 heap, e.g. `ArrayBuffer` backing stores, which [`Limits::heap_limit`] does not
+//!   count: exhausting it is a process allocation failure;
+//! - a panic inside a deno_core builtin op (not ours, so not behind the panic guard): it unwinds into V8
+//!   through an `extern "C"` callback.
 
 mod runtime;
 mod thread;
@@ -27,7 +38,7 @@ mod tests;
 use std::time::Duration;
 
 pub use runtime::{DocumentsJs, init_platform};
-pub use thread::{DocumentsThread, Ticket};
+pub use thread::{DocumentsThread, Settled, Ticket};
 
 /// The embedded bundle: `just documents-bundle` rebuilds it from `packages/documents` (`scripts/build-inproc.ts`)
 /// and records its inputs' hash in `js/BUNDLE.sha256`; `just documents-bundle-check` fails when they drift.
@@ -102,11 +113,12 @@ pub enum Error {
     /// The V8 heap reached [`Limits::heap_limit`]; execution was terminated and the runtime is rebuilt.
     #[error("documents runtime reached its heap limit; it was terminated and is rebuilt")]
     OutOfMemory,
-    /// A Rust panic on the runtime thread (in an op or the loop), or the runtime could not be built.
+    /// A Rust panic on the runtime thread (in an op or the loop), an event-loop error, a request that ended
+    /// without its reply, or the runtime could not be built.
     #[error("documents runtime failed: {0}")]
     Crashed(String),
-    /// Script-level failure that leaves the runtime usable: an uncaught exception in a raw script, or a
-    /// request that settled without output.
+    /// Script-level failure that leaves the runtime usable: an uncaught exception in a raw script (or the
+    /// `version` script producing nothing).
     #[error("documents runtime: {0}")]
     Js(String),
     /// The runtime thread has shut down (last handle dropped or the shutdown token cancelled).
