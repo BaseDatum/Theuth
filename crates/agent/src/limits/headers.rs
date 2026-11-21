@@ -199,6 +199,7 @@ fn unified(h: &[(String, String)], out: &mut Parsed) {
             used_fraction: used,
             resets_at_ms,
             window_secs,
+            history: Vec::new(),
         });
     }
     if get(h, "anthropic-ratelimit-unified-status")
@@ -243,6 +244,7 @@ fn codex(h: &[(String, String)], out: &mut Parsed) {
             used_fraction: pct / 100.0,
             resets_at_ms: get(h, &format!("{p}reset-at")).and_then(epoch_ms),
             window_secs,
+            history: Vec::new(),
         });
     }
     let has = get(h, "x-codex-credits-has-credits").map(truthy);

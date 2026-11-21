@@ -46,6 +46,17 @@ pub enum LimitStatus {
     Error,
 }
 
+/// One observed reading of a usage window.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct UsageSample {
+    /// When the reading was observed (Unix ms).
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub at_ms: u64,
+    /// 0.0 = unused, 1.0 = exhausted; may exceed 1.0.
+    pub used_fraction: f64,
+}
+
 /// A subscription usage window (Codex primary/secondary, Claude 5-hour/weekly…).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -62,6 +73,9 @@ pub struct UsageWindow {
     /// Window length.
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub window_secs: Option<u64>,
+    /// Readings of the current window, oldest first, newest last (may be empty).
+    #[serde(default)]
+    pub history: Vec<UsageSample>,
 }
 
 /// A per-minute API rate-limit bucket observed in response headers.
@@ -688,13 +702,75 @@ fn hhmm(ms: u64) -> String {
         .map_or_else(String::new, |t| t.format("%Y-%m-%d %H:%M UTC").to_string())
 }
 
-/// Replace windows by id, keep the rest.
-fn merge_windows(into: &mut Vec<UsageWindow>, new: Vec<UsageWindow>) {
-    for w in new {
+/// A reading is recorded when the fraction changed or this long passed.
+const SAMPLE_EVERY_MS: u64 = 5 * MIN;
+/// Samples kept per window; beyond it the older half is thinned.
+const HISTORY_CAP: usize = 300;
+/// A fall in `used_fraction` larger than this means a new window.
+const DROP_NEW_WINDOW: f64 = 0.05;
+
+/// Replace windows by id, keep the rest. A replaced window inherits the
+/// previous one's history (shared by headers and polls of the same row);
+/// the new reading is then recorded at `now`.
+fn merge_windows(into: &mut Vec<UsageWindow>, new: Vec<UsageWindow>, now: u64) {
+    for mut w in new {
         match into.iter_mut().find(|x| x.id == w.id) {
-            Some(x) => *x = w,
-            None => into.push(w),
+            Some(x) => {
+                if !is_new_window(x, &w) {
+                    w.history = std::mem::take(&mut x.history);
+                }
+                record(&mut w, now);
+                *x = w;
+            }
+            None => {
+                record(&mut w, now);
+                into.push(w);
+            }
         }
+    }
+}
+
+/// `new` starts another window than `old`: the reset moved forward by at
+/// least half the window, or usage fell by more than [`DROP_NEW_WINDOW`].
+fn is_new_window(old: &UsageWindow, new: &UsageWindow) -> bool {
+    let reset_advanced = match (
+        old.resets_at_ms,
+        new.resets_at_ms,
+        new.window_secs.or(old.window_secs),
+    ) {
+        (Some(a), Some(b), Some(secs)) => b.saturating_sub(a) >= secs.saturating_mul(500),
+        _ => false,
+    };
+    reset_advanced || new.used_fraction < old.used_fraction - DROP_NEW_WINDOW
+}
+
+/// Append `w`'s current reading to its history when it changed or the last
+/// sample is [`SAMPLE_EVERY_MS`] old; thin the older half past [`HISTORY_CAP`].
+fn record(w: &mut UsageWindow, now: u64) {
+    let due = match w.history.last() {
+        None => true,
+        Some(last) => {
+            now >= last.at_ms
+                && (last.used_fraction != w.used_fraction || now - last.at_ms >= SAMPLE_EVERY_MS)
+        }
+    };
+    if !due {
+        return;
+    }
+    w.history.push(UsageSample {
+        at_ms: now,
+        used_fraction: w.used_fraction,
+    });
+    if w.history.len() > HISTORY_CAP {
+        // Drop every other sample of the older half; index 0 stays, the
+        // newest is in the untouched newer half.
+        let half = w.history.len() / 2;
+        let mut i = 0;
+        w.history.retain(|_| {
+            let keep = i >= half || i % 2 == 0;
+            i += 1;
+            keep
+        });
     }
 }
 
@@ -760,7 +836,7 @@ impl State {
                 None => row.rates.push(obs),
             }
         }
-        merge_windows(&mut row.windows, p.windows);
+        merge_windows(&mut row.windows, p.windows, now);
         if p.balance.is_some() {
             row.balance = p.balance;
         }
@@ -783,7 +859,7 @@ impl State {
         row.poll_every_ms = Some(source.cadence().0);
         match res {
             Ok(d) => {
-                merge_windows(&mut row.windows, d.windows);
+                merge_windows(&mut row.windows, d.windows, now);
                 if d.balance.is_some() {
                     row.balance = d.balance;
                 }
@@ -928,6 +1004,7 @@ impl State {
                 let mut w = w.clone();
                 if w.resets_at_ms.is_some_and(|t| t <= now) {
                     w.used_fraction = 0.0;
+                    w.history.clear();
                 }
                 w
             })
