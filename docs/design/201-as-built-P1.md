@@ -36,3 +36,7 @@ Changed: every `endless.settle(..)` in `endless/tests.rs` now calls `endless.qui
 - Merges are still eager (every missing/stale merge each tick); P3 makes them lazy.
 - `draft_line` body is the mechanical cut; P3 gives per-kind lines.
 - `frontier_failing`, `Live::frontier_stalled` and the fold's verbatim/placeholder rendering stay; unreachable for drafting sessions' new units.
+
+## Test status at commit (`cargo test -p agent endless`)
+
+Compiles (PC's code included, no fixes needed). 82 passed, 14 failed. New P1 tests pass except `refined_child_rebuilds_its_draft_parent` (tests.rs, the "draft parent" wait). Failing old tests, which assert 137 behaviour P1 removes (mechanical folds of failing units, frontier-first order, every unit model-built after the wait) or need investigation: `context_length_refusal_retries_once_smaller`, `fold_turns_the_backlog_into_mechanical_nodes_at_once`, `an_error_failing_every_unit_stalls_and_folds_nothing`, `over_cost_batch_splits_and_only_an_over_cost_unit_folds`, `pump_builds_tree_and_tools_answer`, `batches_settle_200_units_in_parallel_and_retry_a_bad_line_alone`, `settings_model_switch_is_live_and_resets_backoff`, `switch_cancels_the_hung_call_and_rebuilds_on_the_new_model`, `three_hard_failures_over_ten_minutes_fold_the_unit`, `transient_failures_never_fold_a_unit`, `zoom_refuses_an_aligned_folded_run_but_opens_a_lone_unit`, `endless_off_with_5000_unbuilt_writes_a_bounded_head`, `loop_::endless_tests::endless_turn_view_is_bounded_and_shrinks_after_a_refusal`. Not updated (time).
