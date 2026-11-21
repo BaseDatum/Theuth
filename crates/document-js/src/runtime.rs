@@ -114,12 +114,19 @@ fn extension() -> Extension {
 /// the `documents-js` thread never initialises V8, whether or not the browser warmup ran.
 pub fn init_platform() {
     static DONE: std::sync::Once = std::sync::Once::new();
-    DONE.call_once(|| match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-        Ok(tokio) => {
-            let _guard = tokio.enter();
-            drop(JsRuntime::new(RuntimeOptions::default()));
+    DONE.call_once(|| {
+        match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(tokio) => {
+                let _guard = tokio.enter();
+                drop(JsRuntime::new(RuntimeOptions::default()));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "V8 platform not initialised early: no tokio runtime")
+            }
         }
-        Err(e) => tracing::warn!(error = %e, "V8 platform not initialised early: no tokio runtime"),
     });
 }
 

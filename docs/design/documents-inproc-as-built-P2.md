@@ -90,7 +90,9 @@ All run with `CARGO_TARGET_DIR=<worktree>/target CARGO_BUILD_JOBS=4 THEUTH_DOCUM
   - `replicate`: `ok. 3 passed`
   - doc-tests: `ok. 0 passed`
 
-RESULTS_BCD
+(b) `cargo test --offline -p artifact --test document --test read` (lock held 18:46–18:52, after ~25 min waiting on another session): `test result: ok. 2 passed; 0 failed` (document), `test result: ok. 7 passed; 0 failed` (read).
+
+RESULTS_CD
 
 ## Deviations
 

@@ -348,9 +348,9 @@ impl From<document_js::Error> for Error {
             document_js::Error::OutOfMemory | document_js::Error::Crashed(_) => {
                 Self::Crashed(e.to_string())
             }
-            document_js::Error::TooLarge { len, max } => Self::Protocol(format!(
-                "request is {len} bytes; the helper accepts {max}"
-            )),
+            document_js::Error::TooLarge { len, max } => {
+                Self::Protocol(format!("request is {len} bytes; the helper accepts {max}"))
+            }
             document_js::Error::Js(m) => Self::Protocol(m),
             document_js::Error::Stopped => Self::Crashed("helper worker stopped".into()),
         }
@@ -706,14 +706,14 @@ mod tests {
     /// `Y.encodeStateAsUpdate(new Y.Doc())`.
     const EMPTY: [u8; 2] = [0, 0];
 
-    fn helper() -> (Helper, mpsc::UnboundedReceiver<HelperEvent>, CancellationToken) {
+    fn helper() -> (
+        Helper,
+        mpsc::UnboundedReceiver<HelperEvent>,
+        CancellationToken,
+    ) {
         let (tx, rx) = mpsc::unbounded_channel();
         let token = CancellationToken::new();
-        (
-            Helper::new(PathBuf::new(), tx, token.clone()),
-            rx,
-            token,
-        )
+        (Helper::new(PathBuf::new(), tx, token.clone()), rx, token)
     }
 
     #[test]
@@ -814,7 +814,9 @@ mod tests {
             Some(HelperEvent::Restarted)
         ));
         // The mirror died with the runtime; reopened from state, it is readable again.
-        assert!(matches!(h.markdown(&doc).await, Err(Error::Protocol(m)) if m.contains("not open")));
+        assert!(
+            matches!(h.markdown(&doc).await, Err(Error::Protocol(m)) if m.contains("not open"))
+        );
         h.open(&doc, &EMPTY, "document-store").await.unwrap();
         h.import(&doc, "after", ImportMode::Replace, false)
             .import_result()
