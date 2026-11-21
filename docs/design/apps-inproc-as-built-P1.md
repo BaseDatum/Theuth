@@ -196,7 +196,7 @@ helper only. `entitlements-app-parser.plist` stays: the documents helper on main
 
 Why a Mach-O/PE stub, not a shell script: a script in `Contents/MacOS` of a signed, notarized app is signed
 through extended attributes that tar/brew do not reliably carry, and Windows payloads need a `.exe`. A
-compiled stub is the conservative choice; it is a few hundred KB (release build size not measured).
+compiled stub is the conservative choice; it is 543,624 bytes as a debug build (release size not measured).
 
 Who could run the stub: only an older `t` whose library hash equals this release's and whose own helper file
 is missing — the updater keeps an existing helper of the same name, so an old `t` updated in place keeps its
@@ -288,7 +288,12 @@ All with `CARGO_TARGET_DIR=<worktree>/target CARGO_BUILD_JOBS=4 --offline`, 2026
   0 failed.
 - `cargo tree -i v8 -p app-js` and `-p theuth`: one `v8 v150.4.0` via `deno_v8 0.4.0` / `deno_core 0.412.0`,
   shared with `obscura-js` in `theuth`.
-- `cargo check -p theuth`, `cargo clippy`, the stub build: see the final report.
+- `cargo check -p theuth`: `Finished`, exit 0 (no warnings from changed crates).
+- `cargo clippy -p app -p app-js -p app-parser-stub -p update --all-targets --no-deps`: clean, exit 0. Without
+  `--no-deps` clippy stops in unrelated workspace dependencies (`voice`: `chunks_exact_to_as_chunks`; with that
+  allowed, `talk`: `single_match` in `crates/talk/src/rpc_hub.rs:50`), both pre-existing on main.
+- `cargo build -p app-parser-stub` (debug, 543,624 bytes): `--version` → `theuth-app-parser <hash>` exit 0;
+  empty stdin → exit 0; one request line → the error line, exit 0; `--bogus` → exit 2.
 
 Not verified: any packaging/release/install/Docker run (not run by rule); `package-windows.ps1` (read only,
 not executed; no PowerShell parse check); the stub inside a signed/notarized app bundle; the site docs build;
