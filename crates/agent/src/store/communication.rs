@@ -3088,8 +3088,11 @@ impl Store {
         Ok(out)
     }
 
-    /// The newest `limit` exchanges changed at or after `since`. `updated_at` is RFC 3339 text compared as text:
-    /// fractional seconds of varying length can misorder rows inside one second, harmless for a window bound.
+    /// The newest `limit` exchanges changed at or after `since`, newest first, read in the order of the
+    /// `peer_exchanges_updated` index (no sort of the window before the limit). `updated_at` is written by
+    /// `now()` (`Utc::now().to_rfc3339()`: `+00:00`, 0/3/6/9 fraction digits) and the bound uses the same
+    /// formatter, so the text comparison orders correctly (`+` sorts before `.`); fractional seconds of varying
+    /// length can misorder rows inside one second, harmless for a window bound.
     pub async fn exchanges_since(
         &self,
         since: DateTime<Utc>,
@@ -3098,12 +3101,62 @@ impl Store {
         let mut conn = self.read.acquire().await?;
         Ok(sqlx::query_as(
             "SELECT id, sender, recipient, sender_session, recipient_session, request_id, state, created_at, \
-             updated_at FROM peer_exchanges WHERE updated_at >= ? ORDER BY accepted_seq DESC LIMIT ?",
+             updated_at FROM peer_exchanges WHERE updated_at >= ? ORDER BY updated_at DESC LIMIT ?",
         )
         .bind(since.to_rfc3339())
         .bind(limit)
         .fetch_all(&mut *conn)
         .await?)
+    }
+
+    /// 208: delete at most `limit` `session_last_event` rows whose session no longer exists (deleted without
+    /// the event reaching the graph). Returns the rows deleted.
+    pub async fn prune_last_events(&self, limit: i64) -> anyhow::Result<u64> {
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query(
+            "DELETE FROM session_last_event WHERE session IN (SELECT session FROM session_last_event \
+             WHERE session NOT IN (SELECT id FROM sessions) LIMIT ?)",
+        )
+        .bind(limit)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        tx.commit().await?;
+        Ok(n)
+    }
+
+    /// Test support: one `peer_exchanges` row as the intake writes it (`updated_at` = `created_at` = `at`).
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn insert_exchange_for_test(
+        &self,
+        id: &str,
+        sender: &str,
+        recipient: &str,
+        session: SessionId,
+        request_id: &str,
+        state: &str,
+        at: &str,
+    ) {
+        let local = |a: &str| a.strip_prefix("session:").map(str::to_owned);
+        sqlx::query(
+            "INSERT INTO peer_exchanges (id, sender, recipient, sender_session, recipient_session, session, \
+             request_id, fingerprint, generation, body, state, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'f', 0, 'hi', ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(sender)
+        .bind(recipient)
+        .bind(local(sender))
+        .bind(local(recipient))
+        .bind(session.to_string())
+        .bind(request_id)
+        .bind(state)
+        .bind(at)
+        .bind(at)
+        .execute(&self.write)
+        .await
+        .unwrap();
     }
 
     /// 208 D6: an exchange's sender address and idempotency key (`result:*` = a child's final result).

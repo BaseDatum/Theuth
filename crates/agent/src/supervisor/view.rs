@@ -189,24 +189,37 @@ impl View {
         parent: Option<SessionId>,
         names: &HashMap<SessionId, &str>,
     ) -> AgentState {
-        let live = self.state_of(row.id, parent, names);
-        match &row.observed {
-            Some(o) if !matches!(live, AgentState::Approval { .. }) => match o.state {
-                ObservedState::Running => AgentState::Running,
-                ObservedState::RequiresAction => AgentState::Approval {
-                    tool: o.description.clone().unwrap_or_default(),
-                },
-                ObservedState::Failed => AgentState::Error,
-                ObservedState::Cancelled => AgentState::Cancelled,
-                ObservedState::Pending
-                | ObservedState::Idle
-                | ObservedState::Completed
-                | ObservedState::Unknown => AgentState::Idle,
-            },
-            _ => live,
-        }
+        observed_row_state(
+            row.observed.as_ref(),
+            self.state_of(row.id, parent, names),
+        )
     }
+}
 
+/// 141 §5.2 table: a watch-only child's state from the harness, unless `live` is an unanswered permission ask
+/// (`Approval`, like anyone's); a row without harness facts keeps `live`. Also the graph's (208).
+pub(crate) fn observed_row_state(
+    observed: Option<&crate::ObservedMeta>,
+    live: AgentState,
+) -> AgentState {
+    match observed {
+        Some(o) if !matches!(live, AgentState::Approval { .. }) => match o.state {
+            ObservedState::Running => AgentState::Running,
+            ObservedState::RequiresAction => AgentState::Approval {
+                tool: o.description.clone().unwrap_or_default(),
+            },
+            ObservedState::Failed => AgentState::Error,
+            ObservedState::Cancelled => AgentState::Cancelled,
+            ObservedState::Pending
+            | ObservedState::Idle
+            | ObservedState::Completed
+            | ObservedState::Unknown => AgentState::Idle,
+        },
+        _ => live,
+    }
+}
+
+impl View {
     /// The latest of `id`'s last input, last stop and turn start.
     fn last_active(&self, id: SessionId) -> Option<DateTime<Utc>> {
         [
