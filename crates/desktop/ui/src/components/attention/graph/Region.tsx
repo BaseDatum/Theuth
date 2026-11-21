@@ -128,7 +128,8 @@ export function GraphRegion({ items, live, highlight, focus, subtree, onSubtree 
 
   const regionRef = useRef<HTMLDivElement>(null)
   const top = useRef(0)
-  const maxH = () => Math.max(MIN_H, 0.8 * (regionRef.current?.parentElement?.clientHeight ?? 1000))
+  // The page's height bounds the drag; the region's direct parent is a `display: contents` wrapper (height 0).
+  const maxH = () => Math.max(MIN_H, 0.8 * (regionRef.current?.closest('article')?.clientHeight ?? globalThis.innerHeight ?? 1000))
   const setHeight = (h: number) => prefs.set({ height: Math.round(Math.min(maxH(), Math.max(MIN_H, h))) })
 
   // Legacy discovery counts every method as present: an engine that then rejects `agent_graph` shows no region either.
