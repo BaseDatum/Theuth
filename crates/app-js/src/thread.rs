@@ -41,8 +41,6 @@ enum Work {
 
 struct Job {
     work: Work,
-    /// [`Shared::epoch`] when the job was enqueued.
-    epoch: u64,
     /// The thread that served earlier jobs died before this one; it is the first job of a new thread.
     lost: bool,
     reply: oneshot::Sender<Settled>,
@@ -232,7 +230,6 @@ impl BundleThread {
         let epoch = self.epoch();
         let mut job = Job {
             work,
-            epoch,
             lost: false,
             reply,
         };
