@@ -4,7 +4,7 @@ description: Repository anatomy, the Rust and Bun toolchain, just recipes for ch
 ---
 
 theuth is a single Rust workspace of 46 crates plus three small Bun projects
-(the desktop UI, the app-parser helper, the documents helper) and this site.
+(the desktop UI, the app-parser helper, the documents helper bundled into `t`) and this site.
 This page is the map and the exact commands. Design rationale lives in the
 numbered design documents inside the repository; they are internal working
 notes and are not published here.
@@ -18,7 +18,7 @@ notes and are not published here.
 | `justfile` | every build, test, packaging and release recipe |
 | `scripts/` | packaging and release scripts, model fetching (`fetch-models.sh`), remote builds, smoke drivers under `scripts/apps/` and `scripts/tests/` |
 | `bindings/` | generated TypeScript wire types, `methods.json` (every RPC method name), `surface-catalog.json` |
-| `packages/apps`, `packages/documents` | Bun sources of `theuth-app-parser-<hash>` and `theuth-documents-<protocol>` |
+| `packages/apps`, `packages/documents` | Bun sources of `theuth-app-parser-<hash>` and of the documents bundle `t` embeds (`just documents-bundle`) |
 | `deploy/relay`, `deploy/vm`, `deploy/update` | relay container and Kubernetes manifests; sandbox VM image; Linux CLI tarball builder |
 | `vendor/` | patched `libsqlite3-sys`, `pbjson-types`, `a2a-client` |
 | `site/` | this website: Vite + React marketing page and the docs under `site/content/docs/` |
@@ -106,8 +106,8 @@ just run -- --data-dir /tmp/theuth-dev   # a scratch data dir
 just ts                         # TypeScript bindings → bindings/ (cargo test -p rpc --features ts --lib export_bindings)
 just ts-desktop                 # the same plus a copy into crates/desktop/ui/src/rpc/bindings
 just helper                     # bun build --compile → packages/apps/dist/theuth-app-parser
-just documents-helper           # → packages/documents/dist/theuth-documents
-just install                    # release t + both helpers into ~/.cargo/bin (or $THEUTH_INSTALL_BIN)
+just documents-bundle           # rebuild the documents bundle crates/document-js embeds (commit it; `just check` runs documents-bundle-check)
+just install                    # release t + the app parser helper into ~/.cargo/bin (or $THEUTH_INSTALL_BIN)
 just models                     # refresh crates/models/data/models.json from models.dev
 just models-check               # fail when the committed catalog drifted
 just fetch-models [--check]     # every local model the daemon loads → $THEUTH_DATA_DIR/models
@@ -120,15 +120,14 @@ it:
 THEUTH_RPC__LISTEN=127.0.0.1:7791 ./target/debug/t --headless --data-dir /tmp/theuth-x
 ```
 
-Debug builds find the app-parser helper at `packages/apps/dist/` and the
-documents helper at `packages/documents/dist/`; `THEUTH_APP_PARSER` and
-`THEUTH_DOCUMENTS_HELPER` override. Release layouts look beside `t` for
-`theuth-app-parser-<hash>` and `theuth-documents-<protocol>`.
+Debug builds find the app-parser helper at `packages/apps/dist/`;
+`THEUTH_APP_PARSER` overrides. Release layouts look beside `t` for
+`theuth-app-parser-<hash>`. The documents helper is compiled into `t`.
 
 ### Desktop
 
 ```sh
-just desktop                    # bindings, documents helper, cargo build -p theuth, bun install, cargo tauri dev
+just desktop                    # bindings, cargo build -p theuth, bun install, cargo tauri dev
 just desktop-check              # cd crates/desktop/ui && bun run check && bun run test && bun run build
 just web-build                  # static browser UI → crates/desktop/ui/dist, served by theuth-relay --web
 just package-macos              # theuth.app + DMG (ad-hoc unless THEUTH_SIGN_IDENTITY or .env.signing)
