@@ -24,7 +24,7 @@ pub const IMAGE_PART: u16 = 0x8000;
 /// `None` past the encoding's limits (`p` ≥ 256 or `k` ≥ 128, R3-10): such
 /// an image gets no unit rather than another image's `part`.
 pub fn image_part(p: usize, k: usize) -> Option<u16> {
-    (p <= 0xFF && k <= 0x7F).then(|| IMAGE_PART | ((p as u16) << 7) | k as u16)
+    (p <= 0xFF && k <= 0x7F).then_some(IMAGE_PART | ((p as u16) << 7) | k as u16)
 }
 
 /// `(content part, tool image)` of a unit `part`.

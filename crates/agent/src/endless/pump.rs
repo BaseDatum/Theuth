@@ -490,6 +490,10 @@ struct Live {
     /// 201 P1: merges whose child changed while they were being built; the
     /// node that lands from the old inputs stays stale.
     redo: HashSet<(u8, u64)>,
+    /// 201 R1-3b: merges running over a unit removed from the context; the
+    /// node that lands from the old inputs is dropped (it would carry the
+    /// removed text) and the merge is rebuilt.
+    discard: HashSet<(u8, u64)>,
     /// 201 §3 (P2): the generation in force — its frozen view (cache of the
     /// newest `endless_generations` row; `None` until loaded or started).
     current_gen: Option<Generation>,
@@ -832,6 +836,7 @@ impl Live {
             drafts: BTreeSet::new(),
             stale: HashSet::new(),
             redo: HashSet::new(),
+            discard: HashSet::new(),
             current_gen: None,
             zooms: Vec::new(),
             tail_bytes: 0,
@@ -2668,7 +2673,13 @@ async fn call(
     }
     let model = c.model();
     let price = c.rates().map(|r| r.input);
-    let largest = compactor::largest_call_bytes(step, cfg.node_bytes);
+    // 201 §7.2: a small chunk follows the window.
+    let chunk = compactor::small_chunk_bytes(crate::tokens::bytes_of(
+        &model.id,
+        crate::tokens::memory_window(model),
+    ));
+    // R2-9: a small-profile call is sized with the small prompt and chunk.
+    let largest = compactor::largest_call_bytes(step, cfg.node_bytes, small.then_some(chunk));
     if let Some(price) = price
         && crate::tokens::tokens_of(&model.id, largest) as f64 * price / 1e6 > cfg.max_usd_per_call
     {
@@ -2694,11 +2705,6 @@ async fn call(
             ctx_budget(c.as_ref(), step, &cfg, local.is_some(), reply),
         )
     };
-    // 201 §7.2: a small chunk follows the window.
-    let chunk = compactor::small_chunk_bytes(crate::tokens::bytes_of(
-        &model.id,
-        crate::tokens::memory_window(model),
-    ));
     let request_id = format!("endless:{l}:{i}:{}", uuid::Uuid::now_v7());
     let reserved = state
         .store
@@ -2790,8 +2796,12 @@ async fn call(
         Some(Err(f)) => {
             let mut u = compactor::sum_usage(&f.calls);
             if billed_drop(&f.error) {
-                let prompt =
-                    compactor::COMPACT.len() + ctx.len() + step.render(cfg.node_bytes).len();
+                // R2-9: a small call is one chunk under the small prompt.
+                let prompt = if small {
+                    ctx.len() + compactor::largest_call_bytes(step, cfg.node_bytes, Some(chunk))
+                } else {
+                    compactor::COMPACT.len() + ctx.len() + step.render(cfg.node_bytes).len()
+                };
                 let est = crate::tokens::tokens_of(&model.id, prompt);
                 let u = u.get_or_insert_default();
                 u.prompt_tokens = Some(
@@ -2900,16 +2910,26 @@ async fn finish(
     fallback: Option<Node>,
 ) {
     // 201 R1-3b: a unit removed from the context while its call ran keeps
-    // its removed line.
-    let removed = key.0 == 0
-        && state
-            .live
-            .lock()
-            .units
-            .get(key.1 as usize)
-            .is_some_and(|u| u.text == REMOVED);
+    // its removed line; a merge built over it from the old text is dropped.
+    let removed = {
+        let mut live = state.live.lock();
+        if key.0 == 0 {
+            live.units
+                .get(key.1 as usize)
+                .is_some_and(|u| u.text == REMOVED)
+        } else if live.discard.remove(&key) {
+            live.redo.remove(&key);
+            if live.tree.built(key.0, key.1) {
+                live.stale.insert(key);
+            }
+            true
+        } else {
+            false
+        }
+    };
     let outcome = match outcome {
         Ok(Some(_)) if removed => Ok(None),
+        Err(_) if removed && key.0 > 0 => Ok(None),
         Ok(Some(node)) => match state.store.endless_node_put(state.session, &node).await {
             Ok(()) => Ok(Some(node)),
             Err(e) => Err(format!("store: {e}")),
@@ -4010,6 +4030,16 @@ pub(crate) async fn rows_excluded(inner: &Inner, session: SessionId) -> anyhow::
             live.put(node.clone());
             out.push(node);
         }
+        // A merge being built over a removed unit lands its old inputs:
+        // `finish` drops it and the merge is rebuilt.
+        for &i in &hit {
+            for l in 1..=u8::try_from(t.max(1).ilog2()).unwrap_or(u8::MAX) {
+                let key = (l, i >> l);
+                if live.running.contains(&key) {
+                    live.discard.insert(key);
+                }
+            }
+        }
         // Every built merge above, level by level, as a draft merge now.
         let mut level: BTreeSet<u64> = hit.iter().copied().collect();
         let mut l = 1u8;
@@ -4310,54 +4340,57 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
     };
     let stats = store.endless_stats(session).await?;
     let spend_today_usd = store.endless_spend_since(session, &utc_day_start()).await?;
-    let mut live = state.live.lock();
-    let cfg = live.fold_cfg(&state.cfg.read());
-    let f = live.fold(cfg);
-    let view = if mode == MemoryMode::Endless {
-        fold::render_lines(&live.tree, &f, &live.units)
-    } else {
-        Vec::new()
+    // The `live` guard ends with this block: `ledger_status` awaits below.
+    let (m, full_cfg, tail, profile, reason) = {
+        let mut live = state.live.lock();
+        let cfg = live.fold_cfg(&state.cfg.read());
+        let f = live.fold(cfg);
+        let view = if mode == MemoryMode::Endless {
+            fold::render_lines(&live.tree, &f, &live.units)
+        } else {
+            Vec::new()
+        };
+        let unbuilt = f.unbuilt(&live.tree);
+        let full_cfg = state.cfg.read().clone();
+        let m = SessionMemory {
+            mode,
+            view,
+            settling: unbuilt > 0,
+            unbuilt,
+            units: live.t(),
+            stats,
+            model: state.compactor().model_id().to_owned(),
+            view_bytes: cfg.view_bytes,
+            backfill: live.backfill(),
+            stalled: if mode == MemoryMode::Endless {
+                live.stalled(cfg)
+            } else {
+                None
+            },
+            backlog: if mode == MemoryMode::Endless {
+                live.backlog(cfg)
+            } else {
+                None
+            },
+            model_override: live.picks.chat.clone(),
+            model_source: if mode == MemoryMode::Endless {
+                chosen(inner, &live.picks).1.to_owned()
+            } else {
+                String::new()
+            },
+            effort: usable_effort(state.compactor().model(), chosen(inner, &live.picks).2),
+            effort_override: live.picks.chat_effort.clone(),
+            spend_today_usd,
+            drafts: u32::try_from(live.drafts.len()).unwrap_or(u32::MAX),
+            tail_bytes: live.tail_bytes,
+            generation: live.current_gen.as_ref().map_or(0, |g| g.n),
+            zooms: live.zoom_count(),
+            ..Default::default()
+        };
+        let tail = live.tail;
+        let (profile, reason) = profile_of(&state, &live);
+        (m, full_cfg, tail, profile, reason)
     };
-    let unbuilt = f.unbuilt(&live.tree);
-    let full_cfg = state.cfg.read().clone();
-    let m = SessionMemory {
-        mode,
-        view,
-        settling: unbuilt > 0,
-        unbuilt,
-        units: live.t(),
-        stats,
-        model: state.compactor().model_id().to_owned(),
-        view_bytes: cfg.view_bytes,
-        backfill: live.backfill(),
-        stalled: if mode == MemoryMode::Endless {
-            live.stalled(cfg)
-        } else {
-            None
-        },
-        backlog: if mode == MemoryMode::Endless {
-            live.backlog(cfg)
-        } else {
-            None
-        },
-        model_override: live.picks.chat.clone(),
-        model_source: if mode == MemoryMode::Endless {
-            chosen(inner, &live.picks).1.to_owned()
-        } else {
-            String::new()
-        },
-        effort: usable_effort(state.compactor().model(), chosen(inner, &live.picks).2),
-        effort_override: live.picks.chat_effort.clone(),
-        spend_today_usd,
-        drafts: u32::try_from(live.drafts.len()).unwrap_or(u32::MAX),
-        tail_bytes: live.tail_bytes,
-        generation: live.current_gen.as_ref().map_or(0, |g| g.n),
-        zooms: live.zoom_count(),
-        ..Default::default()
-    };
-    let tail = live.tail;
-    let (profile, reason) = profile_of(&state, &live);
-    drop(live);
     let mut out = tail_status(
         m,
         &with_agent_tail(inner, session, &full_cfg),
@@ -4765,6 +4798,14 @@ pub(crate) fn running_for_tests(inner: &Inner, session: SessionId) -> Vec<(u8, u
     v
 }
 
+/// Test seam: mark `key` as a job in flight (its result comes through
+/// [`finish_for_tests`]); the pump does not schedule it meanwhile.
+#[cfg(test)]
+pub(crate) fn mark_running_for_tests(inner: &Inner, session: SessionId, key: (u8, u64)) {
+    let state = state_of(inner, session).expect("attached");
+    state.live.lock().running.insert(key);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5078,8 +5119,10 @@ mod tests {
 
     fn with_window(id: &str, context: u32) -> models::Resolved {
         let mut r = resolved_for_tests(id);
-        let mut limit = models::Limit::default();
-        limit.context = context;
+        let limit = models::Limit {
+            context,
+            ..Default::default()
+        };
         r.model = Some(models::Model {
             id: "m".into(),
             name: "m".into(),

@@ -5636,10 +5636,9 @@ impl Turn {
             && local_ok(repl::NAME)
         {
             baseline.push_str("\n\n");
-            baseline.push_str(&self.pinned_index(repl::prompt_block(
-                &specs,
-                self.shared.cfg.runtime_only,
-            )));
+            baseline.push_str(
+                &self.pinned_index(repl::prompt_block(&specs, self.shared.cfg.runtime_only)),
+            );
             for s in repl::indexed(&specs, self.shared.cfg.runtime_only) {
                 self.runtime_names.insert(repl::sanitize_ident(&s.name));
                 self.runtime_names.insert(s.name.clone());

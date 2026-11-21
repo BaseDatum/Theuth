@@ -122,7 +122,7 @@ fn is_error(line: &str) -> bool {
                 .trim_start_matches(|c: char| !c.is_ascii_digit())
                 .split(|c: char| !c.is_ascii_digit())
                 .next()
-                .is_some_and(|n| !n.is_empty() && n.trim_start_matches('0') != "")
+                .is_some_and(|n| !n.is_empty() && !n.trim_start_matches('0').is_empty())
         })
     })
 }

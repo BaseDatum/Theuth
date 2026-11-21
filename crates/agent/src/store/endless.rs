@@ -785,7 +785,8 @@ impl Store {
         id: SessionId,
         seq: i64,
     ) -> anyhow::Result<Vec<EndlessMessage>> {
-        let rows: Vec<(i64, String, Option<String>, Option<String>, bool)> = sqlx::query_as(
+        type Row = (i64, String, Option<String>, Option<String>, bool);
+        let rows: Vec<Row> = sqlx::query_as(
             "SELECT seq, body, excluded, at, vision IS NOT NULL FROM messages WHERE session_id = ?1 AND seq >= ?2 \
              AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807) \
              ORDER BY seq",

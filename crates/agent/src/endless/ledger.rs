@@ -12,14 +12,20 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Section {
+    /// What the user wants achieved in this session.
     Goals,
+    /// Choices made that later work must respect.
     Decisions,
+    /// Limits the work must stay within.
     Constraints,
+    /// Unfinished tasks, mirrored from the `todo` list.
     OpenTasks,
+    /// Files named by tool-call arguments.
     Artefacts,
 }
 
 impl Section {
+    /// Every section, in snapshot order.
     pub const ALL: [Section; 5] = [
         Section::Goals,
         Section::Decisions,
@@ -28,6 +34,7 @@ impl Section {
         Section::Artefacts,
     ];
 
+    /// The section's heading in the snapshot.
     pub fn title(self) -> &'static str {
         match self {
             Section::Goals => "Goals",
@@ -67,8 +74,11 @@ const WRITTEN_ONLY: &str = "ledger {op}: only goals, decisions and constraints a
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
+    /// In force.
     Open,
+    /// Done or no longer relevant.
     Closed,
+    /// Replaced by a newer entry.
     Superseded,
 }
 
@@ -77,8 +87,11 @@ pub enum State {
 pub struct Entry {
     /// `L<n>`, never reused.
     pub id: String,
+    /// The section it belongs to.
     pub section: Section,
+    /// The entry's words.
     pub text: String,
+    /// Open, closed or superseded.
     pub state: State,
     /// The unit (message line) it came from, when known (an accepted suggestion).
     #[serde(default)]
@@ -98,7 +111,9 @@ pub struct Entry {
 pub struct Suggestion {
     /// The line's address, `<unit>+1`.
     pub id: String,
+    /// The flagged `user` unit.
     pub unit: u64,
+    /// Decisions or Constraints.
     pub section: Section,
     /// The user's words (capped).
     pub text: String,
@@ -109,6 +124,7 @@ pub struct Suggestion {
 /// A file named by a tool call's arguments.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Artefact {
+    /// The path as written in the tool call.
     pub path: String,
     /// The tool that last named it.
     pub action: String,
@@ -127,12 +143,16 @@ pub const ENTRY_CHARS: usize = 300;
 /// The whole ledger, persisted as JSON (`endless_ledger.body`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ledger {
+    /// Number of the next entry id (`L<next>`).
     #[serde(default)]
     pub next: u32,
+    /// Goals, Decisions, Constraints and Open tasks, in creation order.
     #[serde(default)]
     pub entries: Vec<Entry>,
+    /// Flagged `user` lines awaiting `accept` or `drop`.
     #[serde(default)]
     pub suggested: Vec<Suggestion>,
+    /// Files named by tool calls, newest first (at most [`MAX_ARTEFACTS`]).
     #[serde(default)]
     pub artefacts: Vec<Artefact>,
     /// Change notes not yet sent (cleared by a trim: the snapshot has them).
@@ -161,16 +181,21 @@ pub struct Op {
 
 /// A unit the trim scans: its index, kind and text.
 pub struct Scan<'a> {
+    /// The unit's index.
     pub i: u64,
+    /// The unit's kind.
     pub kind: super::tree::Kind,
+    /// The unit's text.
     pub text: &'a str,
 }
 
 impl Ledger {
+    /// Parse the persisted JSON; an unreadable body is an empty ledger.
     pub fn from_json(s: &str) -> Self {
         serde_json::from_str(s).unwrap_or_default()
     }
 
+    /// The JSON persisted in `endless_ledger.body`.
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
     }

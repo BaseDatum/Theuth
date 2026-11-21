@@ -894,10 +894,15 @@ pub struct SessionMemory {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct LedgerStatus {
+    /// Open Goals entries.
     pub goals: u32,
+    /// Open Decisions entries.
     pub decisions: u32,
+    /// Open Constraints entries.
     pub constraints: u32,
+    /// Open tasks mirrored from the `todo` list.
     pub open_tasks: u32,
+    /// Artefacts (files named by tool calls).
     pub artefacts: u32,
     /// Unconfirmed suggestions.
     pub suggested: u32,

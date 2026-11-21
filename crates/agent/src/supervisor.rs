@@ -9299,7 +9299,11 @@ impl Message<EndlessFold> for Agents {
     /// a chat on the endless frame takes a trim now through its actor
     /// ([`CompactNow`]: at once when idle, at the next turn boundary when a
     /// turn runs); a meeting-filtered tree keeps the 137G fold.
-    async fn handle(&mut self, m: EndlessFold, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: EndlessFold,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         if let Err(e) = self.stored(m.session).await {
@@ -9328,7 +9332,10 @@ impl Message<EndlessFold> for Agents {
                     })
                     .await
                 {
-                    Ok(_) => endless.memory(m.session).await.map_err(|e| format!("{e:#}")),
+                    Ok(_) => endless
+                        .memory(m.session)
+                        .await
+                        .map_err(|e| format!("{e:#}")),
                     Err(e) => Err(e.to_string()),
                 };
                 tx.send(r);

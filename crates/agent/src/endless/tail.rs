@@ -266,7 +266,7 @@ mod tests {
             "under high, warm"
         );
         let t = trim(&h, total - 1, total + 1, true).expect("cold over low");
-        assert!(t.kept <= total - 1);
+        assert!(t.kept < total);
         assert_eq!(trim(&h, total, total + 1, true), None, "cold but under low");
     }
 

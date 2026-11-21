@@ -755,6 +755,11 @@ pub async fn build(
                         failed_guard |= b.tries < 0;
                         calls.extend(b.calls);
                         lines.push(b.text);
+                        // R2-11: a chunk that failed its guards fails the
+                        // build; the remaining chunks are not called.
+                        if failed_guard {
+                            break;
+                        }
                     }
                     Err(mut f) => {
                         calls.append(&mut f.calls);
@@ -971,29 +976,36 @@ async fn small_once(
 }
 
 /// R1-3 / G11: the prompt bytes of the largest single call `step` makes,
-/// without its context (a map-reduce unit: one chunk's call).
-pub fn largest_call_bytes(step: &Step, node_bytes: u32) -> usize {
+/// without its context (a map-reduce unit: one chunk's call). R2-9:
+/// `small` = the small profile's chunk: its prompt and its chunk size.
+pub fn largest_call_bytes(step: &Step, node_bytes: u32, small: Option<usize>) -> usize {
+    let (over, chunk, prompt) = match small {
+        Some(chunk) => (chunk, chunk, SMALL.len()),
+        None => (MAP_REDUCE_OVER, CHUNK_BYTES, COMPACT.len()),
+    };
+    let render = |s: &Step| match small {
+        Some(_) => small_render(s, node_bytes).len(),
+        None => s.render(node_bytes).len(),
+    };
     let one = match step {
         Step::Unit {
             kind,
             text,
             earlier,
             aim,
-        } if text.len() > MAP_REDUCE_OVER => Step::Unit {
+        } if text.len() > over => render(&Step::Unit {
             kind: *kind,
-            text: chunks(text, CHUNK_BYTES)
+            text: chunks(text, chunk)
                 .first()
                 .copied()
                 .unwrap_or_default()
                 .to_owned(),
             earlier: earlier.clone(),
             aim: *aim,
-        }
-        .render(node_bytes)
-        .len(),
-        _ => step.render(node_bytes).len(),
+        }),
+        _ => render(step),
     };
-    COMPACT.len() + one
+    prompt + one
 }
 
 /// `text` cut into pieces of at most `max` bytes, at a line end when one
@@ -1037,7 +1049,7 @@ async fn build_batch(
     node_bytes: u32,
     attempt: Duration,
 ) -> Result<Built, Failed> {
-    let convo = &vec![ChatMessage::user(step.render(node_bytes))];
+    let convo = &[ChatMessage::user(step.render(node_bytes))];
     let lines_n = units.len() as u32;
     let send = |forced: bool| async move {
         let fut = if forced {
@@ -2322,6 +2334,117 @@ mod tests {
             earlier: vec![],
             drafting,
         }
+    }
+
+    /// A local compactor whose plain replies are spent on thinking and
+    /// whose thinking-off retry answers `forced_reply`.
+    struct Thinker {
+        model: Resolved,
+        plain: std::sync::atomic::AtomicU32,
+        forced: std::sync::atomic::AtomicU32,
+        forced_reply: &'static str,
+    }
+
+    impl Compactor for Thinker {
+        fn compress<'a>(
+            &'a self,
+            _ctx: &'a str,
+            _convo: &'a [ChatMessage],
+        ) -> BoxFuture<'a, Result<Reply, String>> {
+            self.plain.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                Ok(Reply {
+                    reasoning: true,
+                    ..Default::default()
+                })
+            })
+        }
+        fn compress_thinking_off<'a>(
+            &'a self,
+            _ctx: &'a str,
+            _convo: &'a [ChatMessage],
+        ) -> BoxFuture<'a, Result<Reply, String>> {
+            self.forced
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let text = self.forced_reply.to_owned();
+            Box::pin(async move {
+                Ok(Reply {
+                    text,
+                    ..Default::default()
+                })
+            })
+        }
+        fn model(&self) -> &Resolved {
+            &self.model
+        }
+        fn local(&self) -> Option<String> {
+            Some("ep".into())
+        }
+    }
+
+    /// 201 P1 (F8) / R2-12: a local drafting batch whose reply is spent on
+    /// thinking is retried once with thinking off; the retry's lines land
+    /// and both replies are call rows. A meeting batch takes no retry.
+    #[tokio::test]
+    async fn a_local_batch_spent_on_thinking_retries_once_with_thinking_off() {
+        use std::sync::atomic::Ordering;
+        let thinker = || Thinker {
+            model: super::super::pump::resolved_for_tests("local/thinker"),
+            plain: Default::default(),
+            forced: Default::default(),
+            forced_reply: "1| the agent ran cargo test in crates/agent\n2| the agent edited pump.rs and the retry delay",
+        };
+        let c = thinker();
+        let b = build(&c, "ctx", &batch_step(true), 240, 2, SECS)
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                c.plain.load(Ordering::SeqCst),
+                c.forced.load(Ordering::SeqCst)
+            ),
+            (1, 1)
+        );
+        assert!(b.lines.iter().all(Result::is_ok), "{:?}", b.lines);
+        assert_eq!(b.calls.len(), 2, "the thinking reply is charged too");
+        let c = thinker();
+        let b = build(&c, "ctx", &batch_step(false), 240, 2, SECS)
+            .await
+            .unwrap();
+        assert_eq!(
+            c.forced.load(Ordering::SeqCst),
+            0,
+            "a meeting batch: no retry"
+        );
+        assert!(b.lines.iter().all(Result::is_err));
+    }
+
+    /// R2-9: on the small profile the over-cost check sizes one chunk's
+    /// call under the small prompt, not the whole unit under the standard one.
+    #[test]
+    fn small_profile_sizes_the_largest_call_by_its_chunk() {
+        let big = "the agent edited pump.rs and ran the tests again; ".repeat(260);
+        let standard = largest_call_bytes(&talk(big.clone()), 240, None);
+        let small = largest_call_bytes(&talk(big.clone()), 240, Some(735));
+        assert!(standard > big.len(), "{standard}");
+        assert!(small <= SMALL.len() + 735 + 300, "{small}");
+    }
+
+    /// R2-11: a standard map-reduce stops at the first chunk whose line
+    /// fails its guards: no later chunk and no reduce call is made.
+    #[tokio::test]
+    async fn map_reduce_stops_at_the_first_tripped_chunk() {
+        let big = "the agent edited pump.rs and ran the tests again; ".repeat(900);
+        assert!(chunks(&big, CHUNK_BYTES).len() >= 3);
+        let fake = Fake::new(&[
+            "zebra crossing painted blue",
+            "the agent edited pump.rs",
+            "the agent edited pump.rs",
+            "the agent edited pump.rs",
+        ]);
+        let b = build(&fake, "", &talk(big), 512, 1, SECS).await.unwrap();
+        assert!(b.tries < 0, "tries {}", b.tries);
+        assert_eq!(fake.sent.lock().len(), 1, "only the tripped chunk was sent");
     }
 
     /// R2-4: an empty batch reply in a drafting session fails the batch

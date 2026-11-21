@@ -13,7 +13,9 @@ use kameo::actor::Spawn;
 use serde_json::{Value, json};
 use wiremock::Respond;
 
-use super::vision_fallback_tests::{Fake, Harness, MAIN_USAGE, body, sse, sse_tool_call, system, texts};
+use super::vision_fallback_tests::{
+    Fake, Harness, MAIN_USAGE, body, sse, sse_tool_call, system, texts,
+};
 use super::*;
 use crate::endless::eval_tests::{Act, EvalCompactor};
 use crate::endless::tree::Quality;
@@ -429,16 +431,37 @@ async fn s1() {
                 gens[k],
                 first_diff(prev, a),
                 msgs(prev).len(),
-                msgs(prev).get(first_diff(prev, a)).cloned().unwrap_or_default().chars().take(400).collect::<String>(),
-                msgs(a).get(first_diff(prev, a)).cloned().unwrap_or_default().chars().take(400).collect::<String>(),
+                msgs(prev)
+                    .get(first_diff(prev, a))
+                    .cloned()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(400)
+                    .collect::<String>(),
+                msgs(a)
+                    .get(first_diff(prev, a))
+                    .cloned()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(400)
+                    .collect::<String>(),
             );
         } else {
             trims += 1;
-            assert!(first_diff(prev, a) >= 1, "turn {k}: a trim keeps the system message");
+            assert!(
+                first_diff(prev, a) >= 1,
+                "turn {k}: a trim keeps the system message"
+            );
         }
         let sent = texts(a).concat();
-        assert!(sent.contains(&input(k - 1)), "turn {k}: the last input is sent");
-        assert!(sent.contains(&long_reply(k - 1)), "turn {k}: the last reply is sent");
+        assert!(
+            sent.contains(&input(k - 1)),
+            "turn {k}: the last input is sent"
+        );
+        assert!(
+            sent.contains(&long_reply(k - 1)),
+            "turn {k}: the last reply is sent"
+        );
         assert!(
             call_ids(a).0.contains(&format!("ecall_{}", 2 * (k - 1))),
             "turn {k}: the last tool round is sent"
@@ -522,7 +545,10 @@ async fn s2() {
         .iter()
         .any(|n| n.l == 0 && n.quality() == Quality::Model)
     {
-        assert!(Instant::now() < deadline, "no draft refined after the restart");
+        assert!(
+            Instant::now() < deadline,
+            "no draft refined after the restart"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let a2 = session(&h, model, Some(&e2), None).await;
@@ -531,8 +557,15 @@ async fn s2() {
     assert_eq!(errors(&ev), Vec::<String>::new());
     let after = main_calls(&h).await.pop().unwrap();
     let g_after = generation(&e2, &h).await;
-    assert_eq!(g_after.n, g_before.n, "no trim: the tail is under the low mark");
-    assert_eq!(g_after.render.text(), g_before.render.text(), "the frozen view");
+    assert_eq!(
+        g_after.n, g_before.n,
+        "no trim: the tail is under the low mark"
+    );
+    assert_eq!(
+        g_after.render.text(),
+        g_before.render.text(),
+        "the frozen view"
+    );
     assert_eq!(system(&before), system(&after), "system");
     assert_eq!(before["tools"], after["tools"], "tools");
     let d = first_diff(&before, &after);
@@ -540,8 +573,20 @@ async fn s2() {
         is_prefix(&before, &after),
         "the request after the restart departs at message {d} of {}:\nbefore: {}\nafter:  {}",
         msgs(&before).len(),
-        msgs(&before).get(d).cloned().unwrap_or_default().chars().take(400).collect::<String>(),
-        msgs(&after).get(d).cloned().unwrap_or_default().chars().take(400).collect::<String>(),
+        msgs(&before)
+            .get(d)
+            .cloned()
+            .unwrap_or_default()
+            .chars()
+            .take(400)
+            .collect::<String>(),
+        msgs(&after)
+            .get(d)
+            .cloned()
+            .unwrap_or_default()
+            .chars()
+            .take(400)
+            .collect::<String>(),
     );
 }
 
@@ -604,9 +649,15 @@ async fn s3() {
         gens.push(g.n);
     }
     for (k, w) in waits.iter().enumerate() {
-        assert!(*w < Duration::from_millis(500), "turn {k} started after {w:?}: {waits:?}");
+        assert!(
+            *w < Duration::from_millis(500),
+            "turn {k} started after {w:?}: {waits:?}"
+        );
     }
-    assert!(gens.last().copied().unwrap_or(0) >= 3, "trims happened: {gens:?}");
+    assert!(
+        gens.last().copied().unwrap_or(0) >= 3,
+        "trims happened: {gens:?}"
+    );
     assert!(hang.calls() > 0, "the compactor was asked");
     // Every unit has a line (drafts: nothing was refined).
     e.render_for_turn(h.id).await.unwrap();
@@ -673,7 +724,12 @@ async fn s5() {
     let actor = session(&h, model, Some(&e), None).await;
 
     script.text("Noted.");
-    turn(&mut h, &actor, "Hello, a plain first message about the walrus.").await;
+    turn(
+        &mut h,
+        &actor,
+        "Hello, a plain first message about the walrus.",
+    )
+    .await;
     e.render_for_turn(h.id).await.unwrap();
     let units_before = h.store.endless_units(h.id).await.unwrap();
     assert!(!units_before.is_empty());
@@ -690,8 +746,14 @@ async fn s5() {
     turn(&mut h, &actor, "Read the screenshot file.").await;
     let r = main_calls(&h).await.pop().unwrap();
     let urls = image_urls(&r);
-    assert!(urls.iter().any(|u| u.ends_with(&blue64)), "the screenshot is sent");
-    assert!(urls.iter().any(|u| u.ends_with(&red64)), "the photo still rides the tail");
+    assert!(
+        urls.iter().any(|u| u.ends_with(&blue64)),
+        "the screenshot is sent"
+    );
+    assert!(
+        urls.iter().any(|u| u.ends_with(&red64)),
+        "the photo still rides the tail"
+    );
 
     // Push both turns out of the tail, then two more generations.
     let big = |k: usize| format!("FILLER-{k} {}", "words for the tail ".repeat(400));
@@ -716,7 +778,10 @@ async fn s5() {
         .lines()
         .find(|l| l.contains("user: [image: evalphoto.png]"))
         .unwrap_or_else(|| panic!("the photo named in the view:\n{view}"));
-    assert!(photo_line.contains("a red square on white"), "described: {photo_line}");
+    assert!(
+        photo_line.contains("a red square on white"),
+        "described: {photo_line}"
+    );
     // The tool picture's unit is named by the binary's own name (read_file
     // names it by a content hash, not the file name; the echo before it
     // carries the path).
@@ -724,7 +789,10 @@ async fn s5() {
         .lines()
         .find(|l| l.contains("echo: [image: "))
         .unwrap_or_else(|| panic!("the screenshot named in the view:\n{view}"));
-    assert!(shot_line.contains("a red square on white"), "described: {shot_line}");
+    assert!(
+        shot_line.contains("a red square on white"),
+        "described: {shot_line}"
+    );
     assert!(seer.described.load(Ordering::SeqCst) >= 2);
 
     // zoom(id, 1) through the loop re-attaches the screenshot.
@@ -740,12 +808,19 @@ async fn s5() {
     let r = main_calls(&h).await.pop().unwrap();
     let k = script.main_calls() - 2;
     let out = tool_result(&r, &format!("ecall_{k}")).unwrap_or_default();
-    assert!(out.contains(&format!("{shot_unit}+1|")), "zoom answered: {out}");
+    assert!(
+        out.contains(&format!("{shot_unit}+1|")),
+        "zoom answered: {out}"
+    );
     assert!(
         image_urls(&r).iter().any(|u| u.ends_with(&blue64)),
         "zoom(id, 1) sends the screenshot again: {out}"
     );
-    assert_eq!(&units[..units_before.len()], &units_before[..], "earlier units unchanged");
+    assert_eq!(
+        &units[..units_before.len()],
+        &units_before[..],
+        "earlier units unchanged"
+    );
 }
 
 // endregion: --- S5
@@ -781,9 +856,12 @@ impl tools::ErasedTool for EvalTool {
 }
 
 async fn register(reg: &ActorRef<ToolRegistry>, name: &'static str, direct: bool) {
-    reg.ask(tools::registry::RegisterTool(Arc::new(EvalTool { name, direct })))
-        .await
-        .unwrap();
+    reg.ask(tools::registry::RegisterTool(Arc::new(EvalTool {
+        name,
+        direct,
+    })))
+    .await
+    .unwrap();
 }
 
 /// The python worker pool (`$THEUTH_WORKER`, else `monty`/`t` on `PATH`),
@@ -835,7 +913,10 @@ async fn s6() {
     turn(&mut h, &actor, "First turn.").await;
     let r1 = main_calls(&h).await.pop().unwrap();
     let t1 = tool_names(&r1);
-    assert!(system(&r1).contains("## Runtime"), "the runtime index is on");
+    assert!(
+        system(&r1).contains("## Runtime"),
+        "the runtime index is on"
+    );
     for n in ["eval_alpha", "eval_delta"] {
         assert!(t1.iter().any(|t| t == n), "{n} in {t1:?}");
     }
@@ -849,14 +930,24 @@ async fn s6() {
     let r2 = main_calls(&h).await.pop().unwrap();
     assert_eq!(r2["tools"], r1["tools"], "the direct list is held");
     assert_eq!(system(&r2), system(&r1), "the index is held");
-    assert!(is_prefix(&r1, &r2), "diff at message {}", first_diff(&r1, &r2));
+    assert!(
+        is_prefix(&r1, &r2),
+        "diff at message {}",
+        first_diff(&r1, &r2)
+    );
     let note = texts(&r2)
         .into_iter()
         .find(|t| t.starts_with("<tools>"))
         .expect("a <tools> note");
-    assert!(note.contains("eval_beta") && note.contains("eval_gamma"), "{note}");
+    assert!(
+        note.contains("eval_beta") && note.contains("eval_gamma"),
+        "{note}"
+    );
     let sent = texts(&r2);
-    let input = sent.iter().position(|t| t.contains("Second turn.")).unwrap();
+    let input = sent
+        .iter()
+        .position(|t| t.contains("Second turn."))
+        .unwrap();
     let at = sent.iter().position(|t| t.starts_with("<tools>")).unwrap();
     assert!(at > input, "the note follows the input");
 
@@ -872,7 +963,10 @@ async fn s6() {
     assert_eq!(r3a["tools"], r1["tools"], "a removed tool stays defined");
     let k = script.main_calls() - 2;
     let out = tool_result(r3b, &format!("ecall_{k}")).unwrap_or_default();
-    assert!(out.contains("no longer available"), "the call refuses: {out}");
+    assert!(
+        out.contains("no longer available"),
+        "the call refuses: {out}"
+    );
     assert!(is_prefix(&r2, r3a));
 
     // A per-chat hide applies now.
@@ -887,22 +981,49 @@ async fn s6() {
     turn(&mut h, &actor, "Fourth turn.").await;
     let r4 = main_calls(&h).await.pop().unwrap();
     let t4 = tool_names(&r4);
-    assert!(!t4.iter().any(|t| t == "eval_delta"), "hidden at once: {t4:?}");
-    assert!(t4.iter().any(|t| t == "eval_alpha"), "the removal still waits: {t4:?}");
-    assert!(!t4.iter().any(|t| t == "eval_beta"), "the addition still waits: {t4:?}");
-    assert_eq!(generation(&e, &h).await.n, g1, "all of it in one generation");
+    assert!(
+        !t4.iter().any(|t| t == "eval_delta"),
+        "hidden at once: {t4:?}"
+    );
+    assert!(
+        t4.iter().any(|t| t == "eval_alpha"),
+        "the removal still waits: {t4:?}"
+    );
+    assert!(
+        !t4.iter().any(|t| t == "eval_beta"),
+        "the addition still waits: {t4:?}"
+    );
+    assert_eq!(
+        generation(&e, &h).await.n,
+        g1,
+        "all of it in one generation"
+    );
 
     // A trim (the tail passes the high mark): the list is rebuilt.
     script.text("Five.");
-    turn(&mut h, &actor, &format!("BIG {}", "filler words ".repeat(6_000))).await;
+    turn(
+        &mut h,
+        &actor,
+        &format!("BIG {}", "filler words ".repeat(6_000)),
+    )
+    .await;
     script.text("Six.");
     turn(&mut h, &actor, "Sixth turn.").await;
     assert!(generation(&e, &h).await.n > g1, "a trim happened");
     let r6 = main_calls(&h).await.pop().unwrap();
     let t6 = tool_names(&r6);
-    assert!(t6.iter().any(|t| t == "eval_beta"), "joined at the trim: {t6:?}");
-    assert!(!t6.iter().any(|t| t == "eval_alpha"), "left at the trim: {t6:?}");
-    assert!(system(&r6).contains("eval_gamma"), "the index has eval_gamma");
+    assert!(
+        t6.iter().any(|t| t == "eval_beta"),
+        "joined at the trim: {t6:?}"
+    );
+    assert!(
+        !t6.iter().any(|t| t == "eval_alpha"),
+        "left at the trim: {t6:?}"
+    );
+    assert!(
+        system(&r6).contains("eval_gamma"),
+        "the index has eval_gamma"
+    );
     drop(actor);
 
     // Epochs: every change at once, no note.
@@ -1010,23 +1131,38 @@ async fn s9() {
     for w in ["fridays", "postgres", "backups"] {
         assert!(snap.contains(w), "suggested {w}:\n{snap}");
     }
-    assert!(snap.contains("migrate the schema"), "todo mirrored:\n{snap}");
+    assert!(
+        snap.contains("migrate the schema"),
+        "todo mirrored:\n{snap}"
+    );
 
     // Accept, drop, close two tasks, add goals past the budget.
     script.pick(|b| {
-        suggestion_id(b, "postgres")
-            .map(|id| ("ledger".into(), json!({"section": "decisions", "op": "accept", "id": id})))
+        suggestion_id(b, "postgres").map(|id| {
+            (
+                "ledger".into(),
+                json!({"section": "decisions", "op": "accept", "id": id}),
+            )
+        })
     });
     script.pick(|b| {
-        suggestion_id(b, "fridays")
-            .map(|id| ("ledger".into(), json!({"section": "constraints", "op": "drop", "id": id})))
+        suggestion_id(b, "fridays").map(|id| {
+            (
+                "ledger".into(),
+                json!({"section": "constraints", "op": "drop", "id": id}),
+            )
+        })
     });
     script.call("todo", json!({"op": "done", "task": "migrate the schema"}));
     script.call("todo", json!({"op": "done", "task": "write the runbook"}));
     // Seven goals: with the two closed tasks the snapshot passes 1,000 B;
     // without them it fits (open entries are never hidden).
     for g in 0..7 {
-        let tail = if g == 6 { " in two phases, reviewed weekly" } else { "" };
+        let tail = if g == 6 {
+            " in two phases, reviewed weekly"
+        } else {
+            ""
+        };
         script.call(
             "ledger",
             json!({"section": "goals", "op": "add", "text": format!("goal {g}: ship gateway part {g} with tests and a written rollback plan for every region{tail}")}),
@@ -1041,19 +1177,34 @@ async fn s9() {
         k += 1;
         assert!(k < 30, "no further trims");
     }
-    let stored = h.store.endless_ledger(h.id).await.unwrap().unwrap_or_default();
+    let stored = h
+        .store
+        .endless_ledger(h.id)
+        .await
+        .unwrap()
+        .unwrap_or_default();
     let ctx = format!(
         "suggestions at {g_sug}, record turn in {g_rec}, per turn {gens:?}\nstored: {stored}"
     );
     // Lapse: still suggested one trim later, gone two trims later.
     let next = &snaps[&(g_sug + 1)];
-    let suggested = next.split_once("Suggested (unconfirmed)").map_or("", |s| s.1);
-    assert!(suggested.contains("backups"), "still suggested:\n{next}\n{ctx}");
+    let suggested = next
+        .split_once("Suggested (unconfirmed)")
+        .map_or("", |s| s.1);
+    assert!(
+        suggested.contains("backups"),
+        "still suggested:\n{next}\n{ctx}"
+    );
     let later = &snaps[&(g_sug + 2)];
-    assert!(!later.contains("backups"), "lapsed after two trims:\n{later}\n{ctx}");
+    assert!(
+        !later.contains("backups"),
+        "lapsed after two trims:\n{later}\n{ctx}"
+    );
     // Accept and drop, todo mirror, budget: the snapshot after the record turn.
     let s = &snaps[&(g_rec + 1)];
-    let (body, _) = s.split_once("Suggested (unconfirmed)").unwrap_or((s.as_str(), ""));
+    let (body, _) = s
+        .split_once("Suggested (unconfirmed)")
+        .unwrap_or((s.as_str(), ""));
     let decisions = body.split_once("Decisions").map_or("", |d| d.1);
     assert!(decisions.contains("postgres"), "accepted:\n{s}\n{ctx}");
     assert!(!s.contains("fridays"), "dropped:\n{s}\n{ctx}");
@@ -1096,7 +1247,10 @@ async fn s9() {
 /// What the user sees of a turn whose one tool round is larger than the
 /// model's window, then of a plain next turn: `(errors, compactions, main
 /// calls, stop reasons)` per turn.
-async fn one_huge_round(endless: bool, model_id: &str) -> Vec<(Vec<String>, usize, usize, Vec<String>)> {
+async fn one_huge_round(
+    endless: bool,
+    model_id: &str,
+) -> Vec<(Vec<String>, usize, usize, Vec<String>)> {
     let script = Script::new();
     let mut h = Harness::new(ScriptRef(script.clone())).await;
     add_models(&mut h, &[(model_id, false, 128_000)]);
@@ -1120,7 +1274,12 @@ async fn one_huge_round(endless: bool, model_id: &str) -> Vec<(Vec<String>, usiz
                 _ => None,
             })
             .collect();
-        out.push((errors(&ev), compactions(&ev), script.main_calls() - n0, stops));
+        out.push((
+            errors(&ev),
+            compactions(&ev),
+            script.main_calls() - n0,
+            stops,
+        ));
         script.text("Fine.");
     }
     out
@@ -1155,7 +1314,8 @@ fn eval_s10_one_round_over_the_window_endless_vs_epochs() {
         for r in [&endless, &epochs] {
             let e = &r[0].0[0];
             assert!(
-                e.starts_with("model: prompt is too long") && e.contains("theuth preflight, not sent"),
+                e.starts_with("model: prompt is too long")
+                    && e.contains("theuth preflight, not sent"),
                 "{e}"
             );
         }
@@ -1178,12 +1338,18 @@ fn normalise(h: &Harness, b: &Value) -> String {
             "<UUID>",
         ),
         (r#"now=\\"[^\\]*\\""#, "now=<T>"),
-        (r"\d{4}-\d{2}-\d{2}[T ][0-9:.]+(Z|[+-]\d{2}:?\d{2})?", "<TS>"),
+        (
+            r"\d{4}-\d{2}-\d{2}[T ][0-9:.]+(Z|[+-]\d{2}:?\d{2})?",
+            "<TS>",
+        ),
         (r"Date: [^\\]*", "Date: <D>"),
         (r"Working directory: [^\\]*", "Working directory: <CWD>"),
         (r"theuth-[a-z-]+-<UUID>", "<SCRATCH>"),
     ] {
-        s = regex::Regex::new(re).unwrap().replace_all(&s, to).into_owned();
+        s = regex::Regex::new(re)
+            .unwrap()
+            .replace_all(&s, to)
+            .into_owned();
     }
     s
 }
@@ -1251,7 +1417,9 @@ async fn frames_of(kind: &str) -> Vec<String> {
         .expect("a cut");
     // The mini-turn hands the state back with its own `settled`.
     let ev = h
-        .drain_until(|e| matches!(e, AgentEvent::ContextChanged { reason, .. } if reason == "settled"))
+        .drain_until(
+            |e| matches!(e, AgentEvent::ContextChanged { reason, .. } if reason == "settled"),
+        )
         .await;
     let cut = format!("compacted events: {}", compactions(&ev));
     script.text("Third answer.");
@@ -1281,6 +1449,9 @@ fn eval_s4_epochs_and_meeting_frames_match_the_base() {
             return;
         }
         let want: Value = serde_json::from_str(include_str!("eval_golden_s4.json")).unwrap();
+        // The golden was captured in the base worktree: its working
+        // directory line is masked like this run's.
+        let cwd = regex::Regex::new(r"Working directory: [^\\]*").unwrap();
         let mut diffs = Vec::new();
         for kind in ["epochs-bare", "epochs-service", "meeting"] {
             let (g, w) = (&got[kind], &want[kind]);
@@ -1296,14 +1467,13 @@ fn eval_s4_epochs_and_meeting_frames_match_the_base() {
                 .zip(w.as_array().unwrap())
                 .enumerate()
             {
-                // The golden was captured in the base worktree: its working
-                // directory line is masked like this run's.
-                let cwd = regex::Regex::new(r"Working directory: [^\\]*").unwrap();
                 let base = cwd
                     .replace_all(b.as_str().unwrap(), "Working directory: <CWD>")
                     .into_owned();
-                let (a, b): (Vec<&str>, Vec<&str>) =
-                    (a.as_str().unwrap().lines().collect(), base.lines().collect());
+                let (a, b): (Vec<&str>, Vec<&str>) = (
+                    a.as_str().unwrap().lines().collect(),
+                    base.lines().collect(),
+                );
                 let (sa, sb): (HashSet<&str>, HashSet<&str>) =
                     (a.iter().copied().collect(), b.iter().copied().collect());
                 let removed: Vec<&&str> = b.iter().filter(|l| !sa.contains(*l)).collect();
@@ -1317,7 +1487,11 @@ fn eval_s4_epochs_and_meeting_frames_match_the_base() {
                 }
             }
         }
-        assert!(diffs.is_empty(), "frames differ from the base:\n{}", diffs.join("\n"));
+        assert!(
+            diffs.is_empty(),
+            "frames differ from the base:\n{}",
+            diffs.join("\n")
+        );
     });
 }
 

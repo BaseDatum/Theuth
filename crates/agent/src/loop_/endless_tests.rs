@@ -1005,7 +1005,7 @@ async fn scenario_ledger_turns() {
     assert!(
         sent[input + 1].contains("<ledger>") && sent[input + 1].contains("ship the zebra gateway"),
         "the note follows the input: {:?}",
-        &sent[input + 1]
+        sent[input + 1]
     );
     if let Some(before) = snapshot(&req) {
         assert!(!before.contains("zebra"), "the entry waits for the trim");
