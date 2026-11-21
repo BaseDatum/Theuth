@@ -2,7 +2,7 @@ import { receiveComponent } from '@/rpc/bindings/receive'
 import { jsonrepair } from "jsonrepair";
 import { resultLine } from "@/lib/describe";
 import { codeEdited, codeToolRan, emptyCodemap } from "@/lib/codemap/slice";
-import { classify, type CellResultInput, type ContactNote, type FileNote, humanSecs, type Injected, movedFromRecord, splitLeading, splitParentView } from "@/lib/injected";
+import { classify, type CellResultInput, type ContactNote, type FileNote, HARNESS_NOTES, humanSecs, type Injected, movedFromRecord, splitLeading, splitParentView } from "@/lib/injected";
 import { pushChunk } from "@/lib/jobTail";
 import { splitRestart, splitTime } from "@/lib/time";
 import { live, observedState } from "@/lib/session-tree";
@@ -358,6 +358,9 @@ function userEntries(
       // 137G G10: the endless view was shrunk to fit — a muted info line, not a user bubble or a nudge card.
       case "memory":
         return { id: nextId(), kind: "info", text: c.text, context };
+      // 201 R3-2: a `<ledger>` / `<recall>` / `<tools>` note — the same muted line, collapsed under its label.
+      case "note":
+        return { id: nextId(), kind: "info", text: c.text, label: HARNESS_NOTES[c.note], context };
     }
   }).concat(card);
 }

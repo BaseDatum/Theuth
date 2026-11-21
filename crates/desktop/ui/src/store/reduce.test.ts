@@ -262,6 +262,15 @@ test('137G G10: the stored <memory> note is a muted info line (shown whatever th
   expect(fromHistory({ role: 'user', text: '<memory kind="x">\nmine\n</memory>', turn: 1 })).toMatchObject([{ kind: 'user' }])
 })
 
+test('201 R3-2: stored <ledger>, <recall> and <tools> notes are labelled info lines, never user bubbles; with attributes they stay text', () => {
+  for (const [tag, label] of [['ledger', 'Ledger updated'], ['recall', 'Recalled from earlier'], ['tools', 'Tools changed']] as const) {
+    const body = `${tag} body line 1\nline 2`
+    expect(fromHistory({ role: 'user', text: `<${tag}>\n${body}\n</${tag}>`, turn: null, context: msg(5) })).toMatchObject([{ kind: 'info', label, text: body, context: msg(5) }])
+    expect(fromHistory({ role: 'user', text: `<${tag} kind="x">\nmine\n</${tag}>`, turn: 1 })).toMatchObject([{ kind: 'user' }])
+  }
+  expect(fromHistory({ role: 'user', text: '<tools> are what?', turn: 1 })).toMatchObject([{ kind: 'user' }])
+})
+
 test('pending tool is replaced by its start (same id), finished by call id, abandoned ones pruned', () => {
   let s = run([
     { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm', turn_seq: 1 },

@@ -30,6 +30,7 @@ const NOT_A_ROW: Record<string, string> = {
   // Not fixed in 171F4 (docs/design/171f4-notes-d.md): the opening brief of an autoresearch experiment's own session.
   study: "an experiment session's opening brief (autoresearch/brief.rs) followed by instructions; see the 171F4-D notes",
   time: 'the `<time …/>` stamp (clock.rs), stripped by `splitTime` from every user text and tool result, never shown',
+  ledger_snapshot: "the endless frame's state ledger (endless/ledger.rs), part of the request's system frame, never a session row",
 }
 
 function rustFiles(dir: string): string[] {
