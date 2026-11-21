@@ -1,6 +1,6 @@
-// The shell's child web views (205 §4.3): every `invoke`/`listen` for them lives here, so tests mock one module and a
-// container without the native layer (a browser, the iOS shell) never reaches Tauri. Coordinates are logical px
-// relative to the window's content area: the placeholder's `getBoundingClientRect()`.
+// The shell's native web views (205 §4.3, §9): every `invoke`/`listen` for them lives here, so tests mock one module
+// and a container without the native layer (a browser) never reaches Tauri. Coordinates are logical px relative to the
+// window's content area: the placeholder's `getBoundingClientRect()`.
 //
 // Tauri runs async commands concurrently, so calls for one label are serialised here on one promise chain, in issue
 // order; a rejected call does not break the chain. Visibility and bounds are desired state: a call records it and the
@@ -9,7 +9,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { isDesktop } from '@/lib/platform'
+import { container, isDesktop } from '@/lib/platform'
 
 /** A rectangle in logical px, viewport-relative. */
 export type Rect = { x: number; y: number; width: number; height: number }
@@ -18,8 +18,9 @@ export type WebViewState = { label: string; url: string; title: string; loading:
 /** `web-view://closed`: the view was destroyed (`web_view_close`, or its window closed). */
 export type WebViewClosed = { label: string }
 
-/** Only a desktop shell hosts child web views (205 D2, D7); the iOS shell and a browser get the address card. */
-export const nativeWebViews = (): boolean => isDesktop()
+/** A desktop shell (child webviews, 205 D2) and the iOS shell (a raw `WKWebView` over the tile, 205 §9) host web views;
+ * a browser gets the address card (205 D7). */
+export const nativeWebViews = (): boolean => isDesktop() || container() === 'ios'
 
 /** The shell's label for frame `id` (205 D3). */
 export const webLabel = (id: string): string => `web-${id}`

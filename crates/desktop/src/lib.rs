@@ -17,6 +17,8 @@ mod companion;
 #[cfg(target_os = "macos")]
 mod dock;
 #[cfg(target_os = "ios")]
+mod ios_webview;
+#[cfg(target_os = "ios")]
 mod ios_windowing;
 #[cfg(desktop)]
 mod island;
@@ -31,6 +33,8 @@ mod point;
 mod quit;
 #[cfg(desktop)]
 mod update;
+#[cfg(any(desktop, target_os = "ios"))]
+mod web_rules;
 #[cfg(desktop)]
 mod webview;
 
@@ -97,7 +101,22 @@ mod mobile {
             .invoke_handler(tauri::generate_handler![
                 commands::connection,
                 crate::pages::page_put,
-                crate::pages::page_drop
+                crate::pages::page_drop,
+                // 205 §9: the web view tile's native layer, same contract as the desktop's.
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_view_attach,
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_view_bounds,
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_view_visible,
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_view_navigate,
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_view_reload,
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_view_history,
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_view_close
             ])
             .setup(|app| {
                 let builder =

@@ -89,10 +89,11 @@ function Tip({ label, children }: { label: string; children: ReactNode }) {
 }
 
 /**
- * A web view frame (205 §4.4): a 52 px toolbar over a placeholder the shell's child web view `web-<id>` is laid over.
- * Mounting attaches it at the placeholder's rectangle, a per-frame check follows the placeholder while it shows,
- * unmounting hides it; the store's `close` destroys it. Where there is no native layer (a browser, iOS) or the address
- * is on a remote engine's loopback, the placeholder shows the address with **Open in browser** instead (205 D7).
+ * A web view frame (205 §4.4): a 52 px toolbar over a placeholder the shell's native web view `web-<id>` is laid over
+ * (a child webview on the desktop, a `WKWebView` on iOS, 205 §9). Mounting attaches it at the placeholder's rectangle,
+ * a per-frame check follows the placeholder while it shows, unmounting hides it; the store's `close` destroys it. Where
+ * there is no native layer (a browser) or the address is on a remote engine's loopback, the placeholder shows the
+ * address with **Open in browser** instead (205 D7).
  * `first`: the left-most pane, which carries the sidebar toggle and the traffic-light inset like `Header`. `popped`:
  * the frame fills its own window (`/web/$id`), whose title bar closes it.
  */

@@ -3,7 +3,12 @@ import * as native from './web-view-native'
 import { invoke } from '@tauri-apps/api/core'
 
 const shell = vi.hoisted(() => ({ log: [] as string[], attach: null as null | { resolve: () => void; reject: (e: string) => void } }))
-vi.mock('@/lib/platform', async (original) => ({ ...(await original<object>()), isDesktop: () => true }))
+const env = vi.hoisted(() => ({ container: 'ios' as 'macos' | 'ios' | 'web' }))
+vi.mock('@/lib/platform', async (original) => ({
+  ...(await original<object>()),
+  container: () => env.container,
+  isDesktop: () => env.container === 'macos',
+}))
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn((cmd: string, args: { visible?: boolean; width?: number }) => {
     shell.log.push(cmd === 'web_view_visible' ? `${cmd}:${args.visible}` : cmd === 'web_view_bounds' ? `${cmd}:${args.width}` : cmd)
@@ -23,8 +28,22 @@ const R = { x: 0, y: 52, width: 640, height: 480 }
 const attaching = () => vi.waitFor(() => expect(shell.attach).not.toBeNull())
 
 beforeEach(() => {
+  env.container = 'ios'
   shell.log = []
   shell.attach = null
+})
+
+test('the desktop and iOS shells drive native web views; a browser never reaches the shell', async () => {
+  env.container = 'macos'
+  expect(native.nativeWebViews()).toBe(true)
+  env.container = 'ios'
+  expect(native.nativeWebViews()).toBe(true)
+  env.container = 'web'
+  expect(native.nativeWebViews()).toBe(false)
+  await native.attach('a0', 'https://example.com/', R)
+  await native.navigate('a0', 'https://example.com/x')
+  await native.close('a0')
+  expect(shell.log).toEqual([])
 })
 
 test('calls for one label reach the shell in issue order, each after the attach before it has landed', async () => {

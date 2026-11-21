@@ -86,13 +86,17 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Wind
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 # iOS only: `UIApplication.beginBackgroundTask` so the relay socket outlives
-# backgrounding for the grace period iOS grants (31 §8), and the scene-configuration /
-# windowing-control-style surface `ios_windowing.rs` uses (111). Same objc2 line tauri uses.
+# backgrounding for the grace period iOS grants (31 §8), the scene-configuration /
+# windowing-control-style surface `ios_windowing.rs` uses (111), and the web view tile's raw
+# `WKWebView`s (`ios_webview.rs`, 205 §9). Same objc2 line tauri/wry use; `objc2-web-kit` at the
+# version wry resolves (its iOS `WKWebView` class is declared in `ios_webview.rs`: the crate binds it
+# for macOS only).
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
-objc2-foundation = { workspace = true }
-objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "UIScreen", "UITraitCollection", "UIInterface", "UIScene", "UISceneConfiguration", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UISceneWindowingControlStyle", "block2"] }
+objc2-foundation = { workspace = true, features = ["NSURL", "NSURLRequest", "NSUUID", "NSDictionary", "NSKeyValueObserving"] }
+objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "UIScreen", "UITraitCollection", "UIInterface", "UIScene", "UISceneConfiguration", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UISceneWindowingControlStyle", "UIView", "UIScrollView", "objc2-core-foundation", "block2"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKNavigationDelegate", "WKNavigationAction", "WKFrameInfo", "WKUIDelegate"] }
 
 [build-dependencies]
 tauri-build = { workspace = true }
