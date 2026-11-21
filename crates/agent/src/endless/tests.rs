@@ -2914,3 +2914,87 @@ async fn failing_unit_blocks_nothing() {
     let nodes = level0(&store, id).await;
     assert_eq!(quality(&nodes[0]), super::tree::Quality::Draft);
 }
+
+/// 201 §3/§4.3 (P2): a generation's view covers only the units before the
+/// tail, is persisted, and a restart reads back the same bytes; the next
+/// trim opens the next generation. Generation 1 of an endless session with
+/// history covers it all (an empty tail).
+#[tokio::test]
+async fn generation_view_is_frozen_and_survives_a_restart() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    let mut seqs = Vec::new();
+    for k in 0..4 {
+        seqs.push(
+            store
+                .append(id, &ChatMessage::user(format!("note {k}: the plan")))
+                .await
+                .unwrap(),
+        );
+    }
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    assert_eq!(endless.generation(id).await.unwrap(), None);
+    let g1 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    assert_eq!((g1.n, g1.t_cut, g1.first_seq), (1, 4, seqs[3] + 1));
+    assert!(g1.render.text().contains("note 3"), "{}", g1.render.text());
+
+    // Two more rows; a trim keeps them as the tail: the view stops before them.
+    let s5 = store
+        .append(id, &ChatMessage::user("note 4: tail".to_owned()))
+        .await
+        .unwrap();
+    store
+        .append(id, &ChatMessage::user("note 5: tail".to_owned()))
+        .await
+        .unwrap();
+    let g2 = endless
+        .start_generation(id, Some(s5), 1_000_000, false)
+        .await
+        .unwrap();
+    assert_eq!((g2.n, g2.t_cut, g2.first_seq), (2, 4, s5));
+    assert!(!g2.render.text().contains("note 4"), "{}", g2.render.text());
+    assert_eq!(endless.memory(id).await.unwrap().generation, 2);
+
+    // A restart reproduces the frozen view byte for byte.
+    endless.detach(id);
+    endless.attach(id, attached()).await.unwrap();
+    let back = endless.generation(id).await.unwrap().expect("persisted");
+    assert_eq!(back.n, 2);
+    assert_eq!(back.render.text(), g2.render.text());
+    assert_eq!(back.render.blocks, g2.render.blocks);
+}
+
+/// 201 §4.2 (P2): the per-session override wins over the config; `scaled`
+/// takes its marks as shares of the turn allowance.
+#[tokio::test]
+async fn tail_marks_follow_the_override_and_scaled_shares() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    assert_eq!(endless.tail_marks(id, 1_000_000), (24_000, 64_000));
+    let fixed = super::TailOverride {
+        mode: super::TailMode::Fixed,
+        low: 10_000.0,
+        high: 30_000.0,
+    };
+    endless.set_tail(id, Some(fixed)).await.unwrap();
+    assert_eq!(endless.tail_marks(id, 1_000_000), (10_000, 30_000));
+    let scaled = super::TailOverride {
+        mode: super::TailMode::Scaled,
+        low: 0.10,
+        high: 0.25,
+    };
+    endless.set_tail(id, Some(scaled)).await.unwrap();
+    assert_eq!(endless.tail_marks(id, 400_000), (40_000, 100_000));
+}

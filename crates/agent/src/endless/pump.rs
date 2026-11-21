@@ -123,6 +123,11 @@ impl Handle {
             && live.backfill().is_none()
     }
 
+    /// 201 §4.2: the session's tail override (persisted on the row).
+    pub(crate) fn tail(&self) -> Option<TailOverride> {
+        self.state.live.lock().tail
+    }
+
     /// §9: the tree answers `zoom` / `recall` / `date` — attached ∧ `endless`,
     /// whatever the filter or the backfill state (a meeting session and a
     /// backfilling chat have a tree to search even though `active()` is false).
@@ -428,6 +433,14 @@ struct Live {
     /// 201 P1: merges whose child changed while they were being built; the
     /// node that lands from the old inputs stays stale.
     redo: HashSet<(u8, u64)>,
+    /// 201 §3 (P2): the generation in force — its frozen view (cache of the
+    /// newest `endless_generations` row; `None` until loaded or started).
+    current_gen: Option<Generation>,
+    /// 201 §4 (P2): the tail bytes the last turn opened with (status).
+    tail_bytes: u32,
+    /// 201 §4.2 (P2): the session model's turn allowance in bytes, as the
+    /// last turn measured it (`scaled` marks in the status).
+    allowance: Option<u64>,
 }
 
 impl Live {
@@ -736,6 +749,9 @@ impl Live {
             drafts: BTreeSet::new(),
             stale: HashSet::new(),
             redo: HashSet::new(),
+            current_gen: None,
+            tail_bytes: 0,
+            allowance: None,
         }
     }
 }
@@ -2511,6 +2527,171 @@ fn render_within(
     }
 }
 
+/// 201 §3 (P2): one generation — the view rendered once at a trim over the
+/// units before the tail (`[base, t_cut)`) and reused byte for byte by every
+/// turn until the next trim, and after a restart (persisted).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Generation {
+    /// 1 = the session's first.
+    pub n: u32,
+    /// First unit the view does not cover.
+    pub t_cut: u64,
+    /// First `messages.seq` still in the tail.
+    pub first_seq: i64,
+    /// The frozen view.
+    pub render: ViewRender,
+}
+
+impl Generation {
+    fn of_row(r: crate::store::endless::GenerationRow) -> Self {
+        Self {
+            n: r.n,
+            t_cut: r.t_cut,
+            first_seq: r.first_seq,
+            render: ViewRender {
+                blocks: r
+                    .blocks
+                    .into_iter()
+                    .map(|(text, mark)| ViewBlock { text, mark })
+                    .collect(),
+                settled: true,
+                unbuilt: 0,
+                folded: 0,
+            },
+        }
+    }
+
+    fn row(&self) -> crate::store::endless::GenerationRow {
+        crate::store::endless::GenerationRow {
+            n: self.n,
+            t_cut: self.t_cut,
+            first_seq: self.first_seq,
+            blocks: self
+                .render
+                .blocks
+                .iter()
+                .map(|b| (b.text.clone(), b.mark))
+                .collect(),
+        }
+    }
+}
+
+/// 201 §3 (P2): the generation in force (the cached one, else the stored
+/// row); `None` for a session that never started one.
+pub(crate) async fn generation(
+    inner: &Inner,
+    session: SessionId,
+) -> anyhow::Result<Option<Generation>> {
+    let Some(state) = state_of(inner, session) else {
+        anyhow::bail!("session {session} does not use fractal context");
+    };
+    if let Some(g) = state.live.lock().current_gen.clone() {
+        return Ok(Some(g));
+    }
+    let Some(row) = state.store.endless_generation(session).await? else {
+        return Ok(None);
+    };
+    let g = Generation::of_row(row);
+    state.live.lock().current_gen = Some(g.clone());
+    Ok(Some(g))
+}
+
+/// 201 §4.3 (P2): start a generation whose tail begins at message
+/// `first_seq` (`None`: after every row ingested so far — an empty tail).
+/// The fold runs here and only here: the view is rendered over the units
+/// before the tail, fitted to `max_bytes`, persisted and frozen. `again`
+/// (137G G5, a refused request) re-renders the current generation smaller
+/// under the same number instead of opening the next one.
+pub(crate) async fn start_generation(
+    inner: &Inner,
+    session: SessionId,
+    first_seq: Option<i64>,
+    max_bytes: usize,
+    again: bool,
+) -> anyhow::Result<Generation> {
+    let Some(state) = state_of(inner, session) else {
+        anyhow::bail!("session {session} does not use fractal context");
+    };
+    ingest(&state).await?;
+    let prev = generation(inner, session).await?.map_or(0, |g| g.n);
+    let g = {
+        let mut live = state.live.lock();
+        let first_seq = first_seq.unwrap_or(live.last_seq + 1);
+        let t_cut = live.units.partition_point(|u| u.seq < first_seq) as u64;
+        let cfg = live.fold_cfg(&state.cfg.read());
+        let render = render_upto(&mut live, cfg, t_cut, Some(max_bytes), session);
+        Generation {
+            n: if again { prev.max(1) } else { prev + 1 },
+            t_cut,
+            first_seq,
+            render,
+        }
+    };
+    state
+        .store
+        .endless_generation_put(session, &g.row())
+        .await?;
+    state.live.lock().current_gen = Some(g.clone());
+    Ok(g)
+}
+
+/// 201 §6 (P2): a turn of the current generation opens — the compactor
+/// jobs of its units get the generation's frozen view as `<chat>` context
+/// (the `frozen` cache stays keyed by turn; every turn of a generation
+/// carries the same bytes). Records the status numbers.
+pub(crate) fn turn_opened(inner: &Inner, session: SessionId, tail_bytes: u32, allowance: u64) {
+    let Some(state) = state_of(inner, session) else {
+        return;
+    };
+    let mut live = state.live.lock();
+    let text = live
+        .current_gen
+        .as_ref()
+        .map(|g| g.render.text())
+        .unwrap_or_default();
+    live.turn += 1;
+    let turn = live.turn;
+    live.frozen.push_back((turn, text));
+    while live.frozen.len() > FROZEN_KEEP {
+        live.frozen.pop_front();
+    }
+    live.tail_bytes = tail_bytes;
+    live.allowance = Some(allowance);
+}
+
+/// [`render_within`] over `[base, t_cut)` only (201 §4.3: the view stops
+/// where the tail starts). `t_cut ≥ T` is the live view.
+fn render_upto(
+    live: &mut Live,
+    cfg: FoldCfg,
+    t_cut: u64,
+    max_bytes: Option<usize>,
+    session: SessionId,
+) -> ViewRender {
+    if t_cut >= live.t() {
+        return render_within(live, cfg, max_bytes, session);
+    }
+    let want = cfg.high() + cfg.raw_bytes as usize;
+    let m = max_bytes.unwrap_or(usize::MAX);
+    let mut scale = (m as f64 / want as f64).min(1.0);
+    let mut attempt = 0;
+    loop {
+        let c = FoldCfg {
+            view_bytes: ((f64::from(cfg.view_bytes) * scale) as u32).max(2_000),
+            raw_bytes: ((f64::from(cfg.raw_bytes) * scale) as u32).max(1_000),
+            slack: cfg.slack,
+        };
+        let f = Fold::rebuild(&live.tree, live.base.min(t_cut), t_cut, c, &live.units);
+        let r = fold::render(&live.tree, &f, &live.units);
+        let bytes = r.text().len();
+        attempt += 1;
+        if bytes <= m || attempt == 3 {
+            return r;
+        }
+        scale *= m as f64 / bytes as f64 * 0.98;
+    }
+}
+
 pub(crate) fn nudge(inner: &Inner, session: SessionId) {
     if let Some(state) = state_of(inner, session) {
         state.wake.notify_one();
@@ -2551,10 +2732,10 @@ pub(crate) async fn set_tail(
     Ok(())
 }
 
-/// 201 §4.2 seam, filled by phase P2: the session model's turn allowance in
-/// bytes, which sizes a `scaled` tail. `None` until P2 wires it.
-fn turn_allowance_bytes(_inner: &Inner, _session: SessionId) -> Option<u64> {
-    None
+/// 201 §4.2: the session model's turn allowance in bytes, which sizes a
+/// `scaled` tail — as the session's last turn measured it (`None` before one).
+fn turn_allowance_bytes(inner: &Inner, session: SessionId) -> Option<u64> {
+    state_of(inner, session).and_then(|s| s.live.lock().allowance)
 }
 
 /// 201 §12.2: the tail and profile fields of [`SessionMemory`] — the mode
@@ -2832,6 +3013,13 @@ pub(crate) async fn set_mode(
         MemoryMode::Endless => {
             // R1-D4 / R1-D6: filter and base are fixed when the tree is first started.
             let meta = store.endless_meta(session).await?;
+            // 201 §12: switching on starts generation 1 again (empty tail).
+            if meta.mode != MemoryMode::Endless {
+                store.endless_generations_clear(session).await?;
+                if let Some(state) = state_of(inner, session) {
+                    state.live.lock().current_gen = None;
+                }
+            }
             let has_tree = !store.endless_nodes(session).await?.is_empty();
             if !has_tree {
                 let (cap_chars, max_units) = {
@@ -2990,6 +3178,8 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
         effort_override: live.picks.chat_effort.clone(),
         spend_today_usd,
         drafts: u32::try_from(live.drafts.len()).unwrap_or(u32::MAX),
+        tail_bytes: live.tail_bytes,
+        generation: live.current_gen.as_ref().map_or(0, |g| g.n),
         ..Default::default()
     };
     let tail = live.tail;

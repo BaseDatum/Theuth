@@ -42,6 +42,19 @@ pub struct EndlessMeta {
     pub tail: Option<TailOverride>,
 }
 
+/// 201 §4.3 (P2): one `endless_generations` row — a generation's frozen view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GenerationRow {
+    /// Generation number (1 = the session's first).
+    pub n: u32,
+    /// First unit the view does not cover (the tail's first unit).
+    pub t_cut: u64,
+    /// First `messages.seq` still in the tail.
+    pub first_seq: i64,
+    /// The rendered view blocks, `(text, mark)`.
+    pub blocks: Vec<(String, bool)>,
+}
+
 /// One `endless_units` row (the unit without its text).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnitRow {
@@ -303,6 +316,60 @@ impl Store {
         .bind(id.to_string())
         .execute(&mut *tx)
         .await?;
+        tx.commit().await
+    }
+
+    /// 201 §4.3 (P2): the session's newest generation row, if any.
+    pub async fn endless_generation(&self, id: SessionId) -> anyhow::Result<Option<GenerationRow>> {
+        let mut conn = self.read.acquire().await?;
+        let row: Option<(i64, i64, i64, String)> = sqlx::query_as(
+            "SELECT n, t_cut, first_seq, blocks FROM endless_generations \
+             WHERE session_id = ? ORDER BY n DESC LIMIT 1",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&mut *conn)
+        .await?;
+        let Some((n, t_cut, first_seq, blocks)) = row else {
+            return Ok(None);
+        };
+        let blocks: Vec<(String, bool)> = serde_json::from_str(&blocks)?;
+        Ok(Some(GenerationRow {
+            n: n as u32,
+            t_cut: t_cut as u64,
+            first_seq,
+            blocks,
+        }))
+    }
+
+    /// 201 §4.3 (P2): store (or replace) one generation's frozen view.
+    pub async fn endless_generation_put(
+        &self,
+        id: SessionId,
+        g: &GenerationRow,
+    ) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "INSERT OR REPLACE INTO endless_generations \
+             (session_id, n, t_cut, first_seq, blocks, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(i64::from(g.n))
+        .bind(g.t_cut as i64)
+        .bind(g.first_seq)
+        .bind(serde_json::to_string(&g.blocks)?)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await
+    }
+
+    /// 201 (P2): forget the session's generations (`/endless on` starts at 1 again).
+    pub async fn endless_generations_clear(&self, id: SessionId) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("DELETE FROM endless_generations WHERE session_id = ?")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await
     }
 

@@ -1,10 +1,10 @@
-//! 137 §14 (W2): the endless frame through the real [`Session`] actor at the
-//! fake provider of [`super::vision_fallback_tests`] — two consecutive turns
-//! send byte-identical tools and system prompt, the view precedes the input,
-//! no head and nothing of the previous turn is carried; an epochs session is
-//! untouched; an in-turn overflow folds as `cut` with the view as head
-//! (D11); `/endless off` installs the view head (8.6). The view itself comes
-//! from the test hook (`Shared::test_view`): the service's rendering is W1's.
+//! 137 §14 (W2) / 201 §4: the endless frame through the real [`Session`]
+//! actor at the fake provider of [`super::vision_fallback_tests`] — two
+//! consecutive turns send byte-identical tools and system prompt, the view
+//! precedes the carried tail and the input, and request 1 is a byte prefix of
+//! request 2; an epochs session is untouched; an in-turn overflow folds as
+//! `cut` with the view as head (D11); `/endless off` installs the view head
+//! (8.6). The view itself comes from the test hook (`Shared::test_view`).
 
 use kameo::actor::Spawn;
 use serde_json::{Value, json};
@@ -114,7 +114,7 @@ async fn main_calls(h: &Harness) -> Vec<Value> {
 }
 
 #[test]
-fn endless_turns_rebuild_the_frame_from_the_view() {
+fn endless_turns_carry_the_tail_after_the_frozen_view() {
     crate::with_test_registry(scenario_fresh_turns());
 }
 
@@ -140,18 +140,18 @@ async fn scenario_fresh_turns() {
         assert!(names.iter().any(|n| n == t), "{t} in {names:?}");
     }
 
-    // D4: [system][view blocks][input] — the view before the input, one user
-    // message per block, no head, nothing of turn 1 in turn 2's request.
+    // 201 D2/D3: [system][view blocks][tail][input] — the view first, then
+    // turn 1 as it was sent, then the new input; no head.
     let t2 = texts(r2);
-    assert_eq!(t2.len(), 4, "{t2:?}");
+    assert_eq!(t2.len(), 6, "{t2:?}");
     assert_eq!(&t2[1..3], [BLOCK_A, BLOCK_B]);
+    assert!(t2[3].ends_with("First question."), "{}", t2[3]);
     assert!(
-        t2[3].starts_with("<time now=\""),
+        t2[5].starts_with("<time now=\""),
         "the opener carries the date: {}",
-        t2[3]
+        t2[5]
     );
-    assert!(t2[3].ends_with("Second question."));
-    assert!(!t2.iter().any(|t| t.contains("First question.")));
+    assert!(t2[5].ends_with("Second question."));
     assert!(!t2.iter().any(|t| t.contains("<context_summary")));
     let roles: Vec<&str> = r2["messages"]
         .as_array()
@@ -159,9 +159,21 @@ async fn scenario_fresh_turns() {
         .iter()
         .map(|m| m["role"].as_str().unwrap())
         .collect();
-    assert_eq!(roles, ["system", "user", "user", "user"]);
+    assert_eq!(
+        roles,
+        ["system", "user", "user", "user", "assistant", "user"]
+    );
 
-    // 8.3: nothing carried, everything persisted — both turns' rows are in the store.
+    // 201 D4: within a generation request 1 is a byte prefix of request 2.
+    let m1 = r1["messages"].as_array().unwrap();
+    let m2 = r2["messages"].as_array().unwrap();
+    assert_eq!(
+        serde_json::to_string(&m1[..]).unwrap(),
+        serde_json::to_string(&m2[..m1.len()]).unwrap(),
+        "request 1 is a prefix of request 2"
+    );
+
+    // Everything persisted — both turns' rows are in the store.
     let (_, head, history) = h.store.frame(h.id).await.unwrap();
     assert!(head.is_none());
     assert_eq!(history.len(), 4, "two inputs, two replies");
@@ -431,8 +443,10 @@ async fn scenario_bounded_view() {
         "{first} → {second}"
     );
     let all = texts(&calls[1]).concat();
+    // 201: with drafts nothing is unsummarized; the note says the view shrank.
     assert!(
-        all.contains("older unsummarized lines were folded to fit (recall searches them)"),
+        all.contains("the summary view was shrunk to fit")
+            || all.contains("older unsummarized lines were folded to fit"),
         "the G10 note"
     );
     assert!(

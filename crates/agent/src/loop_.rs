@@ -608,6 +608,11 @@ pub struct SessionState {
     /// 137 §7.3: the view blocks of the last endless turn this process, for
     /// the `view_rebase` diff; `None` until the first endless turn.
     pub last_view: Option<Vec<String>>,
+    /// 201 §4.1 (P2): `history` is the verbatim tail of this endless
+    /// generation (carried turn to turn); `None` = not yet (a fresh process,
+    /// a state rebuilt from the store): the next endless turn trims it to the
+    /// generation's `first_seq`.
+    pub tail_gen: Option<u32>,
     /// The detached title call of the last turn (07 §15, 51 §6.1): aborted
     /// when a new one starts and when the session stops, never left to
     /// outlive the lifecycle.
@@ -660,6 +665,7 @@ impl SessionState {
             compaction_off: None,
             clamp_warned: false,
             last_view: None,
+            tail_gen: None,
             title_task: None,
             harvest_task: None,
             budget_note: None,
@@ -3048,6 +3054,24 @@ struct EndlessView {
     shrunk: bool,
     /// 137G G10: the note the turn gets when its view was shrunk.
     note: Option<String>,
+    /// 201 §3: the generation whose frozen view this is.
+    generation: u32,
+    /// 201 §4: the first message row of the tail (re-render on a refusal).
+    first_seq: i64,
+    /// 201 §4: the tail bytes this turn opened with.
+    tail_bytes: u32,
+    /// 201 §4.3: this turn trimmed the tail (a new generation).
+    trimmed: bool,
+}
+
+/// What [`Turn::endless_view`] hands [`Turn::endless_start`] (201 §4).
+struct TurnView {
+    render: ViewRender,
+    max_bytes: usize,
+    generation: u32,
+    first_seq: i64,
+    tail_bytes: u32,
+    trimmed: bool,
 }
 
 /// 137G G1: bytes kept beside the endless view for the tool definitions and
@@ -3056,6 +3080,10 @@ const VIEW_RESERVE: usize = 48_000;
 
 /// 137G G10: the note a turn whose view was shrunk to fit gets.
 fn view_note(folded: u32) -> String {
+    if folded == 0 {
+        // 201: with draft lines nothing is unsummarized; the view is coarser.
+        return "context: the summary view was shrunk to fit; its older lines are coarser (zoom and recall reach them)".to_owned();
+    }
     format!("context: {folded} older unsummarized lines were folded to fit (recall searches them)")
 }
 
@@ -4706,15 +4734,25 @@ impl Turn {
         .await;
     }
 
-    /// 137 §8.1 (D4, D10): the endless preamble, before the turn's first row
-    /// is logged. Settles the view (at most `settle_secs`), freezes it for this
-    /// turn, and resets the frame: no head, no carried history — the turn's
-    /// first request is `[tools][system][view blocks][input]`. A no-op for an
-    /// epochs session (or while a backfill still covers the history, D14).
+    /// 137 §8.1 / 201 §4 (D2–D4): the endless preamble, before the turn's
+    /// first row is logged. The frame is `[tools][system][view][tail][input]`:
+    /// the generation's frozen view and the carried history (the tail). At
+    /// this turn boundary the tail may be trimmed (§4.3), which starts the
+    /// next generation and renders its view once. A no-op for an epochs
+    /// session, a meeting-filtered tree, or while a backfill still covers
+    /// the history (D14).
     async fn endless_start(&mut self) {
-        let Some((render, max_bytes)) = self.endless_view().await else {
+        let Some(start) = self.endless_view().await else {
             return;
         };
+        let TurnView {
+            render,
+            max_bytes,
+            generation,
+            first_seq,
+            tail_bytes,
+            trimmed,
+        } = start;
         let note =
             (render.folded > 0 && max_bytes < self.view_wanted()).then(|| view_note(render.folded));
         let blocks: Vec<String> = render.blocks.iter().map(|b| b.text.clone()).collect();
@@ -4725,26 +4763,29 @@ impl Turn {
             ),
             None => (None, 0),
         };
+        let rebuilt = self.state.last_view.as_ref() != Some(&blocks);
         self.state.last_view = Some(blocks);
-        // Nothing is carried (8.3): the per-epoch sets start over with the frame.
-        self.state.head = None;
-        self.state.history.clear();
-        self.state.used = 0;
-        self.state.last_after = None;
-        self.state.pressure_sent = false;
-        self.state.compaction_off = None;
-        self.state.hinted.clear();
-        self.state.knowledge_read.clear();
-        self.state.files_written.clear();
-        if !self.state.skills.is_empty() {
-            self.state.skills.clear();
-            self.publish_skills().await;
+        if trimmed {
+            // A new generation: the per-epoch sets start over with the frame.
+            self.state.used = 0;
+            self.state.last_after = None;
+            self.state.pressure_sent = false;
+            self.state.compaction_off = None;
+            self.state.hinted.clear();
+            self.state.knowledge_read.clear();
+            self.state.files_written.clear();
+            if !self.state.skills.is_empty() {
+                self.state.skills.clear();
+                self.publish_skills().await;
+            }
         }
-        self.since = 0;
-        self.hint_since = 0;
+        self.since = self.state.history.len();
+        self.hint_since = self.state.history.len();
         // A rebuilt frame is the named `view_rebase` event, not a miss (07 §7).
-        self.reset_this_round = true;
-        tracing::debug!(session = %self.shared.id, blocks = render.blocks.len(), settled = render.settled, unbuilt = render.unbuilt, "endless turn start");
+        if trimmed || rebuilt {
+            self.reset_this_round = true;
+        }
+        tracing::debug!(session = %self.shared.id, blocks = render.blocks.len(), generation, tail_bytes, trimmed, "endless turn start");
         self.view = Some(EndlessView {
             render,
             changed_from_byte,
@@ -4753,6 +4794,10 @@ impl Turn {
             max_bytes,
             shrunk: false,
             note,
+            generation,
+            first_seq,
+            tail_bytes,
+            trimmed,
         });
     }
 
@@ -4787,15 +4832,25 @@ impl Turn {
         })
     }
 
-    /// The view this turn opens with: `render_for_turn` on the service when
-    /// the session is active in endless mode (201 P1: no settle wait; every
-    /// unit has a line); the test hook's view in tests; `None` otherwise.
-    async fn endless_view(&self) -> Option<(ViewRender, usize)> {
+    /// The view this turn opens with and the tail it carries (201 §4): the
+    /// generation in force, trimmed first when due; the test hook's view in
+    /// tests (no trim); `None` when the session does not run the endless
+    /// frame (epochs, a meeting-filtered tree, a backfill, an error).
+    async fn endless_view(&mut self) -> Option<TurnView> {
         #[cfg(test)]
         if let Some(v) = self.shared.test_view.lock().clone() {
-            return Some((v, usize::MAX));
+            self.state.head = None;
+            let tail_bytes = crate::endless::tail::bytes(&self.state.history) as u32;
+            return Some(TurnView {
+                render: v,
+                max_bytes: usize::MAX,
+                generation: 1,
+                first_seq: 0,
+                tail_bytes,
+                trimmed: false,
+            });
         }
-        let endless = self.shared.endless.as_ref()?;
+        let endless = self.shared.endless.clone()?;
         let id = self.shared.id;
         // R1-D6: a meeting-filtered tree enriches the meeting head, never the frame.
         if self.shared.meeting_filter.load(Ordering::Relaxed) || !endless.active(id) {
@@ -4803,14 +4858,84 @@ impl Turn {
         }
         // 201 P1 (D5): no wait on the summary model; a failing compactor
         // shows as `stalled` in the status and never delays the turn.
-        let max_bytes = self.view_allowance();
-        match endless.render_for_turn_within(id, max_bytes, false).await {
-            Ok(r) => Some((r, max_bytes)),
+        let allowance = self.view_allowance();
+        match self.endless_tail(&endless, allowance).await {
+            Ok(v) => Some(v),
             Err(e) => {
-                tracing::warn!(session = %id, "endless render_for_turn: {e:#}; running the epochs frame this turn");
+                tracing::warn!(session = %id, "endless generation: {e:#}; running the epochs frame this turn");
                 None
             }
         }
+    }
+
+    /// 201 §4.3: load the generation, bring `history` to its tail, trim at
+    /// this turn boundary when due (over the high mark, or over the low mark
+    /// with a cold cache) and start the next generation.
+    async fn endless_tail(
+        &mut self,
+        endless: &crate::endless::Endless,
+        allowance: usize,
+    ) -> anyhow::Result<TurnView> {
+        use crate::endless::tail;
+        let id = self.shared.id;
+        let (low, high) = endless.tail_marks(id, allowance as u64);
+        // The view's share: what the allowance leaves beside a full tail.
+        let view_max = allowance.saturating_sub(high as usize);
+        let mut fresh = false;
+        let mut g = match endless.generation(id).await? {
+            Some(g) => g,
+            None => {
+                // §12: a session that was already endless starts generation 1
+                // with its current view and an empty tail.
+                self.state.history.clear();
+                fresh = true;
+                endless.start_generation(id, None, view_max, false).await?
+            }
+        };
+        if self.state.tail_gen != Some(g.n) {
+            // A fresh process or a state rebuilt from the store: the tail is
+            // the generation's rows, read back as they were sent.
+            self.state.head = None;
+            self.state.history.retain(|(seq, _)| *seq >= g.first_seq);
+        }
+        let cfg = endless.config();
+        let cold_after = match cfg.cold_after_secs {
+            // The transport's cache lifetime: 5 min on Anthropic, the same elsewhere.
+            0 => Duration::from_secs(300),
+            s => Duration::from_secs(u64::from(s)),
+        };
+        let cold = self
+            .state
+            .prev_call
+            .is_none_or(|(at, _)| at.elapsed() > cold_after);
+        // D11 put a head in place mid-generation: the next turn starts a new one.
+        let forced = self.state.head.is_some();
+        let cut = tail::trim(&self.state.history, u64::from(low), u64::from(high), cold);
+        let mut trimmed = fresh;
+        if cut.is_some() || forced {
+            let keep_from = cut.map_or(0, |c| c.keep_from);
+            let before = tail::bytes(&self.state.history);
+            let first_seq = self.state.history.get(keep_from).map(|(s, _)| *s);
+            g = endless
+                .start_generation(id, first_seq, view_max, false)
+                .await?;
+            self.state.history.drain(..keep_from);
+            self.state.head = None;
+            let kept = tail::bytes(&self.state.history);
+            tracing::info!(session = %id, cut_bytes = before - kept, kept_bytes = kept, generation = g.n, cold, forced, low, high, view_bytes = g.render.text().len(), "endless: trim");
+            trimmed = true;
+        }
+        self.state.tail_gen = Some(g.n);
+        let tail_bytes = u32::try_from(tail::bytes(&self.state.history)).unwrap_or(u32::MAX);
+        endless.turn_opened(id, tail_bytes, allowance as u64);
+        Ok(TurnView {
+            render: g.render,
+            max_bytes: view_max,
+            generation: g.n,
+            first_seq: g.first_seq,
+            tail_bytes,
+            trimmed,
+        })
     }
 
     /// 137G G5: the turn's request was refused as too long (`prompt` >
@@ -4822,14 +4947,25 @@ impl Turn {
         let Some(endless) = self.shared.endless.clone() else {
             return false;
         };
-        let Some(v) = self.view.as_mut().filter(|v| !v.shrunk) else {
+        let Some((max_bytes, first_seq)) = self
+            .view
+            .as_ref()
+            .filter(|v| !v.shrunk)
+            .map(|v| (v.max_bytes, v.first_seq))
+        else {
             return false;
         };
         let ratio = f64::from(n.window) / f64::from(n.prompt.max(1)) * 0.85;
-        let from = v.max_bytes.min(self.view_wanted().max(1));
+        let from = max_bytes.min(self.view_wanted().max(1));
         let to = (from as f64 * ratio) as usize;
         let id = self.shared.id;
-        match endless.render_for_turn_within(id, to, true).await {
+        // 201: the generation's view is re-rendered smaller under the same
+        // number (the refusal is a cache break anyway).
+        match endless
+            .start_generation(id, Some(first_seq), to, true)
+            .await
+            .map(|g| g.render)
+        {
             Ok(render) => {
                 let Some(v) = self.view.as_mut() else {
                     return false;
@@ -4883,6 +5019,9 @@ impl Turn {
             blocks_hit = v.blocks_hit,
             settled = v.render.settled,
             unbuilt = v.render.unbuilt,
+            generation = v.generation,
+            tail_bytes = v.tail_bytes,
+            trimmed = v.trimmed,
             cache_read,
             cache_write,
             prompt,
@@ -10326,9 +10465,7 @@ mod tests {
         let data_dir = scratch.0.clone();
         let skills_dir = skills::dir(&data_dir);
         std::fs::create_dir_all(&skills_dir).unwrap();
-        let bare = frame::baseline(
-            &data_dir, None, "", "", None, None, true, false, false,
-        );
+        let bare = frame::baseline(&data_dir, None, "", "", None, None, true, false, false);
         assert!(bare.starts_with("You are theuth, a meta-harness"));
         assert!(!bare.contains("## Skills"));
 

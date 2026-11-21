@@ -20,6 +20,7 @@ pub mod compactor;
 pub mod fold;
 pub mod guards;
 pub mod pump;
+pub mod tail;
 #[cfg(test)]
 mod tests;
 pub mod tree;
@@ -1065,6 +1066,41 @@ impl Endless {
         pump::render_for_turn(&self.inner, session, Some(max_bytes), again).await
     }
 
+    /// 201 §3 (P2): the generation in force, `None` before the first.
+    pub async fn generation(&self, session: SessionId) -> anyhow::Result<Option<pump::Generation>> {
+        pump::generation(&self.inner, session).await
+    }
+
+    /// 201 §4.3 (P2): start (or, `again`, re-render smaller) a generation
+    /// whose tail begins at message `first_seq` (`None`: an empty tail).
+    pub async fn start_generation(
+        &self,
+        session: SessionId,
+        first_seq: Option<i64>,
+        max_bytes: usize,
+        again: bool,
+    ) -> anyhow::Result<pump::Generation> {
+        pump::start_generation(&self.inner, session, first_seq, max_bytes, again).await
+    }
+
+    /// 201 §6 (P2): a turn of the current generation opens (compactor
+    /// context, status numbers).
+    pub fn turn_opened(&self, session: SessionId, tail_bytes: u32, allowance: u64) {
+        pump::turn_opened(&self.inner, session, tail_bytes, allowance);
+    }
+
+    /// 201 §4.2 (P2): the session's tail marks `(low, high)` in bytes for a
+    /// turn `allowance` — the session override over the config.
+    pub fn tail_marks(&self, session: SessionId, allowance: u64) -> (u32, u32) {
+        let tail = self
+            .inner
+            .sessions
+            .lock()
+            .get(&session)
+            .and_then(pump::Handle::tail);
+        self.config().with_tail(tail.as_ref()).tail_marks(allowance)
+    }
+
     /// 8.3 / 201 §6 "wake on append": rows reached `messages`; the session's
     /// pump wakes, derives the units and refines their drafts during the turn.
     pub fn on_rows_committed(&self, session: SessionId) {
@@ -1241,19 +1277,19 @@ impl Inner {
     }
 }
 
-/// §9 VIEW_DOC, verbatim.
-pub const VIEW_DOC: &str =
-    "The view: the whole session, oldest first, inside <chat> tags, as one-line
-summaries. Each line is  id+n|text  — the n messages from id on, summarized
-(newlines shown as spaces). A summary tags each item with its kind: user,
-talk, tool, echo, work, note. A short message is its own line, word for word.
-Recent lines cover one message each; the older the messages, the more a line
-covers. A message not summarized yet shows as \"(not summarized yet: zoom
-it)\" or verbatim. No message appears in full, not even the last ones.
+/// §9 VIEW_DOC; 201 §4.4: the messages after the view are word for word.
+pub const VIEW_DOC: &str = "The view: the session before the messages that follow it, oldest first,
+inside <chat> tags, as one-line summaries. Each line is  id+n|text  — the n
+messages from id on, summarized (newlines shown as spaces). A summary tags
+each item with its kind: user, talk, tool, echo, work, note. A short message
+is its own line, word for word. Recent lines cover one message each; the
+older the messages, the more a line covers. The messages after the view are
+the latest ones, word for word, as they were sent; the lines under <chat>
+summarise everything before them.
 Navigating: zoom(id, n) opens line id+n into the two lines it was made from;
 zoom(id, 1) gives message id in full. recall(words) searches every message's
 summary line. Zoom or recall whenever a summary only mentions something you
-need — what your last reply said, a decision, a past attempt, an exact
-error, where a file is — before you act, guess or ask. date(id) gives the
-date and time of message id. You keep no memory between turns beyond this
-view, so say in your reply what you learned that will matter later.";
+need — a decision, a past attempt, an exact error, where a file is — before
+you act, guess or ask. date(id) gives the date and time of message id. Older
+messages leave the word-for-word part as the session grows, so say in your
+reply what you learned that will matter later.";
