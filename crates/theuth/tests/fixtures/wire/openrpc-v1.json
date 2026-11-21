@@ -111647,6 +111647,21 @@
         "format": "uuid",
         "type": "string"
       },
+      "method.talk.input.SttEngine": {
+        "description": "`voice.stt_engine` (202 §5): which model makes whole-utterance text.",
+        "oneOf": [
+          {
+            "const": "onnx",
+            "description": "Parakeet TDT v3, ONNX int8, built in.",
+            "type": "string"
+          },
+          {
+            "const": "mlx",
+            "description": "Parakeet TDT v3 on MLX (Apple silicon), after an explicit download.",
+            "type": "string"
+          }
+        ]
+      },
       "method.talk.input.SuggestionAnswer": {
         "description": "The user's answer to a suggestion card (§6.4).",
         "oneOf": [
@@ -112305,6 +112320,131 @@
           }
         ]
       },
+      "method.talk.output.MlxState": {
+        "description": "Where the MLX engine stands (202 §4); the settings UI shows it.",
+        "oneOf": [
+          {
+            "description": "Cannot run here: not compiled in (only macOS on Apple silicon has it) or no `mlx.metallib`.",
+            "properties": {
+              "reason": {
+                "description": "Why, for the settings UI.",
+                "type": "string"
+              },
+              "state": {
+                "const": "unavailable",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Runnable, not downloaded.",
+            "properties": {
+              "state": {
+                "const": "absent",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "[`install`] running; bytes so far.",
+            "properties": {
+              "done_bytes": {
+                "description": "Bytes on disk so far.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "state": {
+                "const": "downloading",
+                "type": "string"
+              },
+              "total_bytes": {
+                "description": "Bytes of every file together (0 until the hub answered).",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "state",
+              "done_bytes",
+              "total_bytes"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Verified weights on disk.",
+            "properties": {
+              "state": {
+                "const": "ready",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The last [`install`] failed.",
+            "properties": {
+              "reason": {
+                "description": "The error.",
+                "type": "string"
+              },
+              "state": {
+                "const": "failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "method.talk.output.MlxStatus": {
+        "description": "`voice_mlx_status` (202 §4, §5): the engine in effect and where MLX stands.",
+        "properties": {
+          "available": {
+            "description": "MLX can run in this process; when not, `state` is `unavailable` with the reason.",
+            "type": "boolean"
+          },
+          "engine": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.talk.output.SttEngine"
+              }
+            ],
+            "description": "`voice.stt_engine` as last applied (start or `set_stt_engine`)."
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.talk.output.MlxState"
+              }
+            ],
+            "description": "Download / readiness of the MLX weights."
+          }
+        },
+        "required": [
+          "engine",
+          "available",
+          "state"
+        ],
+        "type": "object"
+      },
       "method.talk.output.ModelState": {
         "description": "Model lifecycle.",
         "oneOf": [
@@ -112490,7 +112630,7 @@
         "type": "string"
       },
       "method.talk.output.ShapePresets": {
-        "description": "`voice.shape` (§4.5): one preset per surface.",
+        "description": "`voice.shape` (§4.5): one preset per surface, behind the global `enabled` switch.",
         "properties": {
           "any_app": {
             "allOf": [
@@ -112519,6 +112659,11 @@
             "default": "full",
             "description": "Desktop Composer and per-field mics."
           },
+          "enabled": {
+            "default": true,
+            "description": "`false` bypasses the shaper on every surface (201): the model's text verbatim, no end\ncommands, nothing learned into the dictionary. Wins over the presets below.",
+            "type": "boolean"
+          },
           "phone": {
             "allOf": [
               {
@@ -112539,6 +112684,7 @@
           }
         },
         "required": [
+          "enabled",
           "composer",
           "tui",
           "companion",
@@ -112608,6 +112754,21 @@
           {
             "const": "interrupted",
             "description": "Stage 2 committed: everything cut, the heard prefix kept.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.talk.output.SttEngine": {
+        "description": "`voice.stt_engine` (202 §5): which model makes whole-utterance text.",
+        "oneOf": [
+          {
+            "const": "onnx",
+            "description": "Parakeet TDT v3, ONNX int8, built in.",
+            "type": "string"
+          },
+          {
+            "const": "mlx",
+            "description": "Parakeet TDT v3 on MLX (Apple silicon), after an explicit download.",
             "type": "string"
           }
         ]
@@ -113407,6 +113568,131 @@
           }
         ]
       },
+      "method.talk.receiver.MlxState": {
+        "description": "Where the MLX engine stands (202 §4); the settings UI shows it.",
+        "oneOf": [
+          {
+            "description": "Cannot run here: not compiled in (only macOS on Apple silicon has it) or no `mlx.metallib`.",
+            "properties": {
+              "reason": {
+                "description": "Why, for the settings UI.",
+                "type": "string"
+              },
+              "state": {
+                "const": "unavailable",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Runnable, not downloaded.",
+            "properties": {
+              "state": {
+                "const": "absent",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "[`install`] running; bytes so far.",
+            "properties": {
+              "done_bytes": {
+                "description": "Bytes on disk so far.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "state": {
+                "const": "downloading",
+                "type": "string"
+              },
+              "total_bytes": {
+                "description": "Bytes of every file together (0 until the hub answered).",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "state",
+              "done_bytes",
+              "total_bytes"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Verified weights on disk.",
+            "properties": {
+              "state": {
+                "const": "ready",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The last [`install`] failed.",
+            "properties": {
+              "reason": {
+                "description": "The error.",
+                "type": "string"
+              },
+              "state": {
+                "const": "failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "method.talk.receiver.MlxStatus": {
+        "description": "`voice_mlx_status` (202 §4, §5): the engine in effect and where MLX stands.",
+        "properties": {
+          "available": {
+            "description": "MLX can run in this process; when not, `state` is `unavailable` with the reason.",
+            "type": "boolean"
+          },
+          "engine": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.talk.receiver.SttEngine"
+              }
+            ],
+            "description": "`voice.stt_engine` as last applied (start or `set_stt_engine`)."
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.talk.receiver.MlxState"
+              }
+            ],
+            "description": "Download / readiness of the MLX weights."
+          }
+        },
+        "required": [
+          "engine",
+          "available",
+          "state"
+        ],
+        "type": "object"
+      },
       "method.talk.receiver.ModelState": {
         "description": "Model lifecycle.",
         "oneOf": [
@@ -113589,7 +113875,7 @@
         "type": "string"
       },
       "method.talk.receiver.ShapePresets": {
-        "description": "`voice.shape` (§4.5): one preset per surface.",
+        "description": "`voice.shape` (§4.5): one preset per surface, behind the global `enabled` switch.",
         "properties": {
           "any_app": {
             "allOf": [
@@ -113617,6 +113903,11 @@
             ],
             "default": "full",
             "description": "Desktop Composer and per-field mics."
+          },
+          "enabled": {
+            "default": true,
+            "description": "`false` bypasses the shaper on every surface (201): the model's text verbatim, no end\ncommands, nothing learned into the dictionary. Wins over the presets below.",
+            "type": "boolean"
           },
           "phone": {
             "allOf": [
@@ -113700,6 +113991,21 @@
           {
             "const": "interrupted",
             "description": "Stage 2 committed: everything cut, the heard prefix kept.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.talk.receiver.SttEngine": {
+        "description": "`voice.stt_engine` (202 §5): which model makes whole-utterance text.",
+        "oneOf": [
+          {
+            "const": "onnx",
+            "description": "Parakeet TDT v3, ONNX int8, built in.",
+            "type": "string"
+          },
+          {
+            "const": "mlx",
+            "description": "Parakeet TDT v3 on MLX (Apple silicon), after an explicit download.",
             "type": "string"
           }
         ]
@@ -133089,6 +133395,32 @@
       "x-theuth-owner": "talk"
     },
     {
+      "name": "set_shape_enabled",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "enabled",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "talk"
+    },
+    {
       "name": "set_stream_idle",
       "paramStructure": "by-position",
       "params": [
@@ -133115,6 +133447,32 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "agent"
+    },
+    {
+      "name": "set_stt_engine",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.talk.input.SttEngine"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "talk"
     },
     {
       "name": "set_subagent_effort",
@@ -135513,6 +135871,40 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "agent"
+    },
+    {
+      "name": "voice_mlx_download",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.talk.output.MlxState"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.talk.receiver.MlxState"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "talk"
+    },
+    {
+      "name": "voice_mlx_status",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.talk.output.MlxStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.talk.receiver.MlxStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "talk"
     },
     {
       "name": "voice_settings",
