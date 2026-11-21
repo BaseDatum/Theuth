@@ -284,6 +284,12 @@ export function NewChat({
  * focused pane becomes a draft and the URL stays put; a single pane goes to the whole-window `/new`.
  */
 export function openNewChat(navigate: UseNavigateResult<string>, project?: string | null): void {
+  // Panes are drawn only under `/c/$session`: anywhere else (costs, settings, agents…) a draft pane would be made
+  // off screen and the press would do nothing visible, so every other page goes to the whole-window `/new`.
+  if (!window.location.pathname.startsWith('/c/')) {
+    void navigate({ to: '/new', search: project ? { project } : {} })
+    return
+  }
   const panes = usePanes.getState()
   const draft = panes.fresh(project)
   if (!draft) void navigate({ to: '/new', search: project ? { project } : {} })
