@@ -10,7 +10,6 @@
 //! rebuilt at once and the actor learns of it through [`HelperEvent::Restarted`] (its mirrors are gone and
 //! must be reopened). [`helper_status`] reports the runtime for Settings.
 
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -52,37 +51,9 @@ pub fn init_js_platform() {
     document_js::init_platform();
 }
 
-/// Where the stdio helper executable lived: `THEUTH_DOCUMENTS_HELPER` (a file path),
-/// else `theuth-documents-<version>` beside the running binary; debug builds
-/// fall back to `packages/documents/dist/theuth-documents` in the source tree.
-/// No longer spawned (the helper runs in-process); kept until the packaging is removed.
-pub fn helper_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("THEUTH_DOCUMENTS_HELPER").filter(|p| !p.is_empty()) {
-        return PathBuf::from(p);
-    }
-    let beside = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
-        .unwrap_or_default()
-        .join(format!(
-            "theuth-documents-{}{}",
-            protocol_version(),
-            std::env::consts::EXE_SUFFIX
-        ));
-    #[cfg(debug_assertions)]
-    if !beside.is_file() {
-        let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../packages/documents/dist/theuth-documents");
-        if dev.is_file() {
-            return dev;
-        }
-    }
-    beside
-}
-
 // The doc comments of `HelperStatus`/`HelperProcess` are part of the OpenRPC wire snapshot
 // (crates/theuth/tests/fixtures/wire/openrpc-v1.json): kept verbatim from the child-process era until
-// the wire is revised. In-process meaning: `path` = `helper_path()` (unused), `found` = always true
+// the wire is revised. In-process meaning: `path` = `"in-process"`, `found` = always true
 // (compiled in), `Starting` = no request served yet, `Crashed` = last fatal runtime error until the
 // rebuilt runtime serves, `Missing` = never produced.
 /// Whether the helper `t` would spawn is there and whether it runs (surfaced by `documents_status`,
@@ -128,7 +99,7 @@ fn set_process(p: HelperProcess) {
 /// The current [`HelperStatus`]. `found` is always true: the helper is compiled into `t`.
 pub fn helper_status() -> HelperStatus {
     HelperStatus {
-        path: helper_path().display().to_string(),
+        path: "in-process".to_owned(),
         found: true,
         version: protocol_version().to_owned(),
         process: PROCESS.lock().unwrap_or_else(|e| e.into_inner()).clone(),
@@ -359,16 +330,14 @@ impl From<document_js::Error> for Error {
 
 type Answer = oneshot::Sender<Result<Value, Error>>;
 
-/// Where request lines go: the in-process runtime, or (unit tests) a canned responder.
+/// Where request lines go: the in-process runtime, or (tests) a canned responder.
 #[derive(Clone)]
 enum Backend {
     Js(DocumentsThread),
-    #[cfg(test)]
     Fake(Respond),
 }
 
 /// A canned responder: request line → output lines (events first, reply last).
-#[cfg(test)]
 type Respond = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
 
 /// Handle to the helper; cheap to clone. The runtime starts on the first request.
@@ -383,14 +352,8 @@ pub struct Helper {
 }
 
 impl Helper {
-    /// `events` receives pushed updates and restarts; `shutdown` stops the runtime thread. `path` is the
-    /// former executable path and is ignored (removed with [`helper_path`] in phase 3).
-    pub fn new(
-        path: PathBuf,
-        events: mpsc::UnboundedSender<HelperEvent>,
-        shutdown: CancellationToken,
-    ) -> Self {
-        let _ = path;
+    /// `events` receives pushed updates and restarts; `shutdown` stops the runtime thread.
+    pub fn new(events: mpsc::UnboundedSender<HelperEvent>, shutdown: CancellationToken) -> Self {
         let docs = DocumentsThread::new(
             Limits {
                 deadline: DEADLINE,
@@ -403,9 +366,10 @@ impl Helper {
         Self::with_backend(Backend::Js(docs), events)
     }
 
-    /// A helper whose replies come from `respond` (request line → output lines, events first).
-    #[cfg(test)]
-    pub(crate) fn fake(
+    /// A helper whose replies come from `respond` (request line → output lines, events first): for
+    /// tests that need a fixed outline or transaction instead of real conversions.
+    #[doc(hidden)]
+    pub fn fake(
         events: mpsc::UnboundedSender<HelperEvent>,
         respond: impl Fn(&str) -> Vec<String> + Send + Sync + 'static,
     ) -> Self {
@@ -437,7 +401,6 @@ impl Helper {
         let _order = self.order.lock().unwrap_or_else(|e| e.into_inner());
         let ticket = match &self.backend {
             Backend::Js(docs) => docs.enqueue(line),
-            #[cfg(test)]
             Backend::Fake(respond) => Ticket::ready(fake_reply(respond(&line))),
         };
         // Forwarder gone = every handle dropped; the receiver then sees a closed channel.
@@ -692,7 +655,6 @@ fn parse_reply(line: &str) -> Result<Value, Error> {
     }
 }
 
-#[cfg(test)]
 fn fake_reply(mut lines: Vec<String>) -> Result<document_js::Reply, document_js::Error> {
     let reply = lines
         .pop()
@@ -717,7 +679,7 @@ mod tests {
     ) {
         let (tx, rx) = mpsc::unbounded_channel();
         let token = CancellationToken::new();
-        (Helper::new(PathBuf::new(), tx, token.clone()), rx, token)
+        (Helper::new(tx, token.clone()), rx, token)
     }
 
     #[test]

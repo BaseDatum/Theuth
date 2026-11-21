@@ -1,9 +1,8 @@
-//! The block index end to end (144 §7) against the compiled helper and the tiny random-weight
+//! The block index end to end (144 §7) against the in-process helper and the tiny random-weight
 //! embedding checkpoint the test writes: notes index at block level, hybrid `nb_search` finds the
 //! block (lexical ∪ vector, fused), the `notes` category pages title/body hits and skips deleted
 //! notes, no model → FTS5-only with `nb_index_state.model = NULL`, a model change rebuilds the
-//! vectors with FTS5 untouched, `DocumentChanged` re-indexes the changed blocks. Skipped loudly when
-//! the helper binary is not built (`just documents-helper` or `THEUTH_DOCUMENTS_HELPER`).
+//! vectors with FTS5 untouched, `DocumentChanged` re-indexes the changed blocks.
 
 use std::path::Path;
 use std::time::Duration;
@@ -23,13 +22,8 @@ use search::PageState;
 /// Every test registers the one `DOCUMENT_ACTOR` / `EMBED_ACTOR` names: one at a time.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// The helper path `Helper::new` still takes (ignored: the helper runs in-process); never skips.
-macro_rules! helper_or_skip {
-    () => {{ helper::helper_path() }};
-}
-
 /// The document actor over `data_dir` with `notebooks.embedding_model = model`.
-async fn start(data_dir: &Path, bin: &Path, model: &str) -> ActorRef<DocumentActor> {
+async fn start(data_dir: &Path, model: &str) -> ActorRef<DocumentActor> {
     let figment = figment::Figment::new().merge(figment::providers::Serialized::defaults(
         serde_json::json!({ "notebooks": { "embedding_model": model, "chunk_tokens": 12, "chunk_overlap": 0.25 } }),
     ));
@@ -42,7 +36,7 @@ async fn start(data_dir: &Path, bin: &Path, model: &str) -> ActorRef<DocumentAct
         .unwrap()
         .with_vault(std::sync::Arc::new(vault));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let h = helper::Helper::new(bin.to_path_buf(), tx, rt.shutdown.clone());
+    let h = helper::Helper::new(tx, rt.shutdown.clone());
     let cfg = DocumentsConfig {
         export_debounce_ms: 100,
         ..DocumentsConfig::default()
@@ -153,10 +147,9 @@ Retry the leader election after the quorum is back.\n\n## Backup\n\nRestore from
 #[tokio::test]
 async fn note_blocks_index_and_hybrid_search_hits_the_block() {
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     let _embed = start_embed(dir.path(), "tiny");
-    let actor = start(dir.path(), &bin, "tiny").await;
+    let actor = start(dir.path(), "tiny").await;
     let runbook = note(&actor, "Runbook", RUNBOOK).await;
     let other = note(&actor, "Groceries", "Promote the standby cheese.\n").await;
     index::reindex(&actor).await.unwrap();
@@ -227,10 +220,9 @@ async fn note_blocks_index_and_hybrid_search_hits_the_block() {
 #[tokio::test]
 async fn notes_category_pages_title_and_block_hits_and_skips_deleted() {
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     unregister_embed();
     let dir = tempfile::tempdir().unwrap();
-    let actor = start(dir.path(), &bin, "absent").await;
+    let actor = start(dir.path(), "absent").await;
     let groceries = note(&actor, "Groceries", "milk\n\neggs\n").await;
     let plan = note(&actor, "Plan", "buy groceries on the way home\n").await;
     let gone = note(&actor, "Groceries archive", "old groceries\n").await;
@@ -313,10 +305,9 @@ async fn notes_category_pages_title_and_block_hits_and_skips_deleted() {
 #[tokio::test]
 async fn model_change_rebuilds_vectors_and_edits_reindex_blocks() {
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     unregister_embed();
     let dir = tempfile::tempdir().unwrap();
-    let actor = start(dir.path(), &bin, "tiny").await;
+    let actor = start(dir.path(), "tiny").await;
     let runbook = note(&actor, "Runbook", RUNBOOK).await;
     index::reindex(&actor).await.unwrap();
     let (rows, vectors) = state(dir.path()).await;
@@ -338,7 +329,7 @@ async fn model_change_rebuilds_vectors_and_edits_reindex_blocks() {
 
     // A different checkpoint name at start → every row stale → re-embedded under the new name.
     let _embed = start_embed(dir.path(), "tiny2");
-    let actor = start(dir.path(), &bin, "tiny2").await;
+    let actor = start(dir.path(), "tiny2").await;
     index::reindex(&actor).await.unwrap();
     let (rows, vectors2) = state(dir.path()).await;
     assert_eq!(rows[0].1.as_deref(), Some("tiny2"));

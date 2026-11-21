@@ -25,19 +25,13 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const MD: &str = "---\ntype: fact\ntitle: A fact\ntags:\n  - x\n---\nhello there\n\nsecond block\n";
 
-/// The helper path `Helper::new` still takes (ignored: the helper runs in-process). Never skips any
-/// more; the name and the `bin` plumbing go with `helper_path` in phase 3.
-macro_rules! helper_or_skip {
-    () => {{ helper::helper_path() }};
+async fn start(data_dir: &Path) -> ActorRef<DocumentActor> {
+    start_with(data_dir, DocumentsConfig::default()).await
 }
 
-async fn start(data_dir: &Path, bin: &Path) -> ActorRef<DocumentActor> {
-    start_with(data_dir, bin, DocumentsConfig::default()).await
-}
-
-async fn start_with(data_dir: &Path, bin: &Path, cfg: DocumentsConfig) -> ActorRef<DocumentActor> {
+async fn start_with(data_dir: &Path, cfg: DocumentsConfig) -> ActorRef<DocumentActor> {
     let rt = runtime::Runtime::new(figment::Figment::new(), data_dir.to_path_buf());
-    start_in(rt, data_dir, bin, cfg).await
+    start_in(rt, data_dir, cfg).await
 }
 
 struct MainMemory(runtime::Runtime);
@@ -60,7 +54,6 @@ impl document::memory::Router for MainMemory {
 async fn start_in(
     rt: runtime::Runtime,
     data_dir: &Path,
-    bin: &Path,
     cfg: DocumentsConfig,
 ) -> ActorRef<DocumentActor> {
     document::memory::install(std::sync::Arc::new(MainMemory(rt.clone())));
@@ -73,7 +66,7 @@ async fn start_in(
         .unwrap()
         .with_vault(std::sync::Arc::new(vault));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let h = helper::Helper::new(bin.to_path_buf(), tx, rt.shutdown.clone());
+    let h = helper::Helper::new(tx, rt.shutdown.clone());
     let cfg = DocumentsConfig {
         export_debounce_ms: 100,
         ..cfg
@@ -141,12 +134,11 @@ async fn stop(actor: ActorRef<DocumentActor>) {
 #[tokio::test]
 async fn knowledge_document_round_trip_export_import_restart() {
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     let derived = dir.path().join("knowledge/facts/a.md");
     std::fs::create_dir_all(derived.parent().unwrap()).unwrap();
     std::fs::write(&derived, MD).unwrap();
-    let actor = start(dir.path(), &bin).await;
+    let actor = start(dir.path()).await;
 
     // Create on demand from the file (§7.1): no rewrite of the file.
     let id = actor
@@ -299,7 +291,7 @@ async fn knowledge_document_round_trip_export_import_restart() {
 
     // Restart the authority: snapshot + log reload to the same export.
     stop(actor).await;
-    let actor = start(dir.path(), &bin).await;
+    let actor = start(dir.path()).await;
     let reopened = actor
         .ask(OpenDoc {
             doc: id.clone(),
@@ -375,13 +367,12 @@ async fn agent_tools_edit_attribute_and_undo() {
         .with_env_filter("document=debug")
         .with_test_writer()
         .try_init();
-    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     let derived = dir.path().join("knowledge/facts/b.md");
     std::fs::create_dir_all(derived.parent().unwrap()).unwrap();
     let md = "---\ntype: fact\ntitle: Bullets\n---\n## Heading\n\n* one\n* two\n* three\n";
     std::fs::write(&derived, md).unwrap();
-    let actor = start(dir.path(), &bin).await;
+    let actor = start(dir.path()).await;
     let session = uuid::Uuid::now_v7();
     let docs = Docs::new(actor.clone(), dir.path().to_path_buf());
 
@@ -688,9 +679,8 @@ async fn notes_create_list_rename_delete() {
         .with_env_filter("document=debug")
         .with_test_writer()
         .try_init();
-    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
-    let actor = start(dir.path(), &bin).await;
+    let actor = start(dir.path()).await;
     let owner = Principal::Owner { device: None };
 
     // No heading in the body → `# <title>` is inserted; an own heading is kept.
@@ -898,7 +888,6 @@ async fn boards_create_with_root_list_by_kind_and_edit() {
         .with_env_filter("document=debug")
         .with_test_writer()
         .try_init();
-    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     // 71 step 7b: the board's root is a git top-level with the file its excerpts quote, and the codeindex
     // actor is registered so `doc_insert`/`doc_replace` verify every `Excerpt` against the tree.
@@ -926,7 +915,7 @@ async fn boards_create_with_root_list_by_kind_and_edit() {
     );
     let code = codeindex::CodeindexActor::spawn(codeindex::CodeindexActor::new(ix));
     code.register(codeindex::CODEINDEX_ACTOR).unwrap();
-    let actor = start(dir.path(), &bin).await;
+    let actor = start(dir.path()).await;
     let session = uuid::Uuid::now_v7();
     let docs = Docs::new(actor.clone(), dir.path().to_path_buf());
 
@@ -1224,9 +1213,8 @@ async fn boards_create_with_root_list_by_kind_and_edit() {
 #[tokio::test]
 async fn sharing_links_join_roles_demote_revoke() {
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
-    let actor = start(dir.path(), &bin).await;
+    let actor = start(dir.path()).await;
     let note = actor
         .ask(CreateNote {
             title: "Shared".into(),
@@ -1736,9 +1724,8 @@ fn block_text_update(state: &[u8], id: &str, text: &str) -> String {
 #[tokio::test]
 async fn member_text_is_labelled_for_the_agent() {
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
-    let actor = start(dir.path(), &bin).await;
+    let actor = start(dir.path()).await;
     let docs = Docs::new(actor.clone(), dir.path().to_path_buf());
     let note = actor
         .ask(CreateNote {
@@ -1881,11 +1868,9 @@ async fn member_text_is_labelled_for_the_agent() {
 #[tokio::test]
 async fn limits_doc_size_update_size_awareness_cap() {
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     let actor = start_with(
         dir.path(),
-        &bin,
         DocumentsConfig {
             max_doc_bytes: 4096,
             ..DocumentsConfig::default()
@@ -1989,11 +1974,9 @@ fn note_bytes(data_dir: &Path, doc: &document::DocId) -> usize {
 #[tokio::test]
 async fn idle_unload_compacts_the_log_and_reloads_identically() {
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     let actor = start_with(
         dir.path(),
-        &bin,
         DocumentsConfig {
             idle_unload_secs: 1,
             max_open_docs: 1,
@@ -2139,10 +2122,9 @@ async fn idle_unload_compacts_the_log_and_reloads_identically() {
 #[tokio::test]
 async fn sharing_off_and_disabled() {
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     // `on`: a link and a member.
-    let actor = start(dir.path(), &bin).await;
+    let actor = start(dir.path()).await;
     let doc = actor
         .ask(CreateNote {
             title: "S".into(),
@@ -2186,7 +2168,6 @@ async fn sharing_off_and_disabled() {
     // `off`: no new link; the existing member opens, writes, re-joins (idempotent) as before.
     let actor = start_with(
         dir.path(),
-        &bin,
         DocumentsConfig {
             sharing: "off".into(),
             ..DocumentsConfig::default()
@@ -2228,7 +2209,6 @@ async fn sharing_off_and_disabled() {
     // `disabled`: members are refused everywhere; the owner is untouched.
     let actor = start_with(
         dir.path(),
-        &bin,
         DocumentsConfig {
             sharing: "disabled".into(),
             ..DocumentsConfig::default()
@@ -2321,7 +2301,6 @@ async fn until_exported(sub: &mut tokio::sync::mpsc::Receiver<DocEvent>) {
 #[tokio::test]
 async fn owner_hears_an_export_after_the_quiet_period_or_when_the_editor_leaves() {
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
     let (tx, mut heard) = tokio::sync::mpsc::unbounded_channel();
@@ -2331,7 +2310,6 @@ async fn owner_hears_an_export_after_the_quiet_period_or_when_the_editor_leaves(
     let actor = start_in(
         rt,
         dir.path(),
-        &bin,
         DocumentsConfig {
             export_quiet_secs: 2,
             ..DocumentsConfig::default()
@@ -2446,9 +2424,8 @@ async fn owner_hears_an_export_after_the_quiet_period_or_when_the_editor_leaves(
 #[tokio::test]
 async fn hub_gate_follows_the_lease() {
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
-    let actor = start(dir.path(), &bin).await;
+    let actor = start(dir.path()).await;
     // As the plugin at start (lib.rs): take up the hub duties, so the loss below has duties to stop.
     // `sync_hub` only unloads on a (holding → not) flip it saw start; a fresh actor holds by default
     // (`Follower::default()`) but has taken nothing up until `Reconcile`.
@@ -2661,9 +2638,8 @@ async fn doc_read_annotates_note_cells_through_the_hook() {
         }
     }
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
-    let actor = start(dir.path(), &bin).await;
+    let actor = start(dir.path()).await;
     let session = uuid::Uuid::now_v7();
     let docs = Docs::new(actor.clone(), dir.path().to_path_buf());
     let md = "```cells\n#| cwd: /tmp\n```\n\n```bash\n#| name: preview\npulumi preview -s ir-prod1\n```\n\n```output\nchat said 3 to update\n```\nran 14:36 · exit 0 · 33 s\n\n```bash\n#| name: quiet\ntrue\n```\n\n```output\n```\nran 14:36 · exit 0 · 0.1 s\n\n```bash\n#| name: later\ntrue\n```\n\n```output\n```\nran 14:36 · exit 0 · 0.1 s\n\n```bash\nls\n```\n";

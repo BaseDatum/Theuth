@@ -1,9 +1,8 @@
-//! 144 §4.3 (E1) against the compiled helper: the default `Dense summary` at the end of an ingest
+//! 144 §4.3 (E1) against the in-process helper: the default `Dense summary` at the end of an ingest
 //! (appended as `Principal::Helper`, counted, `Changed{Completed}` emitted, never a second one on a
 //! same-text refresh, a failed call recorded as `insight_error`), `insight_run` with a builtin and a
 //! skill, `insight_promote` into a note with the trailer and the membership. The model call and the
-//! skill lookup are the installed hooks — mocked here the way wave 1 mocked `title()`. Skipped when the
-//! helper binary is not built (`just documents-helper` or `THEUTH_DOCUMENTS_HELPER`).
+//! skill lookup are the installed hooks — mocked here the way wave 1 mocked `title()`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -25,11 +24,6 @@ use kameo::message::{Context, Message};
 
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static CALLS: Mutex<Vec<InsightCall>> = Mutex::new(Vec::new());
-
-/// The helper path `Helper::new` still takes (ignored: the helper runs in-process); never skips.
-macro_rules! helper_or_skip {
-    () => {{ helper::helper_path() }};
-}
 
 /// The mocked seams: the model echoes the instruction (and fails on a source that says `FAIL`); one
 /// insight skill, `legal-review`.
@@ -75,7 +69,7 @@ struct Rig {
     events: Arc<Mutex<Vec<SourceEvent>>>,
 }
 
-async fn start(data_dir: &Path, bin: &Path, cfg: NotebooksConfig) -> Rig {
+async fn start(data_dir: &Path, cfg: NotebooksConfig) -> Rig {
     let rt = runtime::Runtime::new(figment::Figment::new(), data_dir.to_path_buf());
     let vault = secrets::Vault::open(data_dir, secrets::KeyStore::File)
         .await
@@ -85,7 +79,7 @@ async fn start(data_dir: &Path, bin: &Path, cfg: NotebooksConfig) -> Rig {
         .unwrap()
         .with_vault(std::sync::Arc::new(vault));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let h = helper::Helper::new(bin.to_path_buf(), tx, rt.shutdown.clone());
+    let h = helper::Helper::new(tx, rt.shutdown.clone());
     let dcfg = DocumentsConfig {
         export_debounce_ms: 100,
         ..DocumentsConfig::default()
@@ -202,10 +196,9 @@ fn completed_events(rig: &Rig, id: &DocId) -> usize {
 #[tokio::test]
 async fn default_insight_is_appended_once_counted_and_announced_and_a_failure_is_recorded() {
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     mock();
     let dir = tempfile::tempdir().unwrap();
-    let rig = start(dir.path(), &bin, NotebooksConfig::default()).await;
+    let rig = start(dir.path(), NotebooksConfig::default()).await;
 
     let id = add_text(
         &rig,
@@ -285,7 +278,6 @@ async fn default_insight_is_appended_once_counted_and_announced_and_a_failure_is
 #[tokio::test]
 async fn insight_run_builtin_and_skill_then_promote_to_a_note() {
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     mock();
     let dir = tempfile::tempdir().unwrap();
     let cfg = NotebooksConfig {
@@ -293,7 +285,7 @@ async fn insight_run_builtin_and_skill_then_promote_to_a_note() {
         insight_model: Some("cheap/model".into()),
         ..NotebooksConfig::default()
     };
-    let rig = start(dir.path(), &bin, cfg).await;
+    let rig = start(dir.path(), cfg).await;
     let id = add_text(&rig, "# Failover notes\n\nThe primary flapped twice.\n").await;
     until(&rig, &id, "completed", |s| {
         s.status == SourceStatus::Completed

@@ -1,8 +1,7 @@
-//! The ingest job end to end against the compiled helper (144 §4.2): pre-flight refusals on the
+//! The ingest job end to end against the in-process helper (144 §4.2): pre-flight refusals on the
 //! card, `new → queued → running → completed | failed`, dedupe by origin key, refresh freshness,
 //! the routes that need no network (text, PDF, meeting) and the ones that fail cleanly without
-//! their service (audio without the voice plugin, session without a registry). Skipped when the
-//! helper binary is not built (`just documents-helper`).
+//! their service (audio without the voice plugin, session without a registry).
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -22,11 +21,6 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ingest");
 
-/// The helper path `Helper::new` still takes (ignored: the helper runs in-process); never skips.
-macro_rules! helper_or_skip {
-    () => {{ helper::helper_path() }};
-}
-
 struct Rig {
     docs: ActorRef<DocumentActor>,
     ingest: ActorRef<IngestActor>,
@@ -34,7 +28,7 @@ struct Rig {
     notebook: DocId,
 }
 
-async fn start(data_dir: &Path, bin: &Path, cfg: NotebooksConfig) -> Rig {
+async fn start(data_dir: &Path, cfg: NotebooksConfig) -> Rig {
     let rt = runtime::Runtime::new(figment::Figment::new(), data_dir.to_path_buf());
     let vault = secrets::Vault::open(data_dir, secrets::KeyStore::File)
         .await
@@ -44,7 +38,7 @@ async fn start(data_dir: &Path, bin: &Path, cfg: NotebooksConfig) -> Rig {
         .unwrap()
         .with_vault(std::sync::Arc::new(vault));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let h = helper::Helper::new(bin.to_path_buf(), tx, rt.shutdown.clone());
+    let h = helper::Helper::new(tx, rt.shutdown.clone());
     let dcfg = DocumentsConfig {
         export_debounce_ms: 100,
         ..DocumentsConfig::default()
@@ -145,9 +139,8 @@ async fn markdown(docs: &ActorRef<DocumentActor>, id: &DocId) -> String {
 #[tokio::test]
 async fn pasted_text_runs_to_completed_and_refresh_tracks_freshness() {
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
-    let rig = start(dir.path(), &bin, NotebooksConfig::default()).await;
+    let rig = start(dir.path(), NotebooksConfig::default()).await;
 
     let text = "# Failover notes\n\nThe primary flapped twice.\n\n## Fix\n\nAdd a health check.\n";
     let t = Instant::now();
@@ -259,7 +252,6 @@ async fn pasted_text_runs_to_completed_and_refresh_tracks_freshness() {
 #[tokio::test]
 async fn preflight_refusals_land_on_the_card_without_a_job() {
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     let cfg = NotebooksConfig {
         max_source_bytes: 2_000,
@@ -267,7 +259,7 @@ async fn preflight_refusals_land_on_the_card_without_a_job() {
         youtube_ytdlp: Some("/nonexistent/yt-dlp".into()),
         ..NotebooksConfig::default()
     };
-    let rig = start(dir.path(), &bin, cfg).await;
+    let rig = start(dir.path(), cfg).await;
 
     let odd = dir.path().join("thing.xyz");
     std::fs::write(&odd, b"??").unwrap();
@@ -385,9 +377,8 @@ async fn preflight_refusals_land_on_the_card_without_a_job() {
 #[tokio::test]
 async fn pdf_and_meeting_routes_complete_on_fixtures() {
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
-    let rig = start(dir.path(), &bin, NotebooksConfig::default()).await;
+    let rig = start(dir.path(), NotebooksConfig::default()).await;
 
     let t = Instant::now();
     let pdf = format!("{FIXTURES}/two-pages.pdf");
@@ -469,9 +460,8 @@ async fn pdf_and_meeting_routes_complete_on_fixtures() {
 #[tokio::test]
 async fn same_origin_is_one_document_in_two_notebooks_and_a_caller_title_sticks() {
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
-    let rig = start(dir.path(), &bin, NotebooksConfig::default()).await;
+    let rig = start(dir.path(), NotebooksConfig::default()).await;
     let other = DocId::new();
     rig.store
         .notebook_upsert(&store::NotebookRow {
@@ -533,9 +523,8 @@ async fn same_origin_is_one_document_in_two_notebooks_and_a_caller_title_sticks(
 #[tokio::test]
 async fn routes_without_their_service_fail_transiently_and_can_be_refreshed() {
     let _serial = SERIAL.lock().await;
-    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
-    let rig = start(dir.path(), &bin, NotebooksConfig::default()).await;
+    let rig = start(dir.path(), NotebooksConfig::default()).await;
 
     let wav = format!("{FIXTURES}/tone-3s.wav");
     let s = ingest::source_add(

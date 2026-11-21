@@ -289,14 +289,13 @@ async fn missing_call_id_and_missing_blob_are_named() {
 
 #[tokio::test]
 async fn markdown_names_its_bound_document() {
-    let bin = document::helper::helper_path();
     use document::actor::DocumentActor;
     use kameo::actor::Spawn as _;
     let (state, tool, d) = open().await;
     let rt = runtime::Runtime::new(figment::Figment::new(), d.path().to_path_buf());
     let store = document::store::Store::open(d.path()).await.unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let h = document::helper::Helper::new(bin, tx, rt.shutdown.clone());
+    let h = document::helper::Helper::new(tx, rt.shutdown.clone());
     let actor = DocumentActor::spawn(DocumentActor::new(
         store,
         h,

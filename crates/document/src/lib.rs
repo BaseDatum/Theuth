@@ -67,8 +67,8 @@ pub use cells::{
     run_annotations, set_run_annotations, watch_latest,
 };
 pub use helper::{
-    Edit as BlockEdit, EditError, HelperProcess, HelperStatus, ImportMode, helper_path,
-    helper_status, protocol_version,
+    Edit as BlockEdit, EditError, HelperProcess, HelperStatus, ImportMode, helper_status,
+    protocol_version,
 };
 pub use hub::{
     BLOCK_WAIT_MS, DocError, DocServer, HANDBACK_TIMEOUT_MS, HUB_MOVED, Handback, Handover,
@@ -292,9 +292,8 @@ impl runtime::Plugin for DocumentPlugin {
                 Err(e) => tracing::info!("documents: replication unavailable ({e}); local only"),
             }
         });
-        let path = helper_path();
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
-        let helper = helper::Helper::new(path, events_tx, rt.shutdown.clone());
+        let helper = helper::Helper::new(events_tx, rt.shutdown.clone());
         let actor =
             DocumentActor::spawn(DocumentActor::new(store.clone(), helper, cfg, rt.clone()));
         actor.register(DOCUMENT_ACTOR)?;

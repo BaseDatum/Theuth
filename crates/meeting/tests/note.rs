@@ -15,10 +15,10 @@ use document::{
 use kameo::actor::{ActorRef, Spawn};
 use meeting::note;
 
-async fn start_documents(rt: &runtime::Runtime, bin: &std::path::Path) -> ActorRef<DocumentActor> {
+async fn start_documents(rt: &runtime::Runtime) -> ActorRef<DocumentActor> {
     let store = store::Store::open(&rt.data_dir).await.unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let h = helper::Helper::new(bin.to_path_buf(), tx, rt.shutdown.clone());
+    let h = helper::Helper::new(tx, rt.shutdown.clone());
     let cfg = DocumentsConfig {
         export_debounce_ms: 100,
         ..DocumentsConfig::default()
@@ -83,10 +83,9 @@ async fn wait_for(path: &std::path::Path, pred: impl Fn(&str) -> bool) -> String
 
 #[tokio::test]
 async fn note_lives_through_start_summary_and_retry() {
-    let bin = helper::helper_path();
     let dir = tempfile::tempdir().unwrap();
     let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
-    let docs = start_documents(&rt, &bin).await;
+    let docs = start_documents(&rt).await;
     let meeting = meeting::MeetingId::new();
     let mdir = dir.path().join("meetings").join(meeting.to_string());
     std::fs::create_dir_all(&mdir).unwrap();

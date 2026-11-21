@@ -39,7 +39,7 @@ $dataDir = if ($env:THEUTH_DATA_DIR) { $env:THEUTH_DATA_DIR } else { Join-Path $
 function Say([string] $s) { Write-Output "G5: $s" }
 function Clip([string] $s, [int] $n = 200) { if ($null -eq $s) { return '' }; $s = $s -replace "`e\[[0-9;]*m", ''; return $s.Substring(0, [math]::Min($n, $s.Length)) }
 function Procs {
-    foreach ($n in 'theuth-desktop', 'Theuth.Companion', 't', 'theuth-documents-*') {
+    foreach ($n in 'theuth-desktop', 'Theuth.Companion', 't') {
         Get-Process -Name $n -ErrorAction SilentlyContinue | ForEach-Object { Say "proc $($_.ProcessName) pid=$($_.Id) start=$($_.StartTime.ToString('HH:mm:ss')) path=$($_.Path)" }
     }
 }

@@ -1217,8 +1217,7 @@ mod tests {
     async fn actor(data_dir: &Path) -> (ActorRef<DocumentActor>, Store) {
         let rt = Runtime::new(figment::Figment::new(), data_dir.to_path_buf());
         let (tx, rx) = mpsc::unbounded_channel();
-        let helper =
-            crate::helper::Helper::new(data_dir.join("no-helper"), tx, rt.shutdown.clone());
+        let helper = crate::helper::Helper::new(tx, rt.shutdown.clone());
         spawn_actor(data_dir, rt, helper, rx).await
     }
 
