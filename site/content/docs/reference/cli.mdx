@@ -89,7 +89,7 @@ Logging is `RUST_LOG` with `info` as the default.
 | `THEUTH_<SECTION>__<KEY>` | `t` | config override; see [Configuration](/docs/reference/configuration) |
 | `RUST_LOG` | `t`, `theuth-relay` | tracing filter; the log defaults to `info` |
 | `THEUTH_NO_LOGIN_PATH` | `shell` tool | `1`: do not seed `PATH` from the login shell |
-| `THEUTH_APP_PARSER`, `THEUTH_DOCUMENTS_HELPER` | app, documents | path to a helper executable, for development |
+| `THEUTH_DOCUMENTS_HELPER` | documents | path to a helper executable, for development (the app parser runs in-process and has no override) |
 | `ORT_DYLIB_PATH` | models | ONNX Runtime library when not found beside the app or under `<data_dir>/models/onnxruntime/` |
 | `AWS_PROFILE`, `BEDROCK_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK` | agent | Bedrock authentication; see [Models](/docs/getting-started/models) |
 | `OPENROUTER_API_KEY`, `OPENCODE_API_KEY`, and each genai provider's key variable (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …) | agent | provider keys when the vault has none |
