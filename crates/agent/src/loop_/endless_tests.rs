@@ -505,6 +505,16 @@ impl wiremock::Respond for Rounds {
 /// `endless`), attached with `openai/<model>` and paused (drafts, no
 /// compactor call) when `attach`.
 async fn real_endless(h: &Harness, model: &str, attach: bool) -> (Endless, ActorRef<Session>) {
+    real_endless_with(h, model, attach, crate::endless::EndlessConfig::default()).await
+}
+
+/// [`real_endless`] with `cfg`.
+async fn real_endless_with(
+    h: &Harness,
+    model: &str,
+    attach: bool,
+    cfg: crate::endless::EndlessConfig,
+) -> (Endless, ActorRef<Session>) {
     let id = format!("openai/{model}");
     crate::tokens::forget_for_tests(&id);
     let endless = Endless::new(
@@ -513,7 +523,7 @@ async fn real_endless(h: &Harness, model: &str, attach: bool) -> (Endless, Actor
         h.client.clone(),
         Auth::stub(&h.dir),
         h.catalog.clone(),
-        crate::endless::EndlessConfig::default(),
+        cfg,
         None,
     );
     h.store
@@ -916,5 +926,142 @@ async fn scenario_refusal_trim() {
             sent.iter().any(|t| t == &b.text),
             "the new frozen view is sent"
         );
+    }
+}
+
+/// 201 P6c: answers the first main call with one `name(args)` tool call,
+/// then like [`Fake`].
+struct CallOnce {
+    inner: Fake,
+    name: &'static str,
+    args: Value,
+    done: std::sync::atomic::AtomicBool,
+}
+
+impl CallOnce {
+    fn new(name: &'static str, args: Value) -> Self {
+        Self {
+            inner: Fake::compact_held(Duration::ZERO),
+            name,
+            args,
+            done: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+impl wiremock::Respond for CallOnce {
+    fn respond(&self, r: &wiremock::Request) -> wiremock::ResponseTemplate {
+        if super::vision_fallback_tests::body(r)["tools"].is_array()
+            && !self.done.swap(true, Ordering::SeqCst)
+        {
+            return super::vision_fallback_tests::sse_tool_call(
+                "call_once",
+                self.name,
+                &self.args.to_string(),
+            );
+        }
+        self.inner.respond(r)
+    }
+}
+
+/// The request's ledger snapshot block (the text holding `<ledger_snapshot>`).
+fn snapshot(b: &Value) -> Option<String> {
+    texts(b)
+        .into_iter()
+        .find(|t| t.contains("<ledger_snapshot>"))
+}
+
+#[test]
+fn a_ledger_entry_is_noted_then_frozen_into_the_next_snapshot() {
+    crate::with_test_registry(scenario_ledger_turns());
+}
+
+/// 201 §9 (P6c, the P6a full-turn gate): the model's `ledger` add shows as a
+/// `<ledger>` note right after the next turn's input; after a trim the
+/// snapshot block carries the entry, the note has left the tail, and the
+/// block is byte-identical over the generation's following turns.
+async fn scenario_ledger_turns() {
+    let _reg_dir = registry().await;
+    let mut h = Harness::new(CallOnce::new(
+        "ledger",
+        json!({"section": "goals", "op": "add", "text": "ship the zebra gateway"}),
+    ))
+    .await;
+    let (endless, actor) = real_endless(&h, "ledgerturns", true).await;
+    turn(&mut h, &actor, "Our goal: ship the zebra gateway.").await;
+    let calls = main_calls(&h).await;
+    assert!(tool_names(&calls[0]).iter().any(|n| n == "ledger"));
+    let (c, r) = call_ids(calls.last().unwrap());
+    assert_eq!(
+        (c, r),
+        (vec!["call_once".to_owned()], vec!["call_once".to_owned()])
+    );
+
+    let big = |k: usize| format!("INPUT-{k} {}", "word ".repeat(4_000));
+    turn(&mut h, &actor, &big(1)).await;
+    let req = main_calls(&h).await.pop().unwrap();
+    let sent = texts(&req);
+    let input = sent.iter().position(|t| t.contains("INPUT-1")).unwrap();
+    assert!(
+        sent[input + 1].contains("<ledger>") && sent[input + 1].contains("ship the zebra gateway"),
+        "the note follows the input: {:?}",
+        &sent[input + 1]
+    );
+    if let Some(before) = snapshot(&req) {
+        assert!(!before.contains("zebra"), "the entry waits for the trim");
+    }
+
+    turn(&mut h, &actor, &big(2)).await;
+    let g0 = endless.generation(h.id).await.unwrap().unwrap().n;
+    actor
+        .ask(CompactNow {
+            style: None,
+            head: None,
+        })
+        .await
+        .expect("a trim now");
+    h.drain_until(
+        |e| matches!(e, AgentEvent::ContextChanged { reason, .. } if reason == "settled"),
+    )
+    .await;
+    assert_eq!(endless.generation(h.id).await.unwrap().unwrap().n, g0 + 1);
+    turn(&mut h, &actor, "And now?").await;
+    turn(&mut h, &actor, "Still there?").await;
+    let calls = main_calls(&h).await;
+    let (a, b) = (&calls[calls.len() - 2], &calls[calls.len() - 1]);
+    let snap = snapshot(a).expect("a snapshot block after the trim");
+    assert!(snap.contains("ship the zebra gateway"), "{snap}");
+    assert_eq!(
+        snapshot(b).as_deref(),
+        Some(snap.as_str()),
+        "frozen for the generation"
+    );
+    for req in [a, b] {
+        assert!(
+            !texts(req).iter().any(|t| t.contains("<ledger>")),
+            "the note left the tail"
+        );
+    }
+}
+
+#[test]
+fn with_the_ledger_off_there_is_no_tool_and_no_block() {
+    crate::with_test_registry(scenario_ledger_off());
+}
+
+/// 201 §9 (P6c): `ledger: false` — no `ledger` tool, no snapshot block.
+async fn scenario_ledger_off() {
+    let _reg_dir = registry().await;
+    let mut h = Harness::new(Fake::compact_held(Duration::ZERO)).await;
+    let cfg = crate::endless::EndlessConfig {
+        ledger: false,
+        ..crate::endless::EndlessConfig::default()
+    };
+    let (_endless, actor) = real_endless_with(&h, "ledgeroff", true, cfg).await;
+    turn(&mut h, &actor, "Hello.").await;
+    turn(&mut h, &actor, "Again.").await;
+    for req in main_calls(&h).await {
+        assert!(!tool_names(&req).iter().any(|n| n == "ledger"));
+        assert_eq!(snapshot(&req), None);
     }
 }

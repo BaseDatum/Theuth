@@ -3174,15 +3174,22 @@ struct Seer {
     vision: bool,
     described: AtomicU32,
     saw_bytes: std::sync::atomic::AtomicBool,
+    /// 201 P6c: the local endpoint, when the describer is local.
+    local: Option<String>,
 }
 
 impl Seer {
     fn new(vision: bool) -> Arc<Self> {
+        Self::at(vision, None)
+    }
+
+    fn at(vision: bool, local: Option<&str>) -> Arc<Self> {
         Arc::new(Self {
             model: super::pump::resolved_for_tests("fake/seer"),
             vision,
             described: AtomicU32::new(0),
             saw_bytes: std::sync::atomic::AtomicBool::new(false),
+            local: local.map(str::to_owned),
         })
     }
 }
@@ -3211,6 +3218,9 @@ impl Compactor for Seer {
     fn accepts_images(&self) -> bool {
         self.vision
     }
+    fn local(&self) -> Option<String> {
+        self.local.clone()
+    }
     fn describe_image<'a>(
         &'a self,
         _image: &'a genai::chat::Binary,
@@ -3220,6 +3230,11 @@ impl Compactor for Seer {
         Box::pin(async {
             Ok(Reply {
                 text: "a red square on white\n".into(),
+                usage: Some(genai::chat::Usage {
+                    prompt_tokens: Some(1_000),
+                    completion_tokens: Some(12),
+                    ..Default::default()
+                }),
                 ..Default::default()
             })
         })
@@ -3333,6 +3348,103 @@ async fn no_description_when_off_or_text_only() {
         h.await.unwrap();
     }
     assert!(!text_only.saw_bytes.load(Ordering::SeqCst));
+    assert_eq!(l0(&store, id, 0).await.text, "user: [image: photo.png]");
+}
+
+/// The `model_calls` statuses of `id`'s image-description rows (kind `endless`).
+async fn endless_call_rows(store: &Store, id: SessionId) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT status FROM model_calls WHERE owner_id = ? AND kind = 'endless' \
+         AND request_id LIKE 'endless:describe:%'",
+    )
+    .bind(id.to_string())
+    .fetch_all(store.pool())
+    .await
+    .unwrap()
+}
+
+/// 201 P6c: each image description is a `model_calls` row of kind
+/// `endless`, so it counts toward the day's spend.
+#[tokio::test]
+async fn image_descriptions_are_charged_as_endless_calls() {
+    let seer = Seer::new(true);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), seer.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_images(&store, id).await;
+    endless.attach(id, attached()).await.unwrap();
+    endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    endless
+        .describe_left(id, 0, i64::MAX, None)
+        .expect("a description job")
+        .await
+        .unwrap();
+    assert_eq!(seer.described.load(Ordering::SeqCst), 2);
+    assert_eq!(endless_call_rows(&store, id).await, ["settled", "settled"]);
+}
+
+/// 201 P6c: a local describer takes its endpoint's gate — nothing is sent
+/// while every permit is held, and it is served once one is free.
+#[tokio::test]
+async fn a_local_describer_waits_for_the_gate() {
+    let seer = Seer::at(true, Some("ep"));
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), seer.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_images(&store, id).await;
+    endless.attach(id, attached()).await.unwrap();
+    endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    let gate = super::pump::gate_for_tests(&endless.inner, "ep");
+    let held = gate.acquire(1, runtime::SessionId(uuid::Uuid::nil())).await;
+    let job = endless
+        .describe_left(id, 0, i64::MAX, None)
+        .expect("a description job");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        seer.described.load(Ordering::SeqCst),
+        0,
+        "waits at the held gate"
+    );
+    drop(held);
+    job.await.unwrap();
+    assert_eq!(seer.described.load(Ordering::SeqCst), 2);
+}
+
+/// 201 P6c: while settling is paused by spend no image is described (and no
+/// call row is written); the line stays as it was.
+#[tokio::test]
+async fn no_description_while_paused_by_spend() {
+    let seer = Seer::new(true);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), seer.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_images(&store, id).await;
+    store
+        .set_endless_paused(id, Some("spend"), None)
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    if let Some(h) = endless.describe_left(id, 0, i64::MAX, None) {
+        h.await.unwrap();
+    }
+    assert_eq!(seer.described.load(Ordering::SeqCst), 0);
+    assert!(endless_call_rows(&store, id).await.is_empty());
     assert_eq!(l0(&store, id, 0).await.text, "user: [image: photo.png]");
 }
 
@@ -3640,4 +3752,65 @@ async fn prefetch_skips_the_tail_and_zooms_are_counted_per_generation() {
         .await
         .unwrap();
     assert_eq!(g3.zooms, 0, "one generation of grace only");
+}
+
+/// Whether `text` shows unit `i` on a line of its own (`i+1|…`).
+fn alone(text: &str, i: u64) -> bool {
+    let head = format!("{i}+1|");
+    text.lines().any(|l| l.starts_with(&head))
+}
+
+/// 201 §10 / D12 (P6c): a unit merged in generation 1 is zoomed during
+/// generation 1; `(alone in g2, alone in g3)` over real trims.
+async fn zoomed_line_across_trims(age_by_use: bool) -> (bool, bool) {
+    let (_dir, endless, store, _echo, id) = harness_with(EndlessConfig {
+        view_bytes: 4_000,
+        settle_secs: 5,
+        age_by_use,
+        ..EndlessConfig::default()
+    })
+    .await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 24, &[]).await;
+    endless.attach(id, attached()).await.unwrap();
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(20)).await);
+    let g1 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    let t1 = g1.render.text();
+    let i = (0..24u64)
+        .find(|i| !alone(&t1, *i))
+        .unwrap_or_else(|| panic!("no merged line in generation 1:\n{t1}"));
+    endless.zoom(id, i, 1).await.unwrap();
+    let g2 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    let g3 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    endless.detach(id);
+    (alone(&g2.render.text(), i), alone(&g3.render.text(), i))
+}
+
+/// 201 §10 (P6c): with `age_by_use` a line zoomed in generation N is not
+/// merged at the trim that starts N+1 and is merged again at N+2; without
+/// it the trim into N+1 merges it.
+#[tokio::test]
+async fn a_zoomed_line_gets_one_generation_of_grace() {
+    assert_eq!(
+        zoomed_line_across_trims(true).await,
+        (true, false),
+        "age_by_use on"
+    );
+    assert_eq!(
+        zoomed_line_across_trims(false).await,
+        (false, false),
+        "age_by_use off"
+    );
 }

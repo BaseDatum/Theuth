@@ -1547,7 +1547,11 @@ pub(crate) fn describe_left(
                     else {
                         continue;
                     };
-                    match c.describe_image(&b).await {
+                    let Some(r) = describe_call(&state, c, i, &b).await else {
+                        tracing::info!(session = %state.session, unit = i, "endless: image description skipped; settling paused by spend");
+                        continue;
+                    };
+                    match r {
                         Ok(r) => (r.text, by.clone()),
                         Err(e) => {
                             tracing::warn!(session = %state.session, unit = i, error = %e, "endless: image description");
@@ -1585,6 +1589,64 @@ pub(crate) fn describe_left(
         }
         state.wake.notify_one();
     }))
+}
+
+/// 201 P6c (carried from P4): one image description, run like a compactor
+/// job: a local describer waits for its endpoint's [`Gate`] at the lowest
+/// priority (0), and the call is a `model_calls` row of kind `endless`, so
+/// it counts toward `max_usd_per_session_day`. `None`: settling is paused by
+/// spend (or the G11 cap is reached now) — nothing is sent.
+async fn describe_call(
+    state: &State,
+    c: &Arc<dyn Compactor>,
+    i: u64,
+    image: &genai::chat::Binary,
+) -> Option<Result<compactor::Reply, String>> {
+    let cfg = state.cfg.read().clone();
+    let _permit = match c.local() {
+        Some(endpoint) => Some(
+            state
+                .queues
+                .get(&endpoint, cfg.local_jobs)
+                .acquire(0, state.session)
+                .await,
+        ),
+        None => None,
+    };
+    if state.live.lock().paused_by.as_deref() == Some("spend") || spend_capped(state, &cfg).await {
+        return None;
+    }
+    let model = c.model();
+    let request_id = format!("endless:describe:{i}:{}", uuid::Uuid::now_v7());
+    let reserved = match state
+        .store
+        .reserve_call(
+            state.session,
+            &request_id,
+            0,
+            None,
+            CallKind::Endless,
+            model.provider.as_deref(),
+            Some(&model.id),
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return Some(Err(format!("reserve: {e}"))),
+    };
+    if let Err(e) = state.store.mark_dispatched(&reserved).await {
+        tracing::warn!(error = %e, "endless: mark_dispatched");
+    }
+    let r = c.describe_image(image).await;
+    let (status, usage) = match &r {
+        Ok(reply) => (CallStatus::Settled, reply.usage.clone()),
+        Err(_) => (CallStatus::Failed, None),
+    };
+    let obs = compactor::observation(usage.as_ref(), model);
+    if let Err(e) = state.store.settle_call(&reserved, status, obs).await {
+        tracing::warn!(error = %e, "endless: settle_call");
+    }
+    Some(r)
 }
 
 /// 201 §8 (P4): `zoom(id, 1)` on an artefact unit: its line and the binary
