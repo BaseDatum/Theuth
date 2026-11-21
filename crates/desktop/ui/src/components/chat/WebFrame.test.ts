@@ -42,7 +42,7 @@ vi.mock('@/lib/popout', async (original) => ({ ...(await original<object>()), ca
 
 const ID = '0123456789abcdef'
 const W = webLeaf(ID)
-const calls = () => Object.values(native).flatMap((f) => (typeof f === 'function' ? f.mock.calls : []))
+const calls = (): unknown[][] => Object.values(native).flatMap((f): unknown[][] => (typeof f === 'function' ? f.mock.calls : []))
 const RECT = { left: 300, top: 52, width: 640, height: 480, right: 940, bottom: 532, x: 300, y: 52, toJSON() {} } as DOMRect
 
 beforeEach(() => {
