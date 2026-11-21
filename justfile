@@ -20,7 +20,7 @@ setup:
 build *ARGS:
     cargo build {{ARGS}}
 
-check *ARGS:
+check *ARGS: apps-bundle-check
     CARGO_INCREMENTAL={{incremental}} cargo check --workspace --all-targets {{ARGS}}
 
 test *ARGS:
@@ -91,14 +91,47 @@ install: helper documents-helper
     install -m 755 target/release/t "$bin/t.new" && mv -f "$bin/t.new" "$bin/t"
     echo "installed $(command -v t) + $bin/$HELPER + $bin/$DOC_HELPER"
 
-# Standalone app parser helper (bun build --compile) → packages/apps/dist/theuth-app-parser,
-# checked against packages/apps/generated/library-hash.txt. THEUTH_SKIP_BUN_INSTALL=1 skips bun install.
+# The theuth-app-parser-<hash> compatibility stub (crates/app-parser-stub, cargo; `t` validates apps
+# in-process, docs/design/apps-inproc-as-built-P1.md) → target/release/theuth-app-parser-stub, checked
+# against packages/apps/generated/library-hash.txt. Shipped only for installed updaters (46 §2.1).
 helper:
     #!/usr/bin/env bash
     set -euo pipefail
     source scripts/app-parser-env.sh
     build_helper
     echo "built $HELPER_SRC ($HELPER)"
+
+# The in-process OpenUI check/merge bundle: packages/apps/src/inproc.ts → crates/app-js/js/theuth-apps-inproc.js
+# (scripts/build-inproc.ts), its golden transcript (scripts/record-inproc-golden.ts) and the inputs' hash in
+# crates/app-js/js/BUNDLE.sha256. Needs bun; a cargo build never does (the bundle is committed).
+apps-bundle:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    (cd packages/apps && bun install --frozen-lockfile && bun run scripts/build-inproc.ts && bun run scripts/record-inproc-golden.ts)
+    cp packages/apps/dist/theuth-apps-inproc.js crates/app-js/js/theuth-apps-inproc.js
+    {{just_executable()}} _apps-bundle-hash > crates/app-js/js/BUNDLE.sha256
+    cat crates/app-js/js/BUNDLE.sha256
+
+# Fails when packages/apps changed since the committed bundle was built (run `just apps-bundle`),
+# or when the committed bundle is not the one recorded.
+apps-bundle-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! diff <({{just_executable()}} _apps-bundle-hash) crates/app-js/js/BUNDLE.sha256; then
+        echo "crates/app-js/js is stale: run \`just apps-bundle\` and commit the result" >&2
+        exit 1
+    fi
+
+# `inputs <sha256>`: over packages/apps/src/**, generated/*, package.json, bun.lock, tsconfig.json, patches/*,
+# scripts/build-inproc.ts (sorted per-file sha256 lines, hashed); `bundle <sha256>`: the committed bundle.
+# Shared by `apps-bundle` and `apps-bundle-check`.
+_apps-bundle-hash:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd packages/apps
+    inputs=$({ find src generated patches -type f | LC_ALL=C sort; printf '%s\n' package.json bun.lock tsconfig.json scripts/build-inproc.ts; } | while read -r f; do shasum -a 256 "$f"; done | shasum -a 256 | cut -d' ' -f1)
+    bundle=$(shasum -a 256 ../../crates/app-js/js/theuth-apps-inproc.js | cut -d' ' -f1)
+    printf 'inputs %s\nbundle %s\n' "$inputs" "$bundle"
 
 # Standalone documents helper (bun build --compile) → packages/documents/dist/theuth-documents (59 §3.2);
 # `--version` must print the PROTOCOL_VERSION of packages/documents/src/protocol.ts. Debug builds of `t`

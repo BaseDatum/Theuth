@@ -1,8 +1,8 @@
 //! App plugin (design doc 46): progressive interactive UI on OpenUI Lang.
 //!
 //! One `app` tool ([`AppTool`]) publishes validated `.openui` source as a
-//! [`artifact::Kind::App`] record; a lazy headless parser helper
-//! ([`helper::Helper`]) validates it; the [`Apps`] actor serves committed
+//! [`artifact::Kind::App`] record; the in-process headless validator
+//! ([`helper::Helper`], crate `app-js`) checks it; the [`Apps`] actor serves committed
 //! apps to clients and runs their Query/Mutation tool calls through the
 //! registry's [`tools::AppInvoke`] under §7's bounds.
 //!
@@ -38,7 +38,6 @@ pub mod sched;
 pub mod study_draft;
 pub mod tool;
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use kameo::actor::Spawn;
@@ -90,26 +89,6 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self { enabled: true }
     }
-}
-
-/// Where the helper executable lives: `THEUTH_APP_PARSER` (developer/test
-/// override; a file path, never a runtime to invoke) or the immutable
-/// `theuth-app-parser-<hash>` beside the running binary (46 §2.1). The hash in
-/// the name is not trusted: [`helper::Helper`] runs `--version` and refuses a
-/// mismatch before the first request.
-pub fn helper_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("THEUTH_APP_PARSER").filter(|p| !p.is_empty()) {
-        return PathBuf::from(p);
-    }
-    let dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
-        .unwrap_or_default();
-    dir.join(format!(
-        "theuth-app-parser-{}{}",
-        hash(),
-        std::env::consts::EXE_SUFFIX
-    ))
 }
 
 /// How a client reached a bound tool (46 §6.2).
@@ -360,11 +339,7 @@ impl runtime::Plugin for AppPlugin {
             tracing::info!("app disabled by config");
             return Ok(());
         }
-        let helper = Arc::new(helper::Helper::new(
-            helper_path(),
-            hash(),
-            rt.shutdown.clone(),
-        ));
+        let helper = Arc::new(helper::Helper::for_plugin(rt.shutdown.clone()));
         let core = Arc::new(actor::Core::new(rt.clone(), helper));
         let actor =
             Apps::spawn_with_mailbox(Apps::new(core.clone()), runtime::subscriber_mailbox());
@@ -449,28 +424,6 @@ mod tests {
         assert!(s.contains(h));
         assert!(s.contains("Stack("), "catalog filled in");
         assert!(!s.contains("{{catalog}}") && !s.contains("{{hash}}"));
-    }
-
-    /// 58 step 14: the helper beside the binary is `theuth-app-parser-<hash>.exe` on Windows;
-    /// `is_file` on the suffix-less name reported it missing there.
-    #[test]
-    fn default_helper_path_carries_exe_suffix() {
-        if std::env::var_os("THEUTH_APP_PARSER").is_some_and(|p| !p.is_empty()) {
-            return; // override in effect (app-parser-env.sh); the default path is not built
-        }
-        let name = helper_path()
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        assert_eq!(
-            name,
-            format!(
-                "theuth-app-parser-{}{}",
-                hash(),
-                std::env::consts::EXE_SUFFIX
-            )
-        );
     }
 
     #[test]
