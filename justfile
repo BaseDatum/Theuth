@@ -110,6 +110,37 @@ documents-helper:
     build_doc_helper
     echo "built $DOC_HELPER_SRC ($DOC_HELPER)"
 
+# In-process documents bundle (crates/document-js, docs/design/documents-inproc-as-built-P1.md): rebuild
+# packages/documents/dist/theuth-documents-inproc.js, commit it as crates/document-js/js/theuth-documents-inproc.js
+# (cargo embeds it; no bun at build time) and record the hash of its inputs in js/BUNDLE.sha256.
+documents-bundle:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    (cd packages/documents && bun install --frozen-lockfile && bun run scripts/build-inproc.ts)
+    cp packages/documents/dist/theuth-documents-inproc.js crates/document-js/js/theuth-documents-inproc.js
+    {{just_executable()}} _documents-bundle-hash > crates/document-js/js/BUNDLE.sha256
+    cat crates/document-js/js/BUNDLE.sha256
+
+# Fails when packages/documents changed since the committed bundle was built (run `just documents-bundle`),
+# or when the committed bundle is not the one recorded.
+documents-bundle-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! diff <({{just_executable()}} _documents-bundle-hash) crates/document-js/js/BUNDLE.sha256; then
+        echo "crates/document-js/js is stale: run \`just documents-bundle\` and commit the result" >&2
+        exit 1
+    fi
+
+# `inputs <sha256>`: over packages/documents/src/**, package.json, bun.lock, scripts/build-inproc.ts (sorted
+# per-file sha256 lines, hashed); `bundle <sha256>`: the committed bundle.
+_documents-bundle-hash:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd packages/documents
+    inputs=$({ find src -type f | LC_ALL=C sort; printf '%s\n' package.json bun.lock scripts/build-inproc.ts; } | while read -r f; do shasum -a 256 "$f"; done | shasum -a 256 | cut -d' ' -f1)
+    bundle=$(shasum -a 256 ../../crates/document-js/js/theuth-documents-inproc.js | cut -d' ' -f1)
+    printf 'inputs %s\nbundle %s\n' "$inputs" "$bundle"
+
 # Export the real production contract and compile the shared desktop/iOS client.
 ts: wire-schema
     cd crates/desktop/ui && bun install && bun run wire:generate

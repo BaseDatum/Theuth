@@ -20,6 +20,7 @@ markdown = { path = "crates/markdown" }
 oauth = { path = "crates/oauth" }
 tools = { path = "crates/tools" }
 document = { path = "crates/document" }  # Yjs authority + derived markdown for knowledge/artifacts/notes (design doc 59)
+document-js = { path = "crates/document-js" }  # the documents helper's TypeScript in-process in deno_core (docs/design/documents-inproc-as-built-P1.md)
 knowledge = { path = "crates/knowledge" }
 search = { path = "crates/search" }  # shared fuzzy matching/snippet/page envelope (design doc 49 §4.1)
 agent = { path = "crates/agent" }

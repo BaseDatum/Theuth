@@ -1,0 +1,21 @@
+[package]
+name = "document-js"
+version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
+edition.workspace = true
+publish.workspace = true
+description = "The documents helper (packages/documents, BlockNote + yjs + linkedom) run in-process in a deno_core JsRuntime on its own thread, with deadline, heap and panic containment (docs/design/documents-inproc-as-built-P1.md)"
+
+[dependencies]
+# Same version and (default) features as obscura-js, so the one V8 build is shared (`cargo tree -i v8`).
+deno_core = "0.412"
+getrandom = "0.2"
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
