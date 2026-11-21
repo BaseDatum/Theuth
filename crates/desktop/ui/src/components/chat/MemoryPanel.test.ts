@@ -13,7 +13,7 @@ import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { SessionMemory } from "@/rpc/bindings/method.agent.output"
 import type { Stalled } from "@/rpc/bindings/method.agent.output"
 import type { ViewLine } from "@/rpc/bindings/method.agent.output"
-import { INITIAL, LineNode, MemoryBadge, MemoryFooter, SummaryModel, ViewNote, badgeTip, effortMutation, flatten, foldMutation, highlight, modelMutation, nextTry, pauseMutation, reduce, retryMutation } from './MemoryPanel'
+import { INITIAL, LineNode, Live, MemoryBadge, MemoryFooter, SummaryModel, TailSize, ViewNote, badgeTip, effortMutation, flatten, foldMutation, highlight, modelMutation, nextTry, pauseMutation, reduce, retryMutation, tailMutation } from './MemoryPanel'
 import { isFoldedNote } from '@/lib/endless'
 import type { Backlog as EndlessBacklog } from "@/rpc/bindings/method.agent.output"
 import type * as Combobox from './ModelCombobox'
@@ -354,4 +354,41 @@ test('the draft summary picker keeps model and effort pending, and a new model d
   picker.onChange(null)
   expect(useDrafts.getState().settings.compactorModel).toBeNull()
   useDrafts.setState({ settings: {} })
+})
+
+test('201: the live numbers — the tail as a bar against its two marks, the generation, lines on a draft, the resolved profile and why', () => {
+  const paint = (m: SessionMemory) => renderToStaticMarkup(createElement(Live, { m }))
+  const html = paint({ ...memory, tail_mode: 'fixed', tail_low: 24_000, tail_high: 64_000, tail_bytes: 41_000, generation: 3, drafts: 2, profile: 'small', profile_reason: 'the model is local' })
+  expect(html).toContain('tail 41 KB')
+  expect(html).toMatch(/role="meter" aria-label="Tail size" aria-valuemin="0" aria-valuemax="64000" aria-valuenow="41000"/)
+  expect(html).toContain('24–64 KB')
+  expect(html).toContain('generation 3')
+  expect(html).toContain('2 on a draft')
+  expect(html).toContain('small profile · the model is local')
+  // Scaled before the engine knows the allowance: marks 0, the size alone, no bar.
+  const scaled = paint({ ...memory, tail_mode: 'scaled', tail_low: 0, tail_high: 0, tail_bytes: 9_000, generation: 0, drafts: 0, profile: 'standard', profile_reason: '' })
+  expect(scaled).toContain('tail 9 KB')
+  expect(scaled).not.toContain('role="meter"')
+  expect(scaled).toContain('standard profile<')
+})
+
+test("201: the chat's tail override — the trigger names the chat's own pick or the default in force; clearing sends null and the reply replaces the cache", async () => {
+  const paint = (m: SessionMemory) => renderToStaticMarkup(createElement(TailSize, { m, onChange: () => {} }))
+  const inherited = paint({ ...memory, tail_mode: 'fixed', tail_low: 24_000, tail_high: 64_000, tail_override: null })
+  expect(inherited).toMatch(/aria-label="Tail size"/)
+  expect(inherited).toContain('tail 24–64 KB')
+  expect(inherited).toContain(' · default')
+  const own = paint({ ...memory, tail_mode: 'scaled', tail_low: 0, tail_high: 0, tail_override: { mode: 'scaled', low: 0.1, high: 0.25 } })
+  expect(own).toContain('tail 10–25 %')
+  expect(own).not.toContain(' · default')
+  const qc = new QueryClient()
+  const key = queryKeys.sessionMemory('s1')
+  const set_session_tail = vi.fn(async (_s: string, tail: SessionMemory['tail_override']) => ({ ...memory, tail_override: tail }))
+  qc.setQueryData(key, { ...memory, tail_override: { mode: 'fixed', low: 48_000, high: 128_000 } })
+  await new MutationObserver(qc, tailMutation({ set_session_tail } as unknown as Api, qc, 's1')).mutate(null)
+  expect(set_session_tail).toHaveBeenCalledWith('s1', null)
+  expect(qc.getQueryData<SessionMemory>(key)?.tail_override).toBeNull()
+  await new MutationObserver(qc, tailMutation({ set_session_tail } as unknown as Api, qc, 's1')).mutate({ mode: 'fixed', low: 16_000, high: 48_000 })
+  expect(set_session_tail).toHaveBeenLastCalledWith('s1', { mode: 'fixed', low: 16_000, high: 48_000 })
+  expect(qc.getQueryData<SessionMemory>(key)?.tail_override).toEqual({ mode: 'fixed', low: 16_000, high: 48_000 })
 })

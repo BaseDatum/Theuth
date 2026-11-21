@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import { RuntimeFields } from './RuntimeAccessFields'
-import { type Draft, emptyDraft, toFile } from './wizard'
+import { type Draft, emptyDraft, toFile, validate } from './wizard'
 
 type Effort = { levels: string[]; current?: string | null; onSelect(level: string | null): void }
 const pick: Record<string, (id: string | null) => void> = {}
@@ -60,4 +60,25 @@ test('194: the memory summary model carries its effort chips, writes memory_effo
   pick['Context summary model']?.(null)
   expect(JSON.parse(JSON.stringify(toFile(d, false)))).not.toHaveProperty('memory_effort')
   models.data = []
+})
+
+test("201: the agent's tail sizing shows only the chosen mode's pair, names a refused pair, blocks the step, and writes the keys", () => {
+  const base: Draft = { ...emptyDraft(), name: 'ops', title: 'Ops', body: 'x' }
+  const paint = (d: Draft) => renderToStaticMarkup(createElement(RuntimeFields, { d, set: () => {} }))
+  const inherit = paint(base)
+  expect(inherit).toContain('aria-label="Context tail"')
+  expect(inherit).toContain('aria-label="Compactor profile"')
+  expect(inherit).not.toContain('Kept after a trim in')
+  const fixed: Draft = { ...base, tail_mode: 'fixed', tail_low_bytes: 64_000, tail_high_bytes: 32_000, profile: 'small' }
+  const html = paint(fixed)
+  expect(html).toMatch(/aria-label="Kept after a trim in KB"[^>]*value="64"/)
+  expect(html).toMatch(/aria-label="Trim at in KB"[^>]*value="32"/)
+  expect(html).toContain('Trim at (32 KB) must be above Kept after a trim (64 KB).')
+  expect(validate('runtime', fixed, []).tail_mode).toBe('Trim at (32 KB) must be above Kept after a trim (64 KB).')
+  const scaled = paint({ ...base, tail_mode: 'scaled', tail_low_share: 0.1, tail_high_share: 0.25 })
+  expect(scaled).toMatch(/aria-label="Kept after a trim in %"[^>]*value="10"/)
+  expect(scaled).toMatch(/aria-label="Trim at in %"[^>]*value="25"/)
+  expect(validate('runtime', { ...base, tail_mode: 'scaled', tail_low_share: 0.1, tail_high_share: 0.25 }, [])).toEqual({})
+  const file = JSON.parse(JSON.stringify(toFile({ ...fixed, tail_high_bytes: 128_000 }, false)))
+  expect([file.tail_mode, file.tail_low_bytes, file.tail_high_bytes, file.profile]).toEqual(['fixed', 64_000, 128_000, 'small'])
 })

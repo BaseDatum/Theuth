@@ -1,5 +1,6 @@
 import { THEUTH } from '@/components/tasks/helpers'
 import type { AgentInput as AgentFile } from '@/lib/agent-memory'
+import { tailPairError } from '@/lib/endless'
 
 /** `/agents/new` in paperclip's order: who → where in the org → how it runs → what it may reach → what it may spend → its charter → review. */
 export const STEPS = ['identity', 'role', 'runtime', 'access', 'budget', 'charter', 'review'] as const
@@ -72,6 +73,11 @@ export function validate(step: Step, d: Draft, taken: readonly string[]): Partia
         else if (!/^[A-Z]{3}$/.test(d.budget.currency)) e.budget = 'currency is a three-letter code, e.g. USD'
       }
       break
+    case 'runtime': {
+      const tail = tailError(d)
+      if (tail) e.tail_mode = tail
+      break
+    }
     case 'charter':
       if (!d.body.trim()) e.body = 'the charter is the desk\u2019s system prompt; it cannot be empty'
       break
@@ -86,6 +92,13 @@ export function validate(step: Step, d: Draft, taken: readonly string[]): Partia
 /** The first step with an error, or `null` when the whole draft is hireable. */
 export function firstInvalid(d: Draft, taken: readonly string[]): Step | null {
   return STEPS.find((s) => s !== 'review' && Object.keys(validate(s, d, taken)).length > 0) ?? null
+}
+
+/** 201 §12.1: a per-agent tail pair given in full must be in range with the high mark above the low one (roster `file::parse` refuses it otherwise). */
+export function tailError(d: Pick<Draft, 'tail_mode' | 'tail_low_bytes' | 'tail_high_bytes' | 'tail_low_share' | 'tail_high_share'>): string | null {
+  if (!d.tail_mode) return null
+  const [low, high] = d.tail_mode === 'fixed' ? [d.tail_low_bytes, d.tail_high_bytes] : [d.tail_low_share, d.tail_high_share]
+  return low != null && high != null ? tailPairError(d.tail_mode, low, high) : null
 }
 
 export function toFile(d: Draft, paused: boolean): AgentFile {

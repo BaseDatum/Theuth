@@ -142,6 +142,7 @@ export function RenameInput({ value, label, onSave, onDone }: { value: string; l
  * A whole-number `Info` field edited on blur/Enter (Agent loop, Advisor); values outside `[min, max]` are ignored.
  * `placeholder`: a key the engine may not send (an optional one); the field stays editable and shows the engine default.
  * `step` below 1: a decimal field (USD amounts), not floored.
+ * `blank`: the value an emptied field writes (201: "empty = automatic" writes 0); without it an empty field writes nothing.
  */
 export function Count({
   value,
@@ -149,6 +150,7 @@ export function Count({
   max,
   step,
   placeholder,
+  blank,
   action,
   'aria-label': ariaLabel,
 }: {
@@ -156,7 +158,8 @@ export function Count({
   min: number
   max?: number
   step?: number
-  placeholder?: number
+  placeholder?: number | string
+  blank?: number
   action: { mutate: (n: number) => void; isPending: boolean }
   'aria-label'?: string
 }) {
@@ -173,12 +176,32 @@ export function Count({
       disabled={(value === undefined && placeholder === undefined) || action.isPending}
       className="w-28 text-right"
       onBlur={(e) => {
-        const n = bounded(e.currentTarget.value, min, max, step)
-        if (n !== undefined && n !== value) action.mutate(n)
+        const raw = e.currentTarget.value
+        const n = blank !== undefined && raw.trim() === '' ? blank : bounded(raw, min, max, step)
+        if (n !== undefined && n !== (value ?? blank)) action.mutate(n)
       }}
       onKeyDown={(e) => {
         if (e.key === 'Enter') e.currentTarget.blur()
       }}
+    />
+  )
+}
+
+/** A native range: `onChange` follows the pointer (the label beside it previews), `onCommit` fires on release so a drag is one write. */
+export function Range({ value, min, max, step, onChange, onCommit, disabled, 'aria-label': ariaLabel }: { value: number; min: number; max: number; step: number; onChange(v: number): void; onCommit(v: number): void; disabled: boolean; 'aria-label': string }) {
+  return (
+    <input
+      type="range"
+      aria-label={ariaLabel}
+      className="w-48 accent-primary disabled:opacity-50 max-md:w-full"
+      min={min}
+      max={max}
+      step={step}
+      value={value}
+      disabled={disabled}
+      onChange={(e) => onChange(Number(e.target.value))}
+      onPointerUp={(e) => onCommit(Number(e.currentTarget.value))}
+      onKeyUp={(e) => onCommit(Number(e.currentTarget.value))}
     />
   )
 }
