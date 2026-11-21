@@ -48,6 +48,8 @@ type FoldNodeType = Node<FoldData, 'fold'>
 
 const LodContext = createContext<Lod>('full')
 const HANDLE = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0, pointerEvents: 'none' } as const
+/** How long after mount the first `fitView` may still move the viewport (a "Show in graph" centring waits for it). */
+const FIT_SETTLE_MS = 350
 
 function Handles() {
   return (
@@ -170,14 +172,24 @@ function Flow(p: CanvasProps) {
     if (at) void rf.setCenter(at.x + BOX.w / 2, at.y + BOX.h / 2, { zoom: rf.getZoom(), duration: reduced ? 0 : 400 })
   }, [p.state, p.follow, els.pos, rf, reduced, running])
 
-  // Show in graph: centre, keep the zoom.
+  // Show in graph: centre, keep the zoom — once per nonce. A canvas that mounts because of the click (the region was
+  // collapsed) runs its first fit in its first frames; the centring waits until FIT_SETTLE_MS after mount so the fit
+  // does not override it. Positions are read at that moment (a ref), so later moves do not re-centre.
+  const mountedAt = useRef(performance.now())
+  const posRef = useRef(els.pos)
+  posRef.current = els.pos
+  const nonce = p.focus?.nonce
   useEffect(() => {
-    if (!p.focus) return
-    const at = els.pos.get(p.focus.session)
-    if (at) void rf.setCenter(at.x + BOX.w / 2, at.y + BOX.h / 2, { zoom: rf.getZoom(), duration: reduced ? 0 : 300 })
-    // Only a new nonce re-centres; positions moving later do not.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p.focus?.nonce])
+    const f = p.focus
+    if (!f) return
+    const wait = Math.max(0, FIT_SETTLE_MS - (performance.now() - mountedAt.current))
+    const t = setTimeout(() => {
+      const at = posRef.current.get(f.session)
+      if (at) void rf.setCenter(at.x + BOX.w / 2, at.y + BOX.h / 2, { zoom: rf.getZoom(), duration: reduced ? 0 : 300 })
+    }, wait)
+    return () => clearTimeout(t)
+    // Only a new nonce re-centres.
+  }, [nonce, rf])
 
   const nodes = useMemo<(SessionNodeType | FoldNodeType)[]>(
     () =>

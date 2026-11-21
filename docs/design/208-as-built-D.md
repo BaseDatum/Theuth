@@ -62,6 +62,9 @@ and the §10.1 simulated engine; no engine side existed while this was built.
 10. **Bindings: `METHODS` and `TOPICS` runtime arrays in `client.ts` not hand-patched** (single lines of 10–4.6 k chars).
     Types are complete; at runtime `useQuerySupport(['agent_graph'])` reads discovery, not `METHODS`. F's regeneration
     adds them.
+11. **Show in graph centring waits for the first fit**: a canvas that mounts because of the click runs `fitView` in its
+    first frames, which overrode the centring. The centring now runs `FIT_SETTLE_MS = 350` ms after mount at the
+    earliest, reading positions through a ref, once per nonce.
 
 ## Hand-patched bindings (git-ignored, never committed; F regenerates)
 
@@ -74,9 +77,26 @@ and the §10.1 simulated engine; no engine side existed while this was built.
   `TaggedTopicPayloads`, `TopicReceiverPayloads` `agent.graph@1` (not `METHODS`/`TOPICS`, deviation 10).
 - `methods.json`: `agent_graph`.
 
+## Gates (`/tmp/theuth-208-d-gate.sh`, one hold each, `crates/desktop/ui`)
+
+| hold | step | rc | result |
+|---|---|---|---|
+| h1 21:16 | `bun add @xyflow/react@13.0.2 --exact` | 0 | 4 packages |
+| h1 | `bun run check` | 1 | `Page.tsx` `readView` missing `subtree` (expected mid-work; fixed) |
+| h1 | vitest attention + sidebar + no-emoji | 0 | 13 files, 97 tests (before the graph tests existed) |
+| h2 21:36 | `bun run check` | 0 | |
+| h2 | vitest attention + sidebar + no-emoji | 0 | 21 files, 137 tests |
+| h3 21:41 | `bun run check` | 0 | |
+| h3 | `bun run test` | 0 | 390 files, 2789 tests |
+| h3 | `bun run build` | 0 | lazy chunk `Canvas-*.js` 207.46 kB (gzip 72.00 kB) + `Canvas-*.css` 15.99 kB (gzip 2.70 kB); `react-flow`/`xyflow` appear in no other chunk |
+
 ## Seen in the browser (headless Chromium, `bunx vite --port 1438`)
 
-Screenshots in `/tmp/theuth-208-shots/` (listed in the final report). Observed:
+Screenshots in `/tmp/theuth-208-shots/`, each in `light` and `dark`: `01-expanded-compact-*-1280`,
+`02-lod-dot-*-1280`, `03-lod-full-*-1280`, `04-collapsed-*-1280`, `05-show-in-graph-path-highlight-*-1280`,
+`06-node-click-list-filtered-*-1280`, `07-fullscreen-*-1280`, `08-mid-simulation-*-1280`, `09-mobile-collapsed-*-390`,
+`10-mobile-fullscreen-*-390` (`.png`). The simulated clock runs at 60× even with `?still=1`, so counts in later shots
+differ from the T0 text. Observed:
 - Collapsed strip "4 need you · 11 working · 14 finished · +3 older trees" at the fixture instant; `G` collapses and
   expands; `Shift+G` full screen; `Esc` leaves it (after deviation 5).
 - Expanded canvas: dotted background (both themes), Controls, MiniMap, attribution link; tidy trees; sticky slots
@@ -85,7 +105,9 @@ Screenshots in `/tmp/theuth-208-shots/` (listed in the final report). Observed:
 - Needs-you red ring + count badge on `builder`, `ops desk`, `nightly-sweep`, `concierge desk`.
 - Mid-simulation: 3 animated (dashed, moving) edges, 2 pulse dots in flight, a fading node (0.25 < opacity < 1).
 - Show in graph from the first card: `r1.builder` centred exactly (0, 0 px offset) with no zoom change, accent border on
-  it and its root, the rest dimmed, the tree edge on the path accent.
+  it and its root, the rest dimmed, the tree edge on the path accent. Also from a collapsed region (the canvas mounts
+  because of the click): centred (0, 0) after deviation 11; before it the mount fit won (470 px off). After a 400 px
+  drag, a second click re-centres (0, 0).
 - Node click on `ops desk`: list "34 items · 2 shown", chip "In ops desk" in toolbar and strip, node bar with "Filter
   list to this tree · Open session · Clear".
 - Message edge click: popover with names, per-direction counts, last time; "Load messages" (fixture returns none).
@@ -102,4 +124,6 @@ Screenshots in `/tmp/theuth-208-shots/` (listed in the final report). Observed:
   not seen.
 - Resize handle drag, height persistence: implemented, not dragged in the browser.
 - `onlyRenderVisibleElements` above 50 nodes: set; not measured.
+- The edge popover's "Load messages" list with real records (the fixture's `list_peer_messages` returns none).
+- Pulse timing is by arrival (each new pulse runs once for 0.9 s), not by `at_ms`.
 - Real data path (`api.agent_graph`, `onTopic('agent.graph@1')`) not run against an engine (F §11.4).
