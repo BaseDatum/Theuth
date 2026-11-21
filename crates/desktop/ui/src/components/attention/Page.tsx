@@ -17,6 +17,7 @@ import {
   EMPTY_FILTER,
   type Entry,
   type ListFilter,
+  type SubtreeFilter,
   type ProjectFilter,
   SORTS,
   type SortKey,
@@ -38,6 +39,7 @@ import {
 } from './model'
 import { useAttentionBulk } from './queries'
 import { Toolbar } from './Toolbar'
+import { GraphRegion } from './graph/Region'
 
 /** 207 §8.5: sort, kind chips and project, kept across launches (the search is not). */
 const VIEW_KEY = 'attention.view'
@@ -53,7 +55,7 @@ function readView(): View {
     const kinds = new Set(Array.isArray(o.kinds) ? o.kinds.filter((k): k is string => typeof k === 'string') : [])
     const p = o.project as { type?: unknown; name?: unknown } | undefined
     const project: ProjectFilter = p?.type === 'none' ? { type: 'none' } : p?.type === 'project' && typeof p.name === 'string' ? { type: 'project', name: p.name } : { type: 'all' }
-    return { filter: { kinds, project, query: '' }, sort }
+    return { filter: { kinds, project, query: '', subtree: null }, sort }
   } catch {
     return { filter: EMPTY_FILTER, sort: 'priority' }
   }
@@ -75,7 +77,7 @@ export const useAttentionView = () => useContext(ViewContext)
  * The key map stays out of the way of controls: a key pressed on a button, link, field, menu, dialog or popup list is
  * theirs (Enter on a focused Allow clicks Allow; Enter in the Snooze menu picks the preset).
  */
-const CONTROL = 'button,a,input,textarea,select,[contenteditable="true"],[role="menu"],[role="menuitem"],[role="dialog"],[role="combobox"],[role="listbox"],[role="option"],[role="checkbox"]'
+export const CONTROL = 'button,a,input,textarea,select,[contenteditable="true"],[role="menu"],[role="menuitem"],[role="dialog"],[role="combobox"],[role="listbox"],[role="option"],[role="checkbox"]'
 
 /** Cards without a countdown get this coarse clock, so a per-second tick re-renders only the cards that count down. */
 const COARSE_MS = 15_000
@@ -114,7 +116,7 @@ export function Page() {
   const live = useMemo(() => (items ?? []).filter((i) => typeof i.expires_ms !== 'number' || i.expires_ms > now), [items, now])
   const kinds = useMemo(() => kindCounts(live), [live])
   const projects = useMemo(() => projectsOf(live), [live])
-  const filtered = filter.kinds.size > 0 || filter.project.type !== 'all' || filter.query !== ''
+  const filtered = filter.kinds.size > 0 || filter.project.type !== 'all' || filter.query !== '' || filter.subtree !== null
   const searchRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -185,12 +187,18 @@ export function Page() {
       else next.delete(key)
       return next
     })
+  /** 208: "Show in graph" — the region expands and centres on the nonce. */
+  const [graphFocus, setGraphFocus] = useState<{ session: string; nonce: number } | null>(null)
+  const showInGraph = (session: string) => setGraphFocus((f) => ({ session, nonce: (f?.nonce ?? 0) + 1 }))
+  const setSubtree = (subtree: SubtreeFilter | null) => setView({ filter: { ...filter, subtree }, sort })
   // Stable callbacks for the memoised cards (review 14): they read the latest closures through a ref.
-  const latest = useRef({ select, open, expand })
-  latest.current = { select, open, expand }
+  const latest = useRef({ select, open, expand, showInGraph, setSubtree })
+  latest.current = { select, open, expand, showInGraph, setSubtree }
   const onSelect = useCallback((mode: 'toggle' | 'range', key: string) => latest.current.select(key, mode), [])
   const onOpen = useCallback((key: string) => latest.current.open(key), [])
   const onExpand = useCallback((key: string, on: boolean) => latest.current.expand(key, on), [])
+  const onShowInGraph = useCallback((session: string) => latest.current.showInGraph(session), [])
+  const onSubtree = useCallback((f: SubtreeFilter | null) => latest.current.setSubtree(f), [])
 
   const focusTo = (key: string | null) => {
     setFocus(key)
@@ -199,6 +207,9 @@ export function Page() {
     if (i >= 0) v.scrollToIndex(i, { align: 'auto' })
   }
   const focused = entries.find((e) => e.key === focus)
+  // 208: the graph highlights the focused entry's session, else the open item's.
+  const openItem = active ? items?.find((i) => i.id === active) : undefined
+  const graphHighlight = (focused ? entryHead(focused).session : openItem?.session) ?? null
   const approvalsOf = (xs: readonly AttentionItem[]) => xs.flatMap((i) => (i.kind === 'approval' && i.approval ? [i.approval] : []))
   const selected = selectedIds(entries, selection)
   const selectedItems = entries.flatMap(entryItems).filter((i) => selection.has(i.id))
@@ -290,6 +301,9 @@ export function Page() {
             Attention {items && <span className="font-normal text-fg-tertiary tabular-nums">{live.length}</span>}
           </h2>
         </header>
+        <div className={cn(active ? 'hidden md:contents' : 'contents')}>
+          <GraphRegion items={items} highlight={graphHighlight} focus={graphFocus} subtree={filter.subtree?.session ?? null} onSubtree={onSubtree} />
+        </div>
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <aside className={cn('w-full shrink-0 flex-col border-r border-border-subtle md:flex md:w-[440px]', active ? 'hidden' : 'flex')}>
             {attention.isPending ? (
@@ -359,6 +373,7 @@ export function Page() {
                           active: entryItems(entry).some((i) => i.id === active),
                           onSelect,
                           onOpen,
+                          onShowInGraph,
                         }
                         return entry.type === 'item' ? (
                           <Card key={entry.key} item={entry.item} {...common} />

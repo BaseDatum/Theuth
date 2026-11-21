@@ -2,7 +2,7 @@
 // itself (Allow / Deny, a question's options, Enter secret, a reply to a stopped session) without opening the item.
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Check, ChevronDown, Minus } from 'lucide-react'
+import { Check, ChevronDown, Minus, Network } from 'lucide-react'
 import { type ComponentProps, type MouseEvent, type ReactNode, memo, useState } from 'react'
 import { DoubleChip } from '@/components/chat/DoubleChip'
 import { SecretRequestCard, eventFields } from '@/components/chat/SecretRequestCard'
@@ -51,6 +51,8 @@ type FrameProps = {
   selecting?: boolean
   onSelect?: SelectHandler
   onOpen?: (key: string) => void
+  /** 208 §7.4: centre the item's session on the Attention graph (shown when set and the item carries a session). */
+  onShowInGraph?: (session: string) => void
   detail?: ReactNode
   children?: ReactNode
 } & Omit<ComponentProps<'li'>, 'onSelect' | 'children'>
@@ -66,7 +68,13 @@ const said = (segments: readonly string[], word: string) => segments.some((s) =>
  * facts (an approval's command in mono), where it came from (`project · root › child`, the agent when the path does not
  * already name it), why it sits here (the reason line, wrapping, never cut), then the actions.
  */
-function Frame({ item, now, entryKey = item.id, stack, active, focused, selected = false, selecting, onSelect, onOpen, detail, children, className, ...li }: FrameProps) {
+function Frame({ item, now, entryKey = item.id, stack, active, focused, selected = false, selecting, onSelect, onOpen, onShowInGraph, detail, children, className, ...li }: FrameProps) {
+  const session = typeof item.session === 'string' && item.session !== '' ? item.session : null
+  const graph = onShowInGraph && session !== null && (
+    <Button size="icon-xs" variant="ghost" aria-label="Show in graph" title="Show in graph" className="ml-auto text-fg-tertiary" onClick={() => onShowInGraph(session)}>
+      <Network />
+    </Button>
+  )
   const path = pathText(item)
   const agent = item.agent && !said([...(item.path ?? []), item.project ?? ''], item.agent) ? item.agent : null
   const from = [path, agent].filter(Boolean).join(' · ')
@@ -122,7 +130,12 @@ function Frame({ item, now, entryKey = item.id, stack, active, focused, selected
           {detail}
           {from && <p className="truncate text-xs text-fg-tertiary">{from}</p>}
           {reason && <p className="text-xs text-fg-secondary tabular-nums">{reason}</p>}
-          {children && <div className="flex min-w-0 flex-wrap items-center gap-1 pt-0.5">{children}</div>}
+          {(children || graph) && (
+            <div className="flex min-w-0 flex-wrap items-center gap-1 pt-0.5">
+              {children}
+              {graph}
+            </div>
+          )}
         </div>
       </div>
     </li>
