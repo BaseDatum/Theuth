@@ -104,8 +104,9 @@ pub struct CheckResult {
 pub enum Error {
     /// [`PENDING`] requests already queued.
     Busy,
-    /// [`DEADLINE`] passed; the validator was terminated and is rebuilt.
-    Timeout,
+    /// The isolate's deadline ([`DEADLINE`] for OpenUI, [`MERMAID_DEADLINE`]
+    /// for mermaid; carried here) passed; it was terminated and is rebuilt.
+    Timeout(Duration),
     /// The validator's runtime failed (heap limit, panic, a reply for
     /// another request, stopped); it is rebuilt for the next request.
     Crashed(String),
@@ -121,7 +122,7 @@ impl std::fmt::Display for Error {
                 f,
                 "app parser busy: {PENDING} validations pending; try again"
             ),
-            Self::Timeout => write!(f, "app parser did not answer within {DEADLINE:?}"),
+            Self::Timeout(d) => write!(f, "app parser did not answer within {d:?}"),
             Self::Crashed(e) => write!(f, "app parser failed: {e}"),
             Self::Protocol(e) => write!(f, "app parser protocol error: {e}"),
         }
@@ -334,7 +335,7 @@ async fn send(lane: &Lane, line: String, id: &str) -> Result<serde_json::Value, 
         Backend::Canned(respond) => respond(&line),
         Backend::Js(js) => match js.enqueue(line).await {
             Ok(r) => r.reply,
-            Err(app_js::Error::Timeout) => return Err(Error::Timeout),
+            Err(app_js::Error::Timeout) => return Err(Error::Timeout(js.limits().deadline)),
             Err(app_js::Error::TooLarge { len, max }) => {
                 return Err(Error::Protocol(format!(
                     "request is {len} bytes; the helper accepts {max}"
@@ -441,7 +442,7 @@ mod tests {
         let t = std::time::Instant::now();
         assert_eq!(
             h.check("root = Stack([])", &[]).await.unwrap_err(),
-            Error::Timeout
+            Error::Timeout(DEADLINE)
         );
         assert!(
             t.elapsed() >= DEADLINE && t.elapsed() < DEADLINE * 5,
@@ -676,7 +677,7 @@ mod tests {
         for (name, source) in hostile {
             let out = h.check_mermaid(&source).await;
             assert!(
-                matches!(&out, Ok(_) | Err(Error::Timeout))
+                matches!(&out, Ok(_) | Err(Error::Timeout(MERMAID_DEADLINE)))
                     || matches!(&out, Err(Error::Crashed(m)) if m.contains("heap limit")),
                 "{name}: {out:?}"
             );
@@ -688,5 +689,31 @@ mod tests {
             "the OpenUI isolate never noticed"
         );
         assert!(js(&h.mermaid).generation() >= 3);
+    }
+
+    /// Review M1: the committed OpenUI bundle validates against exactly the
+    /// library `app::HASH` advertises (also enforced at build time by build.rs).
+    #[test]
+    fn the_bundle_embeds_this_binarys_library_hash() {
+        let version = std::thread::spawn(|| {
+            app_js::BundleJs::new(&app_js::APPS, app_js::Limits::default())
+                .and_then(|mut js| js.version())
+                .expect("version")
+        })
+        .join()
+        .expect("version thread");
+        assert_eq!(version, format!("theuth-app-parser {}", crate::hash()));
+    }
+
+    #[test]
+    fn timeout_text_names_the_isolates_own_deadline() {
+        assert_eq!(
+            Error::Timeout(MERMAID_DEADLINE).to_string(),
+            "app parser did not answer within 5s"
+        );
+        assert_eq!(
+            Error::Timeout(DEADLINE).to_string(),
+            "app parser did not answer within 2s"
+        );
     }
 }

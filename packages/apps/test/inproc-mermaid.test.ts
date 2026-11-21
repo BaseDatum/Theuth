@@ -8,6 +8,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import vm from "node:vm";
+import stub from "../src/inproc/stub.ts";
+import { answer } from "../src/mermaid-core.ts";
 
 const root = join(import.meta.dir, "..", "..", "..");
 const bundle = readFileSync(join(root, "crates/app-js/js/theuth-mermaid-inproc.js"), "utf8");
@@ -62,5 +64,18 @@ describe("committed mermaid bundle in a bare JS context", () => {
       id: "x",
       error: 'op must be "check_mermaid"',
     });
+  });
+});
+
+describe("render-only stub (review m2)", () => {
+  test("a parse path that reaches a stubbed library fails the request instead of calling the diagram invalid", async () => {
+    // The stub is a callable Proxy; a fake diagram parser that calls into it, like a layout engine would.
+    const layoutEngine = stub as () => unknown;
+    const parser = { parse: async () => layoutEngine() };
+    await expect(answer(parser, "flowchart TD\n  A --> B")).rejects.toThrow("render-only library");
+    // Registration at chunk load stays a no-op, and real parse errors are still verdicts.
+    expect(() => (stub as { use: (p: unknown) => unknown }).use({})).not.toThrow();
+    const broken = { parse: async () => Promise.reject(new Error("Parse error on line 3:\n...")) };
+    expect(await answer(broken, "x")).toEqual({ ok: false, errors: [{ line: 3, message: "Parse error on line 3:\n..." }] });
   });
 });

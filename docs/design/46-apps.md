@@ -232,6 +232,9 @@ on shutdown; crash/2 s validation deadline kills and replaces the helper on
 next request, with the current request failed and nothing committed. Start
 lazily, so sessions without apps pay neither process nor parser startup cost.
 
+*(2026-11-21: the helper process described in this subsection and the next paragraph no longer exists —
+validation runs in-process; see the two dated notes after it. Kept as history.)*
+
 **As built.** The executable is `theuth-app-parser-<library-hash>` beside the
 `theuth` binary (`THEUTH_APP_PARSER` overrides the path for tests), built by
 `packages/apps/scripts/build-helper.ts` with `bun build --compile --minify`

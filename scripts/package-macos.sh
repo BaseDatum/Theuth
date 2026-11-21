@@ -23,7 +23,7 @@
 #
 # Env:
 #   THEUTH_SIGN_IDENTITY      codesign identity (default: "-" ad-hoc)
-#   THEUTH_SKIP_BUN_INSTALL=1 skip `bun install` (desktop UI and packages/apps)
+#   THEUTH_SKIP_BUN_INSTALL=1 skip `bun install` (desktop UI and packages/documents)
 # Optional local defaults: repo-root `.env.signing`.
 set -euo pipefail
 

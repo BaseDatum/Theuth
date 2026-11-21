@@ -170,6 +170,11 @@ gate() { echo "==> gate $1: $2"; }
 fail() { echo "error: gate $1 failed: $2" >&2; exit 1; }
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
+# Review M1: the committed in-process bundles must match their inputs and embed the library hash `t`
+# advertises (`t --app-parser-hash`); shasum + grep, no bun. Cheapest gate, so first.
+gate 0 "in-process app bundles match their inputs and library hash $HELPER_HASH"
+( check_apps_bundle ) || fail 0 "crates/app-js/js is stale (just apps-bundle, commit, rebuild)"
+
 gate 1 "VERSION == CFBundleShortVersionString"
 [[ -d "$APP" ]] || fail 1 "$APP missing — run just package-macos"
 PLIST_VER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"

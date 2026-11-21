@@ -26,7 +26,7 @@ each other; the subcommands talk to a running daemon over JSON-RPC.
 | `t --telegram-setup` | verify a @BotFather token with `getMe`, store it as the `telegram_bot` secret, register the bot's command menus, print a `t.me/<bot>?start=<code>` pairing link and QR, wait up to 10 min for the owner's `/start`, write `telegram.owner` / `telegram.enabled`. Refuses while an engine runs on this data dir (`daemon running: use /telegram link or the telegram_link tool`) |
 | `t --update` | force an update check; logs to stderr (`RUST_LOG=debug t --update` for detail); exit 1 on `update: <error>`. Installs `.tar.gz` releases (macOS, Linux CLI); the Windows CLI zip is not self-updated |
 | `t --secret-set NAME [--secret-note <text>]`, `t --secret-rm NAME`, `t --secret-list` | vault management; see [Secrets](/docs/reference/secrets) |
-| `t --app-parser-hash` | print the app parser helper hash this build wants |
+| `t --app-parser-hash` | print the app library hash this build embeds (release tooling and older self-updaters check it against the `theuth-app-parser-<hash>` payload file) |
 | `t --bench-models [--accelerator auto\|cpu\|webgpu\|directml\|cuda]` | benchmark the local speech and decision models; exit code from the benchmark |
 | `t --decision-export <prefix> [--since YYYY-MM-DD] [--out <file>] [--format fixture\|laya]` | fold decision training rows into a fixture |
 

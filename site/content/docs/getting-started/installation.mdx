@@ -5,7 +5,7 @@ description: Install the t command or the desktop app on macOS, Linux and Window
 
 ## Two things you can install
 
-- **The `t` command** — the whole harness in one binary: terminal UI, headless daemon, print mode, CLI subcommands. Two helper executables sit beside it: `theuth-app-parser-<hash>` (validates apps) and `theuth-documents-<version>` (the notes/knowledge editor backend). Every package below ships all three.
+- **The `t` command** — the whole harness in one binary: terminal UI, headless daemon, print mode, CLI subcommands. One helper executable sits beside it: `theuth-documents-<version>` (the notes/knowledge editor backend); app validation runs inside `t`. Every package below also ships a small `theuth-app-parser-<hash>` file that only older self-updaters look for.
 - **The desktop app** (`theuth.app`, `theuth-desktop`) — a tray/menubar shell around the same engine. It bundles its own `t`, so it does not need the command installed, and it reuses an engine a terminal `t` already started on the same data directory.
 
 They share `~/.theuth` (`--data-dir` / `THEUTH_DATA_DIR` relocate it on every OS, `C:\Users\<you>\.theuth` on Windows). Installing both is normal.
@@ -124,7 +124,7 @@ update:
   url: https://s3.rwx.dev/theuth/releases/latest.json
 ```
 
-Helpers are versioned by name (`theuth-app-parser-<hash>`, `theuth-documents-<version>`); an update adds the new ones and leaves older ones in place for any `t` still running. Debug builds never check.
+Helpers are versioned by name (`theuth-documents-<version>`, and the `theuth-app-parser-<hash>` compatibility file); an update adds the new ones and leaves older ones in place for any `t` still running. Debug builds never check.
 
 ### The desktop app
 

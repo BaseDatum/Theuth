@@ -1,17 +1,20 @@
 //! [`BundleThread`]: the `Send + Clone` face of [`BundleJs`]. One OS thread per handle family (named after
 //! [`Bundle::thread`], 16 MB stack, started on the first request) owns a current-thread tokio runtime for
 //! waiting on jobs and the `JsRuntime`; jobs run to completion in enqueue order; a fatal failure fails the
-//! job and every job queued behind it, then the runtime is dropped and rebuilt and
-//! [`BundleThread::generation`] bumps. Each bundle gets its own thread and isolate (and its own limits).
+//! job that was running, the runtime is dropped and rebuilt, [`BundleThread::generation`] bumps, and the jobs
+//! queued behind it then run on the fresh runtime. Each bundle gets its own thread and isolate (and its own
+//! limits).
 //!
-//! Copied from `crates/document-js/src/thread.rs` (feat/documents-inproc 0ca80bbf3); the only change is the
-//! [`Bundle`] parameter.
+//! Copied from `crates/document-js/src/thread.rs` (feat/documents-inproc 0ca80bbf3); changes: the [`Bundle`]
+//! parameter, and queued jobs are re-run instead of failed after a fatal failure (review m1: both bundles
+//! are stateless — every request carries all it needs — so one runaway request must not fail up to 8 other
+//! sessions' queued checks; document-js keeps failing them because its runtime holds per-document mirrors).
 //!
 //! Every job carries the *epoch* it was enqueued under. The epoch moves on when the runtime it served is
 //! given up: a job failed fatally (bumped by the thread before that job's reply is sent), or the client
-//! called [`BundleThread::restart`]. A job from an older epoch never runs on a newer runtime: it fails
-//! with the error that ended its epoch. So whatever a client enqueues after it has seen a fatal failure runs
-//! on the fresh runtime, and nothing enqueued before it does.
+//! called [`BundleThread::restart`]. A runtime built in an older epoch never serves a job again: the next job
+//! (whatever its epoch) runs on a fresh one, and a job whose runtime was given up while it ran has its output
+//! discarded. So no reply produced by an abandoned runtime ever reaches a client.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
@@ -184,11 +187,8 @@ impl BundleThread {
     }
 
     /// Give up the current runtime although no request failed fatally: the client saw output it cannot
-    /// trust (a reply naming another request). Every request already enqueued fails with
-    /// [`Error::Crashed`] instead of running (one that is running now has its result replaced), and the next
-    /// one runs on a fresh runtime. Returns the new epoch: tickets with a lower [`Ticket::epoch`] belong to
-    /// the abandoned runtime. Reporting the lost mirrors is the caller's job ([`Settled::rebuilt`] stays
-    /// false for these requests).
+    /// trust (a reply naming another request). A request running now has its result replaced by
+    /// [`Error::Crashed`]; requests still queued run on a fresh runtime. Returns the new epoch.
     pub fn restart(&self) -> u64 {
         // Under the queue lock: no enqueue interleaves with the bump.
         let _tx = self.inner.tx.lock().unwrap_or_else(|e| e.into_inner());
@@ -383,13 +383,6 @@ fn serve(
             }
         }
         let now = shared.epoch.load(Ordering::SeqCst);
-        if job.epoch < now {
-            let _ = job.reply.send(Settled {
-                result: Err(stale(job.epoch, &ended)),
-                rebuilt: false,
-            });
-            continue;
-        }
         if js.as_ref().is_some_and(|(_, built)| *built < now)
             && let Some((dead, _)) = js.take()
         {
@@ -432,7 +425,7 @@ fn serve(
             .is_some_and(|(_, built)| *built < shared.epoch.load(Ordering::SeqCst))
         {
             if let Some(e) = &fatal {
-                tracing::warn!(error = %e, "JS runtime failed; failing queued requests and rebuilding");
+                tracing::warn!(error = %e, "JS runtime failed; rebuilding it for the queued requests");
             }
             if let Some((dead, _)) = js.take() {
                 discard(dead);

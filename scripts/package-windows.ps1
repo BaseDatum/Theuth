@@ -32,7 +32,7 @@ release-s3.sh on the Mac (cargo tauri signer sign), like the Linux tarballs. Nev
 
 Host tools: rustup (rust-toolchain.toml picks the channel; MSVC target), cargo-tauri, bun.
 Env:
-  THEUTH_SKIP_BUN_INSTALL=1   skip `bun install` (desktop UI and both packages)
+  THEUTH_SKIP_BUN_INSTALL=1   skip `bun install` (desktop UI and packages/documents)
   THEUTH_SKIP_COMPANION_SMOKE=1  stage the companion without running `--probe-notify` on it
 #>
 # Progress lines go to the host on purpose: Build-Helper returns a path through the output stream.
@@ -68,8 +68,8 @@ function Test-StdinEof([string]$Exe) {
     if ($p.ExitCode -ne 0) { Fail "$Exe did not exit 0 on stdin EOF (exit $($p.ExitCode))" }
 }
 
-# `bun run build:helper` in $Pkg, then the compiled exe. Bun appends .exe to a suffix-less
-# --outfile on Windows, and both build-helper.ts scripts then copy/self-test the suffix-less name,
+# `bun run build:helper` in $Pkg (packages/documents only), then the compiled exe. Bun appends .exe to a
+# suffix-less --outfile on Windows, and build-helper.ts then copies/self-tests the suffix-less name,
 # which fails *after* the compile; so the script's exit code is reported, not fatal - the exe
 # must exist and pass the same checks release-s3.sh runs on every payload.
 function Build-Helper([string]$Pkg, [string]$Stable) {
@@ -114,6 +114,11 @@ if ($TauriVersion -ne $Version) { Fail "version mismatch: crates/theuth/Cargo.to
 # scripts/app-parser-env.sh, in PowerShell.
 $HelperHash = (Get-Content packages/apps/generated/library-hash.txt -Raw).Trim()
 if ($HelperHash -notmatch '^[0-9a-f]{64}$') { Fail "packages/apps/generated/library-hash.txt is not a sha256 hex (got '$HelperHash'; run bun run generate in packages/apps)" }
+# Review M1: the committed OpenUI bundle (compiled into t) must embed this library hash. A plain text
+# search, not the full input hash of scripts/apps-bundle-hash.sh (TODO: port that to PowerShell; the cargo
+# build.rs in crates/app enforces the same text check at build time anyway).
+$AppsBundle = Get-Content crates/app-js/js/theuth-apps-inproc.js -Raw
+if (-not $AppsBundle.Contains($HelperHash)) { Fail "crates/app-js/js/theuth-apps-inproc.js does not embed library hash $HelperHash (run just apps-bundle and commit)" }
 $Helper = "theuth-app-parser-$HelperHash"
 $DocVersion = (Select-String -Path packages/documents/src/protocol.ts -Pattern '^export const PROTOCOL_VERSION = "([0-9.]+)";').Matches[0].Groups[1].Value
 if ($DocVersion -notmatch '^[0-9.]+$') { Fail "packages/documents/src/protocol.ts declares no PROTOCOL_VERSION" }
@@ -154,7 +159,7 @@ $HelperSrc = Join-Path $Root 'target/release/theuth-app-parser-stub.exe'
 if (-not (Test-Path $HelperSrc)) { Fail "$HelperSrc not produced" }
 $said = (& $HelperSrc --version 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) { Fail "$HelperSrc --version failed: $said" }
-if ($said -notlike "*$HelperHash*") { Fail "$HelperSrc --version printed '$said', expected library hash $HelperHash (stale build? rerun bun run generate && build:helper)" }
+if ($said -notlike "*$HelperHash*") { Fail "$HelperSrc --version printed '$said', expected library hash $HelperHash (stale build? rerun cargo build --release -p app-parser-stub)" }
 Test-StdinEof $HelperSrc
 
 Write-Host "==> [1/6] building $DocHelper.exe (bun build --compile)"

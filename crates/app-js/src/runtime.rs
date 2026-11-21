@@ -117,19 +117,53 @@ fn extension() -> Extension {
     }
 }
 
-/// Initialise the V8 platform (flags + platform; deno_core's `init_v8`, behind a process-wide `Once`) with
-/// the settings every `JsRuntime::new` uses, without building an isolate or a tokio runtime. A no-op when a
-/// runtime already did it, e.g. `browser::warmup`'s obscura runtime.
+/// Process-wide lock held only while a `JsRuntime` (isolate) of this crate is being created: isolate
+/// creation is serialised across the `app-js` / `mermaid-js` threads and [`init_platform`]. obscura-js
+/// serialises its own isolate creation with a private lock this crate cannot reach, so the two locks are
+/// independent; [`init_platform`] building the first isolate on the main thread before any plugin starts is
+/// what orders them in `t`.
+fn isolate_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Initialise the V8 platform (deno_core's `init_v8`, behind a process-wide `Once`) AND build and drop one bare
+/// `JsRuntime` on the calling thread, once per process. `t` calls it on the main thread right after
+/// `browser::warmup`: with the browser disabled the warmup builds no isolate, and the first isolate built off
+/// the main thread once segfaulted in `InitializeBuiltinJSDispatchTable` (crates/browser/src/lib.rs `warmup`).
+/// Idempotent; a second call (e.g. document-js's after both branches merge) is a no-op here, and after
+/// `browser::warmup` the extra isolate costs a few ms.
 ///
-/// Call it from `t`'s startup sequence before any plugin starts, i.e. synchronously in the main future
-/// that `main`'s `block_on` drives, not from a spawned task: a spawned task gives no ordering against the
-/// plugin threads, so the `app-js` thread could initialise V8 on its first request instead (with
-/// the same settings, but on a request's latency, and after browser isolates may already exist), which
-/// this call exists to prevent. It is safe in any thread or async context: it builds nothing that must
-/// be dropped outside one (the earlier version built and dropped a current-thread tokio runtime, which
-/// tokio refuses to drop inside an async context such as `main`'s `block_on`).
+/// Safe in an async context (where `t` calls it: inside `main`'s `block_on`): there the isolate is built under
+/// the current tokio handle, as `browser::warmup` does with obscura's; outside one a throwaway current-thread
+/// runtime provides the context and is disposed with `shutdown_background`, which never blocks.
 pub fn init_platform() {
+    static FIRST: std::sync::Once = std::sync::Once::new();
+    FIRST.call_once(first_isolate);
+}
+
+/// [`init_platform`]'s body without the `Once` (tests exercise both contexts in one process).
+pub(crate) fn first_isolate() {
     JsRuntime::init_platform(None);
+    let _creating = isolate_lock();
+    let build = || drop(JsRuntime::new(RuntimeOptions::default()));
+    if tokio::runtime::Handle::try_current().is_ok() {
+        build();
+        return;
+    }
+    match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => {
+            {
+                let _guard = rt.enter();
+                build();
+            }
+            rt.shutdown_background();
+        }
+        Err(e) => tracing::warn!(error = %e, "first isolate not built early: no tokio runtime"),
+    }
 }
 
 /// One in-process bundle: a `JsRuntime` with the polyfill and the bundle loaded. `!Send`, and it drives its own
@@ -166,6 +200,7 @@ impl BundleJs {
         // deno_core binds the isolate to the tokio handle current at `JsRuntime::new`.
         let mut js = {
             let _guard = tokio.enter();
+            let _creating = isolate_lock();
             JsRuntime::new(RuntimeOptions {
                 extensions: vec![extension()],
                 create_params: Some(v8::CreateParams::default().heap_limits(0, limits.heap_limit)),

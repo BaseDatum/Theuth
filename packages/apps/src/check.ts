@@ -45,7 +45,7 @@ const ROOT_ID = "root";
  * Read from the generated schema (property order = positional order) rather than from `diagrams.ts`, so the
  * in-process bundle carries neither the diagram definitions nor zod; same table (apps-inproc-as-built-P1.md).
  */
-const SELECT_AT: Record<string, number> = {};
+export const SELECT_AT: Record<string, number> = {};
 for (const [name, def] of Object.entries(generatedLibrary.schema.$defs ?? {})) {
   const at = def.properties ? Object.keys(def.properties).indexOf("onSelect") : -1;
   if (at !== -1) SELECT_AT[name] = at;

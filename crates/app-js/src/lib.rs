@@ -16,9 +16,9 @@
 //! - [`BundleJs`] owns one runtime (`!Send`); [`BundleJs::call`] serves one request.
 //! - [`BundleThread`] is the `Send + Clone` handle: one lazily started OS thread owns the runtime, requests
 //!   run to completion in enqueue order, and a failure that leaves the runtime unusable (deadline, heap
-//!   limit, panic, an event-loop error or a request that ended without its own reply) fails the request and
-//!   every one queued behind it, drops the runtime and builds a fresh one, bumping
-//!   [`BundleThread::generation`]. A dead thread is respawned by the next request.
+//!   limit, panic, an event-loop error or a request that ended without its own reply) fails that request,
+//!   drops the runtime and builds a fresh one (bumping [`BundleThread::generation`]); the requests queued
+//!   behind it run on the fresh one. A dead thread is respawned by the next request.
 //!
 //! Containment (a JS failure must not take down the process): a JS exception is an `{id, ok:false, error}`
 //! reply; a request past [`Limits::deadline`] is terminated from the watchdog thread ([`Error::Timeout`]); the

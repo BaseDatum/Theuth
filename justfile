@@ -111,34 +111,23 @@ apps-bundle:
     #!/usr/bin/env bash
     set -euo pipefail
     (cd packages/apps && bun install --frozen-lockfile && bun run scripts/build-inproc.ts && bun run scripts/record-inproc-golden.ts && bun run scripts/build-inproc-mermaid.ts)
-    cp packages/apps/dist/theuth-apps-inproc.js crates/app-js/js/theuth-apps-inproc.js
-    cp packages/apps/dist/theuth-mermaid-inproc.js crates/app-js/js/theuth-mermaid-inproc.js
-    {{just_executable()}} _apps-bundle-hash > crates/app-js/js/BUNDLE.sha256
+    for b in theuth-apps-inproc theuth-mermaid-inproc; do
+        cp "packages/apps/dist/$b.js" "crates/app-js/js/$b.js"
+        cp "packages/apps/dist/$b.inputs" "crates/app-js/js/$b.inputs"
+    done
+    scripts/apps-bundle-hash.sh > crates/app-js/js/BUNDLE.sha256
     cat crates/app-js/js/BUNDLE.sha256
 
-# Fails when packages/apps changed since the committed bundles were built (run `just apps-bundle`),
-# or when a committed bundle is not the one recorded.
+# Fails when a bundle's inputs changed since the committed bundles were built (run `just apps-bundle`),
+# or when a committed bundle is not the one recorded. shasum only (scripts/apps-bundle-hash.sh: each bundle's
+# real inputs as listed in crates/app-js/js/*.inputs, plus lockfile, patches, tsconfig and build scripts).
 apps-bundle-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    if ! diff <({{just_executable()}} _apps-bundle-hash) crates/app-js/js/BUNDLE.sha256; then
+    if ! diff <(scripts/apps-bundle-hash.sh) crates/app-js/js/BUNDLE.sha256; then
         echo "crates/app-js/js is stale: run \`just apps-bundle\` and commit the result" >&2
         exit 1
     fi
-
-# `inputs` / `mermaid-inputs <sha256>`: sorted per-file sha256 lines, hashed, over packages/apps/src/**, patches/*,
-# package.json, bun.lock, tsconfig.json and the bundle's build script (+ generated/* for the OpenUI bundle);
-# `bundle` / `mermaid-bundle <sha256>`: the committed bundles. Shared by `apps-bundle` and `apps-bundle-check`.
-_apps-bundle-hash:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd packages/apps
-    hash_of() { while read -r f; do shasum -a 256 "$f"; done | shasum -a 256 | cut -d' ' -f1; }
-    inputs=$({ find src generated patches -type f | LC_ALL=C sort; printf '%s\n' package.json bun.lock tsconfig.json scripts/build-inproc.ts; } | hash_of)
-    bundle=$(shasum -a 256 ../../crates/app-js/js/theuth-apps-inproc.js | cut -d' ' -f1)
-    minputs=$({ find src patches -type f | LC_ALL=C sort; printf '%s\n' package.json bun.lock tsconfig.json scripts/build-inproc-mermaid.ts; } | hash_of)
-    mbundle=$(shasum -a 256 ../../crates/app-js/js/theuth-mermaid-inproc.js | cut -d' ' -f1)
-    printf 'inputs %s\nbundle %s\nmermaid-inputs %s\nmermaid-bundle %s\n' "$inputs" "$bundle" "$minputs" "$mbundle"
 
 # Standalone documents helper (bun build --compile) → packages/documents/dist/theuth-documents (59 §3.2);
 # `--version` must print the PROTOCOL_VERSION of packages/documents/src/protocol.ts. Debug builds of `t`

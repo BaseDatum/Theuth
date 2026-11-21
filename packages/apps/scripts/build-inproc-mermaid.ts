@@ -12,6 +12,7 @@
  */
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { localInputs, writeInputs } from "./bundle-inputs.ts";
 
 const pkgDir = join(import.meta.dir, "..");
 const minify = !process.argv.includes("--no-minify");
@@ -55,4 +56,5 @@ const out = await Bun.build({ ...options, minify });
 if (!out.success) throw new AggregateError(out.logs, "inproc mermaid bundle failed");
 if (out.outputs.length !== 1) throw new Error(`expected one output file, got ${out.outputs.map((o) => o.path).join(", ")}`);
 await Bun.write(outfile, out.outputs[0]!);
+await writeInputs(outfile, localInputs(text, pkgDir));
 console.error(`built ${outfile}${trim ? " (trimmed)" : ""}: ${Bun.file(outfile).size} bytes, ${modules.length} packages:\n  ${modules.join("\n  ")}`);

@@ -21,11 +21,24 @@ export const MERMAID_CONFIG = {
   htmlLabels: false,
 } as const;
 
+/** Marker property on the error `src/inproc/stub.ts` throws when a parse path reaches a render-only library. */
+export const RENDER_ONLY_UNAVAILABLE: unique symbol = Symbol.for("theuth.mermaid.renderOnlyUnavailable");
+
+function isRenderOnlyUnavailable(e: unknown): boolean {
+  return typeof e === "object" && e !== null && RENDER_ONLY_UNAVAILABLE in e;
+}
+
+/**
+ * `{ok:true}`, or `{ok:false}` with mermaid's message and line. A throw from the render-only stub is NOT a
+ * verdict on the diagram (our bundle lacks a library), so it is rethrown: the request fails as a protocol
+ * error and the reply fence fails open instead of a valid diagram being reported invalid.
+ */
 export async function answer(parser: MermaidParser, source: string): Promise<MermaidAnswer> {
   try {
     await parser.parse(source);
     return { ok: true };
   } catch (e) {
+    if (isRenderOnlyUnavailable(e)) throw e;
     const raw = (e instanceof Error ? e.message : String(e)).trim();
     const message = raw.length > MAX_MESSAGE ? `${raw.slice(0, MAX_MESSAGE)}…` : raw;
     const m = LINE.exec(message);

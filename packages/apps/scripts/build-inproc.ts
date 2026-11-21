@@ -11,6 +11,7 @@
  */
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { localInputs, writeInputs } from "./bundle-inputs.ts";
 
 const pkgDir = join(import.meta.dir, "..");
 const distDir = join(pkgDir, "dist");
@@ -67,6 +68,7 @@ if (!text.includes(hash)) throw new Error("inproc bundle does not embed generate
 const out = await Bun.build({ ...options, minify });
 if (!out.success) throw new AggregateError(out.logs, "inproc bundle failed");
 await Bun.write(outfile, out.outputs[0]!);
+await writeInputs(outfile, localInputs(text, pkgDir));
 console.error(
   `built ${outfile}: ${Bun.file(outfile).size} bytes, ${modules.length} packages:\n  ${modules.join("\n  ")}\n  src/: ${local.join(", ")}`,
 );

@@ -1,11 +1,22 @@
 /**
  * Stand-in for render-only libraries in the trimmed in-process mermaid bundle (`build-inproc-mermaid.ts --trim`):
  * layout engines that only a renderer calls. Plugin registration at chunk load (`cytoscape.use(fcose)`) is a
- * no-op; any other use throws, so a parse path that did reach one shows up as a parity mismatch instead of a
- * silent wrong answer.
+ * no-op; any other use throws a `RenderOnlyUnavailable`, which `mermaid-core.ts` `answer` rethrows instead of
+ * reporting a syntax error: the request then fails as a protocol error and the reply fence fails open, rather
+ * than a valid diagram being reported invalid (review m2). The parity corpus catches such a path as a mismatch.
  */
+import { RENDER_ONLY_UNAVAILABLE } from "../mermaid-core.ts";
+
+class RenderOnlyUnavailable extends Error {
+  readonly [RENDER_ONLY_UNAVAILABLE] = true;
+  constructor() {
+    super("theuth: render-only library is not bundled in the parse-only mermaid runtime");
+    this.name = "RenderOnlyUnavailable";
+  }
+}
+
 function unavailable(): never {
-  throw new Error("theuth: render-only library is not bundled in the parse-only mermaid runtime");
+  throw new RenderOnlyUnavailable();
 }
 
 const stub: unknown = new Proxy(unavailable, {

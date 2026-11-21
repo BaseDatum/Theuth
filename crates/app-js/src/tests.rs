@@ -209,10 +209,10 @@ async fn deadline_terminates_a_runaway_script_and_rebuilds() {
     let spin = t.eval_raw("for (;;) {}".into());
     let queued = t.enqueue(check_line("q", PROTOTYPE));
     assert_eq!(spin.await, Err(Error::Timeout));
-    assert_eq!(
-        queued.await,
-        Err(Error::Timeout),
-        "a job queued behind the hang fails with it"
+    // Not started when the runaway failed: re-run on the fresh runtime (review m1).
+    ok(
+        &queued.await.expect("queued behind the hang is served"),
+        "q",
     );
     assert!(
         started.elapsed() < Duration::from_secs(20),
@@ -266,9 +266,9 @@ async fn panic_in_an_op_is_contained() {
     round_trip(&t, "after").await;
 }
 
-/// A panic on the runtime thread outside JS fails the job and everything queued; a fresh runtime serves.
+/// A panic on the runtime thread outside JS fails that job; the jobs queued behind it run on a fresh runtime.
 #[tokio::test]
-async fn panic_on_the_thread_fails_pending_jobs_and_a_fresh_runtime_serves() {
+async fn panic_on_the_thread_fails_that_job_and_a_fresh_runtime_serves_the_queue() {
     let t = thread(limits());
     round_trip(&t, "before").await;
     let busy = t.eval_raw("{ const t0 = Date.now(); while (Date.now() - t0 < 300) {} }".into());
@@ -282,8 +282,8 @@ async fn panic_on_the_thread_fails_pending_jobs_and_a_fresh_runtime_serves() {
         matches!(&r, Err(Error::Crashed(m)) if m.contains("panic on the app-js thread")),
         "{r:?}"
     );
-    for q in queued {
-        assert!(matches!(q.await, Err(Error::Crashed(_))));
+    for (i, q) in queued.into_iter().enumerate() {
+        ok(&q.await.expect("queued job re-run"), &format!("q{i}"));
     }
     assert!(t.is_running(), "the thread survives its job's panic");
     wait_until("rebuild", || t.generation() == 2).await;
@@ -419,25 +419,30 @@ async fn a_request_that_ends_without_its_reply_is_fatal() {
     round_trip(&t, "after").await;
 }
 
-/// `restart`: queued requests from the abandoned epoch fail without running; the next one runs fresh.
+/// `restart`: the running request's output is discarded; the queued one runs on the fresh runtime.
 #[tokio::test]
-async fn restart_fails_the_queued_requests_and_the_next_one_runs_fresh() {
+async fn restart_fails_the_running_request_and_the_queued_ones_run_fresh() {
     let t = thread(limits());
     round_trip(&t, "before").await;
+    t.eval_raw("globalThis.__mark = 'old';".into())
+        .await
+        .expect("mark");
     let busy = t.eval_raw("{ const t0 = Date.now(); while (Date.now() - t0 < 300) {} }".into());
-    let queued = t.enqueue(check_line("q", PROTOTYPE));
+    let queued = t.eval_raw(
+        "if (globalThis.__mark !== undefined) throw new Error('queued ran on the abandoned runtime');".into(),
+    );
     let old = queued.epoch();
     let epoch = t.restart();
     assert!(epoch > old);
     let busy = busy.settled().await;
     assert!(
         matches!(&busy.result, Err(Error::Crashed(m)) if m.contains("given up")),
-        "{busy:?}"
+        "the running job's output is from the abandoned runtime: {busy:?}"
     );
     let queued = queued.settled().await;
     assert!(
-        matches!(queued.result, Err(Error::Crashed(_))),
-        "{queued:?}"
+        queued.result.is_ok(),
+        "queued job runs on the fresh runtime: {queued:?}"
     );
     round_trip(&t, "after").await;
     assert_eq!(t.generation(), 2);
@@ -473,19 +478,53 @@ async fn two_handles_run_two_isolates() {
     wait_until("rebuild", || b.generation() == 2).await;
 }
 
-/// `init_platform` inside an async context (where `t` calls it: `main`'s `block_on`) does not panic, twice.
-#[tokio::test]
-async fn init_platform_is_safe_inside_an_async_context() {
+/// `init_platform` (twice) and its body inside a multi-thread async context, where `t` calls it (`main`'s
+/// `block_on`): builds an isolate under the current handle, no runtime dropped in async context.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn init_platform_builds_an_isolate_inside_a_multi_thread_async_context() {
     crate::init_platform();
+    crate::init_platform();
+    crate::runtime::first_isolate();
+}
+
+/// Same inside a current-thread async context.
+#[tokio::test]
+async fn init_platform_builds_an_isolate_inside_a_current_thread_async_context() {
+    crate::runtime::first_isolate();
     crate::init_platform();
 }
 
-/// The mermaid spike's ordering bug: the jobs queued behind a fatal failure must be failed before the failing
-/// job's reply is observable, so a request the client sends after seeing that reply runs on the fresh runtime.
-/// Here the epoch moves on before the reply is sent: the queued-before jobs fail without running, the
-/// sent-after one is served by generation 2 even though the old ones are still in the queue ahead of it.
+/// Same on a plain thread with no tokio context: a throwaway runtime, disposed without blocking.
+#[test]
+fn init_platform_builds_an_isolate_on_a_plain_thread() {
+    std::thread::spawn(crate::runtime::first_isolate)
+        .join()
+        .expect("first isolate on a plain thread");
+    crate::init_platform();
+}
+
+/// Review m1: 1 runaway + 5 queued checks → the runaway times out, the 5 succeed on the fresh runtime.
 #[tokio::test]
-async fn a_request_sent_after_a_fatal_reply_runs_fresh_and_the_ones_queued_before_fail() {
+async fn one_runaway_does_not_fail_the_checks_queued_behind_it() {
+    let t = thread(limits());
+    round_trip(&t, "before").await;
+    let spin = t.eval_raw("for (;;) {}".into());
+    let queued: Vec<_> = (0..5)
+        .map(|i| t.enqueue(check_line(&format!("c{i}"), PROTOTYPE)))
+        .collect();
+    assert_eq!(spin.await, Err(Error::Timeout));
+    for (i, q) in queued.into_iter().enumerate() {
+        let v = ok(&q.await.expect("queued check served"), &format!("c{i}"));
+        assert_eq!(v["diagnostics"], json!([]));
+    }
+    assert_eq!(t.generation(), 2);
+}
+
+/// The mermaid spike's ordering bug, restated for re-run semantics: no job may run on the runtime a fatal
+/// failure gave up. The jobs queued before the failure and the one sent after seeing it all run on the fresh
+/// runtime (no mark there).
+#[tokio::test]
+async fn after_a_fatal_failure_no_job_runs_on_the_abandoned_runtime() {
     let t = thread(limits());
     round_trip(&t, "before").await;
     // Marks the runtime so we can tell which one served a request.
@@ -502,10 +541,9 @@ async fn a_request_sent_after_a_fatal_reply_runs_fresh_and_the_ones_queued_befor
         "if (globalThis.__mark !== undefined) throw new Error('after: old runtime');".into(),
     );
     for q in queued {
-        assert_eq!(
-            q.await,
-            Err(Error::Timeout),
-            "queued before the failure: failed, not run"
+        assert!(
+            q.await.is_ok(),
+            "queued before the failure: re-run on the fresh runtime"
         );
     }
     assert_eq!(

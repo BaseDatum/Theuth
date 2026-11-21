@@ -106,13 +106,13 @@ Already in place from 25 §5; listed because release gates 2–3 depend on it.
    hash preferred) and the `THEUTH_NOTARY_*` values from
    `.env.signing.example`; `xcrun notarytool store-credentials theuth-notary`
    has been run once.
-2. The release Mac has `bun` (`brew install oven-sh/bun/bun`): `just
-   package-macos` builds the app parser helper from `packages/apps` with
-   `bun build --compile` into a standalone executable (46 §2.1), named
-   `theuth-app-parser-<hash>` after the committed
-   `packages/apps/generated/library-hash.txt`, and signs it with
-   `scripts/entitlements-app-parser.plist` (JIT, for Bun's runtime). Bun is
-   a build tool only; nothing shipped needs Node or Bun.
+2. The release Mac has `bun` (`brew install oven-sh/bun/bun`) for the documents
+   helper (`packages/documents`, `bun build --compile`, signed with
+   `scripts/entitlements-app-parser.plist`: JIT, for Bun's runtime). The app
+   parser runs inside `t`; `just package-macos` builds only its
+   `theuth-app-parser-<hash>` compatibility stub, with cargo (named after the
+   committed `packages/apps/generated/library-hash.txt`, signed without
+   entitlements). Bun is a build tool only; nothing shipped needs Node or Bun.
 3. `just package-macos && just notarize-macos` produces a `.app` for which
 
    ```sh
