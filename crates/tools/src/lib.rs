@@ -7,7 +7,7 @@
 //! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`AppInvoke`], [`InspectTool`], [`DescribeTools`], [`ExternalApproval`], [`RegisterTool`], [`UnregisterTool`], [`RegisterActivity`], [`ActivityRecipient`], [`InstallCommunicationAccess`], [`InstallJournal`], [`RegisterLifecycle`], [`ExpectParticipants`], [`ParticipantsReady`], [`OpenTree`], [`CloseTreeAll`]
 //! - commands on the `"approval"` actor ([`Approval`]): [`Resolve`]
 //! - commands on the `"ask"` actor ([`AskUser`]): [`AnswerAsk`]
-//! - commands on the `"mcp"` actor ([`Mcp`]): [`ListServers`], [`SetGate`], [`Restart`], [`AddServer`], [`RemoveServer`], [`AddRepo`], [`SyncMcp`], [`McpLogin`], [`McpLogout`]
+//! - commands on the `"mcp"` actor ([`Mcp`]): [`ListServers`], [`SetGate`], [`Restart`], [`StartServer`], [`AddServer`], [`RemoveServer`], [`AddRepo`], [`SyncMcp`], [`McpLogin`], [`McpLogout`]
 //! - commands on the `"jobs"` actor ([`Jobs`]): [`ListJobs`], [`CancelJob`], [`ListTerminals`], [`PtyScreen`], [`PtyInput`], [`CloseSessions`]
 //! - events: [`ApprovalRequested`], [`ApprovalResolved`], [`AskRequested`], [`AskResolved`], [`JobEvent`]
 //! - activity protocol (47 §4, [`activity`]): the supervisor implements [`Admit`], [`Settle`] and
@@ -32,7 +32,8 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
     rpc_core::merge_described([
         rpc_tooling::rpc_module(server.clone()),
         rpc_settings::rpc_module(server),
-    ]).expect("tools RPC composition")
+    ])
+    .expect("tools RPC composition")
 }
 
 pub mod activity;
@@ -91,7 +92,7 @@ pub use journal::{
 pub use mcp::{
     AddRepo, AddServer, ListServers, Mcp, McpAuth, McpHomeAction, McpLogin, McpLogout, McpProgress,
     McpServer, McpState, McpToolInfo, Progress, RemoveServer, RepoInfo, Restart, SetGate,
-    SetMcpHome, SyncMcp, peers_changed, set_machine, set_paired_check,
+    SetMcpHome, StartServer, SyncMcp, peers_changed, set_machine, set_paired_check,
 };
 pub use proctree::{PtyThresholds, TreeQuiet};
 pub use pty::{

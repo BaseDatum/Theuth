@@ -11,6 +11,9 @@ export const memoryRequirements = {"methods":["endless_fold","endless_pause","en
 export const sessionCostRequirements = {"methods":["session_cost"],"topics":[]} as const satisfies Requirements
 export const messagingRequirements = {"methods":["answer_peer_request","get_communication","list_peer_messages","list_peers","peer_message","set_peer_scope"],"topics":["agent.communication@1","agent.peer-message@1","agent.peer-delivered@1"]} as const satisfies Requirements
 export const toolsRequirements = {"methods":["add_mcp_repo","add_mcp_server","list_mcp","mcp_login","mcp_logout","mcp_status","mesh_status","remove_mcp_server","set_mcp_gate","set_mcp_hidden","set_mcp_home","sync_mcp"],"topics":["tools.mcp-progress@1"]} as const satisfies Requirements
+// The composer popover's harness-wide server switch: on (`mcp_start`, after clearing an `off` gate) and off. An engine
+// with `set_mcp_gate` alone keeps the off direction.
+export const mcpPowerRequirements = { methods: ['mcp_start', 'set_mcp_gate'] } as const satisfies Requirements
 export const contextRequirements = {"methods":["list_models"],"topics":[]} as const satisfies Requirements
 export const browserRequirements = {"methods":["browser_screenshot"],"topics":["browser.events@1"]} as const satisfies Requirements
 export const approvalsRequirements = {"methods":["double_forget","double_take_over","list_sessions","mesh_status","resolve_approval"],"topics":[]} as const satisfies Requirements

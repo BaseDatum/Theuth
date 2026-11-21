@@ -128458,6 +128458,32 @@
       "x-theuth-owner": "mcp-server"
     },
     {
+      "name": "mcp_start",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "server",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "mcp-server"
+    },
+    {
       "name": "mcp_status",
       "paramStructure": "by-position",
       "params": [],
