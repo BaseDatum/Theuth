@@ -47,6 +47,6 @@ The UI of 201 §12.2 / D15 over the wire fields PC landed. TypeScript/React only
 
 ## Verification
 
-- `bun run check`: no errors in any PU file. The run fails on pre-existing `@openuidev/*` / `packages/apps` errors (missing modules, implicit any), all outside this phase's files.
+- `bun run check`: RC=0, 0 errors (after `bun install` in `packages/apps`; before that, the run failed only on its missing `@openuidev/*` modules).
 - `bun run test -- src/components/settings/Memory.test.ts src/components/chat/MemoryPanel.test.ts src/components/agents/RuntimeAccessFields.test.ts`: 3 files, 34 tests passed.
 - `Memory.test.ts` overrides `info` through a `vi.mock('@/store/connection')` hook, because a server render reads zustand's initial state.
