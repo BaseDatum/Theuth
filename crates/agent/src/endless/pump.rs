@@ -41,6 +41,10 @@ const DEFAULT_UNIT_USD: f64 = 0.02;
 const CALIBRATE_NODES: u32 = 20;
 /// Longest wait between retries of a failing node.
 const RETRY_CAP: Duration = Duration::from_secs(1800);
+/// 201 §7.2: guard trips (whole builds whose every candidate failed) a
+/// level-0 unit gets: a `small`-profile unit then keeps its draft until
+/// `endless_retry`, an `echo` unit's draft becomes its final line.
+const TRIP_LIMIT: u8 = 2;
 
 /// Retry delay after `failures` consecutive failures (`failures ≥ 1`):
 /// `base_secs × 2^(failures−1)`, capped at [`RETRY_CAP`].
@@ -67,6 +71,10 @@ struct Retry {
     error: String,
     /// The compactor model id that failed.
     model: String,
+    /// A guard trip whose draft stays (drafting session): the session reads
+    /// on that draft, so it is no failure the user sees — no warning, no
+    /// notice, not `stalled` — only a backoff.
+    kept: bool,
 }
 
 impl Retry {
@@ -383,7 +391,8 @@ impl State {
     }
 
     /// E2/E3: install `compactor` when its key differs — cancel the calls
-    /// made with the old one, reset every backoff, wake the pump. `true` = changed.
+    /// made with the old one, let every failed node run once now, wake the
+    /// pump. `true` = changed.
     fn switch(&self, (key, compactor): (String, Arc<dyn Compactor>)) -> bool {
         {
             let mut cur = self.current.write();
@@ -398,7 +407,7 @@ impl State {
                 cancel: CancellationToken::new(),
             };
         }
-        self.reset_backoff();
+        self.retry_once();
         true
     }
 
@@ -409,6 +418,27 @@ impl State {
             live.failed.clear();
             live.reported.clear();
             live.tripped.clear();
+            live.dirty = true;
+        }
+        self.wake.notify_one();
+    }
+
+    /// A switch: every failed node may run once now with the new model, and
+    /// a unit that spent its guard trips gets one more. The failure counts
+    /// stay, so a node that fails again waits its (grown) backoff instead of
+    /// retrying at once after every switch.
+    fn retry_once(&self) {
+        {
+            let mut live = self.live.lock();
+            let now = Instant::now();
+            for r in live.failed.values_mut() {
+                r.at = now;
+                r.hard = 0;
+                r.cost = false;
+            }
+            for n in live.tripped.values_mut() {
+                *n = (*n).min(TRIP_LIMIT - 1);
+            }
             live.dirty = true;
         }
         self.wake.notify_one();
@@ -509,8 +539,10 @@ struct Live {
     /// 201 §7.1 (P3): the desk agent's `profile:` key (the config's
     /// `profile` when unset).
     agent_profile: Option<Profile>,
-    /// 201 §7.2 (P3): `small`-profile guard trips per level-0 unit: one
-    /// trip waits for an idle queue, two keep the draft until `endless_retry`.
+    /// 201 §7.2 (P3): guard trips per level-0 unit (`small` profile, or an
+    /// `echo` unit): one trip of a `small` unit waits for an idle queue,
+    /// [`TRIP_LIMIT`] keep its draft until `endless_retry`; an `echo` unit
+    /// at [`TRIP_LIMIT`] keeps its draft as its final line.
     tripped: HashMap<u64, u8>,
 }
 
@@ -740,17 +772,23 @@ impl Live {
     }
 
     /// 137F: the failing node that blocks most — the level-0 frontier, else
-    /// the one with the most consecutive failures.
+    /// the one with the most consecutive failures. A guard trip whose draft
+    /// stays is no failure here.
     fn stalled(&mut self, cfg: FoldCfg) -> Option<Stalled> {
-        if self.failed.is_empty() {
+        if self.failed.values().all(|r| r.kept) {
             return None;
         }
         let front = (0u8, self.frontier(cfg));
-        let (key, r) = self.failed.get_key_value(&front).or_else(|| {
-            self.failed
-                .iter()
-                .max_by(|a, b| a.1.failures.cmp(&b.1.failures).then(b.0.cmp(a.0)))
-        })?;
+        let (key, r) = self
+            .failed
+            .get_key_value(&front)
+            .filter(|(_, r)| !r.kept)
+            .or_else(|| {
+                self.failed
+                    .iter()
+                    .filter(|(_, r)| !r.kept)
+                    .max_by(|a, b| a.1.failures.cmp(&b.1.failures).then(b.0.cmp(a.0)))
+            })?;
         let next_retry_at = (!self.running.contains(key)).then(|| {
             let left = r.at.saturating_duration_since(Instant::now());
             (Utc::now() + chrono::Duration::from_std(left).unwrap_or_default())
@@ -1916,7 +1954,7 @@ fn schedule(state: &Arc<State>) {
                 continue;
             }
             match live.tripped.get(&i) {
-                Some(n) if small && *n >= 2 => continue,
+                Some(n) if small && *n >= TRIP_LIMIT => continue,
                 Some(_) if small => {
                     deferred = deferred.or(Some(i));
                     continue;
@@ -2377,6 +2415,13 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live, counted: bool
     let drafting = live.drafting();
     // 201 §7.2 (P3): the small profile's own short context.
     let small = drafting && profile_of(&state, live).0 == Profile::Small;
+    // 201 §7.2: an echo unit's guard trips count in every profile.
+    let echo = l == 0
+        && drafting
+        && live
+            .units
+            .get(i as usize)
+            .is_some_and(|u| u.kind == tree::Kind::Echo);
     let ctx = match (&step, small) {
         (None, _) => String::new(),
         (Some(_), true) => small_ctx(live, id),
@@ -2433,8 +2478,10 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live, counted: bool
             (None, None) => Err("no step".to_owned()),
         };
         // 201 §7.2 (P3): a small-profile guard trip keeps the draft and
-        // earns one later retry when the queue is idle (`schedule`).
-        if small && l == 0 && matches!(&outcome, Err(e) if e.starts_with(NO_PASSING_LINE)) {
+        // earns one later retry when the queue is idle (`schedule`); an echo
+        // unit's trips end in its draft as the final line (`finish`).
+        if (small || echo) && l == 0 && matches!(&outcome, Err(e) if e.starts_with(NO_PASSING_LINE))
+        {
             *state.live.lock().tripped.entry(i).or_default() += 1;
         }
         guard.armed = false;
@@ -2867,6 +2914,9 @@ fn record_failure(state: &State, live: &mut Live, key: (u8, u64), e: &str, model
             live.pending_error = Some(COST_NOTICE.to_owned());
         }
     }
+    // A guard trip in a drafting session keeps the draft: a backoff, no
+    // warning and no notice (the session reads on the draft).
+    let kept = live.drafting() && e.starts_with(NO_PASSING_LINE);
     live.failed.insert(
         key,
         Retry {
@@ -2877,8 +2927,13 @@ fn record_failure(state: &State, live: &mut Live, key: (u8, u64), e: &str, model
             cost,
             error: one_line(e, 300),
             model: model.to_owned(),
+            kept,
         },
     );
+    if kept {
+        tracing::debug!(session = %state.session, l = key.0, i = key.1, model, failures, error = %e, "endless: line refused by the guards; the draft stays");
+        return;
+    }
     if live.reported.insert(key) && !e.starts_with(OVER_COST) {
         tracing::warn!(session = %state.session, l = key.0, i = key.1, error = %e, "endless: node failed (will retry)");
         live.pending_error = Some(format!(
@@ -2890,6 +2945,25 @@ fn record_failure(state: &State, live: &mut Live, key: (u8, u64), e: &str, model
     if delay >= RETRY_CAP && (prev_failures == 0 || retry_delay(base, prev_failures) < RETRY_CAP) {
         tracing::warn!(session = %state.session, l = key.0, i = key.1, model, failures, error = %e, "endless: node keeps failing (retrying every 30 min)");
     }
+}
+
+/// 201 §7.3 (D8): an echo unit that spent its [`TRIP_LIMIT`] guard trips —
+/// its draft (first line, error lines, counts, last line), promoted to
+/// final (`free`), so it leaves the refinement queue. `None` otherwise.
+fn spent_echo(live: &Live, i: u64) -> Option<Node> {
+    let echo = live
+        .units
+        .get(i as usize)
+        .is_some_and(|u| u.kind == tree::Kind::Echo);
+    if !echo || live.tripped.get(&i).is_none_or(|n| *n < TRIP_LIMIT) {
+        return None;
+    }
+    let mut node = live.tree.get(0, i)?.clone();
+    if node.quality() != Quality::Draft {
+        return None;
+    }
+    node.set_quality(Quality::Free);
+    Some(node)
 }
 
 /// Persist and publish one job's outcome (`Ok(None)`: its calls were
@@ -2948,6 +3022,23 @@ async fn finish(
         }
         _ => None,
     };
+    // 201 §7.3: an echo unit out of guard trips keeps its draft as final.
+    let spent = match &outcome {
+        Err(e) if key.0 == 0 && !cancel.is_cancelled() && e.starts_with(NO_PASSING_LINE) => {
+            let node = spent_echo(&state.live.lock(), key.1);
+            match node {
+                Some(node) => match state.store.endless_node_put(state.session, &node).await {
+                    Ok(()) => Some(node),
+                    Err(e) => {
+                        tracing::warn!(session = %state.session, error = %e, "endless: final echo line");
+                        None
+                    }
+                },
+                None => None,
+            }
+        }
+        _ => None,
+    };
     let mut live = state.live.lock();
     release(&mut live, &[key], counted);
     match outcome {
@@ -2966,10 +3057,19 @@ async fn finish(
         Ok(None) => {}
         Err(_) if cancel.is_cancelled() => {}
         Err(e) => {
-            record_failure(state, &mut live, key, &e, model);
-            if let Some(node) = fallback {
+            if let Some(node) = spent {
+                tracing::info!(session = %state.session, i = key.1, model, "endless: echo draft kept as its final line (the model line failed the guards)");
+                live.failed.remove(&key);
+                live.reported.remove(&key);
+                live.tripped.remove(&key.1);
+                live.solo.remove(&key.1);
                 live.put(node);
-                live.stale.insert(key);
+            } else {
+                record_failure(state, &mut live, key, &e, model);
+                if let Some(node) = fallback {
+                    live.put(node);
+                    live.stale.insert(key);
+                }
             }
         }
     }
@@ -3185,7 +3285,7 @@ pub(crate) async fn quiet_for_tests(inner: &Inner, session: SessionId, max: Dura
                 live.failed
                     .get(&(0, *i))
                     .is_some_and(|r| r.mechanical(last_ok))
-                    || live.tripped.get(i).is_some_and(|n| *n >= 2)
+                    || live.tripped.get(i).is_some_and(|n| *n >= TRIP_LIMIT)
             };
             let drafts = live.drafts.iter().filter(|i| !given_up(i)).count();
             let failing = live.failed.iter().any(|(k, r)| {
@@ -4751,6 +4851,24 @@ pub(crate) fn failed_for_tests(
         .collect();
     v.sort();
     v
+}
+
+/// Test seam: record one failure `e` of `key` (as [`finish`] does) and
+/// return the user notice it raised, if any (atomic: the pump cannot take
+/// the notice in between).
+#[cfg(test)]
+pub(crate) fn notice_for_tests(
+    inner: &Inner,
+    session: SessionId,
+    key: (u8, u64),
+    e: &str,
+) -> Option<String> {
+    let state = state_of(inner, session).expect("attached");
+    let model = state.compactor().model_id().to_owned();
+    let mut live = state.live.lock();
+    live.pending_error = None;
+    record_failure(&state, &mut live, key, e, &model);
+    live.pending_error.take()
 }
 
 /// Test seam: drive one job outcome through [`finish`] without the pump.
