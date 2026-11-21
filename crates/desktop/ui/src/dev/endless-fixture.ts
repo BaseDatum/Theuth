@@ -85,6 +85,10 @@ const memory: SessionMemory = receiveComponent("method.agent.output.SessionMemor
   drafts: 2,
   profile: 'standard',
   profile_reason: 'the model reads more than 32 k tokens',
+  // 201 §9–§11: the ledger's open entries, zooms this generation, a tool-list change waiting for the next trim.
+  ledger: { goals: 1, decisions: 4, constraints: 2, open_tasks: 3, artefacts: 5, suggested: 2, bytes: 2_300 },
+  zooms: 7,
+  tools_pending: true,
 })
 
 /** `"backlog"` (137G): a long-stuck chat — 4,812 lines wait, the oldest 4,512 folded into one placeholder line, the newest shown raw. */

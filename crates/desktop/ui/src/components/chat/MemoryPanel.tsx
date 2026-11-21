@@ -26,7 +26,7 @@ import type { GuardTrips } from "@/rpc/bindings/method.agent.output"
 import type { SessionMemory } from "@/rpc/bindings/method.agent.output"
 import type { Stalled } from "@/rpc/bindings/method.agent.output"
 import type { ViewLine } from "@/rpc/bindings/method.agent.output"
-import type { TailMode, TailOverride } from "@/rpc/bindings/method.agent.output"
+import type { LedgerStatus, TailMode, TailOverride } from "@/rpc/bindings/method.agent.output"
 import { MenuRow } from './HeaderMenu'
 import { ModelCombobox } from './ModelCombobox'
 import { settings } from './slash'
@@ -303,11 +303,36 @@ function TailBar({ m }: { m: SessionMemory }) {
   )
 }
 
+/** 201 §9: the ledger's open entries per section, the unconfirmed suggestions and the frozen snapshot against `ledger_bytes`. */
+function Ledger({ l, limit }: { l: LedgerStatus; limit: number }) {
+  const kb = (b: number) => (b >= 10_000 ? `${Math.round(b / 1000)}` : `${(b / 1000).toFixed(1)}`)
+  const sections: [number, string, string][] = [
+    [l.goals, 'goal', 'goals'],
+    [l.decisions, 'decision', 'decisions'],
+    [l.constraints, 'constraint', 'constraints'],
+    [l.open_tasks, 'open task', 'open tasks'],
+    [l.artefacts, 'artefact', 'artefacts'],
+  ]
+  return (
+    <span className="tabular-nums" title="The state ledger's open entries, frozen with the generation in force">
+      ledger {sections.map(([n, one, many]) => `${n} ${n === 1 ? one : many}`).join(' · ')}
+      {l.suggested > 0 && <span className="text-fg-primary"> · {l.suggested} to confirm</span>}
+      <span className="text-fg-tertiary">
+        {' '}
+        · {kb(l.bytes)}/{kb(limit)} KB
+      </span>
+    </span>
+  )
+}
+
+/** What the live renderers read besides the status itself. */
+export type LiveConfig = { ledgerBytes: number }
+
 /**
- * 201: the live numbers of the session-memory status, one renderer per entry (`null` = nothing to show). Later phases
- * append theirs here (ledger counts, zooms this generation, a pending tool-list change).
+ * 201: the live numbers of the session-memory status, one renderer per entry (`null` = nothing to show). A field an
+ * older engine does not send renders nothing.
  */
-export const LIVE: readonly ((m: SessionMemory) => ReactNode)[] = [
+export const LIVE: readonly ((m: SessionMemory, cfg: LiveConfig) => ReactNode)[] = [
   (m) => <TailBar m={m} />,
   (m) => (
     <span className="tabular-nums" title="Trims taken so far">
@@ -324,13 +349,22 @@ export const LIVE: readonly ((m: SessionMemory) => ReactNode)[] = [
       {m.profile ?? 'standard'} profile{m.profile_reason ? ` · ${m.profile_reason}` : ''}
     </span>
   ),
+  (m, cfg) => (m.ledger ? <Ledger l={m.ledger} limit={cfg.ledgerBytes} /> : null),
+  (m) =>
+    typeof m.zooms === 'number' ? (
+      <span className="tabular-nums" title="Zooms this generation; a high count means the view is folded too tightly">
+        {m.zooms} {m.zooms === 1 ? 'zoom' : 'zooms'} this generation
+      </span>
+    ) : null,
+  (m) => (m.tools_pending === true ? <span className="basis-full text-fg-tertiary">A tool-list change is waiting for the next trim</span> : null),
 ]
 
-export function Live({ m }: { m: SessionMemory }) {
+export function Live({ m, ledgerBytes = ENDLESS_DEFAULTS.ledger_bytes }: { m: SessionMemory; ledgerBytes?: number }) {
+  const cfg: LiveConfig = { ledgerBytes }
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-secondary">
       {LIVE.map((render, i) => (
-        <Fragment key={i}>{render(m)}</Fragment>
+        <Fragment key={i}>{render(m, cfg)}</Fragment>
       ))}
     </div>
   )
@@ -480,14 +514,14 @@ export function nextTry(s: Stalled, now: number): string {
   return `Next try ${at - now >= 5_000 ? ago(at, now) : 'in a moment'}`
 }
 
-/** 137G Fold now, shared by the failing block and the backlog row; the footer owns the mutation. */
+/** 201 Trim now (`endless_fold`; 137G's Fold now), shared by the failing block and the backlog row; the footer owns the mutation. */
 type Fold = { run(): void; pending: boolean }
 
 function FoldButton({ fold }: { fold: Fold }) {
   return (
     <Button size="xs" variant="outline" disabled={fold.pending} onClick={fold.run}>
       {fold.pending && <LoaderCircle className="animate-spin" />}
-      Fold now
+      Trim now
     </Button>
   )
 }
@@ -640,7 +674,7 @@ function BacklogRow({ session, m, b, fold }: { session: string; m: SessionMemory
         {toggle(true, 'Pause settling')}
         <ChangeModel />
       </div>
-      <p className={help}>Fold now: turns every waiting line into a short excerpt at once, at no cost. Recall still finds the originals.</p>
+      <p className={help}>Trim now: cuts this chat's verbatim tail back to its low mark and starts a new generation, at no cost. Recall still finds the originals.</p>
     </>
   )
 }
@@ -695,6 +729,8 @@ export function ViewNote({ line, className }: { line: ViewLine; className?: stri
 export function MemoryPanel({ session, open, onOpenChange }: { session: string; open: boolean; onOpenChange(o: boolean): void }) {
   const api = useApi()
   const memory = useSessionMemory(session, open)
+  const canSettings = useQuerySupport(['endless_settings_get'])
+  const ledgerBytes = useQuery({ enabled: canSettings && open && !!memory.data?.ledger, queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() }).data?.ledger_bytes
   const [tree, dispatch] = useReducer(reduce, INITIAL)
   const { kids, open: opened, hits } = tree
   const [query, setQuery] = useState('')
@@ -803,7 +839,7 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
           <SheetTitle>Context</SheetTitle>
           <SheetDescription className="sr-only">The session's view by band; open a line to see what it summarises.</SheetDescription>
           {m && m.mode === 'endless' && <Stats session={session} m={m} />}
-          {m && m.mode === 'endless' && <Live m={m} />}
+          {m && m.mode === 'endless' && <Live m={m} ledgerBytes={ledgerBytes} />}
         </SheetHeader>
         <div className="px-4 pb-3">
           <Input

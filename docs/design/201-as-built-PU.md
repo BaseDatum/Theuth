@@ -35,18 +35,20 @@ The UI of 201 §12.2 / D15 over the wire fields PC landed. TypeScript/React only
 
 ## Seams / later
 
-- Ledger counts, zooms this generation, pending tool-list change: append to `LIVE` in `MemoryPanel.tsx`.
 - Engine-side turn allowance for the scaled preview: `scaledMarks` in `lib/endless.ts`.
 
 ## Continuation (test fixes; component unchanged)
 
-- Both red tests in `Memory.test.ts` were test bugs; `Memory.tsx` already met §12.2.
-- Fixed-mode check now asserts the tail pair's percent labels are absent (Slack and Start merging at are percent in every mode). Scaled-mode check asserts the KB labels are absent.
-- Scaled preview: a server render reads zustand's `getInitialState`, so the test points it at `getState` while setting `info.default_model` (the repo's existing pattern), then restores it.
-- Suggestions gate: the test extracts the switch's `<button>` tag and asserts `disabled=""` with the ledger off and its absence with the ledger on, so attribute order no longer matters.
+- Both red tests in `Memory.test.ts` were test bugs (mode-specific labels, attribute order of the suggestions switch). `Memory.test.ts` sets `info.default_model` through a `vi.mock('@/store/connection')` hook.
+
+## Second pass (§9–§11 status fields)
+
+- `MemoryPanel.tsx`: `LIVE` renderers now take `(m, cfg: LiveConfig)`; `Live` takes `ledgerBytes` (default `ENDLESS_DEFAULTS.ledger_bytes`), which `MemoryPanel` reads from `endless_settings_get` only while `m.ledger` is set. New entries: `Ledger` (five section counts, "N to confirm" when `suggested > 0`, `bytes`/`ledger_bytes` in KB; absent when `ledger` is null), "N zooms this generation" (hint as tooltip: a high count means the view is folded too tightly), and "A tool-list change is waiting for the next trim" only when `tools_pending === true`. A missing key renders nothing. No other `SessionMemory` field was unshown.
+- Fold action relabelled `Trim now`; backlog hint: "cuts this chat's verbatim tail back to its low mark and starts a new generation, at no cost". `/compact` in `slash.ts`: "fold context (endless chat: trim the tail now); style sets the default". Wording only.
+- `dev/endless-fixture.ts`: `ledger`, `zooms`, `tools_pending` on the base memory.
+- Tests (`MemoryPanel.test.ts`): ledger counts/suggestions/size and null; zooms and the pending notice; an older reply without the keys (built without `receiveComponent`, which fills defaults).
+- Deviation: for meetings, backfilling or unattached sessions `endless_fold` still folds the old way (P5); the panel cannot tell those apart, so the button says Trim now everywhere.
 
 ## Verification
 
-- `bun run check`: RC=0, 0 errors (after `bun install` in `packages/apps`; before that, the run failed only on its missing `@openuidev/*` modules).
-- `bun run test -- src/components/settings/Memory.test.ts src/components/chat/MemoryPanel.test.ts src/components/agents/RuntimeAccessFields.test.ts`: 3 files, 34 tests passed.
-- `Memory.test.ts` overrides `info` through a `vi.mock('@/store/connection')` hook, because a server render reads zustand's initial state.
+- `bun run check` (tsc -b) and `bun run test -- src/components/settings/Memory.test.ts src/components/chat/MemoryPanel.test.ts src/components/agents/RuntimeAccessFields.test.ts`: see the commit's report.
