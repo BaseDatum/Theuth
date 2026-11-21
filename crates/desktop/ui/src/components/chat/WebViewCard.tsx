@@ -2,10 +2,9 @@ import { AppWindow, ExternalLink, Globe, PanelRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { placeWeb, usePanes } from '@/lib/panes'
-import { openExternal } from '@/lib/platform'
-import { canPopout, openPopout } from '@/lib/popout'
-import { useWebViews, webLeaf } from '@/lib/web-views'
+import { placeWeb, popOutWeb } from '@/lib/panes'
+import { canPopout } from '@/lib/popout'
+import { openInBrowser, useWebViews } from '@/lib/web-views'
 import type { Entry } from '@/store/sessions'
 import { ToolSpinner } from './Indicators'
 
@@ -30,11 +29,17 @@ export function openWebView(session: string, { id, url, title }: { id: string; u
   const view = store.views[id]
   if (!view) store.open({ id, session, url, title })
   if (view?.popped && canPopout()) {
-    void openPopout({ kind: 'web', id, url: view.current, title: view.title })
+    void popOutWeb({ id, session: view.session, url: view.current, title: view.title }).catch((e: unknown) => console.warn('open_window', e))
     return
   }
-  store.patch(id, { popped: false })
   placeWeb(session, id)
+}
+
+/** The card's pop out: the frame recorded first (the store may have lost it in a restart), so the main window never
+ * attaches it back out of that window. */
+function popOutCard(session: string, { id, url, title }: { id: string; url: string; title: string }): void {
+  const view = useWebViews.getState().views[id]
+  void popOutWeb({ id, session: view?.session || session, url: view?.current || url, title: view?.title || title }).catch((e: unknown) => console.warn('open_window', e))
 }
 
 /** The transcript card of a `show_web` call (205 §4.4): title, address, Open, pop out, open in browser. A phone does not
@@ -61,7 +66,7 @@ export function WebViewCard({ tool, session }: { tool: Tool; session: string }) 
           </Button>
         )}
         {call.url && !failed && (
-          <Button variant={isMobile ? 'outline' : 'ghost'} size={isMobile ? 'sm' : 'icon-sm'} className={isMobile ? undefined : 'text-fg-secondary'} aria-label="Open in browser" onClick={() => openExternal(call.url)}>
+          <Button variant={isMobile ? 'outline' : 'ghost'} size={isMobile ? 'sm' : 'icon-sm'} className={isMobile ? undefined : 'text-fg-secondary'} aria-label="Open in browser" onClick={() => openInBrowser(call.url)}>
             <ExternalLink className={isMobile ? undefined : 'size-4'} />
             {isMobile && 'Open in browser'}
           </Button>
@@ -74,12 +79,7 @@ export function WebViewCard({ tool, session }: { tool: Tool; session: string }) 
                 size="icon-sm"
                 className="text-fg-secondary"
                 aria-label="Open in new window"
-                onClick={() => {
-                  // 205 D6: the window takes the page; a tile of it here closes.
-                  useWebViews.getState().patch(id, { popped: true })
-                  void openPopout({ kind: 'web', id, url: useWebViews.getState().views[id]?.current ?? call.url, title: call.title })
-                  usePanes.getState().close(webLeaf(id))
-                }}
+                onClick={() => popOutCard(session, { id, url: call.url, title: call.title })}
               >
                 <AppWindow className="size-4" />
               </Button>

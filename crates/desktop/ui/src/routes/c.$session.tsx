@@ -26,7 +26,7 @@ import { relistReminders, relistTerminals } from '@/components/chat/background'
 import { Transcript } from '@/components/chat/Transcript'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
 import { chatName } from '@/lib/attach'
-import { closeWeb, isDraft, usePanes } from '@/lib/panes'
+import { chatLeaves, closeWeb, isDraft, usePanes, useRoutedPane } from '@/lib/panes'
 import { isWeb, webId } from '@/lib/web-views'
 import { WebFrame } from '@/components/chat/WebFrame'
 import { reportLoadError, useRemoteStart } from '@/lib/remote-start'
@@ -72,7 +72,7 @@ function SessionRoute() {
   const { seq, cell, messaging, peer } = Route.useSearch()
   const navigate = useNavigate()
   // The URL names the focused pane: a sidebar click lands in it, a pane press moves the URL to it.
-  useEffect(() => usePanes.getState().show(session), [session])
+  useRoutedPane(session)
   useEffect(() => (cell === undefined ? undefined : scrollToCell(cell)), [session, cell])
   // 188: open the chat's Messaging… sheet once, then drop the params so a reload does not reopen it.
   useEffect(() => {
@@ -87,7 +87,7 @@ function SessionRoute() {
       session={session}
       render={(id, first) =>
         isWeb(id) ? (
-          <WebFrame id={webId(id)} onClose={() => closeWeb(webId(id))} />
+          <WebFrame id={webId(id)} first={first} onClose={() => closeWeb(webId(id))} />
         ) : isDraft(id) ? (
           <NewChatPane id={id} first={first} />
         ) : (
@@ -129,7 +129,8 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
   const api = useApi()
   const navigate = useNavigate()
   const focused = usePanes((s) => s.focused) === session
-  const split = usePanes((s) => s.root !== null)
+  // A chat beside web tiles only is the URL's chat: it has no close (it would come straight back, `useRoutedPane`).
+  const split = usePanes((s) => s.root !== null && chatLeaves(s.root).length > 1)
   // The engine this route mounted under: an RPC landing after a switch writes to its own stores, never the new engine's (48 §5).
   const { sessions: store } = useScope()
   const title = useSessionField(session, 'title')

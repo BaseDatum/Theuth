@@ -1,19 +1,21 @@
 import { AppWindow, ArrowLeft, ArrowRight, ExternalLink, Globe, RotateCw, X } from 'lucide-react'
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
+import { SidebarToggle } from '@/components/chat/Header'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { useSidebar } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useEngines } from '@/link/engines'
 import { isLocal } from '@/lib/files'
-import { usePanes } from '@/lib/panes'
-import { openExternal } from '@/lib/platform'
-import { canPopout, openPopout } from '@/lib/popout'
+import { isMacDesktop } from '@/lib/hotkeys'
+import { popOutWeb, usePanes } from '@/lib/panes'
+import { canPopout, closePopout, isPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
 import * as native from '@/lib/web-view-native'
-import { isLoopback, normalizeUrl, useWebViews, webLeaf } from '@/lib/web-views'
+import { httpUrl, isLoopback, openInBrowser, useWebViews } from '@/lib/web-views'
 
-/** Open overlays a native web view would draw over (it sits above all DOM): radix dialogs, sheets, menus, popovers,
- * selects and the modal backdrops. Tooltips are not among them: they come and go with the pointer. */
+/** Open things a native web view would draw over (it sits above all DOM): radix dialogs, sheets, menus, popovers,
+ * selects, the modal backdrops and toasts. Tooltips are not among them: they come and go with the pointer. */
 const OVERLAYS = [
   '[role="dialog"]',
   '[role="alertdialog"]',
@@ -22,13 +24,18 @@ const OVERLAYS = [
   '[data-radix-popper-content-wrapper]',
   '[data-slot="sheet-content"]',
   '[data-slot$="-overlay"]',
+  '[data-sonner-toast]',
 ].join(',')
 
 const isTooltip = (el: Element) => el.querySelector('[role="tooltip"],[data-slot="tooltip-content"]') !== null
 
 const intersects = (a: DOMRect, b: DOMRect) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
 
-/** Some open overlay intersects `ref`'s box. Watches `document.body` for overlays mounting, unmounting or changing state. */
+/** A mutation inside the transcript's virtual rows (streaming text, cards) never opens an overlay. */
+const inTranscript = (n: Node) => (n instanceof Element ? n : n.parentElement)?.closest('[data-index]') != null
+
+/** Some open overlay intersects `ref`'s box. Watches `document.body` for overlays mounting, unmounting or changing
+ * state (`data-state`), one check per animation frame. */
 function useOverlayOver(ref: RefObject<HTMLElement | null>, enabled: boolean): boolean {
   const [over, setOver] = useState(false)
   useEffect(() => {
@@ -44,11 +51,10 @@ function useOverlayOver(ref: RefObject<HTMLElement | null>, enabled: boolean): b
       const box = el.getBoundingClientRect()
       setOver([...document.querySelectorAll(OVERLAYS)].some((o) => !el.contains(o) && !isTooltip(o) && intersects(o.getBoundingClientRect(), box)))
     }
-    const schedule = () => {
-      if (!frame) frame = requestAnimationFrame(check)
-    }
-    const mo = new MutationObserver(schedule)
-    mo.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-state', 'style', 'hidden'] })
+    const mo = new MutationObserver((records) => {
+      if (!frame && records.some((r) => !inTranscript(r.target))) frame = requestAnimationFrame(check)
+    })
+    mo.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-state'] })
     check()
     return () => {
       mo.disconnect()
@@ -68,95 +74,110 @@ const rectOf = (el: HTMLElement): native.Rect => {
   const r = el.getBoundingClientRect()
   return { x: r.left, y: r.top, width: r.width, height: r.height }
 }
+const sameRect = (a: native.Rect, b: native.Rect | null) => b !== null && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
 
 const warn = (what: string) => (e: unknown) => console.warn(what, e)
 
+/** Toolbar tooltips open sideways, over the toolbar's DOM: below it the native view would cover them. */
 function Tip({ label, children }: { label: string; children: ReactNode }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
+      <TooltipContent side="left">{label}</TooltipContent>
     </Tooltip>
   )
 }
 
 /**
  * A web view frame (205 §4.4): a 52 px toolbar over a placeholder the shell's child web view `web-<id>` is laid over.
- * Mounting attaches it at the placeholder's rectangle, a resize or scroll moves it (once per frame), unmounting hides
- * it; the store's `close` destroys it. Where there is no native layer (a browser, iOS) or the address is on a remote
- * engine's loopback, the placeholder shows the address with **Open in browser** instead (205 D7). `popped`: the frame
- * fills its own window (`/web/$id`), whose title bar closes it.
+ * Mounting attaches it at the placeholder's rectangle, a per-frame check follows the placeholder while it shows,
+ * unmounting hides it; the store's `close` destroys it. Where there is no native layer (a browser, iOS) or the address
+ * is on a remote engine's loopback, the placeholder shows the address with **Open in browser** instead (205 D7).
+ * `first`: the left-most pane, which carries the sidebar toggle and the traffic-light inset like `Header`. `popped`:
+ * the frame fills its own window (`/web/$id`), whose title bar closes it.
  */
-export function WebFrame({ id, onClose, popped = false }: { id: string; onClose?: () => void; popped?: boolean }) {
+export function WebFrame({ id, first = false, onClose, popped = false }: { id: string; first?: boolean; onClose?: () => void; popped?: boolean }) {
   const view = useWebViews((s) => s.views[id])
   const active = useEngines((s) => s.active)
   const engine = useEngines((s) => s.engines.find((e) => e.id === s.active)?.name ?? s.active)
+  const { open, isMobile } = useSidebar()
   const [forced, setForced] = useState(false)
   const [draft, setDraft] = useState<string | null>(null)
+  const [invalid, setInvalid] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const hasNative = native.nativeWebViews()
   const current = view?.current ?? ''
   const remote = hasNative && !isLocal(active) && isLoopback(current)
   const live = view !== undefined && hasNative && (!remote || forced)
   const occluded = useOccluded(ref, live)
+  const mac = isMacDesktop()
+  // `Header`'s rule: a popped window has no sidebar to open and is its own window.
+  const nav = first && (!open || isMobile) && !popped && !isPopout()
 
   useEffect(() => {
     const el = ref.current
     if (!live || !el) return
     const start = useWebViews.getState().views[id]
-    void native.attach(id, start?.current || start?.url || '', rectOf(el)).catch(warn('web_view_attach'))
-    let frame = 0
-    const schedule = () => {
-      if (!frame)
-        frame = requestAnimationFrame(() => {
-          frame = 0
-          void native.bounds(id, rectOf(el)).catch(warn('web_view_bounds'))
-        })
-    }
-    const ro = new ResizeObserver(schedule)
-    ro.observe(el)
-    window.addEventListener('resize', schedule)
-    window.addEventListener('scroll', schedule, true)
-    return () => {
-      cancelAnimationFrame(frame)
-      ro.disconnect()
-      window.removeEventListener('resize', schedule)
-      window.removeEventListener('scroll', schedule, true)
-      void native.visible(id, false).catch(warn('web_view_visible'))
-    }
-  }, [id, live])
+    native.attach(id, start?.current || start?.url || '', rectOf(el)).catch((e: unknown) => {
+      // 205 D6: a pop-out window holds the page; focus it rather than leave an empty tile here.
+      if (!popped && String(e).startsWith('in-popout:')) {
+        const v = useWebViews.getState().views[id]
+        if (v) void popOutWeb({ id, session: v.session, url: v.current || v.url, title: v.title }).catch(warn('open_window'))
+      } else warn('web_view_attach')(e)
+    })
+    return () => void native.detach(id).catch(warn('web_view_visible'))
+  }, [id, live, popped])
 
-  // Hide under an overlay or a drag; show again (at the current rectangle) once it is gone. The attach above shows it.
-  const wasOccluded = useRef(false)
+  // Hide under an overlay or a drag, show again once it is gone; the module sends only what changed.
   useEffect(() => {
-    const el = ref.current
-    if (!live || !el || occluded === wasOccluded.current) return
-    wasOccluded.current = occluded
-    if (occluded) void native.visible(id, false).catch(warn('web_view_visible'))
-    else {
-      void native.bounds(id, rectOf(el)).catch(warn('web_view_bounds'))
-      void native.visible(id, true).catch(warn('web_view_visible'))
-    }
+    if (live) void native.visible(id, !occluded).catch(warn('web_view_visible'))
   }, [id, live, occluded])
 
+  // Follow the placeholder (resizes, splits, scrolls, sidebar moves) once per frame while it shows; send only changes.
   useEffect(() => {
-    if (!live) return
+    const el = ref.current
+    if (!live || occluded || !el) return
+    let last: native.Rect | null = rectOf(el)
+    let frame = requestAnimationFrame(function tick() {
+      const r = rectOf(el)
+      if (!sameRect(r, last)) {
+        last = r
+        void native.bounds(id, r).catch(warn('web_view_bounds'))
+      }
+      frame = requestAnimationFrame(tick)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [id, live, occluded])
+
+  // The main window keeps every frame's state (`installWebViewEvents`); a pop-out window listens for its own frame,
+  // and closes once its view is destroyed (the main window closed the frame: its session deleted, the engine left).
+  useEffect(() => {
+    if (!live || !popped) return
     const label = native.webLabel(id)
-    let off: (() => void) | undefined
+    const offs: (() => void)[] = []
     let gone = false
-    void native.onState((s) => {
-      if (s.label === label) useWebViews.getState().patch(id, { current: s.url, title: s.title || useWebViews.getState().views[id]?.title, loading: s.loading })
-    }).then((u) => (gone ? u() : (off = u)))
+    const keep = (p: Promise<() => void>) => void p.then((u) => (gone ? u() : offs.push(u)))
+    keep(
+      native.onState((s) => {
+        const v = useWebViews.getState().views[id]
+        if (s.label === label && v) useWebViews.getState().patch(id, { current: s.url, title: s.title || v.title, loading: s.loading })
+      }),
+    )
+    keep(native.onClosed((s) => s.label === label && closePopout()))
     return () => {
       gone = true
-      off?.()
+      for (const off of offs) off()
     }
-  }, [id, live])
+  }, [id, live, popped])
+
+  const toggle = nav ? <SidebarToggle /> : null
+  const rowClass = cn('relative flex h-[52px] shrink-0 items-center gap-1 px-2', nav && !open && mac && 'pl-20')
 
   if (!view) {
     return (
       <div className="flex min-h-0 flex-1 flex-col">
-        <header className="relative flex h-[52px] shrink-0 items-center justify-end gap-2 px-3">
+        <header data-tauri-drag-region={mac || undefined} className={cn(rowClass, 'justify-between')}>
+          {toggle}
           {onClose && !popped && <CloseButton onClose={onClose} />}
         </header>
         <div className="flex flex-1 items-center justify-center text-sm text-fg-secondary">This web view is closed.</div>
@@ -165,20 +186,23 @@ export function WebFrame({ id, onClose, popped = false }: { id: string; onClose?
   }
 
   const go = (input: string) => {
-    const url = normalizeUrl(input)
+    const url = httpUrl(input)
+    if (!url) {
+      setInvalid(true)
+      return
+    }
     setDraft(null)
-    useWebViews.getState().patch(id, { url, current: url })
-    if (live) void native.navigate(id, url).catch(warn('web_view_navigate'))
+    setInvalid(false)
+    // `current` follows the page: the shell's state event, or the navigation having been accepted.
+    if (live) native.navigate(id, url).then(() => useWebViews.getState().patch(id, { url, current: url }), warn('web_view_navigate'))
+    else useWebViews.getState().patch(id, { url, current: url })
   }
-  const popOut = () => {
-    useWebViews.getState().patch(id, { popped: true })
-    void openPopout({ kind: 'web', id, url: current, title: view.title })
-    usePanes.getState().close(webLeaf(id))
-  }
+  const popOut = () => void popOutWeb({ id, session: view.session, url: current, title: view.title }).catch(warn('open_window'))
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header className="relative flex h-[52px] shrink-0 items-center gap-1 px-2">
+      <header data-tauri-drag-region={mac || undefined} className={rowClass}>
+        {toggle}
         <Tip label="Back">
           <Button variant="ghost" size="icon" className="rounded-lg text-fg-secondary" aria-label="Back" disabled={!live} onClick={() => void native.history(id, -1).catch(warn('web_view_history'))}>
             <ArrowLeft className="size-5" />
@@ -196,21 +220,30 @@ export function WebFrame({ id, onClose, popped = false }: { id: string; onClose?
         </Tip>
         <Input
           aria-label="Address"
+          aria-invalid={invalid || undefined}
+          title={invalid ? 'Only http and https addresses open here' : undefined}
           className="mx-1 h-8 min-w-0 flex-1 font-mono text-xs"
           spellCheck={false}
           value={draft ?? current}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={() => setDraft(null)}
+          onChange={(e) => {
+            setDraft(e.target.value)
+            setInvalid(false)
+          }}
+          onBlur={() => {
+            setDraft(null)
+            setInvalid(false)
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && draft !== null && draft.trim()) go(draft)
             else if (e.key === 'Escape') {
               setDraft(null)
+              setInvalid(false)
               e.currentTarget.blur()
             }
           }}
         />
         <Tip label="Open in browser">
-          <Button variant="ghost" size="icon" className="rounded-lg text-fg-secondary" aria-label="Open in browser" onClick={() => openExternal(current)}>
+          <Button variant="ghost" size="icon" className="rounded-lg text-fg-secondary" aria-label="Open in browser" onClick={() => openInBrowser(current)}>
             <ExternalLink className="size-5" />
           </Button>
         </Tip>
@@ -228,7 +261,7 @@ export function WebFrame({ id, onClose, popped = false }: { id: string; onClose?
           <Quiet title={view.title} url={current}>
             {remote && <p className="text-sm text-fg-secondary">This address is on {engine}.</p>}
             <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={() => openExternal(current)}>
+              <Button variant="outline" size="sm" onClick={() => openInBrowser(current)}>
                 <ExternalLink />
                 Open in browser
               </Button>

@@ -4,8 +4,10 @@
 // session does not exist until the first send; `place(draft, session, 'center')` then swaps it in.
 // A leaf may also hold a web frame (`web:<id>`, 205 D5, `lib/web-views.ts`): never focused, never in the URL.
 
+import { useEffect } from 'react'
 import { create } from 'zustand'
-import { isWeb, useWebViews, webLeaf } from '@/lib/web-views'
+import { openPopout } from '@/lib/popout'
+import { isWeb, type WebView, useWebViews, webLeaf } from '@/lib/web-views'
 
 export type Edge = 'left' | 'right' | 'top' | 'bottom' | 'center'
 export type Node = { session: string } | { dir: 'row' | 'col'; ratio: number; a: Node; b: Node }
@@ -215,4 +217,24 @@ export function placeWeb(session: string, id: string): boolean {
 export function closeWeb(id: string): void {
   usePanes.getState().close(webLeaf(id))
   useWebViews.getState().close(id)
+}
+
+/**
+ * 205 D6: frame `view.id` moves into its own window (or focuses the one that holds it). Only once the window opened is
+ * the frame recorded (created first when the store lost it, e.g. after a restart) as popped and its tile closed; a
+ * rejection leaves everything as it was.
+ */
+export async function popOutWeb(view: Pick<WebView, 'id' | 'session' | 'url' | 'title'>): Promise<void> {
+  await openPopout({ kind: 'web', id: view.id, url: view.url, title: view.title })
+  const store = useWebViews.getState()
+  if (!store.views[view.id]) store.open(view)
+  store.patch(view.id, { popped: true })
+  usePanes.getState().close(webLeaf(view.id))
+}
+
+/** The route's chat is shown: on a URL change, and again when the tree is left holding only web tiles while the URL
+ * stayed (the chat closed beside a web tile, so a sidebar click on that same URL changes nothing else). */
+export function useRoutedPane(session: string): void {
+  const stranded = usePanes((s) => s.root !== null && leaves(s.root).every((l) => isWeb(l)))
+  useEffect(() => usePanes.getState().show(session), [session, stranded])
 }

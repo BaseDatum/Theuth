@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest'
 import { chatLeaves, closeWeb, leaves, placeWeb, shown, usePanes } from './panes'
-import { isLoopback, isWeb, normalizeUrl, useWebViews, webId, webLeaf } from './web-views'
+import { httpUrl, isLoopback, isWeb, useWebViews, webId, webLeaf } from './web-views'
 
 const native = vi.hoisted(() => ({ close: vi.fn(async () => {}) }))
 vi.mock('@/lib/web-view-native', async (original) => ({ ...(await original<object>()), close: native.close }))
@@ -83,9 +83,12 @@ test('New chat with a chat and a web tile is single-pane mode: the tile is no ch
   expect(leaves(usePanes.getState().root!)).toEqual(['s1', draft, W])
 })
 
-test('the address field: a bare host gets http://, a scheme is kept; loopback names the engine machine', () => {
-  expect(normalizeUrl(' localhost:3000/x ')).toBe('http://localhost:3000/x')
-  expect(normalizeUrl('https://example.com')).toBe('https://example.com')
+test('the address field and every external link take http(s) only: a bare host gets http://, any other scheme is refused', () => {
+  expect(httpUrl(' localhost:3000/x ')).toBe('http://localhost:3000/x')
+  expect(httpUrl('example.com')).toBe('http://example.com')
+  expect(httpUrl('https://example.com')).toBe('https://example.com')
+  for (const bad of ['javascript:alert(1)', 'file:///etc/passwd', 'data:text/html,x', 'theuth-page://x', 'mailto:a@b.c', 'http://', ''])
+    expect(httpUrl(bad)).toBeNull()
   expect(isLoopback('http://localhost:5173/')).toBe(true)
   expect(isLoopback('http://app.localhost/')).toBe(true)
   expect(isLoopback('http://127.0.0.1:8080/')).toBe(true)

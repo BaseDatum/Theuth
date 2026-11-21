@@ -2,6 +2,7 @@
 // last asked for (the tool, the address field), `current` what the page reports (`web-view://state`).
 
 import { create } from 'zustand'
+import { openExternal } from '@/lib/platform'
 import * as native from '@/lib/web-view-native'
 
 export type WebView = {
@@ -49,10 +50,53 @@ export const useWebViews = create<WebViewsStore>()((set, get) => ({
   },
 }))
 
-/** What the address field sends: `localhost:3000` and `example.com/x` get `http://` (205 §4.1); a scheme is kept. */
-export const normalizeUrl = (input: string): string => {
+/** Every frame closed, native views included: the engine they belong to was left. */
+export function closeAllWebViews(): void {
+  for (const id of Object.keys(useWebViews.getState().views)) useWebViews.getState().close(id)
+}
+
+/** An `http:`/`https:` address with a host, or `null`. A bare host (`localhost:3000`, `example.com/x`) gets `http://`
+ * (205 §4.1); any other scheme (`javascript:`, `file:`, `data:`, …) is refused. */
+export function httpUrl(input: string): string | null {
   const s = input.trim()
-  return /^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `http://${s}`
+  // `name:` not followed by a port is a scheme; `localhost:3000` is a host.
+  const schemed = /^[a-z][a-z0-9+.-]*:/i.test(s) && !/^[^:/?#]+:\d+(?:[/?#]|$)/.test(s)
+  let url: URL
+  try {
+    url = new URL(schemed ? s : `http://${s}`)
+  } catch {
+    return null
+  }
+  return (url.protocol === 'http:' || url.protocol === 'https:') && url.hostname !== '' ? (schemed ? s : `http://${s}`) : null
+}
+
+/** Open `url` in the system browser, if it is an http(s) address (`httpUrl`); anything else is dropped. */
+export function openInBrowser(url: string): void {
+  const href = httpUrl(url)
+  if (href) openExternal(href)
+}
+
+/**
+ * 205 §4.4, the main window's one listener set: `web-view://state` keeps a frame's address, title and spinner current
+ * wherever it is shown (a tile, a pop-out, nowhere on screen); `web-view://closed` (the view destroyed, its pop-out
+ * window closed) clears `popped`, so the card places a tile again. No tile opens by itself.
+ */
+export function installWebViewEvents(): () => void {
+  let gone = false
+  const offs: (() => void)[] = []
+  const keep = (p: Promise<() => void>) => void p.then((off) => (gone ? off() : offs.push(off)))
+  keep(
+    native.onState((s) => {
+      const id = native.labelId(s.label)
+      const old = useWebViews.getState().views[id]
+      if (old) useWebViews.getState().patch(id, { current: s.url, title: s.title || old.title, loading: s.loading })
+    }),
+  )
+  keep(native.onClosed((s) => useWebViews.getState().patch(native.labelId(s.label), { popped: false, loading: false })))
+  return () => {
+    gone = true
+    for (const off of offs) off()
+  }
 }
 
 /** `localhost`, `*.localhost`, `127.0.0.0/8`, `::1` and `0.0.0.0`: an address that names the engine's machine (205 §4.4, last bullet). */
