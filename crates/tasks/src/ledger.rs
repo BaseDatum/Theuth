@@ -2941,11 +2941,22 @@ impl Ledger {
             if !sessions.contains(&c.session) || !self.works(&t) {
                 continue;
             }
+            // 207: `left_to_agent:` is the user's move on a decision, not the agent's
+            // disposition; leaving a decision never changes what closing the episode does.
             let continuing = self
                 .store
-                .last_event(&t.id, "disposition")
+                .events(&t.id)
                 .await
                 .map_err(db)?
+                .into_iter()
+                .rev()
+                .find(|e| {
+                    e.field == "disposition"
+                        && !e
+                            .after
+                            .as_deref()
+                            .is_some_and(|a| a.starts_with("left_to_agent:"))
+                })
                 .is_some_and(|e| {
                     e.after
                         .as_deref()
@@ -6366,6 +6377,41 @@ pub(crate) mod tests {
         assert_eq!(
             r.ledger.leave_decision(&decision, "user", false).await,
             Err(format!("no task is blocked on {decision}"))
+        );
+    }
+
+    /// 207: leaving a decision to the agent never changes what closing the episode does:
+    /// a task whose agent said `continuing` stays `doing`; one whose agent said nothing is
+    /// blocked `no continuation`, as without the leave.
+    #[tokio::test]
+    async fn left_decision_does_not_change_episode_closing() {
+        let mut r = rig().await;
+        let (cont, d1) = escalated_to_user(&mut r, true).await;
+        r.ledger
+            .note_disposition(
+                &cont.id,
+                "continuing:after the budget call",
+                "agent:lead",
+                Some("s-lead"),
+            )
+            .await
+            .unwrap();
+        let (silent, d2) = escalated_to_user(&mut r, true).await;
+        for d in [&d1, &d2] {
+            r.ledger.leave_decision(d, "user", true).await.unwrap();
+        }
+        for t in [&cont, &silent] {
+            assert_eq!(r.ledger.get(&t.id).await.unwrap().state, TaskState::Doing);
+        }
+        let blocked = r
+            .ledger
+            .episode_closing("lead", &["s-lead".into()])
+            .await
+            .unwrap();
+        assert_eq!(blocked, vec![silent.id.clone()]);
+        assert_eq!(
+            r.ledger.get(&cont.id).await.unwrap().state,
+            TaskState::Doing
         );
     }
 
