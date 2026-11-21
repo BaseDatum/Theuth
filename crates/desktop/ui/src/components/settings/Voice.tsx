@@ -23,6 +23,8 @@ import type { EndPhrases } from "@/rpc/bindings/method.talk.output"
 import type { HistoryRow } from "@/rpc/bindings/method.talk.output"
 import type { Preset } from "@/rpc/bindings/method.talk.output"
 import type { Surface } from "@/rpc/bindings/method.talk.output"
+import type { MlxStatus } from "@/rpc/bindings/method.talk.output"
+import type { SttEngine } from "@/rpc/bindings/method.talk.output"
 
 const DEFAULT_DEVICE = '__default__'
 const PRESETS: [Preset, string][] = [
@@ -33,6 +35,11 @@ const PRESETS: [Preset, string][] = [
 const SURFACES: [Surface, string, string][] = [
   ['composer', 'Composer', 'The chat box and every text field of this app.'],
   ['phone', 'Phone', 'The webview on a phone.'],
+]
+/** 202 §5: `voice.stt_engine`. */
+const ENGINES: [SttEngine, string][] = [
+  ['onnx', 'Parakeet TDT v3 — ONNX int8 (built in)'],
+  ['mlx', 'Parakeet TDT v3 — MLX full precision (Apple GPU, 2.5 GB download)'],
 ]
 /** §7.2 defaults. */
 const END_DEFAULTS: EndPhrases = { send: ['send it'], scratch: ['scratch that'], literal: 'literal' }
@@ -46,6 +53,20 @@ const keys = {
   polishEffort: ['polish-effort'] as const,
   history: ['voice', 'history'] as const,
   dictation: ['voice', 'dictation-status'] as const,
+  mlx: ['voice', 'mlx-status'] as const,
+}
+
+/** 202 §4: where the MLX model stands, as the settings row prints it; choosing MLX before it is ready says ONNX runs meanwhile. */
+export function mlxStatusText(s: MlxStatus | undefined): string {
+  if (!s) return ''
+  const st = s.state
+  const line =
+    st.state === 'unavailable' ? `Unavailable: ${st.reason}`
+    : st.state === 'absent' ? 'Not downloaded'
+    : st.state === 'downloading' ? (st.total_bytes > 0 ? `Downloading ${Math.floor((st.done_bytes * 100) / st.total_bytes)}%` : 'Downloading…')
+    : st.state === 'ready' ? 'Ready'
+    : `Failed: ${st.reason}`
+  return s.engine === 'mlx' && st.state !== 'ready' ? `${line}. ONNX is used until the MLX model is ready.` : line
 }
 
 /** `ms` as the debug row prints it. */
@@ -131,6 +152,7 @@ export function Microphone() {
 
 /** Voice › Dictation: how dictated words are shaped, the spoken end phrases and the polish model. */
 export function Dictation() {
+  const canMlx = useQuerySupport(["voice_mlx_status"])
   const canQuery2 = useQuerySupport(["voice_settings"])
   const canQuery2_2 = useQuerySupport(["list_models"])
   const canQuery2_3 = useQuerySupport(["polish_model"])
@@ -143,6 +165,15 @@ export function Dictation() {
 
   const setShape = useAction(({ surface, preset }: { surface: Surface; preset: Preset }) => api.set_shape(surface, preset), { keys: [keys.settings] })
   const setShapeEnabled = useAction((enabled: boolean) => api.set_shape_enabled(enabled), { keys: [keys.settings] })
+  const mlx = useQuery({
+    enabled: canMlx,
+    queryKey: keys.mlx,
+    queryFn: () => api.voice_mlx_status(),
+    refetchInterval: (q) => (q.state.data?.state.state === 'downloading' ? 1000 : false),
+  })
+  const setEngine = useAction((engine: SttEngine) => api.set_stt_engine(engine), { keys: [keys.mlx] })
+  const download = useAction(() => api.voice_mlx_download(), { keys: [keys.mlx] })
+  const mlxState = mlx.data?.state.state
   const setEnd = useAction((p: EndPhrases) => api.set_end_phrases(p), { keys: [keys.settings] })
   const setPolishModel = useAction((id: string | null) => api.set_polish_model(id), { keys: [keys.polishModel, keys.polishEffort, keys.settings] })
   const setPolishEffort = useAction((level: string | null) => api.set_polish_effort(level), { keys: [keys.polishEffort] })
@@ -154,6 +185,32 @@ export function Dictation() {
 
   return (
     <>
+      <Section title="Speech model">
+        <Row stack label="Speech model" description="MLX re-transcribes each finished utterance for the final text; the live preview still comes from the streaming model.">
+          <Select value={mlx.data?.engine ?? 'onnx'} disabled={!mlx.isSuccess || setEngine.isPending} onValueChange={(v) => setEngine.mutate(v as SttEngine)}>
+            <SelectTrigger className="max-w-96 max-md:w-full max-md:max-w-none" aria-label="Speech model">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {ENGINES.map(([id, name]) => (
+                <SelectItem key={id} value={id} disabled={id === 'mlx' && !mlx.data?.available}>
+                  {name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Row>
+        <Row label="MLX model" description={mlxStatusText(mlx.data)}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!mlx.isSuccess || !(mlxState === 'absent' || mlxState === 'failed') || download.isPending}
+            onClick={() => download.mutate()}
+          >
+            Download
+          </Button>
+        </Row>
+      </Section>
       <Section title="Shaping">
         <Row label="Shape dictated text" description="Off delivers the speech model's text exactly as heard on every surface: no spoken punctuation, numbers, dictionary terms or end phrases.">
           <Switch aria-label="Shape dictated text" checked={shaping} disabled={!settings.isSuccess || setShapeEnabled.isPending} onCheckedChange={(v) => setShapeEnabled.mutate(v)} />

@@ -3,8 +3,8 @@ import { type ComponentType, createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
-import type { HistoryRow } from "@/rpc/bindings/method.talk.output"
-import { Dictation, Microphone, SYSTEM_DEFAULT, VoiceHistory, inputDevicesFor, phrases, timingsLine } from './Voice'
+import type { HistoryRow, MlxState, SttEngine } from "@/rpc/bindings/method.talk.output"
+import { Dictation, Microphone, SYSTEM_DEFAULT, VoiceHistory, inputDevicesFor, mlxStatusText, phrases, timingsLine } from './Voice'
 
 const row: HistoryRow = {
   id: 'd1',
@@ -44,7 +44,7 @@ vi.mock('@/lib/rpc', async (original) => ({
     ],
     voice_status: async () => ({ model: { state: 'ready' }, accelerator: '', voice: 'af', voices: [], speaking: null, queued: [], input_devices: ['Shure MV7'] }),
     voice_settings: record('voice_settings', {
-      shape: { composer: 'plain', tui: 'full', companion: 'full', phone: 'off', any_app: 'full' },
+      shape: { enabled: true, composer: 'plain', tui: 'full', companion: 'full', phone: 'off', any_app: 'full' },
       end_commands: { send: ['ship it', 'send it'], scratch: ['scratch that'], literal: 'verbatim' },
       input_devices: ['Shure MV7'],
       standby_secs: 8,
@@ -63,6 +63,7 @@ vi.mock('@/lib/rpc', async (original) => ({
       input_device: 'Shure MV7',
       last: { surface: 'composer', press_to_first_pcm_ms: 42, press_to_first_partial_ms: 310, press_to_first_final_ms: 890, stop_to_final_ms: 420, polish_ms: null, device: 'Shure MV7' },
     }),
+    voice_mlx_status: record('voice_mlx_status', { engine: 'mlx', available: true, state: { state: 'downloading', done_bytes: 1_250, total_bytes: 2_500 } }),
     set_input_devices: record('set_input_devices', null),
   }),
 }))
@@ -91,6 +92,25 @@ test('Dictation: shaping + end phrases come from voice_settings (nothing remembe
   expect(html).toContain('value="verbatim"')
   expect(html).toContain('Chain (title model, then session)')
   expect(html).toContain('never polished')
+})
+
+test('Dictation: the shaping switch and the speech model row come from the engine', async () => {
+  const html = await render(Dictation)
+  expect(html).toMatch(/<button(?![^>]*\sdisabled(?:=""|\s|>))[^>]*aria-checked="true"[^>]*aria-label="Shape dictated text"|<button(?![^>]*\sdisabled(?:=""|\s|>))[^>]*aria-label="Shape dictated text"[^>]*aria-checked="true"/)
+  expect(html).toMatch(/<button(?![^>]*\sdisabled(?:=""|\s|>))[^>]*aria-label="Speech model"/)
+  expect(html).toContain('Downloading 50%. ONNX is used until the MLX model is ready.')
+  expect(html).toContain('the live preview still comes from the streaming model')
+})
+
+test('mlxStatusText: every state, and the ONNX note only while MLX is chosen and not ready', () => {
+  const s = (state: MlxState, engine: SttEngine = 'onnx') => mlxStatusText({ engine, available: state.state !== 'unavailable', state })
+  expect(mlxStatusText(undefined)).toBe('')
+  expect(s({ state: 'absent' })).toBe('Not downloaded')
+  expect(s({ state: 'downloading', done_bytes: 0, total_bytes: 0 })).toBe('Downloading…')
+  expect(s({ state: 'ready' }, 'mlx')).toBe('Ready')
+  expect(s({ state: 'failed', reason: 'HEAD config.json: 404' })).toBe('Failed: HEAD config.json: 404')
+  expect(s({ state: 'unavailable', reason: 'mlx.metallib not found' })).toBe('Unavailable: mlx.metallib not found')
+  expect(s({ state: 'absent' }, 'mlx')).toBe('Not downloaded. ONNX is used until the MLX model is ready.')
 })
 
 test('History: rows show raw → shaped (+ polished), the debug row the four numbers', async () => {
