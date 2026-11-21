@@ -96,3 +96,28 @@ Eleven `eval_*` tests in `crates/agent/src/endless/eval_tests.rs` and `crates/ag
 Not reached by E2: Anthropic cache marks (every loop test runs on the OpenAI-compatible fake provider); S2 through `resume_all` and with the tail over the low mark.
 
 Note for anyone repeating S4: base and head builds of `agent` collide in a shared target directory; one head run silently executed the base binary until `cargo clean -p agent`.
+
+## E1 — gates at `0bdf0ebb9` (evaluator, in `~/Develop/skymoore/theuth-201-verify`; logs `/tmp/b201-eval-verify-*.log`)
+
+| Gate | Verdict | Numbers |
+|---|---|---|
+| G1 `cargo check --workspace --all-targets` | green with warnings | 30 `missing_docs` warnings, all in changed files (`endless/ledger.rs` 25, `endless/mod.rs#L881-L885` 5) |
+| G2 `cargo test -p agent` (whole crate) | red | lib 1133 passed, 8 failed, 5 ignored (same 8 in two runs); `notebooks_*` green |
+| G3 roster / rpc / tui | green | 108 / 16+1 / 248+1+1 |
+| G3 meeting | red (not the build) | `calendar` 1 failed: `fastmail_floating_time_is_local_and_unknown_hosts_are_not_links` (time zone / DST; crate unchanged) |
+| G3 theuth | red (expected) | `wire_schema_snapshot` equality at line 21; the compatibility classifier passed. Diff is additive only: method `set_session_tail`; schemas `TailMode`, `TailOverride`, `CompactorProfile`, `LedgerStatus`, `DescribeImages`; 14 fields on `EndlessConfig`; 12 on `SessionMemory`; 6 on roster `AgentFile`; nothing removed or changed |
+| G4 clippy `-p agent -p roster -D warnings` | red | stops at a pre-existing error in `voice/src/history/mod.rs#L465`; with that lint allowed: agent lib 32, lib test 35, all in changed files; roster clean |
+| G5 rustfmt on changed files | red | new hunks: `loop_.rs` 2 (`#L4382`, `#L5525`), `supervisor.rs` 2 (`#L9299`, `#L9328`); `rpc_turns.rs` 4 and `roster/src/tools.rs` 1 are pre-existing |
+| G6 UI check / test / build | green / red / green | test: 2 failed of 2,582 — `injected-wrappers.test.ts` (the four new tags unclassified: build regression, = R3-2) and `link/pairing.test.ts` (flaky, passes alone, code unchanged) |
+| G7 filtered agent tests ×3 | green | 161 passed, 0 failed, 2 ignored each time; no flakiness |
+| G8 ignores added | 1 | `endless::tests::a_zoomed_line_gets_one_generation_of_grace` (replaced by E2's S7 test) |
+
+The 8 red agent tests: 4 `sensor::tests::*` and `loop_::runtime_bridge_tests::guessed_direct_calls_are_bridged_or_refused` (environment: the installed `/opt/homebrew/bin/t` worker speaks protocol 5–6, the tree needs 8); 2 `skills::tests::*` (environment: gpg signing); and `communication::files::notices::tests::notices_are_automatic_and_stop_at_the_chain_limit` (`notices.rs#L593`, an error row on the session; fails alone; test file unchanged since base; UNCONFIRMED whether it fails at the base: possibly a regression).
+
+Build regressions from the gates: `await_holding_lock` at `endless/pump.rs#L4006` (the `state.live.lock()` guard is held across `ledger_status(..).await` at `#L4063`: a real concern, not style); 30 `missing_docs`; `endless/tail.rs#L249` `int_plus_one`; `endless/compactor.rs#L970` `useless_vec`; `endless/pump.rs#L4745` `field_reassign_with_default`; `loop_/endless_tests.rs#L1008` needless reference; the four rustfmt hunks.
+
+## Fix round (in progress when this section was written)
+
+- FU (UI and TUI): R3-2, R3-12 UI side, R3-13 fixed (`85e24d7ee`, `476143d35`, `78f9e3bc5`, `a49586812`); whole UI suite 2,585 passed, check clean.
+- F1 (loop, tail, generations): R1-1, -2, -3, -4, -5, -6, -7, -8, -9, -12, -14 fixed (`c69ceb548`); filtered agent run 180 passed, 0 failed, 2 ignored. Not done: R1-10, R1-11. New finding from F1: a message removed from context keeps its line in the tree and in every later view (handed to F2 as R1-3b).
+- F2 (pump), F3 (safety, ledger, units), then a polish pass for the gate regressions above: see `docs/design/201-as-built-FIX-*.md`.
