@@ -53,9 +53,10 @@ impl WebSettingsApiServer for Server {
         site: Option<String>,
         recent: Option<web::Recency>,
     ) -> RpcResult<web::settings::SearchTestResult> {
+        // 206: the Settings test is the harness's own call, not the model's.
         let out = ask::<ToolRegistry, _>(
             tools::REGISTRY_ACTOR,
-            tools::Invoke(tools::ToolCall {
+            tools::HarnessInvoke(tools::ToolCall {
                 id: format!("search-test-{}", uuid::Uuid::now_v7()),
                 name: "search_web".into(),
                 args: serde_json::json!({ "query": query, "site": site, "recent": recent }),

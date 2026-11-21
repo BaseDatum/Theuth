@@ -7,8 +7,8 @@ use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::ErrorObjectOwned;
 use runtime::SessionId;
 use tools::{
-    ApprovalsState, BuiltinCategory, ListBuiltins, SetApprovals, SetBuiltinsDisabled, SetHidden,
-    ToolRegistry,
+    ApprovalsState, BuiltinCategory, BuiltinsSwitchError, ListBuiltins, SetApprovals,
+    SetBuiltinsDisabled, SetHidden, ToolRegistry,
 };
 use uuid::Uuid;
 use rpc_core::{ask, Server};
@@ -63,12 +63,20 @@ pub trait AgentToolingApi {
     #[method(name = "list_builtins", with_extensions)]
     async fn list_builtins(&self, session: Option<SessionId>) -> RpcResult<Vec<BuiltinCategory>>;
     /// 206: switch builtin tools off (`disabled: true`) or on again for every session
-    /// on this engine; `names` are registered builtin names and `cat:<id>` keys. Persists
-    /// to `tools.builtins.disabled` in this engine's `config.yaml`; running turns pick it
-    /// up before their next model call. A name that is neither is invalid params, and
-    /// then nothing changes.
-    #[method(name = "set_builtins_disabled")]
-    async fn set_builtins_disabled(&self, names: Vec<String>, disabled: bool) -> RpcResult<()>;
+    /// on an engine; `names` are registered builtin names and `cat:<id>` keys (when
+    /// switching on, also any name in the set, so a stale entry can go). With
+    /// `session`, the engine that owns that session changes its set (forwarded as
+    /// `list_builtins`); without, this engine. Persists to `tools.builtins.disabled` in
+    /// that engine's `config.yaml` before applying; running turns pick it up before
+    /// their next model call. A name that is neither is invalid params; a file that
+    /// cannot be written is an internal error saying why. Either way nothing changes.
+    #[method(name = "set_builtins_disabled", with_extensions)]
+    async fn set_builtins_disabled(
+        &self,
+        names: Vec<String>,
+        disabled: bool,
+        session: Option<SessionId>,
+    ) -> RpcResult<()>;
     /// Turn approval prompts on/off for `session`, or globally (persisted) with `None`.
     /// 183 §4.5 (W-4): on a session `enabled` pins `sessions.approvals` to
     /// `'on'`/`'off'`; `clear: true` drops the pin (inherit `tools.approvals`).
@@ -155,20 +163,39 @@ impl AgentToolingApiServer for Server {
         ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, ListBuiltins(session)).await
     }
 
-    async fn set_builtins_disabled(&self, names: Vec<String>, disabled: bool) -> RpcResult<()> {
-        let unknown = ask::<ToolRegistry, _>(
-            tools::REGISTRY_ACTOR,
-            SetBuiltinsDisabled { names, disabled },
-        )
-        .await?;
-        if unknown.is_empty() {
-            return Ok(());
+    async fn set_builtins_disabled(
+        &self,
+        ext: &Extensions,
+        names: Vec<String>,
+        disabled: bool,
+        session: Option<SessionId>,
+    ) -> RpcResult<()> {
+        self.authorize_opt_fwd(ext, session).await?;
+        // The set the owner lists is the owner's: change it there, as `set_mcp_hidden`.
+        if let Some(s) = session
+            && let Some(r) =
+                forward::route(ext, s, "set_builtins_disabled", (&names, disabled, session)).await?
+        {
+            return Ok(r);
         }
-        Err(ErrorObjectOwned::owned(
-            jsonrpsee::types::error::INVALID_PARAMS_CODE,
-            format!("not a builtin tool or category key: {}", unknown.join(", ")),
-            None::<()>,
-        ))
+        let registry = rpc_core::lookup::<ToolRegistry>(tools::REGISTRY_ACTOR)?;
+        match registry.ask(SetBuiltinsDisabled { names, disabled }).await {
+            Ok(()) => Ok(()),
+            Err(kameo::error::SendError::HandlerError(e)) => {
+                let code = match e {
+                    BuiltinsSwitchError::Unknown(_) => jsonrpsee::types::error::INVALID_PARAMS_CODE,
+                    BuiltinsSwitchError::NotWritten(_) => {
+                        jsonrpsee::types::error::INTERNAL_ERROR_CODE
+                    }
+                };
+                Err(ErrorObjectOwned::owned(code, e.to_string(), None::<()>))
+            }
+            Err(e) => Err(ErrorObjectOwned::owned(
+                rpc_core::ASK_FAILED,
+                e.to_string(),
+                None::<()>,
+            )),
+        }
     }
 
     async fn set_approvals(

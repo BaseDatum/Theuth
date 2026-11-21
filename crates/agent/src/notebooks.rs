@@ -14,7 +14,7 @@ use kameo::message::{Context, Message};
 use runtime::side_call::CallKind;
 use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
-use tools::registry::{Invoke, ToolRegistry};
+use tools::registry::{HarnessInvoke, ToolRegistry};
 use tools::{REGISTRY_ACTOR, ToolCall, ToolOutput};
 
 use crate::store::Store;
@@ -432,6 +432,7 @@ fn twelve_words(s: &str) -> String {
 }
 
 /// One registry call as `session`; a tool error is this function's error. Shared with `ask`/`overviews` (E2).
+/// The harness's own call (206: [`HarnessInvoke`]): a builtin switched off for the model still runs.
 pub(crate) async fn invoke(
     session: SessionId,
     name: &str,
@@ -442,7 +443,7 @@ pub(crate) async fn invoke(
         .flatten()
         .ok_or_else(|| anyhow::anyhow!("tool registry is not running"))?;
     let out = registry
-        .ask(Invoke(ToolCall {
+        .ask(HarnessInvoke(ToolCall {
             id: format!("nb-{}", SessionId::new()),
             name: name.to_owned(),
             args,

@@ -149,7 +149,8 @@ pub fn registry() -> Option<ActorRef<tools::ToolRegistry>> {
 /// Call a registered tool (`scrape_url`, `session_read`, an MCP tool) the way a plugin does: a quiet
 /// call under a fresh session; a tool error is an `Err` here. 16 §5 (2026-11-11): without the
 /// caller's local-network grant (the job's, [`tools::egress::lan`]) that session carries the
-/// registry's no-LAN marker for the call.
+/// registry's no-LAN marker for the call. The harness's own call (206: `HarnessInvoke`): a builtin
+/// switched off for the model still runs.
 pub async fn invoke(
     reg: &ActorRef<tools::ToolRegistry>,
     name: &str,
@@ -171,7 +172,7 @@ pub async fn invoke(
         session,
         quiet: true,
     };
-    let out = tokio::time::timeout(deadline, reg.ask(tools::Invoke(call))).await;
+    let out = tokio::time::timeout(deadline, reg.ask(tools::HarnessInvoke(call))).await;
     if !lan {
         let _ = reg.ask(no_lan(false)).await;
     }

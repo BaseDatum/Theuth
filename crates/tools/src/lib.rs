@@ -111,8 +111,9 @@ pub use registry::{
     RestoreApprovals, RestoreHidden, SetAllowOnly, SetNoLan, SetPromoteAfter, SetTurnCap,
 };
 pub use registry::{
-    CloseTreeAll, ExpectParticipants, HiddenEpoch, ListBuiltins, MCP_SERVER_HIDE_PREFIX, OpenTree,
-    ParticipantsReady, RegisterLifecycle, SetBuiltinsDisabled, mcp_server_key,
+    BuiltinsSwitchError, CloseTreeAll, ExpectParticipants, HarnessInvoke, HiddenEpoch,
+    ListBuiltins, MCP_SERVER_HIDE_PREFIX, OpenTree, ParticipantsReady, RegisterLifecycle,
+    SetBuiltinsDisabled, mcp_server_key,
 };
 pub use reminder::{
     CancelReminder, CancelReminders, RearmReminder, ReminderEvent, ReminderView, SetReminder,

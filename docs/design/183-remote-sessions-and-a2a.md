@@ -276,7 +276,7 @@ The 37 `forward::route` sites in `crates/rpc/src/api.rs`. After this change ever
 | `set_harness_option` / `resume_child` | 5247 / 5270 | write | |
 | `set_mcp_hidden` | 5307 | write | owner's MCP set |
 | `list_builtins` | `crates/agent/src/rpc_tooling.rs` | read | 206: owner's hide set, like `list_mcp`; forwarded only with a session |
-| `set_builtins_disabled` | `crates/agent/src/rpc_tooling.rs` | write | 206: never forwarded; engine-local `tools.builtins.disabled` |
+| `set_builtins_disabled` | `crates/agent/src/rpc_tooling.rs` | write | 206: forwarded only with a session (the owner's `tools.builtins.disabled`, like `list_builtins`); without one engine-local |
 | `set_approvals` | 5330 | write | persisted on the row (§4.5) |
 | `set_communication` | 5354 | write | persisted on the row (§4.5) |
 | `set_peer_scope` / `answer_peer_request` | 5369 / 5437 | write | |

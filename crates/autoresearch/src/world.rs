@@ -931,7 +931,9 @@ async fn post_card(study: &StudyRecord, exp: &ExperimentRecord, token: &str) {
             session: origin,
             quiet: true,
         };
-        match tokio::time::timeout(Duration::from_secs(30), reg.ask(::tools::Invoke(call))).await {
+        // 206: the harness's own card, not a model call: the builtin switch does not apply.
+        let card = reg.ask(::tools::HarnessInvoke(call));
+        match tokio::time::timeout(Duration::from_secs(30), card).await {
             Ok(Ok(out)) if !out.is_error => {}
             Ok(Ok(out)) => {
                 tracing::warn!(slug = %study.slug, n = exp.n, "launch card refused: {}", out.content)
