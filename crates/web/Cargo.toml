@@ -1,11 +1,12 @@
 [package]
 name = "web"
-version.workspace = true
+version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
 description = "Web search and fetch: search_web / read_url tools, SSRF-guarded fetcher, RRF aggregator, keyless engines, provider registry (design doc 16)"
 
 [dependencies]
+platform = { workspace = true }  # the product version (`platform::version`)
 rpc-core = { workspace = true }
 rpc-core-macros = { workspace = true }
 jsonrpsee = { workspace = true }

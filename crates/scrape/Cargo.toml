@@ -1,6 +1,6 @@
 [package]
 name = "scrape"
-version.workspace = true
+version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
 description = "Local scrape/crawl/map tools on vendored firecrawl-native (design doc 38)"

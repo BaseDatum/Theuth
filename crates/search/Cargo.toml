@@ -1,6 +1,6 @@
 [package]
 name = "search"
-version.workspace = true
+version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
 description = "Shared fuzzy matching, snippets and the bounded result page (design doc 49 §4.1)"

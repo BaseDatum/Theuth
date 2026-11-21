@@ -70,6 +70,7 @@ pub struct App {
 }
 
 fn main() -> anyhow::Result<()> {
+    platform::version::set(env!("CARGO_PKG_VERSION"));
     let cli = Cli::parse();
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));

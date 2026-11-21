@@ -58,7 +58,7 @@ impl Wikipedia {
                 self.base,
                 encode_title(title)
             ))
-            .header(USER_AGENT, super::USER_AGENT)
+            .header(USER_AGENT, super::user_agent())
             .send()
             .await?;
         if !response.status().is_success() {
@@ -86,7 +86,7 @@ impl Provider for Wikipedia {
         let limit = q.limit.to_string();
         let response = client
             .get(format!("{}/w/api.php", self.base))
-            .header(USER_AGENT, super::USER_AGENT)
+            .header(USER_AGENT, super::user_agent())
             .query(&[
                 ("action", "query"),
                 ("list", "search"),

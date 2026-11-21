@@ -118,7 +118,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             m.catalog = Some(catalog);
             m.mount_components(&component_commands);
             m.entries.push(Entry::Info(
-                concat!("theuth ", env!("CARGO_PKG_VERSION")).into(),
+                format!("theuth {}", platform::version::get()),
             ));
             m
         }

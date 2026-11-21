@@ -223,7 +223,7 @@ fn newer(current: &Version, remote: &Version) -> bool {
 }
 
 fn current_version() -> anyhow::Result<Version> {
-    Version::parse(env!("CARGO_PKG_VERSION")).context("CARGO_PKG_VERSION is not semver")
+    Version::parse(platform::version::get()).context("the product version is not semver")
 }
 
 /// Tauri's encoding: base64 of the minisign text file (`.pub` / `.sig`).
@@ -263,7 +263,7 @@ async fn check_and_apply(
     let client = reqwest::Client::builder()
         .connect_timeout(HTTP_TIMEOUT)
         .read_timeout(HTTP_TIMEOUT)
-        .user_agent(format!("theuth/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("theuth/{}", platform::version::get()))
         .build()?;
     let manifest: Manifest = client
         .get(&cfg.url)

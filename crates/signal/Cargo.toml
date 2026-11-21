@@ -1,6 +1,6 @@
 [package]
 name = "signal"
-version.workspace = true
+version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
 description = "Signal messenger frontend for the daemon (design doc 09)"

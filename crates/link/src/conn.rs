@@ -152,7 +152,7 @@ pub fn respond(
         };
         let hello = serde_json::to_vec(&SessionHello {
             name,
-            version: env!("CARGO_PKG_VERSION"),
+            version: platform::version::get(),
         })
         .ok()?;
         let n = hs.write_message(&hello, &mut msg2).ok()?;
@@ -1008,7 +1008,7 @@ mod tests {
         let n = dev.read_message(&msg2, &mut buf).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&buf[..n]).unwrap();
         assert_eq!(v["name"], "Sky");
-        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(v["version"], platform::version::get());
         let mut dev_t = dev.into_transport_mode().unwrap();
         let n = transport.write_message(b"\x01hi", &mut buf).unwrap();
         let enc = buf[..n].to_vec();

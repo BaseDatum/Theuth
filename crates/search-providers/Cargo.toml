@@ -1,6 +1,6 @@
 [package]
 name = "search-providers"
-version.workspace = true
+version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
 description = "External search providers (Brave, Firecrawl, SearXNG, OpenSERP) registered with the web plugin over the bus (design doc 16 §3), plus the search_x tool over xAI's x_search (design doc 80)"

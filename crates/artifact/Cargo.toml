@@ -1,6 +1,6 @@
 [package]
 name = "artifact"
-version.workspace = true
+version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
 description = "Files the agent makes for the user, shown in chat: `show` tool, content-addressed store, Typst PDF compile, SVG raster (design doc 35)"

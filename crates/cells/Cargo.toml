@@ -1,6 +1,6 @@
 [package]
 name = "cells"
-version.workspace = true
+version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
 description = "User cells: code the user runs with one press in chat, notes and notebooks — kernels, run store, delivery, RPC (design doc 171)"

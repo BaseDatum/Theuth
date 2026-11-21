@@ -1,6 +1,6 @@
 [package]
 name = "schedule"
-version.workspace = true
+version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
 description = "Prompt files that fire on a clock: schedules/ directory, croner tick, one session per schedule, reply delivery (design doc 34)"

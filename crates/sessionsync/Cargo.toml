@@ -1,6 +1,6 @@
 [package]
 name = "sessionsync"
-version.workspace = true
+version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
 description = "Transcript replication with transferable ownership: ships the agent store's per-commit changeset log over the mesh and applies peers' logs (design doc 68)"

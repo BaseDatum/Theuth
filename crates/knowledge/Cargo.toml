@@ -1,6 +1,6 @@
 [package]
 name = "knowledge"
-version.workspace = true
+version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
 description = "Knowledge bundle: OKF files, FTS index, gix history, knowledge_* tools (design doc 10)"

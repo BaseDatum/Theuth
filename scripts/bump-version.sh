@@ -2,9 +2,14 @@
 # Bump the product version (major | minor | patch | x.y.z).
 #
 # One version, two files kept in lockstep:
-#   Cargo.toml                       [workspace.package].version — every crate
-#                                    (version.workspace = true), `t --version`,
-#                                    the TUI banner, macOS bundle, release scripts
+#   Cargo.toml                       [workspace.package].version — the binary
+#                                    crates only (theuth, desktop, relay:
+#                                    version.workspace = true), `t --version`,
+#                                    macOS bundle, release scripts. Library
+#                                    crates keep a frozen version and read the
+#                                    product version at runtime
+#                                    (platform::version, set by each binary), so
+#                                    a bump rebuilds the binaries, not the workspace.
 #   crates/desktop/tauri.conf.json   version — iOS CFBundleShortVersionString
 #                                    (tauri ios build has no Cargo.toml fallback)
 #                                    and the UI badge (vite define)

@@ -583,7 +583,7 @@ pub fn card(facts: &CardFacts) -> AgentCard {
     AgentCard {
         name: facts.name.clone(),
         description: facts.description.clone(),
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        version: platform::version::get().to_owned(),
         supported_interfaces: interfaces,
         capabilities: AgentCapabilities {
             streaming: Some(true),
