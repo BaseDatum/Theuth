@@ -1077,6 +1077,7 @@ dependencies = [
  "typst-layout",
  "typst-pdf",
  "typst-render",
+ "url",
  "uuid",
  "wire",
  "zip 9.2.2",
