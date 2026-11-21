@@ -103,34 +103,36 @@ impl Tool for SecretListTool {
                  or call secret_request",
             ));
         }
-        let lines: Vec<String> = list
-            .iter()
-            .map(|s| {
-                let note = if s.note.is_empty() {
-                    String::new()
-                } else {
-                    format!(" · {}", s.note)
-                };
-                let expires = s
-                    .expires
-                    .as_deref()
-                    .and_then(expiry::from_rfc3339)
-                    .map(|t| format!(" · expires {}", expiry::local_time(t)))
-                    .unwrap_or_default();
-                format!(
-                    "{} · v{} ({} kept){note} · {} · {}{expires}",
-                    s.name,
-                    s.current,
-                    s.versions.len(),
-                    s.updated,
-                    s.source
-                )
-            })
-            .collect();
+        let now = crate::now_ms();
+        let lines: Vec<String> = list.iter().map(|s| list_line(s, now)).collect();
         let mut out = ToolOutput::ok(lines.join("\n"));
         out.structured = serde_json::to_value(&list).ok();
         Ok(out)
     }
+}
+
+/// One `secret_list` line: `NAME · vN (K kept) · note · updated · source`, then
+/// ` · expires in 40 min` (or the date) when the current version expires.
+fn list_line(s: &SecretInfo, now_ms: u64) -> String {
+    let note = if s.note.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", s.note)
+    };
+    let expires = s
+        .expires
+        .as_deref()
+        .and_then(expiry::from_rfc3339)
+        .map(|t| format!(" · {}", expiry::describe(t, now_ms)))
+        .unwrap_or_default();
+    format!(
+        "{} · v{} ({} kept){note} · {} · {}{expires}",
+        s.name,
+        s.current,
+        s.versions.len(),
+        s.updated,
+        s.source
+    )
 }
 
 /// One value of a `secret_request` with `fields` (79 §6.6).
@@ -830,5 +832,30 @@ mod tests {
             expires_ms: None,
         };
         assert_eq!(receipt(&timed, false, t).content, "no answer after 60 s");
+    }
+
+    #[test]
+    fn list_line_describes_the_expiry() {
+        let info = |expires: Option<String>| SecretInfo {
+            name: "TOKEN".into(),
+            note: "GitHub PAT".into(),
+            source: "local".into(),
+            current: 2,
+            versions: vec![],
+            updated: "2026-09-21T10:00:00Z".into(),
+            expires,
+        };
+        let base = "TOKEN · v2 (0 kept) · GitHub PAT · 2026-09-21T10:00:00Z · local";
+        assert_eq!(list_line(&info(None), NOW), base);
+        let soon = NOW + 40 * 60_000;
+        assert_eq!(
+            list_line(&info(Some(expiry::rfc3339(soon))), NOW),
+            format!("{base} · expires in 40 min")
+        );
+        let far = NOW + 3 * 86_400_000;
+        assert_eq!(
+            list_line(&info(Some(expiry::rfc3339(far))), NOW),
+            format!("{base} · expires {}", expiry::local_time(far))
+        );
     }
 }
