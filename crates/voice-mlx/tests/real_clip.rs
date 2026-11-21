@@ -25,8 +25,10 @@ fn transcribes_real_clip() {
 
     for clip in clips.split(':') {
         let bytes = std::fs::read(clip).unwrap();
-        let pcm: Vec<f32> =
-            bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
+        let pcm: Vec<f32> = bytes
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
+            .collect();
         let t0 = Instant::now();
         let t = model.transcribe(&pcm).unwrap();
         println!(
@@ -37,7 +39,10 @@ fn transcribes_real_clip() {
             t.text
         );
         if let Some(w) = t.words.first() {
-            println!("  first word {:?} {:.2}–{:.2} s", w.text, w.start_s, w.end_s);
+            println!(
+                "  first word {:?} {:.2}–{:.2} s",
+                w.text, w.start_s, w.end_s
+            );
         }
         assert!(!t.text.is_empty());
         if let Ok(expect) = std::env::var("PARAKEET_MLX_EXPECT") {

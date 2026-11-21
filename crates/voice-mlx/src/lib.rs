@@ -32,6 +32,10 @@ pub const FILES: &[&str] = &["config.json", "model.safetensors"];
 mod mel;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod model;
+#[cfg_attr(
+    not(all(target_os = "macos", target_arch = "aarch64")),
+    allow(dead_code)
+)]
 mod text;
 
 /// True only where the MLX engine is compiled in (macOS on Apple silicon).

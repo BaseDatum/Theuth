@@ -28,7 +28,11 @@ pub(crate) fn decode_piece(piece: &str) -> String {
 
 /// Assemble the transcript: text = concatenated token texts, stripped (Python `str.strip`); a word starts at
 /// every token whose text begins with whitespace (or the first token) and runs to the next such token.
-pub(crate) fn assemble(tokens: &[Token], vocabulary: &[String], seconds_per_frame: f32) -> Transcript {
+pub(crate) fn assemble(
+    tokens: &[Token],
+    vocabulary: &[String],
+    seconds_per_frame: f32,
+) -> Transcript {
     let mut text = String::new();
     let mut words: Vec<Word> = Vec::new();
     for t in tokens {
@@ -41,11 +45,18 @@ pub(crate) fn assemble(tokens: &[Token], vocabulary: &[String], seconds_per_fram
                 w.text.push_str(&piece);
                 w.end_s = end_s;
             }
-            _ => words.push(Word { text: piece.trim_start().to_owned(), start_s, end_s }),
+            _ => words.push(Word {
+                text: piece.trim_start().to_owned(),
+                start_s,
+                end_s,
+            }),
         }
     }
     words.retain(|w| !w.text.is_empty());
-    Transcript { text: text.trim().to_owned(), words }
+    Transcript {
+        text: text.trim().to_owned(),
+        words,
+    }
 }
 
 #[cfg(test)]
@@ -71,7 +82,11 @@ mod tests {
     fn joins_like_parakeet_mlx() {
         let v = vocab(&["▁it", "▁ok", "s", ".", "'", "?", "!"]);
         let toks: Vec<Token> = (0..v.len())
-            .map(|id| Token { id, start_frame: id * 2, duration_frames: 1 })
+            .map(|id| Token {
+                id,
+                start_frame: id * 2,
+                duration_frames: 1,
+            })
             .collect();
         let t = assemble(&toks, &v, 0.08);
         assert_eq!(t.text, "it oks.'?!");

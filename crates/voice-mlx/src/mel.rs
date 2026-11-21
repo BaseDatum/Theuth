@@ -26,12 +26,25 @@ pub(crate) fn filterbank() -> Vec<f32> {
     const MIN_LOG_HZ: f64 = 1000.0;
     let min_log_mel = MIN_LOG_HZ / F_SP;
     let logstep = 6.4f64.ln() / 27.0;
-    let hz_to_mel = |f: f64| if f >= MIN_LOG_HZ { min_log_mel + (f / MIN_LOG_HZ).ln() / logstep } else { f / F_SP };
-    let mel_to_hz =
-        |m: f64| if m >= min_log_mel { MIN_LOG_HZ * (logstep * (m - min_log_mel)).exp() } else { F_SP * m };
+    let hz_to_mel = |f: f64| {
+        if f >= MIN_LOG_HZ {
+            min_log_mel + (f / MIN_LOG_HZ).ln() / logstep
+        } else {
+            f / F_SP
+        }
+    };
+    let mel_to_hz = |m: f64| {
+        if m >= min_log_mel {
+            MIN_LOG_HZ * (logstep * (m - min_log_mel)).exp()
+        } else {
+            F_SP * m
+        }
+    };
 
     let sr = SAMPLE_RATE as f64;
-    let fftfreqs: Vec<f64> = (0..N_BINS).map(|i| i as f64 * (sr / 2.0) / (N_BINS - 1) as f64).collect();
+    let fftfreqs: Vec<f64> = (0..N_BINS)
+        .map(|i| i as f64 * (sr / 2.0) / (N_BINS - 1) as f64)
+        .collect();
     let (mel_lo, mel_hi) = (hz_to_mel(0.0), hz_to_mel(sr / 2.0));
     let mel_f: Vec<f64> = (0..N_MELS + 2)
         .map(|i| mel_to_hz(mel_lo + (mel_hi - mel_lo) * i as f64 / (N_MELS + 1) as f64))
@@ -64,7 +77,11 @@ fn frames(pcm: &[f32]) -> (Vec<f32>, usize) {
 
     let window: Vec<f32> = (0..N_FFT)
         .map(|i| {
-            if i < WIN { (0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / WIN as f64).cos()) as f32 } else { 0.0 }
+            if i < WIN {
+                (0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / WIN as f64).cos()) as f32
+            } else {
+                0.0
+            }
         })
         .collect();
     let t = (padded.len() - WIN + HOP) / HOP;
@@ -82,16 +99,27 @@ fn frames(pcm: &[f32]) -> (Vec<f32>, usize) {
 /// Normalised log-mel features `[1, t, N_MELS]`, float32.
 pub(crate) fn log_mel(pcm: &[f32], fb: &Array) -> Result<Array> {
     // parakeet-mlx needs ≥ HOP samples, but its reflect padding silently shortens below N_FFT/2 + 1; refuse that.
-    ensure!(pcm.len() > N_FFT / 2 + 1, "audio must hold more than {} samples, got {}", N_FFT / 2 + 1, pcm.len());
+    ensure!(
+        pcm.len() > N_FFT / 2 + 1,
+        "audio must hold more than {} samples, got {}",
+        N_FFT / 2 + 1,
+        pcm.len()
+    );
     let (fr, t) = frames(pcm);
-    let spec = fft::rfft(Array::from_slice(&fr, &[t as i32, N_FFT as i32]), N_FFT as i32, -1)?;
+    let spec = fft::rfft(
+        Array::from_slice(&fr, &[t as i32, N_FFT as i32]),
+        N_FFT as i32,
+        -1,
+    )?;
     let mag = ops::abs(spec.real()?)?.add(ops::abs(spec.imag()?)?)?;
     let power = mag.power(Array::from_f32(2.0))?;
     let mel = ops::matmul(fb, power.t())?; // [N_MELS, t]
     let mel = mel.add(Array::from_f32(1e-5))?.log()?;
     let mean = mel.mean_axis(1, true)?;
     let std = mel.var_axis(1, true, 0)?.sqrt()?;
-    let norm = mel.subtract(&mean)?.divide(std.add(Array::from_f32(1e-5))?)?;
+    let norm = mel
+        .subtract(&mean)?
+        .divide(std.add(Array::from_f32(1e-5))?)?;
     Ok(ops::expand_dims(norm.t(), 0)?)
 }
 
@@ -111,10 +139,14 @@ mod tests {
             .map(|n| {
                 let n = n as f64;
                 (0.5 * (2.0 * std::f64::consts::PI * 440.0 * n / 16000.0).sin()
-                    + 0.25 * (2.0 * std::f64::consts::PI * 1234.5 * n / 16000.0).sin()) as f32
+                    + 0.25 * (2.0 * std::f64::consts::PI * 1234.5 * n / 16000.0).sin())
+                    as f32
             })
             .collect();
-        let mel = log_mel(&pcm, &filterbank_array()).unwrap().contiguous().unwrap();
+        let mel = log_mel(&pcm, &filterbank_array())
+            .unwrap()
+            .contiguous()
+            .unwrap();
         assert_eq!(mel.shape(), &[1, 51, 128]);
         let v: &[f32] = mel.as_slice();
         let at = |t: usize, f: usize| v[t * 128 + f];
@@ -131,9 +163,16 @@ mod tests {
             ((50, 127), 0.476_270_9),
         ];
         for &((t, f), want) in oracle {
-            assert!((at(t, f) - want).abs() < 2e-3, "mel[{t},{f}] = {} want {want}", at(t, f));
+            assert!(
+                (at(t, f) - want).abs() < 2e-3,
+                "mel[{t},{f}] = {} want {want}",
+                at(t, f)
+            );
         }
         let mean_abs = v.iter().map(|x| x.abs()).sum::<f32>() / v.len() as f32;
-        assert!((mean_abs - 0.470_609_4).abs() < 1e-3, "mean |mel| {mean_abs}");
+        assert!(
+            (mean_abs - 0.470_609_4).abs() < 1e-3,
+            "mean |mel| {mean_abs}"
+        );
     }
 }

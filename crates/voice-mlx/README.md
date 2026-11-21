@@ -51,10 +51,34 @@ Faithfulness notes:
   ~1.5 MB but compiles kernels from source on first use in every process.
 - **Linked:** static `libmlx` + `libmlxc` (+ gguflib), `libc++`, `objc`; frameworks `Foundation`, `Metal`,
   `Accelerate` (mlx-sys build.rs), plus `clang_rt.osx` from Xcode when found.
-- **Minimum macOS:** see "Measured" below.
+- **Minimum macOS:** MLX v0.32.2's CMake builds for the *build host's* macOS version unless
+  `CMAKE_OSX_DEPLOYMENT_TARGET` is set, and refuses anything below 14.0. For a distributable binary set
+  `MACOSX_DEPLOYMENT_TARGET=14.0` (or the app's floor, ≥ 14.0) for the build; not yet verified that mlx-sys's cmake
+  invocation forwards it (check `otool -l` LC_BUILD_VERSION `minos` on objects in `libmlx.a`).
 - **Build:** mlx-sys runs CMake, which fetches MLX v0.32.2 sources from GitHub (network at build time) and builds
   them; needs cmake and the Metal toolchain.
 
 ## Measured here
 
-(filled in below by the porting session)
+Python oracle (parakeet-mlx 0.7.0, `uv run --with parakeet-mlx`, run once in /tmp, not part of the build):
+load 4.8 s cold (f32) / 0.14 s warm-cache (bf16); three private dictation clips of 6.9 s, 17.8 s and 36.8 s took
+576 / 205 / 291 ms (f32, first includes kernel warm-up); f32 and bf16 transcripts identical. The synthetic-tone mel
+values used by `mel::tests` come from the same run.
+
+Not yet measured for the Rust port (status 2026-11-21, first session): the crate has **not been compiled yet** —
+the machine-wide build lock was held by another session for the whole window. Cold mlx-sys build time, binary
+size delta, Rust load/per-clip time and peak RSS are still open.
+
+## Next steps for whoever continues
+
+1. `cargo check -p voice-mlx` (under the build lock, `CMAKE_BUILD_PARALLEL_LEVEL=4`); fix API slips against
+   mlx-rs 0.34 (written against its source, never compiled).
+2. `cargo test -p voice-mlx` — `text::tests` (tokenizer joining oracle) and `mel::tests` (log-mel oracle, needs
+   Metal).
+3. Weights: `curl -L https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3/resolve/main/{config.json,model.safetensors}`
+   into /tmp/parakeet-tdt-mlx, then `PARAKEET_MLX_DIR=... PARAKEET_MLX_CLIP=a.pcm16:b.pcm16 cargo test -p voice-mlx
+   --test real_clip -- --ignored --nocapture`; compare with
+   `uv run --with parakeet-mlx==0.7.0 python -c 'from parakeet_mlx import from_pretrained; from parakeet_mlx.audio import get_logmel; ...'`
+   (`model.generate(get_logmel(pcm, model.preprocessor_config))[0].text`).
+4. If transcripts diverge, compare encoder output mean/std first (oracle for the 6.9 s clip: shape [1, 87, 1024],
+   mean −1.63e-5, std 0.018683), then the rel_shift / pos-emb path in `model.rs`.
