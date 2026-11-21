@@ -1216,6 +1216,29 @@ impl Endless {
         pump::zoom(&self.inner, session, id, n).await
     }
 
+    /// 201 §8 (P4): `zoom(id, 1)` on an artefact unit: its line and its
+    /// binary re-read from the row (`Err(line)`: no longer stored); `None`
+    /// for any other unit.
+    pub async fn artefact(
+        &self,
+        session: SessionId,
+        id: u64,
+    ) -> Option<Result<(String, genai::chat::Binary), String>> {
+        pump::artefact(&self.inner, session, id).await
+    }
+
+    /// 201 §8 (P4): a trim moved rows `[from_seq, to_seq)` out of the tail:
+    /// describe their images in the background ([`pump::describe_left`]).
+    pub fn describe_left(
+        &self,
+        session: SessionId,
+        from_seq: i64,
+        to_seq: i64,
+        vision: Option<models::Resolved>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        pump::describe_left(&self.inner, session, from_seq, to_seq, vision)
+    }
+
     /// `recall(query, limit)` (§9).
     pub async fn recall(
         &self,

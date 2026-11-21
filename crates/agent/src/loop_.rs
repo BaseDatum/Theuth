@@ -4916,9 +4916,13 @@ impl Turn {
             let keep_from = cut.map_or(0, |c| c.keep_from);
             let before = tail::bytes(&self.state.history);
             let first_seq = self.state.history.get(keep_from).map(|(s, _)| *s);
+            let left_from = g.first_seq;
             g = endless
                 .start_generation(id, first_seq, view_max, false)
                 .await?;
+            // 201 §8 (P4): images leaving the tail gain a description in
+            // the background; the next generation shows it.
+            endless.describe_left(id, left_from, g.first_seq, self.vision_model());
             self.state.history.drain(..keep_from);
             self.state.head = None;
             let kept = tail::bytes(&self.state.history);

@@ -3166,3 +3166,204 @@ async fn model_merges_wait_for_merge_at() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+/// 201 §8 (P4): a compactor that may accept images; counts descriptions and
+/// records whether any request ever carried image bytes.
+struct Seer {
+    model: models::Resolved,
+    vision: bool,
+    described: AtomicU32,
+    saw_bytes: std::sync::atomic::AtomicBool,
+}
+
+impl Seer {
+    fn new(vision: bool) -> Arc<Self> {
+        Arc::new(Self {
+            model: super::pump::resolved_for_tests("fake/seer"),
+            vision,
+            described: AtomicU32::new(0),
+            saw_bytes: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+}
+
+impl Compactor for Seer {
+    fn compress<'a>(
+        &'a self,
+        _ctx: &'a str,
+        convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        let bytes = convo.iter().any(|m| {
+            m.content.iter().any(|p| match p {
+                ContentPart::Binary(_) => true,
+                ContentPart::ToolResponse(r) => !r.images.is_empty(),
+                _ => false,
+            })
+        });
+        if bytes {
+            self.saw_bytes.store(true, Ordering::SeqCst);
+        }
+        Box::pin(async { Err("scripted failure".to_owned()) })
+    }
+    fn model(&self) -> &models::Resolved {
+        &self.model
+    }
+    fn accepts_images(&self) -> bool {
+        self.vision
+    }
+    fn describe_image<'a>(
+        &'a self,
+        _image: &'a genai::chat::Binary,
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        self.saw_bytes.store(true, Ordering::SeqCst);
+        self.described.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Ok(Reply {
+                text: "a red square on white\n".into(),
+                ..Default::default()
+            })
+        })
+    }
+}
+
+/// A session with one screenshot (tool picture) and one user image.
+async fn seed_images(store: &Store, id: SessionId) {
+    let png = |n: &str| genai::chat::Binary::from_base64("image/png", "iVBORw0K", Some(n.into()));
+    store
+        .append(
+            id,
+            &ChatMessage::user(MessageContent::from_parts(vec![ContentPart::Binary(png(
+                "photo.png",
+            ))])),
+        )
+        .await
+        .unwrap();
+    store
+        .append(
+            id,
+            &ChatMessage::from(vec![
+                ToolResponse::new("c1", "shot taken").with_images(vec![png("/tmp/screen.png")]),
+            ]),
+        )
+        .await
+        .unwrap();
+}
+
+async fn l0(store: &Store, id: SessionId, i: u64) -> super::tree::Node {
+    store
+        .endless_nodes(id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|n| n.l == 0 && n.i == i)
+        .unwrap()
+}
+
+/// 201 §8 (P4): units 0 (`[image: photo.png]`), 1 (echo), 2 (tool picture);
+/// at a trim with `auto` an image-capable compactor describes both images,
+/// the line records the source, and the next generation shows it.
+#[tokio::test]
+async fn trim_describes_images_leaving_the_tail() {
+    let seer = Seer::new(true);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), seer.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_images(&store, id).await;
+    endless.attach(id, attached()).await.unwrap();
+    let g1 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    assert!(g1.render.text().contains("[image: photo.png]"));
+    assert!(g1.render.text().contains("echo: [image: screen.png]"));
+    endless
+        .describe_left(id, 0, i64::MAX, None)
+        .expect("a description job")
+        .await
+        .unwrap();
+    assert_eq!(seer.described.load(Ordering::SeqCst), 2);
+    for i in [0, 2] {
+        let n = l0(&store, id, i).await;
+        assert!(n.text.ends_with(" — a red square on white"), "{}", n.text);
+        assert_eq!(n.model.as_deref(), Some("described:compactor:fake/seer"));
+    }
+    // Already described: nothing to do at the next trim.
+    assert!(endless.describe_left(id, 0, i64::MAX, None).is_none());
+    let g2 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    assert!(
+        g2.render.text().contains("a red square"),
+        "{}",
+        g2.render.text()
+    );
+}
+
+/// 201 §8 (P4): `describe_images: off` skips descriptions; a text-only
+/// compactor with no vision model is never sent image bytes.
+#[tokio::test]
+async fn no_description_when_off_or_text_only() {
+    let seer = Seer::new(true);
+    let cfg = EndlessConfig {
+        describe_images: super::DescribeImages::Off,
+        ..cfg_p1(16)
+    };
+    let (_dir, endless, store, id) = harness_for(cfg, seer.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_images(&store, id).await;
+    endless.attach(id, attached()).await.unwrap();
+    assert!(endless.describe_left(id, 0, i64::MAX, None).is_none());
+    assert_eq!(seer.described.load(Ordering::SeqCst), 0);
+
+    let text_only = Seer::new(false);
+    let (_dir2, endless, store, id) = harness_for(cfg_p1(16), text_only.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_images(&store, id).await;
+    endless.attach(id, attached()).await.unwrap();
+    if let Some(h) = endless.describe_left(id, 0, i64::MAX, None) {
+        h.await.unwrap();
+    }
+    assert!(!text_only.saw_bytes.load(Ordering::SeqCst));
+    assert_eq!(l0(&store, id, 0).await.text, "user: [image: photo.png]");
+}
+
+/// 201 §8 (P4): `zoom(id, 1)` on an artefact unit returns the stored
+/// binary with its line; other units are no artefacts.
+#[tokio::test]
+async fn zoom_on_an_image_unit_returns_the_binary() {
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), Seer::new(false)).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_images(&store, id).await;
+    endless.attach(id, attached()).await.unwrap();
+    let (line, b) = endless.artefact(id, 2).await.unwrap().unwrap();
+    assert_eq!(line, "echo: [image: screen.png]");
+    assert_eq!(b.name.as_deref(), Some("/tmp/screen.png"));
+    let (_, b) = endless.artefact(id, 0).await.unwrap().unwrap();
+    assert_eq!(b.name.as_deref(), Some("photo.png"));
+    assert!(
+        endless.artefact(id, 1).await.is_none(),
+        "an echo is no artefact"
+    );
+    let out = crate::loop_::endless_tools::run(
+        &endless,
+        id,
+        crate::loop_::endless_tools::ZOOM,
+        &serde_json::json!({"id": 2, "n": 1}),
+    )
+    .await;
+    assert_eq!(out.files.len(), 1, "{}", out.content);
+    assert!(out.content.starts_with("2+1|echo: [image: screen.png]"));
+    let _ = std::fs::remove_file(&out.files[0]);
+}

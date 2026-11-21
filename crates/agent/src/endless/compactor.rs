@@ -468,7 +468,23 @@ pub trait Compactor: Send + Sync {
     ) -> BoxFuture<'a, Result<Reply, String>> {
         self.compress(ctx, convo)
     }
+    /// 201 §8 (P4): the catalog says this model accepts images.
+    fn accepts_images(&self) -> bool {
+        crate::backend::supports_images(self.model())
+    }
+    /// 201 §8 (P4): a one-line description of `image` ([`DESCRIBE`]); asked
+    /// only of a model that accepts images. The default sends nothing.
+    fn describe_image<'a>(
+        &'a self,
+        image: &'a genai::chat::Binary,
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        let _ = image;
+        Box::pin(async { Err("this compactor does not describe images".to_owned()) })
+    }
 }
+
+/// 201 §8 (P4): the system prompt of an image description.
+pub const DESCRIBE: &str = "Describe the image in one line of at most 30 words: what it shows, and any visible text that matters. Reply with that line only.";
 
 /// R2-11: `inner`, recording every answered attempt as it lands — so a job
 /// dropped by its outer bound (or a panic) still settles the usage of the
@@ -1523,6 +1539,13 @@ impl Compactor for ModelCompactor {
         Box::pin(self.compress_inner(ctx, convo, 1, false, true))
     }
 
+    fn describe_image<'a>(
+        &'a self,
+        image: &'a genai::chat::Binary,
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        Box::pin(self.describe_inner(image))
+    }
+
     fn model(&self) -> &Resolved {
         &self.model
     }
@@ -1557,6 +1580,25 @@ impl ModelCompactor {
         } else {
             self.request_opts(transport, ctx, convo, lines, forced)
         };
+        self.send(req, opts).await
+    }
+
+    /// 201 §8 (P4): one [`DESCRIBE`] request carrying `image`, capped like a
+    /// small-profile reply.
+    async fn describe_inner(&self, image: &genai::chat::Binary) -> Result<Reply, String> {
+        let transport = self.backend.transport(&self.model).await?;
+        use genai::chat::{ContentPart, MessageContent};
+        let convo = [ChatMessage::user(MessageContent::from_parts(vec![
+            ContentPart::Text("Describe this image in one line.".to_owned()),
+            ContentPart::Binary(image.clone()),
+        ]))];
+        let ctx = "An image from the conversation follows.";
+        let (req, opts) = self.request_with(DESCRIBE, transport, ctx, &convo, 1, false);
+        let opts = opts.with_max_tokens(SMALL_REPLY_TOKENS.min(self.carry()));
+        self.send(req, opts).await
+    }
+
+    async fn send(&self, req: ChatRequest, opts: ChatOptions) -> Result<Reply, String> {
         let cap = opts.max_tokens.unwrap_or(0);
         let thinking_off = opts.extra_body.is_some() || opts.reasoning_effort.is_some();
         let started = Instant::now();

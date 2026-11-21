@@ -684,6 +684,24 @@ impl Store {
         Ok(rows.into_iter().map(|i| i as u64).collect())
     }
 
+    /// 201 §8 (P4): the one `messages` row `seq` (an artefact unit's binary).
+    pub async fn endless_message(
+        &self,
+        id: SessionId,
+        seq: i64,
+    ) -> anyhow::Result<Option<ChatMessage>> {
+        let body: Option<String> =
+            sqlx::query_scalar("SELECT body FROM messages WHERE session_id = ?1 AND seq = ?2")
+                .bind(id.to_string())
+                .bind(seq)
+                .fetch_optional(&self.read)
+                .await?;
+        Ok(match body {
+            Some(b) => Some(serde_json::from_str(&b)?),
+            None => None,
+        })
+    }
+
     /// `messages` rows from `seq` on (cut_at respected), for unit derivation.
     pub async fn endless_messages_from(
         &self,

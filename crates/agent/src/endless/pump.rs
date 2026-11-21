@@ -21,8 +21,8 @@ use super::fold::ViewBlock;
 use super::fold::{self, Fold, FoldCfg, Part, ViewRender};
 use super::tree::{self, Node, Quality, Tree, Unit, exists, id_n};
 use super::{
-    Attached, Backfill, Backlog, EndlessConfig, EndlessProgress, Inner, MemoryMode, Profile,
-    SessionMemory, SetMode, Stalled, TailMode, TailOverride, UnitFilter, ViewLine, units,
+    Attached, Backfill, Backlog, DescribeImages, EndlessConfig, EndlessProgress, Inner, MemoryMode,
+    Profile, SessionMemory, SetMode, Stalled, TailMode, TailOverride, UnitFilter, ViewLine, units,
 };
 use crate::backend::Backend;
 use crate::cost::{CallKind, CallStatus};
@@ -1252,6 +1252,8 @@ async fn load(state: &State) -> anyhow::Result<()> {
         last_seq = last_seq.max(r.seq);
         max_turn = max_turn.max(r.turn);
     }
+    // 201 §8 (P4): a vision note names the image units it describes.
+    link_notes(&mut units, |_, _| None);
     let nodes = state.store.endless_nodes(state.session).await?;
     {
         let mut live = state.live.lock();
@@ -1361,6 +1363,16 @@ async fn ingest(state: &State) -> anyhow::Result<()> {
         next_i += units.len() as u64;
         new_units.extend(units);
     }
+    {
+        let live = state.live.lock();
+        link_notes(&mut new_units, |seq, part| {
+            live.units
+                .iter()
+                .rev()
+                .find(|x| x.seq == seq && x.part == part)
+                .map(|x| x.i)
+        });
+    }
     let unit_rows: Vec<UnitRow> = new_units
         .iter()
         .map(|u| UnitRow {
@@ -1387,6 +1399,204 @@ async fn ingest(state: &State) -> anyhow::Result<()> {
         live.dirty = true;
     }
     fill_drafts(state, first).await
+}
+
+/// 201 §8 (P4): link every vision note of `units` to the image units it
+/// describes: earlier units of `units` first, then `outer`.
+fn link_notes(units: &mut [Unit], outer: impl Fn(i64, u16) -> Option<u64>) {
+    for k in 0..units.len() {
+        if units[k].kind != tree::Kind::Note {
+            continue;
+        }
+        let (before, rest) = units.split_at_mut(k);
+        units::link_note(&mut rest[0], |seq, part| {
+            before
+                .iter()
+                .rev()
+                .find(|x| x.seq == seq && x.part == part)
+                .map(|x| x.i)
+                .or_else(|| outer(seq, part))
+        });
+    }
+}
+
+/// 201 §8 (P4): the `endless_nodes.model` prefix of a described image line:
+/// `described:note`, `described:compactor:<id>`, `described:vision:<id>`.
+pub(crate) const DESCRIBED: &str = "described:";
+
+/// 201 §8 (P4): the binary of an artefact unit, read back from its row;
+/// `None` when the row or the part is no longer stored.
+async fn artefact_binary(
+    store: &Store,
+    session: SessionId,
+    seq: i64,
+    part: u16,
+) -> Option<genai::chat::Binary> {
+    use genai::chat::ContentPart;
+    let m = store.endless_message(session, seq).await.ok().flatten()?;
+    let (p, image) = units::locate(part);
+    match (m.content.parts().get(p)?, image) {
+        (ContentPart::Binary(b), None) => Some(b.clone()),
+        (ContentPart::ToolResponse(r), Some(k)) => r.images.get(k).cloned(),
+        _ => None,
+    }
+}
+
+/// 201 §8 (P4): `line` with `desc` appended, the whole within `node_bytes`;
+/// `None` when the description is empty or no room is left for it.
+fn described(line: &str, desc: &str, node_bytes: u32) -> Option<String> {
+    let desc = desc
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())?
+        .trim_matches('"');
+    if desc.is_empty() || line.len() + 4 >= node_bytes as usize {
+        return None;
+    }
+    let text = format!("{line} — {desc}");
+    Some(super::guards::cut_utf8(&text, node_bytes as usize).to_owned())
+}
+
+/// 201 §8 (P4): the image units of rows `[from_seq, to_seq)` — the rows a
+/// trim just moved out of the tail — gain a one-line description on their
+/// line, in the background (the turn never waits): a vision note about the
+/// image when there is one, else the compactor when the catalog says it
+/// accepts images, else `vision` (design 52's fallback model), else none.
+/// `describe_images: off`, a meeting tree and an epochs session skip it.
+/// The generation frozen at this trim shows the line as it was; the next
+/// one shows the description.
+pub(crate) fn describe_left(
+    inner: &Inner,
+    session: SessionId,
+    from_seq: i64,
+    to_seq: i64,
+    vision: Option<models::Resolved>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let state = state_of(inner, session)?;
+    let node_bytes = {
+        let cfg = state.cfg.read();
+        if cfg.describe_images == DescribeImages::Off {
+            return None;
+        }
+        cfg.node_bytes
+    };
+    // (unit, seq, part, the vision note's answer for it)
+    let targets: Vec<(u64, i64, u16, Option<String>)> = {
+        let live = state.live.lock();
+        if live.mode != MemoryMode::Endless || !live.drafting() {
+            return None;
+        }
+        live.units
+            .iter()
+            .filter(|u| u.seq >= from_seq && u.seq < to_seq && u.text.starts_with("[image: "))
+            .filter(|u| {
+                live.tree
+                    .get(0, u.i)
+                    .is_some_and(|n| !n.model.as_deref().is_some_and(|m| m.starts_with(DESCRIBED)))
+            })
+            .map(|u| {
+                let (p, k) = units::locate(u.part);
+                let note = live.units[u.i as usize..]
+                    .iter()
+                    .filter(|n| n.kind == tree::Kind::Note)
+                    .find_map(|n| units::note_answer(&n.text, u.seq, p, k));
+                (u.i, u.seq, u.part, note)
+            })
+            .collect()
+    };
+    if targets.is_empty() {
+        return None;
+    }
+    let compactor = state.compactor();
+    let describer: Option<(Arc<dyn Compactor>, String)> = if compactor.accepts_images() {
+        let by = format!("{DESCRIBED}compactor:{}", compactor.model_id());
+        Some((compactor, by))
+    } else {
+        vision.map(|v| {
+            let c: Arc<dyn Compactor> = match &inner.compactor_for_tests {
+                Some(f) => f(&v.id),
+                None => Arc::new(model_compactor(inner, session, v.clone(), "theuth", None)),
+            };
+            (c, format!("{DESCRIBED}vision:{}", v.id))
+        })
+    };
+    Some(tokio::spawn(async move {
+        for (i, seq, part, note) in targets {
+            let (desc, by) = match note {
+                Some(a) => (a, format!("{DESCRIBED}note")),
+                None => {
+                    let Some((c, by)) = &describer else { continue };
+                    let Some(b) = artefact_binary(&state.store, state.session, seq, part).await
+                    else {
+                        continue;
+                    };
+                    match c.describe_image(&b).await {
+                        Ok(r) => (r.text, by.clone()),
+                        Err(e) => {
+                            tracing::warn!(session = %state.session, unit = i, error = %e, "endless: image description");
+                            continue;
+                        }
+                    }
+                }
+            };
+            let node = {
+                let live = state.live.lock();
+                let Some(n) = live.tree.get(0, i) else {
+                    continue;
+                };
+                let Some(text) = described(&n.text, &desc, node_bytes) else {
+                    continue;
+                };
+                let mut n = n.clone();
+                n.size = text.len() as u32;
+                n.text = text;
+                n.model = Some(by);
+                n
+            };
+            if let Err(e) = state
+                .store
+                .endless_nodes_put(state.session, std::slice::from_ref(&node))
+                .await
+            {
+                tracing::warn!(session = %state.session, error = %e, "endless: image description");
+                continue;
+            }
+            let mut live = state.live.lock();
+            live.put(node);
+            live.invalidate();
+            live.dirty = true;
+        }
+        state.wake.notify_one();
+    }))
+}
+
+/// 201 §8 (P4): `zoom(id, 1)` on an artefact unit: its line and the binary
+/// read back from the row (`Err` with the line when it is no longer
+/// stored); `None` for any other unit.
+pub(crate) async fn artefact(
+    inner: &Inner,
+    session: SessionId,
+    id: u64,
+) -> Option<Result<(String, genai::chat::Binary), String>> {
+    let state = state_of(inner, session)?;
+    let (seq, part, line) = {
+        let live = state.live.lock();
+        let u = live.units.get(id as usize)?;
+        if !units::is_artefact(&u.text) {
+            return None;
+        }
+        let line = live
+            .tree
+            .get(0, id)
+            .map_or_else(|| u.tagged(), |n| n.text.clone());
+        (u.seq, u.part, line)
+    };
+    Some(
+        match artefact_binary(&state.store, state.session, seq, part).await {
+            Some(b) => Ok((line, b)),
+            None => Err(line),
+        },
+    )
 }
 
 fn start_pump(state: Arc<State>, cancel: CancellationToken) {
