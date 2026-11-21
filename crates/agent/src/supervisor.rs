@@ -113,8 +113,8 @@ use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{
     EndlessConfigChanged, EndlessFold, EndlessPause, EndlessRecall, EndlessRetry, EndlessZoom,
     GetEndlessSettings, RenderMemoryView, SessionMemoryQuery, SetAgentCompactorModel,
-    SetEndlessSettings, SetSessionCompactorModel, SetSessionMemory, SetSessionTail,
-    SetSessionViewBytes,
+    SetEndlessSettings, SetSessionAgentTail, SetSessionCompactorModel, SetSessionMemory,
+    SetSessionTail, SetSessionViewBytes,
 };
 use crate::{GetFavoriteModels, SetModelFavorite};
 use crate::{GetSubagentEffort, SetDeskEffort, SetSubagentEffort, ValidateEffort};
@@ -9467,6 +9467,19 @@ impl Message<SetSessionViewBytes> for Agents {
     ) -> Self::Reply {
         self.stored(m.session).await?;
         crate::endless_ext::set_view_bytes(&self.endless, m.session, m.bytes).await
+    }
+}
+
+impl Message<SetSessionAgentTail> for Agents {
+    type Reply = ();
+
+    /// 201 §4.2: the desk agent's tail keys, read at the session's next trim.
+    async fn handle(
+        &mut self,
+        m: SetSessionAgentTail,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.endless.set_agent_tail(m.session, m.tail);
     }
 }
 

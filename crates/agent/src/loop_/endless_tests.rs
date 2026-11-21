@@ -282,14 +282,19 @@ async fn scenario_off() {
     // A `Turn`-less host over the stored frame, as `SetMemoryNow` runs one.
     let (mut turn, _) = h.turn("openai/textonly", CancellationToken::new()).await;
     let text = "<context_summary epoch=\"1\" style=\"endless\">\n<chat>\n0+2|user: first; talk: ok\n</chat>\n</context_summary>";
-    let folded = turn.install_view_head(1, text).await.unwrap();
-    assert_eq!(folded, 2, "the input and the reply");
+    // 201 (P2): the tail from the reply on stays as the epoch's history.
+    let reply_seq = turn.state.history[1].0;
+    let folded = turn
+        .install_view_head(1, text, Some(reply_seq))
+        .await
+        .unwrap();
+    assert_eq!(folded, 1, "the input; the reply is the kept tail");
     assert_eq!(turn.state.epoch, 1);
-    assert!(turn.state.history.is_empty(), "nothing of the tail kept");
+    assert_eq!(turn.state.history.len(), 1, "the tail kept as history");
     let (epoch, head, tail) = h.store.frame(h.id).await.unwrap();
     assert_eq!(epoch, 1);
     assert_eq!(text_of(&head.unwrap().content), text);
-    assert!(tail.is_empty());
+    assert_eq!(tail.len(), 1, "the next epochs turn sees head + the tail");
     assert_eq!(
         compact::style_of_head(text),
         CompactStyle::Summary,
@@ -298,7 +303,7 @@ async fn scenario_off() {
     // A session with no rows gets no head.
     let (mut empty, _) = h.turn("openai/textonly", CancellationToken::new()).await;
     empty.state.history.clear();
-    assert_eq!(empty.install_view_head(2, text).await.unwrap(), 0);
+    assert_eq!(empty.install_view_head(2, text, None).await.unwrap(), 0);
 }
 
 /// 137G: refuses the first round call as too long (Anthropic's wording),

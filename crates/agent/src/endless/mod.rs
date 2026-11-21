@@ -255,6 +255,28 @@ impl EndlessConfig {
         )
     }
 
+    /// This config with the desk agent's `tail_*:` keys applied (201 §4.2;
+    /// each key that is set replaces the config's).
+    pub fn with_agent_tail(&self, a: &AgentTail) -> Self {
+        let mut c = self.clone();
+        if let Some(m) = a.mode {
+            c.tail_mode = m;
+        }
+        if let Some(v) = a.low_bytes {
+            c.tail_low_bytes = v;
+        }
+        if let Some(v) = a.high_bytes {
+            c.tail_high_bytes = v;
+        }
+        if let Some(v) = a.low_share {
+            c.tail_low_share = v;
+        }
+        if let Some(v) = a.high_share {
+            c.tail_high_share = v;
+        }
+        c
+    }
+
     /// This config with a per-agent or per-session tail override applied
     /// (201 §4.2: the mode and its two marks, in that mode's unit).
     pub fn with_tail(&self, o: Option<&TailOverride>) -> Self {
@@ -439,6 +461,22 @@ impl DescribeImages {
             Self::Off => "off",
         }
     }
+}
+
+/// 201 §4.2: a desk agent's `tail_*:` keys from `agents/<name>.md`, any
+/// subset; applied to its desk session below the session's own override.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AgentTail {
+    /// `tail_mode:`.
+    pub mode: Option<TailMode>,
+    /// `tail_low_bytes:`.
+    pub low_bytes: Option<u32>,
+    /// `tail_high_bytes:`.
+    pub high_bytes: Option<u32>,
+    /// `tail_low_share:`.
+    pub low_share: Option<f64>,
+    /// `tail_high_share:`.
+    pub high_share: Option<f64>,
 }
 
 /// 201 §4.2: a per-session (or per-agent) tail override: the mode and its two
@@ -892,6 +930,8 @@ pub(crate) struct Inner {
     pub(crate) queues: pump::Queues,
     /// Tests inject scripted compactors here, by resolved model id; `None` = the model (D8).
     pub(crate) compactor_for_tests: Option<pump::CompactorFactory>,
+    /// 201 §4.2: desk sessions' per-agent tail keys (set at every desk open).
+    pub(crate) agent_tails: Mutex<HashMap<SessionId, AgentTail>>,
 }
 
 /// The one handle for the endless mode (137-contract.md §4). Cheap to clone.
@@ -925,6 +965,7 @@ impl Endless {
                 sessions: Mutex::new(HashMap::new()),
                 queues: pump::Queues::default(),
                 compactor_for_tests: None,
+                agent_tails: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -1098,7 +1139,19 @@ impl Endless {
             .lock()
             .get(&session)
             .and_then(pump::Handle::tail);
-        self.config().with_tail(tail.as_ref()).tail_marks(allowance)
+        pump::with_agent_tail(&self.inner, session, &self.config())
+            .with_tail(tail.as_ref())
+            .tail_marks(allowance)
+    }
+
+    /// 201 §4.2: the desk agent's tail keys for `session` (all `None` clears).
+    pub fn set_agent_tail(&self, session: SessionId, tail: AgentTail) {
+        let mut m = self.inner.agent_tails.lock();
+        if tail == AgentTail::default() {
+            m.remove(&session);
+        } else {
+            m.insert(session, tail);
+        }
     }
 
     /// 8.3 / 201 §6 "wake on append": rows reached `messages`; the session's

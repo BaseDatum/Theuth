@@ -21,9 +21,15 @@ Every per-turn item (the opener's `<time>` stamp, knowledge hints, notes, notebo
 - A D11 overflow head mid-generation forces a new generation at the next turn (`forced`), tail = the rows after the cut. After a restart with such a head, rows between `first_seq` and the cut are absent from `store.frame` and are not carried.
 - The test hook (`Shared::test_view`) path carries history and never trims (generation 1).
 
-## Unfinished
+## Unfinished at the first commit (see the follow-up below for what landed since)
 
-- Item 8 `/endless off`: the head is still the live render from `set_mode_within` and the tail is not kept as history.
-- Item 10: `raw_bytes`/unbuilt-verbatim still feed the fold (`render_upto` scales both).
-- Per-agent `tail_*` keys are still not applied to the desk session (roster/lib.rs seam untouched); only session override → config.
-- Tests not written: loop-level trim through the real service (cut ≤ low, cold early), refinement mid-generation leaving the frozen bytes unchanged, epochs/meeting frame-unchanged (existing `epochs_session_keeps_…` covers epochs only).
+- Item 8 `/endless off`, item 10 `raw_bytes`, per-agent tail keys, three tests.
+
+## Follow-up
+
+- **Item 8.** `Turn::set_memory` reads the generation before switching; when the service returns a head, it is replaced by `pump::off_head(n, frozen view)`, and `install_view_head(n, text, tail_from)` writes the `epochs` row with `tail_from = first_seq`, so the next classic turn sees head + the same verbatim rows. With no generation (never ran an endless turn) the old path holds: live render, empty tail. The D11 overflow head already came from `self.view.render`, which is the frozen view; unchanged.
+- **Item 10.** `render_upto` (the only render a chat's frame uses) folds with `raw_bytes: 0` and fits against `high()` alone: no verbatim unbuilt window for chats. `render_within` (meeting `render_with_budget` callers, `render_for_turn`, `/endless off` without a generation) keeps `raw_bytes`. The key stays accepted.
+- **Per-agent tail keys.** `agent::AgentTail`, `EndlessConfig::with_agent_tail`, message `SetSessionAgentTail` (supervisor → `Endless::set_agent_tail`, held in `Inner.agent_tails`, in memory). The roster sends it at every desk open beside `view_bytes` (a cleared key clears). Precedence: session override (`with_tail`) over agent keys over config, in `Endless::tail_marks` and in the status (`pump::with_agent_tail` feeds `tail_status`, so `tail_low`/`tail_high` show the agent's marks). Until the desk opens after an engine start, the desk session uses config + its own override.
+- **Turn starts (review question).** A steering message reaches the history after a tool result (the batch that was running), and a subagent report (`<message from="session:`) arrives either as a turn's own input or after a tool result; a user message after a tool message is never a start, so a cut never lands between a call and its results. The only role-ambiguous position is a user message after a tool-free assistant reply inside one turn (a salvage `recovery` note): cutting there splits that past turn but no call/result pair. The trim runs before the new input is appended, so the current turn is never in the history it cuts, and the last start is always kept. Test: `steering_and_subagent_reports_are_not_turn_starts`.
+- **Tests added:** `refined_line_waits_for_the_next_generation` (pump: model lines injected mid-generation, the frozen view stays byte-identical, the next generation shows them); `steering_and_subagent_reports_are_not_turn_starts`; `endless_off_installs_the_view_head_as_the_next_epoch` now checks the kept tail.
+- **Still not built:** (a) a trim through the turn loop with the real service (the trim rule is covered by `tail.rs` unit tests, the generation by pump tests; the loop wiring only by the test-hook scenario). (c) a meeting-session frame test: not written; the argument is that `endless_view` returns `None` on `meeting_filter` before any P2 code runs, so `endless_start` leaves `head`/`history` untouched exactly as before P2.

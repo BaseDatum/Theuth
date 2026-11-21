@@ -2998,3 +2998,63 @@ async fn tail_marks_follow_the_override_and_scaled_shares() {
     endless.set_tail(id, Some(scaled)).await.unwrap();
     assert_eq!(endless.tail_marks(id, 400_000), (40_000, 100_000));
 }
+
+/// 201 §3 (P2): a line refined mid-generation does not touch the frozen
+/// view; it shows from the next generation's render on.
+#[tokio::test]
+async fn refined_line_waits_for_the_next_generation() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 2, &[]).await;
+    endless.attach(id, attached()).await.unwrap();
+    let g1 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    assert!(!g1.render.text().contains("model line zero"));
+    for (i, text) in [(0u64, "model line zero"), (1, "model line one")] {
+        super::pump::finish_for_tests(
+            &endless.inner,
+            id,
+            (0, i),
+            Ok(super::tree::Node {
+                l: 0,
+                i,
+                text: text.into(),
+                size: text.len() as u32,
+                free: false,
+                model: Some("fake/a".into()),
+                tries: 1,
+                mechanical: false,
+            }),
+        )
+        .await;
+    }
+    eventually("the parent rebuilt from the model lines", || async {
+        store
+            .endless_nodes(id)
+            .await
+            .unwrap()
+            .iter()
+            .all(|n| quality(n) != super::tree::Quality::Draft)
+    })
+    .await;
+    // Same generation: byte for byte the frozen view.
+    let same = endless.generation(id).await.unwrap().unwrap();
+    assert_eq!((same.n, same.render.text()), (1, g1.render.text()));
+    // The next trim renders the refined lines.
+    let g2 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    assert_eq!(g2.n, 2);
+    assert!(
+        g2.render.text().contains("model line zero"),
+        "{}",
+        g2.render.text()
+    );
+}

@@ -7751,12 +7751,23 @@ impl Turn {
             return Ok(SetMode { memory, head: None });
         }
         let n = self.state.epoch + 1;
+        // 201 §12 (P2): `/endless off` writes the head from the generation's
+        // frozen view and keeps its tail as the next epoch's history.
+        let frozen = match mode {
+            MemoryMode::Epochs => endless.generation(session).await.ok().flatten(),
+            MemoryMode::Endless => None,
+        };
         // R1-7: the `/endless off` head fits the session model's turn budget.
         let allowance = self.view_allowance();
-        let r = endless
+        let mut r = endless
             .set_mode_within(session, mode, n, filter, allowance)
             .await
             .map_err(|e| format!("{e:#}"))?;
+        if let Some(g) = &frozen
+            && r.head.is_some()
+        {
+            r.head = Some(crate::endless::pump::off_head(n, &g.render.text()));
+        }
         match mode {
             MemoryMode::Endless => {
                 let est = crate::endless_ext::backfill_estimate(&r.memory);
@@ -7764,7 +7775,10 @@ impl Turn {
             }
             MemoryMode::Epochs => {
                 let folded = match &r.head {
-                    Some(text) => self.install_view_head(n, text).await?,
+                    Some(text) => {
+                        self.install_view_head(n, text, frozen.map(|g| g.first_seq))
+                            .await?
+                    }
                     None => 0,
                 };
                 self.state.last_view = None;
@@ -7775,31 +7789,40 @@ impl Turn {
     }
 
     /// `/endless off` (8.6): `text` (the `<context_summary epoch=n
-    /// style="endless">` the service rendered) becomes epoch `n`'s head with
-    /// an empty tail — one `epochs` row, as a compaction writes it, no model
-    /// call. Returns how many rows the head now stands for; a session with
-    /// no rows gets no head (nothing to stand for).
-    async fn install_view_head(&mut self, n: u32, text: &str) -> Result<u32, String> {
+    /// style="endless">` of the generation's frozen view) becomes epoch
+    /// `n`'s head — one `epochs` row, as a compaction writes it, no model
+    /// call. 201: the rows from `tail_from` on (the verbatim tail) stay as
+    /// the epoch's history; `None` = an empty tail. Returns how many rows the
+    /// head now stands for; a session with no rows gets no head.
+    async fn install_view_head(
+        &mut self,
+        n: u32,
+        text: &str,
+        tail_from: Option<i64>,
+    ) -> Result<u32, String> {
         let session = self.shared.id;
         let Some(&(at_seq, _)) = self.state.history.last() else {
             return Ok(0);
         };
-        let folded = self.state.history.len();
+        let tail_from = tail_from.unwrap_or(at_seq + 1);
+        let before = self.state.history.len();
         let head = ChatMessage::user(text.to_owned());
         self.shared
             .store
-            .compact(session, n, at_seq, at_seq + 1, &head)
+            .compact(session, n, at_seq, tail_from, &head)
             .await
             .map_err(|e| format!("store: {e:#}"))?;
-        self.state.history.clear();
+        self.state.history.retain(|(seq, _)| *seq >= tail_from);
+        let folded = before - self.state.history.len();
+        self.state.tail_gen = None;
         self.state.head = Some(head);
         self.state.epoch = n;
         self.state.used = self.calibrated(self.est_frame());
         self.state.pressure_sent = false;
         self.state.last_after = None;
         self.reset_this_round = true;
-        self.since = 0;
-        self.hint_since = 0;
+        self.since = self.state.history.len();
+        self.hint_since = self.state.history.len();
         // read-file-images §2: the fold is where images may go natively again.
         self.shared.images_off.store(false, Ordering::Relaxed);
         self.publish(AgentEvent::Compacted {

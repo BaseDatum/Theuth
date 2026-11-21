@@ -249,9 +249,9 @@ pub use dreaming_ledger::{
     LedgerStop, LedgerToolError, LedgerUserMessage,
 };
 pub use endless::{
-    Backfill, Backlog, DescribeImages, Endless, EndlessConfig, EndlessProgress, EndlessStats,
-    GuardTrips, MemoryMode, Profile, SessionMemory, SetMode, Stalled, TailMode, TailOverride,
-    UnitFilter, ViewLine, resolved_compactor_model,
+    AgentTail, Backfill, Backlog, DescribeImages, Endless, EndlessConfig, EndlessProgress,
+    EndlessStats, GuardTrips, MemoryMode, Profile, SessionMemory, SetMode, Stalled, TailMode,
+    TailOverride, UnitFilter, ViewLine, resolved_compactor_model,
 };
 pub use lifecycle::{
     Authorize, Authorized, CreateSession, LeaveSession, PrivateTrees, ResumePrivate, TreeOpened,
@@ -1381,6 +1381,17 @@ pub struct SetSessionTail {
     pub session: SessionId,
     /// The override; `None` clears it.
     pub tail: Option<TailOverride>,
+}
+
+/// `ask` → `()` (201 §4.2): a desk agent's `tail_*:` keys for its desk
+/// session, below the session's own override and above `agent.endless`.
+/// Held in memory; the roster sends it at every desk open.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetSessionAgentTail {
+    /// Target session.
+    pub session: SessionId,
+    /// The agent's keys (all `None` clears).
+    pub tail: AgentTail,
 }
 
 /// `ask` → `Result<EndlessConfig, String>` (137 §11.3): the live `agent.endless` section (never `Err`).

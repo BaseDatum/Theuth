@@ -2659,8 +2659,12 @@ pub(crate) fn turn_opened(inner: &Inner, session: SessionId, tail_bytes: u32, al
     live.allowance = Some(allowance);
 }
 
-/// [`render_within`] over `[base, t_cut)` only (201 §4.3: the view stops
-/// where the tail starts). `t_cut ≥ T` is the live view.
+/// 201 §4.3: the generation's view — the fold over `[base, t_cut)` only (the
+/// view stops where the tail starts), fitted to `max_bytes` (at most three
+/// renders). 201 §5/§12: no `raw_bytes` window and no verbatim unbuilt
+/// units for a chat: every unit has a line, and the tail carries the newest
+/// messages word for word (the config key stays accepted; meeting trees,
+/// which never render a generation, keep it).
 fn render_upto(
     live: &mut Live,
     cfg: FoldCfg,
@@ -2668,24 +2672,25 @@ fn render_upto(
     max_bytes: Option<usize>,
     session: SessionId,
 ) -> ViewRender {
-    if t_cut >= live.t() {
-        return render_within(live, cfg, max_bytes, session);
-    }
-    let want = cfg.high() + cfg.raw_bytes as usize;
+    let t = t_cut.min(live.t());
+    let want = cfg.high();
     let m = max_bytes.unwrap_or(usize::MAX);
     let mut scale = (m as f64 / want as f64).min(1.0);
     let mut attempt = 0;
     loop {
         let c = FoldCfg {
             view_bytes: ((f64::from(cfg.view_bytes) * scale) as u32).max(2_000),
-            raw_bytes: ((f64::from(cfg.raw_bytes) * scale) as u32).max(1_000),
+            raw_bytes: 0,
             slack: cfg.slack,
         };
-        let f = Fold::rebuild(&live.tree, live.base.min(t_cut), t_cut, c, &live.units);
+        let f = Fold::rebuild(&live.tree, live.base.min(t), t, c, &live.units);
         let r = fold::render(&live.tree, &f, &live.units);
         let bytes = r.text().len();
         attempt += 1;
         if bytes <= m || attempt == 3 {
+            if scale < 1.0 {
+                tracing::info!(%session, max_bytes = m, view_bytes = c.view_bytes, bytes, "endless: view scaled down to the budget");
+            }
             return r;
         }
         scale *= m as f64 / bytes as f64 * 0.98;
@@ -3124,7 +3129,7 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
     let mode = store.session_memory(session).await?;
     let Some(state) = state_of(inner, session) else {
         let tail = store.endless_meta(session).await?.tail;
-        let cfg = inner.cfg.read().clone();
+        let cfg = with_agent_tail(inner, session, &inner.cfg.read());
         return Ok(tail_status(
             SessionMemory {
                 mode,
@@ -3186,10 +3191,24 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
     drop(live);
     Ok(tail_status(
         m,
-        &full_cfg,
+        &with_agent_tail(inner, session, &full_cfg),
         tail,
         turn_allowance_bytes(inner, session),
     ))
+}
+
+/// 201 §4.2: `cfg` with the desk agent's `tail_*:` keys for `session`
+/// applied (below the session's own override, which `tail_status` and
+/// `Endless::tail_marks` apply on top).
+pub(crate) fn with_agent_tail(
+    inner: &Inner,
+    session: SessionId,
+    cfg: &EndlessConfig,
+) -> EndlessConfig {
+    match inner.agent_tails.lock().get(&session) {
+        Some(a) => cfg.with_agent_tail(a),
+        None => cfg.clone(),
+    }
 }
 
 /// RFC 3339 start of the current UTC day (`model_calls.created_at` is UTC RFC 3339).

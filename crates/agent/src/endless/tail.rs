@@ -47,8 +47,9 @@ pub fn turn_starts(history: &[(i64, ChatMessage)]) -> Vec<usize> {
 pub struct Trim {
     /// First history index kept (`> 0`).
     pub keep_from: usize,
-    /// Bytes cut and kept.
+    /// Bytes cut.
     pub cut: u64,
+    /// Bytes kept.
     pub kept: u64,
 }
 
@@ -138,6 +139,40 @@ mod tests {
         for low in [1_000, 5_000, 9_000, 13_000] {
             let t = trim(&h, low, 15_000, false).unwrap();
             assert!(![4, 5].contains(&t.keep_from));
+        }
+    }
+
+    /// A steering message (user text that arrives while tools run) and a
+    /// subagent report (`<message from="session:…`) land after a tool result,
+    /// so neither is a turn start: no trim keeps a tool result without its
+    /// call, and the turn they belong to is cut whole or kept whole.
+    #[test]
+    fn steering_and_subagent_reports_are_not_turn_starts() {
+        let big = "x".repeat(4_000);
+        let h: Vec<(i64, ChatMessage)> = vec![
+            user("t0"),
+            reply(&big),
+            user("t1"),
+            call("c1"),
+            result("c1", &big),
+            user("<message from=\"user\">also check y</message>"),
+            call("c2"),
+            result("c2", &big),
+            user("<message from=\"session:01ab\">report: done</message>"),
+            reply(&big),
+            user("t2"),
+            reply(&big),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, m)| (i as i64, m))
+        .collect();
+        assert_eq!(turn_starts(&h), [0, 2, 10]);
+        for low in [500, 3_000, 6_000, 9_000, 14_000] {
+            if let Some(t) = trim(&h, low, low + 1, false) {
+                assert!([2, 10].contains(&t.keep_from), "low {low}: {t:?}");
+                assert_ne!(h[t.keep_from].1.role, ChatRole::Tool);
+            }
         }
     }
 
