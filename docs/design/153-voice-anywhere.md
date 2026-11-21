@@ -444,7 +444,8 @@ pub struct Variant { pub heard: String, pub metaphone: (String, String), pub see
 pub enum Scope { Global, Surface(Surface), App(String) }          // per-term scope; an any-app term can be limited to one app
 pub struct Negative { pub heard_lc: String, pub canonical: String }  // "this heard form must NOT become canonical" (Never, or an unchanged delivery)
 ```
-User entries come from Settings › Voice › Dictionary (desktop) / Settings › Dictation (companion) and `dictionary_put`; learned entries from
+User entries come from Settings › Voice › Dictionary (desktop; 204: its own tab — search, Yours / Learned / Built-in chips, Add / Edit /
+Override / Delete; the built-in list is searched on the engine through `dictionary_search`, never listed) / Settings › Dictation (companion) and `dictionary_put`; learned entries from
 §6.3's Add carry the heard variant and `source: Learned`. A **negative** is written by "Never for this" and — the cheap acoustic-free version
 of A:L89 — by any delivered utterance the user *sent unchanged* that contained the heard form (the pair is then vetoed for that surface).
 
@@ -710,6 +711,10 @@ destination; 45's `[voice note]` is an agent prompt in this tree and is never po
 Voice — the 124/127 component (`docs/design/124-model-picker.md:122`, `127-favorite-models.md:30`), the way Loop.tsx binds the title model
 (`UI/components/settings/Loop.tsx:34-41`). TUI: `/model polish`. Companion: the row shows the current name and opens theuth's Settings
 (`theuth://settings/voice`), no second picker.
+
+204: `voice.polish_enabled` (default `true`) is the global switch above the picker — Settings › Voice › Dictation › Polish › "Polish
+dictated text". Off: the engine's `Polish` handler answers `refused: "polish off"` before any model lookup, whatever the client asked;
+the picker and effort chips are greyed. `rewrite` (§13.6) is an explicit command and ignores it.
 
 ### 9.3 Model chain, guarded in code
 `ModelRole::Polish` in `crates/agent/src/loop_/side.rs:37-61`: `slot(&self.polish_model).or_else(|| slot(&self.title_model)).map_or_else(session, Ok)`
@@ -1124,7 +1129,7 @@ Events on `subscribe_events`: `DictationText` (+ `shaped`, `command`, `actions`)
 
 ### 14.3 Settings keys (engine `config.yaml`; written by the RPCs above)
 `voice.shape.{enabled,composer,tui,companion,phone,any_app}` (`enabled`: 203's global off switch, `set_shape_enabled`), `voice.stt_engine` (`onnx` | `mlx`, 202 §5, `set_stt_engine`), `voice.end_commands.{send,scratch,literal}`, `voice.input_devices`,
-`voice.standby_secs`, `voice.duck_media`, `voice.polish_model`, `voice.polish_profiles.<destination>`, `voice.rewrite_template`,
+`voice.standby_secs`, `voice.duck_media`, `voice.polish_enabled` (204's global polish switch, default `true`, `set_polish_enabled`; `false` = `polish` answers `refused: "polish off"`, `rewrite` unaffected), `voice.polish_model`, `voice.polish_profiles.<destination>`, `voice.rewrite_template`,
 `voice.history.{enabled,rows,audio_mib,learn}`, `computer.native`. Companion-local (`UserDefaults` / the C# settings store, the
 `VoiceKeySettings` pattern, `COMP/Companion/PointAndSay/PointController.swift:529-538`): `dictateAnywhereEnabled`, `commandKeyEnabled`,
 `gesture` (holdLock | automatic) per mode, `micOnKeyDown`, `appProfiles: [AppProfile]`, `leaveTextOnClipboard`, `checkPasteLanded`,
