@@ -8,7 +8,7 @@ import { afterEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import type { BuiltinCategory, BuiltinTool } from '@/lib/builtins'
 import { useDrafts } from '@/lib/drafts'
-import type { McpServer } from '@/rpc/bindings/method.mcp_2dserver.output'
+import type { McpServer, McpToolInfo } from '@/rpc/bindings/method.mcp_2dserver.output'
 import { McpMenu } from './McpMenu'
 import { useToolsSheet } from './tools-sheet'
 
@@ -22,11 +22,12 @@ const categories: BuiltinCategory[] = [
   category('web', 'Web', [tool('read_url', { hidden: true }), tool('search_web', { hidden: true })]),
   category('browser', 'Browser', [tool('browser_open', { disabled: true }), tool('browser_click', { disabled: true })]),
 ]
-const fs = {
-  name: 'fs',
+const mcpTool = (name: string, hidden = false): McpToolInfo => ({ name, description: '', gate: null, risk: 'read_only', action: 'allow', registered: name, hidden })
+const server = (name: string, over: Partial<McpServer> = {}): McpServer => ({
+  name,
   connected: true,
   gate: null,
-  tools: [{ name: 'ls', description: '', gate: null, risk: 'read_only', action: 'allow', registered: 'ls', hidden: false }],
+  tools: [mcpTool(`${name}_a`)],
   repo: null,
   auth: 'none',
   home: null,
@@ -35,10 +36,25 @@ const fs = {
   everywhere: false,
   state: 'running',
   reason: null,
-} as McpServer
+  ...over,
+})
+const fs = server('fs', { tools: [mcpTool('ls')] })
+// `cold` is off in mcp/config.yaml for every chat, so never launched.
+const cold = server('cold', { connected: false, gate: 'off', tools: [], state: 'off' })
+const several = (): McpServer[] => [
+  server('alpha'),
+  server('bravo', { tools: [mcpTool('bravo_a', true)] }),
+  server('charlie', { tools: [mcpTool('charlie_a', true), mcpTool('charlie_b')] }),
+  cold,
+]
 
 const calls: unknown[][] = []
 const listed: (string | null)[] = []
+let servers: McpServer[] = [fs]
+const power = {
+  mcp_start: vi.fn(async (_server: string) => null),
+  set_mcp_gate: vi.fn(async (_server: string, _tool: string | null, _gate: string | null) => null),
+}
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
   useApi: () => ({
@@ -46,11 +62,12 @@ vi.mock('@/lib/rpc', async (original) => ({
       listed.push(session)
       return categories
     },
-    list_mcp: async () => [fs],
+    list_mcp: async () => servers,
     set_mcp_hidden: async (...args: unknown[]) => {
       calls.push(args)
       return null
     },
+    ...power,
   }),
 }))
 vi.mock('@/store/connection', async (original) => {
@@ -67,6 +84,9 @@ vi.mock('@/rpc/capabilities', () => {
 afterEach(() => {
   calls.length = 0
   listed.length = 0
+  servers = [fs]
+  power.mcp_start.mockReset().mockImplementation(async () => null)
+  power.set_mcp_gate.mockReset().mockImplementation(async () => null)
   unsupported.clear()
   useDrafts.setState({ settings: {}, opening: null })
   useToolsSheet.setState({ session: null, tab: 'builtins' })
@@ -185,4 +205,137 @@ test('an engine with neither shows no tools button at all', async () => {
   expect(document.querySelector('[aria-label="Tools and MCP servers"], [aria-label="MCP servers"]')).toBeNull()
   expect(rows()).toHaveLength(0)
   unmount()
+})
+
+// The MCP servers tab's rows: the checkbox (this chat) by its label, the switch (every chat) by its aria-label.
+const box = (name: string) => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemcheckbox"]')].find((r) => r.textContent?.startsWith(name))!
+const sw = (name: string) => document.querySelector<HTMLButtonElement>(`[role="switch"][aria-label="${name} for every chat"]`)
+const line = (name: string) => box(name).parentElement!.parentElement!
+const click = (el: Element) => act(async () => void (el as HTMLElement).click())
+
+async function mountServers(list: McpServer[] = several()) {
+  servers = list
+  const m = await mount()
+  await m.pick('MCP servers')
+  await vi.waitFor(() => expect(box(list.at(-1)!.name)).toBeDefined())
+  return m
+}
+
+test('checkbox: on, off, mixed in this chat; unchecked and disabled while the server is off for every chat', async () => {
+  const { unmount } = await mountServers()
+  expect(box('alpha').getAttribute('aria-checked')).toBe('true')
+  expect(box('bravo').getAttribute('aria-checked')).toBe('false')
+  expect(box('charlie').getAttribute('aria-checked')).toBe('mixed')
+  expect(box('cold').getAttribute('aria-checked')).toBe('false')
+  expect(box('cold').disabled).toBe(true)
+  expect(line('cold').textContent).toContain('off for every chat')
+  for (const n of ['alpha', 'bravo', 'charlie']) expect(sw(n)!.getAttribute('aria-checked')).toBe('true')
+  expect(sw('cold')!.getAttribute('aria-checked')).toBe('false')
+  unmount()
+})
+
+test('a server that is not running has its checkbox disabled and says why', async () => {
+  const { unmount } = await mountServers([server('down', { connected: false, tools: [], state: 'error', reason: 'boom' })])
+  expect(box('down').disabled).toBe(true)
+  expect(box('down').getAttribute('aria-checked')).toBe('false')
+  expect(line('down').textContent).toContain('boom')
+  expect(sw('down')!.getAttribute('aria-checked')).toBe('false')
+  unmount()
+})
+
+test('the checkbox hides or shows the server in this chat only (set_mcp_hidden), never the harness-wide gate', async () => {
+  const { unmount } = await mountServers()
+  await click(box('alpha'))
+  await vi.waitFor(() => expect(calls.at(-1)).toEqual(['s1', ['mcp:alpha'], true]))
+  await vi.waitFor(() => expect(box('bravo').disabled).toBe(false))
+  await click(box('bravo'))
+  await vi.waitFor(() => expect(calls.at(-1)).toEqual(['s1', ['mcp:bravo', 'bravo_a'], false]))
+  await vi.waitFor(() => expect(box('charlie').disabled).toBe(false))
+  await click(box('charlie'))
+  // A mixed server is shown whole again: its entry and every per-tool hide go.
+  await vi.waitFor(() => expect(calls.at(-1)).toEqual(['s1', ['mcp:charlie', 'charlie_a', 'charlie_b'], false]))
+  expect(power.set_mcp_gate).not.toHaveBeenCalled()
+  expect(power.mcp_start).not.toHaveBeenCalled()
+  unmount()
+})
+
+test('switch on: clears the off gate, starts the server (starting…, checkbox disabled), then it is checked here', async () => {
+  const start = Promise.withResolvers<null>()
+  power.mcp_start.mockImplementation(() => start.promise)
+  const { unmount } = await mountServers()
+  await click(sw('cold')!)
+  await vi.waitFor(() => expect(power.mcp_start).toHaveBeenCalledWith('cold'))
+  expect(power.set_mcp_gate.mock.calls).toEqual([['cold', null, null]])
+  expect(line('cold').textContent).toContain('starting…')
+  expect(sw('cold')!.getAttribute('aria-checked')).toBe('true')
+  expect(sw('cold')!.disabled).toBe(true)
+  expect(box('cold').disabled).toBe(true)
+  servers = servers.map((s) => (s.name === 'cold' ? server('cold') : s))
+  await act(async () => start.resolve(null))
+  await vi.waitFor(() => expect(box('cold').disabled).toBe(false))
+  expect(box('cold').getAttribute('aria-checked')).toBe('true')
+  expect(line('cold').textContent).not.toContain('starting…')
+  expect(calls).toEqual([])
+  unmount()
+})
+
+test('switch off: off for every chat (stopping…); no start, no per-chat hide', async () => {
+  const stop = Promise.withResolvers<null>()
+  power.set_mcp_gate.mockImplementation(() => stop.promise)
+  const { unmount } = await mountServers()
+  await click(sw('alpha')!)
+  await vi.waitFor(() => expect(power.set_mcp_gate.mock.calls).toEqual([['alpha', null, 'off']]))
+  expect(line('alpha').textContent).toContain('stopping…')
+  expect(sw('alpha')!.getAttribute('aria-checked')).toBe('false')
+  expect(box('alpha').disabled).toBe(true)
+  await act(async () => stop.resolve(null))
+  await vi.waitFor(() => expect(line('alpha').textContent).not.toContain('stopping…'))
+  expect(power.mcp_start).not.toHaveBeenCalled()
+  expect(calls).toEqual([])
+  unmount()
+})
+
+test('switch on keeps a server-wide risk gate: a failed server with one only starts', async () => {
+  const { unmount } = await mountServers([server('risky', { connected: false, gate: 'read_only', tools: [], state: 'error', reason: 'boom' })])
+  await click(sw('risky')!)
+  await vi.waitFor(() => expect(power.mcp_start).toHaveBeenCalledWith('risky'))
+  expect(power.set_mcp_gate).not.toHaveBeenCalled()
+  unmount()
+})
+
+test('a failed start restores the off gate, shows the error (at most 120 chars) and retries', async () => {
+  const long = `cold: connect failed: ${'x'.repeat(200)}`
+  power.mcp_start.mockRejectedValueOnce(new Error(long))
+  const { unmount } = await mountServers()
+  await click(sw('cold')!)
+  const alert = () => line('cold').querySelector('[role="alert"]')
+  await vi.waitFor(() => expect(alert()?.textContent).toBe(`${long.slice(0, 120)}…`))
+  expect(alert()?.getAttribute('title')).toBe(long)
+  expect(power.set_mcp_gate.mock.calls).toEqual([
+    ['cold', null, null],
+    ['cold', null, 'off'],
+  ])
+  expect(sw('cold')!.getAttribute('aria-checked')).toBe('false')
+  expect(sw('cold')!.disabled).toBe(false)
+  expect(line('cold').textContent).not.toContain('starting…')
+  const retry = [...line('cold').querySelectorAll('button')].find((b) => b.textContent === 'Retry')!
+  await click(retry)
+  await vi.waitFor(() => expect(power.mcp_start).toHaveBeenCalledTimes(2))
+  await vi.waitFor(() => expect(alert()).toBeNull())
+  unmount()
+})
+
+test('an engine without mcp_start keeps only the off direction; one without set_mcp_gate has no switch', async () => {
+  unsupported.add('mcp_start')
+  const first = await mountServers()
+  expect(sw('alpha')!.disabled).toBe(false)
+  expect(sw('cold')!.disabled).toBe(true)
+  await click(sw('alpha')!)
+  await vi.waitFor(() => expect(power.set_mcp_gate).toHaveBeenCalledWith('alpha', null, 'off'))
+  first.unmount()
+  unsupported.add('set_mcp_gate')
+  const second = await mountServers()
+  expect(document.querySelector('[role="switch"]')).toBeNull()
+  expect(box('alpha').getAttribute('aria-checked')).toBe('true')
+  second.unmount()
 })

@@ -2951,6 +2951,77 @@ mod tests {
         });
     }
 
+    /// The popover's switch on an `off` server: `set_mcp_gate(live, null, null)` +
+    /// `mcp_start` reaches a live runtime at its next cell; the chat's `mcp:live` hide
+    /// still keeps it out of that chat's subagent; `off` stops it everywhere.
+    #[test]
+    fn switching_a_server_on_and_off_reaches_a_live_runtime() {
+        crate::with_test_registry(async {
+            let Some(pool) = monty_pool().await else {
+                return;
+            };
+            let dir = tempdir();
+            std::fs::create_dir_all(dir.0.join("mcp")).unwrap();
+            std::fs::write(
+                dir.0.join("mcp/config.yaml"),
+                "servers:\n  live:\n    risk: off\n",
+            )
+            .unwrap();
+            std::fs::write(dir.0.join("mcp/live.json"), mcp_live_entry().to_string()).unwrap();
+            let cx = mcp_live_cx(&dir.0).await;
+            let parent = SessionId::new();
+            cx.registry
+                .tell(tools::SetParent {
+                    session: cx.session,
+                    parent,
+                })
+                .await
+                .unwrap();
+            let mcp = ActorRef::<tools::Mcp>::lookup(tools::MCP_ACTOR)
+                .unwrap()
+                .unwrap();
+            let gate = |gate| tools::SetGate {
+                server: "live".into(),
+                tool: None,
+                gate,
+            };
+            let mut repl = Repl::open(&pool, cx.session, &dir.0, cx.clone()).await;
+            let out = repl.run("off", "await live_echo(value='x')").await;
+            assert!(out.is_error, "{}", out.content);
+
+            mcp.ask(gate(None)).await.unwrap();
+            mcp.ask(tools::StartServer {
+                name: "live".into(),
+            })
+            .await
+            .unwrap();
+            let out = repl
+                .run("on", "reply = await live_echo(value='on')\nprint(reply)")
+                .await;
+            assert!(
+                !out.is_error && out.content.contains("live:on:"),
+                "{}",
+                out.content
+            );
+
+            let hide = |hidden: bool| tools::SetHidden {
+                session: parent,
+                tools: vec![tools::mcp_server_key("live")],
+                hidden,
+            };
+            cx.registry.ask(hide(true)).await.unwrap();
+            let out = repl.run("hidden", "await live_echo(value='x')").await;
+            assert!(out.is_error, "{}", out.content);
+            cx.registry.ask(hide(false)).await.unwrap();
+
+            mcp.ask(gate(Some(tools::Gate::Off))).await.unwrap();
+            assert!(!prompt_block(&specs(&cx).await, true).contains("async def live_echo("));
+            let out = repl.run("stopped", "await live_echo(value='x')").await;
+            assert!(out.is_error, "{}", out.content);
+            repl.close().await;
+        });
+    }
+
     #[test]
     fn mcp_live_stub_rebase_preserves_an_unreadable_dump() {
         let mut bytes = b"MONTY\0\xff\xfforiginal".to_vec();
