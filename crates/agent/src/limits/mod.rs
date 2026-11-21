@@ -50,8 +50,10 @@ pub enum LimitStatus {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UsageSample {
+    /// When the reading was observed (Unix ms).
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub at_ms: u64,
+    /// 0.0 = unused, 1.0 = exhausted; may exceed 1.0.
     pub used_fraction: f64,
 }
 
