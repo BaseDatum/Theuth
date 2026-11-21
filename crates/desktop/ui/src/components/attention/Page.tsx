@@ -1,6 +1,6 @@
 import { Outlet, useNavigate, useParams } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { createContext, type KeyboardEvent, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, type FocusEvent, type KeyboardEvent, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { snoozeUntil } from '@/components/hud/model'
 import { useAttention } from '@/components/hud/queries'
 import { SidebarLead } from '@/components/nav/SectionBand'
@@ -8,7 +8,6 @@ import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import { isMacDesktop } from '@/lib/hotkeys'
-import { nextSelection } from '@/lib/selection'
 import { cn } from '@/lib/utils'
 import type { AttentionItem } from '@/rpc/bindings/method.roster.output'
 import { BulkBar } from './BulkBar'
@@ -23,10 +22,17 @@ import {
   type SortKey,
   allApprovals,
   entryHead,
+  entryIds,
   entryItems,
+  entrySelection,
+  focusAfter,
   kindCounts,
   moveFocus,
+  nextTick,
+  opensFirst,
   projectsOf,
+  pruneFilter,
+  selectEntries,
   selectedIds,
   visibleEntries,
 } from './model'
@@ -61,29 +67,25 @@ function saveView({ filter, sort }: View) {
   }
 }
 
-/** The list as the rail shows it — `/attention`'s index pane opens its first entry. */
+/** The list as the rail shows it — `/attention`'s index pane opens its first entry, a screen moves on along it. */
 const ViewContext = createContext<{ entries: readonly Entry[] } | null>(null)
 export const useAttentionView = () => useContext(ViewContext)
 
-/** A clock for countdowns and expiry: every second while something counts down, else every 30 s. */
-function useNow(fast: boolean): number {
-  const [now, setNow] = useState(Date.now)
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), fast ? 1000 : 30_000)
-    return () => clearInterval(t)
-  }, [fast])
-  return now
-}
+/**
+ * The key map stays out of the way of controls: a key pressed on a button, link, field, menu, dialog or popup list is
+ * theirs (Enter on a focused Allow clicks Allow; Enter in the Snooze menu picks the preset).
+ */
+const CONTROL = 'button,a,input,textarea,select,[contenteditable="true"],[role="menu"],[role="menuitem"],[role="dialog"],[role="combobox"],[role="listbox"],[role="option"],[role="checkbox"]'
 
-/** The key map ignores keys typed into a field. */
-const typing = (t: EventTarget): boolean => t instanceof HTMLElement && (t.isContentEditable || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')
+/** Cards without a countdown get this coarse clock, so a per-second tick re-renders only the cards that count down. */
+const COARSE_MS = 15_000
 
 /**
  * `/attention` (101 D6, 207 §6): the 52 px header, then a 440 px rail with the toolbar and ONE flat, virtualised list of
  * cards in the engine's order (or the chosen sort) beside the selected item's screen (`<Outlet/>`). Under `md` one pane
  * at a time: the list at `/attention`, the screen at `/attention/$id` (which carries its own header with the back chevron).
- * Keys on the list (not while typing): J/K move · Enter opens · A/D allow/deny · S snooze · E dismiss · X select ·
- * Shift+X range · / search · Esc clears the search, then the selection.
+ * Keys on the list (not on a control or while typing): J/K move · Enter opens · A/D allow/deny (a collapsed stack opens
+ * first) · S snooze · E dismiss · X select · Shift+X range · / search · Esc clears the search, then the selection.
  */
 export function Page() {
   const sidebar = useSidebar()
@@ -99,14 +101,16 @@ export function Page() {
     setViewState(next)
     saveView(next)
   }
+  /** Item ids, snapshotted when selected (review 12). */
   const [selection, setSelection] = useState<ReadonlySet<string>>(() => new Set())
   const [anchor, setAnchor] = useState<string | null>(null)
   const [focus, setFocus] = useState<string | null>(null)
-  const [ticking, setTicking] = useState(false)
-  const now = useNow(ticking)
+  /** Stacks whose members are shown (a keyboard A / D opens a stack before it acts on it). */
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
+  const [now, setNow] = useState(Date.now)
   const entries = useMemo(() => visibleEntries(items ?? [], filter, sort, now), [items, filter, sort, now])
   const keys = useMemo(() => entries.map((e) => e.key), [entries])
-  const shown = useMemo(() => entries.reduce((n, e) => n + entryItems(e).length, 0), [entries])
+  const shownIds = useMemo(() => entries.flatMap(entryIds), [entries])
   const live = useMemo(() => (items ?? []).filter((i) => typeof i.expires_ms !== 'number' || i.expires_ms > now), [items, now])
   const kinds = useMemo(() => kindCounts(live), [live])
   const projects = useMemo(() => projectsOf(live), [live])
@@ -114,15 +118,25 @@ export function Page() {
   const searchRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => setTicking(entries.some((e) => entryItems(e).some((i) => typeof i.deadline_ms === 'number'))), [entries])
-  // Entries that leave the list leave the selection.
+  // Review 14: one timer — every second while a visible card counts down, else at the next expiry (at most 30 s).
   useEffect(() => {
-    const present = new Set(keys)
+    const t = setTimeout(() => setNow(Date.now()), nextTick(entries.flatMap(entryItems), now))
+    return () => clearTimeout(t)
+  }, [entries, now])
+  // Review 11: a remembered kind or project that is no longer listed would leave "Nothing matches" with no chip to undo.
+  useEffect(() => {
+    if (!items) return
+    const pruned = pruneFilter(filter, kinds.map((k) => k.kind), projects.map((p) => p.name))
+    if (pruned !== filter) setView({ filter: pruned, sort })
+  })
+  // Items that leave the list leave the selection.
+  useEffect(() => {
+    const present = new Set(shownIds)
     setSelection((prev) => {
-      const kept = [...prev].filter((k) => present.has(k))
+      const kept = [...prev].filter((id) => present.has(id))
       return kept.length === prev.size ? prev : new Set(kept)
     })
-  }, [keys])
+  }, [shownIds])
 
   const v = useVirtualizer({
     count: entries.length,
@@ -132,19 +146,52 @@ export function Page() {
     getItemKey: (i) => entries[i]?.key ?? i,
   })
 
+  // Review 2: the focused card left (resolved, filtered out) — focus the one now in its place and give the scroller DOM
+  // focus back when it fell to the body, so the key map keeps working.
+  const prevKeys = useRef(keys)
+  useEffect(() => {
+    const prev = prevKeys.current
+    prevKeys.current = keys
+    if (focus === null || keys.includes(focus)) return
+    const next = focusAfter(prev, keys, focus)
+    setFocus(next)
+    const i = next === null ? -1 : keys.indexOf(next)
+    if (i >= 0) v.scrollToIndex(i, { align: 'auto' })
+    const el = document.activeElement
+    if (!el || el === document.body || !el.isConnected) scrollRef.current?.focus({ preventScroll: true })
+  }, [keys, focus, v])
+
   const select = (key: string, mode: 'toggle' | 'range') => {
-    setSelection((prev) => nextSelection(prev, keys, anchor, key, mode))
+    setSelection((prev) => selectEntries(prev, entries, anchor, key, mode))
     setAnchor(key)
     setFocus(key)
   }
-  const clearSelection = () => {
-    setSelection(new Set())
-    setAnchor(null)
+  /** After a bulk call: the selection keeps only what failed, so it can be retried. */
+  const keepFailed = (failed: readonly string[]) => {
+    setSelection(new Set(failed))
+    if (failed.length === 0) setAnchor(null)
   }
-  const open = (e: Entry) => {
-    setFocus(e.key)
+  const clearSelection = () => keepFailed([])
+  const open = (key: string) => {
+    const e = entries.find((x) => x.key === key)
+    if (!e) return
+    setFocus(key)
     void navigate({ to: '/attention/$id', params: { id: entryHead(e).id }, search: true })
   }
+  const expand = (key: string, on: boolean) =>
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (on) next.add(key)
+      else next.delete(key)
+      return next
+    })
+  // Stable callbacks for the memoised cards (review 14): they read the latest closures through a ref.
+  const latest = useRef({ select, open, expand })
+  latest.current = { select, open, expand }
+  const onSelect = useCallback((mode: 'toggle' | 'range', key: string) => latest.current.select(key, mode), [])
+  const onOpen = useCallback((key: string) => latest.current.open(key), [])
+  const onExpand = useCallback((key: string, on: boolean) => latest.current.expand(key, on), [])
+
   const focusTo = (key: string | null) => {
     setFocus(key)
     const i = key === null ? -1 : keys.indexOf(key)
@@ -152,13 +199,16 @@ export function Page() {
     if (i >= 0) v.scrollToIndex(i, { align: 'auto' })
   }
   const focused = entries.find((e) => e.key === focus)
-  /** The selection's ids, else the focused entry's. */
-  const targetIds = () => (selection.size > 0 ? selectedIds(entries, selection) : focused ? entryItems(focused).map((i) => i.id) : [])
   const approvalsOf = (xs: readonly AttentionItem[]) => xs.flatMap((i) => (i.kind === 'approval' && i.approval ? [i.approval] : []))
-  const selectedItems = entries.filter((e) => selection.has(e.key)).flatMap(entryItems)
+  const selected = selectedIds(entries, selection)
+  const selectedItems = entries.flatMap(entryItems).filter((i) => selection.has(i.id))
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (typing(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
+    if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return
+    const target = e.target as Element
+    if (target !== e.currentTarget && target.closest(CONTROL)) return
+    // Review 7: one bulk call at a time — keys wait while one runs.
+    if (bulk.pending) return
     const key = e.key.length === 1 ? e.key.toLowerCase() : e.key
     const handled = () => e.preventDefault()
     switch (key) {
@@ -170,24 +220,32 @@ export function Page() {
       case 'Enter':
         if (focused) {
           handled()
-          open(focused)
+          open(focused.key)
         }
         return
       case 'a':
       case 'd': {
-        const approvals = focused ? approvalsOf(entryItems(focused)) : []
-        if (approvals.length > 0) {
-          handled()
-          void bulk.resolve(approvals, key === 'a' ? 'allow' : 'deny')
-        }
+        if (!focused) return
+        const approvals = approvalsOf(entryItems(focused))
+        if (approvals.length === 0) return
+        handled()
+        // Review 3: a collapsed stack opens first, so N commands are never decided unseen.
+        if (opensFirst(focused, expanded, false)) expand(focused.key, true)
+        else void bulk.resolve(approvals, key === 'a' ? 'allow' : 'deny')
         return
       }
       case 's':
       case 'e': {
-        const ids = targetIds()
+        const ids = selection.size > 0 ? selected : focused ? entryIds(focused) : []
         if (ids.length === 0) return
         handled()
-        void (key === 's' ? bulk.snooze(ids, snoozeUntil('tomorrow')) : bulk.dismiss(ids)).then(clearSelection)
+        // The same guard for snooze and dismiss on a focused stack (a selection was chosen on purpose).
+        if (focused && opensFirst(focused, expanded, selection.size > 0)) {
+          expand(focused.key, true)
+          return
+        }
+        const call = key === 's' ? bulk.snooze(ids, snoozeUntil('tomorrow')) : bulk.dismiss(ids)
+        if (selection.size > 0) void call.then((outs) => keepFailed(outs.filter((o) => o.resolution === 'failed').map((o) => o.id)))
         return
       }
       case 'x':
@@ -201,6 +259,8 @@ export function Page() {
         searchRef.current?.focus()
         return
       case 'Escape':
+        // Review 4: Shift+Escape is the app's "focus the composer".
+        if (e.shiftKey) return
         if (filter.query) {
           handled()
           setView({ filter: { ...filter, query: '' }, sort })
@@ -210,6 +270,12 @@ export function Page() {
         }
         return
     }
+  }
+  // Review 1: focusing anything inside a card (Tab to its Allow) makes that card the focused entry.
+  const onFocus = (e: FocusEvent<HTMLDivElement>) => {
+    const k = (e.target as Element).closest('[data-entry-key]')?.getAttribute('data-entry-key')
+    if (k) setFocus(k)
+    else if (focus === null) setFocus(keys[0] ?? null)
   }
 
   return (
@@ -242,7 +308,7 @@ export function Page() {
                 <div className="flex h-8 shrink-0 items-center gap-2 border-b border-border-subtle px-3 text-xs text-fg-tertiary tabular-nums">
                   <span className="mr-auto">
                     {live.length} {live.length === 1 ? 'item' : 'items'}
-                    {shown !== live.length && ` · ${shown} shown`}
+                    {shownIds.length !== live.length && ` · ${shownIds.length} shown`}
                   </span>
                   {filtered && (
                     <Button size="xs" variant="ghost" onClick={() => setView({ filter: EMPTY_FILTER, sort })}>
@@ -250,8 +316,8 @@ export function Page() {
                     </Button>
                   )}
                   {entries.length > 0 && (
-                    <Button size="xs" variant="ghost" onClick={() => setSelection(new Set(keys))}>
-                      Select all {shown}
+                    <Button size="xs" variant="ghost" onClick={() => setSelection(new Set(shownIds))}>
+                      Select all {shownIds.length}
                     </Button>
                   )}
                 </div>
@@ -271,39 +337,46 @@ export function Page() {
                     aria-label="Attention items"
                     aria-keyshortcuts="J K Enter A D S E X Shift+X / Escape"
                     onKeyDown={onKeyDown}
-                    onFocus={() => focus === null && setFocus(keys[0] ?? null)}
-                    className="min-h-0 flex-1 overflow-y-auto outline-none"
+                    onFocus={onFocus}
+                    className="min-h-0 flex-1 overflow-y-auto outline-none focus-visible:ring-1 focus-visible:ring-border-strong focus-visible:ring-inset"
                   >
                     <ul className="relative w-full" style={{ height: v.getTotalSize() }}>
                       {v.getVirtualItems().map((row) => {
                         const entry = entries[row.index]
                         if (!entry) return null
+                        const counts = entryItems(entry).some((i) => typeof i.deadline_ms === 'number')
+                        const sel = entrySelection(entry, selection)
                         const common = {
                           'data-index': row.index,
                           ref: v.measureElement,
                           className: 'absolute top-0 left-0 w-full',
                           style: { transform: `translateY(${row.start}px)` },
-                          now,
+                          entryKey: entry.key,
+                          now: counts ? now : Math.floor(now / COARSE_MS) * COARSE_MS,
                           focused: entry.key === focus,
-                          selected: selection.has(entry.key),
+                          selected: sel === 'all' ? true : sel === 'some' ? ('some' as const) : false,
                           selecting: selection.size > 0,
                           active: entryItems(entry).some((i) => i.id === active),
-                          onSelect: (mode: 'toggle' | 'range') => select(entry.key, mode),
-                          onOpen: () => open(entry),
+                          onSelect,
+                          onOpen,
                         }
-                        return entry.type === 'item' ? <Card key={entry.key} item={entry.item} {...common} /> : <StackCard key={entry.key} items={entry.items} {...common} />
+                        return entry.type === 'item' ? (
+                          <Card key={entry.key} item={entry.item} {...common} />
+                        ) : (
+                          <StackCard key={entry.key} items={entry.items} expanded={expanded.has(entry.key)} onExpand={onExpand} {...common} />
+                        )
                       })}
                     </ul>
                   </div>
                 )}
-                {selection.size > 0 && (
+                {selected.length > 0 && (
                   <BulkBar
-                    count={selectedItems.length}
+                    count={selected.length}
                     approvals={allApprovals(entries, selection)}
                     pending={bulk.pending}
-                    onDismiss={() => void bulk.dismiss(selectedIds(entries, selection)).then(clearSelection)}
-                    onSnooze={(until) => void bulk.snooze(selectedIds(entries, selection), until).then(clearSelection)}
-                    onResolve={(decision) => void bulk.resolve(approvalsOf(selectedItems), decision).then(clearSelection)}
+                    onDismiss={() => void bulk.dismiss(selected).then((outs) => keepFailed(outs.filter((o) => o.resolution === 'failed').map((o) => o.id)))}
+                    onSnooze={(until) => void bulk.snooze(selected, until).then((outs) => keepFailed(outs.filter((o) => o.resolution === 'failed').map((o) => o.id)))}
+                    onResolve={(decision) => void bulk.resolve(approvalsOf(selectedItems), decision).then((outs) => keepFailed(outs.filter((o) => o.result === 'failed').map((o) => o.id)))}
                     onClear={clearSelection}
                   />
                 )}

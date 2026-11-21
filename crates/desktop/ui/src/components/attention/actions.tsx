@@ -17,7 +17,7 @@ import { cn } from '@/lib/utils'
 import { useQuerySupport } from '@/rpc/capabilities'
 import type { AttentionItem, AttentionOutcome } from '@/rpc/bindings/method.roster.output'
 import { DISMISS_HINT, dismissLabel, doubleIds } from './labels'
-import { useAttentionBulk } from './queries'
+import { useAttentionBulk, useBulkPending } from './queries'
 
 export type Size = 'xs' | 'sm' | 'default'
 
@@ -116,7 +116,9 @@ export function AllowOnce({ first, size, disabled, onClick }: { first: { contact
 export function KindActions({ item, size = 'xs', onResolved }: { item: AttentionItem; size?: Size; onResolved?: () => void }) {
   const act = useAttentionActions()
   const [answer, setAnswer] = useState('')
-  const busy = Object.values(act).some((a) => a.isPending)
+  // Review 7: no second submit while this item's action or any bulk call runs.
+  const bulkPending = useBulkPending()
+  const busy = bulkPending || Object.values(act).some((a) => a.isPending)
   const sandboxes = useSandboxes()
   const vm = item.kind === 'handoff' ? sandboxes.data?.find((s) => s.name === item.detail || (s.engine !== null && s.engine === item.detail)) : undefined
   const handoffId = item.kind === 'handoff' ? item.id.replace(/^handoff:/, '') : null

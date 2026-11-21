@@ -155,6 +155,58 @@ forced, a fake api for the per-kind mutations). Looked at 1280 x 900, 900 x 900 
 - 390 px: list only; a tap opens the detail with the back chevron; toolbar fits (chips scroll); the bulk bar is part of
   the column, so it never covers the last card.
 
+## Review fixes (independent code review, 14 items)
+
+Every finding was checked against the code first; all 14 were accurate and are fixed. Pure logic is in `model.ts` and
+tested in `model.test.ts`.
+
+1. **Fixed.** The key map returns on `defaultPrevented` and when the key lands on a control (button, link, field,
+   menu, menu item, dialog, combobox, listbox, option, checkbox), so Enter on a focused Allow clicks Allow and Enter in
+   the Snooze menu picks the preset. Focus inside a card (Tab) makes that card the focused entry (`data-entry-key`).
+2. **Fixed.** `focusAfter(prev, next, key)`: when the focused entry leaves, focus goes to the next survivor in the
+   previous order (else the one before), is scrolled into view, and the scroller gets DOM focus back when it had fallen
+   to the body. `e e e` and J/K after a removal keep working.
+3. **Fixed.** Keyboard `a` / `d` on a collapsed stack opens it (Show N); the next press acts on all members. The page
+   owns the stack's open state (`StackCard` `expanded` / `onExpand`); the visible buttons are unchanged.
+4. **Fixed.** Escape ignores Shift (Shift+Escape stays the app's composer key). The bare `aria-selected` on `li` is gone:
+   `data-focused` for keyboard focus, `aria-current` for the open item; the scroller has a `focus-visible` ring.
+5. **Fixed.** `useAttentionBulk().resolve` returns a `ResolveOutcome` per approval (`done` / `gone` / `failed`); only done
+   and already-answered leave the list, failed stay and stay selected (every bulk path keeps exactly its failed ids
+   selected; a whole-call failure reports every id failed); the toast says "N allowed · M already answered · K failed,
+   still waiting"; an empty call is a no-op with no toast.
+6. **Fixed.** `AskScreen` never calls `answer_ask(id, null)`: on an older engine the button is a hide-only Dismiss
+   (`attention_dismiss`). `useAttentionActions().ask` takes `Answer[]` only. No other dismiss/close control in
+   `components/attention` or `components/hud` reaches `answer_ask(…, null)`; `components/chat/AskCard.tsx` still has its
+   own Dismiss with `null` (the chat surface, outside this scope).
+7. **Fixed.** Inline actions (`useItemAction` in `hud/queries.ts`, mutation key `ATTENTION_ACTION_KEY`) take their items
+   out of the cache at once and put them back where they stood on failure (`restoreItems`); the list refetches only
+   when the engine does not patch it. Bulk calls run under `ATTENTION_BULK_KEY`; while one runs (`useBulkPending`) the key
+   map and every card's buttons are inert.
+8. **Fixed.** Bulk settle refetches the task and agent lists always (small), the attention list only without patching.
+9. **Fixed.** `applyChange` ignores an event the cursor already passed (same epoch, `seq <=`): nothing applied, no
+   refetch, cursor unchanged. `patchEvent` / `patchSettled` run one refetch at a time and refetch once more when an event
+   landed while one ran (its older snapshot would overwrite the patch).
+10. **Fixed.** The ten legacy topics invalidate nothing once `attention_dismiss_many` is detected; the list loads once on
+    mount and once after every reconnect (patch state reset).
+11. **Fixed.** `pruneFilter` drops remembered kinds and projects that are no longer listed (only once the list loaded).
+12. **Fixed.** The selection holds item ids snapshotted at selection time (`selectEntries`, `entrySelection`): a member
+    that joins a selected stack is not selected and the checkbox shows mixed; a selected approval that becomes a stack
+    keeps its selection. A stack's card shows its highest risk (`stackRisk`) and flags destructive members.
+13. **Fixed.** `useResolved` computes the next item from the list as displayed while the item is still listed
+    (`nextItemAfter`: a stack sibling, else `focusAfter`); `nextAfter` is deleted.
+14. **Fixed.** One timer at `nextTick` (1 s while a visible card counts down, else the nearest expiry, at most 30 s).
+    `Card` / `StackCard` are memoised; cards without a countdown get a 15 s clock and stable keyed callbacks, so a
+    per-second tick re-renders only cards that count down.
+
+Follow-up: `opensFirst` extends the item 3 guard to every key action — A, D, S and E on a collapsed stack open it and act on the next press (a selection acts at once); the list's focus ring is a 1 px inset `border-strong` line on focus-visible only (checked light and dark: `e` then `s` on the ×3 stack expanded, then snoozed 34 → 31).
+
+Exercised in headless Chromium on `src/dev/attention-fixture.html` (1280 x 900): Tab to the first card's Allow + Enter
+allowed that approval (34 → 33), focus moved to the next card and the scroller got DOM focus back; Tab to the next
+card's Snooze, Enter, ArrowDown, Enter snoozed that card only (33 → 32); `e` three times dismissed the focused card each
+time (the second was the ×3 stack: 31 → 28) with focus following; J / K moved from the survivor; after a reload, `a` on
+the ×3 stack expanded it (3 members listed, nothing resolved), a second `a` allowed all three (34 → 31). No console
+errors.
+
 ## Not done / not verified
 
 - Not seen in the Tauri shell or against an engine. The UI was looked at only in headless Chromium on the dev fixture
