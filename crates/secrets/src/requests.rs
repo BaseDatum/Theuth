@@ -88,7 +88,7 @@ pub async fn list(pool: &SqlitePool, unanswered_only: bool) -> anyhow::Result<Ve
         .collect())
 }
 
-/// Set `answered_ms` / `outcome` (`stored` | `declined` | `timeout`) on an
+/// Set `answered_ms` / `outcome` (`stored` | `declined` | `timeout` | 207: [`crate::PROCEED_WITHOUT`]) on an
 /// unanswered row. `Ok(false)` when there is no such row or it was already
 /// answered (the first answer sticks; LWW would otherwise let a later
 /// `timeout` from the origin overwrite a peer's `stored`).

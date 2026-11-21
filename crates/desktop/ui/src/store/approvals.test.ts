@@ -47,7 +47,7 @@ test('PendingPrompts replaces the pending set with what the engine reports', () 
   expect(st.approvals.getState().pending).toEqual([])
   expect(st.secretRequests.getState().pending.map((p) => p.id)).toEqual(['sr'])
   // The snapshot is authoritative: a previously resolved id may be pending again after it.
-  dispatch([{key: 'tools.ask-resolved@1', event: { type: 'AskResolved', id: 'live', dismissed: false, timed_out: false }}], st)
+  dispatch([{key: 'tools.ask-resolved@1', event: { type: 'AskResolved', id: 'live', dismissed: false, timed_out: false, left_to_agent: false }}], st)
   expect(st.asks.getState().pending).toEqual([])
   dispatch([{key: 'rpc.stream@1', event: { type: 'PendingPrompts', approvals: [], asks: [ask('live')], secrets: [] }}], st)
   expect(st.asks.getState().pending.map((p) => p.id)).toEqual(['live'])

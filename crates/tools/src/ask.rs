@@ -111,6 +111,9 @@ pub struct AskResolved {
     pub dismissed: bool,
     /// Nobody answered in time.
     pub timed_out: bool,
+    /// 207: the user left the questions to the agent (Attention dismiss); the turn goes on.
+    #[serde(default)]
+    pub left_to_agent: bool,
 }
 
 impl wire::WireEvent for AskResolved {
@@ -142,6 +145,14 @@ pub struct AnswerAskBy {
     pub by: Answerer,
 }
 
+/// 207: `ask` → `Option<SessionId>`: the owning session if `id` was pending and is now resolved as
+/// "left to the agent". Never cancels the turn (unlike `AnswerAsk { answers: None }`).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct LeaveAsk {
+    /// The request.
+    pub id: AskId,
+}
+
 /// Tool → actor: publish [`AskRequested`] and wait. `ask` → the answers
 /// (`None` = dismissed) and whether it timed out. Public for the tasks
 /// plugin's `escalate`, which asks the user the same way (67 §11).
@@ -165,13 +176,20 @@ pub struct Republish(pub QuestionRow);
 /// Internal: drop a pending entry whose waiter gave up.
 struct Expire(AskId);
 
+/// 207: what the parked call is told: the answers (`None` = dismissed), or
+/// that the user left the questions to the agent.
+enum Verdict {
+    Answers(Option<Vec<Answer>>),
+    LeftToAgent,
+}
+
 /// A waiting tool call: its session, questions, journal row and where its
 /// answers go.
 struct Waiter {
     session: SessionId,
     questions: Vec<Question>,
     row: QuestionRow,
-    tx: oneshot::Sender<Option<Vec<Answer>>>,
+    tx: oneshot::Sender<Verdict>,
 }
 
 /// The ask actor.
@@ -225,7 +243,10 @@ impl AskUser {
     ) -> Option<SessionId> {
         let w = self.pending.remove(&id)?;
         let answer = Some(serde_json::json!(answers));
-        let delivered = w.tx.send(answers).ok().map(|()| w.session);
+        let delivered =
+            w.tx.send(Verdict::Answers(answers))
+                .ok()
+                .map(|()| w.session);
         self.settle(w.row, QuestionState::Answered, answer, Some(by))
             .await;
         delivered
@@ -281,23 +302,31 @@ impl AskUser {
                 questions,
             })
             .await;
-            let (answers, timed_out) = match tokio::time::timeout(timeout, arx).await {
-                Ok(Ok(a)) => (a, false),
+            let (answers, timed_out, left_to_agent) = match tokio::time::timeout(timeout, arx).await
+            {
+                Ok(Ok(Verdict::Answers(a))) => (a, false, false),
+                // 207: left to the agent: no answers, the turn goes on.
+                Ok(Ok(Verdict::LeftToAgent)) => (None, false, true),
                 // Sender dropped: actor died; treat as dismissed.
-                Ok(Err(_)) => (None, false),
+                Ok(Err(_)) => (None, false, false),
                 Err(_) => {
                     let _ = me.ask(Expire(id)).await;
-                    (None, true)
+                    (None, true, false)
                 }
             };
             rt.publish(AskResolved {
                 id,
-                dismissed: answers.is_none() && !timed_out,
+                dismissed: answers.is_none() && !timed_out && !left_to_agent,
                 timed_out,
+                left_to_agent,
             })
             .await;
             if let Some(tx) = tx {
-                tx.send(Outcome { answers, timed_out });
+                tx.send(Outcome {
+                    answers,
+                    timed_out,
+                    left_to_agent,
+                });
             }
         });
         reply
@@ -319,6 +348,9 @@ pub struct Outcome {
     pub answers: Option<Vec<Answer>>,
     /// No answer within the human timeout.
     pub timed_out: bool,
+    /// 207: the user left the questions to the agent; `answers` is `None`
+    /// and the tool answers ok.
+    pub left_to_agent: bool,
 }
 
 impl Message<Request> for AskUser {
@@ -371,6 +403,7 @@ impl Message<Republish> for AskUser {
                 tx.send(Outcome {
                     answers: None,
                     timed_out: true,
+                    left_to_agent: false,
                 });
             }
             return reply;
@@ -385,6 +418,7 @@ impl Message<Republish> for AskUser {
                 tx.send(Outcome {
                     answers: None,
                     timed_out: false,
+                    left_to_agent: false,
                 });
             }
             return reply;
@@ -406,6 +440,25 @@ impl Message<AnswerAskBy> for AskUser {
 
     async fn handle(&mut self, m: AnswerAskBy, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.answer(m.id, Some(m.answers), m.by).await
+    }
+}
+
+impl Message<LeaveAsk> for AskUser {
+    type Reply = Option<SessionId>;
+
+    /// 207: the parked call gets no answers and goes on; the row settles
+    /// `answered` with `{"left_to_agent": true}` by the human.
+    async fn handle(&mut self, m: LeaveAsk, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let w = self.pending.remove(&m.id)?;
+        let delivered = w.tx.send(Verdict::LeftToAgent).ok().map(|()| w.session);
+        self.settle(
+            w.row,
+            QuestionState::Answered,
+            Some(serde_json::json!({"left_to_agent": true})),
+            Some(Answerer::Human),
+        )
+        .await;
+        delivered
     }
 }
 
@@ -504,6 +557,12 @@ impl Tool for AskUserTool {
                     outcome(&questions, out)
                 }
                 QuestionState::Answered => {
+                    // 207: a set left to the agent is stored as
+                    // `{"left_to_agent": true}`, not as answers.
+                    let left_to_agent = row
+                        .answer
+                        .as_ref()
+                        .is_some_and(|a| a.get("left_to_agent") == Some(&Value::Bool(true)));
                     let answers: Option<Vec<Answer>> =
                         row.answer.and_then(|a| serde_json::from_value(a).ok());
                     outcome(
@@ -511,6 +570,7 @@ impl Tool for AskUserTool {
                         Outcome {
                             answers,
                             timed_out: false,
+                            left_to_agent,
                         },
                     )
                 }
@@ -547,10 +607,23 @@ impl Tool for AskUserTool {
     }
 }
 
-/// The tool's result for an [`Outcome`]: the rendered answers, or the
-/// timeout / dismissal error.
+/// The tool's result for an [`Outcome`]: the rendered answers, the
+/// timeout / dismissal error, or 207's "left to you".
 fn outcome(questions: &[Question], out: Outcome) -> ToolOutput {
     match out.answers {
+        // 207: ok, not err: the agent continues; `{<question id>: null}` per question.
+        _ if out.left_to_agent => {
+            let mut left = ToolOutput::ok(
+                "ask_user: the user left these questions to you — decide yourself, say in your reply what you chose, and continue.",
+            );
+            left.structured = Some(Value::Object(
+                questions
+                    .iter()
+                    .map(|q| (q.id.clone(), Value::Null))
+                    .collect(),
+            ));
+            left
+        }
         Some(answers) => render(questions, &answers),
         None if out.timed_out => ToolOutput::err("ask_user: no answer from the user in time"),
         None => ToolOutput::err("ask_user: the user dismissed the questions"),
@@ -989,6 +1062,84 @@ mod tests {
             journal.questions().len(),
             1,
             "nothing asked, nothing journaled"
+        );
+    }
+
+    /// 207: `LeaveAsk` hands a pending set back to the agent: the call
+    /// answers ok (not the dismissal error that ends the turn) with a null
+    /// per question, the bus sees `left_to_agent` (not `dismissed`), and the
+    /// row is `answered` with `{"left_to_agent": true}` by the human. A
+    /// second `LeaveAsk` (or an unknown id) is refused.
+    #[tokio::test]
+    async fn leave_ask_hands_the_questions_back() {
+        let (rt, actor, journal) = with_journal(Duration::from_secs(30)).await;
+        let resolved = Arc::new(std::sync::Mutex::new(Vec::new()));
+        #[derive(kameo::Actor)]
+        struct Done(Arc<std::sync::Mutex<Vec<AskResolved>>>);
+        impl Message<AskResolved> for Done {
+            type Reply = ();
+            async fn handle(&mut self, m: AskResolved, _: &mut Context<Self, ()>) {
+                crate::jobs::lock(&self.0).push(m);
+            }
+        }
+        let sub = kameo::actor::Spawn::spawn(Done(resolved.clone()));
+        rt.subscribe::<Done, AskResolved>(&sub).await;
+        let session = SessionId::new();
+        let asked = tokio::spawn({
+            let actor = actor.clone();
+            async move {
+                Tool::call(
+                    &AskUserTool(actor),
+                    AskArgs {
+                        questions: one_question(),
+                    },
+                    cx(session, "c1"),
+                )
+                .await
+                .unwrap()
+            }
+        });
+        let id = loop {
+            if let Some(r) = actor.ask(PendingAsks).await.unwrap().first() {
+                break r.id;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        assert_eq!(actor.ask(LeaveAsk { id }).await.unwrap(), Some(session));
+        let out = asked.await.unwrap();
+        assert!(!out.is_error, "{out:?}");
+        assert_eq!(
+            out.content,
+            "ask_user: the user left these questions to you — decide yourself, say in your reply what you chose, and continue."
+        );
+        assert_eq!(out.structured, Some(serde_json::json!({"q": null})));
+        let event = loop {
+            if let Some(e) = crate::jobs::lock(&resolved).first().cloned() {
+                break e;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        assert_eq!(event.id, id);
+        assert!(event.left_to_agent);
+        assert!(!event.dismissed, "a dismissal is what cancels the turn");
+        assert!(!event.timed_out);
+        let last = journal.questions().last().cloned().unwrap();
+        assert_eq!(last.state, QuestionState::Answered);
+        assert_eq!(
+            last.answer,
+            Some(serde_json::json!({"left_to_agent": true}))
+        );
+        assert_eq!(last.answered_by, Some(crate::journal::Answerer::Human));
+        assert!(actor.ask(PendingAsks).await.unwrap().is_empty());
+        assert_eq!(actor.ask(LeaveAsk { id }).await.unwrap(), None);
+        assert_eq!(
+            actor
+                .ask(LeaveAsk {
+                    id: AskId(uuid::Uuid::now_v7())
+                })
+                .await
+                .unwrap(),
+            None
         );
     }
 }

@@ -8,7 +8,7 @@
 //! - commands on the [`TASKS_ACTOR`] actor ([`Tasks`]): [`ListTasks`],
 //!   [`GetTask`], [`TaskBlocks`], [`CreateTask`], [`UpdateTask`], [`MoveTask`], [`CommentTask`],
 //!   [`TaskEvents`], [`CheckoutTask`], [`PlaceTask`], [`Escalate`],
-//!   [`AwaitDecision`], [`AnswerDecision`], [`Mention`], [`MarkAnswered`],
+//!   [`AwaitDecision`], [`AnswerDecision`], [`LeaveDecision`], [`Mention`], [`MarkAnswered`],
 //!   [`GetPacket`], [`ListPackets`], [`EffectiveReviewer`], [`ReviewPacket`],
 //!   [`NoteDisposition`], [`EpisodeClosing`], [`FinishWake`], [`ReleaseClaims`],
 //!   [`WriteBudgetOf`], [`MoveHome`], [`HomesOffline`], [`EnginesWith`], [`RegisterDeskRouter`]
@@ -68,6 +68,11 @@ pub const DB: &str = "tasks.sqlite";
 pub const DISPATCH_EVERY: Duration = Duration::from_secs(5);
 /// Orphan sweep cadence (67 §7.5).
 pub const SWEEP_EVERY: Duration = Duration::from_secs(30);
+
+/// 207: blocker prefix of a decision the user left to the agent: `left:decision:<id>`.
+pub const LEFT_PREFIX: &str = "left:";
+/// 207: what a live `escalate` returns when the user leaves its decision (`decision: <this>`).
+pub const LEFT_ANSWER: &str = "left to you — the user chose not to decide. Pick the option you would recommend, record it with task_note, and continue.";
 
 /// How a wake reaches an agent: the roster owns desks, the tasks plugin owns
 /// wakes, so the roster registers one of these with [`RegisterDeskRouter`].
@@ -414,6 +419,23 @@ pub struct AnswerDecision {
     pub actor: String,
     /// Session.
     pub session: Option<String>,
+}
+
+/// 207: `ask` → `Result<LeftDecision, String>`: the user leaves `decision` to its task's owner. Never wakes anyone.
+/// `Err("no task is blocked on …")` when no task carries the blocker.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LeaveDecision {
+    /// `decision:<id>`.
+    pub decision: String,
+    /// Who (`rpc_core::Client::actor`).
+    pub actor: String,
+}
+
+/// 207: whether an `escalate` was still waiting live for the answer.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, kameo::Reply)]
+pub struct LeftDecision {
+    /// An `escalate` was waiting live and now returns [`LEFT_ANSWER`].
+    pub live: bool,
 }
 
 /// `ask` → `Option<String>`: the answer to `decision` within `wait`, else
@@ -1112,6 +1134,26 @@ impl Message<AnswerDecision> for Tasks {
     }
 }
 
+impl Message<LeaveDecision> for Tasks {
+    type Reply = Result<LeftDecision, String>;
+
+    async fn handle(
+        &mut self,
+        m: LeaveDecision,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let live = self.escalations.waiting(&m.decision);
+        self.ledger
+            .leave_decision(&m.decision, &m.actor, live)
+            .await?;
+        if live {
+            self.escalations.answer(&m.decision, LEFT_ANSWER);
+        }
+        tokio::spawn(drop_card(m.decision));
+        Ok(LeftDecision { live })
+    }
+}
+
 impl Message<AwaitDecision> for Tasks {
     type Reply = DelegatedReply<Option<String>>;
 
@@ -1121,6 +1163,22 @@ impl Message<AwaitDecision> for Tasks {
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
+        // 207 E3: the user left the decision between `Escalate` and this wait
+        // (recorded as parked): the escalate is live after all — answer now.
+        let left = self
+            .ledger
+            .take_left_decision(&m.decision)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(decision = %m.decision, "take_left_decision: {e}");
+                false
+            });
+        if left {
+            if let Some(tx) = tx {
+                tx.send(Some(LEFT_ANSWER.to_owned()));
+            }
+            return reply;
+        }
         let rx = self.escalations.subscribe(&m.decision);
         tokio::spawn(async move {
             let answer = escalate::wait(rx, m.wait).await;
@@ -1767,6 +1825,7 @@ mod tests {
             items: vec![],
             to: None,
             if_wrong: None,
+            left_to_agent_ms: None,
         };
         assert_eq!(
             card_question(&p, "portal"),
@@ -1898,6 +1957,106 @@ mod tests {
             .await
             .unwrap();
         assert!(actor.ask(GetTask(t.id)).await.is_ok(), "actor stopped");
+    }
+
+    /// 207: `LeaveDecision` answers a live `escalate` with [`LEFT_ANSWER`] (`live: true`),
+    /// reports a parked one as `live: false`, and refuses a decision nothing is blocked on.
+    #[tokio::test]
+    async fn leave_decision_reports_live_and_answers_the_waiter() {
+        let mut r = ledger::tests::rig().await;
+        let live_task = r.task("agent:lead").await;
+        let parked_task = r.task("agent:lead").await;
+        ledger::tests::board(&r.thread, "b1", &packet::DECISION_SECTIONS);
+        let actor = Tasks::spawn(Tasks {
+            ledger: r.ledger,
+            escalations: Default::default(),
+        });
+        let escalate = |task: &TaskId| Escalate {
+            task: task.clone(),
+            question: "ship?".into(),
+            summary: Some("Ship the release.".into()),
+            board: Some("b1".into()),
+            options: vec![],
+            recommended: None,
+            pointers: vec![],
+            recommendation: None,
+            items: vec![],
+            if_wrong: Some("low, the release is a tag".into()),
+            actor: "agent:lead".into(),
+            session: None,
+        };
+        let live = actor.ask(escalate(&live_task.id)).await.unwrap();
+        let parked = actor.ask(escalate(&parked_task.id)).await.unwrap();
+        // the escalate tool's live wait is in the mailbox before the leave
+        let waiter = actor
+            .ask(AwaitDecision {
+                decision: live.clone(),
+                wait: Duration::from_secs(30),
+            })
+            .enqueue()
+            .await
+            .unwrap();
+        let left = actor
+            .ask(LeaveDecision {
+                decision: live.clone(),
+                actor: "user".into(),
+            })
+            .await
+            .unwrap();
+        assert!(left.live);
+        assert_eq!(waiter.await.unwrap(), Some(LEFT_ANSWER.to_owned()));
+        assert!(
+            actor
+                .ask(GetTask(live_task.id.clone()))
+                .await
+                .unwrap()
+                .blockers
+                .is_empty()
+        );
+
+        let left = actor
+            .ask(LeaveDecision {
+                decision: parked.clone(),
+                actor: "user".into(),
+            })
+            .await
+            .unwrap();
+        assert!(!left.live);
+        assert_eq!(
+            actor
+                .ask(GetTask(parked_task.id.clone()))
+                .await
+                .unwrap()
+                .blockers,
+            vec![format!("{LEFT_PREFIX}{parked}")]
+        );
+        // 207 E3: the escalate's live wait only arrives now (the leave landed
+        // between Escalate and AwaitDecision): it gets the left answer at
+        // once, and the task is unblocked as by a live leave.
+        let late = tokio::time::timeout(
+            Duration::from_secs(5),
+            actor.ask(AwaitDecision {
+                decision: parked.clone(),
+                wait: Duration::from_secs(30),
+            }),
+        )
+        .await
+        .expect("answered at once, not after the wait")
+        .unwrap();
+        assert_eq!(late, Some(LEFT_ANSWER.to_owned()));
+        let t = actor.ask(GetTask(parked_task.id.clone())).await.unwrap();
+        assert!(t.blockers.is_empty(), "{:?}", t.blockers);
+        assert_ne!(t.state, TaskState::Blocked);
+
+        let err = actor
+            .ask(LeaveDecision {
+                decision: "decision:nope".into(),
+                actor: "user".into(),
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no task is blocked on decision:nope"), "{err}");
     }
 
     /// A liveness probe shaped like the real one (`AgentProbe` asks the agent

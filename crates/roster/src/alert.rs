@@ -41,8 +41,9 @@ pub struct Alert {
 }
 
 /// The §7.2 table: the class an item of this kind alerts with, or none.
-/// External [`crate::attention::Source`] items (126) carry their own id
-/// prefix and never match a row; `resume:boot:*` is a banner, not a need.
+/// `resume:boot:*` is a banner, not a need. 207 §6: home items are
+/// `node:<engine>` / `misplaced:<task>`; a study's items (`autoresearch:*`)
+/// alert as review / blocked.
 #[must_use]
 pub fn class_of(item: &AttentionItem) -> Option<AlertClass> {
     use AttentionKind as K;
@@ -51,12 +52,15 @@ pub fn class_of(item: &AttentionItem) -> Option<AlertClass> {
         K::Approval => own("approval:"),
         K::Decision => own("decision:"),
         K::Hire => own("hire:"),
-        K::Blocked => own("blocked:"),
-        K::Review => own("review:"),
+        // 207 E3: a decision left to the agent is a quiet notice, not a need.
+        K::Blocked => {
+            (own("blocked:") && !crate::score::left_decision(item)) || own("autoresearch:")
+        }
+        K::Review => own("review:") || own("autoresearch:"),
         K::Handoff => own("handoff:"),
         K::Secret => own("secret:"),
         K::Ask => own("ask:"),
-        K::Home => own("home:"),
+        K::Home => own("node:") || own("misplaced:"),
         K::ContactFirst => own("contact_first:"),
         K::Resume => own("resume:") && !own("resume:boot:"),
         K::Budget => {
@@ -76,6 +80,15 @@ pub fn class_of(item: &AttentionItem) -> Option<AlertClass> {
 #[must_use]
 pub fn why_of(item: &AttentionItem) -> String {
     use AttentionKind as K;
+    if item.id.starts_with("autoresearch:") {
+        return "a study waits for you".into();
+    }
+    let first_line = |s: Option<&str>| {
+        s.and_then(|s| s.lines().find(|l| !l.trim().is_empty()))
+            .unwrap_or_default()
+            .trim()
+            .to_owned()
+    };
     match item.kind {
         K::Approval => {
             let tool = item
@@ -96,15 +109,24 @@ pub fn why_of(item: &AttentionItem) -> String {
         K::ContactFirst => "a contact waits for you to allow it".into(),
         K::Budget => "an agent is paused at its budget cap".into(),
         K::Finished => {
-            let first = item
-                .summary
-                .as_deref()
-                .and_then(|s| s.lines().find(|l| !l.trim().is_empty()))
-                .unwrap_or_default()
-                .trim();
-            match first {
-                "" => "turn ended".into(),
-                s => format!("turn ended: {s}"),
+            use crate::attention::StopOutcome as O;
+            let stop = item.stop.as_ref();
+            match stop.map(|s| s.outcome) {
+                Some(O::Failed) => {
+                    match first_line(
+                        stop.and_then(|s| s.error.as_deref())
+                            .or(item.summary.as_deref()),
+                    ) {
+                        e if e.is_empty() => "turn failed".into(),
+                        e => format!("turn failed: {e}"),
+                    }
+                }
+                Some(O::Cancelled) => "turn cancelled".into(),
+                Some(O::TimedOut) => "turn timed out".into(),
+                Some(O::Finished) | None => match first_line(item.summary.as_deref()) {
+                    s if s.is_empty() => "turn ended".into(),
+                    s => format!("turn ended: {s}"),
+                },
             }
         }
         K::Node | K::Show | K::Double => String::new(),
@@ -155,26 +177,8 @@ mod tests {
 
     fn item(id: &str, kind: AttentionKind) -> AttentionItem {
         AttentionItem {
-            id: id.into(),
-            kind,
-            title: String::new(),
-            detail: None,
-            at_ms: 0,
-            task: None,
-            agent: None,
-            session: None,
-            approval: None,
-            decision: None,
-            packet: None,
-            ask: None,
-            turn: None,
             waiting_since_ms: None,
-            summary: None,
-            next_steps: Vec::new(),
-            context: None,
-            priority: None,
-            rank: 5,
-            alert: None,
+            ..AttentionItem::new(id.into(), kind, String::new(), None, 0)
         }
     }
 
@@ -184,7 +188,7 @@ mod tests {
     fn class_and_why_for_every_kind() {
         use AlertClass::{Finished, NeedsYou};
         use AttentionKind as K;
-        let rows: [(&str, K, Option<AlertClass>, &str); 14] = [
+        let rows: [(&str, K, Option<AlertClass>, &str); 16] = [
             (
                 "approval:1",
                 K::Approval,
@@ -252,6 +256,18 @@ mod tests {
                 "turn ended: all green",
             ),
             ("node:n", K::Node, None, ""),
+            (
+                "node:e",
+                K::Home,
+                Some(NeedsYou),
+                "a machine is offline with tasks waiting on it",
+            ),
+            (
+                "misplaced:t",
+                K::Home,
+                Some(NeedsYou),
+                "a machine is offline with tasks waiting on it",
+            ),
             ("show:c", K::Show, None, ""),
             ("double:q", K::Double, None, ""),
         ];
@@ -267,14 +283,38 @@ mod tests {
         budget.detail = Some("at 80 %: the cap pauses it".into());
         assert_eq!(class_of(&budget), None, "a budget warning is not a need");
         assert_eq!(class_of(&item("resume:boot:5", K::Resume)), None);
-        assert_eq!(
-            class_of(&item("autoresearch:finished:x", K::Review)),
-            None,
-            "external source items never alert"
-        );
+        // 207 §6: a study's items alert as review / blocked, with their own why.
+        for (id, kind) in [
+            ("autoresearch:finished:x", K::Review),
+            ("autoresearch:launch:x:3", K::Blocked),
+        ] {
+            let it = item(id, kind);
+            assert_eq!(class_of(&it), Some(NeedsYou), "{id}");
+            assert_eq!(why_of(&it), "a study waits for you");
+        }
         let mut finished = item("finished:s:t", K::Finished);
         finished.summary = None;
         assert_eq!(why_of(&finished), "turn ended");
+        // 207 §6: the why follows the stop's outcome.
+        let stop = |outcome, error: Option<&str>| crate::attention::AttentionStop {
+            outcome,
+            reason: String::new(),
+            error: error.map(str::to_owned),
+        };
+        use crate::attention::StopOutcome as O;
+        finished.stop = Some(stop(O::Failed, Some("rate limited\nretry later")));
+        assert_eq!(why_of(&finished), "turn failed: rate limited");
+        finished.stop = Some(stop(O::Failed, None));
+        assert_eq!(why_of(&finished), "turn failed");
+        finished.summary = Some("half done".into());
+        assert_eq!(why_of(&finished), "turn failed: half done");
+        finished.stop = Some(stop(O::Cancelled, None));
+        assert_eq!(why_of(&finished), "turn cancelled");
+        finished.stop = Some(stop(O::TimedOut, Some("deadline")));
+        assert_eq!(why_of(&finished), "turn timed out");
+        finished.stop = Some(stop(O::Finished, None));
+        assert_eq!(why_of(&finished), "turn ended: half done");
+        assert_eq!(class_of(&finished), Some(Finished));
     }
 
     /// §7.4: `None` inside the delay, a stable id after it, a new id once the

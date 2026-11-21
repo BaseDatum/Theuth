@@ -9,7 +9,12 @@
       "ids_removed": [
         "b"
       ],
-      "at_ms": 1
+      "at_ms": 1,
+      "items": [],
+      "order": [],
+      "seq": 0,
+      "epoch_ms": 0,
+      "alerts_changed": false
     },
     "notification": {
       "jsonrpc": "2.0",
@@ -25,7 +30,185 @@
           "ids_removed": [
             "b"
           ],
-          "at_ms": 1
+          "at_ms": 1,
+          "items": [],
+          "order": [],
+          "seq": 0,
+          "epoch_ms": 0,
+          "alerts_changed": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "AttentionChanged",
+      "count": 2,
+      "ids_added": [
+        "approval:00000000-0000-0000-0000-000000000001"
+      ],
+      "ids_removed": [],
+      "at_ms": 1700000600000,
+      "items": [
+        {
+          "id": "approval:00000000-0000-0000-0000-000000000001",
+          "kind": "approval",
+          "title": "builder wants to run shell",
+          "detail": "kubectl delete deployment relay-canary -n prod",
+          "at_ms": 1700000000000,
+          "task": null,
+          "agent": null,
+          "session": "00000000-0000-0000-0000-000000000002",
+          "approval": "00000000-0000-0000-0000-000000000001",
+          "decision": null,
+          "packet": null,
+          "ask": null,
+          "turn": null,
+          "waiting_since_ms": 1700000000000,
+          "summary": null,
+          "next_steps": [],
+          "context": null,
+          "priority": null,
+          "rank": 5,
+          "alert": null,
+          "score": 1050,
+          "reasons": [
+            {
+              "signal": "base",
+              "points": 600,
+              "text": "approval"
+            },
+            {
+              "signal": "live",
+              "points": 300,
+              "text": "agent waiting on you"
+            },
+            {
+              "signal": "risk",
+              "points": 100,
+              "text": "destructive"
+            },
+            {
+              "signal": "blocks",
+              "points": 40,
+              "text": "blocks 1 agent"
+            },
+            {
+              "signal": "age",
+              "points": 10,
+              "text": "waiting 10 min"
+            }
+          ],
+          "risk": "destructive",
+          "tool": "shell",
+          "deadline_ms": 1700000300000,
+          "expires_ms": null,
+          "blocks": 1,
+          "session_live": true,
+          "project": "release-2.5",
+          "root_session": "00000000-0000-0000-0000-000000000003",
+          "parent_session": "00000000-0000-0000-0000-000000000003",
+          "path": [
+            "Ship 2.5 release",
+            "builder"
+          ],
+          "stop": null
+        }
+      ],
+      "order": [
+        "approval:00000000-0000-0000-0000-000000000001",
+        "show:c1"
+      ],
+      "seq": 3,
+      "epoch_ms": 1699999000000,
+      "alerts_changed": true
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AttentionChanged",
+          "count": 2,
+          "ids_added": [
+            "approval:00000000-0000-0000-0000-000000000001"
+          ],
+          "ids_removed": [],
+          "at_ms": 1700000600000,
+          "items": [
+            {
+              "id": "approval:00000000-0000-0000-0000-000000000001",
+              "kind": "approval",
+              "title": "builder wants to run shell",
+              "detail": "kubectl delete deployment relay-canary -n prod",
+              "at_ms": 1700000000000,
+              "task": null,
+              "agent": null,
+              "session": "00000000-0000-0000-0000-000000000002",
+              "approval": "00000000-0000-0000-0000-000000000001",
+              "decision": null,
+              "packet": null,
+              "ask": null,
+              "turn": null,
+              "waiting_since_ms": 1700000000000,
+              "summary": null,
+              "next_steps": [],
+              "context": null,
+              "priority": null,
+              "rank": 5,
+              "alert": null,
+              "score": 1050,
+              "reasons": [
+                {
+                  "signal": "base",
+                  "points": 600,
+                  "text": "approval"
+                },
+                {
+                  "signal": "live",
+                  "points": 300,
+                  "text": "agent waiting on you"
+                },
+                {
+                  "signal": "risk",
+                  "points": 100,
+                  "text": "destructive"
+                },
+                {
+                  "signal": "blocks",
+                  "points": 40,
+                  "text": "blocks 1 agent"
+                },
+                {
+                  "signal": "age",
+                  "points": 10,
+                  "text": "waiting 10 min"
+                }
+              ],
+              "risk": "destructive",
+              "tool": "shell",
+              "deadline_ms": 1700000300000,
+              "expires_ms": null,
+              "blocks": 1,
+              "session_live": true,
+              "project": "release-2.5",
+              "root_session": "00000000-0000-0000-0000-000000000003",
+              "parent_session": "00000000-0000-0000-0000-000000000003",
+              "path": [
+                "Ship 2.5 release",
+                "builder"
+              ],
+              "stop": null
+            }
+          ],
+          "order": [
+            "approval:00000000-0000-0000-0000-000000000001",
+            "show:c1"
+          ],
+          "seq": 3,
+          "epoch_ms": 1699999000000,
+          "alerts_changed": true
         }
       }
     }

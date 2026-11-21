@@ -172,6 +172,8 @@ pub fn closing_note(entry: &Entry, res: &AskResolved) -> Option<&'static str> {
         Some("⌛ questions expired")
     } else if entry.done {
         None
+    } else if res.left_to_agent {
+        Some("questions left to the agent")
     } else if res.dismissed {
         Some("questions dismissed elsewhere")
     } else {

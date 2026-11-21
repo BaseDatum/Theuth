@@ -5668,26 +5668,9 @@ impl roster::attention::Source for AttentionSource {
                     detail: Option<String>,
                     at: &str,
                     session: Option<SessionId>| AttentionItem {
-            id,
-            kind,
-            title,
-            detail,
-            at_ms: ms_of(at),
-            task: None,
-            agent: None,
             session: session.map(|s| s.to_string()),
-            approval: None,
-            decision: None,
-            packet: None,
-            ask: None,
-            turn: None,
             waiting_since_ms: None,
-            summary: None,
-            next_steps: Vec::new(),
-            context: None,
-            priority: None,
-            rank: 5,
-            alert: None,
+            ..AttentionItem::new(id, kind, title, detail, ms_of(at))
         };
         let mut out = Vec::new();
         let Ok(studies) = self.0.list_studies().await else {

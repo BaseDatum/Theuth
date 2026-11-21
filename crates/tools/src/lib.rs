@@ -68,12 +68,12 @@ pub use activity::{
     Settle, Tracked,
 };
 pub use approval::{
-    Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, ForgetSession,
+    Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Dismiss, ForgetSession,
     PendingApprovals, Resolve, ResolveBy,
 };
 pub use ask::{
-    Answer, AnswerAsk, AnswerAskBy, AskId, AskRequested, AskResolved, AskUser, Choice, PendingAsks,
-    Question, late_answer_text,
+    Answer, AnswerAsk, AnswerAskBy, AskId, AskRequested, AskResolved, AskUser, Choice, LeaveAsk,
+    PendingAsks, Question, late_answer_text,
 };
 pub use builtins::{
     BUILTIN_CATEGORY_PREFIX, BuiltinCategory, BuiltinTool, BuiltinsConfig, category_key,
@@ -101,11 +101,11 @@ pub use pty::{
 };
 pub use registry::{
     ActivityRecipient, AppInvoke, AppInvoked, ApprovalsState, CheckFence, DescribeTools,
-    ExternalApproval, FenceChecker, FenceError, GetApprovals, GetPtyIdle, HiddenTools, InspectTool,
-    InstallCommunicationAccess, InstallMcpAccess, Invoke, ListPrompts, ListTools, McpAccess,
-    RegisterActivity, RegisterFenceChecker, RegisterPrompt, RegisterTool, SetApprovals, SetCap,
-    SetHidden, SetParent, SetPtyIdle, ToolInspection, ToolRegistry, UnregisterPrompt,
-    UnregisterTool, UserActivation,
+    ExternalApproval, ExternalVerdict, FenceChecker, FenceError, GetApprovals, GetPtyIdle,
+    HiddenTools, InspectTool, InstallCommunicationAccess, InstallMcpAccess, Invoke, ListPrompts,
+    ListTools, McpAccess, RegisterActivity, RegisterFenceChecker, RegisterPrompt, RegisterTool,
+    SetApprovals, SetCap, SetHidden, SetParent, SetPtyIdle, ToolInspection, ToolRegistry,
+    UnregisterPrompt, UnregisterTool, UserActivation,
 };
 pub use registry::{
     Allowlisted, CancelCalls, ContactScoped, EffectiveCap, InstallResources, RemoveResources,

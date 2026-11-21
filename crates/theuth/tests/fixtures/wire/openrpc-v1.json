@@ -20267,9 +20267,112 @@
           }
         ]
       },
-      "event.roster_2eattention.output.AttentionChanged": {
-        "description": "130 E1: bus event the [`Attention`] actor publishes after a derive whose\nresult differs from the previous one by id set; `count` is the new badge.",
+      "event.roster_2eattention.output.Alert": {
+        "description": "The alert on one [`AttentionItem`] (155 §7.1): `id` is stable for one\nepisode (`<item id>@<episode start ms>`); clients post one notification\nper id.",
         "properties": {
+          "at_ms": {
+            "description": "ms since epoch: when the episode began.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "class": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.output.AlertClass"
+              }
+            ],
+            "description": "What it is."
+          },
+          "id": {
+            "description": "`<item id>@<at_ms>`.",
+            "type": "string"
+          },
+          "why": {
+            "description": "What triggered it, one short sentence.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "class",
+          "why",
+          "at_ms"
+        ],
+        "type": "object"
+      },
+      "event.roster_2eattention.output.AlertClass": {
+        "description": "Why a client should notify (155 §7.2).",
+        "oneOf": [
+          {
+            "const": "needs_you",
+            "description": "Only Sky can move it: an approval, a question, a review, …",
+            "type": "string"
+          },
+          {
+            "const": "finished",
+            "description": "A session finished while unseen (done ≠ idle, per connection).",
+            "type": "string"
+          }
+        ]
+      },
+      "event.roster_2eattention.output.ApprovalId": {
+        "description": "Correlates a request with its resolution.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.roster_2eattention.output.AskId": {
+        "description": "Correlates a request with its answer.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.roster_2eattention.output.AskRequested": {
+        "description": "Event: a tool call is waiting on the user's answers. Every UI subscribes.",
+        "properties": {
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.output.AskId"
+              }
+            ],
+            "description": "Use in [`AnswerAsk`]."
+          },
+          "questions": {
+            "description": "The questions, in order.",
+            "items": {
+              "$ref": "#/components/schemas/event.roster_2eattention.output.Question"
+            },
+            "type": "array"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.output.SessionId"
+              }
+            ],
+            "description": "Owning session."
+          },
+          "type": {
+            "const": "AskRequested",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "session",
+          "questions",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.roster_2eattention.output.AttentionChanged": {
+        "description": "130 E1 / 207 §5.5: bus event the [`Attention`] actor publishes after a\nderive whose result differs from the last published one (ids, order,\ncontent, alerts); `count` is the new badge.",
+        "properties": {
+          "alerts_changed": {
+            "default": false,
+            "description": "207 §7: some item's `alert` appeared, changed or went away: refetch `attention_list` (masked per connection).",
+            "type": "boolean"
+          },
           "at_ms": {
             "description": "ms since epoch of the derive.",
             "format": "uint64",
@@ -20279,6 +20382,13 @@
           "count": {
             "description": "The new list's length (the badge).",
             "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "epoch_ms": {
+            "default": 0,
+            "description": "207 §7: ms since epoch the `Attention` actor started (a new value = a new run; `seq` restarts).",
+            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
@@ -20295,6 +20405,875 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "items": {
+            "default": [],
+            "description": "207 §7: every item added or changed (content other than `score`/`reasons`/`alert`) since the previous\nevent, with `alert` set to `None` (alerts are per connection; see `alerts_changed`).",
+            "items": {
+              "$ref": "#/components/schemas/event.roster_2eattention.output.AttentionItem"
+            },
+            "type": "array"
+          },
+          "order": {
+            "default": [],
+            "description": "207 §7: every listed id in engine order after this derive.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "seq": {
+            "default": 0,
+            "description": "207 §7: 1-based per engine run, +1 per published event; 0 = an engine before 207.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": {
+            "const": "AttentionChanged",
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "ids_added",
+          "ids_removed",
+          "at_ms",
+          "items",
+          "order",
+          "seq",
+          "epoch_ms",
+          "alerts_changed",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.roster_2eattention.output.AttentionItem": {
+        "description": "One inbox item. `id` is stable across derivations (dismiss / snooze key).",
+        "properties": {
+          "agent": {
+            "description": "The agent: hire / budget items, the task owner, else the desk the session belongs to (104 A3).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "alert": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.output.Alert"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "155 §7.1: the engine's alert decision for this item — set after\n`roster.alert_delay_ms` for kinds that alert; rpc blanks it per\nconnection for the focused session and seen finishes (§7.3, §7.5)."
+          },
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.output.ApprovalId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The approval id, for approvals."
+          },
+          "ask": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.output.AskRequested"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The pending question(s), for asks (104 A3): the screen renders at once."
+          },
+          "at_ms": {
+            "description": "ms since epoch: when the item arose (task update, approval time, …).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "blocks": {
+            "default": 0,
+            "description": "207 D5: sessions stopped behind this item (transitive `awaiting` on its session).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.output.ItemContext"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "149 E6: the conversation the item sits in, for session-born kinds\n(ask, approval, finished, resume, blocked-with-session); `None` when\nthe session is unknown or has no messages."
+          },
+          "deadline_ms": {
+            "default": null,
+            "description": "207 R5: ms since epoch the request resolves itself (approval/ask/hand-off/secret timeout, a double's grace end).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "decision": {
+            "description": "The `decision:<id>` blocker, for decisions.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detail": {
+            "description": "Why / what it waits on.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_ms": {
+            "default": null,
+            "description": "207 R4: ms since epoch the item leaves the list on its own (`finished`: stop + `stopped_ttl_mins`).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.output.AttentionKind"
+              }
+            ],
+            "description": "What."
+          },
+          "next_steps": {
+            "default": [],
+            "description": "130 E3: the agent's `## Next` list, ≤ 2 items of ≤ 80 chars (Finished items).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "packet": {
+            "description": "The packet key (`decision:<id>` | `review:<task>`) when one exists (101): `packet_get` reads it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parent_session": {
+            "default": null,
+            "description": "207 R5: the item's session's parent; `None` for a root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "default": [],
+            "description": "207 R5: display path, root first: the root's title, then each child's peer name; empty when the session is unknown.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.output.Priority"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "132 D4: the task's priority — task-born items and session items whose\nsession is a task checkout; `None` otherwise."
+          },
+          "project": {
+            "default": null,
+            "description": "207 R5: the session's effective project (its root's), else the task's; `None` when neither.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rank": {
+            "default": 0,
+            "description": "132 D4: [`tasks::rank::rank`] of that task (`project_order` step + priority\nweight); `Priority::Medium.weight()` (5) for items without one. Higher first.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reasons": {
+            "default": [],
+            "description": "207 D3: the score's contributors, points desc (ties in `AttentionSignal` order); `base` always present.",
+            "items": {
+              "$ref": "#/components/schemas/event.roster_2eattention.output.AttentionReason"
+            },
+            "type": "array"
+          },
+          "risk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.output.Risk"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "207 R5: approvals — `ApprovalRequested.risk`; `None` for other kinds."
+          },
+          "root_session": {
+            "default": null,
+            "description": "207 R5: the root of the item's session tree (itself for a root).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "score": {
+            "default": 0,
+            "description": "207 D3: the engine's score — the sum of `reasons`; the list is ordered by it (§3.4).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session": {
+            "description": "The session that produced the item, for every kind that has one (104 A3).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_live": {
+            "default": false,
+            "description": "207 R3: the item's session is running / awaiting / in approval right now.",
+            "type": "boolean"
+          },
+          "stop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.output.AttentionStop"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "207 R4: `finished` items — how the turn stopped."
+          },
+          "summary": {
+            "default": null,
+            "description": "130 E3: the first line of the turn's final text, ≤ 160 chars (Finished items).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.output.TaskId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The task, for task-born items."
+          },
+          "title": {
+            "description": "One line.",
+            "type": "string"
+          },
+          "tool": {
+            "default": null,
+            "description": "207 R5: approvals — the tool name (`ApprovalRequested.tool`); `None` for other kinds.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn": {
+            "default": null,
+            "description": "The turn the item belongs to, when the source carries one (104 A3). No source does yet.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "waiting_since_ms": {
+            "default": null,
+            "description": "130 E2: ms since epoch the user has been waited on — the approval's\narrival, the ask's arrival, the blocker's / review's `task_events`\ntime when known, else `at_ms`. `None` for kinds that wait on nobody.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "detail",
+          "at_ms",
+          "task",
+          "agent",
+          "session",
+          "approval",
+          "decision",
+          "packet",
+          "ask",
+          "turn",
+          "waiting_since_ms",
+          "summary",
+          "next_steps",
+          "context",
+          "priority",
+          "rank",
+          "alert",
+          "score",
+          "reasons",
+          "risk",
+          "tool",
+          "deadline_ms",
+          "expires_ms",
+          "blocks",
+          "session_live",
+          "project",
+          "root_session",
+          "parent_session",
+          "path",
+          "stop"
+        ],
+        "type": "object"
+      },
+      "event.roster_2eattention.output.AttentionKind": {
+        "description": "What kind of decision an item wants.",
+        "oneOf": [
+          {
+            "const": "approval",
+            "description": "A tool call waits for allow / deny.",
+            "type": "string"
+          },
+          {
+            "const": "decision",
+            "description": "A task is blocked on a `decision:<id>` — answer it.",
+            "type": "string"
+          },
+          {
+            "const": "hire",
+            "description": "A proposed agent waits for hire / decline.",
+            "type": "string"
+          },
+          {
+            "const": "blocked",
+            "description": "A task is blocked on a person or another task.",
+            "type": "string"
+          },
+          {
+            "const": "review",
+            "description": "A task in review with the user as reviewer — done or back.",
+            "type": "string"
+          },
+          {
+            "const": "budget",
+            "description": "An agent at ≥ 80 % of its month budget, or paused at the cap.",
+            "type": "string"
+          },
+          {
+            "const": "node",
+            "description": "A paired engine is unreachable.",
+            "type": "string"
+          },
+          {
+            "const": "handoff",
+            "description": "An agent in a VM needs a human at its desktop (79 §6.6): open it, then Done / Cancel.",
+            "type": "string"
+          },
+          {
+            "const": "secret",
+            "description": "A session asked for a secret (79 §6.6): the masked card, one or several fields.",
+            "type": "string"
+          },
+          {
+            "const": "ask",
+            "description": "A session asked the user a question (`ask_user`, 104 A1): answer or dismiss.",
+            "type": "string"
+          },
+          {
+            "const": "show",
+            "description": "An agent showed the user an artifact (104 A1): see it.",
+            "type": "string"
+          },
+          {
+            "const": "resume",
+            "description": "109 §8.3: a session's interrupted turn needs a human — a replay\nskipped a mutating call (effect unknown), an ACP child got a hand-off,\nor `durability.resume: ask` waits for the Resume button.",
+            "type": "string"
+          },
+          {
+            "const": "double",
+            "description": "126 §10: the double answered a card for the owner (\"double answered\nAllow for `git push` · undo 14 s\"), or the daily L3 digest.",
+            "type": "string"
+          },
+          {
+            "const": "finished",
+            "description": "130 E3: a root or desk session's turn ended cleanly — the receipt, with\n`summary` and the agent's `## Next` suggestions.",
+            "type": "string"
+          },
+          {
+            "const": "home",
+            "description": "182 D9: a task's home engine is offline (or unknown) with tasks waiting\non it (`node:<engine id>`, raised by the lease holder) — move them here,\nor keep waiting; nothing runs elsewhere on its own. S1: a task homed\nhere whose agent lives elsewhere (`misplaced:<task>`).",
+            "type": "string"
+          },
+          {
+            "const": "contact_first",
+            "description": "183 §7.6 (W-27): a contact's first task for an export waits — Allow once · Always ·\nBlock (`contact_first_answer`). Id `contact_first:<contact>:<export>` (both names are\n`[a-z0-9_-]`); the title names the contact, its machine and the export.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.roster_2eattention.output.AttentionReason": {
+        "description": "207 D3: one line of an item's score breakdown.",
+        "properties": {
+          "points": {
+            "description": "Its points (> 0, except `base` which is always listed).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "signal": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.output.AttentionSignal"
+              }
+            ],
+            "description": "Which signal."
+          },
+          "text": {
+            "description": "Short text for the card (\"blocks 3 agents\", \"denies itself in 1:42\"); a snapshot at derive time.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "signal",
+          "points",
+          "text"
+        ],
+        "type": "object"
+      },
+      "event.roster_2eattention.output.AttentionSignal": {
+        "description": "207 D3: one contributor to an item's score.",
+        "oneOf": [
+          {
+            "const": "base",
+            "description": "The kind's base (207 §3.1).",
+            "type": "string"
+          },
+          {
+            "const": "live",
+            "description": "The item's session is live right now.",
+            "type": "string"
+          },
+          {
+            "const": "blocks",
+            "description": "Sessions stopped behind the item.",
+            "type": "string"
+          },
+          {
+            "const": "deadline",
+            "description": "The request resolves itself soon.",
+            "type": "string"
+          },
+          {
+            "const": "risk",
+            "description": "The approval's risk class.",
+            "type": "string"
+          },
+          {
+            "const": "task",
+            "description": "The task's priority and project rank.",
+            "type": "string"
+          },
+          {
+            "const": "age",
+            "description": "Minutes waited.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.roster_2eattention.output.AttentionStop": {
+        "description": "207 D5: the stop behind a `finished` item.",
+        "properties": {
+          "error": {
+            "description": "The turn's last `AgentEvent::Error` message, cut to `SUMMARY_MAX` chars; `None` when there was none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.output.StopOutcome"
+              }
+            ],
+            "description": "Outcome class."
+          },
+          "reason": {
+            "description": "The raw `TurnFinished.stop_reason`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "reason",
+          "error"
+        ],
+        "type": "object"
+      },
+      "event.roster_2eattention.output.Choice": {
+        "description": "One selectable answer.",
+        "properties": {
+          "description": {
+            "description": "Optional tradeoff or explanation shown under the label.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "description": "Short label (a few words).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "type": "object"
+      },
+      "event.roster_2eattention.output.ItemContext": {
+        "description": "149 E6: the two bubbles behind an item — the user's last input to the\nsession and the agent's last assistant text before the item arose, each\n≤ [`CONTEXT_MAX`] chars (sentence-clipped, fences dropped); `None` when unknown.",
+        "properties": {
+          "last_reply": {
+            "description": "The agent's last reply (the text after that input).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request": {
+            "description": "What the user last asked the session.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "request",
+          "last_reply"
+        ],
+        "type": "object"
+      },
+      "event.roster_2eattention.output.Priority": {
+        "description": "How soon a task wants attention (132 D4). The user alone sets it; one\n[`crate::rank::rank`] orders the inbox and an agent's wake dispatch by it.",
+        "oneOf": [
+          {
+            "const": "urgent",
+            "description": "Its own group at the top of the rail.",
+            "type": "string"
+          },
+          {
+            "const": "high",
+            "description": "Before the ordinary.",
+            "type": "string"
+          },
+          {
+            "const": "medium",
+            "description": "The default.",
+            "type": "string"
+          },
+          {
+            "const": "low",
+            "description": "When nothing else waits.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.roster_2eattention.output.Question": {
+        "description": "One question. The user picks an option, types a freeform answer, or skips.",
+        "properties": {
+          "id": {
+            "description": "Short stable key; the answer is reported under it.",
+            "type": "string"
+          },
+          "options": {
+            "default": [],
+            "description": "2–5 distinct options; may be empty for a freeform-only question.",
+            "items": {
+              "$ref": "#/components/schemas/event.roster_2eattention.output.Choice"
+            },
+            "type": "array"
+          },
+          "question": {
+            "description": "The question text.",
+            "type": "string"
+          },
+          "recommended": {
+            "description": "Index into `options` you recommend; shown to the user as such.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "question",
+          "options"
+        ],
+        "type": "object"
+      },
+      "event.roster_2eattention.output.Risk": {
+        "description": "How much damage a tool can do; the only input to the approval policy.",
+        "oneOf": [
+          {
+            "const": "read_only",
+            "description": "Observes only.",
+            "type": "string"
+          },
+          {
+            "const": "mutating",
+            "description": "Changes state that can be undone or is scoped.",
+            "type": "string"
+          },
+          {
+            "const": "destructive",
+            "description": "Irreversible or unbounded (arbitrary shell, delete, network writes).",
+            "type": "string"
+          }
+        ]
+      },
+      "event.roster_2eattention.output.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.roster_2eattention.output.StopOutcome": {
+        "description": "207 D5: how a session's turn stopped (`finished` items).",
+        "oneOf": [
+          {
+            "const": "finished",
+            "description": "Any provider stop reason that is not one of the three below (`end_turn`, `stop`, `max_tokens`, …).",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "`stop_reason == \"error\"`.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "`stop_reason == \"cancelled\"` (Stop, a parent's cancel, `max_runtime`).",
+            "type": "string"
+          },
+          {
+            "const": "timed_out",
+            "description": "`stop_reason == \"timed_out\"` (the peer-work deadline).",
+            "type": "string"
+          }
+        ]
+      },
+      "event.roster_2eattention.output.TaskId": {
+        "description": "Task id: uuidv7 as text.",
+        "type": "string"
+      },
+      "event.roster_2eattention.receiver.Alert": {
+        "description": "The alert on one [`AttentionItem`] (155 §7.1): `id` is stable for one\nepisode (`<item id>@<episode start ms>`); clients post one notification\nper id.",
+        "properties": {
+          "at_ms": {
+            "description": "ms since epoch: when the episode began.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "class": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.receiver.AlertClass"
+              }
+            ],
+            "description": "What it is."
+          },
+          "id": {
+            "description": "`<item id>@<at_ms>`.",
+            "type": "string"
+          },
+          "why": {
+            "description": "What triggered it, one short sentence.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "class",
+          "why",
+          "at_ms"
+        ],
+        "type": "object"
+      },
+      "event.roster_2eattention.receiver.AlertClass": {
+        "description": "Why a client should notify (155 §7.2).",
+        "oneOf": [
+          {
+            "const": "needs_you",
+            "description": "Only Sky can move it: an approval, a question, a review, …",
+            "type": "string"
+          },
+          {
+            "const": "finished",
+            "description": "A session finished while unseen (done ≠ idle, per connection).",
+            "type": "string"
+          }
+        ]
+      },
+      "event.roster_2eattention.receiver.ApprovalId": {
+        "description": "Correlates a request with its resolution.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.roster_2eattention.receiver.AskId": {
+        "description": "Correlates a request with its answer.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.roster_2eattention.receiver.AskRequested": {
+        "description": "Event: a tool call is waiting on the user's answers. Every UI subscribes.",
+        "properties": {
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.receiver.AskId"
+              }
+            ],
+            "description": "Use in [`AnswerAsk`]."
+          },
+          "questions": {
+            "description": "The questions, in order.",
+            "items": {
+              "$ref": "#/components/schemas/event.roster_2eattention.receiver.Question"
+            },
+            "type": "array"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.receiver.SessionId"
+              }
+            ],
+            "description": "Owning session."
+          },
+          "type": {
+            "const": "AskRequested",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "session",
+          "questions",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.roster_2eattention.receiver.AttentionChanged": {
+        "description": "130 E1 / 207 §5.5: bus event the [`Attention`] actor publishes after a\nderive whose result differs from the last published one (ids, order,\ncontent, alerts); `count` is the new badge.",
+        "properties": {
+          "alerts_changed": {
+            "default": false,
+            "description": "207 §7: some item's `alert` appeared, changed or went away: refetch `attention_list` (masked per connection).",
+            "type": "boolean"
+          },
+          "at_ms": {
+            "description": "ms since epoch of the derive.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "count": {
+            "description": "The new list's length (the badge).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "epoch_ms": {
+            "default": 0,
+            "description": "207 §7: ms since epoch the `Attention` actor started (a new value = a new run; `seq` restarts).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ids_added": {
+            "description": "Ids present now and not before, sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ids_removed": {
+            "description": "Ids present before and not now, sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "items": {
+            "default": [],
+            "description": "207 §7: every item added or changed (content other than `score`/`reasons`/`alert`) since the previous\nevent, with `alert` set to `None` (alerts are per connection; see `alerts_changed`).",
+            "items": {
+              "$ref": "#/components/schemas/event.roster_2eattention.receiver.AttentionItem"
+            },
+            "type": "array"
+          },
+          "order": {
+            "default": [],
+            "description": "207 §7: every listed id in engine order after this derive.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "seq": {
+            "default": 0,
+            "description": "207 §7: 1-based per engine run, +1 per published event; 0 = an engine before 207.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
           },
           "type": {
             "const": "AttentionChanged",
@@ -20310,48 +21289,635 @@
         ],
         "type": "object"
       },
-      "event.roster_2eattention.receiver.AttentionChanged": {
-        "description": "130 E1: bus event the [`Attention`] actor publishes after a derive whose\nresult differs from the previous one by id set; `count` is the new badge.",
+      "event.roster_2eattention.receiver.AttentionItem": {
+        "description": "One inbox item. `id` is stable across derivations (dismiss / snooze key).",
         "properties": {
+          "agent": {
+            "description": "The agent: hire / budget items, the task owner, else the desk the session belongs to (104 A3).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "alert": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.receiver.Alert"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "155 §7.1: the engine's alert decision for this item — set after\n`roster.alert_delay_ms` for kinds that alert; rpc blanks it per\nconnection for the focused session and seen finishes (§7.3, §7.5)."
+          },
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.receiver.ApprovalId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The approval id, for approvals."
+          },
+          "ask": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.receiver.AskRequested"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The pending question(s), for asks (104 A3): the screen renders at once."
+          },
           "at_ms": {
-            "description": "ms since epoch of the derive.",
+            "description": "ms since epoch: when the item arose (task update, approval time, …).",
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
-          "count": {
-            "description": "The new list's length (the badge).",
+          "blocks": {
+            "default": 0,
+            "description": "207 D5: sessions stopped behind this item (transitive `awaiting` on its session).",
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
           },
-          "ids_added": {
-            "description": "Ids present now and not before, sorted.",
+          "context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.receiver.ItemContext"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "149 E6: the conversation the item sits in, for session-born kinds\n(ask, approval, finished, resume, blocked-with-session); `None` when\nthe session is unknown or has no messages."
+          },
+          "deadline_ms": {
+            "default": null,
+            "description": "207 R5: ms since epoch the request resolves itself (approval/ask/hand-off/secret timeout, a double's grace end).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "decision": {
+            "description": "The `decision:<id>` blocker, for decisions.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detail": {
+            "description": "Why / what it waits on.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_ms": {
+            "default": null,
+            "description": "207 R4: ms since epoch the item leaves the list on its own (`finished`: stop + `stopped_ttl_mins`).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.receiver.AttentionKind"
+              }
+            ],
+            "description": "What."
+          },
+          "next_steps": {
+            "default": [],
+            "description": "130 E3: the agent's `## Next` list, ≤ 2 items of ≤ 80 chars (Finished items).",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
-          "ids_removed": {
-            "description": "Ids present before and not now, sorted.",
+          "packet": {
+            "description": "The packet key (`decision:<id>` | `review:<task>`) when one exists (101): `packet_get` reads it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parent_session": {
+            "default": null,
+            "description": "207 R5: the item's session's parent; `None` for a root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "default": [],
+            "description": "207 R5: display path, root first: the root's title, then each child's peer name; empty when the session is unknown.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
-          "type": {
-            "const": "AttentionChanged",
+          "priority": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.receiver.Priority"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "132 D4: the task's priority — task-born items and session items whose\nsession is a task checkout; `None` otherwise."
+          },
+          "project": {
+            "default": null,
+            "description": "207 R5: the session's effective project (its root's), else the task's; `None` when neither.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rank": {
+            "default": 0,
+            "description": "132 D4: [`tasks::rank::rank`] of that task (`project_order` step + priority\nweight); `Priority::Medium.weight()` (5) for items without one. Higher first.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reasons": {
+            "default": [],
+            "description": "207 D3: the score's contributors, points desc (ties in `AttentionSignal` order); `base` always present.",
+            "items": {
+              "$ref": "#/components/schemas/event.roster_2eattention.receiver.AttentionReason"
+            },
+            "type": "array"
+          },
+          "risk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.receiver.Risk"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "207 R5: approvals — `ApprovalRequested.risk`; `None` for other kinds."
+          },
+          "root_session": {
+            "default": null,
+            "description": "207 R5: the root of the item's session tree (itself for a root).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "score": {
+            "default": 0,
+            "description": "207 D3: the engine's score — the sum of `reasons`; the list is ordered by it (§3.4).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session": {
+            "description": "The session that produced the item, for every kind that has one (104 A3).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_live": {
+            "default": false,
+            "description": "207 R3: the item's session is running / awaiting / in approval right now.",
+            "type": "boolean"
+          },
+          "stop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.receiver.AttentionStop"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "207 R4: `finished` items — how the turn stopped."
+          },
+          "summary": {
+            "default": null,
+            "description": "130 E3: the first line of the turn's final text, ≤ 160 chars (Finished items).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.receiver.TaskId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The task, for task-born items."
+          },
+          "title": {
+            "description": "One line.",
+            "type": "string"
+          },
+          "tool": {
+            "default": null,
+            "description": "207 R5: approvals — the tool name (`ApprovalRequested.tool`); `None` for other kinds.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn": {
+            "default": null,
+            "description": "The turn the item belongs to, when the source carries one (104 A3). No source does yet.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "waiting_since_ms": {
+            "default": null,
+            "description": "130 E2: ms since epoch the user has been waited on — the approval's\narrival, the ask's arrival, the blocker's / review's `task_events`\ntime when known, else `at_ms`. `None` for kinds that wait on nobody.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "at_ms"
+        ],
+        "type": "object"
+      },
+      "event.roster_2eattention.receiver.AttentionKind": {
+        "description": "What kind of decision an item wants.",
+        "oneOf": [
+          {
+            "const": "approval",
+            "description": "A tool call waits for allow / deny.",
+            "type": "string"
+          },
+          {
+            "const": "decision",
+            "description": "A task is blocked on a `decision:<id>` — answer it.",
+            "type": "string"
+          },
+          {
+            "const": "hire",
+            "description": "A proposed agent waits for hire / decline.",
+            "type": "string"
+          },
+          {
+            "const": "blocked",
+            "description": "A task is blocked on a person or another task.",
+            "type": "string"
+          },
+          {
+            "const": "review",
+            "description": "A task in review with the user as reviewer — done or back.",
+            "type": "string"
+          },
+          {
+            "const": "budget",
+            "description": "An agent at ≥ 80 % of its month budget, or paused at the cap.",
+            "type": "string"
+          },
+          {
+            "const": "node",
+            "description": "A paired engine is unreachable.",
+            "type": "string"
+          },
+          {
+            "const": "handoff",
+            "description": "An agent in a VM needs a human at its desktop (79 §6.6): open it, then Done / Cancel.",
+            "type": "string"
+          },
+          {
+            "const": "secret",
+            "description": "A session asked for a secret (79 §6.6): the masked card, one or several fields.",
+            "type": "string"
+          },
+          {
+            "const": "ask",
+            "description": "A session asked the user a question (`ask_user`, 104 A1): answer or dismiss.",
+            "type": "string"
+          },
+          {
+            "const": "show",
+            "description": "An agent showed the user an artifact (104 A1): see it.",
+            "type": "string"
+          },
+          {
+            "const": "resume",
+            "description": "109 §8.3: a session's interrupted turn needs a human — a replay\nskipped a mutating call (effect unknown), an ACP child got a hand-off,\nor `durability.resume: ask` waits for the Resume button.",
+            "type": "string"
+          },
+          {
+            "const": "double",
+            "description": "126 §10: the double answered a card for the owner (\"double answered\nAllow for `git push` · undo 14 s\"), or the daily L3 digest.",
+            "type": "string"
+          },
+          {
+            "const": "finished",
+            "description": "130 E3: a root or desk session's turn ended cleanly — the receipt, with\n`summary` and the agent's `## Next` suggestions.",
+            "type": "string"
+          },
+          {
+            "const": "home",
+            "description": "182 D9: a task's home engine is offline (or unknown) with tasks waiting\non it (`node:<engine id>`, raised by the lease holder) — move them here,\nor keep waiting; nothing runs elsewhere on its own. S1: a task homed\nhere whose agent lives elsewhere (`misplaced:<task>`).",
+            "type": "string"
+          },
+          {
+            "const": "contact_first",
+            "description": "183 §7.6 (W-27): a contact's first task for an export waits — Allow once · Always ·\nBlock (`contact_first_answer`). Id `contact_first:<contact>:<export>` (both names are\n`[a-z0-9_-]`); the title names the contact, its machine and the export.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.roster_2eattention.receiver.AttentionReason": {
+        "description": "207 D3: one line of an item's score breakdown.",
+        "properties": {
+          "points": {
+            "description": "Its points (> 0, except `base` which is always listed).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "signal": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.receiver.AttentionSignal"
+              }
+            ],
+            "description": "Which signal."
+          },
+          "text": {
+            "description": "Short text for the card (\"blocks 3 agents\", \"denies itself in 1:42\"); a snapshot at derive time.",
             "type": "string"
           }
         },
         "required": [
-          "count",
-          "ids_added",
-          "ids_removed",
-          "at_ms",
-          "type"
+          "signal",
+          "points",
+          "text"
         ],
         "type": "object"
+      },
+      "event.roster_2eattention.receiver.AttentionSignal": {
+        "description": "207 D3: one contributor to an item's score.",
+        "oneOf": [
+          {
+            "const": "base",
+            "description": "The kind's base (207 §3.1).",
+            "type": "string"
+          },
+          {
+            "const": "live",
+            "description": "The item's session is live right now.",
+            "type": "string"
+          },
+          {
+            "const": "blocks",
+            "description": "Sessions stopped behind the item.",
+            "type": "string"
+          },
+          {
+            "const": "deadline",
+            "description": "The request resolves itself soon.",
+            "type": "string"
+          },
+          {
+            "const": "risk",
+            "description": "The approval's risk class.",
+            "type": "string"
+          },
+          {
+            "const": "task",
+            "description": "The task's priority and project rank.",
+            "type": "string"
+          },
+          {
+            "const": "age",
+            "description": "Minutes waited.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.roster_2eattention.receiver.AttentionStop": {
+        "description": "207 D5: the stop behind a `finished` item.",
+        "properties": {
+          "error": {
+            "description": "The turn's last `AgentEvent::Error` message, cut to `SUMMARY_MAX` chars; `None` when there was none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.roster_2eattention.receiver.StopOutcome"
+              }
+            ],
+            "description": "Outcome class."
+          },
+          "reason": {
+            "description": "The raw `TurnFinished.stop_reason`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "event.roster_2eattention.receiver.Choice": {
+        "description": "One selectable answer.",
+        "properties": {
+          "description": {
+            "description": "Optional tradeoff or explanation shown under the label.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "description": "Short label (a few words).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "type": "object"
+      },
+      "event.roster_2eattention.receiver.ItemContext": {
+        "description": "149 E6: the two bubbles behind an item — the user's last input to the\nsession and the agent's last assistant text before the item arose, each\n≤ [`CONTEXT_MAX`] chars (sentence-clipped, fences dropped); `None` when unknown.",
+        "properties": {
+          "last_reply": {
+            "description": "The agent's last reply (the text after that input).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request": {
+            "description": "What the user last asked the session.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "event.roster_2eattention.receiver.Priority": {
+        "description": "How soon a task wants attention (132 D4). The user alone sets it; one\n[`crate::rank::rank`] orders the inbox and an agent's wake dispatch by it.",
+        "oneOf": [
+          {
+            "const": "urgent",
+            "description": "Its own group at the top of the rail.",
+            "type": "string"
+          },
+          {
+            "const": "high",
+            "description": "Before the ordinary.",
+            "type": "string"
+          },
+          {
+            "const": "medium",
+            "description": "The default.",
+            "type": "string"
+          },
+          {
+            "const": "low",
+            "description": "When nothing else waits.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.roster_2eattention.receiver.Question": {
+        "description": "One question. The user picks an option, types a freeform answer, or skips.",
+        "properties": {
+          "id": {
+            "description": "Short stable key; the answer is reported under it.",
+            "type": "string"
+          },
+          "options": {
+            "default": [],
+            "description": "2–5 distinct options; may be empty for a freeform-only question.",
+            "items": {
+              "$ref": "#/components/schemas/event.roster_2eattention.receiver.Choice"
+            },
+            "type": "array"
+          },
+          "question": {
+            "description": "The question text.",
+            "type": "string"
+          },
+          "recommended": {
+            "description": "Index into `options` you recommend; shown to the user as such.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "question"
+        ],
+        "type": "object"
+      },
+      "event.roster_2eattention.receiver.Risk": {
+        "description": "How much damage a tool can do; the only input to the approval policy.",
+        "oneOf": [
+          {
+            "const": "read_only",
+            "description": "Observes only.",
+            "type": "string"
+          },
+          {
+            "const": "mutating",
+            "description": "Changes state that can be undone or is scoped.",
+            "type": "string"
+          },
+          {
+            "const": "destructive",
+            "description": "Irreversible or unbounded (arbitrary shell, delete, network writes).",
+            "type": "string"
+          }
+        ]
+      },
+      "event.roster_2eattention.receiver.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.roster_2eattention.receiver.StopOutcome": {
+        "description": "207 D5: how a session's turn stopped (`finished` items).",
+        "oneOf": [
+          {
+            "const": "finished",
+            "description": "Any provider stop reason that is not one of the three below (`end_turn`, `stop`, `max_tokens`, …).",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "`stop_reason == \"error\"`.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "`stop_reason == \"cancelled\"` (Stop, a parent's cancel, `max_runtime`).",
+            "type": "string"
+          },
+          {
+            "const": "timed_out",
+            "description": "`stop_reason == \"timed_out\"` (the peer-work deadline).",
+            "type": "string"
+          }
+        ]
+      },
+      "event.roster_2eattention.receiver.TaskId": {
+        "description": "Task id: uuidv7 as text.",
+        "type": "string"
       },
       "event.rpc_2estream.output.ApprovalId": {
         "description": "Correlates a request with its resolution.",
@@ -26742,6 +28308,11 @@
             ],
             "description": "Outcome."
           },
+          "dismissed": {
+            "default": false,
+            "description": "207: the user left the call to the agent (Attention dismiss): not run; `decision` is `deny`, `timed_out` false.",
+            "type": "boolean"
+          },
           "id": {
             "allOf": [
               {
@@ -26763,6 +28334,7 @@
           "id",
           "decision",
           "timed_out",
+          "dismissed",
           "type"
         ],
         "type": "object"
@@ -26797,6 +28369,11 @@
               }
             ],
             "description": "Outcome."
+          },
+          "dismissed": {
+            "default": false,
+            "description": "207: the user left the call to the agent (Attention dismiss): not run; `decision` is `deny`, `timed_out` false.",
+            "type": "boolean"
           },
           "id": {
             "allOf": [
@@ -27067,6 +28644,11 @@
             ],
             "description": "The request."
           },
+          "left_to_agent": {
+            "default": false,
+            "description": "207: the user left the questions to the agent (Attention dismiss); the turn goes on.",
+            "type": "boolean"
+          },
           "timed_out": {
             "description": "Nobody answered in time.",
             "type": "boolean"
@@ -27080,6 +28662,7 @@
           "id",
           "dismissed",
           "timed_out",
+          "left_to_agent",
           "type"
         ],
         "type": "object"
@@ -27103,6 +28686,11 @@
               }
             ],
             "description": "The request."
+          },
+          "left_to_agent": {
+            "default": false,
+            "description": "207: the user left the questions to the agent (Attention dismiss); the turn goes on.",
+            "type": "boolean"
           },
           "timed_out": {
             "description": "Nobody answered in time.",
@@ -96421,6 +98009,149 @@
         ],
         "type": "object"
       },
+      "method.roster.input.AttentionFilter": {
+        "description": "207 §5.3: a filter over the current list. Every part that is set must match.",
+        "properties": {
+          "before_ms": {
+            "default": null,
+            "description": "Only items with `at_ms <= before_ms` (the newest the caller had seen); `None` = no bound.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "kinds": {
+            "default": [],
+            "description": "Any of these kinds; empty = every kind.",
+            "items": {
+              "$ref": "#/components/schemas/method.roster.input.AttentionKind"
+            },
+            "type": "array"
+          },
+          "projects": {
+            "default": [],
+            "description": "Any of these projects; `\"\"` matches items without a project; empty = every project.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "method.roster.input.AttentionKind": {
+        "description": "What kind of decision an item wants.",
+        "oneOf": [
+          {
+            "const": "approval",
+            "description": "A tool call waits for allow / deny.",
+            "type": "string"
+          },
+          {
+            "const": "decision",
+            "description": "A task is blocked on a `decision:<id>` — answer it.",
+            "type": "string"
+          },
+          {
+            "const": "hire",
+            "description": "A proposed agent waits for hire / decline.",
+            "type": "string"
+          },
+          {
+            "const": "blocked",
+            "description": "A task is blocked on a person or another task.",
+            "type": "string"
+          },
+          {
+            "const": "review",
+            "description": "A task in review with the user as reviewer — done or back.",
+            "type": "string"
+          },
+          {
+            "const": "budget",
+            "description": "An agent at ≥ 80 % of its month budget, or paused at the cap.",
+            "type": "string"
+          },
+          {
+            "const": "node",
+            "description": "A paired engine is unreachable.",
+            "type": "string"
+          },
+          {
+            "const": "handoff",
+            "description": "An agent in a VM needs a human at its desktop (79 §6.6): open it, then Done / Cancel.",
+            "type": "string"
+          },
+          {
+            "const": "secret",
+            "description": "A session asked for a secret (79 §6.6): the masked card, one or several fields.",
+            "type": "string"
+          },
+          {
+            "const": "ask",
+            "description": "A session asked the user a question (`ask_user`, 104 A1): answer or dismiss.",
+            "type": "string"
+          },
+          {
+            "const": "show",
+            "description": "An agent showed the user an artifact (104 A1): see it.",
+            "type": "string"
+          },
+          {
+            "const": "resume",
+            "description": "109 §8.3: a session's interrupted turn needs a human — a replay\nskipped a mutating call (effect unknown), an ACP child got a hand-off,\nor `durability.resume: ask` waits for the Resume button.",
+            "type": "string"
+          },
+          {
+            "const": "double",
+            "description": "126 §10: the double answered a card for the owner (\"double answered\nAllow for `git push` · undo 14 s\"), or the daily L3 digest.",
+            "type": "string"
+          },
+          {
+            "const": "finished",
+            "description": "130 E3: a root or desk session's turn ended cleanly — the receipt, with\n`summary` and the agent's `## Next` suggestions.",
+            "type": "string"
+          },
+          {
+            "const": "home",
+            "description": "182 D9: a task's home engine is offline (or unknown) with tasks waiting\non it (`node:<engine id>`, raised by the lease holder) — move them here,\nor keep waiting; nothing runs elsewhere on its own. S1: a task homed\nhere whose agent lives elsewhere (`misplaced:<task>`).",
+            "type": "string"
+          },
+          {
+            "const": "contact_first",
+            "description": "183 §7.6 (W-27): a contact's first task for an export waits — Allow once · Always ·\nBlock (`contact_first_answer`). Id `contact_first:<contact>:<export>` (both names are\n`[a-z0-9_-]`); the title names the contact, its machine and the export.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.roster.input.AttentionTarget": {
+        "description": "207 §5.3: what a bulk call acts on — exactly one of `ids` (non-empty) or `filter`.",
+        "properties": {
+          "filter": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.roster.input.AttentionFilter"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Every listed item matching this, in engine order."
+          },
+          "ids": {
+            "default": [],
+            "description": "Item ids, in the caller's order.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "method.roster.input.Binding": {
         "description": "Which owner-side thing a document is bound to (§3.1, §4.2 `binding`).",
         "oneOf": [
@@ -97833,6 +99564,13 @@
             "minimum": 0,
             "type": "integer"
           },
+          "blocks": {
+            "default": 0,
+            "description": "207 D5: sessions stopped behind this item (transitive `awaiting` on its session).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "context": {
             "anyOf": [
               {
@@ -97844,6 +99582,16 @@
             ],
             "default": null,
             "description": "149 E6: the conversation the item sits in, for session-born kinds\n(ask, approval, finished, resume, blocked-with-session); `None` when\nthe session is unknown or has no messages."
+          },
+          "deadline_ms": {
+            "default": null,
+            "description": "207 R5: ms since epoch the request resolves itself (approval/ask/hand-off/secret timeout, a double's grace end).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "decision": {
             "description": "The `decision:<id>` blocker, for decisions.",
@@ -97859,8 +99607,18 @@
               "null"
             ]
           },
+          "expires_ms": {
+            "default": null,
+            "description": "207 R4: ms since epoch the item leaves the list on its own (`finished`: stop + `stopped_ttl_mins`).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "id": {
-            "description": "`approval:<id>` | `decision:<task>:<decision>` | `hire:<agent>` | `blocked:<task>` | `review:<task>` | `budget:<agent>` | `node:<id>` | `misplaced:<task>` | `handoff:<id>` | `secret:<id>` | `ask:<id>` | `show:<call_id>` | `resume:<session>:<turn>`.",
+            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.",
             "type": "string"
           },
           "kind": {
@@ -97886,6 +99644,22 @@
               "null"
             ]
           },
+          "parent_session": {
+            "default": null,
+            "description": "207 R5: the item's session's parent; `None` for a root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "default": [],
+            "description": "207 R5: display path, root first: the root's title, then each child's peer name; empty when the session is unknown.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "priority": {
             "anyOf": [
               {
@@ -97898,9 +99672,52 @@
             "default": null,
             "description": "132 D4: the task's priority — task-born items and session items whose\nsession is a task checkout; `None` otherwise."
           },
+          "project": {
+            "default": null,
+            "description": "207 R5: the session's effective project (its root's), else the task's; `None` when neither.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "rank": {
             "default": 0,
             "description": "132 D4: [`tasks::rank::rank`] of that task (`project_order` step + priority\nweight); `Priority::Medium.weight()` (5) for items without one. Higher first.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reasons": {
+            "default": [],
+            "description": "207 D3: the score's contributors, points desc (ties in `AttentionSignal` order); `base` always present.",
+            "items": {
+              "$ref": "#/components/schemas/method.roster.output.AttentionReason"
+            },
+            "type": "array"
+          },
+          "risk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.roster.output.Risk"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "207 R5: approvals — `ApprovalRequested.risk`; `None` for other kinds."
+          },
+          "root_session": {
+            "default": null,
+            "description": "207 R5: the root of the item's session tree (itself for a root).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "score": {
+            "default": 0,
+            "description": "207 D3: the engine's score — the sum of `reasons`; the list is ordered by it (§3.4).",
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
@@ -97911,6 +99728,23 @@
               "string",
               "null"
             ]
+          },
+          "session_live": {
+            "default": false,
+            "description": "207 R3: the item's session is running / awaiting / in approval right now.",
+            "type": "boolean"
+          },
+          "stop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.roster.output.AttentionStop"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "207 R4: `finished` items — how the turn stopped."
           },
           "summary": {
             "default": null,
@@ -97934,6 +99768,14 @@
           "title": {
             "description": "One line.",
             "type": "string"
+          },
+          "tool": {
+            "default": null,
+            "description": "207 R5: approvals — the tool name (`ApprovalRequested.tool`); `None` for other kinds.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "turn": {
             "default": null,
@@ -97976,7 +99818,20 @@
           "context",
           "priority",
           "rank",
-          "alert"
+          "alert",
+          "score",
+          "reasons",
+          "risk",
+          "tool",
+          "deadline_ms",
+          "expires_ms",
+          "blocks",
+          "session_live",
+          "project",
+          "root_session",
+          "parent_session",
+          "path",
+          "stop"
         ],
         "type": "object"
       },
@@ -98064,6 +99919,180 @@
             "type": "string"
           }
         ]
+      },
+      "method.roster.output.AttentionOutcome": {
+        "description": "207 §5.3: one id's result of a bulk call.",
+        "properties": {
+          "error": {
+            "description": "The resolver's message when `resolution` is `failed`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "The item id.",
+            "type": "string"
+          },
+          "resolution": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.roster.output.AttentionResolution"
+              }
+            ],
+            "description": "What happened."
+          }
+        },
+        "required": [
+          "id",
+          "resolution",
+          "error"
+        ],
+        "type": "object"
+      },
+      "method.roster.output.AttentionReason": {
+        "description": "207 D3: one line of an item's score breakdown.",
+        "properties": {
+          "points": {
+            "description": "Its points (> 0, except `base` which is always listed).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "signal": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.roster.output.AttentionSignal"
+              }
+            ],
+            "description": "Which signal."
+          },
+          "text": {
+            "description": "Short text for the card (\"blocks 3 agents\", \"denies itself in 1:42\"); a snapshot at derive time.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "signal",
+          "points",
+          "text"
+        ],
+        "type": "object"
+      },
+      "method.roster.output.AttentionResolution": {
+        "description": "207 §5.2: what a bulk call did to one id.",
+        "oneOf": [
+          {
+            "const": "hidden",
+            "description": "Hidden (119, versioned): review, hire, budget, node, home, blocked, show, finished, double, resume, contact_first, autoresearch:*.",
+            "type": "string"
+          },
+          {
+            "const": "snoozed",
+            "description": "Snoozed until the given time.",
+            "type": "string"
+          },
+          {
+            "const": "left_to_agent",
+            "description": "A live tool call was told to decide itself (ask, live decision).",
+            "type": "string"
+          },
+          {
+            "const": "left_for_later",
+            "description": "Recorded for the agent's next wake; nothing woken (parked decision).",
+            "type": "string"
+          },
+          {
+            "const": "not_run",
+            "description": "An approval the user left to the agent: the call was not run.",
+            "type": "string"
+          },
+          {
+            "const": "proceed_without",
+            "description": "A secret request or hand-off resolved \"none is coming, proceed without\".",
+            "type": "string"
+          },
+          {
+            "const": "gone",
+            "description": "Not in the list any more, or already resolved elsewhere.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "The resolver failed; nothing was written. See `error`.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.roster.output.AttentionSignal": {
+        "description": "207 D3: one contributor to an item's score.",
+        "oneOf": [
+          {
+            "const": "base",
+            "description": "The kind's base (207 §3.1).",
+            "type": "string"
+          },
+          {
+            "const": "live",
+            "description": "The item's session is live right now.",
+            "type": "string"
+          },
+          {
+            "const": "blocks",
+            "description": "Sessions stopped behind the item.",
+            "type": "string"
+          },
+          {
+            "const": "deadline",
+            "description": "The request resolves itself soon.",
+            "type": "string"
+          },
+          {
+            "const": "risk",
+            "description": "The approval's risk class.",
+            "type": "string"
+          },
+          {
+            "const": "task",
+            "description": "The task's priority and project rank.",
+            "type": "string"
+          },
+          {
+            "const": "age",
+            "description": "Minutes waited.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.roster.output.AttentionStop": {
+        "description": "207 D5: the stop behind a `finished` item.",
+        "properties": {
+          "error": {
+            "description": "The turn's last `AgentEvent::Error` message, cut to `SUMMARY_MAX` chars; `None` when there was none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.roster.output.StopOutcome"
+              }
+            ],
+            "description": "Outcome class."
+          },
+          "reason": {
+            "description": "The raw `TurnFinished.stop_reason`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "reason",
+          "error"
+        ],
+        "type": "object"
       },
       "method.roster.output.Budget": {
         "description": "`budget:` in the file: `none` (default, infinite) or `<amount> <CUR>/month` (67 §6.4).",
@@ -98624,6 +100653,16 @@
             ],
             "description": "Decision or review."
           },
+          "left_to_agent_ms": {
+            "default": null,
+            "description": "207 §5.2: ms since epoch the user left this decision to the agent (Attention dismiss).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "options": {
             "description": "Decision only; may be empty (free-form question).",
             "items": {
@@ -98703,7 +100742,8 @@
           "recommendation",
           "items",
           "to",
-          "if_wrong"
+          "if_wrong",
+          "left_to_agent_ms"
         ],
         "type": "object"
       },
@@ -98929,6 +100969,26 @@
         ],
         "type": "object"
       },
+      "method.roster.output.Risk": {
+        "description": "How much damage a tool can do; the only input to the approval policy.",
+        "oneOf": [
+          {
+            "const": "read_only",
+            "description": "Observes only.",
+            "type": "string"
+          },
+          {
+            "const": "mutating",
+            "description": "Changes state that can be undone or is scoped.",
+            "type": "string"
+          },
+          {
+            "const": "destructive",
+            "description": "Irreversible or unbounded (arbitrary shell, delete, network writes).",
+            "type": "string"
+          }
+        ]
+      },
       "method.roster.output.RunsIn": {
         "description": "`runs_in:` front matter (79 §2.8): `any` (default) | `vm` (the agent's own\nVM, `vm-<agent>`) | `vm:<name>` (a named, shared VM). Wire form is the same\nstring.",
         "type": "string"
@@ -98937,6 +100997,31 @@
         "description": "Identifies a conversation; every event carries one.",
         "format": "uuid",
         "type": "string"
+      },
+      "method.roster.output.StopOutcome": {
+        "description": "207 D5: how a session's turn stopped (`finished` items).",
+        "oneOf": [
+          {
+            "const": "finished",
+            "description": "Any provider stop reason that is not one of the three below (`end_turn`, `stop`, `max_tokens`, …).",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "`stop_reason == \"error\"`.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "`stop_reason == \"cancelled\"` (Stop, a parent's cancel, `max_runtime`).",
+            "type": "string"
+          },
+          {
+            "const": "timed_out",
+            "description": "`stop_reason == \"timed_out\"` (the peer-work deadline).",
+            "type": "string"
+          }
+        ]
       },
       "method.roster.output.TailMode": {
         "description": "201 §4.2: how the verbatim tail is sized.",
@@ -99938,6 +102023,13 @@
             "minimum": 0,
             "type": "integer"
           },
+          "blocks": {
+            "default": 0,
+            "description": "207 D5: sessions stopped behind this item (transitive `awaiting` on its session).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "context": {
             "anyOf": [
               {
@@ -99949,6 +102041,16 @@
             ],
             "default": null,
             "description": "149 E6: the conversation the item sits in, for session-born kinds\n(ask, approval, finished, resume, blocked-with-session); `None` when\nthe session is unknown or has no messages."
+          },
+          "deadline_ms": {
+            "default": null,
+            "description": "207 R5: ms since epoch the request resolves itself (approval/ask/hand-off/secret timeout, a double's grace end).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "decision": {
             "description": "The `decision:<id>` blocker, for decisions.",
@@ -99964,8 +102066,18 @@
               "null"
             ]
           },
+          "expires_ms": {
+            "default": null,
+            "description": "207 R4: ms since epoch the item leaves the list on its own (`finished`: stop + `stopped_ttl_mins`).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "id": {
-            "description": "`approval:<id>` | `decision:<task>:<decision>` | `hire:<agent>` | `blocked:<task>` | `review:<task>` | `budget:<agent>` | `node:<id>` | `misplaced:<task>` | `handoff:<id>` | `secret:<id>` | `ask:<id>` | `show:<call_id>` | `resume:<session>:<turn>`.",
+            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.",
             "type": "string"
           },
           "kind": {
@@ -99991,6 +102103,22 @@
               "null"
             ]
           },
+          "parent_session": {
+            "default": null,
+            "description": "207 R5: the item's session's parent; `None` for a root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "default": [],
+            "description": "207 R5: display path, root first: the root's title, then each child's peer name; empty when the session is unknown.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "priority": {
             "anyOf": [
               {
@@ -100003,9 +102131,52 @@
             "default": null,
             "description": "132 D4: the task's priority — task-born items and session items whose\nsession is a task checkout; `None` otherwise."
           },
+          "project": {
+            "default": null,
+            "description": "207 R5: the session's effective project (its root's), else the task's; `None` when neither.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "rank": {
             "default": 0,
             "description": "132 D4: [`tasks::rank::rank`] of that task (`project_order` step + priority\nweight); `Priority::Medium.weight()` (5) for items without one. Higher first.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reasons": {
+            "default": [],
+            "description": "207 D3: the score's contributors, points desc (ties in `AttentionSignal` order); `base` always present.",
+            "items": {
+              "$ref": "#/components/schemas/method.roster.receiver.AttentionReason"
+            },
+            "type": "array"
+          },
+          "risk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.roster.receiver.Risk"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "207 R5: approvals — `ApprovalRequested.risk`; `None` for other kinds."
+          },
+          "root_session": {
+            "default": null,
+            "description": "207 R5: the root of the item's session tree (itself for a root).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "score": {
+            "default": 0,
+            "description": "207 D3: the engine's score — the sum of `reasons`; the list is ordered by it (§3.4).",
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
@@ -100016,6 +102187,23 @@
               "string",
               "null"
             ]
+          },
+          "session_live": {
+            "default": false,
+            "description": "207 R3: the item's session is running / awaiting / in approval right now.",
+            "type": "boolean"
+          },
+          "stop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.roster.receiver.AttentionStop"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "207 R4: `finished` items — how the turn stopped."
           },
           "summary": {
             "default": null,
@@ -100039,6 +102227,14 @@
           "title": {
             "description": "One line.",
             "type": "string"
+          },
+          "tool": {
+            "default": null,
+            "description": "207 R5: approvals — the tool name (`ApprovalRequested.tool`); `None` for other kinds.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "turn": {
             "default": null,
@@ -100153,6 +102349,178 @@
             "type": "string"
           }
         ]
+      },
+      "method.roster.receiver.AttentionOutcome": {
+        "description": "207 §5.3: one id's result of a bulk call.",
+        "properties": {
+          "error": {
+            "description": "The resolver's message when `resolution` is `failed`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "The item id.",
+            "type": "string"
+          },
+          "resolution": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.roster.receiver.AttentionResolution"
+              }
+            ],
+            "description": "What happened."
+          }
+        },
+        "required": [
+          "id",
+          "resolution"
+        ],
+        "type": "object"
+      },
+      "method.roster.receiver.AttentionReason": {
+        "description": "207 D3: one line of an item's score breakdown.",
+        "properties": {
+          "points": {
+            "description": "Its points (> 0, except `base` which is always listed).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "signal": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.roster.receiver.AttentionSignal"
+              }
+            ],
+            "description": "Which signal."
+          },
+          "text": {
+            "description": "Short text for the card (\"blocks 3 agents\", \"denies itself in 1:42\"); a snapshot at derive time.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "signal",
+          "points",
+          "text"
+        ],
+        "type": "object"
+      },
+      "method.roster.receiver.AttentionResolution": {
+        "description": "207 §5.2: what a bulk call did to one id.",
+        "oneOf": [
+          {
+            "const": "hidden",
+            "description": "Hidden (119, versioned): review, hire, budget, node, home, blocked, show, finished, double, resume, contact_first, autoresearch:*.",
+            "type": "string"
+          },
+          {
+            "const": "snoozed",
+            "description": "Snoozed until the given time.",
+            "type": "string"
+          },
+          {
+            "const": "left_to_agent",
+            "description": "A live tool call was told to decide itself (ask, live decision).",
+            "type": "string"
+          },
+          {
+            "const": "left_for_later",
+            "description": "Recorded for the agent's next wake; nothing woken (parked decision).",
+            "type": "string"
+          },
+          {
+            "const": "not_run",
+            "description": "An approval the user left to the agent: the call was not run.",
+            "type": "string"
+          },
+          {
+            "const": "proceed_without",
+            "description": "A secret request or hand-off resolved \"none is coming, proceed without\".",
+            "type": "string"
+          },
+          {
+            "const": "gone",
+            "description": "Not in the list any more, or already resolved elsewhere.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "The resolver failed; nothing was written. See `error`.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.roster.receiver.AttentionSignal": {
+        "description": "207 D3: one contributor to an item's score.",
+        "oneOf": [
+          {
+            "const": "base",
+            "description": "The kind's base (207 §3.1).",
+            "type": "string"
+          },
+          {
+            "const": "live",
+            "description": "The item's session is live right now.",
+            "type": "string"
+          },
+          {
+            "const": "blocks",
+            "description": "Sessions stopped behind the item.",
+            "type": "string"
+          },
+          {
+            "const": "deadline",
+            "description": "The request resolves itself soon.",
+            "type": "string"
+          },
+          {
+            "const": "risk",
+            "description": "The approval's risk class.",
+            "type": "string"
+          },
+          {
+            "const": "task",
+            "description": "The task's priority and project rank.",
+            "type": "string"
+          },
+          {
+            "const": "age",
+            "description": "Minutes waited.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.roster.receiver.AttentionStop": {
+        "description": "207 D5: the stop behind a `finished` item.",
+        "properties": {
+          "error": {
+            "description": "The turn's last `AgentEvent::Error` message, cut to `SUMMARY_MAX` chars; `None` when there was none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.roster.receiver.StopOutcome"
+              }
+            ],
+            "description": "Outcome class."
+          },
+          "reason": {
+            "description": "The raw `TurnFinished.stop_reason`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "reason"
+        ],
+        "type": "object"
       },
       "method.roster.receiver.Budget": {
         "description": "`budget:` in the file: `none` (default, infinite) or `<amount> <CUR>/month` (67 §6.4).",
@@ -100695,6 +103063,16 @@
             ],
             "description": "Decision or review."
           },
+          "left_to_agent_ms": {
+            "default": null,
+            "description": "207 §5.2: ms since epoch the user left this decision to the agent (Attention dismiss).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "options": {
             "description": "Decision only; may be empty (free-form question).",
             "items": {
@@ -100987,6 +103365,26 @@
         ],
         "type": "object"
       },
+      "method.roster.receiver.Risk": {
+        "description": "How much damage a tool can do; the only input to the approval policy.",
+        "oneOf": [
+          {
+            "const": "read_only",
+            "description": "Observes only.",
+            "type": "string"
+          },
+          {
+            "const": "mutating",
+            "description": "Changes state that can be undone or is scoped.",
+            "type": "string"
+          },
+          {
+            "const": "destructive",
+            "description": "Irreversible or unbounded (arbitrary shell, delete, network writes).",
+            "type": "string"
+          }
+        ]
+      },
       "method.roster.receiver.RunsIn": {
         "description": "`runs_in:` front matter (79 §2.8): `any` (default) | `vm` (the agent's own\nVM, `vm-<agent>`) | `vm:<name>` (a named, shared VM). Wire form is the same\nstring.",
         "type": "string"
@@ -100995,6 +103393,31 @@
         "description": "Identifies a conversation; every event carries one.",
         "format": "uuid",
         "type": "string"
+      },
+      "method.roster.receiver.StopOutcome": {
+        "description": "207 D5: how a session's turn stopped (`finished` items).",
+        "oneOf": [
+          {
+            "const": "finished",
+            "description": "Any provider stop reason that is not one of the three below (`end_turn`, `stop`, `max_tokens`, …).",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "`stop_reason == \"error\"`.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "`stop_reason == \"cancelled\"` (Stop, a parent's cancel, `max_runtime`).",
+            "type": "string"
+          },
+          {
+            "const": "timed_out",
+            "description": "`stop_reason == \"timed_out\"` (the peer-work deadline).",
+            "type": "string"
+          }
+        ]
       },
       "method.roster.receiver.TailMode": {
         "description": "201 §4.2: how the verbatim tail is sized.",
@@ -110862,7 +113285,7 @@
             "description": "Row id."
           },
           "outcome": {
-            "description": "`stored` | `declined` | `timeout` once answered.",
+            "description": "`stored` | `declined` | `timeout` | [`PROCEED_WITHOUT`] once answered.",
             "type": [
               "string",
               "null"
@@ -111089,7 +113512,7 @@
             "description": "Row id."
           },
           "outcome": {
-            "description": "`stored` | `declined` | `timeout` once answered.",
+            "description": "`stored` | `declined` | `timeout` | [`PROCEED_WITHOUT`] once answered.",
             "type": [
               "string",
               "null"
@@ -119464,6 +121887,38 @@
       "x-theuth-owner": "roster"
     },
     {
+      "name": "attention_dismiss_many",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "target",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.roster.input.AttentionTarget"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.roster.output.AttentionOutcome"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.roster.receiver.AttentionOutcome"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "roster"
+    },
+    {
       "name": "attention_list",
       "paramStructure": "by-position",
       "params": [],
@@ -119518,6 +121973,50 @@
         },
         "x-theuth-receiverSchema": {
           "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "roster"
+    },
+    {
+      "name": "attention_snooze_many",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "target",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.roster.input.AttentionTarget"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "until_ms",
+          "required": true,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "x-theuth-aliases": [
+            "untilMs"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.roster.output.AttentionOutcome"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.roster.receiver.AttentionOutcome"
+          },
+          "type": "array"
         }
       },
       "x-theuth-audience": "owner",

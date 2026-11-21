@@ -54,6 +54,13 @@ impl Escalations {
         }
         self.answered.insert(decision.to_owned(), text.to_owned());
     }
+
+    /// 207: an `escalate` is still waiting live on `decision` (a receiver that has not timed out).
+    pub fn waiting(&self, decision: &str) -> bool {
+        self.pending
+            .get(decision)
+            .is_some_and(|txs| txs.iter().any(|tx| !tx.is_closed()))
+    }
 }
 
 /// The answer within `dur`, else `None` (the task stays parked).
@@ -86,5 +93,19 @@ mod tests {
         e.answer("decision:2", "no");
         assert_eq!(a.await.unwrap(), "no");
         assert_eq!(b.await.unwrap(), "no");
+    }
+
+    #[tokio::test]
+    async fn waiting_only_while_a_receiver_is_live() {
+        let mut e = Escalations::default();
+        assert!(!e.waiting("decision:3"));
+        let rx = e.subscribe("decision:3");
+        assert!(e.waiting("decision:3"));
+        assert_eq!(wait(rx, Duration::from_millis(1)).await, None);
+        assert!(!e.waiting("decision:3"));
+        let rx = e.subscribe("decision:3");
+        e.answer("decision:3", crate::LEFT_ANSWER);
+        assert!(!e.waiting("decision:3"));
+        assert_eq!(rx.await.unwrap(), crate::LEFT_ANSWER);
     }
 }

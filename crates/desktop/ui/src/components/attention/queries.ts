@@ -1,8 +1,20 @@
 import { useQuerySupport } from '@/rpc/capabilities'
-import { useQuery } from '@tanstack/react-query'
-import { PACKET_KEY } from '@/components/hud/queries'
+import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
+import { toast } from 'sonner'
+import { ATTENTION_KEY, PACKET_KEY, attentionPatched, dropFromList } from '@/components/hud/queries'
 import { PACKET_SIM, crowdedFlag, simFlag } from '@/components/settings/sandbox-queries'
+import { errorText } from '@/components/settings/shared'
+import { keys as taskKeys } from '@/components/tasks/queries'
 import { useApi } from '@/lib/rpc'
+import type { ApprovalId, AttentionItem, AttentionOutcome, AttentionResolution } from '@/rpc/bindings/method.roster.output'
+import { type ResolveOutcome, bulkTarget, outcomeSummary, pathText, resolveSummary } from './model'
+
+/** 207 review 7: every bulk call carries this key, so the page's key map and every card's buttons wait for it. */
+export const ATTENTION_BULK_KEY = ['attention-bulk'] as const
+
+/** True while any bulk Dismiss / Snooze / Allow / Deny runs, on any surface. */
+export const useBulkPending = (): boolean => useIsMutating({ mutationKey: ATTENTION_BULK_KEY }) > 0
 
 /** `packet_get(key)` — the agent's summary, pointers, options and checks behind an inbox item (101 §3); off when the item has none. Under `?sim=` and 132 D10 `?mock=crowded` the fixture packets answer. */
 export function usePacket(key: string | null) {
@@ -15,4 +27,134 @@ export function usePacket(key: string | null) {
     // `typeof`, not `!== null`: an item from an engine without 101 has no `packet` field at all.
     enabled: canQuery1 && (typeof key === 'string'),
   })
+}
+
+/** At most this many `resolve_approval` (or pre-207 per-id) calls in flight at once. */
+const IN_FLIGHT = 6
+
+/** `fn` over `xs` with at most `IN_FLIGHT` running; results in input order. */
+async function pooled<T, R>(xs: readonly T[], fn: (x: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(xs.length)
+  let next = 0
+  const lane = async () => {
+    while (next < xs.length) {
+      const i = next++
+      out[i] = await fn(xs[i] as T)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(IN_FLIGHT, xs.length) }, lane))
+  return out
+}
+
+/**
+ * 207: one RPC for N items (`attention_dismiss_many` / `attention_snooze_many`), toasting `outcomeSummary`; Allow / Deny N
+ * loop `resolve_approval`. Only ids that really left (any outcome but `failed`; for approvals done or already answered)
+ * leave the cached list; failed ones stay, and the outcomes say which (review 5) so a selection can keep them. A call
+ * that fails as a whole reports every id `failed`. The task and agent lists refetch after Allow / Deny; `ATTENTION_KEY`
+ * only when the engine does not patch the list from `AttentionChanged`. An engine before 207 gets one
+ * `attention_dismiss` / `attention_snooze` per id. Under `?sim=` / `?mock=crowded` everything resolves locally.
+ */
+export function useAttentionBulk() {
+  const api = useApi()
+  const qc = useQueryClient()
+  const many = useQuerySupport(['attention_dismiss_many'])
+  const local = simFlag() !== null || crowdedFlag()
+  const pending = useBulkPending()
+  const runner = useMutation({ mutationKey: ATTENTION_BULK_KEY, mutationFn: (work: () => Promise<unknown>) => work() })
+  const run = <R,>(work: () => Promise<R>): Promise<R> => runner.mutateAsync(work) as Promise<R>
+
+  const settle = (ids: readonly string[]) => {
+    if (ids.length === 0) return
+    dropFromList(qc, ids)
+    // Review 8: a left decision or an allowed call moves tasks and agents; those lists are small, refetch them always.
+    for (const queryKey of [taskKeys.tasks, taskKeys.agents]) void qc.invalidateQueries({ queryKey })
+    if (!local && !attentionPatched(qc)) void qc.invalidateQueries({ queryKey: ATTENTION_KEY })
+  }
+  const report = (outcomes: AttentionOutcome[]) => {
+    const text = outcomeSummary(outcomes)
+    const failed = outcomes.find((o) => o.resolution === 'failed')
+    if (failed) toast.error(text, { description: failed.error ?? undefined })
+    else if (text) toast(text)
+    settle(outcomes.filter((o) => o.resolution !== 'failed').map((o) => o.id))
+    return outcomes
+  }
+  const allFailed = (ids: readonly string[]) => (e: unknown): AttentionOutcome[] => {
+    toast.error(errorText(e))
+    return ids.map((id) => ({ id, resolution: 'failed', error: errorText(e) }))
+  }
+  const perId = (ids: readonly string[], resolution: AttentionResolution, call: (id: string) => Promise<unknown>) =>
+    pooled(ids, (id) =>
+      call(id).then(
+        (): AttentionOutcome => ({ id, resolution, error: null }),
+        (e: unknown): AttentionOutcome => ({ id, resolution: 'failed', error: errorText(e) }),
+      ),
+    )
+
+  return {
+    dismiss: (ids: readonly string[]): Promise<AttentionOutcome[]> =>
+      ids.length === 0
+        ? Promise.resolve([])
+        : run(async () => {
+            if (local) return report(ids.map((id) => ({ id, resolution: 'hidden', error: null })))
+            if (many) return report(await api.attention_dismiss_many(bulkTarget(ids)))
+            return report(await perId(ids, 'hidden', (id) => api.attention_dismiss(id)))
+          }).catch(allFailed(ids)),
+    snooze: (ids: readonly string[], until: number): Promise<AttentionOutcome[]> =>
+      ids.length === 0
+        ? Promise.resolve([])
+        : run(async () => {
+            if (local) return report(ids.map((id) => ({ id, resolution: 'snoozed', error: null })))
+            if (many) return report(await api.attention_snooze_many(bulkTarget(ids), until))
+            return report(await perId(ids, 'snoozed', (id) => api.attention_snooze(id, until)))
+          }).catch(allFailed(ids)),
+    /** Outcomes keyed by item id (`approval:<id>`). */
+    resolve: (approvals: readonly ApprovalId[], decision: 'allow' | 'deny'): Promise<ResolveOutcome[]> =>
+      approvals.length === 0
+        ? Promise.resolve([])
+        : run(async () => {
+            const outcomes = await pooled(approvals, async (a): Promise<ResolveOutcome> => {
+              const id = `approval:${a}`
+              if (local) return { id, result: 'done', error: null }
+              try {
+                return { id, result: (await api.resolve_approval(a, decision)) ? 'done' : 'gone', error: null }
+              } catch (e) {
+                return { id, result: 'failed', error: errorText(e) }
+              }
+            })
+            const failed = outcomes.find((o) => o.result === 'failed')
+            if (failed) toast.error(resolveSummary(outcomes, decision), { description: failed.error ?? undefined })
+            else toast(resolveSummary(outcomes, decision))
+            settle(outcomes.filter((o) => o.result !== 'failed').map((o) => o.id))
+            return outcomes
+          }),
+    pending,
+  }
+}
+
+/**
+ * 207 R4: the stopped card's reply — `send_input(session, text.trim(), [], null)` starts the session's next turn (the one
+ * action in the list that does); toast 'Sent to <pathText>'. Under `?sim=` / `?mock=crowded` it only toasts.
+ */
+export function useReply() {
+  const api = useApi()
+  const qc = useQueryClient()
+  const local = simFlag() !== null || crowdedFlag()
+  const [inFlight, setInFlight] = useState(false)
+  const send = async (session: string, text: string): Promise<string> => {
+    setInFlight(true)
+    try {
+      const sent = local ? session : await api.send_input(session, text.trim(), [], null)
+      const item = qc.getQueryData<AttentionItem[]>(ATTENTION_KEY)?.find((i) => i.session === session && i.kind === 'finished')
+      toast(`Sent to ${(item && pathText(item)) || session.slice(0, 8)}`)
+      // The next turn removes the card on the engine (`TurnStarted`); drop it here so the list moves on now.
+      if (item) dropFromList(qc, [item.id])
+      return sent
+    } catch (e) {
+      toast.error(errorText(e))
+      throw e
+    } finally {
+      setInFlight(false)
+    }
+  }
+  return { send, pending: inFlight }
 }

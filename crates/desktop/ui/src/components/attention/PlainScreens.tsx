@@ -2,7 +2,9 @@
 import { useQueryClient } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { SecretRequestCard, eventFields } from '@/components/chat/SecretRequestCard'
-import { KindActions, doubleIds } from '@/components/hud/Hud'
+import { KindActions } from './actions'
+import { doubleIds, stopWord } from './labels'
+import { Reply } from './Reply'
 import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useSecretRequestRows } from '@/components/hud/queries'
 import { useHandoffs, useSandboxes } from '@/components/settings/sandbox-queries'
 import { age } from '@/components/tasks/helpers'
@@ -227,21 +229,31 @@ export function DoubleScreen({ item }: { item: AttentionItem }) {
   )
 }
 
-/** 130 E3: a finished turn — the summary line and the agent's `## Next` suggestions; Open session · Dismiss. */
+/**
+ * 207 R4: a stopped session — the outcome word, the error when the turn failed or timed out, the summary, the agent's
+ * `## Next` steps and the reply that starts the next turn; Snooze · Dismiss in the bar.
+ */
 export function FinishedScreen({ item }: { item: AttentionItem }) {
-  const next = item.next_steps ?? []
+  const word = stopWord(item.stop)
+  const error = item.stop?.error
   return (
-    <Plain item={item} title={item.summary ?? item.title}>
-      {next.length > 0 && (
-        <Fact label="Next">
-          <ul className="list-disc space-y-1 pl-5">
-            {next.map((s) => (
-              <li key={s}>{s}</li>
-            ))}
-          </ul>
+    <Plain item={item} title={item.title}>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Fact label="Outcome">
+          <span className={cn((item.stop?.outcome === 'failed' || item.stop?.outcome === 'timed_out') && 'text-danger')}>{word}</span>
+          {item.stop && item.stop.reason !== 'end_turn' && <span className="text-fg-tertiary"> · {item.stop.reason}</span>}
+        </Fact>
+        <Fact label="Stopped">{age(item.at_ms)} ago</Fact>
+      </div>
+      {error && (
+        <Fact label="Error">
+          <span className="break-words font-mono text-xs">{error}</span>
         </Fact>
       )}
-      <Fact label="Finished">{age(item.at_ms)}</Fact>
+      {item.summary && item.summary !== error && <Fact label="Summary">{item.summary}</Fact>}
+      <Fact label="Reply">
+        <Reply item={item} size="sm" />
+      </Fact>
     </Plain>
   )
 }

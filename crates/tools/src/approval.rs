@@ -72,6 +72,9 @@ pub struct ApprovalResolved {
     pub decision: Decision,
     /// True when nobody answered in time.
     pub timed_out: bool,
+    /// 207: the user left the call to the agent (Attention dismiss): not run; `decision` is `deny`, `timed_out` false.
+    #[serde(default)]
+    pub dismissed: bool,
 }
 
 impl wire::WireEvent for ApprovalResolved {
@@ -100,6 +103,13 @@ pub struct ResolveBy {
     pub decision: Decision,
     /// Who answers.
     pub by: Answerer,
+}
+
+/// 207: `ask` → `bool` (true when it was pending): the user leaves this call to the agent — it is not run.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Dismiss {
+    /// The request.
+    pub id: ApprovalId,
 }
 
 /// Registry → approval: publish [`ApprovalRequested`] and wait for a
@@ -131,16 +141,26 @@ pub struct HonourAnswer {
     pub call_id: String,
     /// The stored answer.
     pub decision: Decision,
+    /// 207: the stored answer was a dismissal (`decision` is `Deny`): the
+    /// replay resolves as dismissed.
+    pub dismissed: bool,
 }
 
 /// Internal: drop a pending entry whose waiter gave up.
 struct Expire(ApprovalId);
 
+/// 207: what the parked call is told: a decision, or that the user left it
+/// to the agent.
+enum Verdict {
+    Decided(Decision),
+    Dismissed,
+}
+
 /// One unanswered request: the card, its journal row and the waiter.
 struct Pending {
     requested: ApprovalRequested,
     row: QuestionRow,
-    tx: oneshot::Sender<Decision>,
+    tx: oneshot::Sender<Verdict>,
 }
 
 /// The approval actor.
@@ -149,8 +169,9 @@ pub struct Approval {
     rt: Runtime,
     timeout: Duration,
     pending: HashMap<ApprovalId, Pending>,
-    /// [`HonourAnswer`]s not yet consumed by their call's replay.
-    honoured: HashMap<(SessionId, String), Decision>,
+    /// [`HonourAnswer`]s not yet consumed by their call's replay: the
+    /// decision and whether it was a dismissal (207).
+    honoured: HashMap<(SessionId, String), (Decision, bool)>,
     /// 109 §6.1: the journal seam the `questions` rows go through.
     pub(crate) journal: Arc<dyn Journal>,
 }
@@ -168,18 +189,19 @@ impl Approval {
     }
 
     /// Journal a pending row's end: the `questions` row leaves `pending`
-    /// and the call's `waits(question)` row goes (§4.4). `by` names who
-    /// answered (126 §4.3); `None` on a timeout.
+    /// and the call's `waits(question)` row goes (§4.4). `answer` is the
+    /// stored JSON (the bare `Decision`, or 207's `"dismissed"`); `by` names
+    /// who answered (126 §4.3); `None` on a timeout.
     async fn settle(
         &self,
         mut row: QuestionRow,
         state: QuestionState,
-        answer: Option<Decision>,
+        answer: Option<serde_json::Value>,
         by: Option<Answerer>,
     ) {
         row.state = state;
         row.answered_at = Some(Utc::now());
-        row.answer = answer.map(|d| serde_json::json!(d));
+        row.answer = answer;
         row.answered_by = by;
         if let Some(call) = &row.tool_call_id {
             self.journal.wait(None, row.session, call).await;
@@ -193,9 +215,14 @@ impl Approval {
         let Some(p) = self.pending.remove(&id) else {
             return false;
         };
-        let delivered = p.tx.send(decision).is_ok();
-        self.settle(p.row, QuestionState::Answered, Some(decision), Some(by))
-            .await;
+        let delivered = p.tx.send(Verdict::Decided(decision)).is_ok();
+        self.settle(
+            p.row,
+            QuestionState::Answered,
+            Some(serde_json::json!(decision)),
+            Some(by),
+        )
+        .await;
         delivered
     }
 }
@@ -212,7 +239,8 @@ impl Message<HonourAnswer> for Approval {
     type Reply = ();
 
     async fn handle(&mut self, m: HonourAnswer, _: &mut Context<Self, Self::Reply>) {
-        self.honoured.insert((m.session, m.call_id), m.decision);
+        self.honoured
+            .insert((m.session, m.call_id), (m.decision, m.dismissed));
     }
 }
 
@@ -226,7 +254,7 @@ impl Message<RequestApproval> for Approval {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let id = ApprovalId(uuid::Uuid::now_v7());
-        if let Some(decision) = m
+        if let Some((decision, dismissed)) = m
             .call_id
             .as_ref()
             .and_then(|c| self.honoured.remove(&(m.session, c.clone())))
@@ -237,6 +265,7 @@ impl Message<RequestApproval> for Approval {
                     id,
                     decision,
                     timed_out: false,
+                    dismissed,
                 });
             }
             return reply;
@@ -294,19 +323,22 @@ impl Message<RequestApproval> for Approval {
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move {
             rt.publish(requested).await;
-            let (decision, timed_out) = match tokio::time::timeout(timeout, drx).await {
-                Ok(Ok(d)) => (d, false),
+            let (decision, timed_out, dismissed) = match tokio::time::timeout(timeout, drx).await {
+                Ok(Ok(Verdict::Decided(d))) => (d, false, false),
+                // 207: left to the agent: not run.
+                Ok(Ok(Verdict::Dismissed)) => (Decision::Deny, false, true),
                 // Sender dropped: actor died; treat as deny.
-                Ok(Err(_)) => (Decision::Deny, false),
+                Ok(Err(_)) => (Decision::Deny, false, false),
                 Err(_) => {
                     let _ = me.ask(Expire(id)).await;
-                    (Decision::Deny, true)
+                    (Decision::Deny, true, false)
                 }
             };
             let resolved = ApprovalResolved {
                 id,
                 decision,
                 timed_out,
+                dismissed,
             };
             rt.publish(resolved.clone()).await;
             if let Some(tx) = tx {
@@ -330,6 +362,27 @@ impl Message<ResolveBy> for Approval {
 
     async fn handle(&mut self, m: ResolveBy, _: &mut Context<Self, Self::Reply>) -> bool {
         self.resolve(m.id, m.decision, m.by).await
+    }
+}
+
+impl Message<Dismiss> for Approval {
+    type Reply = bool;
+
+    /// 207: the parked call is not run; the row settles `answered` with
+    /// `"dismissed"` by the human.
+    async fn handle(&mut self, m: Dismiss, _: &mut Context<Self, Self::Reply>) -> bool {
+        let Some(p) = self.pending.remove(&m.id) else {
+            return false;
+        };
+        let delivered = p.tx.send(Verdict::Dismissed).is_ok();
+        self.settle(
+            p.row,
+            QuestionState::Answered,
+            Some(serde_json::json!("dismissed")),
+            Some(Answerer::Human),
+        )
+        .await;
+        delivered
     }
 }
 
@@ -632,16 +685,108 @@ pub(crate) mod tests {
                 session,
                 call_id: "c1".into(),
                 decision: Decision::Deny,
+                dismissed: false,
             })
             .await
             .unwrap();
         let r = actor.ask(request(session, Some("c1"))).await.unwrap();
-        assert_eq!((r.decision, r.timed_out), (Decision::Deny, false));
+        assert_eq!(
+            (r.decision, r.timed_out, r.dismissed),
+            (Decision::Deny, false, false)
+        );
         assert!(journal.questions().is_empty(), "no second question");
         // Consumed: the same call asks again normally (and times out here).
         let r = actor.ask(request(session, Some("c1"))).await.unwrap();
         assert!(r.timed_out);
         assert_eq!(lock(&seen).len(), 1, "one card for the real ask");
         assert_eq!(journal.questions().len(), 2);
+    }
+
+    /// Bus subscriber keeping every resolution it sees.
+    #[derive(kameo::Actor)]
+    struct SeenResolved(Arc<Mutex<Vec<ApprovalResolved>>>);
+
+    impl Message<ApprovalResolved> for SeenResolved {
+        type Reply = ();
+        async fn handle(&mut self, m: ApprovalResolved, _: &mut Context<Self, ()>) {
+            lock(&self.0).push(m);
+        }
+    }
+
+    /// 207: `Dismiss` leaves a pending call to the agent: the waiter and the
+    /// bus see a dismissed deny (not a timeout), the row is `answered` with
+    /// `"dismissed"` by the human, and a second `Dismiss` (or an unknown id)
+    /// is refused.
+    #[tokio::test]
+    async fn dismiss_leaves_the_call_to_the_agent() {
+        let (rt, actor, journal) = actor(Duration::from_secs(5)).await;
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let sub = SeenResolved::spawn(SeenResolved(published.clone()));
+        rt.subscribe::<SeenResolved, ApprovalResolved>(&sub).await;
+        let session = SessionId::new();
+        let pending = tokio::spawn({
+            let actor = actor.clone();
+            async move { actor.ask(request(session, Some("c1"))).await.unwrap() }
+        });
+        let id = loop {
+            if let Some(r) = actor.ask(PendingApprovals).await.unwrap().first() {
+                break r.id;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        assert!(actor.ask(Dismiss { id }).await.unwrap());
+        let r = pending.await.unwrap();
+        assert_eq!(
+            (r.id, r.decision, r.timed_out, r.dismissed),
+            (id, Decision::Deny, false, true)
+        );
+        let event = loop {
+            if let Some(e) = lock(&published).first().cloned() {
+                break e;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        assert_eq!(
+            (event.id, event.decision, event.timed_out, event.dismissed),
+            (id, Decision::Deny, false, true)
+        );
+        let rows = journal.questions();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].state, QuestionState::Answered);
+        assert_eq!(rows[1].answer, Some(serde_json::json!("dismissed")));
+        assert_eq!(rows[1].answered_by, Some(Answerer::Human));
+        assert!(actor.ask(PendingApprovals).await.unwrap().is_empty());
+        assert!(!actor.ask(Dismiss { id }).await.unwrap(), "already gone");
+        assert!(
+            !actor
+                .ask(Dismiss {
+                    id: ApprovalId(uuid::Uuid::now_v7())
+                })
+                .await
+                .unwrap(),
+            "unknown id"
+        );
+    }
+
+    /// 207: a stored dismissal replays as dismissed — no card, no row.
+    #[tokio::test]
+    async fn dismissed_answer_honoured_on_replay() {
+        let (_rt, actor, journal) = actor(Duration::from_millis(50)).await;
+        let session = SessionId::new();
+        actor
+            .tell(HonourAnswer {
+                session,
+                call_id: "c1".into(),
+                decision: Decision::Deny,
+                dismissed: true,
+            })
+            .await
+            .unwrap();
+        let r = actor.ask(request(session, Some("c1"))).await.unwrap();
+        assert_eq!(
+            (r.decision, r.timed_out, r.dismissed),
+            (Decision::Deny, false, true)
+        );
+        assert!(journal.questions().is_empty(), "no second question");
     }
 }

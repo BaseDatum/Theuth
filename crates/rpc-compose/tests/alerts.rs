@@ -110,14 +110,22 @@ async fn attention_list_masks_alerts_per_connection() {
         .unwrap();
     let attention: ActorRef<Attention> = Attention::start(&rt, &store).await.unwrap();
     let (done, asking) = (SessionId::new(), SessionId::new());
+    // 207 §4: a stopped card expires `stopped_ttl_mins` after the stop: stamp it now.
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
     roster::attention::record_finished(
         store.pool(),
         &Finished {
             session: done.to_string(),
             turn: "t1".into(),
-            at_ms: 1,
+            at_ms: now_ms,
             summary: Some("all green".into()),
             next_steps: vec![],
+            outcome: roster::attention::StopOutcome::Finished,
+            stop_reason: "end_turn".into(),
+            error: None,
         },
     )
     .await
@@ -149,9 +157,9 @@ async fn attention_list_masks_alerts_per_connection() {
     let first = a.list().await;
     assert_eq!(first.len(), 2, "{first:?}");
     assert_eq!(alerts(&first), (None, None), "inside alert_delay_ms");
-    // The first list raised an id-set change; the AlertDue nudge is the empty-diff one (§7.4).
+    // 207 §5.5: the AlertDue recheck publishes with `alerts_changed`, no id change.
     until(&mut stream, |v| {
-        v["ids_added"].as_array().is_some_and(Vec::is_empty)
+        v["alerts_changed"] == true && v["ids_added"].as_array().is_some_and(Vec::is_empty)
     })
     .await;
     let shown = a.list().await;

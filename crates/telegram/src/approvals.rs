@@ -78,23 +78,29 @@ pub fn body(req: &ApprovalRequested) -> String {
 }
 
 /// The card after resolution: the first line of `body` becomes the verdict
-/// (`✓ allowed by <name>` / `✗ denied` / `⌛ timed out`), the fence stays,
-/// and the buttons become one disabled button showing the verdict.
+/// (`✓ allowed by <name>` / `✗ denied` / `⌛ timed out` / 207: left to the
+/// agent), the fence stays, and the buttons become one disabled button
+/// showing the verdict.
 #[must_use]
 pub fn resolved(
     body: &str,
     decision: Decision,
     timed_out: bool,
+    dismissed: bool,
     by: Option<&str>,
 ) -> (String, Keyboard) {
     let (head, rest) = body.split_once('\n').unwrap_or((body, ""));
     let tool = head.split("**").nth(1).unwrap_or(head);
     let (mut line, label) = match (decision, timed_out) {
+        _ if dismissed => (
+            format!("**{tool}** left to the agent (not run, not refused)"),
+            "left to the agent",
+        ),
         (_, true) => (format!("⌛ **{tool}** timed out"), "⌛ timed out"),
         (Decision::Allow, false) => (format!("✓ **{tool}** allowed"), "✓ allowed"),
         (Decision::Deny, false) => (format!("✗ **{tool}** denied"), "✗ denied"),
     };
-    if let Some(name) = by.filter(|_| !timed_out) {
+    if let Some(name) = by.filter(|_| !timed_out && !dismissed) {
         line.push_str(&format!(" by {name}"));
     }
     if !rest.is_empty() {
@@ -184,7 +190,7 @@ mod tests {
     #[test]
     fn resolved_card_rewrites_the_verdict_line_and_disables_the_buttons() {
         let b = body(&req("shell", json!({ "command": "ls" })));
-        let (text, k) = resolved(&b, Decision::Allow, false, Some("Ann"));
+        let (text, k) = resolved(&b, Decision::Allow, false, false, Some("Ann"));
         assert_eq!(text, "✓ **shell** allowed by Ann\n```sh\nls\n```");
         assert_eq!(
             k.rows,
@@ -192,14 +198,26 @@ mod tests {
                 text: "✓ allowed".into()
             }]]
         );
-        let (text, _) = resolved(&b, Decision::Deny, false, None);
+        let (text, _) = resolved(&b, Decision::Deny, false, false, None);
         assert!(text.starts_with("✗ **shell** denied\n"));
-        let (text, k) = resolved(&b, Decision::Deny, true, Some("Ann"));
+        let (text, k) = resolved(&b, Decision::Deny, true, false, Some("Ann"));
         assert!(text.starts_with("⌛ **shell** timed out\n"));
         assert_eq!(
             k.rows[0][0],
             Button::Disabled {
                 text: "⌛ timed out".into()
+            }
+        );
+        // 207 E4: left to the agent is not a denial and names nobody.
+        let (text, k) = resolved(&b, Decision::Deny, false, true, Some("Ann"));
+        assert_eq!(
+            text,
+            "**shell** left to the agent (not run, not refused)\n```sh\nls\n```"
+        );
+        assert_eq!(
+            k.rows[0][0],
+            Button::Disabled {
+                text: "left to the agent".into()
             }
         );
     }

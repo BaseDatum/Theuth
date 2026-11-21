@@ -94,7 +94,8 @@ pub struct SetCap {
 pub struct Republish;
 
 /// `ask` → `Vec<AttentionItem>`: the `AttentionKind::Double` items — a card in
-/// grace ("double answers Allow in 14 s — take over") and the cards answered
+/// grace ("double answers Allow for … — take over"; the countdown is the
+/// item's `deadline_ms`) and the cards answered
 /// in the last [`ACTED_TTL`]. The roster's inbox merges them (hand-off).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ListAttention;
@@ -740,10 +741,7 @@ impl Double {
         }
         let now = Utc::now();
         let (session, class) = (pc.session, pc.class.clone());
-        let item = self
-            .pending
-            .get(qid)
-            .and_then(|pc| self.item(pc, now, true));
+        let item = self.pending.get(qid).and_then(|pc| self.item(pc, true));
         if let Some(item) = item {
             self.acted.push(Acted { item, at: now });
         }
@@ -759,8 +757,10 @@ impl Double {
         self.rt.publish(ev).await;
     }
 
-    /// The inbox row for a card in grace or just answered.
-    fn item(&self, pc: &PendingCard, now: DateTime<Utc>, answered: bool) -> Option<AttentionItem> {
+    /// The inbox row for a card in grace or just answered. 207 E5: the title
+    /// carries no countdown (the deadline is `deadline_ms`), so a recheck
+    /// during grace sees the same item, not new content every second.
+    fn item(&self, pc: &PendingCard, answered: bool) -> Option<AttentionItem> {
         let pred = pc.predicted.as_ref()?;
         let what = match &pc.payload {
             Payload::Approval(a) => format!(
@@ -779,38 +779,41 @@ impl Double {
         let title = if answered {
             format!("double answered {} for {what}", pred.choice)
         } else {
-            let left = pc.grace_until.map_or(0, |t| (t - now).num_seconds().max(0));
-            format!(
-                "double answers {} for {what} in {left} s — take over",
-                pred.choice
-            )
+            format!("double answers {} for {what} — take over", pred.choice)
         };
         let (approval, ask) = match &pc.payload {
             Payload::Approval(a) => (Some(a.id), None),
             Payload::Ask(a) => (None, Some(a.clone())),
         };
+        let ms = |t: DateTime<Utc>| u64::try_from(t.timestamp_millis()).unwrap_or_default();
         Some(AttentionItem {
-            id: format!("double:{}", pred.question_id),
-            kind: AttentionKind::Double,
-            title,
-            detail: pc.grace_until.map(|t| t.to_rfc3339()),
-            at_ms: u64::try_from(now.timestamp_millis()).unwrap_or_default(),
-            task: None,
-            agent: None,
             session: Some(pc.session.to_string()),
             approval,
-            decision: None,
-            packet: None,
             ask,
-            turn: None,
             waiting_since_ms: None,
-            summary: None,
-            next_steps: Vec::new(),
-            context: None,
-            priority: None,
-            rank: 5, // 132: Priority::Medium.weight(); no task behind a double card
-            alert: None,
+            deadline_ms: if answered {
+                None
+            } else {
+                pc.grace_until.map(ms)
+            },
+            ..AttentionItem::new(
+                format!("double:{}", pred.question_id),
+                AttentionKind::Double,
+                title,
+                pc.grace_until.map(|t| t.to_rfc3339()),
+                ms(pc.asked_at),
+            )
         })
+    }
+
+    /// Drops a pending card with no label: its grace timer is aborted and the turn forgets it.
+    fn drop_pending(&mut self, qid: &str) {
+        if let Some(mut pc) = self.pending.remove(qid) {
+            if let Some(h) = pc.grace.take() {
+                h.abort();
+            }
+            self.turns.drop_card(pc.session, qid);
+        }
     }
 
     /// `DoubleClass` for one row (both curves over the last 30 days).
@@ -1033,6 +1036,11 @@ impl Message<ApprovalResolved> for Double {
 
     async fn handle(&mut self, m: ApprovalResolved, _: &mut Context<Self, ()>) {
         let qid = m.id.0.to_string();
+        if m.dismissed {
+            // 207: the owner dismissed the card: no decision, no label.
+            self.drop_pending(&qid);
+            return;
+        }
         self.settle(&qid, Some(decision_label(m.decision)), m.timed_out)
             .await;
     }
@@ -1043,14 +1051,9 @@ impl Message<AskResolved> for Double {
 
     async fn handle(&mut self, m: AskResolved, _: &mut Context<Self, ()>) {
         let qid = m.id.0.to_string();
-        if m.dismissed {
-            // The owner closed the set: the turn is cancelled; no label.
-            if let Some(mut pc) = self.pending.remove(&qid) {
-                if let Some(h) = pc.grace.take() {
-                    h.abort();
-                }
-                self.turns.drop_card(pc.session, &qid);
-            }
+        if m.dismissed || m.left_to_agent {
+            // The owner closed the set (turn cancelled) or 207: left it to the agent; no label.
+            self.drop_pending(&qid);
             return;
         }
         self.settle(&qid, None, m.timed_out).await;
@@ -1368,7 +1371,7 @@ impl Message<ListAttention> for Double {
             .pending
             .values()
             .filter(|pc| pc.grace_until.is_some() && !pc.acted && !pc.taken_over)
-            .filter_map(|pc| self.item(pc, now, false))
+            .filter_map(|pc| self.item(pc, false))
             .collect();
         out.extend(self.acted.iter().rev().map(|a| a.item.clone()));
         out
@@ -1754,6 +1757,15 @@ mod tests {
         assert_eq!(items[0].kind, AttentionKind::Double);
         assert_eq!(items[0].approval, Some(id));
         assert!(items[0].title.contains("take over"), "{}", items[0].title);
+        // 207 E5: no countdown in the title (it changed every derive); the
+        // deadline is `deadline_ms`.
+        assert!(
+            !items[0].title.contains(" s — "),
+            "countdown in the title: {}",
+            items[0].title
+        );
+        assert!(items[0].deadline_ms.is_some());
+        assert_eq!(items[0].detail, ev.will_act_at);
         wait_for(|| (!h.probe.answered.lock().is_empty()).then_some(())).await;
         let a = h.probe.answered.lock()[0].clone();
         assert_eq!(a.question_id, id.0.to_string());
@@ -1927,6 +1939,7 @@ mod tests {
             id,
             decision: Decision::Deny,
             timed_out: true,
+            dismissed: false,
         })
         .await;
         let ex = h
@@ -2004,6 +2017,7 @@ mod tests {
             id: ask_id,
             dismissed: false,
             timed_out: false,
+            left_to_agent: false,
         })
         .await;
         h.rt.publish(AgentEvent::ToolCallFinished {
@@ -2036,6 +2050,102 @@ mod tests {
         assert_eq!(ex.class, "ask:freeform:root");
         assert!(h.store.predictions(&ex.id).await.unwrap().is_empty());
         assert_eq!(h.probe.predicted.lock().len(), 1);
+        h.stop().await;
+    }
+
+    /// 207: a dismissed approval and an ask left to the agent drop the card with no label; a
+    /// later resolution of the same id finds no card and writes nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dismissed_and_left_drop_the_card_without_a_label() {
+        let h = Harness::new(oracle(0.8), 30).await;
+        let s = SessionId::new();
+        let id = h
+            .raise(s, "shell", serde_json::json!({"command": "git push"}))
+            .await;
+        h.rt.publish(ApprovalResolved {
+            id,
+            decision: Decision::Deny,
+            timed_out: false,
+            dismissed: true,
+        })
+        .await;
+        h.rt.publish(ApprovalResolved {
+            id,
+            decision: Decision::Deny,
+            timed_out: false,
+            dismissed: false,
+        })
+        .await;
+        let ex = example_when(&h.store, &id.0.to_string()).await;
+        let ask_id = tools::AskId(uuid::Uuid::now_v7());
+        h.rt.publish(AskRequested {
+            id: ask_id,
+            session: s,
+            questions: vec![Question {
+                id: "mode".into(),
+                question: "What now?".into(),
+                options: ["Add to backlog", "Start now"]
+                    .iter()
+                    .map(|l| tools::Choice {
+                        label: (*l).into(),
+                        description: None,
+                    })
+                    .collect(),
+                recommended: None,
+            }],
+        })
+        .await;
+        wait_for(|| (h.probe.predicted.lock().len() == 2).then_some(())).await;
+        h.rt.publish(AskResolved {
+            id: ask_id,
+            dismissed: false,
+            timed_out: false,
+            left_to_agent: true,
+        })
+        .await;
+        // Had the card survived, this would write a `timeout` label.
+        h.rt.publish(AskResolved {
+            id: ask_id,
+            dismissed: false,
+            timed_out: true,
+            left_to_agent: false,
+        })
+        .await;
+        let ask_ex = example_when(&h.store, &ask_id.0.to_string()).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(h.store.labels(&ex.id).await.unwrap().is_empty());
+        assert!(h.store.labels(&ask_ex.id).await.unwrap().is_empty());
+        h.stop().await;
+    }
+
+    /// 207: the double's row keeps the card's arrival as `at_ms` across reads, carries the
+    /// grace end as `deadline_ms` while in grace, and drops it once answered.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn item_at_and_deadline() {
+        let h = Harness::new(oracle(0.9), 1).await;
+        h.seed("approval:read_file:read_only:root", 2).await;
+        let s = SessionId::new();
+        h.raise(s, "read_file", serde_json::json!({"path": "/tmp/x"}))
+            .await;
+        let ev = h.probe.predicted.lock()[0].clone();
+        let grace_end = chrono::DateTime::parse_from_rfc3339(ev.will_act_at.as_deref().unwrap())
+            .unwrap()
+            .timestamp_millis() as u64;
+        let first = h.double.ask(ListAttention).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let second = h.double.ask(ListAttention).await.unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_eq!(first[0].at_ms, second[0].at_ms);
+        assert!(first[0].at_ms <= grace_end);
+        assert_eq!(first[0].deadline_ms, Some(grace_end));
+        assert_eq!(first[0].waiting_since_ms, None);
+        wait_for(|| (!h.probe.answered.lock().is_empty()).then_some(())).await;
+        let answered = h.double.ask(ListAttention).await.unwrap();
+        assert_eq!(answered.len(), 1);
+        assert!(answered[0].title.starts_with("double answered"));
+        assert_eq!(answered[0].deadline_ms, None);
+        assert_eq!(answered[0].at_ms, first[0].at_ms);
         h.stop().await;
     }
 
