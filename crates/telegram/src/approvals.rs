@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn resolved_card_rewrites_the_verdict_line_and_disables_the_buttons() {
         let b = body(&req("shell", json!({ "command": "ls" })));
-        let (text, k) = resolved(&b, Decision::Allow, false, Some("Ann"));
+        let (text, k) = resolved(&b, Decision::Allow, false, false, Some("Ann"));
         assert_eq!(text, "✓ **shell** allowed by Ann\n```sh\nls\n```");
         assert_eq!(
             k.rows,
