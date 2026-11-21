@@ -187,3 +187,44 @@ main webview, `hide`/`show`, `reparent` keeping the page, `on_new_window` and ti
 and the copied `asset:` handler are read from source only. The separate data store needs macOS 14 or later;
 older systems share the default store. Deleting the chat named in the URL while a web tile sits beside it is
 untested.
+
+## 9. iOS shell (2026-11-21)
+
+Replaces D7 for the iOS shell on iPad: the tile hosts a native page there too. The web client keeps the
+address card, and so does the phone, which does not tile (D5): its card offers **Open in browser** only.
+
+**What was built.** `crates/desktop/src/ios_webview.rs` implements the seven §4.3 commands with the same
+names, arguments, error strings and events. Tauri cannot add a child webview on iOS (`Window::add_child` is
+desktop-only, wry's `build_as_child` is unsupported there), so each `web-<id>` is a raw `WKWebView` built
+through UIKit (objc2): a sibling of Tauri's `WKWebView`, inserted directly above it in the same superview, framed
+at the placeholder's rectangle converted through Tauri's scroll view (`zoomScale`, content offset and insets),
+clipped to it. All UIKit work runs on the main thread (`Webview::with_webview`); views and their delegates live in a
+main-thread registry. The pure rules (label, allowlist, throttle, error prefixes, data store identifier) moved to
+`crates/desktop/src/web_rules.rs`, shared with the desktop's `webview.rs`. `nativeWebViews()` is true in the iOS
+container (`lib/web-view-native.ts`); the pop-out button was already absent there (`canPopout()`).
+
+**Isolation.** Each view has its own `WKWebViewConfiguration` with the persistent data store of the desktop's
+identifier (`dataStoreForIdentifier:`, iOS 17+; the app's minimum is 17.4) and nothing else: no script message
+handler, no URL scheme handler, no user script. It is not a Tauri webview, so it has no IPC, no `tauri:`/`asset:`/
+`theuth-page:` scheme and no plugin init scripts; the desktop's IPC fence, `asset` check and links script have no
+counterpart and are not needed.
+
+**Differences from the desktop.**
+- Navigation policy (`decidePolicyForNavigationAction`): the main frame passes `allowed()` only (http/https,
+  never an app origin); subframes pass `navigation_allowed()` (adds `about:blank`/`srcdoc`, `data:`, `blob:`).
+  The desktop applies `navigation_allowed()` to every frame.
+- A navigation without a target frame (`target=_blank`) is cancelled and opened with
+  `UIApplication openURL:options:completionHandler:`; `window.open` reaches `createWebViewWithConfiguration`,
+  which returns nil after the same open. Both share the one-per-second throttle. No links script is needed: no
+  opener plugin script swallows the click.
+- `web_view_history` calls `goBack`/`goForward` instead of evaluating `history.back()`.
+- State events: navigation start and commit (`loading: true`), finish and failure (`loading: false`), and KVO on
+  `title` and `URL` (title changes and `pushState` without a navigation). Each payload reads URL and title from
+  the view at that moment.
+- One window: no reparenting, `in-popout` is unreachable, no `web-view://closed` from a window closing.
+- The view is not inside the DOM, so the occlusion rules of §4.4 (hide under dialogs, sheets, menus) apply
+  unchanged; the iPad sidebar is inline at tile widths, and as a sheet it is a `role="dialog"` overlay.
+
+**Not verified.** Proven on the iPad simulator only (see the task's screenshots): rotation, Stage Manager window
+resizing, the on-screen keyboard shifting Tauri's scroll view while a tile shows, memory with several views,
+and a real device are untested.
