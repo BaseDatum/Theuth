@@ -22,18 +22,9 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ingest");
 
+/// The helper path `Helper::new` still takes (ignored: the helper runs in-process); never skips.
 macro_rules! helper_or_skip {
-    () => {{
-        let p = helper::helper_path();
-        if !p.is_file() {
-            eprintln!(
-                "SKIPPED: no documents helper at {} — run `just documents-helper` or set THEUTH_DOCUMENTS_HELPER",
-                p.display()
-            );
-            return;
-        }
-        p
-    }};
+    () => {{ helper::helper_path() }};
 }
 
 struct Rig {

@@ -290,10 +290,6 @@ async fn missing_call_id_and_missing_blob_are_named() {
 #[tokio::test]
 async fn markdown_names_its_bound_document() {
     let bin = document::helper::helper_path();
-    if !bin.is_file() {
-        eprintln!("skipped: documents helper not built at {}", bin.display());
-        return;
-    }
     use document::actor::DocumentActor;
     use kameo::actor::Spawn as _;
     let (state, tool, d) = open().await;

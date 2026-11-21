@@ -1,7 +1,7 @@
-//! The authority end to end against the compiled helper (design 59 §14 step 1
+//! The authority end to end against the documents helper (design 59 §14 step 1
 //! checks 2, 3, 6): create from a file, edit → export within 3 s, file edit →
-//! diff import, restart → identical export. Skipped when the helper binary is
-//! not built (`just documents-helper`).
+//! diff import, restart → identical export. The helper runs in-process (document-js),
+//! so nothing is skipped.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -25,20 +25,10 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const MD: &str = "---\ntype: fact\ntitle: A fact\ntags:\n  - x\n---\nhello there\n\nsecond block\n";
 
-/// The compiled helper, or return from the test loudly. Cargo has no runtime `#[ignore]`: the test
-/// counts as `ok`, so the skip is shouted (`cargo test -- --nocapture` shows it).
+/// The helper path `Helper::new` still takes (ignored: the helper runs in-process). Never skips any
+/// more; the name and the `bin` plumbing go with `helper_path` in phase 3.
 macro_rules! helper_or_skip {
-    () => {{
-        let p = helper::helper_path();
-        if !p.is_file() {
-            eprintln!(
-                "SKIPPED: no documents helper at {} — run `just documents-helper` or set THEUTH_DOCUMENTS_HELPER",
-                p.display()
-            );
-            return;
-        }
-        p
-    }};
+    () => {{ helper::helper_path() }};
 }
 
 async fn start(data_dir: &Path, bin: &Path) -> ActorRef<DocumentActor> {

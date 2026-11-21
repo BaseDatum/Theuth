@@ -84,10 +84,6 @@ async fn wait_for(path: &std::path::Path, pred: impl Fn(&str) -> bool) -> String
 #[tokio::test]
 async fn note_lives_through_start_summary_and_retry() {
     let bin = helper::helper_path();
-    if !bin.is_file() {
-        eprintln!("skipped: documents helper not built at {}", bin.display());
-        return;
-    }
     let dir = tempfile::tempdir().unwrap();
     let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
     let docs = start_documents(&rt, &bin).await;

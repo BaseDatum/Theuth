@@ -293,9 +293,6 @@ impl runtime::Plugin for DocumentPlugin {
             }
         });
         let path = helper_path();
-        if !path.is_file() {
-            tracing::warn!(path = %path.display(), "documents helper not found; the editor will report it on first use");
-        }
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
         let helper = helper::Helper::new(path, events_tx, rt.shutdown.clone());
         let actor =

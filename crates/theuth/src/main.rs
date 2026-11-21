@@ -1813,6 +1813,9 @@ async fn run() -> anyhow::Result<()> {
         .extract_inner::<browser::BrowserConfig>("browser")
         .unwrap_or_default();
     browser::warmup(&browser_cfg);
+    // The documents helper runs in-process on its own thread (document-js): make sure V8 is up on the
+    // main thread before it, also when the browser (and so its warmup) is disabled.
+    document::helper::init_js_platform();
 
     let rt = Runtime::new(config, data_dir);
     // 187: MCP servers start only on their home engine, so the tools plugin needs this

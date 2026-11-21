@@ -23,18 +23,9 @@ use search::PageState;
 /// Every test registers the one `DOCUMENT_ACTOR` / `EMBED_ACTOR` names: one at a time.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// The helper path `Helper::new` still takes (ignored: the helper runs in-process); never skips.
 macro_rules! helper_or_skip {
-    () => {{
-        let p = helper::helper_path();
-        if !p.is_file() {
-            eprintln!(
-                "SKIPPED: no documents helper at {} — run `just documents-helper` or set THEUTH_DOCUMENTS_HELPER",
-                p.display()
-            );
-            return;
-        }
-        p
-    }};
+    () => {{ helper::helper_path() }};
 }
 
 /// The document actor over `data_dir` with `notebooks.embedding_model = model`.

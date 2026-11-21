@@ -62,6 +62,14 @@ impl Future for Ticket {
 }
 
 impl Ticket {
+    /// A ticket already settled with `result` (lets a client substitute canned replies in its tests).
+    #[doc(hidden)]
+    pub fn ready(result: Result<Reply, Error>) -> Self {
+        let (tx, rx) = oneshot::channel();
+        let _ = tx.send(result);
+        Self { rx }
+    }
+
     fn failed(e: Error) -> Self {
         let (tx, rx) = oneshot::channel();
         let _ = tx.send(Err(e));

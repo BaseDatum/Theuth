@@ -109,6 +109,20 @@ fn extension() -> Extension {
     }
 }
 
+/// Initialise the V8 platform on the calling thread unless a runtime already did (deno_core's `init_v8` is
+/// behind a process-wide `Once`): builds and drops one bare `JsRuntime`. `t` calls it on the main thread so
+/// the `documents-js` thread never initialises V8, whether or not the browser warmup ran.
+pub fn init_platform() {
+    static DONE: std::sync::Once = std::sync::Once::new();
+    DONE.call_once(|| match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(tokio) => {
+            let _guard = tokio.enter();
+            drop(JsRuntime::new(RuntimeOptions::default()));
+        }
+        Err(e) => tracing::warn!(error = %e, "V8 platform not initialised early: no tokio runtime"),
+    });
+}
+
 /// One in-process documents helper: a `JsRuntime` with the bundle loaded. `!Send`, and it drives its own
 /// current-thread tokio runtime, so it must not be called from inside an async context: use
 /// [`crate::DocumentsThread`] there.

@@ -1,48 +1,35 @@
-//! Client of the `theuth-documents` helper (design 59 §3.2; the pattern is
-//! 46 §2.1's `app::helper`): one long-lived child, newline-delimited JSON
-//! over stdio, binary fields base64. Unlike the app parser, requests are
-//! pipelined (each carries an id) and the child pushes `{"ev":"update"}`
-//! lines on its own after an import; those reach the actor as
-//! [`HelperEvent`]s. The child is started when the [`Helper`] is built and
-//! kept warm; a crash, a malformed line or a request past [`DEADLINE`]
-//! kills it and it is respawned with backoff (1 s, 2 s, … 30 s). A request
-//! that arrives while a spawn is due or in flight waits for it (bounded by
-//! [`DEADLINE`] on the handshake); while the child is down — crashed,
-//! missing, or in backoff — every request fails at once with the last
-//! failure, the child's stderr included. The actor learns of the fresh child
-//! through [`HelperEvent::Restarted`] (its mirrors are gone and must be reopened).
-//! The executable's `--version` must print our [`protocol_version`] before
-//! it serves anything. [`helper_status`] reports the process for Settings.
+//! Client of the documents helper (design 59 §3.2): the TypeScript in `packages/documents` (BlockNote +
+//! yjs + linkedom), run in-process by [`document_js::DocumentsThread`] — one `documents-js` thread owning a
+//! deno_core runtime, started on the first request (docs/design/documents-inproc-as-built-P2.md). The wire is
+//! unchanged: one JSON request line per call, binary fields base64, `{"ev":"update"}` lines pushed before
+//! the reply of the `import`/`edit` that caused them; those reach the actor as [`HelperEvent`]s, in request
+//! order, before the request's [`Pending`] resolves.
+//!
+//! A request past [`DEADLINE`], a runtime that reaches its heap limit or a panic on the runtime thread fails
+//! that request and every one queued behind it ([`Error::Timeout`] / [`Error::Crashed`]); the runtime is
+//! rebuilt at once and the actor learns of it through [`HelperEvent::Restarted`] (its mirrors are gone and
+//! must be reopened). [`helper_status`] reports the runtime for Settings.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::process::Stdio;
-use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use base64::Engine as _;
+use document_js::{DocumentsThread, Limits, Ticket};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::meta::DocId;
 
-/// Per request: from writing the line to reading its response.
+/// Per request: from enqueueing the line to its reply (the runtime's watchdog deadline).
 pub const DEADLINE: Duration = Duration::from_secs(30);
-/// Largest line either way (the helper enforces the same on requests).
+/// Largest request line; longer ones never reach the runtime.
 pub const MAX_LINE: usize = 16 * 1024 * 1024;
-const BACKOFF_MIN: Duration = Duration::from_secs(1);
-const BACKOFF_MAX: Duration = Duration::from_secs(30);
-/// How much of the child's stderr is kept for error messages and [`HelperStatus`].
-const STDERR_KEEP: usize = 4 * 1024;
-/// How much of it goes into an [`Error::Crashed`] message.
-const STDERR_IN_ERROR: usize = 300;
 
 const PROTOCOL_TS: &str = include_str!("../../../packages/documents/src/protocol.ts");
 
@@ -58,10 +45,17 @@ pub fn protocol_version() -> &'static str {
     &V
 }
 
-/// Where the helper executable lives: `THEUTH_DOCUMENTS_HELPER` (a file path),
+/// Initialise the V8 platform on the calling thread (idempotent: deno_core's `init_v8` sits behind a
+/// process-wide `Once`). `t` calls it on the main thread right after `browser::warmup`, so the documents
+/// thread never initialises V8 itself, browser enabled or not.
+pub fn init_js_platform() {
+    document_js::init_platform();
+}
+
+/// Where the stdio helper executable lived: `THEUTH_DOCUMENTS_HELPER` (a file path),
 /// else `theuth-documents-<version>` beside the running binary; debug builds
-/// fall back to `packages/documents/dist/theuth-documents` in the source tree
-/// so `cargo run` and `just desktop` find the one `just documents-helper` built.
+/// fall back to `packages/documents/dist/theuth-documents` in the source tree.
+/// No longer spawned (the helper runs in-process); kept until the packaging is removed.
 pub fn helper_path() -> PathBuf {
     if let Some(p) = std::env::var_os("THEUTH_DOCUMENTS_HELPER").filter(|p| !p.is_empty()) {
         return PathBuf::from(p);
@@ -86,36 +80,36 @@ pub fn helper_path() -> PathBuf {
     beside
 }
 
-/// Whether the helper `t` would spawn is there and whether it runs (surfaced by `documents_status`,
-/// shown in Settings; a missing or crashed helper disables notes, knowledge editing and meeting notes).
+/// Whether the helper is there and whether it runs (surfaced by `documents_status`, shown in Settings;
+/// a missing or crashed helper disables notes, knowledge editing and meeting notes).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct HelperStatus {
-    /// Where [`helper_path`] points.
+    /// Where the helper lives (`in-process` since it runs inside `t`).
     pub path: String,
-    /// The file exists there.
+    /// The helper is available (always, since it is compiled in).
     pub found: bool,
-    /// The protocol version this `t` wants (`theuth-documents-<version>`).
+    /// The protocol version this `t` speaks (`theuth-documents-<version>`).
     pub version: String,
-    /// The child process right now.
+    /// The runtime right now.
     pub process: HelperProcess,
 }
 
-/// The helper process as the worker last saw it.
+/// The helper runtime as the client last saw it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "state", rename_all = "lowercase")]
 pub enum HelperProcess {
-    /// Not spawned yet (documents off, or the first spawn is in flight).
+    /// Has not served a request yet.
     Starting,
     /// Serving.
     Running,
-    /// Exited, failed its handshake or was killed; `stderr` is what it said (or the error), respawn pending.
+    /// Failed fatally (deadline, heap limit, panic); `stderr` is the error; a fresh runtime is being built.
     Crashed {
-        /// Its stderr, or the spawn error.
+        /// The fatal error.
         stderr: String,
     },
-    /// No executable at `path`.
+    /// Never produced since the helper runs in-process (kept for the wire shape).
     Missing,
 }
 
@@ -128,10 +122,9 @@ fn set_process(p: HelperProcess) {
 
 /// The current [`HelperStatus`].
 pub fn helper_status() -> HelperStatus {
-    let path = helper_path();
     HelperStatus {
-        found: path.is_file(),
-        path: path.display().to_string(),
+        path: "in-process".to_owned(),
+        found: true,
         version: protocol_version().to_owned(),
         process: PROCESS.lock().unwrap_or_else(|e| e.into_inner()).clone(),
     }
@@ -316,38 +309,24 @@ pub enum HelperEvent {
         /// For an import: body blocks changed of `total` (the §4.6 `import-file` trigger).
         ratio: Option<(u32, u32)>,
     },
-    /// A fresh child is serving: every mirror it held is gone.
+    /// A fresh runtime is serving: every mirror the previous one held is gone.
     Restarted,
 }
 
 /// Why a request produced no result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// No executable at the expected path.
-    Missing(PathBuf),
-    /// The executable speaks another protocol version.
-    Version {
-        /// Ours.
-        expected: String,
-        /// Its `--version`.
-        found: String,
-    },
-    /// [`DEADLINE`] passed; the child was killed.
+    /// [`DEADLINE`] passed; the runtime was terminated and is rebuilt.
     Timeout,
-    /// The child exited or its pipes broke.
+    /// The runtime failed fatally (heap limit, panic) or is gone; it is rebuilt.
     Crashed(String),
-    /// The helper answered `ok: false`, or the line was unreadable.
+    /// The helper answered `ok: false`, the line was unreadable, or the request was too large.
     Protocol(String),
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Missing(p) => write!(f, "documents helper not found at {}", p.display()),
-            Self::Version { expected, found } => write!(
-                f,
-                "documents helper speaks protocol {found}, this build needs {expected}"
-            ),
             Self::Timeout => write!(f, "documents helper did not answer within {DEADLINE:?}"),
             Self::Crashed(e) => write!(f, "documents helper failed: {e}"),
             Self::Protocol(e) => write!(f, "documents helper: {e}"),
@@ -357,34 +336,81 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Requests written and not yet answered: id → (sent at, reply).
-type PendingMap = HashMap<u64, (Instant, oneshot::Sender<Result<Value, Error>>)>;
-
-struct Job {
-    id: u64,
-    line: Vec<u8>,
-    reply: oneshot::Sender<Result<Value, Error>>,
+impl From<document_js::Error> for Error {
+    fn from(e: document_js::Error) -> Self {
+        match e {
+            document_js::Error::Timeout => Self::Timeout,
+            document_js::Error::OutOfMemory | document_js::Error::Crashed(_) => {
+                Self::Crashed(e.to_string())
+            }
+            document_js::Error::TooLarge { len, max } => Self::Protocol(format!(
+                "request is {len} bytes; the helper accepts {max}"
+            )),
+            document_js::Error::Js(m) => Self::Protocol(m),
+            document_js::Error::Stopped => Self::Crashed("helper worker stopped".into()),
+        }
+    }
 }
 
-/// Handle to the helper; cheap to clone. The child starts when the handle is built.
+type Answer = oneshot::Sender<Result<Value, Error>>;
+
+/// Where request lines go: the in-process runtime, or (unit tests) a canned responder.
+#[derive(Clone)]
+enum Backend {
+    Js(DocumentsThread),
+    #[cfg(test)]
+    Fake(Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>),
+}
+
+/// Handle to the helper; cheap to clone. The runtime starts on the first request.
 #[derive(Clone)]
 pub struct Helper {
-    tx: mpsc::UnboundedSender<Job>,
-    next: std::sync::Arc<AtomicU64>,
+    backend: Backend,
+    next: Arc<AtomicU64>,
+    /// Tickets in enqueue order → the forwarder, which emits each one's events then answers it.
+    forward: mpsc::UnboundedSender<(Ticket, Answer)>,
+    /// Held across "enqueue on the runtime" + "enqueue on the forwarder": one order for both.
+    order: Arc<Mutex<()>>,
 }
 
 impl Helper {
-    /// `path` is the executable; `events` receives pushed lines and restarts; `shutdown` kills the child.
+    /// `events` receives pushed updates and restarts; `shutdown` stops the runtime thread. `path` is the
+    /// former executable path and is ignored (removed with [`helper_path`] in phase 3).
     pub fn new(
         path: PathBuf,
         events: mpsc::UnboundedSender<HelperEvent>,
         shutdown: CancellationToken,
     ) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(worker(path, rx, events, shutdown));
+        let _ = path;
+        let docs = DocumentsThread::new(
+            Limits {
+                deadline: DEADLINE,
+                max_line: MAX_LINE,
+                ..Limits::default()
+            },
+            shutdown.clone(),
+        );
+        tokio::spawn(restarts(docs.subscribe(), events.clone(), shutdown));
+        Self::with_backend(Backend::Js(docs), events)
+    }
+
+    /// A helper whose replies come from `respond` (request line → output lines, events first).
+    #[cfg(test)]
+    pub(crate) fn fake(
+        events: mpsc::UnboundedSender<HelperEvent>,
+        respond: impl Fn(&str) -> Vec<String> + Send + Sync + 'static,
+    ) -> Self {
+        Self::with_backend(Backend::Fake(Arc::new(respond)), events)
+    }
+
+    fn with_backend(backend: Backend, events: mpsc::UnboundedSender<HelperEvent>) -> Self {
+        let (forward, rx) = mpsc::unbounded_channel();
+        tokio::spawn(forwarder(rx, events));
         Self {
-            tx,
-            next: std::sync::Arc::new(AtomicU64::new(1)),
+            backend,
+            next: Arc::new(AtomicU64::new(1)),
+            forward,
+            order: Arc::new(Mutex::new(())),
         }
     }
 
@@ -397,19 +423,17 @@ impl Helper {
                 b.insert(k.clone(), v.clone());
             }
         }
-        let mut line = serde_json::to_vec(&body).unwrap_or_default();
-        line.push(b'\n');
+        let line = serde_json::to_string(&body).unwrap_or_default();
         let (reply, rx) = oneshot::channel();
-        let pending = Pending { id, rx };
-        if line.len() > MAX_LINE {
-            let _ = reply.send(Err(Error::Protocol(format!(
-                "request is {} bytes; the helper accepts {MAX_LINE}",
-                line.len()
-            ))));
-        } else if self.tx.send(Job { id, line, reply }).is_err() {
-            // Worker gone (shutdown): the receiver sees a closed channel.
-        }
-        pending
+        let _order = self.order.lock().unwrap_or_else(|e| e.into_inner());
+        let ticket = match &self.backend {
+            Backend::Js(docs) => docs.enqueue(line),
+            #[cfg(test)]
+            Backend::Fake(respond) => Ticket::ready(fake_reply(respond(&line))),
+        };
+        // Forwarder gone = every handle dropped; the receiver then sees a closed channel.
+        let _ = self.forward.send((ticket, reply));
+        Pending { id, rx }
     }
 
     /// Load a mirror from its full state. Enqueued synchronously so a following `update` cannot overtake it.
@@ -540,227 +564,114 @@ fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
-struct Proc {
-    child: Child,
-    stdin: ChildStdin,
-    /// Lines from the reader task; `None` = EOF or a read error.
-    lines: mpsc::UnboundedReceiver<Option<Vec<u8>>>,
-    /// The last [`STDERR_KEEP`] bytes the child wrote to stderr; `stderr_done` = its pipe closed.
-    stderr: std::sync::Arc<std::sync::Mutex<String>>,
-    stderr_done: tokio::task::JoinHandle<()>,
-}
-
-impl Proc {
-    fn stderr(&self) -> String {
-        self.stderr
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-    }
-
-    async fn kill(mut self) {
-        let _ = self.child.kill().await;
-    }
-
-    /// The child's stdout closed: reap it and describe why (`Error::Crashed`).
-    async fn reap(mut self) -> Error {
-        let status = match tokio::time::timeout(Duration::from_secs(1), self.child.wait()).await {
-            Ok(Ok(s)) => s.to_string(),
-            _ => {
-                let _ = self.child.kill().await;
-                "stdout closed".to_owned()
+/// Settle tickets in enqueue order (= the runtime's completion order): each request's update events reach
+/// `events` before its reply resolves, and events never interleave across requests.
+async fn forwarder(
+    mut rx: mpsc::UnboundedReceiver<(Ticket, Answer)>,
+    events: mpsc::UnboundedSender<HelperEvent>,
+) {
+    while let Some((ticket, answer)) = rx.recv().await {
+        let result = match ticket.await {
+            Ok(reply) => {
+                set_process(HelperProcess::Running);
+                for line in &reply.events {
+                    handle_event(line, &events);
+                }
+                parse_reply(&reply.reply)
+            }
+            Err(e) => {
+                if e.is_fatal() {
+                    set_process(HelperProcess::Crashed {
+                        stderr: e.to_string(),
+                    });
+                    tracing::warn!(error = %e, "documents runtime failed; it is rebuilt");
+                }
+                Err(Error::from(e))
             }
         };
-        // Let the last stderr lines land before reading them.
-        let _ = tokio::time::timeout(Duration::from_secs(1), &mut self.stderr_done).await;
-        Error::Crashed(format!(
-            "{status}: {}",
-            head(&self.stderr(), STDERR_IN_ERROR)
-        ))
+        let _ = answer.send(result);
     }
 }
 
-fn head(s: &str, n: usize) -> &str {
-    let s = s.trim();
-    match s.char_indices().nth(n) {
-        Some((i, _)) => &s[..i],
-        None => s,
-    }
-}
-
-/// Owns the child: spawns it (again, with backoff, whenever it is gone), writes requests, matches
-/// replies to pending ids, forwards events. Requests that find a spawn due wait for it (they sit in
-/// `rx` until it resolves); requests that find no child and no spawn due fail with the last failure.
-async fn worker(
-    path: PathBuf,
-    mut rx: mpsc::UnboundedReceiver<Job>,
+/// Every rebuilt runtime (generation 2, 3, …) is a fresh helper: report it running and tell the actor.
+async fn restarts(
+    mut generations: watch::Receiver<u64>,
     events: mpsc::UnboundedSender<HelperEvent>,
     shutdown: CancellationToken,
 ) {
-    let mut proc: Option<Proc> = None;
-    let mut pending: PendingMap = HashMap::new();
-    // Why there is no child: what a request gets meanwhile.
-    let mut down = Error::Crashed("starting".into());
-    let mut backoff = BACKOFF_MIN;
-    let mut next_spawn = Instant::now();
-    let mut generation: u64 = 0;
-    let mut tick = tokio::time::interval(Duration::from_secs(1));
-    // A child that died, failed to start or was killed: fail what it owed, schedule the next spawn.
-    macro_rules! lost {
-        ($e:expr) => {{
-            let e: Error = $e;
-            tracing::warn!(error = %e, "documents helper down; next spawn in {backoff:?}");
-            fail_all(&mut pending, e.clone());
-            set_process(match &e {
-                Error::Missing(_) => HelperProcess::Missing,
-                Error::Crashed(s) => HelperProcess::Crashed { stderr: s.clone() },
-                other => HelperProcess::Crashed { stderr: other.to_string() },
-            });
-            down = e;
-            next_spawn = Instant::now() + backoff;
-            backoff = (backoff * 2).min(BACKOFF_MAX);
-        }};
-    }
     loop {
-        // A due spawn runs before anything else is polled: jobs that arrive meanwhile sit in `rx` and
-        // meet the child (or its failure) instead of failing with "starting". The sleep branch below
-        // only wakes the loop when the backoff ends.
-        if proc.is_none() && next_spawn <= Instant::now() {
-            match tokio::time::timeout(DEADLINE, spawn(&path)).await {
-                Ok(Ok(p)) => {
-                    proc = Some(p);
-                    backoff = BACKOFF_MIN;
-                    generation += 1;
-                    set_process(HelperProcess::Running);
-                    if generation > 1 {
-                        tracing::info!("documents helper running again");
-                        let _ = events.send(HelperEvent::Restarted);
-                    }
-                }
-                Ok(Err(e)) => lost!(e),
-                Err(_) => lost!(Error::Crashed(format!(
-                    "no answer to --version within {DEADLINE:?}"
-                ))),
-            }
-            continue;
-        }
         tokio::select! {
-            _ = shutdown.cancelled() => break,
-            _ = tokio::time::sleep_until(next_spawn.into()), if proc.is_none() => {}
-            _ = tick.tick() => {
-                if proc.is_some() && pending.values().any(|(at, _)| at.elapsed() > DEADLINE) {
-                    if let Some(p) = proc.take() {
-                        let stderr = p.stderr();
-                        p.kill().await;
-                        tracing::warn!("documents helper killed after {DEADLINE:?}; stderr: {}", head(&stderr, STDERR_IN_ERROR));
-                    }
-                    // A hang, not a crash: spawn again at once.
-                    fail_all(&mut pending, Error::Timeout);
-                    down = Error::Timeout;
-                    set_process(HelperProcess::Crashed { stderr: Error::Timeout.to_string() });
-                    next_spawn = Instant::now();
+            () = shutdown.cancelled() => break,
+            changed = generations.changed() => {
+                if changed.is_err() {
+                    break;
                 }
-            }
-            line = async {
-                match proc.as_mut() {
-                    Some(p) => p.lines.recv().await.flatten(),
-                    None => std::future::pending().await,
+                if *generations.borrow_and_update() > 1 {
+                    tracing::info!("documents runtime running again");
+                    set_process(HelperProcess::Running);
+                    let _ = events.send(HelperEvent::Restarted);
                 }
-            } => {
-                match line {
-                    Some(line) => handle_line(&line, &mut pending, &events),
-                    None => if let Some(p) = proc.take() {
-                        lost!(p.reap().await);
-                    }
-                }
-            }
-            job = rx.recv() => {
-                let Some(job) = job else { break };
-                let Some(p) = proc.as_mut() else {
-                    let _ = job.reply.send(Err(down.clone()));
-                    continue;
-                };
-                if let Err(e) = p.stdin.write_all(&job.line).await {
-                    let _ = job.reply.send(Err(Error::Crashed(format!("write: {e}"))));
-                    if let Some(p) = proc.take() {
-                        lost!(p.reap().await);
-                    }
-                    continue;
-                }
-                pending.insert(job.id, (Instant::now(), job.reply));
             }
         }
-    }
-    if let Some(p) = proc {
-        p.kill().await;
     }
     set_process(HelperProcess::Starting);
 }
 
-fn fail_all(pending: &mut PendingMap, e: Error) {
-    for (_, (_, tx)) in pending.drain() {
-        let _ = tx.send(Err(e.clone()));
-    }
-}
-
-fn handle_line(line: &[u8], pending: &mut PendingMap, events: &mpsc::UnboundedSender<HelperEvent>) {
-    let v: Value = match serde_json::from_slice(line) {
+/// One pushed `{"ev":"update"}` line → [`HelperEvent::Update`].
+fn handle_event(line: &str, events: &mpsc::UnboundedSender<HelperEvent>) {
+    let v: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(error = %e, "documents helper: unreadable line dropped");
             return;
         }
     };
-    if v.get("ev").and_then(Value::as_str) == Some("update") {
-        let doc = v.get("doc").and_then(Value::as_str).and_then(DocId::parse);
-        let update = v
-            .get("update")
-            .and_then(Value::as_str)
-            .and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok());
-        let touched = v
-            .get("touched")
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default();
-        let req = v.get("req").and_then(Value::as_u64).unwrap_or_default();
-        let ratio = match (
-            v.get("changed").and_then(Value::as_u64),
-            v.get("total").and_then(Value::as_u64),
-        ) {
-            (Some(c), Some(t)) => Some((c as u32, t as u32)),
-            _ => None,
-        };
-        match (doc, update) {
-            (Some(doc), Some(update)) => {
-                let _ = events.send(HelperEvent::Update {
-                    doc,
-                    update,
-                    touched,
-                    req,
-                    ratio,
-                });
-            }
-            _ => tracing::warn!("documents helper: malformed update event dropped"),
-        }
+    if v.get("ev").and_then(Value::as_str) != Some("update") {
+        tracing::warn!("documents helper: unexpected event dropped: {v}");
         return;
     }
-    let Some(id) = v.get("id").and_then(Value::as_u64) else {
-        tracing::warn!("documents helper: line without id dropped: {v}");
-        return;
+    let doc = v.get("doc").and_then(Value::as_str).and_then(DocId::parse);
+    let update = v
+        .get("update")
+        .and_then(Value::as_str)
+        .and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok());
+    let touched = v
+        .get("touched")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let req = v.get("req").and_then(Value::as_u64).unwrap_or_default();
+    let ratio = match (
+        v.get("changed").and_then(Value::as_u64),
+        v.get("total").and_then(Value::as_u64),
+    ) {
+        (Some(c), Some(t)) => Some((c as u32, t as u32)),
+        _ => None,
     };
-    let Some((_, tx)) = pending.remove(&id) else {
-        // id 0 = the helper could not parse a line at all; nothing waits on it.
-        if id != 0 {
-            tracing::warn!(id, "documents helper: reply for unknown request");
+    match (doc, update) {
+        (Some(doc), Some(update)) => {
+            let _ = events.send(HelperEvent::Update {
+                doc,
+                update,
+                touched,
+                req,
+                ratio,
+            });
         }
-        return;
-    };
-    let r = if v.get("ok").and_then(Value::as_bool) == Some(true) {
+        _ => tracing::warn!("documents helper: malformed update event dropped"),
+    }
+}
+
+/// The reply line → its `result`, or the helper's `error` as [`Error::Protocol`].
+fn parse_reply(line: &str) -> Result<Value, Error> {
+    let v: Value = serde_json::from_str(line)
+        .map_err(|e| Error::Protocol(format!("unreadable reply: {e}")))?;
+    if v.get("ok").and_then(Value::as_bool) == Some(true) {
         Ok(v.get("result").cloned().unwrap_or(Value::Null))
     } else {
         Err(Error::Protocol(
@@ -769,117 +680,17 @@ fn handle_line(line: &[u8], pending: &mut PendingMap, events: &mpsc::UnboundedSe
                 .unwrap_or("error without message")
                 .to_owned(),
         ))
-    };
-    let _ = tx.send(r);
+    }
 }
 
-/// `--version` must print our protocol version; then start the line server. A child that exits
-/// before the handshake fails with what it wrote to stderr — "exit status 1" told nobody anything.
-async fn spawn(path: &std::path::Path) -> Result<Proc, Error> {
-    if !path.is_file() {
-        return Err(Error::Missing(path.to_path_buf()));
-    }
-    let mut probe = Command::new(path);
-    probe
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    platform::process::hide_console(probe.as_std_mut());
-    let out = probe
-        .output()
-        .await
-        .map_err(|e| Error::Crashed(format!("{}: {e}", path.display())))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(Error::Crashed(format!(
-            "--version {}: {}",
-            out.status,
-            head(&stderr, STDERR_IN_ERROR)
-        )));
-    }
-    let found = String::from_utf8_lossy(&out.stdout)
-        .split_whitespace()
-        .last()
-        .unwrap_or_default()
-        .to_owned();
-    if found != protocol_version() {
-        return Err(Error::Version {
-            expected: protocol_version().to_owned(),
-            found,
-        });
-    }
-    let mut cmd = Command::new(path);
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    platform::process::hide_console(cmd.as_std_mut());
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| Error::Crashed(format!("{}: {e}", path.display())))?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| Error::Crashed("no stdin".into()))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| Error::Crashed("no stdout".into()))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| Error::Crashed("no stderr".into()))?;
-    let (tx, lines) = mpsc::unbounded_channel();
-    tokio::spawn(async move {
-        let mut stdout = BufReader::new(stdout);
-        loop {
-            let mut buf = Vec::new();
-            let n = (&mut stdout)
-                .take(MAX_LINE as u64 + 1)
-                .read_until(b'\n', &mut buf)
-                .await;
-            match n {
-                Ok(0) | Err(_) => break,
-                Ok(_) if buf.len() > MAX_LINE => {
-                    tracing::warn!("documents helper: line above {MAX_LINE} bytes; child replaced");
-                    break;
-                }
-                Ok(_) => {
-                    if tx.send(Some(buf)).is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-        let _ = tx.send(None);
-    });
-    // stderr: into the log line by line, and kept (last STDERR_KEEP bytes) for the crash report.
-    let kept = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let sink = kept.clone();
-    let stderr_done = tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            tracing::warn!(target: "document::helper::stderr", "{line}");
-            let mut kept = sink.lock().unwrap_or_else(|e| e.into_inner());
-            kept.push_str(&line);
-            kept.push('\n');
-            if kept.len() > STDERR_KEEP {
-                let mut cut = kept.len() - STDERR_KEEP;
-                while !kept.is_char_boundary(cut) {
-                    cut += 1;
-                }
-                kept.drain(..cut);
-            }
-        }
-    });
-    Ok(Proc {
-        child,
-        stdin,
-        lines,
-        stderr: kept,
-        stderr_done,
+#[cfg(test)]
+fn fake_reply(mut lines: Vec<String>) -> Result<document_js::Reply, document_js::Error> {
+    let reply = lines
+        .pop()
+        .ok_or_else(|| document_js::Error::Js("the fake produced no output".into()))?;
+    Ok(document_js::Reply {
+        events: lines,
+        reply,
     })
 }
 
@@ -887,58 +698,17 @@ async fn spawn(path: &std::path::Path) -> Result<Proc, Error> {
 mod tests {
     use super::*;
 
-    /// 58 step 14: the helper beside the binary is `theuth-documents-<ver>.exe` on Windows;
-    /// `HelperStatus.found` tested the suffix-less name and read false there.
-    #[test]
-    fn default_helper_path_carries_exe_suffix() {
-        if std::env::var_os("THEUTH_DOCUMENTS_HELPER").is_some_and(|p| !p.is_empty()) {
-            return; // override in effect; the default path is not built
-        }
-        let name = helper_path()
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        // Debug builds may pick the source-tree dev helper instead (suffix-less, by name).
-        assert!(
-            name == format!(
-                "theuth-documents-{}{}",
-                protocol_version(),
-                std::env::consts::EXE_SUFFIX
-            ) || name == "theuth-documents",
-            "{name}"
-        );
-    }
+    /// `Y.encodeStateAsUpdate(new Y.Doc())`.
+    const EMPTY: [u8; 2] = [0, 0];
 
-    /// A `sh` helper: `--version` prints our version; then `body` runs with the request stream on stdin.
-    fn script(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
-        let p = dir.join(name);
-        std::fs::write(
-            &p,
-            format!(
-                "#!/bin/sh\nif [ \"$1\" = --version ]; then echo \"theuth-documents {}\"; exit 0; fi\n{body}\n",
-                protocol_version()
-            ),
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        p
-    }
-
-    /// Echo every request as `{"id":<id>,"ok":true,"result":{"markdown":"x"}}`, preceded by one update event.
-    const ECHO: &str = r#"while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
-  printf '{"ev":"update","doc":"aaaaaaaaaaaaaaaaaaaaaaaaaa","update":"AQID","touched":["b1"],"req":%s,"changed":1,"total":2}\n' "$id"
-  printf '{"id":%s,"ok":true,"result":{"markdown":"x","changed":1,"total":2}}\n' "$id"
-done"#;
-
-    fn helper(path: PathBuf) -> (Helper, mpsc::UnboundedReceiver<HelperEvent>) {
+    fn helper() -> (Helper, mpsc::UnboundedReceiver<HelperEvent>, CancellationToken) {
         let (tx, rx) = mpsc::unbounded_channel();
-        (Helper::new(path, tx, CancellationToken::new()), rx)
+        let token = CancellationToken::new();
+        (
+            Helper::new(PathBuf::new(), tx, token.clone()),
+            rx,
+            token,
+        )
     }
 
     #[test]
@@ -950,137 +720,143 @@ done"#;
         );
     }
 
+    /// The bundle compiled into `t` speaks the protocol `protocol.ts` declares (the old `--version` check).
+    #[test]
+    fn the_embedded_bundle_speaks_our_protocol_version() {
+        let mut js = document_js::DocumentsJs::new(Limits::default()).unwrap();
+        assert_eq!(
+            js.version().unwrap(),
+            format!("theuth-documents {}", protocol_version())
+        );
+    }
+
     #[tokio::test]
     async fn requests_pipeline_and_events_arrive_before_the_reply() {
-        let dir = tempfile::tempdir().unwrap();
-        let (h, mut ev) = helper(script(dir.path(), "ok.sh", ECHO));
-        let doc = DocId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
-        let a = h.markdown(&doc);
-        let b = h.import(&doc, "md", ImportMode::Diff, true);
-        let import_id = b.id();
-        let (a, b) = tokio::join!(a, b.import_result());
-        assert_eq!(a.unwrap(), "x");
-        let r = b.unwrap();
-        assert_eq!((r.changed, r.total), (1, 2));
-        // The echo emits one event per request; the import's names the import request.
-        let mut seen = Vec::new();
-        for _ in 0..2 {
-            match ev.recv().await.unwrap() {
-                HelperEvent::Update {
-                    update,
-                    touched,
-                    req,
-                    ratio,
-                    ..
-                } => {
-                    assert_eq!(update, vec![1, 2, 3]);
-                    assert_eq!(touched, vec!["b1"]);
-                    assert_eq!(ratio, Some((1, 2)));
-                    seen.push(req);
-                }
-                other => panic!("{other:?}"),
-            }
-        }
-        assert!(seen.contains(&import_id), "{seen:?} lacks {import_id}");
-    }
-
-    #[tokio::test]
-    async fn wrong_version_and_missing_binary() {
-        let dir = tempfile::tempdir().unwrap();
-        let other = dir.path().join("other.sh");
-        std::fs::write(&other, "#!/bin/sh\necho 'theuth-documents 0.0'\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        let (h, _ev) = helper(other);
+        let (h, mut ev, _t) = helper();
         let doc = DocId::new();
-        assert_eq!(
-            h.markdown(&doc).await.unwrap_err(),
-            Error::Version {
-                expected: protocol_version().into(),
-                found: "0.0".into()
+        h.open(&doc, &EMPTY, "document-store").await.unwrap();
+        let a = h.import(&doc, "# One\n\npara", ImportMode::Replace, false);
+        let import_id = a.id();
+        let b = h.markdown(&doc);
+        // Both are queued before either is awaited; the import's update is delivered before its reply.
+        let (a, b) = tokio::join!(a.import_result(), b);
+        let r = a.unwrap();
+        assert_eq!((r.changed, r.total), (2, 2));
+        assert_eq!(b.unwrap(), "# One\n\npara\n");
+        match ev.try_recv().expect("update before the reply") {
+            HelperEvent::Update {
+                doc: d,
+                update,
+                touched,
+                req,
+                ratio,
+            } => {
+                assert_eq!(d, doc);
+                assert!(!update.is_empty());
+                assert_eq!(touched.len(), 2);
+                assert_eq!(req, import_id);
+                assert_eq!(ratio, Some((2, 2)));
             }
-        );
-        let (h, _ev) = helper(dir.path().join("nope"));
-        assert!(matches!(
-            h.markdown(&doc).await.unwrap_err(),
-            Error::Missing(_)
-        ));
-    }
-
-    #[tokio::test]
-    async fn a_handshake_failure_carries_the_stderr() {
-        let dir = tempfile::tempdir().unwrap();
-        let bad = dir.path().join("bad.sh");
-        std::fs::write(
-            &bad,
-            "#!/bin/sh\necho 'ENOENT: no such file default-stylesheet.css' >&2\nexit 1\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        let (h, _ev) = helper(bad);
-        match h.markdown(&DocId::new()).await.unwrap_err() {
-            Error::Crashed(e) => assert!(e.contains("default-stylesheet.css"), "{e}"),
             other => panic!("{other:?}"),
         }
+        let outline = h.outline(&doc, None).await.unwrap();
+        assert_eq!(outline.blocks.len(), 2);
+        let e = h
+            .edit(
+                &doc,
+                &[Edit::Delete {
+                    blocks: vec!["nope".into()],
+                }],
+            )
+            .edit_result()
+            .await
+            .unwrap_err();
         assert!(
-            matches!(helper_status().process, HelperProcess::Crashed { stderr } if stderr.contains("ENOENT"))
+            matches!(EditError::from_helper(&e), EditError::UnknownBlock { .. }),
+            "{e}"
         );
     }
 
     #[tokio::test]
-    async fn error_replies_and_a_crash_fail_the_request_then_restart() {
-        let dir = tempfile::tempdir().unwrap();
-        let (h, mut ev) = helper(script(
-            dir.path(),
-            "flaky.sh",
-            r#"IFS= read -r line
-id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
-printf '{"id":%s,"ok":false,"error":"nope"}\n' "$id"
-IFS= read -r line
-echo boom >&2
-exit 3"#,
-        ));
-        let doc = DocId::new();
-        assert_eq!(
-            h.markdown(&doc).await.unwrap_err(),
-            Error::Protocol("nope".into())
-        );
-        match h.markdown(&doc).await.unwrap_err() {
-            Error::Crashed(e) => assert!(e.contains("exit status: 3") && e.contains("boom"), "{e}"),
-            other => panic!("{other:?}"),
-        }
-        // While it is down, requests fail at once with the same failure instead of waiting for the respawn.
-        let t = Instant::now();
-        match h.markdown(&doc).await.unwrap_err() {
-            Error::Crashed(e) => assert!(e.contains("boom"), "{e}"),
-            other => panic!("{other:?}"),
-        }
-        assert!(t.elapsed() < BACKOFF_MIN, "{:?}", t.elapsed());
-        // The child is respawned after the backoff and the actor is told.
-        assert!(matches!(ev.recv().await.unwrap(), HelperEvent::Restarted));
-        assert_eq!(
-            h.markdown(&doc).await.unwrap_err(),
-            Error::Protocol("nope".into())
-        );
-    }
-
-    #[tokio::test]
-    async fn shutdown_kills_the_child() {
-        let dir = tempfile::tempdir().unwrap();
-        let (tx, _rx) = mpsc::unbounded_channel();
+    async fn a_timeout_fails_the_request_then_restarts_and_documents_reopen() {
+        let (tx, mut ev) = mpsc::unbounded_channel();
         let token = CancellationToken::new();
-        let h = Helper::new(script(dir.path(), "ok.sh", ECHO), tx, token.clone());
+        // A runtime of our own with a short deadline, behind the same forwarder/restart plumbing as `new`.
+        let docs = DocumentsThread::new(
+            Limits {
+                deadline: Duration::from_millis(1500),
+                ..Limits::default()
+            },
+            token.clone(),
+        );
+        tokio::spawn(restarts(docs.subscribe(), tx.clone(), token.clone()));
+        let h = Helper::with_backend(Backend::Js(docs.clone()), tx);
         let doc = DocId::new();
+        h.open(&doc, &EMPTY, "document-store").await.unwrap();
+        h.import(&doc, "before", ImportMode::Replace, false)
+            .import_result()
+            .await
+            .unwrap();
+        while ev.try_recv().is_ok() {}
+        let hang = docs.eval_raw("for (;;) {}".into());
+        let queued = h.request("markdown", &doc, json!({}));
+        assert_eq!(hang.await, Err(document_js::Error::Timeout));
+        assert_eq!(queued.await, Err(Error::Timeout));
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(10), ev.recv())
+                .await
+                .unwrap(),
+            Some(HelperEvent::Restarted)
+        ));
+        // The mirror died with the runtime; reopened from state, it is readable again.
+        assert!(matches!(h.markdown(&doc).await, Err(Error::Protocol(m)) if m.contains("not open")));
+        h.open(&doc, &EMPTY, "document-store").await.unwrap();
+        h.import(&doc, "after", ImportMode::Replace, false)
+            .import_result()
+            .await
+            .unwrap();
+        assert_eq!(h.markdown(&doc).await.unwrap(), "after\n");
+    }
+
+    #[tokio::test]
+    async fn a_panic_on_the_runtime_thread_is_a_crash_then_a_restart() {
+        let (tx, mut ev) = mpsc::unbounded_channel();
+        let token = CancellationToken::new();
+        let docs = DocumentsThread::new(Limits::default(), token.clone());
+        tokio::spawn(restarts(docs.subscribe(), tx.clone(), token.clone()));
+        let h = Helper::with_backend(Backend::Js(docs.clone()), tx);
+        let doc = DocId::new();
+        h.open(&doc, &EMPTY, "document-store").await.unwrap();
+        let panicked = docs.panic_on_thread().await;
+        assert!(matches!(panicked, Err(document_js::Error::Crashed(_))));
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(10), ev.recv())
+                .await
+                .unwrap(),
+            Some(HelperEvent::Restarted)
+        ));
+        h.open(&doc, &EMPTY, "document-store").await.unwrap();
         assert!(h.markdown(&doc).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_oversized_request_is_refused_before_the_runtime() {
+        let (h, _ev, _t) = helper();
+        let doc = DocId::new();
+        let big = "x".repeat(MAX_LINE);
+        match h.import(&doc, &big, ImportMode::Replace, false).await {
+            Err(Error::Protocol(m)) => assert!(m.contains("the helper accepts"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_stops_the_runtime() {
+        let (h, _ev, token) = helper();
+        let doc = DocId::new();
+        h.open(&doc, &EMPTY, "document-store").await.unwrap();
         token.cancel();
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(matches!(
             h.markdown(&doc).await.unwrap_err(),
             Error::Crashed(_)

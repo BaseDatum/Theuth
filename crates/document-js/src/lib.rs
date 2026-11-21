@@ -26,7 +26,7 @@ mod tests;
 
 use std::time::Duration;
 
-pub use runtime::DocumentsJs;
+pub use runtime::{DocumentsJs, init_platform};
 pub use thread::{DocumentsThread, Ticket};
 
 /// The embedded bundle: `just documents-bundle` rebuilds it from `packages/documents` (`scripts/build-inproc.ts`)

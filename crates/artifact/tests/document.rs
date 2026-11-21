@@ -58,10 +58,6 @@ async fn versions(state: &State, session: SessionId) -> Vec<artifact::Artifact> 
 async fn show_twice_then_edit_is_three_versions_of_one_document() {
     let _serial = SERIAL.lock().await;
     let bin = helper::helper_path();
-    if !bin.is_file() {
-        eprintln!("skipped: documents helper not built at {}", bin.display());
-        return;
-    }
     let dir = tempfile::tempdir().unwrap();
     let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
     let docs = start_documents(&rt, &bin).await;
@@ -234,10 +230,6 @@ async fn markdown_export_carries_cell_outputs_and_run_lines() {
     }
     let _serial = SERIAL.lock().await;
     let bin = helper::helper_path();
-    if !bin.is_file() {
-        eprintln!("skipped: documents helper not built at {}", bin.display());
-        return;
-    }
     document::set_run_annotations(Arc::new(Hook));
     let dir = tempfile::tempdir().unwrap();
     let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
