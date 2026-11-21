@@ -92,7 +92,13 @@ All run with `CARGO_TARGET_DIR=<worktree>/target CARGO_BUILD_JOBS=4 THEUTH_DOCUM
 
 (b) `cargo test --offline -p artifact --test document --test read` (lock held 18:46–18:52, after ~25 min waiting on another session): `test result: ok. 2 passed; 0 failed` (document), `test result: ok. 7 passed; 0 failed` (read).
 
-RESULTS_CD
+(c) `cargo check --offline -p theuth`: the first two attempts failed in third-party build scripts because the seeded `target/` held Swift module caches from another checkout (`apple-metal`, then `screencapturekit`: "PCH was compiled with module cache path '/Users/sky/Develop/skymoore/theuth/target/…'"). I removed `target/debug/build/*/out/swift-build*`; no code change. Third run (19:07–19:08): `Finished dev profile … in 53.64s`, exit 0. Every `Helper::new` call site compiles.
+
+(d) `cargo clippy --offline -p document --all-targets` (19:09): failed before reaching `document`, on a pre-existing lint in a dependency I did not touch: `crates/voice/src/history/mod.rs:465` `clippy::chunks_exact_to_as_chunks`, new in clippy 1.99 and denied by the workspace `clippy::all`.
+
+Re-run as `cargo clippy --offline -p document --all-targets -- -A clippy::chunks_exact_to_as_chunks` (19:17): one error in my code, `clippy::type_complexity` on the test-only `Backend::Fake(Arc<dyn Fn…>)`. I fixed it with the `Respond` type alias. A second run at 19:18 was wasted: it started before the fix landed.
+
+**The final clippy run after the fix did NOT run.** Its lock waiter was still queued behind another session at 19:22, and I stopped it to report within budget. Still to run: `cargo clippy --offline -p document --all-targets -- -A clippy::chunks_exact_to_as_chunks`.
 
 ## Deviations
 

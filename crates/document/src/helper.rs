@@ -364,8 +364,12 @@ type Answer = oneshot::Sender<Result<Value, Error>>;
 enum Backend {
     Js(DocumentsThread),
     #[cfg(test)]
-    Fake(Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>),
+    Fake(Respond),
 }
+
+/// A canned responder: request line → output lines (events first, reply last).
+#[cfg(test)]
+type Respond = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
 
 /// Handle to the helper; cheap to clone. The runtime starts on the first request.
 #[derive(Clone)]
