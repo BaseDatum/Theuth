@@ -108,6 +108,31 @@ UI hold (19:05:38–19:06:08), in `crates/desktop/ui`, node_modules APFS-cloned 
 `bun install`): `bun run check` rc 0; `bun run test` rc 0 — 381 files, 2728 tests passed; `bun run build` rc 0 (only
 the existing > 500 kB chunk warning).
 
+## Review findings E1–E7 (orchestrator request, 18:14)
+
+- **E1 (external ACP approval dismissed → reject option): not changed; owner decision.** Confirmed by reading:
+  `tools/src/registry.rs` `ExternalApproval` maps the `ApprovalResolved` to a bare `Decision`
+  (`map_or(Deny, |r| r.decision)`, `dismissed` dropped); `agent/src/acp_child.rs` `ask_permission` → `outcome()`
+  answers `Deny` with the harness's `RejectOnce`/`RejectAlways` option. The only alternative ACP offers is
+  `RequestPermissionOutcome::Cancelled`, documented in `agent-client-protocol-schema` 1.13
+  (`src/v1/client.rs:2394`) as "the prompt turn was cancelled before the user responded" — the answer a client MUST
+  give after `session/cancel`; acp_child itself sends it only when the turn's cancel token fires. A harness
+  following the spec therefore treats `cancelled` as the end of its turn, which would make a dismissal cancel the
+  external agent's turn (the opposite of "leave it to the agent"). Not verified against a harness's own code (none
+  in the tree). `PermissionOptionKind` has only allow/reject kinds and `Selected` carries no text, so the protocol
+  has no channel for the neutral "not run, the user left this to you" wording. Per the instruction, the reject
+  option stays; the owner should decide between "reject (harness may report it as denied)" and "cancelled
+  (harness ends its turn)".
+- **E2:** done as gap 4a (commit `9ec8f976e`), by filtering `left_to_agent:` out of the disposition `episode_closing`
+  reads rather than by a new event kind; the only reader of the last disposition is `episode_closing`
+  (`roster::desk::continued` uses `any`). The test covers the reviewer's scenario (agent said `continuing`, decision
+  escalated with a live checkout, left live, episode closes → task stays `doing`, no `no continuation`, no wake).
+  The event-kind change was not made.
+- **E3–E7: not done** (time): parked left decision stays invisible in Attention and the Escalate/AwaitDecision race is
+  open (E3); Signal/Slack/Telegram cards still render a dismissal as deny / "answered elsewhere" (E4); the double
+  card's title still carries the countdown (E5); `score.rs` u32 arithmetic unchanged (E6); `RescoreTick` always
+  gathers (E7).
+
 ## Not done / not verified
 
 - Nothing ran against a live engine; nothing was seen in the Tauri app (C's visual pass was headless Chromium on the
