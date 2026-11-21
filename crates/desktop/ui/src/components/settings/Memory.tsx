@@ -254,7 +254,7 @@ export function Memory({ focus = null }: { focus?: string | null }) {
           label={
             <>
               Kept after a trim · <span className="tabular-nums">{fixed ? `${lowUi} KB` : `${lowUi} %`}</span>
-              {resolvedTail && <span className="text-fg-tertiary tabular-nums"> · ≈ {Math.round(resolvedTail.low / 1000)} KB</span>}
+              {resolvedTail && <span className="text-fg-tertiary tabular-nums">{` · ≈ ${Math.round(resolvedTail.low / 1000)} KB`}</span>}
             </>
           }
           description={
@@ -279,7 +279,7 @@ export function Memory({ focus = null }: { focus?: string | null }) {
           label={
             <>
               Trim at · <span className="tabular-nums">{fixed ? `${highUi} KB` : `${highUi} %`}</span>
-              {resolvedTail && <span className="text-fg-tertiary tabular-nums"> · ≈ {Math.round(resolvedTail.high / 1000)} KB</span>}
+              {resolvedTail && <span className="text-fg-tertiary tabular-nums">{` · ≈ ${Math.round(resolvedTail.high / 1000)} KB`}</span>}
             </>
           }
           description={

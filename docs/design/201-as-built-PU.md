@@ -44,3 +44,9 @@ The UI of 201 §12.2 / D15 over the wire fields PC landed. TypeScript/React only
 - Fixed-mode check now asserts the tail pair's percent labels are absent (Slack and Start merging at are percent in every mode). Scaled-mode check asserts the KB labels are absent.
 - Scaled preview: a server render reads zustand's `getInitialState`, so the test points it at `getState` while setting `info.default_model` (the repo's existing pattern), then restores it.
 - Suggestions gate: the test extracts the switch's `<button>` tag and asserts `disabled=""` with the ledger off and its absence with the ledger on, so attribute order no longer matters.
+
+## Verification
+
+- `bun run check`: no errors in any PU file. The run fails on pre-existing `@openuidev/*` / `packages/apps` errors (missing modules, implicit any), all outside this phase's files.
+- `bun run test -- src/components/settings/Memory.test.ts src/components/chat/MemoryPanel.test.ts src/components/agents/RuntimeAccessFields.test.ts`: 3 files, 34 tests passed.
+- `Memory.test.ts` overrides `info` through a `vi.mock('@/store/connection')` hook, because a server render reads zustand's initial state.
