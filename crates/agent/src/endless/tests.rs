@@ -1200,7 +1200,9 @@ async fn queued_merge_does_not_hold_back_the_frontier() {
     };
     let (_dir, endless, store, id) = harness_for(cfg, p.clone()).await;
     let gate = super::pump::gate_for_tests(&endless.inner, "ep");
-    let held = gate.acquire(1, runtime::SessionId(uuid::Uuid::nil())).await;
+    let held = gate
+        .acquire(1, Some(runtime::SessionId(uuid::Uuid::nil())))
+        .await;
     store
         .set_session_memory(id, MemoryMode::Endless)
         .await
@@ -3405,7 +3407,9 @@ async fn a_local_describer_waits_for_the_gate() {
         .await
         .unwrap();
     let gate = super::pump::gate_for_tests(&endless.inner, "ep");
-    let held = gate.acquire(1, runtime::SessionId(uuid::Uuid::nil())).await;
+    let held = gate
+        .acquire(1, Some(runtime::SessionId(uuid::Uuid::nil())))
+        .await;
     let job = endless
         .describe_left(id, 0, i64::MAX, None)
         .expect("a description job");
@@ -3823,4 +3827,84 @@ async fn a_zoomed_line_gets_one_generation_of_grace() {
         (false, false),
         "age_by_use off"
     );
+}
+
+/// R2-1: a paused session whose long user messages (final, free lines)
+/// overflow the view gets deterministic draft merges — merged lines, never
+/// the "older lines folded to fit the view" prefix.
+#[tokio::test]
+async fn paused_long_user_messages_render_merged_lines() {
+    let p = Probe::new("fake/a", Act::Hang);
+    let (_dir, endless, store, id) = harness_for(
+        EndlessConfig {
+            view_bytes: 4_000,
+            ..cfg_p1(16)
+        },
+        p.clone(),
+    )
+    .await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    for k in 0..64 {
+        let text = format!(
+            "user note {k}: please check /srv/app/config_{k}.yaml {}",
+            "and keep the rollout notes in order ".repeat(16)
+        );
+        store.append(id, &ChatMessage::user(text)).await.unwrap();
+    }
+    endless.attach(id, attached()).await.unwrap();
+    endless.pause(id, true).await.unwrap();
+    eventually("merged lines and no folded prefix", || async {
+        let view = endless.memory(id).await.unwrap().view;
+        view.iter().any(|l| l.n > 1 && l.built)
+            && view
+                .iter()
+                .all(|l| !l.text.contains("older lines folded to fit the view"))
+    })
+    .await;
+    let drafts = store
+        .endless_nodes(id)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|n| n.l > 0)
+        .any(|n| quality(&n) == super::tree::Quality::Draft);
+    assert!(drafts, "draft merges, refined later");
+}
+
+/// R2-3: a drafting batch refused for one unit's content (a hard 400) sends
+/// its units alone next time; the good units get their model lines.
+#[tokio::test]
+async fn a_batch_refused_for_one_unit_runs_its_units_alone() {
+    let (_dir, endless, store, id) = harness_for(
+        EndlessConfig {
+            view_bytes: 16_000,
+            retry_secs: 0,
+            batch_units: 16,
+            ..EndlessConfig::default()
+        },
+        Picky::new("400 Bad Request: content filter refused the input", false),
+    )
+    .await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    // The bad unit is last: an earlier unit's draft is in a later call's
+    // context, so `BAD` there would fail its neighbours too.
+    seed_many(&store, id, 4, &[3]).await;
+    endless.attach(id, attached()).await.unwrap();
+    eventually("units 0..3 refined alone", || async {
+        let nodes = level0(&store, id).await;
+        (0..3).all(|i| nodes.iter().any(|n| n.i == i && n.model.is_some()))
+    })
+    .await;
+    let bad = level0(&store, id)
+        .await
+        .into_iter()
+        .find(|n| n.i == 3)
+        .unwrap();
+    assert!(bad.model.is_none(), "{bad:?}");
 }

@@ -216,6 +216,11 @@ impl GateState {
         {
             return Some(*oldest);
         }
+        // R2-5: while a meeting's call (no owner) waits, the line is the
+        // pre-201 one — no session run reorders it.
+        if self.waiting.iter().any(|k| !self.owner.contains_key(&k.1)) {
+            return Some(first);
+        }
         let same = |k: &WaitKey| self.last.is_some() && self.owner.get(&k.1) == self.last.as_ref();
         let pick = if self.run < RUN_MAX {
             self.waiting.iter().find(|k| k.0 == first.0 && same(k))
@@ -271,13 +276,20 @@ impl Gate {
     /// Wait for a permit; higher `priority` is served first, the oldest
     /// waiter every [`AGE_EVERY`]th grant, `owner`'s run kept (201 P3).
     /// Cancel-safe.
-    pub(crate) async fn acquire(self: &Arc<Self>, priority: u8, owner: SessionId) -> Permit {
+    /// R2-5: `owner` is `None` for a meeting session (no run rule).
+    pub(crate) async fn acquire(
+        self: &Arc<Self>,
+        priority: u8,
+        owner: Option<SessionId>,
+    ) -> Permit {
         let key = {
             let mut s = self.state.lock();
             let key = (Reverse(priority), s.next);
             s.next += 1;
             s.waiting.insert(key);
-            s.owner.insert(key.1, owner);
+            if let Some(o) = owner {
+                s.owner.insert(key.1, o);
+            }
             key
         };
         let _ticket = Ticket { gate: self, key };
@@ -292,11 +304,11 @@ impl Gate {
                     s.owner.remove(&key.1);
                     s.free -= 1;
                     s.grants += 1;
-                    if s.last == Some(owner) {
+                    if owner.is_some() && s.last == owner {
                         s.run += 1;
                     } else {
-                        s.last = Some(owner);
-                        s.run = 1;
+                        s.last = owner;
+                        s.run = u32::from(owner.is_some());
                     }
                     if s.free > 0 && !s.waiting.is_empty() {
                         self.freed.notify_waiters();
@@ -1603,12 +1615,13 @@ async fn describe_call(
     image: &genai::chat::Binary,
 ) -> Option<Result<compactor::Reply, String>> {
     let cfg = state.cfg.read().clone();
+    let owner = state.live.lock().drafting().then_some(state.session);
     let _permit = match c.local() {
         Some(endpoint) => Some(
             state
                 .queues
                 .get(&endpoint, cfg.local_jobs)
-                .acquire(0, state.session)
+                .acquire(0, owner)
                 .await,
         ),
         None => None,
@@ -1953,6 +1966,33 @@ fn schedule(state: &Arc<State>) {
             {
                 merges -= 1;
                 work.push(Work::Node(key));
+            } else if drafting {
+                // R2-1: no model merge now (paused, spend-capped, under
+                // `merge_at`, no slot): a deterministic draft merge, marked
+                // for refinement, so the view never falls to the folded
+                // prefix while lines exist. Written only when its text
+                // changes (no rewrite per pass).
+                let (Some(a), Some(b)) =
+                    (live.tree.get(l - 1, 2 * i), live.tree.get(l - 1, 2 * i + 1))
+                else {
+                    continue;
+                };
+                let text = tree::draft_merge(&a.text, &b.text, node_bytes);
+                if live.tree.get(l, i).is_none_or(|p| p.text != text) {
+                    let node = Node {
+                        l,
+                        i,
+                        size: text.len() as u32,
+                        text,
+                        free: false,
+                        model: None,
+                        tries: 0,
+                        mechanical: true,
+                    };
+                    live.put(node.clone());
+                    inline.push(node);
+                }
+                live.stale.insert(key);
             }
         }
         l += 1;
@@ -2350,6 +2390,7 @@ fn spawn_batch(state: Arc<State>, units: Vec<u64>, live: &mut Live) {
             })
             .collect(),
         earlier: live.earlier(live.unit_turn(first), first),
+        drafting: live.drafting(),
     };
     let ctx = ctx_for(&state, live, last_turn);
     let (compactor, cancel) = {
@@ -2537,12 +2578,14 @@ async fn call(
     } = job;
     let local = c.local();
     let cfg = state.cfg.read().clone();
+    // R2-5: a meeting's calls keep the pre-201 queue order (no run rule).
+    let owner = state.live.lock().drafting().then_some(state.session);
     // E9: a local endpoint's engine-wide queue; the wait is never timed.
     let _permit = match &local {
         Some(endpoint) => {
             let gate = state.queues.get(endpoint, cfg.local_jobs);
             tokio::select! {
-                p = gate.acquire(priority, state.session) => Some(p),
+                p = gate.acquire(priority, owner) => Some(p),
                 _ = cancel.cancelled() => return Ok(None),
             }
         }
@@ -2904,8 +2947,20 @@ async fn finish_batch(
             }
         }
         Err(e) => {
+            // R2-3: a drafting batch that failed hard again for another
+            // reason than thinking or an empty reply (one unit's content
+            // may be refused) sends its units alone next time, so one bad
+            // unit cannot hold the others on their drafts.
+            let alone = live.drafting()
+                && keys.len() > 1
+                && hard_failure(&e)
+                && !e.contains("reply on thinking")
+                && !e.contains("compactor returned nothing");
             for key in &keys {
                 record_failure(state, &mut live, *key, &e, model);
+                if alone && live.failed.get(key).is_some_and(|r| r.failures >= 2) {
+                    live.solo.insert(key.1);
+                }
             }
         }
     }
@@ -4645,12 +4700,12 @@ mod tests {
     #[tokio::test]
     async fn local_gate_serves_the_frontier_first() {
         let gate = Gate::new(1);
-        let held = gate.acquire(0, ME).await;
+        let held = gate.acquire(0, Some(ME)).await;
         let order = Arc::new(Mutex::new(Vec::new()));
         let waiter = |name: &'static str, priority: u8| {
             let (gate, order) = (gate.clone(), order.clone());
             tokio::spawn(async move {
-                let _p = gate.acquire(priority, ME).await;
+                let _p = gate.acquire(priority, Some(ME)).await;
                 order.lock().push(name);
                 tokio::task::yield_now().await;
             })
@@ -4658,7 +4713,7 @@ mod tests {
         let gone = {
             let gate = gate.clone();
             tokio::spawn(async move {
-                let _p = gate.acquire(1, ME).await;
+                let _p = gate.acquire(1, Some(ME)).await;
                 unreachable!("aborted before the permit");
             })
         };
@@ -4687,12 +4742,12 @@ mod tests {
     #[tokio::test]
     async fn local_gate_ages_the_oldest_waiter_in() {
         let gate = Gate::new(1);
-        let held = gate.acquire(1, ME).await; // grant 1
+        let held = gate.acquire(1, Some(ME)).await; // grant 1
         let order = Arc::new(Mutex::new(Vec::new()));
         let waiter = |name: &'static str, priority: u8| {
             let (gate, order) = (gate.clone(), order.clone());
             tokio::spawn(async move {
-                let _p = gate.acquire(priority, ME).await;
+                let _p = gate.acquire(priority, Some(ME)).await;
                 order.lock().push(name);
                 tokio::task::yield_now().await;
             })
@@ -4724,9 +4779,9 @@ mod tests {
             SessionId(uuid::Uuid::from_u128(1)),
             SessionId(uuid::Uuid::from_u128(2)),
         );
-        let held = gate.acquire(1, a).await; // a's run: 1
+        let held = gate.acquire(1, Some(a)).await; // a's run: 1
         let order = Arc::new(Mutex::new(Vec::new()));
-        let waiter = |name: String, s: SessionId| {
+        let waiter = |name: String, s: Option<SessionId>| {
             let (gate, order) = (gate.clone(), order.clone());
             tokio::spawn(async move {
                 let _p = gate.acquire(1, s).await;
@@ -4734,10 +4789,10 @@ mod tests {
                 tokio::task::yield_now().await;
             })
         };
-        let mut tasks = vec![waiter("b0".into(), b)];
+        let mut tasks = vec![waiter("b0".into(), Some(b))];
         tokio::task::yield_now().await;
         for k in 0..10 {
-            tasks.push(waiter(format!("a{k}"), a));
+            tasks.push(waiter(format!("a{k}"), Some(a)));
             tokio::task::yield_now().await;
         }
         drop(held);
@@ -4750,6 +4805,36 @@ mod tests {
         ]
         .map(String::from)
         .to_vec();
+        assert_eq!(*order.lock(), want);
+    }
+
+    /// R2-5: a meeting's waiter (no owner) is served in the pre-201 order —
+    /// a drafting session's run does not overtake it.
+    #[tokio::test]
+    async fn local_gate_keeps_meeting_calls_in_order() {
+        let gate = Gate::new(1);
+        let a = SessionId(uuid::Uuid::from_u128(1));
+        let held = gate.acquire(1, Some(a)).await;
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let waiter = |name: String, s: Option<SessionId>| {
+            let (gate, order) = (gate.clone(), order.clone());
+            tokio::spawn(async move {
+                let _p = gate.acquire(1, s).await;
+                order.lock().push(name);
+                tokio::task::yield_now().await;
+            })
+        };
+        let mut tasks = vec![waiter("m0".into(), None)];
+        tokio::task::yield_now().await;
+        for k in 0..3 {
+            tasks.push(waiter(format!("a{k}"), Some(a)));
+            tokio::task::yield_now().await;
+        }
+        drop(held);
+        for t in tasks {
+            t.await.unwrap();
+        }
+        let want: Vec<String> = ["m0", "a0", "a1", "a2"].map(String::from).to_vec();
         assert_eq!(*order.lock(), want);
     }
 

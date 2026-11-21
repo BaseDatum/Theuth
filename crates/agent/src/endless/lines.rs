@@ -70,25 +70,61 @@ fn tool_line(text: &str, max: usize) -> String {
     line
 }
 
-/// A line of tool output that reports a failure: `error:` / `error[…]` /
-/// `error ` at its start, or a failure word anywhere (`error_log` is not one).
+/// R2-6: a line of tool output that reports a failure — it STARTS (after
+/// whitespace, timestamp tokens and `[…]` brackets) with an error marker
+/// (`error`, `fatal`, `panicked at`, `traceback`, `exception`, `FAILED`,
+/// `failed:`; a `[ERROR]`-style bracket counts), or it is a non-zero
+/// `exit code` / `exit status` line. Source that merely contains
+/// `Error::new` or `except Exception` is not error output.
 fn is_error(line: &str) -> bool {
-    let l = line.to_ascii_lowercase();
-    let starts = l
-        .strip_prefix("error")
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '[', ' ', '(']));
-    starts
-        || [
-            "error:",
-            " error ",
-            "panicked",
-            " failed",
-            "fatal:",
-            "exception",
-            "traceback",
-        ]
-        .iter()
-        .any(|w| l.contains(w))
+    let mut l = line.trim_start();
+    loop {
+        if let Some(rest) = l.strip_prefix('[')
+            && let Some(end) = rest.find(']')
+        {
+            let tag = rest[..end].trim().to_ascii_lowercase();
+            if ["error", "err", "fatal", "failed", "fail"].contains(&tag.as_str()) {
+                return true;
+            }
+            l = rest[end + 1..].trim_start();
+            continue;
+        }
+        // A timestamp token: starts with a digit, holds `:` or `-`.
+        let tok = l.split_whitespace().next().unwrap_or("");
+        if tok.starts_with(|c: char| c.is_ascii_digit()) && tok.contains([':', '-']) {
+            l = l[tok.len()..].trim_start();
+            continue;
+        }
+        break;
+    }
+    let low = l.to_ascii_lowercase();
+    let marker = |word: &str| {
+        low.strip_prefix(word).is_some_and(|rest| {
+            rest.is_empty()
+                || rest.starts_with([' ', '[', '(', '\t'])
+                || (rest.starts_with(':') && !rest.starts_with("::"))
+        })
+    };
+    if marker("error")
+        || marker("fatal")
+        || marker("traceback")
+        || marker("exception")
+        || l.starts_with("FAILED")
+        || low.starts_with("failed:")
+        || low.starts_with("panicked at")
+        || (low.starts_with("thread '") && low.contains("' panicked at"))
+    {
+        return true;
+    }
+    ["exit code", "exit status"].iter().any(|w| {
+        low.find(w).is_some_and(|at| {
+            low[at + w.len()..]
+                .trim_start_matches(|c: char| !c.is_ascii_digit())
+                .split(|c: char| !c.is_ascii_digit())
+                .next()
+                .is_some_and(|n| !n.is_empty() && n.trim_start_matches('0') != "")
+        })
+    })
 }
 
 fn error_lines(text: &str) -> Vec<&str> {
@@ -261,6 +297,45 @@ mod tests {
             !needs_model(&unit(Kind::Echo, &"ok\n".repeat(100))),
             "short"
         );
+    }
+
+    /// R2-6: only lines that start with an error marker (or a non-zero
+    /// exit) count; a source read that mentions `Error::new` or
+    /// `except Exception` is a long echo that needs the model.
+    #[test]
+    fn only_error_output_counts_as_error_lines() {
+        for e in [
+            "error[E0308]: mismatched types",
+            "Error: no such file",
+            "ERROR something broke",
+            "  fatal: not a git repository",
+            "2026-11-21T10:00:00Z [ERROR] db down",
+            "12:00:01 error: timeout",
+            "thread 'main' panicked at src/main.rs:3:5:",
+            "Traceback (most recent call last):",
+            "Exception in thread \"main\"",
+            "FAILED tests/test_x.py::test_y",
+            "failed: 3 tests",
+            "Process exited with exit code 2",
+            "error: process didn't exit successfully (exit status: 101)",
+        ] {
+            assert!(is_error(e), "{e}");
+        }
+        for ok in [
+            "    return Err(Error::new(ErrorKind::Other, \"x\"));",
+            "except Exception as e:",
+            "let failed = 0; // the error count",
+            "Error::new(kind)",
+            "exit code 0",
+            "errors = []",
+        ] {
+            assert!(!is_error(ok), "{ok}");
+        }
+        let source =
+            "fn f() -> Result<(), Error> {\n    Err(Error::new(\"bad\"))\n}\nexcept Exception:\n"
+                .repeat(60);
+        assert!(source.len() > ECHO_MODEL_OVER);
+        assert!(needs_model(&unit(Kind::Echo, &source)));
     }
 
     #[test]
