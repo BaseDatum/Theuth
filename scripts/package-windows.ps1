@@ -5,8 +5,8 @@ release-s3.sh. Runs ON the Windows host from the repo root: `just package-window
 `pwsh -NoProfile -File scripts/package-windows.ps1`. Mirrors scripts/package-macos.sh:
 
   1. cargo build --release -p theuth  (daemon sidecar, x86_64-pc-windows-msvc)
-     + packages/apps: bun build --compile -> theuth-app-parser-<hash>.exe (46 S2.1; the same
-       hash / --version / stdin-EOF checks as scripts/app-parser-env.sh)
+     + crates/app-parser-stub: cargo build -> theuth-app-parser-<hash>.exe compatibility stub (46 S2.1; the
+       parser runs in-process, docs/design/apps-inproc-as-built-P1.md; same hash / --version / stdin-EOF checks)
      + packages/documents: bun build --compile -> theuth-documents-<ver>.exe (59 S3.2)
   2. stage all as externalBin: binaries/t-<triple>.exe, binaries/theuth-app-parser-<hash>-<triple>.exe,
      binaries/theuth-documents-<ver>-<triple>.exe (the helpers must sit beside `t.exe` - helper_path -
@@ -148,8 +148,10 @@ Exec 'cargo build --release -p theuth' { cargo build --release -p theuth }
 $T = Join-Path $Root 'target/release/t.exe'
 if (-not (Test-Path $T)) { Fail "$T not produced" }
 
-Write-Host "==> [1/6] building $Helper.exe (bun build --compile)"
-$HelperSrc = Build-Helper 'packages/apps' 'theuth-app-parser'
+Write-Host "==> [1/6] building $Helper.exe (compatibility stub, cargo)"
+Exec 'cargo build -p app-parser-stub' { cargo build --release -p app-parser-stub }
+$HelperSrc = Join-Path $Root 'target/release/theuth-app-parser-stub.exe'
+if (-not (Test-Path $HelperSrc)) { Fail "$HelperSrc not produced" }
 $said = (& $HelperSrc --version 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) { Fail "$HelperSrc --version failed: $said" }
 if ($said -notlike "*$HelperHash*") { Fail "$HelperSrc --version printed '$said', expected library hash $HelperHash (stale build? rerun bun run generate && build:helper)" }

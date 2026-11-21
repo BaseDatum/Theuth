@@ -2,7 +2,8 @@
 # Package theuth.app + theuth.dmg for macOS (jarvis pipeline, stripped).
 #
 #   1. cargo build --release -p theuth  (daemon sidecar, host arch)
-#      + packages/apps: bun build --compile → theuth-app-parser (46 §2.1; scripts/app-parser-env.sh)
+#      + crates/app-parser-stub: cargo build → theuth-app-parser compatibility stub (46 §2.1; the parser
+#        runs in-process, apps-inproc-as-built-P1.md; scripts/app-parser-env.sh)
 #      + packages/documents: bun build --compile → theuth-documents (59 §3.2; same env script)
 #   2. check_sidecar (LC_RPATH /usr/lib/swift + `t --version`; 27 Revision 2026-10-07) and
 #      stage sidecar as binaries/t-<host-triple>
@@ -13,7 +14,8 @@
 #        into Contents/Library/LoginItems — by hand, not `bundle.macOS.files`: the bundler copies those
 #        but never signs them (spike SA §3), and this script's sign order is already manual
 #   4. codesign inside-out (hardened runtime): $THEUTH_SIGN_IDENTITY, else ad-hoc "-"
-#      both helpers get scripts/entitlements-app-parser.plist (Bun JIT); check_sidecar again on
+#      the documents helper gets scripts/entitlements-app-parser.plist (Bun JIT); the app-parser stub
+#      is plain Mach-O (no JIT, no entitlements); check_sidecar again on
 #      the signed sidecar (library validation must still load the system Swift runtime)
 #   5. hdiutil DMG (after signing — Tauri's dmg target would snapshot pre-signature)
 #
@@ -79,7 +81,7 @@ echo "==> [1/5] building theuth (release, $HOST_TRIPLE)"
 MLX_METAL_DIR="$ROOT/target/release/mlx-metal"
 MLX_RS_METAL_PATH="$MLX_METAL_DIR" cargo build --release -p theuth
 
-echo "==> [1/5] building $HELPER (bun build --compile)"
+echo "==> [1/5] building $HELPER (compatibility stub, cargo)"
 build_helper
 
 echo "==> [1/5] building $DOC_HELPER (bun build --compile)"
@@ -158,8 +160,7 @@ TIMESTAMP_FLAG="--timestamp"
 # to the app instead of an orphan bare-binary row.
 codesign --force $TIMESTAMP_FLAG --sign "$IDENTITY" "$APP/Contents/Frameworks/libonnxruntime.dylib"
 codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
-  -i "${BUNDLE_ID}.app-parser" \
-  --entitlements "$HELPER_ENTITLEMENTS" "$APP/Contents/MacOS/$HELPER"
+  -i "${BUNDLE_ID}.app-parser" "$APP/Contents/MacOS/$HELPER"
 check_helper "$APP/Contents/MacOS/$HELPER"
 codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
   -i "${BUNDLE_ID}.documents" \

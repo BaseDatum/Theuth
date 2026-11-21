@@ -442,10 +442,12 @@ fn is_doc_helper_name(name: &str) -> bool {
         .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit() || b == b'.'))
 }
 
-/// Step 3: the payload holds `theuth`, one `theuth-app-parser-<hash>` and at most one
+/// Step 3: the payload holds `theuth`, at most one `theuth-app-parser-<hash>` and at most one
 /// `theuth-documents-<version>` (regular files, nothing else). All land beside `exe` as `<name>.new.<pid>-<nonce>`,
-/// `chmod 755`; the new `theuth` is asked which helper hash it was compiled against
-/// and must name the one shipped beside it; then swap: helper first, then
+/// `chmod 755`; when the payload ships an app-parser entry, the new `theuth` is asked which
+/// hash it was compiled against and must name the one shipped beside it (the entry is a
+/// compatibility stub since the in-process parser, apps-inproc-as-built-P1.md, and optional so a
+/// later release can drop it); then swap: helper first, then
 /// `theuth`, so a `theuth` that exists always has its helper. Same directory, so each
 /// swap is an atomic rename and the running image is untouched (39 §2.2 `ETXTBSY`);
 /// on Windows the running `theuth.exe` goes through `self-replace` (58 §0.5).
@@ -465,9 +467,11 @@ async fn install(tarball: &Path, exe: &Path) -> anyhow::Result<()> {
     let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
     let result = match unpack(tarball, exe, dir, &tag, &mut staged) {
         // `unpack` sorts `t` last.
-        Ok(hash) => probe(&staged[staged.len() - 1].0, &hash)
-            .await
-            .and_then(|()| {
+        Ok(hash) => match &hash {
+            Some(hash) => probe(&staged[staged.len() - 1].0, hash).await,
+            None => Ok(()),
+        }
+        .and_then(|()| {
                 for (new, dest) in &staged {
                     if dest != exe && dest.exists() {
                         let _ = std::fs::remove_file(new);
@@ -520,14 +524,14 @@ async fn probe(new_theuth: &Path, hash: &str) -> anyhow::Result<()> {
 /// Extract the validated entries to `<dest><tag>`, each created fresh
 /// (`create_new`) so the path is provably this install's; `staged` is filled in
 /// commit order (helpers, then `theuth`), including on error so the caller can
-/// clean up. Returns the app parser helper's hash.
+/// clean up. Returns the app parser entry's hash, if the payload has one.
 fn unpack(
     tarball: &Path,
     exe: &Path,
     dir: &Path,
     tag: &str,
     staged: &mut Vec<(PathBuf, PathBuf)>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<Option<String>> {
     let file = std::fs::File::open(tarball).with_context(|| tarball.display().to_string())?;
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
     let mut theuth = false;
@@ -578,15 +582,12 @@ fn unpack(
         drop(file);
         platform::files::set_executable(&new).with_context(|| new.display().to_string())?;
     }
-    let Some(hash) = helper else {
-        anyhow::bail!("tarball has no `{HELPER_PREFIX}<hash>` entry");
-    };
     if !theuth {
         anyhow::bail!("tarball has no `t` entry");
     }
     // Commit order: helper first, `t` last.
     staged.sort_by_key(|(_, dest)| dest == exe);
-    Ok(hash)
+    Ok(helper)
 }
 
 /// The plugin (39 §3.2): registers [`UpdateActor`] as [`UPDATE_ACTOR`]; runs
@@ -872,6 +873,15 @@ mod tests {
             std::fs::read(dir.path().join(&doc_helper)).unwrap(),
             b"docs"
         );
+
+        // A payload without the app-parser entry (a release after the in-process parser drops the stub)
+        // installs without the probe; every helper already beside `t` stays.
+        let not_a_program = b"not a program".to_vec();
+        let tb = tarball(dir.path(), &[file("t", &not_a_program)]);
+        install(&tb, &exe).await.unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), not_a_program);
+        assert_eq!(std::fs::read(dir.path().join(&helper)).unwrap(), b"#!/bin/sh\necho helper\n");
+        assert_eq!(std::fs::read(dir.path().join(&old_helper)).unwrap(), b"old helper");
     }
 
     #[tokio::test]
@@ -895,7 +905,6 @@ mod tests {
                 "t not executable",
                 vec![file("t", b"not a program"), file(&helper, b"h")],
             ),
-            ("no helper", vec![file("t", b"new")]),
             ("no t", vec![file(&helper, b"h")]),
             (
                 "unqualified helper",

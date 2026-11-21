@@ -191,9 +191,10 @@ else
   signed_developer_id "$APP" || fail 2 "ad-hoc build (set THEUTH_SIGN_IDENTITY, rerun just package-macos)"
   for h in "$HELPER" "$DOC_HELPER"; do
     signed_developer_id "$APP/Contents/MacOS/$h" || fail 2 "$h not signed with a Developer ID (rerun just package-macos)"
-    ents="$(codesign -d --entitlements - --xml "$APP/Contents/MacOS/$h" 2>/dev/null)" || true
-    [[ "$ents" == *"com.apple.security.cs.allow-jit"* ]] || fail 2 "$h lacks the JIT entitlement (scripts/entitlements-app-parser.plist)"
   done
+  # The app-parser entry is a plain stub since the in-process parser (apps-inproc-as-built-P1.md): no JIT.
+  ents="$(codesign -d --entitlements - --xml "$APP/Contents/MacOS/$DOC_HELPER" 2>/dev/null)" || true
+  [[ "$ents" == *"com.apple.security.cs.allow-jit"* ]] || fail 2 "$DOC_HELPER lacks the JIT entitlement (scripts/entitlements-app-parser.plist)"
   gate 3 "spctl --assess (notarized)"
   spctl --assess --type execute "$APP" 2>/dev/null || fail 3 "not notarized (just notarize-macos)"
 fi

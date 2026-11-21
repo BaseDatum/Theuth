@@ -2,7 +2,8 @@
 # Package the theuth desktop app for Linux: .deb, .rpm and .AppImage, staged for release-s3.sh.
 #
 #   1. cargo build --release -p theuth  (daemon sidecar, host arch)
-#      + packages/apps: bun build --compile → theuth-app-parser (46 §2.1; scripts/app-parser-env.sh)
+#      + crates/app-parser-stub: cargo build → theuth-app-parser compatibility stub (46 §2.1; the parser
+#        runs in-process, apps-inproc-as-built-P1.md; scripts/app-parser-env.sh)
 #      + packages/documents: bun build --compile → theuth-documents (59 §3.2; same env script)
 #   2. stage all as externalBin: binaries/t-<triple>, binaries/theuth-app-parser-<hash>-<triple>,
 #      binaries/theuth-documents-<ver>-<triple> (the helpers must sit beside `t` — helper_path — so
@@ -120,7 +121,7 @@ just ts-desktop
 echo "==> [1/5] building theuth (release, $HOST_TRIPLE)"
 cargo build --release -p theuth
 
-echo "==> [1/5] building $HELPER (bun build --compile)"
+echo "==> [1/5] building $HELPER (compatibility stub, cargo)"
 build_helper
 
 echo "==> [1/5] building $DOC_HELPER (bun build --compile)"

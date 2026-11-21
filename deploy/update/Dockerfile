@@ -4,8 +4,9 @@
 # The output stage is `FROM scratch` with three files, so `--output type=local` yields
 # `target/linux-out/t`, `target/linux-out/theuth-app-parser-<hash>` and `target/linux-out/theuth-documents-<ver>`.
 #
-# The helper is a `bun build --compile` executable: Bun is pinned by version + sha256 and used
-# at build time only; the output embeds its own runtime, so no Bun/Node on the target box.
+# The app-parser entry is the compatibility stub (crates/app-parser-stub; `t` validates apps in-process,
+# docs/design/apps-inproc-as-built-P1.md), built by cargo with `t`. The documents helper is a
+# `bun build --compile` executable: Bun is pinned by version + sha256 and used at build time only.
 # The hash is packages/apps/generated/library-hash.txt, the value `theuth` embeds (scripts/app-parser-env.sh).
 #
 # Why ubuntu:24.04 and not musl/alpine?
@@ -68,19 +69,12 @@ COPY . /src
 RUN --mount=type=cache,id=theuth-update-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry \
     --mount=type=cache,id=theuth-update-cargo-git-${TARGETARCH},target=/usr/local/cargo/git \
     --mount=type=cache,id=theuth-update-cargo-target-${TARGETARCH},target=/src/target \
-    cargo build --release -p theuth \
+    cargo build --release -p theuth -p app-parser-stub \
  && cp target/release/t /t \
- && /t --version
-
-# Helper: native target (the running bun is the embedded runtime — no cross-target download).
-# Named by the committed library hash; `--version` must echo it and EOF on stdin must exit 0.
-RUN --mount=type=cache,id=theuth-update-bun-${TARGETARCH},target=/root/.bun/install/cache \
-    cd packages/apps \
- && bun install --frozen-lockfile \
- && bun run build:helper \
- && hash="$(tr -d '[:space:]' <generated/library-hash.txt)" \
+ && /t --version \
+ && hash="$(tr -d '[:space:]' <packages/apps/generated/library-hash.txt)" \
  && echo "$hash" | grep -Eqx '[0-9a-f]{64}' \
- && install -m 755 dist/theuth-app-parser "/theuth-app-parser-$hash" \
+ && install -m 755 target/release/theuth-app-parser-stub "/theuth-app-parser-$hash" \
  && "/theuth-app-parser-$hash" --version | grep -q "$hash" \
  && printf '' | "/theuth-app-parser-$hash"
 

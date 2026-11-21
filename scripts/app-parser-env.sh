@@ -1,14 +1,15 @@
 # shellcheck shell=bash
 # Source from packaging scripts after `cd "$ROOT"`:  source "$ROOT/scripts/app-parser-env.sh"
 #
-# Both bun-compiled helpers that ship beside `theuth`:
+# The files that ship beside `theuth`:
 #
-# The app parser helper (design doc 46 §2.1) ships beside `theuth` as
-# `theuth-app-parser-<library sha256>`: one immutable file per library hash, so an
-# update can drop the new helper next to the old one before swapping `theuth`, and
-# an older `theuth` still running keeps finding its own. The hash is the committed
-# `packages/apps/generated/library-hash.txt`, the value `theuth` and the helper both
-# embed at build time; the updater accepts only `theuth-app-parser-[0-9a-f]{64}`.
+# The app parser entry (design doc 46 §2.1; apps-inproc-as-built-P1.md) ships beside `theuth` as
+# `theuth-app-parser-<library sha256>`. `theuth` validates apps in-process (crate app-js) and never
+# runs it: since the in-process parser it is a tiny compatibility stub (crates/app-parser-stub,
+# `cargo build`, no Bun) that prints the hash for `--version`, kept only because installed
+# updaters refuse a payload without exactly one `theuth-app-parser-[0-9a-f]{64}` entry. The hash is
+# the committed `packages/apps/generated/library-hash.txt`, the value `theuth` and the stub both
+# embed at build time. A later release may drop the entry once no supported updater requires it.
 #
 # The documents helper (design doc 59 §3.2) ships as `theuth-documents-<protocol version>`
 # (`crates/document/src/helper.rs::helper_path`), the version being PROTOCOL_VERSION of
@@ -17,7 +18,7 @@
 #
 # Sets: HELPER_HASH     64 lowercase hex
 #       HELPER          theuth-app-parser-$HELPER_HASH
-#       HELPER_SRC      packages/apps/dist/theuth-app-parser  (output of `bun run build:helper`)
+#       HELPER_SRC      target/release/theuth-app-parser-stub  (output of `cargo build --release -p app-parser-stub`)
 #       DOC_VERSION     e.g. 59.5
 #       DOC_HELPER      theuth-documents-$DOC_VERSION
 #       DOC_HELPER_SRC  packages/documents/dist/theuth-documents  (output of `bun run build:helper`)
@@ -25,19 +26,13 @@ HELPER_HASH="$(tr -d '[:space:]' <packages/apps/generated/library-hash.txt)"
 [[ "$HELPER_HASH" =~ ^[0-9a-f]{64}$ ]] \
   || { echo "error: packages/apps/generated/library-hash.txt is not a sha256 hex (got '$HELPER_HASH'; run bun run generate in packages/apps)" >&2; exit 1; }
 HELPER="theuth-app-parser-$HELPER_HASH"
-HELPER_SRC="packages/apps/dist/theuth-app-parser"
+HELPER_SRC="target/release/theuth-app-parser-stub"
 
-# build_helper: standalone `bun build --compile` executable for the host, no runtime Bun/Node.
-# THEUTH_SKIP_BUN_INSTALL=1 skips `bun install`.
+# build_helper: the compatibility stub for the host (cargo, no Bun). Cargo honours CARGO_TARGET_DIR;
+# the stub lands in target/release unless the caller overrides HELPER_SRC accordingly.
 build_helper() {
-  command -v bun >/dev/null 2>&1 || { echo "error: bun required to build $HELPER (brew install oven-sh/bun/bun)" >&2; exit 1; }
-  (
-    cd packages/apps
-    export OPENUI_TELEMETRY_DISABLED=1 DO_NOT_TRACK=1
-    [[ "${THEUTH_SKIP_BUN_INSTALL:-0}" == "1" ]] || bun install --frozen-lockfile
-    bun run build:helper
-  )
-  [[ -x "$HELPER_SRC" ]] || { echo "error: $HELPER_SRC not produced by bun run build:helper" >&2; exit 1; }
+  cargo build --release -p app-parser-stub
+  [[ -x "$HELPER_SRC" ]] || { echo "error: $HELPER_SRC not produced by cargo build --release -p app-parser-stub" >&2; exit 1; }
   check_helper "$HELPER_SRC"
 }
 
