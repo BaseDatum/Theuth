@@ -96,6 +96,9 @@ pub struct SecretInfo {
     pub versions: Vec<VersionInfo>,
     /// `created` of the current version.
     pub updated: String,
+    /// When the current version expires and the secret is deleted (RFC 3339 UTC); `None` = never.
+    #[serde(default)]
+    pub expires: Option<String>,
 }
 
 /// `secret_list` / `list_secrets` result.
@@ -272,6 +275,9 @@ struct Version {
     /// `updated_ms` of the row (183 W-36: the Unpair preview's window).
     #[serde(default)]
     ms: u64,
+    /// The row's `expires_ms`: set by the write that made this version.
+    #[serde(default)]
+    expires_ms: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -332,6 +338,8 @@ pub struct Vault {
     keylock: tokio::sync::Mutex<()>,
     key_store: &'static str,
     inner: RwLock<Inner>,
+    /// Bumped by every [`Vault::refresh`]: the expiry sweeper re-arms on it.
+    changed: tokio::sync::watch::Sender<u64>,
 }
 
 impl std::fmt::Debug for Vault {
@@ -393,6 +401,7 @@ impl Vault {
                 entries: BTreeMap::new(),
                 scrubber: None,
             }),
+            changed: tokio::sync::watch::Sender::new(0),
         };
         vault.refresh().await?;
         vault.migrate_legacy(&data_dir.join(LEGACY_FILE)).await?;
@@ -571,6 +580,7 @@ impl Vault {
                 created: rfc3339(r.updated_ms),
                 source: r.source,
                 ms: r.updated_ms,
+                expires_ms: r.expires_ms,
             });
         }
         drop(prev);
@@ -580,6 +590,8 @@ impl Vault {
         let mut g = self.inner.write().unwrap_or_else(PoisonError::into_inner);
         g.scrubber = scrubber(&entries);
         g.entries = entries;
+        drop(g);
+        self.changed.send_modify(|n| *n = n.wrapping_add(1));
         Ok(())
     }
 
@@ -620,7 +632,8 @@ impl Vault {
 
     /// Push a new version (`v` monotonic per name, ≤ [`KEEP`] kept). The same
     /// value as the current version returns the current info and writes
-    /// nothing. `note: None` keeps the old note (`""` for a new name).
+    /// nothing. `note: None` keeps the old note (`""` for a new name). The new
+    /// version never expires: a plain replace clears an expiry an earlier write set.
     pub async fn set(
         &self,
         name: &str,
@@ -628,14 +641,63 @@ impl Vault {
         note: Option<&str>,
         source: &str,
     ) -> Result<SecretInfo, String> {
+        self.set_expiring(name, value, note, source, None).await
+    }
+
+    /// [`Vault::set`] whose new version expires at `expires_ms` (absolute Unix ms;
+    /// `None` = never): the sweeper then deletes the name, and a placeholder for it
+    /// fails from that moment. The same value with a different expiry is a new version.
+    pub async fn set_expiring(
+        &self,
+        name: &str,
+        value: &str,
+        note: Option<&str>,
+        source: &str,
+        expires_ms: Option<u64>,
+    ) -> Result<SecretInfo, String> {
         if !valid_name(name) {
             return Err(format!(
                 "invalid secret name {name:?}; names are [A-Za-z0-9_.-]{{1,64}}"
             ));
         }
-        self.write(name, value, note, source, None)
+        self.write(name, value, note, source, None, expires_ms)
             .await?
             .ok_or_else(|| format!("{name}: concurrent write; retry"))
+    }
+
+    /// The current version's expiry (absolute Unix ms), backend rows included.
+    pub fn expires_ms(&self, name: &str) -> Option<u64> {
+        self.read().entries.get(name)?.versions.first()?.expires_ms
+    }
+
+    /// The soonest expiry of any secret; `None` when nothing expires.
+    pub fn next_expiry(&self) -> Option<u64> {
+        self.read()
+            .entries
+            .values()
+            .filter_map(|e| e.versions.first()?.expires_ms)
+            .min()
+    }
+
+    /// Names whose current version expired at or before `now_ms`.
+    pub fn expired(&self, now_ms: u64) -> Vec<String> {
+        self.read()
+            .entries
+            .iter()
+            .filter(|(_, e)| {
+                e.versions
+                    .first()
+                    .and_then(|v| v.expires_ms)
+                    .is_some_and(|t| t <= now_ms)
+            })
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
+
+    /// A receiver that sees every [`Vault::refresh`] (own writes, a peer's rows): the
+    /// expiry sweeper re-arms its timer on it.
+    pub fn watch_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changed.subscribe()
     }
 
     /// [`Vault::set`] only if the current version is `expected` (`None` = the
@@ -651,7 +713,7 @@ impl Vault {
         if !writable_name(name) {
             return Err(format!("invalid secret name {name:?}"));
         }
-        self.write(name, value, None, source, Some(expected)).await
+        self.write(name, value, None, source, Some(expected), None).await
     }
 
     /// Copy version `back` (1..=4) to the top as a new version, source `restore vN`.
@@ -671,18 +733,48 @@ impl Vault {
             (old.value.clone(), format!("restore v{}", old.v))
         };
         // A restore always writes: the same-value short cut is skipped by design.
-        self.write_row(name, &value, None, &source, None, true)
+        self.write_row(name, &value, None, &source, None, None, true)
             .await?
             .ok_or_else(|| format!("{name}: concurrent write; retry"))
     }
 
     /// Remove the name and every version.
     pub async fn delete(&self, name: &str) -> Result<(), String> {
+        self.delete_where(name, None).await.map(|_| ())
+    }
+
+    /// [`Vault::delete`] — the same rows, so the deletion replicates the same way —
+    /// but only while the current version (read inside the transaction) still
+    /// expires at or before `now_ms`: a replace that landed meanwhile keeps the
+    /// secret. `Ok(false)` when it no longer expires or is already gone.
+    pub async fn delete_expired(&self, name: &str, now_ms: u64) -> Result<bool, String> {
+        match self.delete_where(name, Some(now_ms)).await {
+            Err(e) if e == unknown(name) => Ok(false),
+            r => r,
+        }
+    }
+
+    /// One transaction: the pointer and every `vault` row of `name`; with
+    /// `expired_by`, only when the current version's `expires_ms` ≤ it (`Ok(false)` otherwise).
+    async fn delete_where(&self, name: &str, expired_by: Option<u64>) -> Result<bool, String> {
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(|e| e.to_string())?;
+        if let Some(now) = expired_by {
+            let expires: Option<Option<i64>> = sqlx::query_scalar(
+                "SELECT v.expires_ms FROM vault_current c JOIN vault v \
+                 ON v.name = c.name AND v.version = c.version WHERE c.name = ?",
+            )
+            .bind(name)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+            if !expires.flatten().is_some_and(|t| t as u64 <= now) {
+                return Ok(false);
+            }
+        }
         let gone = sqlx::query("DELETE FROM vault_current WHERE name = ?")
             .bind(name)
             .execute(&mut *tx)
@@ -698,7 +790,8 @@ impl Vault {
             .await
             .map_err(|e| e.to_string())?;
         tx.commit().await.map_err(|e| e.to_string())?;
-        self.refresh().await.map_err(|e| format!("{e:#}"))
+        self.refresh().await.map_err(|e| format!("{e:#}"))?;
+        Ok(true)
     }
 
     /// Replace every `{{secret:NAME}}` / `{{secret:NAME:-N}}` in every string
@@ -709,6 +802,7 @@ impl Vault {
         static RE: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(PLACEHOLDER).expect("PLACEHOLDER is a valid regex"));
         let g = self.read();
+        let now = now_ms();
         let mut n = 0;
         strings(args, &mut |s| {
             if !s.contains("{{secret:") {
@@ -717,7 +811,7 @@ impl Vault {
             let mut err = None;
             let out = RE.replace_all(s, |c: &regex::Captures| -> String {
                 let back = c.get(2).map_or(0, |m| m.as_str().parse().unwrap_or(0));
-                match lookup(&g.entries, &c[1], back) {
+                match lookup(&g.entries, &c[1], back, now) {
                     Ok(value) => {
                         n += 1;
                         value.to_owned()
@@ -785,8 +879,9 @@ impl Vault {
         note: Option<&str>,
         source: &str,
         expected: Option<Option<u32>>,
+        expires_ms: Option<u64>,
     ) -> Result<Option<SecretInfo>, String> {
-        self.write_row(name, value, note, source, expected, false)
+        self.write_row(name, value, note, source, expected, expires_ms, false)
             .await
     }
 
@@ -805,6 +900,7 @@ impl Vault {
         note: Option<&str>,
         source: &str,
         expected: Option<Option<u32>>,
+        expires_ms: Option<u64>,
         force: bool,
     ) -> Result<Option<SecretInfo>, String> {
         let e = |e: sqlx::Error| e.to_string();
@@ -815,7 +911,7 @@ impl Vault {
                     e.versions.first().map(|v| v.v),
                     e.versions
                         .first()
-                        .is_some_and(|cur| cur.value.as_str() == value),
+                        .is_some_and(|cur| cur.value.as_str() == value && cur.expires_ms == expires_ms),
                     e.note.clone(),
                 )
             })
@@ -848,7 +944,7 @@ impl Vault {
         let now = now_ms();
         let (key, key_id) = self.current();
         sqlx::query(
-            "INSERT INTO vault (id, name, version, ciphertext, note, source, updated_ms, key_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO vault (id, name, version, ciphertext, note, source, updated_ms, key_id, expires_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(name)
@@ -858,6 +954,7 @@ impl Vault {
         .bind(source)
         .bind(now as i64)
         .bind(&key_id)
+        .bind(expires_ms.map(|t| t as i64))
         .execute(&mut *tx)
         .await
         .map_err(e)?;
@@ -1040,12 +1137,23 @@ fn open_bytes(key: &[u8; 32], aad: &[u8], bytes: &[u8]) -> Option<Zeroizing<Vec<
 }
 
 /// The value `back` versions behind the current, with the placeholder-style error texts.
+/// A secret whose current version expired at or before `now` resolves to nothing, at any
+/// `back`, even before the sweeper deleted it.
 fn lookup<'a>(
     entries: &'a BTreeMap<String, Entry>,
     name: &str,
     back: usize,
+    now: u64,
 ) -> Result<&'a str, String> {
     let e = entries.get(name).ok_or_else(|| unknown(name))?;
+    if let Some(t) = e.versions.first().and_then(|v| v.expires_ms)
+        && t <= now
+    {
+        return Err(format!(
+            "secret {name} expired at {}",
+            crate::expiry::local_time(t)
+        ));
+    }
     e.versions
         .get(back)
         .map(|v| v.value.as_str())
@@ -1074,6 +1182,7 @@ fn info(name: &str, e: &Entry) -> SecretInfo {
             })
             .collect(),
         updated: cur.map(|c| c.created.clone()).unwrap_or_default(),
+        expires: cur.and_then(|c| c.expires_ms).map(crate::expiry::rfc3339),
     }
 }
 
@@ -1758,6 +1867,51 @@ mod tests {
         pump(&ha, &eb).await;
         b.refresh().await.unwrap();
         assert_eq!(list_names(&b), ["slack"]);
+    }
+
+    /// The expiry rides its `vault` row: a peer sees it, refuses the placeholder once it
+    /// passes, a plain replace on either side clears it everywhere, and the sweeper's delete
+    /// replicates like `/secrets rm`'s.
+    #[tokio::test]
+    async fn expiry_replicates_with_the_row() {
+        let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = open(da.path()).await;
+        let b = open(db.path()).await;
+        b.adopt_keyring(a.keyring()).await.unwrap();
+        let ea = replica::engine::Engine::open(&da.path().join("replica.sqlite"))
+            .await
+            .unwrap();
+        let eb = replica::engine::Engine::open(&db.path().join("replica.sqlite"))
+            .await
+            .unwrap();
+        let ha = ea.attach(a.pool(), store::TABLES).await.unwrap();
+        let hb = eb.attach(b.pool(), store::TABLES).await.unwrap();
+
+        let at = now_ms() + 60_000;
+        a.set_expiring("tok", "first-value-long", None, "user", Some(at))
+            .await
+            .unwrap();
+        pump(&ha, &eb).await;
+        b.refresh().await.unwrap();
+        assert_eq!(b.expires_ms("tok"), Some(at));
+        assert_eq!(b.list()[0].expires.as_deref(), Some(rfc3339(at).as_str()));
+
+        b.set("tok", "second-value-long", None, "user").await.unwrap();
+        pump(&hb, &ea).await;
+        a.refresh().await.unwrap();
+        assert_eq!(a.expires_ms("tok"), None, "a plain replace on the peer clears it");
+
+        a.set_expiring("tok", "third-value-long", None, "user", Some(now_ms() - 1))
+            .await
+            .unwrap();
+        pump(&ha, &eb).await;
+        b.refresh().await.unwrap();
+        let mut args = serde_json::json!({"h": "{{secret:tok:-1}}"});
+        assert!(b.expand(&mut args).unwrap_err().starts_with("secret tok expired at "));
+        assert!(a.delete_expired("tok", now_ms()).await.unwrap());
+        pump(&ha, &eb).await;
+        b.refresh().await.unwrap();
+        assert!(list_names(&b).is_empty(), "the sweep's delete replicates");
     }
 
     #[tokio::test]

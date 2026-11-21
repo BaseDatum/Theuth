@@ -1,7 +1,7 @@
 // 104 A6: the kinds whose screen is the row's facts laid out large — hand-off, secret, hire, budget, node, blocked.
 import { useQueryClient } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { SecretRequestCard } from '@/components/chat/SecretRequestCard'
+import { SecretRequestCard, eventFields } from '@/components/chat/SecretRequestCard'
 import { KindActions, doubleIds } from '@/components/hud/Hud'
 import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useSecretRequestRows } from '@/components/hud/queries'
 import { useHandoffs, useSandboxes } from '@/components/settings/sandbox-queries'
@@ -78,9 +78,9 @@ export function SecretScreen({ item }: { item: AttentionItem }) {
   return (
     <Plain item={item}>
       {row ? (
-        <SecretRequestCard id={row.id} title={row.title} note={one && one.label !== one.name ? one.label : undefined} fields={row.fields} origin={origin} onAnswered={answered} />
+        <SecretRequestCard id={row.id} title={row.title} note={one && one.label !== one.name ? one.label : undefined} fields={row.fields} expires={row.expires} origin={origin} onAnswered={answered} />
       ) : local ? (
-        <SecretRequestCard id={local.id} note={local.note} fields={[{ name: local.name, label: local.name, masked: true, current: local.current }]} origin={origin} onAnswered={answered} />
+        <SecretRequestCard id={local.id} title={local.title} note={local.title ? undefined : local.note} fields={eventFields(local)} expires={local.expires} origin={origin} onAnswered={answered} />
       ) : (
         <p className="text-sm text-fg-secondary">{rows.isPending ? 'Loading the request…' : `Answer it in the session${item.detail ? ` on ${item.detail}` : ''}.`}</p>
       )}

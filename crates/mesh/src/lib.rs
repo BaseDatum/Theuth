@@ -1630,8 +1630,10 @@ mod tests {
                         label: "a token".into(),
                         masked: true,
                         current: None,
+                        note: None,
                     }],
                     id: None,
+                    expires: None,
                 })
                 .await
         });
