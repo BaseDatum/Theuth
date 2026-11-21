@@ -27,6 +27,7 @@ use crate::communication::{self, Admitted, CommunicationAccess};
 use crate::jobs::{CloseSessions, InstallActivity, JOBS_ACTOR, Jobs, lock};
 use crate::journal::{InstallJournal, Journal, NoopJournal, QuestionRow};
 use crate::resources::{CloseAck, CloseTree, SessionResources, TreeOpened};
+use crate::builtins::{self, BUILTIN_CATEGORY_PREFIX, BuiltinCategory, BuiltinTool, CATEGORIES};
 use crate::{
     APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall,
     ToolCx, ToolOutput, ToolSource, ToolSpec, ToolsConfig, edit, fs, glob, jobs, pty, reminder,
@@ -68,6 +69,10 @@ pub struct ToolRegistry {
     /// Bumped whenever a [`SetHidden`] or [`RestoreHidden`] changes a hide set;
     /// a running turn compares it before each model call ([`HiddenEpoch`]).
     hidden_epoch: u64,
+    /// 206: the harness-wide builtin switch (`tools.builtins.disabled`): builtin
+    /// names and [`builtins::category_key`]s hidden for every session. Seeded at
+    /// [`start`], changed by [`SetBuiltinsDisabled`]; never touches MCP tools.
+    builtins_disabled: HashSet<String>,
     /// child → parent, from [`SetParent`]; a session inherits its ancestors' pin and hidden set.
     parents: HashMap<SessionId, SessionId>,
     /// Risk ceiling per session from [`SetCap`]: a tool above it is neither
@@ -162,7 +167,8 @@ pub struct ListTools(pub Option<SessionId>);
 pub struct SetHidden {
     /// Session to switch (its subagents follow).
     pub session: SessionId,
-    /// Registered tool names, or [`mcp_server_key`]s for whole MCP servers.
+    /// Registered tool names, [`mcp_server_key`]s for whole MCP servers, or
+    /// [`builtins::category_key`]s for whole builtin categories (206).
     pub tools: Vec<String>,
     /// `true` hides.
     pub hidden: bool,
@@ -198,6 +204,25 @@ pub struct RestoreHidden {
     pub session: SessionId,
     /// The row's names; empty clears any set held in memory.
     pub tools: Vec<String>,
+}
+
+/// `ask` → `Vec<BuiltinCategory>` (206): every registered builtin (`Native`
+/// source) by category, in [`CATEGORIES`] order, tools sorted by name; a
+/// category with no registered tool is left out. With a session, `hidden`
+/// reports its (and its ancestors') hide set.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ListBuiltins(pub Option<SessionId>);
+
+/// `ask` → `Vec<String>` (206): add (`disabled`) or remove names in the
+/// harness-wide builtin switch and persist it to `tools.builtins.disabled`.
+/// The reply lists the names that are neither a registered builtin nor a
+/// known category key; when it is not empty nothing changed.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetBuiltinsDisabled {
+    /// Builtin tool names and [`builtins::category_key`]s.
+    pub names: Vec<String>,
+    /// `true` switches them off for every session.
+    pub disabled: bool,
 }
 
 /// `ask` → [`ToolOutput`]. Never fails: unknown tool, denied approval, bad
@@ -1038,10 +1063,14 @@ impl ToolRegistry {
     }
 
     /// `name` is hidden for the session or an ancestor (by name, or its MCP server by
-    /// [`mcp_server_key`]), is an MCP tool the session's agent may not see (67 §6.3), or is
-    /// outside a contact session's allowlist (183 Z3-R2).
+    /// [`mcp_server_key`]), is an MCP tool the session's agent may not see (67 §6.3), is
+    /// outside a contact session's allowlist (183 Z3-R2), or is a builtin switched off by
+    /// a builtin switch (206: [`Self::builtin_switched`]).
     fn is_hidden(&self, mut id: SessionId, name: &str) -> bool {
-        if self.mcp_hidden(id, name) || !self.allowlist_admits(id, name) {
+        if self.mcp_hidden(id, name)
+            || !self.allowlist_admits(id, name)
+            || self.builtin_switched(id, name)
+        {
             return true;
         }
         // The server key, resolved on the first set that names any server.
@@ -1067,6 +1096,63 @@ impl ToolRegistry {
                 Some(p) => id = *p,
                 None => return false,
             }
+        }
+    }
+
+    /// 206: `name` is a registered builtin (its source is `Native`).
+    fn is_native(&self, name: &str) -> bool {
+        self.tools
+            .get(name)
+            .is_some_and(|t| matches!(t.source(), ToolSource::Native { .. }))
+    }
+
+    /// 206: builtin `name` is off by a builtin switch: its name or category key is in the
+    /// harness-wide set, or its category key is in the hidden set of `id` or an ancestor.
+    /// A hide by plain name is [`Self::is_hidden`]'s own business. MCP tools: never.
+    fn builtin_switched(&self, mut id: SessionId, name: &str) -> bool {
+        let mut key: Option<Option<String>> = None;
+        let mut key = || {
+            key.get_or_insert_with(|| self.is_native(name).then(|| builtins::category_key_of(name)))
+                .clone()
+        };
+        if !self.builtins_disabled.is_empty()
+            && let Some(k) = key()
+            && (self.builtins_disabled.contains(name) || self.builtins_disabled.contains(&k))
+        {
+            return true;
+        }
+        loop {
+            if let Some(h) = self.hidden.get(&id)
+                && h.iter().any(|k| k.starts_with(BUILTIN_CATEGORY_PREFIX))
+                && key().is_some_and(|k| h.contains(&k))
+            {
+                return true;
+            }
+            match self.parents.get(&id) {
+                Some(p) => id = *p,
+                None => return false,
+            }
+        }
+    }
+
+    /// 206: the hidden sets of `id` and its ancestors, nearest first.
+    fn hidden_chain(&self, mut id: SessionId) -> Vec<&HashSet<String>> {
+        let mut sets = Vec::new();
+        loop {
+            sets.extend(self.hidden.get(&id));
+            match self.parents.get(&id) {
+                Some(p) => id = *p,
+                None => return sets,
+            }
+        }
+    }
+
+    /// 206: a name [`SetBuiltinsDisabled`] accepts: a registered builtin or the key of
+    /// a known category.
+    fn is_builtin_name(&self, name: &str) -> bool {
+        match name.strip_prefix(BUILTIN_CATEGORY_PREFIX) {
+            Some(id) => builtins::category(id).is_some(),
+            None => self.is_native(name),
         }
     }
 
@@ -1588,6 +1674,90 @@ impl Message<RestoreHidden> for ToolRegistry {
     }
 }
 
+impl Message<ListBuiltins> for ToolRegistry {
+    type Reply = Vec<BuiltinCategory>;
+
+    async fn handle(
+        &mut self,
+        ListBuiltins(session): ListBuiltins,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Vec<BuiltinCategory> {
+        let chain = session.map(|s| self.hidden_chain(s)).unwrap_or_default();
+        let mut by_category: HashMap<&'static str, Vec<BuiltinTool>> = HashMap::new();
+        for (name, tool) in &self.tools {
+            if !matches!(tool.source(), ToolSource::Native { .. }) {
+                continue;
+            }
+            let category = builtins::category_of(name);
+            let key = builtins::category_key(category);
+            let names = |set: &HashSet<String>| set.contains(name) || set.contains(&key);
+            let spec = tool.spec();
+            by_category.entry(category).or_default().push(BuiltinTool {
+                name: name.clone(),
+                description: spec.description,
+                risk: spec.risk,
+                direct: spec.direct,
+                disabled: names(&self.builtins_disabled),
+                hidden: chain.iter().any(|set| names(set)),
+            });
+        }
+        CATEGORIES
+            .iter()
+            .filter_map(|c| {
+                let mut tools = by_category.remove(c.id)?;
+                tools.sort_by(|a, b| a.name.cmp(&b.name));
+                Some(BuiltinCategory {
+                    id: c.id.to_owned(),
+                    label: c.label.to_owned(),
+                    description: c.description.to_owned(),
+                    tools,
+                })
+            })
+            .collect()
+    }
+}
+
+impl Message<SetBuiltinsDisabled> for ToolRegistry {
+    type Reply = Vec<String>;
+
+    async fn handle(
+        &mut self,
+        m: SetBuiltinsDisabled,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Vec<String> {
+        let unknown: Vec<String> = m
+            .names
+            .iter()
+            .filter(|n| !self.is_builtin_name(n))
+            .cloned()
+            .collect();
+        if !unknown.is_empty() {
+            return unknown;
+        }
+        if m.disabled {
+            self.builtins_disabled.extend(m.names);
+        } else {
+            self.builtins_disabled.retain(|n| !m.names.contains(n));
+        }
+        // Running turns re-list before their next model call; python re-lists per cell.
+        self.hidden_epoch += 1;
+        let mut sorted: Vec<&String> = self.builtins_disabled.iter().collect();
+        sorted.sort();
+        // JSON is YAML flow syntax, and quoting keeps `cat:<id>` a plain string.
+        let value = serde_json::to_string(&sorted).unwrap_or_else(|_| "[]".to_owned());
+        if let Err(e) = runtime::write_nested_config_value(
+            &self.config_path,
+            "tools",
+            "builtins",
+            "disabled",
+            &value,
+        ) {
+            tracing::warn!("config.yaml: {e}");
+        }
+        Vec::new()
+    }
+}
+
 impl Message<InstallCommunicationAccess> for ToolRegistry {
     type Reply = ();
 
@@ -1899,7 +2069,19 @@ impl Message<Invoke> for ToolRegistry {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         let Some(tool) = self.visible(call.session, &call.name) else {
-            tx.send(ToolOutput::err(format!("unknown tool: {}", call.name)));
+            // 206: a builtin the user switched off says so; anything else stays unknown.
+            let text = if self.mcp_hidden(call.session, &call.name)
+                || !self.allowlist_admits(call.session, &call.name)
+                || !self.builtin_switched(call.session, &call.name)
+            {
+                format!("unknown tool: {}", call.name)
+            } else {
+                format!(
+                    "{} is turned off (Settings > Tools > Builtins)",
+                    call.name
+                )
+            };
+            tx.send(ToolOutput::err(text));
             return reply;
         };
         if self.contact_scoped(call.session) {
@@ -2299,6 +2481,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             pin: HashMap::new(),
             hidden: HashMap::new(),
             hidden_epoch: 0,
+            builtins_disabled: cfg.builtins.disabled.into_iter().collect(),
             parents: HashMap::new(),
             cap: HashMap::new(),
             turn_cap: HashMap::new(),
@@ -2373,6 +2556,7 @@ pub(crate) mod tests {
             pin: HashMap::new(),
             hidden: HashMap::new(),
             hidden_epoch: 0,
+            builtins_disabled: HashSet::new(),
             parents: HashMap::new(),
             cap: HashMap::new(),
             turn_cap: HashMap::new(),
@@ -2865,6 +3049,294 @@ pub(crate) mod tests {
             names(reg.ask(ListTools(Some(child))).await.unwrap()),
             ["delete", "echo", "search"]
         );
+    }
+
+    fn tool_names(specs: Vec<ToolSpec>) -> Vec<String> {
+        specs.into_iter().map(|s| s.name).collect()
+    }
+
+    /// 206: a `cat:<id>` entry in a session's hide set hides every builtin of that
+    /// category for the session and its subagents, one registered later too; an MCP
+    /// tool whose name would fall in the category is untouched.
+    #[tokio::test]
+    async fn builtins_category_key_hides_natives_now_and_later_not_mcp() {
+        let reg = registry(
+            vec![
+                Arc::new(Echo),
+                Arc::new(fs::ReadFile),
+                Arc::new(FilesMcp("search", Risk::ReadOnly)),
+            ],
+            None,
+        );
+        let (parent, child, other) = (SessionId::new(), SessionId::new(), SessionId::new());
+        reg.tell(SetParent {
+            session: child,
+            parent,
+        })
+        .await
+        .unwrap();
+        let before = reg.ask(HiddenEpoch).await.unwrap();
+        reg.ask(SetHidden {
+            session: parent,
+            tools: vec![
+                builtins::category_key("files"),
+                builtins::category_key("knowledge"),
+            ],
+            hidden: true,
+        })
+        .await
+        .unwrap();
+        assert_ne!(reg.ask(HiddenEpoch).await.unwrap(), before);
+        assert_eq!(
+            tool_names(reg.ask(ListTools(Some(child))).await.unwrap()),
+            ["echo", "search"]
+        );
+        reg.ask(RegisterTool(Arc::new(fs::ListDir))).await.unwrap();
+        assert_eq!(
+            tool_names(reg.ask(ListTools(Some(child))).await.unwrap()),
+            ["echo", "search"]
+        );
+        assert_eq!(
+            tool_names(reg.ask(ListTools(Some(other))).await.unwrap()),
+            ["echo", "list_dir", "read_file", "search"]
+        );
+        assert_eq!(
+            tool_names(reg.ask(ListTools(None)).await.unwrap()),
+            ["echo", "list_dir", "read_file", "search"]
+        );
+        let out = reg.ask(Invoke(call("list_dir", child))).await.unwrap();
+        assert!(out.is_error);
+        assert_eq!(
+            out.content,
+            "list_dir is turned off (Settings > Tools > Builtins)"
+        );
+
+        reg.ask(SetHidden {
+            session: parent,
+            tools: vec![builtins::category_key("files")],
+            hidden: false,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            tool_names(reg.ask(ListTools(Some(child))).await.unwrap()),
+            ["echo", "list_dir", "read_file", "search"]
+        );
+    }
+
+    /// 206: the harness-wide set hides a builtin (by name or category key) for every
+    /// session, moves [`HiddenEpoch`], never touches MCP tools or `ListTools(None)`,
+    /// and a call says the tool is turned off.
+    #[tokio::test]
+    async fn builtins_harness_wide_set_hides_for_every_session_and_bumps_epoch() {
+        let reg = registry(
+            vec![
+                Arc::new(Echo),
+                Arc::new(fs::ReadFile),
+                Arc::new(FilesMcp("search", Risk::ReadOnly)),
+            ],
+            None,
+        );
+        let (a, b) = (SessionId::new(), SessionId::new());
+        let before = reg.ask(HiddenEpoch).await.unwrap();
+        let rejected = reg
+            .ask(SetBuiltinsDisabled {
+                names: vec!["echo".into(), builtins::category_key("files")],
+                disabled: true,
+            })
+            .await
+            .unwrap();
+        assert!(rejected.is_empty(), "{rejected:?}");
+        assert_ne!(reg.ask(HiddenEpoch).await.unwrap(), before);
+        for s in [a, b] {
+            assert_eq!(
+                tool_names(reg.ask(ListTools(Some(s))).await.unwrap()),
+                ["search"]
+            );
+        }
+        assert_eq!(
+            tool_names(reg.ask(ListTools(None)).await.unwrap()),
+            ["echo", "read_file", "search"]
+        );
+        let out = reg.ask(Invoke(call("echo", a))).await.unwrap();
+        assert_eq!(out.content, "echo is turned off (Settings > Tools > Builtins)");
+        assert!(!reg.ask(Invoke(call("search", a))).await.unwrap().is_error);
+
+        // Removing a name that is not in the set is fine.
+        let rejected = reg
+            .ask(SetBuiltinsDisabled {
+                names: vec!["echo".into(), "read_file".into()],
+                disabled: false,
+            })
+            .await
+            .unwrap();
+        assert!(rejected.is_empty(), "{rejected:?}");
+        assert_eq!(
+            tool_names(reg.ask(ListTools(Some(b))).await.unwrap()),
+            ["echo", "search"]
+        );
+        assert!(!reg.ask(Invoke(call("echo", a))).await.unwrap().is_error);
+    }
+
+    fn scratch_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("theuth-builtins-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 206: an unknown name, an MCP tool or an unknown category key is refused, and
+    /// then nothing changes: not the set, not the file.
+    #[tokio::test]
+    async fn builtins_set_disabled_rejects_unknown_and_writes_nothing() {
+        let dir = scratch_dir();
+        let path = dir.join("config.yaml");
+        let reg = ToolRegistry::spawn(ToolRegistry {
+            config_path: path.clone(),
+            ..build(
+                vec![Arc::new(Echo), Arc::new(FilesMcp("search", Risk::ReadOnly))],
+                None,
+            )
+        });
+        let rejected = reg
+            .ask(SetBuiltinsDisabled {
+                names: vec![
+                    "echo".into(),
+                    "cat:nope".into(),
+                    "search".into(),
+                    "missing".into(),
+                ],
+                disabled: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(rejected, ["cat:nope", "search", "missing"]);
+        assert!(!path.exists());
+        let cats = reg.ask(ListBuiltins(None)).await.unwrap();
+        assert!(cats.iter().flat_map(|c| &c.tools).all(|t| !t.disabled));
+        assert_eq!(
+            tool_names(reg.ask(ListTools(Some(SessionId::new()))).await.unwrap()),
+            ["echo", "search"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 206: `ListBuiltins` lists natives only, by category in table order, with
+    /// `disabled` from the harness-wide set and `hidden` from the session's and its
+    /// ancestors' hide sets (name or category key); no session: never hidden.
+    #[tokio::test]
+    async fn builtins_list_flags_and_inheritance() {
+        let reg = registry(
+            vec![
+                Arc::new(Echo),
+                Arc::new(fs::ReadFile),
+                Arc::new(fs::ListDir),
+                Arc::new(FilesMcp("search", Risk::ReadOnly)),
+            ],
+            None,
+        );
+        let (parent, child) = (SessionId::new(), SessionId::new());
+        reg.tell(SetParent {
+            session: child,
+            parent,
+        })
+        .await
+        .unwrap();
+        reg.ask(SetBuiltinsDisabled {
+            names: vec!["read_file".into()],
+            disabled: true,
+        })
+        .await
+        .unwrap();
+        reg.ask(SetHidden {
+            session: parent,
+            tools: vec![builtins::category_key("other"), "list_dir".into()],
+            hidden: true,
+        })
+        .await
+        .unwrap();
+        let flags = |cats: Vec<BuiltinCategory>| {
+            cats.into_iter()
+                .map(|c| {
+                    let tools = c
+                        .tools
+                        .into_iter()
+                        .map(|t| (t.name, t.disabled, t.hidden))
+                        .collect::<Vec<_>>();
+                    (c.id, tools)
+                })
+                .collect::<Vec<_>>()
+        };
+        let s = |x: &str| x.to_owned();
+        assert_eq!(
+            flags(reg.ask(ListBuiltins(Some(child))).await.unwrap()),
+            [
+                (
+                    s("files"),
+                    vec![(s("list_dir"), false, true), (s("read_file"), true, false)]
+                ),
+                (s("other"), vec![(s("echo"), false, true)]),
+            ]
+        );
+        assert_eq!(
+            flags(reg.ask(ListBuiltins(None)).await.unwrap()),
+            [
+                (
+                    s("files"),
+                    vec![(s("list_dir"), false, false), (s("read_file"), true, false)]
+                ),
+                (s("other"), vec![(s("echo"), false, false)]),
+            ]
+        );
+        reg.ask(SetBuiltinsDisabled {
+            names: vec![builtins::category_key("files")],
+            disabled: true,
+        })
+        .await
+        .unwrap();
+        let cats = reg.ask(ListBuiltins(None)).await.unwrap();
+        assert!(cats[0].tools.iter().all(|t| t.disabled));
+        assert_eq!(cats[0].label, "Files");
+    }
+
+    /// 206: the switch persists to `tools.builtins.disabled` (sorted, comments kept) and
+    /// a registry started on that file holds the same set.
+    #[tokio::test]
+    async fn builtins_disabled_round_trips_through_config_yaml() {
+        let dir = scratch_dir();
+        let path = dir.join("config.yaml");
+        std::fs::write(&path, "# keep me\ntools:\n  approvals: true\n").unwrap();
+        let reg = ToolRegistry::spawn(ToolRegistry {
+            config_path: path.clone(),
+            ..build(vec![Arc::new(Echo), Arc::new(fs::ReadFile)], None)
+        });
+        let rejected = reg
+            .ask(SetBuiltinsDisabled {
+                names: vec!["read_file".into(), builtins::category_key("web")],
+                disabled: true,
+            })
+            .await
+            .unwrap();
+        assert!(rejected.is_empty(), "{rejected:?}");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# keep me"), "{text}");
+        assert!(text.contains("approvals: true"), "{text}");
+
+        let rt = Runtime::new(
+            figment::Figment::new().merge(figment::providers::Yaml::file(&path)),
+            dir.clone(),
+        );
+        let cfg = config(&rt).unwrap();
+        assert!(cfg.approvals);
+        assert_eq!(cfg.builtins.disabled, ["cat:web", "read_file"]);
+        let restarted = ToolRegistry::spawn(ToolRegistry {
+            builtins_disabled: cfg.builtins.disabled.into_iter().collect(),
+            ..build(vec![Arc::new(Echo), Arc::new(fs::ReadFile)], None)
+        });
+        assert_eq!(
+            tool_names(restarted.ask(ListTools(Some(SessionId::new()))).await.unwrap()),
+            ["echo"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// A `Mutating` tool for the cap tests; changes nothing.

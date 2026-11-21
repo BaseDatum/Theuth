@@ -38,6 +38,7 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
 pub mod activity;
 pub mod approval;
 pub mod ask;
+pub mod builtins;
 pub mod communication;
 pub mod doc;
 pub mod edit;
@@ -73,6 +74,9 @@ pub use ask::{
     Answer, AnswerAsk, AnswerAskBy, AskId, AskRequested, AskResolved, AskUser, Choice, PendingAsks,
     Question, late_answer_text,
 };
+pub use builtins::{
+    BUILTIN_CATEGORY_PREFIX, BuiltinCategory, BuiltinTool, BuiltinsConfig, category_key, category_of,
+};
 pub use communication::{CommunicationAccess, Disabled};
 pub use jobs::CloseSessions;
 pub use jobs::{
@@ -106,8 +110,8 @@ pub use registry::{
     RestoreApprovals, RestoreHidden, SetAllowOnly, SetNoLan, SetPromoteAfter, SetTurnCap,
 };
 pub use registry::{
-    CloseTreeAll, ExpectParticipants, HiddenEpoch, MCP_SERVER_HIDE_PREFIX, OpenTree,
-    ParticipantsReady, RegisterLifecycle, mcp_server_key,
+    CloseTreeAll, ExpectParticipants, HiddenEpoch, ListBuiltins, MCP_SERVER_HIDE_PREFIX, OpenTree,
+    ParticipantsReady, RegisterLifecycle, SetBuiltinsDisabled, mcp_server_key,
 };
 pub use reminder::{
     CancelReminder, CancelReminders, RearmReminder, ReminderEvent, ReminderView, SetReminder,
@@ -542,6 +546,8 @@ pub struct ToolsConfig {
     /// 155 §6.2: a PTY job's process tree using more than this percent of one
     /// core over a one-second sample counts as busy (no `<job_idle>`).
     pub pty_tree_cpu_pct: u8,
+    /// 206: the harness-wide builtin switch (`tools.builtins.disabled`).
+    pub builtins: BuiltinsConfig,
 }
 
 impl Default for ToolsConfig {
@@ -560,6 +566,7 @@ impl Default for ToolsConfig {
             pty_shell: None,
             pty_reaction_secs: 10,
             pty_tree_cpu_pct: 2,
+            builtins: BuiltinsConfig::default(),
         }
     }
 }

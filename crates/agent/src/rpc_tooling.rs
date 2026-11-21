@@ -6,7 +6,10 @@ use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::ErrorObjectOwned;
 use runtime::SessionId;
-use tools::{ApprovalsState, SetApprovals, SetHidden, ToolRegistry};
+use tools::{
+    ApprovalsState, BuiltinCategory, ListBuiltins, SetApprovals, SetBuiltinsDisabled, SetHidden,
+    ToolRegistry,
+};
 use uuid::Uuid;
 use rpc_core::{ask, Server};
 use agent::rpc_support::RpcServerExt;
@@ -40,9 +43,12 @@ pub trait AgentToolingApi {
     /// Hide (or show again) registered tools for one session and its
     /// subagents, in memory: absent from the model's tool list, `unknown tool`
     /// when called. An `mcp:<server>` entry hides every tool of that MCP server,
-    /// including tools it registers after a reconnect or restart. A running turn
-    /// picks the change up before its next model call (prompt index, python
-    /// runtime functions, direct tools). The persistent form is `set_mcp_gate(.., Some(Off))`.
+    /// including tools it registers after a reconnect or restart; a `cat:<id>`
+    /// entry (206) hides every builtin of that category the same way (a call
+    /// then says the tool is turned off). A running turn picks the change up
+    /// before its next model call (prompt index, python runtime functions,
+    /// direct tools). The persistent form is `set_mcp_gate(.., Some(Off))` for
+    /// MCP tools and `set_builtins_disabled` for builtins.
     #[method(name = "set_mcp_hidden", with_extensions)]
     async fn set_mcp_hidden(
         &self,
@@ -50,6 +56,19 @@ pub trait AgentToolingApi {
         tools: Vec<String>,
         hidden: bool,
     ) -> RpcResult<()>;
+    /// 206: the harness's builtin tools by category (display order, tools sorted by
+    /// name; empty categories left out), each with `disabled` (harness-wide,
+    /// `tools.builtins.disabled`) and, with a session, `hidden` (its or an ancestor's
+    /// `set_mcp_hidden` set, by name or `cat:<id>`), answered by the session's owner.
+    #[method(name = "list_builtins", with_extensions)]
+    async fn list_builtins(&self, session: Option<SessionId>) -> RpcResult<Vec<BuiltinCategory>>;
+    /// 206: switch builtin tools off (`disabled: true`) or on again for every session
+    /// on this engine; `names` are registered builtin names and `cat:<id>` keys. Persists
+    /// to `tools.builtins.disabled` in this engine's `config.yaml`; running turns pick it
+    /// up before their next model call. A name that is neither is invalid params, and
+    /// then nothing changes.
+    #[method(name = "set_builtins_disabled")]
+    async fn set_builtins_disabled(&self, names: Vec<String>, disabled: bool) -> RpcResult<()>;
     /// Turn approval prompts on/off for `session`, or globally (persisted) with `None`.
     /// 183 §4.5 (W-4): on a session `enabled` pins `sessions.approvals` to
     /// `'on'`/`'off'`; `clear: true` drops the pin (inherit `tools.approvals`).
@@ -118,6 +137,39 @@ impl AgentToolingApiServer for Server {
             },
         )
         .await
+    }
+
+    async fn list_builtins(
+        &self,
+        ext: &Extensions,
+        session: Option<SessionId>,
+    ) -> RpcResult<Vec<BuiltinCategory>> {
+        self.authorize_opt_fwd(ext, session).await?;
+        // The hides live in the owner's registry (`set_mcp_hidden` runs there), as
+        // for `list_mcp`: owner offline → `-32010`, never this engine's state.
+        if let Some(s) = session
+            && let Some(r) = forward::route(ext, s, "list_builtins", (session,)).await?
+        {
+            return Ok(r);
+        }
+        ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, ListBuiltins(session)).await
+    }
+
+    async fn set_builtins_disabled(&self, names: Vec<String>, disabled: bool) -> RpcResult<()> {
+        let unknown =
+            ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, SetBuiltinsDisabled { names, disabled })
+                .await?;
+        if unknown.is_empty() {
+            return Ok(());
+        }
+        Err(ErrorObjectOwned::owned(
+            jsonrpsee::types::error::INVALID_PARAMS_CODE,
+            format!(
+                "not a builtin tool or category key: {}",
+                unknown.join(", ")
+            ),
+            None::<()>,
+        ))
     }
 
     async fn set_approvals(
