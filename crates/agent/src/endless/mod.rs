@@ -23,6 +23,7 @@ pub mod ledger;
 pub mod lines;
 pub mod pump;
 pub mod tail;
+pub mod tool_pin;
 #[cfg(test)]
 mod tests;
 pub mod tree;
@@ -855,6 +856,16 @@ pub struct SessionMemory {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(as = "Option<String>", optional))]
     pub profile_reason: String,
+    /// 201 §10 (P6b): `zoom` calls during the generation in force (the page
+    /// faults that keep lines unmerged at the next trim).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub zooms: u32,
+    /// 201 §11 (P6b): a tool-list change waits for the next trim (new tools
+    /// announced and callable through the runtime, removed ones refusing).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub tools_pending: bool,
     /// 201 §9 (P6a): the state ledger's open entries per section, its
     /// suggestions and the frozen snapshot's bytes; `None` when the ledger is
     /// off, for a meeting or an epochs session.
@@ -963,6 +974,9 @@ pub(crate) struct Inner {
     /// 201 (P5): chats whose next turn boundary trims down to the low mark
     /// (`endless_fold` / `/compact` while a turn ran).
     pub(crate) trim_asked: Mutex<std::collections::HashSet<SessionId>>,
+    /// 201 §11 (P6b): each endless chat's tool part of the request prefix,
+    /// frozen per generation (process-local; a restart rebuilds it cold).
+    pub(crate) tool_pins: Mutex<HashMap<SessionId, tool_pin::ToolPin>>,
 }
 
 /// The one handle for the endless mode (137-contract.md §4). Cheap to clone.
@@ -998,6 +1012,7 @@ impl Endless {
                 compactor_for_tests: None,
                 agent_tails: Mutex::new(HashMap::new()),
                 trim_asked: Mutex::new(std::collections::HashSet::new()),
+                tool_pins: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -1333,6 +1348,35 @@ impl Endless {
     /// 201 (P5): take the [`Endless::request_trim`] mark (once).
     pub fn take_trim_request(&self, session: SessionId) -> bool {
         self.inner.trim_asked.lock().remove(&session)
+    }
+
+    /// 201 §11 (P6b): the session's frozen tool part (a copy).
+    pub fn tool_pin(&self, session: SessionId) -> Option<tool_pin::ToolPin> {
+        self.inner.tool_pins.lock().get(&session).cloned()
+    }
+
+    /// 201 §11 (P6b): store (or, `None`, drop) the session's frozen tool part.
+    pub fn set_tool_pin(&self, session: SessionId, pin: Option<tool_pin::ToolPin>) {
+        let mut pins = self.inner.tool_pins.lock();
+        match pin {
+            Some(p) => pins.insert(session, p),
+            None => pins.remove(&session),
+        };
+    }
+
+    /// 201 §11 (P6b): the refusal for a call of a tool removed since the
+    /// session's tool part was frozen; `None` for any other.
+    pub fn tool_refusal(&self, session: SessionId, name: &str) -> Option<String> {
+        self.inner.tool_pins.lock().get(&session)?.refusal(name)
+    }
+
+    /// 201 §10 (P6b): the `<recall>` prefetch body for a new input — the
+    /// best `recall` hits over its rare words whose units are not in the
+    /// tail, up to `prefetch_bytes`; `None` when off, in a meeting, before a
+    /// generation, or without a hit.
+    pub async fn prefetch(&self, session: SessionId, input: &str) -> Option<String> {
+        let bytes = self.inner.cfg.read().clone().clamped().prefetch_bytes as usize;
+        pump::prefetch(&self.inner, session, input, bytes).await
     }
 
     /// The session's tree is meeting-filtered (R1-D6): `endless_fold` keeps

@@ -123,6 +123,16 @@ pub fn ledger_note(text: &str) -> Option<&str> {
         .map(str::trim)
 }
 
+/// 201 §10/§11 (P6b): the body of a bare `<recall>…</recall>` prefetch note
+/// or `<tools>…</tools>` announcement appended after a turn's input — no
+/// memory unit, like a `<ledger>` note; `None` for anything else.
+pub fn input_note(text: &str) -> Option<&str> {
+    let t = crate::clock::strip(text).trim();
+    [("<recall>", "</recall>"), ("<tools>", "</tools>")]
+        .into_iter()
+        .find_map(|(open, close)| t.strip_prefix(open)?.strip_suffix(close).map(str::trim))
+}
+
 /// `Nm Ns` / `Nh Nm` for an ETA.
 pub fn eta(secs: u64) -> String {
     match secs {

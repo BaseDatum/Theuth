@@ -433,7 +433,8 @@ async fn scenario_bounded_view() {
     let view_bytes = |b: &Value| -> usize {
         texts(b)
             .iter()
-            .filter(|t| t.contains("+1|talk: message"))
+            // 201 §10 (P6b): the `<recall>` prefetch note after the input is no view.
+            .filter(|t| t.contains("+1|talk: message") && !t.contains("<recall>"))
             .map(String::len)
             .sum()
     };

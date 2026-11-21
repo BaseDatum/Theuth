@@ -1384,6 +1384,8 @@ impl Session {
         let rest: Vec<Queued> = inputs.collect();
         // 201 §9 (P6a): ledger changes since the last input, as a note after it.
         task.ledger_note().await;
+        // 201 §10/§11 (P6b): `<tools>` announcement and `<recall>` prefetch, after it.
+        task.input_notes(&texts).await;
         // 171 §9.3: quiet results opened ahead of a channel input; the turn is still its.
         if channel.is_none() {
             channel = rest.iter().find_map(|(_, i)| i.channel.clone());
@@ -2979,6 +2981,9 @@ struct Turn {
     refusal_trimmed: bool,
     /// 201 §11 (P5): `zoom` / `recall` / `date` are in this turn's tool list.
     endless_listed: bool,
+    /// 201 §11 (P6b): this rebase's fresh `## Runtime` index block (taken
+    /// by `batch_tools`).
+    tool_index: Option<String>,
     /// `history[since..]` was appended since the last call (07 §8.1).
     since: usize,
     /// Logged `window == 0` this turn.
@@ -3894,6 +3899,7 @@ impl Turn {
             overflowed: false,
             refusal_trimmed: false,
             endless_listed: false,
+            tool_index: None,
             window_logged: false,
             repl: None,
             input_text: String::new(),
@@ -4339,6 +4345,152 @@ impl Turn {
         if let Some(body) = e.ledger_notes(self.shared.id).await {
             self.note("ledger", &body).await;
         }
+    }
+
+    /// 201 §10/§11 (P6b): after the turn's input, beside the `<ledger>`
+    /// note: a `<tools>` note naming the tools added since the request's
+    /// tool part was frozen (callable through the runtime now), and the
+    /// `<recall>` prefetch for the input's rare words. Only on the endless
+    /// frame (never a meeting); neither is a unit; nothing before the input
+    /// changes.
+    async fn input_notes(&mut self, texts: &[String]) {
+        if self.view.is_none() {
+            return;
+        }
+        let Some(e) = self.shared.endless.clone() else {
+            return;
+        };
+        let id = self.shared.id;
+        if let Some(mut pin) = e.tool_pin(id).filter(|p| self.tool_pin_holds(p))
+            && let Ok(Some(registry)) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
+            && let Ok(specs) = registry.ask(ListTools(Some(id))).await
+        {
+            let names: BTreeSet<String> = specs.iter().map(|s| s.name.clone()).collect();
+            let new = pin.announce(&names);
+            if !new.is_empty() {
+                let lines: Vec<String> = specs
+                    .iter()
+                    .filter(|s| new.contains(&s.name))
+                    .map(repl::signature)
+                    .collect();
+                e.set_tool_pin(id, Some(pin));
+                let body = format!(
+                    "New tools since this conversation's tool list was fixed. Call them from the python runtime now; they join the direct tool list at the next memory trim:\n{}",
+                    lines.join("\n")
+                );
+                self.note("tools", &body).await;
+            }
+        }
+        if let Some(body) = e.prefetch(id, &texts.join("\n")).await {
+            let body = format!("Earlier lines that match this message (zoom an id for more):\n{body}");
+            self.note("recall", &body).await;
+        }
+    }
+
+    /// 201 §11 (P6b): the cache counts as cold — the same rule as the
+    /// turn-boundary trim (`cold_after_secs`, 0 = the transport's 300 s).
+    fn cache_cold(&self) -> bool {
+        let secs = self
+            .shared
+            .endless
+            .as_ref()
+            .map_or(0, |e| e.config().cold_after_secs);
+        let after = match secs {
+            0 => Duration::from_secs(300),
+            s => Duration::from_secs(u64::from(s)),
+        };
+        self.state
+            .prev_call
+            .is_none_or(|(at, _)| at.elapsed() > after)
+    }
+
+    /// 201 §11 (P6b): this turn keeps `pin`'s tool part — the endless frame
+    /// is up (a chat, never a meeting), still in the generation `pin` was
+    /// frozen in, and the cache is warm.
+    fn tool_pin_holds(&self, pin: &crate::endless::tool_pin::ToolPin) -> bool {
+        self.view
+            .as_ref()
+            .is_some_and(|v| v.generation == pin.generation)
+            && !self.cache_cold()
+    }
+
+    /// 201 §11 (P6b), called from `rebase`: the `## Runtime` index block to
+    /// send — the frozen one while the session's tool part holds, else
+    /// `fresh`. Keeps `fresh` for [`Turn::batch_tools`].
+    fn pinned_index(&mut self, fresh: String) -> String {
+        let pinned = self
+            .shared
+            .endless
+            .as_ref()
+            .and_then(|e| e.tool_pin(self.shared.id))
+            .filter(|p| self.tool_pin_holds(p))
+            .map(|p| p.index);
+        self.tool_index = Some(fresh.clone());
+        pinned.unwrap_or(fresh)
+    }
+
+    /// 201 §11 (P6b), the last step of `rebase`: in an endless chat, a
+    /// tool-list change mid-generation leaves the request prefix as frozen
+    /// — additions wait (announced by `input_notes`), a tool gone from the
+    /// registry stays defined and refuses; a per-session hide applies now.
+    /// The tool part is frozen afresh at a new generation or a cold cache.
+    /// Without the endless frame, or without a runtime index (nothing to
+    /// call a new tool through), nothing is held: the pre-201 behaviour.
+    async fn batch_tools(&mut self, registry: &ActorRef<ToolRegistry>) {
+        use crate::endless::tool_pin::{Fresh, ToolPin};
+        let index = self.tool_index.take();
+        let Some(e) = self.shared.endless.clone() else {
+            return;
+        };
+        let id = self.shared.id;
+        let (Some(v), Some(index)) = (self.view.as_ref(), index) else {
+            e.set_tool_pin(id, None);
+            return;
+        };
+        let generation = v.generation;
+        let names: BTreeSet<String> = self
+            .risks
+            .keys()
+            .cloned()
+            .chain(self.tools.iter().map(|t| t.name.as_str().to_owned()))
+            .collect();
+        let held = e.tool_pin(id).filter(|p| self.tool_pin_holds(p));
+        let Some(mut pin) = held else {
+            let fresh = Fresh {
+                index: &index,
+                tools: &self.tools,
+                names: &names,
+            };
+            e.set_tool_pin(id, Some(ToolPin::new(generation, &fresh)));
+            return;
+        };
+        let registered: BTreeSet<String> = if pin.names.difference(&names).next().is_some() {
+            registry
+                .ask(ListTools(None))
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| s.name)
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
+        let old_index = pin.index.clone();
+        let fresh = Fresh {
+            index: &index,
+            tools: &self.tools,
+            names: &names,
+        };
+        if pin.reconcile(&fresh, |n| registered.contains(n)) {
+            // A hide: the index is taken fresh now.
+            self.state.baseline = self.state.baseline.replacen(&old_index, &pin.index, 1);
+            self.reset_this_round = true;
+        }
+        if pin.pending {
+            tracing::info!(session = %id, generation, removed = pin.removed.len(), "endless: tool-list change held until the next trim");
+        }
+        self.tools.clone_from(&pin.tools);
+        e.set_tool_pin(id, Some(pin));
     }
 
     /// 36 §3: a frame ending in an assistant `tool_use` with no `tool_result`
@@ -4973,7 +5125,7 @@ impl Turn {
             self.state.history.drain(..keep_from);
             self.state.head = None;
             let kept = tail::bytes(&self.state.history);
-            tracing::info!(session = %id, cut_bytes = before - kept, kept_bytes = kept, generation = g.n, cold, asked, forced, low, high, view_bytes = g.render.text().len(), "endless: trim");
+            tracing::info!(session = %id, cut_bytes = before - kept, kept_bytes = kept, generation = g.n, cold, asked, forced, low, high, view_bytes = g.render.text().len(), zooms = g.zooms, "endless: trim");
             trimmed = true;
         }
         self.state.tail_gen = Some(g.n);
@@ -5373,7 +5525,10 @@ impl Turn {
             && local_ok(repl::NAME)
         {
             baseline.push_str("\n\n");
-            baseline.push_str(&repl::prompt_block(&specs, self.shared.cfg.runtime_only));
+            baseline.push_str(&self.pinned_index(repl::prompt_block(
+                &specs,
+                self.shared.cfg.runtime_only,
+            )));
             for s in repl::indexed(&specs, self.shared.cfg.runtime_only) {
                 self.runtime_names.insert(repl::sanitize_ident(&s.name));
                 self.runtime_names.insert(s.name.clone());
@@ -5444,6 +5599,7 @@ impl Turn {
         }
         specs.retain(|s| local_ok(&s.name));
         self.tools = specs.into_iter().map(direct_tool).collect();
+        self.batch_tools(registry).await;
     }
 
     /// Cache marks for `current`'s provider; resolved once per model per turn (07 §3).
@@ -7408,6 +7564,19 @@ impl Turn {
         };
         let mut bridged: Vec<Option<String>> = vec![None; calls.len()];
         for (i, c) in calls.iter_mut().enumerate() {
+            if outputs[i].is_none()
+                && let Some(msg) = self
+                    .shared
+                    .endless
+                    .as_ref()
+                    .and_then(|e| e.tool_refusal(self.shared.id, &c.fn_name))
+            {
+                // 201 §11 (P6b): removed mid-generation, still defined.
+                let out = ToolOutput::err(msg);
+                self.journal_finished(&c.call_id, &out).await;
+                outputs[i] = Some(out);
+                continue;
+            }
             if outputs[i].is_some() || self.tools.iter().any(|t| t.name.as_str() == c.fn_name) {
                 continue;
             }

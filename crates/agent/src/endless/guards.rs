@@ -336,6 +336,18 @@ pub fn tokens(s: &str) -> Vec<String> {
     .collect()
 }
 
+/// 201 §10 (P6b): the rare words of `s` — the G2 grounding rule's (at least
+/// four characters, not a stop word) — distinct, in order of appearance.
+pub fn rare_words(s: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for w in tokens(s) {
+        if w.chars().count() >= 4 && !STOP.contains(&w.as_str()) && !out.contains(&w) {
+            out.push(w);
+        }
+    }
+    out
+}
+
 fn ngrams(toks: &[String], n: usize) -> HashSet<Vec<String>> {
     toks.windows(n).map(<[String]>::to_vec).collect()
 }

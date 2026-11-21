@@ -675,6 +675,33 @@ impl Store {
         let Some(q) = fts_query(query) else {
             return Ok(Vec::new());
         };
+        self.endless_fts(id, &q, limit).await
+    }
+
+    /// 201 §10 (P6b): [`Store::endless_recall`] matching ANY of `words`
+    /// (the prefetch over a new input's rare words), best rank first.
+    pub async fn endless_recall_any(
+        &self,
+        id: SessionId,
+        words: &[String],
+        limit: u32,
+    ) -> anyhow::Result<Vec<(u64, String)>> {
+        let q: Vec<String> = words
+            .iter()
+            .map(|w| format!("\"{}\"", w.replace('"', "\"\"")))
+            .collect();
+        if q.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.endless_fts(id, &q.join(" OR "), limit).await
+    }
+
+    async fn endless_fts(
+        &self,
+        id: SessionId,
+        q: &str,
+        limit: u32,
+    ) -> anyhow::Result<Vec<(u64, String)>> {
         let rows: Vec<(i64, String)> = sqlx::query_as(
             "SELECT i, text FROM endless_lines_fts WHERE session_id = ? AND endless_lines_fts MATCH ? \
              ORDER BY rank, i DESC LIMIT ?",

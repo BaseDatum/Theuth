@@ -74,10 +74,12 @@ pub fn derive(
     for (part, p) in m.content.iter().enumerate() {
         let (kind, text) = match (p, &m.role) {
             // R1-7: the G9/G10 `<memory>` notices are about the memory, not
-            // in it; 201 §9: so are the `<ledger>` change notes.
+            // in it; 201 §9: so are the `<ledger>` change notes; 201 §10/§11:
+            // and the `<recall>` prefetch and `<tools>` announcement notes.
             (ContentPart::Text(t), ChatRole::User)
                 if crate::endless_ext::memory_note(t).is_some()
-                    || crate::endless_ext::ledger_note(t).is_some() =>
+                    || crate::endless_ext::ledger_note(t).is_some()
+                    || crate::endless_ext::input_note(t).is_some() =>
             {
                 continue;
             }
@@ -291,6 +293,19 @@ mod tests {
         let note = ChatMessage::user("<ledger>\nL1 added to Goals: ship it\n</ledger>");
         assert!(derive(1, None, &note, 30_000, 0).is_empty());
         let mine = ChatMessage::user("what does <ledger> mean here?");
+        assert_eq!(derive(2, None, &mine, 30_000, 0).len(), 1);
+    }
+
+    /// 201 §10/§11 (P6b): `<recall>` and `<tools>` notes are no units.
+    #[test]
+    fn input_notes_are_not_units() {
+        for note in [
+            "<recall>\n12+1|user: the port is 8443\n</recall>",
+            "<tools>\nasync def fetch(url: str) -> str\n</tools>",
+        ] {
+            assert!(derive(1, None, &ChatMessage::user(note), 30_000, 0).is_empty());
+        }
+        let mine = ChatMessage::user("<tools> are what?");
         assert_eq!(derive(2, None, &mine, 30_000, 0).len(), 1);
     }
 

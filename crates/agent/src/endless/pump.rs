@@ -481,6 +481,10 @@ struct Live {
     /// 201 §3 (P2): the generation in force — its frozen view (cache of the
     /// newest `endless_generations` row; `None` until loaded or started).
     current_gen: Option<Generation>,
+    /// 201 §10 (P6b): every `zoom` since the generation before the one in
+    /// force — `(generation zoomed in, part)`; process-local (a restart
+    /// forgets the grace, the cache is cold then anyway).
+    zooms: Vec<(u32, Part)>,
     /// 201 §4 (P2): the tail bytes the last turn opened with (status).
     tail_bytes: u32,
     /// 201 §4.2 (P2): the session model's turn allowance in bytes, as the
@@ -495,6 +499,13 @@ struct Live {
 }
 
 impl Live {
+    /// 201 §10 (P6b): `zoom` calls during the generation in force.
+    fn zoom_count(&self) -> u32 {
+        let n = self.current_gen.as_ref().map_or(0, |g| g.n);
+        let c = self.zooms.iter().filter(|(g, _)| *g == n).count();
+        u32::try_from(c).unwrap_or(u32::MAX)
+    }
+
     fn t(&self) -> u64 {
         self.units.len() as u64
     }
@@ -801,6 +812,7 @@ impl Live {
             stale: HashSet::new(),
             redo: HashSet::new(),
             current_gen: None,
+            zooms: Vec::new(),
             tail_bytes: 0,
             allowance: None,
             agent_profile: None,
@@ -3058,6 +3070,10 @@ pub struct Generation {
     /// block between the system prompt and the view; `None` when the ledger
     /// was off at this trim (or in a meeting).
     pub ledger: Option<String>,
+    /// 201 §10 (P6b): zooms taken during the generation this one ended (the
+    /// page-fault count of the `endless: trim` line); not persisted, 0 when
+    /// read back from the store.
+    pub zooms: u32,
 }
 
 impl Generation {
@@ -3077,6 +3093,7 @@ impl Generation {
                 folded: 0,
             },
             ledger: r.ledger,
+            zooms: 0,
         }
     }
 
@@ -3157,13 +3174,30 @@ pub(crate) async fn start_generation(
         let first_seq = first_seq.unwrap_or(live.last_seq + 1);
         let t_cut = live.units.partition_point(|u| u.seq < first_seq) as u64;
         let cfg = live.fold_cfg(&state.cfg.read());
-        let render = render_upto(&mut live, cfg, t_cut, Some(max_bytes), session);
+        // 201 §10 (P6b): the lines zoomed during the generation just ended
+        // stay unmerged in this render (one generation of grace).
+        let ended = if again { prev.saturating_sub(1) } else { prev };
+        let zoomed: Vec<Part> = live
+            .zooms
+            .iter()
+            .filter(|(n, _)| *n == ended)
+            .map(|(_, p)| *p)
+            .collect();
+        let zooms = u32::try_from(zoomed.len()).unwrap_or(u32::MAX);
+        let pinned = if state.cfg.read().age_by_use {
+            zoomed
+        } else {
+            Vec::new()
+        };
+        live.zooms.retain(|(n, _)| *n >= ended);
+        let render = render_upto(&mut live, cfg, t_cut, Some(max_bytes), session, &pinned);
         Generation {
             n: if again { prev.max(1) } else { prev + 1 },
             t_cut,
             first_seq,
             render,
             ledger: None,
+            zooms,
         }
     };
     // 201 §9 (P6a): a re-render under the same number keeps its snapshot.
@@ -3367,6 +3401,7 @@ fn render_upto(
     t_cut: u64,
     max_bytes: Option<usize>,
     session: SessionId,
+    pinned: &[Part],
 ) -> ViewRender {
     let t = t_cut.min(live.t());
     let want = cfg.high();
@@ -3379,7 +3414,7 @@ fn render_upto(
             raw_bytes: 0,
             slack: cfg.slack,
         };
-        let f = Fold::rebuild(&live.tree, live.base.min(t), t, c, &live.units);
+        let f = Fold::rebuild_pinned(&live.tree, live.base.min(t), t, c, &live.units, pinned);
         let r = fold::render(&live.tree, &f, &live.units);
         let bytes = r.text().len();
         attempt += 1;
@@ -3619,6 +3654,12 @@ pub(crate) async fn zoom(
     else {
         return Err(format!("No line {id}+{n}."));
     };
+    // 201 §10 (P6b): a zoom is a page fault — the line stays unmerged at
+    // the next trim (`start_generation`), and the count is the fault rate.
+    let generation = live.current_gen.as_ref().map_or(0, |g| g.n);
+    live.zooms.push((generation, Part { l, i }));
+    let faults = live.zooms.iter().filter(|(g, _)| *g == generation).count();
+    tracing::info!(%session, level = l, id, n, generation, zooms = faults, "endless: zoom");
     if l == 0 {
         let u = &live.units[i as usize];
         return Ok(vec![ViewLine {
@@ -3687,6 +3728,59 @@ pub(crate) async fn recall(
         }
     }
     Ok(out)
+}
+
+/// 201 §10 (P6b): [`super::Endless::prefetch`] — the same search `recall`
+/// runs (FTS over the level-0 lines), over `input`'s rare words, any of them;
+/// hits whose unit is in the tail (at or after the generation's `t_cut`)
+/// are skipped, the rest taken best first while they fit `bytes`.
+pub(crate) async fn prefetch(
+    inner: &Inner,
+    session: SessionId,
+    input: &str,
+    bytes: usize,
+) -> Option<String> {
+    if bytes == 0 {
+        return None;
+    }
+    let state = state_of(inner, session)?;
+    let t_cut = {
+        let live = state.live.lock();
+        if live.filter == UnitFilter::Meeting {
+            return None;
+        }
+        live.current_gen.as_ref()?.t_cut
+    };
+    let words = super::guards::rare_words(input);
+    if words.is_empty() {
+        return None;
+    }
+    let hits = match state.store.endless_recall_any(session, &words, 16).await {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!(%session, "prefetch: {e:#}");
+            return None;
+        }
+    };
+    let mut out = String::new();
+    let mut taken = 0;
+    for (i, text) in hits {
+        if i >= t_cut {
+            continue;
+        }
+        let line = format!("{i}+1|{}\n", text.replace('\n', " "));
+        if out.len() + line.len() > bytes {
+            continue;
+        }
+        out.push_str(&line);
+        taken += 1;
+    }
+    if out.is_empty() {
+        return None;
+    }
+    tracing::info!(%session, words = words.len(), lines = taken, bytes = out.len(), "endless: prefetch");
+    out.pop();
+    Some(out)
 }
 
 pub(crate) async fn date(
@@ -3889,6 +3983,7 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
         drafts: u32::try_from(live.drafts.len()).unwrap_or(u32::MAX),
         tail_bytes: live.tail_bytes,
         generation: live.current_gen.as_ref().map_or(0, |g| g.n),
+        zooms: live.zoom_count(),
         ..Default::default()
     };
     let tail = live.tail;
@@ -3908,6 +4003,11 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
             None
         });
     }
+    out.tools_pending = inner
+        .tool_pins
+        .lock()
+        .get(&session)
+        .is_some_and(|p| p.pending);
     Ok(out)
 }
 

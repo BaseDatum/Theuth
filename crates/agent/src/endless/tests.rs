@@ -3578,3 +3578,66 @@ async fn ledger_off_means_absent_until_the_next_trim() {
     assert!(endless.ledger_listed(id).await);
     endless.detach(id);
 }
+
+/// 201 §10 (P6b): the prefetch finds lines before the tail over the input's
+/// rare words, skips the tail's own, respects the byte cap, and adds nothing
+/// with a 0 cap or no hit. Zooms are counted per generation and reach the
+/// next generation's trim figure.
+#[tokio::test]
+async fn prefetch_skips_the_tail_and_zooms_are_counted_per_generation() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    for text in [
+        "the zebra gateway listens on port 8443",
+        "lunch was fine",
+        "zebra credentials rotate weekly",
+    ] {
+        store.append(id, &ChatMessage::user(text)).await.unwrap();
+    }
+    let tail = store
+        .append(id, &ChatMessage::user("zebra tail mention"))
+        .await
+        .unwrap();
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    let g1 = endless
+        .start_generation(id, Some(tail), 1_000_000, false)
+        .await
+        .unwrap();
+    assert_eq!(g1.t_cut, 3);
+    let got = endless
+        .prefetch(id, "which port does the zebra gateway use?")
+        .await
+        .expect("hits before the tail");
+    assert!(got.contains("0+1|"), "{got}");
+    assert!(!got.contains("3+1|"), "the tail's own line: {got}");
+    assert!(got.len() <= 2_000);
+    let one = super::pump::prefetch(&endless.inner, id, "zebra", 50)
+        .await
+        .expect("one line fits");
+    assert!(one.len() <= 50 && !one.contains('\n'), "{one}");
+    assert_eq!(
+        super::pump::prefetch(&endless.inner, id, "zebra", 0).await,
+        None
+    );
+    assert_eq!(endless.prefetch(id, "quantum marmalade").await, None);
+
+    // Zooms in generation 1: counted, and the trim into 2 reports them.
+    endless.zoom(id, 0, 1).await.unwrap();
+    endless.zoom(id, 2, 1).await.unwrap();
+    assert_eq!(endless.memory(id).await.unwrap().zooms, 2);
+    let g2 = endless
+        .start_generation(id, Some(tail), 1_000_000, false)
+        .await
+        .unwrap();
+    assert_eq!((g2.n, g2.zooms), (2, 2));
+    assert_eq!(endless.memory(id).await.unwrap().zooms, 0);
+    let g3 = endless
+        .start_generation(id, Some(tail), 1_000_000, false)
+        .await
+        .unwrap();
+    assert_eq!(g3.zooms, 0, "one generation of grace only");
+}
