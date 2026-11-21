@@ -140,6 +140,18 @@ test('in a chat, "Off here" hides the category for that chat by its key', async 
   unmount()
 })
 
+test('U-12: "Off always" in a chat goes to the engine that owns it (the chat id rides along); the draft sends none', async () => {
+  const chat = await mount('s1')
+  await act(async () => chat.choice('Files', 'Off always').click())
+  await vi.waitFor(() => expect(calls).toEqual([['set_builtins_disabled', [['cat:files'], true, 's1']]]))
+  chat.unmount()
+  calls.length = 0
+  const draft = await mount('')
+  await act(async () => draft.choice('Files', 'Off always').click())
+  await vi.waitFor(() => expect(calls).toEqual([['set_builtins_disabled', [['cat:files'], true]]]))
+  draft.unmount()
+})
+
 test('one tool on inside an always-off category: the others get their own entries before the key goes', async () => {
   answer = catalog({ disabled: true })
   const { choice, expand, unmount } = await mount(null)
@@ -190,7 +202,7 @@ test('U-2: a multi-call switch whose second call fails still refetches the list,
   await vi.waitFor(() =>
     expect(calls).toEqual([
       ['set_mcp_hidden', ['s1', ['cat:files'], true]],
-      ['set_builtins_disabled', [['cat:files', 'read_file', 'write_file', 'grep'], false]],
+      ['set_builtins_disabled', [['cat:files', 'read_file', 'write_file', 'grep'], false, 's1']],
     ]),
   )
   await vi.waitFor(() => expect(fetched).toBe(2))
