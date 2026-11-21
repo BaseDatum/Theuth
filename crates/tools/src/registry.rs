@@ -492,9 +492,10 @@ impl Suspension {
 /// replaces it for new invocations.
 pub struct InstallExecutionGate(pub Arc<dyn ExecutionGate>);
 
-/// `ask` → [`Decision`]: the same gate as [`Invoke`] for a tool call theuth does
-/// not run itself — an external harness's `session/request_permission`
-/// (design doc 06 §3.4, §8.8). Timeout and a missing approval actor are `Deny`.
+/// `ask` → [`ExternalVerdict`]: the same gate as [`Invoke`] for a tool call
+/// theuth does not run itself — an external harness's
+/// `session/request_permission` (design doc 06 §3.4, §8.8). Timeout and a
+/// missing approval actor are `Deny`.
 #[derive(Clone, Debug)]
 pub struct ExternalApproval {
     /// Session the call belongs to (approval pin inheritance).
@@ -505,6 +506,27 @@ pub struct ExternalApproval {
     pub args: serde_json::Value,
     /// Risk class the caller derived (`acp::risk(kind)`).
     pub risk: Risk,
+}
+
+/// The answer to an [`ExternalApproval`]. `dismissed` (207): the user left the
+/// call to the agent from Attention — not run, but not a refusal either; the
+/// caller must not report it as one. `decision` is then `Deny`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, kameo::Reply)]
+pub struct ExternalVerdict {
+    /// Run it or not.
+    pub decision: Decision,
+    /// Not run because it was left to the agent, not refused.
+    pub dismissed: bool,
+}
+
+impl ExternalVerdict {
+    /// A plain allow / deny (gate, policy, timeout, unreachable approver).
+    pub const fn plain(decision: Decision) -> Self {
+        Self {
+            decision,
+            dismissed: false,
+        }
+    }
 }
 
 /// `ask` → `()`. A plugin's system-prompt paragraph: what its tools are for and
@@ -1617,7 +1639,7 @@ impl Message<DescribeTools> for ToolRegistry {
 }
 
 impl Message<ExternalApproval> for ToolRegistry {
-    type Reply = DelegatedReply<Decision>;
+    type Reply = DelegatedReply<ExternalVerdict>;
 
     async fn handle(
         &mut self,
@@ -1628,13 +1650,13 @@ impl Message<ExternalApproval> for ToolRegistry {
         let Some(tx) = tx else { return reply };
         let approval = match self.gate(m.session, &m.tool, m.risk, false) {
             Ok(None) => {
-                tx.send(Decision::Allow);
+                tx.send(ExternalVerdict::plain(Decision::Allow));
                 return reply;
             }
             Ok(Some(a)) => a,
             Err(why) => {
                 tracing::info!(tool = %m.tool, "external approval: {why}");
-                tx.send(Decision::Deny);
+                tx.send(ExternalVerdict::plain(Decision::Deny));
                 return reply;
             }
         };
@@ -1647,11 +1669,17 @@ impl Message<ExternalApproval> for ToolRegistry {
                 call_id: None,
             };
             // Timeout already resolves as `Deny`; an unreachable actor is one too.
+            // 207: a dismissal is carried, not flattened into a deny.
             tx.send(
                 approval
                     .ask(req)
                     .await
-                    .map_or(Decision::Deny, |r| r.decision),
+                    .map_or(ExternalVerdict::plain(Decision::Deny), |r| {
+                        ExternalVerdict {
+                            decision: r.decision,
+                            dismissed: r.dismissed,
+                        }
+                    }),
             );
         });
         reply
@@ -5122,5 +5150,33 @@ pub(crate) mod tests {
             "wipe: not run — the user left this call to you without approving it. Do not retry it as is; find a way that needs no approval, or say in your reply why it is needed."
         );
         assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// 207 (E1): an external harness's permission ask that the user left to
+    /// the agent comes back marked `dismissed`, not as a bare deny.
+    #[tokio::test]
+    async fn dismissed_external_approval_is_marked_dismissed() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let approval = Approval::spawn(Approval::new(rt.clone(), Duration::from_secs(5)));
+        let reg = registry_with(Vec::new(), None, Policy::default(), Some(approval.clone()));
+        let dismisser = Dismisser::spawn(Dismisser(approval));
+        rt.subscribe::<Dismisser, crate::approval::ApprovalRequested>(&dismisser)
+            .await;
+        let v = reg
+            .ask(ExternalApproval {
+                session: SessionId::new(),
+                tool: "Delete files".into(),
+                args: serde_json::json!({"kind": "delete"}),
+                risk: Risk::Destructive,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            v,
+            ExternalVerdict {
+                decision: Decision::Deny,
+                dismissed: true
+            }
+        );
     }
 }

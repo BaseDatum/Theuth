@@ -30,7 +30,7 @@ use runtime::{InputId, Runtime, SessionId, TurnId};
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
-use tools::{Decision, ExternalApproval, REGISTRY_ACTOR, ToolRegistry};
+use tools::{Decision, ExternalApproval, ExternalVerdict, REGISTRY_ACTOR, ToolRegistry};
 use uuid::Uuid;
 
 use crate::activity::{ActivityConfig, ChildActivity, ChildStalled, ChildUpdate};
@@ -1408,7 +1408,7 @@ impl AcpChild {
             };
             let decision = tokio::select! {
                 () = cancel.cancelled() => None,
-                d = decide => Some(d.unwrap_or(Decision::Deny)),
+                d = decide => Some(d.unwrap_or(ExternalVerdict::plain(Decision::Deny))),
             };
             let o = outcome(&p.options, decision);
             p.respond(o);
@@ -1444,28 +1444,48 @@ fn with_kind(
     serde_json::Value::Object(m)
 }
 
-/// The option for `decision` (06 §3.4): `allow_once` else `allow_always`;
-/// `reject_once` else `reject_always`; none offered / no decision → `cancelled`.
+/// What the harness's `_meta` carries on a permission answer the user left to
+/// the agent (207 E1). ACP has no outcome for "not run, not refused": the
+/// answer is still the harness's reject option, and `_meta` is the only place
+/// a harness that looks for it can tell the difference.
+pub(crate) const LEFT_TO_AGENT: &str =
+    "not run: the user left this to you, choose another way or continue without it";
+
+/// The option for `verdict` (06 §3.4): `allow_once` else `allow_always`;
+/// `reject_once` else `reject_always`; none offered / no verdict → `cancelled`.
+/// A dismissal (207: left to the agent, never a refusal) is not `cancelled`
+/// — by the spec that is the answer to a cancelled prompt turn — but the
+/// reject option with [`LEFT_TO_AGENT`] under `_meta.theuth`.
 fn outcome(
     options: &[agent_client_protocol::schema::v1::PermissionOption],
-    decision: Option<Decision>,
+    verdict: Option<ExternalVerdict>,
 ) -> RequestPermissionOutcome {
-    let kinds: [PermissionOptionKind; 2] = match decision {
-        Some(Decision::Allow) => [
+    let Some(verdict) = verdict else {
+        return RequestPermissionOutcome::Cancelled;
+    };
+    let kinds: [PermissionOptionKind; 2] = match verdict.decision {
+        Decision::Allow => [
             PermissionOptionKind::AllowOnce,
             PermissionOptionKind::AllowAlways,
         ],
-        Some(Decision::Deny) => [
+        Decision::Deny => [
             PermissionOptionKind::RejectOnce,
             PermissionOptionKind::RejectAlways,
         ],
-        None => return RequestPermissionOutcome::Cancelled,
     };
+    let meta = verdict.dismissed.then(|| {
+        serde_json::Map::from_iter([(
+            "theuth".to_owned(),
+            serde_json::json!({ "left_to_agent": true, "text": LEFT_TO_AGENT }),
+        )])
+    });
     kinds
         .iter()
         .find_map(|k| options.iter().find(|o| o.kind == *k))
         .map_or(RequestPermissionOutcome::Cancelled, |o| {
-            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(o.option_id.clone()))
+            RequestPermissionOutcome::Selected(
+                SelectedPermissionOutcome::new(o.option_id.clone()).meta(meta),
+            )
         })
 }
 
@@ -2997,20 +3017,44 @@ pub(crate) mod tests {
             RequestPermissionOutcome::Selected(s) => Some(s.option_id.0.to_string()),
             _ => None,
         };
-        assert_eq!(
-            id(outcome(&opts, Some(Decision::Allow))).as_deref(),
-            Some("once")
-        );
-        assert_eq!(
-            id(outcome(&opts, Some(Decision::Deny))).as_deref(),
-            Some("no")
-        );
+        let allow = Some(ExternalVerdict::plain(Decision::Allow));
+        let deny = Some(ExternalVerdict::plain(Decision::Deny));
+        assert_eq!(id(outcome(&opts, allow)).as_deref(), Some("once"));
+        assert_eq!(id(outcome(&opts, deny)).as_deref(), Some("no"));
         assert_eq!(id(outcome(&opts, None)), None);
-        assert_eq!(
-            id(outcome(&opts[..1], Some(Decision::Allow))).as_deref(),
-            Some("always")
-        );
-        assert_eq!(id(outcome(&opts[..1], Some(Decision::Deny))), None);
+        assert_eq!(id(outcome(&opts[..1], allow)).as_deref(), Some("always"));
+        assert_eq!(id(outcome(&opts[..1], deny)), None);
+    }
+
+    /// 207 E1: a permission ask the user left to the agent is answered with
+    /// the reject option (never `cancelled`, which ends the harness's turn),
+    /// marked under `_meta.theuth` as left to the agent; a plain deny carries
+    /// no `_meta`.
+    #[test]
+    fn dismissed_permission_is_reject_once_marked_left_to_agent() {
+        use agent_client_protocol::schema::v1::PermissionOption;
+        let opts = vec![
+            PermissionOption::new("never", "Never", PermissionOptionKind::RejectAlways),
+            PermissionOption::new("no", "No", PermissionOptionKind::RejectOnce),
+            PermissionOption::new("once", "Once", PermissionOptionKind::AllowOnce),
+        ];
+        let left = ExternalVerdict {
+            decision: Decision::Deny,
+            dismissed: true,
+        };
+        let RequestPermissionOutcome::Selected(s) = outcome(&opts, Some(left)) else {
+            panic!("a dismissal must select an option, not cancel the turn");
+        };
+        assert_eq!(s.option_id.0.as_ref(), "no");
+        let meta = s.meta.expect("left-to-agent meta");
+        assert_eq!(meta["theuth"]["left_to_agent"], true);
+        assert_eq!(meta["theuth"]["text"], LEFT_TO_AGENT);
+        let RequestPermissionOutcome::Selected(d) =
+            outcome(&opts, Some(ExternalVerdict::plain(Decision::Deny)))
+        else {
+            panic!("deny selects reject");
+        };
+        assert_eq!((d.option_id.0.as_ref(), d.meta), ("no", None));
     }
 
     /// omp's exact refusal (message plus the `data` the transport appends,
