@@ -295,7 +295,8 @@ impl Model for voice_mlx::ParakeetMlx {
 }
 
 /// Builds the model, on the engine thread.
-pub type Loader = Arc<dyn Fn() -> anyhow::Result<Box<dyn Model>> + Send + Sync>;
+pub type Loaded = anyhow::Result<Box<dyn Model>>;
+pub type Loader = Arc<dyn Fn() -> Loaded + Send + Sync>;
 
 struct Job {
     pcm: Vec<f32>,
@@ -563,13 +564,17 @@ pub struct Mlx {
 /// The real model loader.
 #[cfg(feature = "mlx")]
 fn loader(dir: PathBuf) -> Loader {
-    Arc::new(move || Ok(Box::new(voice_mlx::ParakeetMlx::load(&dir)?) as Box<dyn Model>))
+    Arc::new(move || -> Loaded {
+        Ok(Box::new(voice_mlx::ParakeetMlx::load(&dir)?) as Box<dyn Model>)
+    })
 }
 
 /// Without the `mlx` feature every load fails (the engine is never selected then).
 #[cfg(not(feature = "mlx"))]
 fn loader(dir: PathBuf) -> Loader {
-    Arc::new(move || anyhow::bail!("built without the MLX engine ({})", dir.display()))
+    Arc::new(move || -> Loaded {
+        anyhow::bail!("built without the MLX engine ({})", dir.display())
+    })
 }
 
 impl Mlx {
@@ -686,7 +691,7 @@ mod tests {
 
     fn engine(idle: Duration, loads: Arc<AtomicUsize>) -> Engine {
         Engine::new(
-            Arc::new(move || {
+            Arc::new(move || -> Loaded {
                 loads.fetch_add(1, Ordering::SeqCst);
                 Ok(Box::new(FakeModel {
                     text: "hello",
@@ -749,10 +754,13 @@ mod tests {
 
     #[test]
     fn load_error_and_load_panic_fail() {
-        let e = Engine::new(Arc::new(|| anyhow::bail!("no weights")), Duration::ZERO);
+        let e = Engine::new(
+            Arc::new(|| -> Loaded { anyhow::bail!("no weights") }),
+            Duration::ZERO,
+        );
         assert!(e.transcribe(&[0.0; 8], LONG, true).is_err());
         assert!(matches!(e.phase(), Phase::Failed(r) if r.contains("no weights")));
-        let e = Engine::new(Arc::new(|| panic!("metal")), Duration::ZERO);
+        let e = Engine::new(Arc::new(|| -> Loaded { panic!("metal") }), Duration::ZERO);
         assert!(e.transcribe(&[0.0; 8], LONG, true).is_err());
         assert!(matches!(e.phase(), Phase::Failed(r) if r.contains("metal")));
     }
@@ -760,7 +768,7 @@ mod tests {
     #[test]
     fn loading_engine_fails_fast_without_wait_load() {
         let e = Engine::new(
-            Arc::new(|| {
+            Arc::new(|| -> Loaded {
                 std::thread::sleep(Duration::from_millis(300));
                 Ok(Box::new(FakeModel {
                     text: "x",
