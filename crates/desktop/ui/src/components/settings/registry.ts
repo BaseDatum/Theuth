@@ -36,7 +36,7 @@ export const TAB_IDS = [
   'loop', 'memory', 'approvals', 'advisor', 'autoresearch', 'harnesses',
   'suffixes',
   'dreaming', 'double', 'decision',
-  'voice', 'dictation', 'voice-key', 'voice-history',
+  'voice', 'dictation', 'voice-dictionary', 'voice-key', 'voice-history',
   'meetings', 'detection', 'live', 'speakers', 'templates',
   'calendar', 'briefs', 'upcoming',
   'machine', 'machines', 'devices', 'contacts', 'messaging', 'vms',
