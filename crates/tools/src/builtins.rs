@@ -214,6 +214,7 @@ pub const CATEGORIES: &[CategoryDef] = &[
         description: "Show results, previews and apps, and talk to the user",
         exact: &[
             "show",
+            "show_web",
             "page_preview",
             "artifact_read",
             "app",
@@ -463,6 +464,7 @@ mod tests {
                 "output",
                 &[
                     "show",
+                    "show_web",
                     "page_preview",
                     "artifact_read",
                     "app",
@@ -592,6 +594,7 @@ mod tests {
             figment::Figment::new()
                 .merge(Yaml::string(yaml))
                 .extract_inner::<BuiltinsConfig>("tools.builtins")
+                .map_err(Box::new)
         };
         assert!(
             read("tools:\n  builtins:\n    disabled:\n")
