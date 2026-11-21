@@ -261,6 +261,7 @@ fn polls_fill_rows_failures_keep_last_good() {
             used_fraction: 0.3,
             resets_at_ms: Some(NOW + 3_600_000),
             window_secs: Some(18_000),
+            history: Vec::new(),
         }],
         plan: Some("pro".into()),
         account: Some("acct-1234".into()),
@@ -442,6 +443,183 @@ fn snapshot_round_trip_serves_stale_until_refreshed() {
     );
     assert!(load(&dir.0.join("missing.json")).is_none());
 }
+
+// region: window history
+
+const HOUR: u64 = 60 * MIN;
+
+fn win(used: f64, resets_at_ms: u64) -> UsageWindow {
+    UsageWindow {
+        id: "primary".into(),
+        label: "5-hour".into(),
+        used_fraction: used,
+        resets_at_ms: Some(resets_at_ms),
+        window_secs: Some(18_000),
+        history: Vec::new(),
+    }
+}
+
+/// `(at_ms, used_fraction)` of the one window.
+fn samples(ws: &[UsageWindow]) -> Vec<(u64, f64)> {
+    ws[0]
+        .history
+        .iter()
+        .map(|s| (s.at_ms, s.used_fraction))
+        .collect()
+}
+
+#[test]
+fn history_appends_on_change_and_every_five_minutes() {
+    let reset = NOW + 4 * HOUR;
+    let mut ws = Vec::new();
+    merge_windows(&mut ws, vec![win(0.1, reset)], NOW);
+    merge_windows(&mut ws, vec![win(0.2, reset)], NOW + 1_000);
+    // Unchanged within 5 minutes: skipped.
+    merge_windows(&mut ws, vec![win(0.2, reset)], NOW + 4 * MIN);
+    assert_eq!(samples(&ws), [(NOW, 0.1), (NOW + 1_000, 0.2)]);
+    // Unchanged, 5 minutes after the last sample: recorded.
+    merge_windows(&mut ws, vec![win(0.2, reset)], NOW + 1_000 + 5 * MIN);
+    assert_eq!(samples(&ws).len(), 3);
+    assert_eq!(samples(&ws)[2], (NOW + 1_000 + 5 * MIN, 0.2));
+    // Small jitter of the reset (a relative `reset_after`) is the same window.
+    merge_windows(&mut ws, vec![win(0.25, reset + 2_000)], NOW + 6 * MIN);
+    assert_eq!(samples(&ws).len(), 4);
+}
+
+#[test]
+fn history_clears_on_a_new_window() {
+    let reset = NOW + HOUR;
+    let mut ws = Vec::new();
+    merge_windows(&mut ws, vec![win(0.5, reset)], NOW);
+    merge_windows(&mut ws, vec![win(0.6, reset)], NOW + MIN);
+    // The reset moved a whole window forward: fresh history.
+    merge_windows(&mut ws, vec![win(0.6, reset + 18_000_000)], NOW + 2 * MIN);
+    assert_eq!(samples(&ws), [(NOW + 2 * MIN, 0.6)]);
+    // A drop of more than 5 points (same reset): fresh history.
+    merge_windows(&mut ws, vec![win(0.58, reset + 18_000_000)], NOW + 3 * MIN);
+    assert_eq!(samples(&ws).len(), 2, "a small drop stays");
+    merge_windows(&mut ws, vec![win(0.02, reset + 18_000_000)], NOW + 4 * MIN);
+    assert_eq!(samples(&ws), [(NOW + 4 * MIN, 0.02)]);
+}
+
+#[test]
+fn history_caps_at_300_keeping_first_and_newest() {
+    let reset = NOW + 1_000 * HOUR;
+    let mut ws = Vec::new();
+    for i in 0..1_000u64 {
+        merge_windows(&mut ws, vec![win(i as f64 * 1e-4, reset)], NOW + i);
+        assert!(ws[0].history.len() <= 300);
+    }
+    let s = samples(&ws);
+    assert_eq!(s[0].0, NOW, "first kept");
+    assert_eq!(s.last().unwrap().0, NOW + 999, "newest kept");
+    assert!(s.windows(2).all(|p| p[0].0 < p[1].0), "oldest first");
+    assert!(s.len() > 200, "thinning halves only the older half");
+}
+
+#[test]
+fn header_and_poll_share_one_history() {
+    let mut st = State::default();
+    let reset_s = (NOW + 2 * HOUR) / 1_000;
+    let header = |pct: &str| {
+        h(&[
+            ("anthropic-ratelimit-unified-5h-utilization", pct),
+            ("anthropic-ratelimit-unified-5h-reset", &reset_s.to_string()),
+        ])
+    };
+    st.observe(
+        "anthropic",
+        "oauth",
+        "claude-opus-5-5",
+        200,
+        &header("0.2"),
+        NOW,
+    );
+    let poll = PollData {
+        windows: vec![UsageWindow {
+            id: "five_hour".into(),
+            label: "5-hour".into(),
+            used_fraction: 0.25,
+            resets_at_ms: Some(reset_s * 1_000),
+            window_secs: Some(18_000),
+            history: Vec::new(),
+        }],
+        ..PollData::default()
+    };
+    st.apply_poll(Source::Claude, NOW + MIN, Ok(poll));
+    st.observe(
+        "anthropic",
+        "oauth",
+        "claude-opus-5-5",
+        200,
+        &header("0.3"),
+        NOW + 2 * MIN,
+    );
+    let s = st.render(NOW + 3 * MIN);
+    let r = row(&s, "anthropic:oauth");
+    let w = r.windows.iter().find(|w| w.id == "five_hour").unwrap();
+    assert_eq!(
+        samples(std::slice::from_ref(w)),
+        [(NOW, 0.2), (NOW + MIN, 0.25), (NOW + 2 * MIN, 0.3)]
+    );
+    // Past the reset the window reads unused, without the old readings.
+    let s = st.render(reset_s * 1_000);
+    let w = &row(&s, "anthropic:oauth").windows[0];
+    assert!(w.history.is_empty());
+}
+
+#[test]
+fn history_survives_the_snapshot_and_an_old_snapshot_loads() {
+    let dir = crate::TestDir::new("limits-history");
+    let path = dir.0.join("limits").join("snapshot.json");
+    let mut st = State::default();
+    st.apply_poll(
+        Source::Codex,
+        NOW,
+        Ok(PollData {
+            windows: vec![win(0.1, NOW + HOUR)],
+            ..PollData::default()
+        }),
+    );
+    st.apply_poll(
+        Source::Codex,
+        NOW + MIN,
+        Ok(PollData {
+            windows: vec![win(0.2, NOW + HOUR)],
+            ..PollData::default()
+        }),
+    );
+    save(&path, &st.render(NOW + 2 * MIN)).unwrap();
+    let mut restored = State::restore(load(&path).unwrap());
+    let r = row(&restored.render(NOW + 2 * MIN), "openai:oauth").clone();
+    assert_eq!(samples(&r.windows), [(NOW, 0.1), (NOW + MIN, 0.2)]);
+    // Fresh data after the restart continues the same history.
+    restored.apply_poll(
+        Source::Codex,
+        NOW + 3 * MIN,
+        Ok(PollData {
+            windows: vec![win(0.3, NOW + HOUR)],
+            ..PollData::default()
+        }),
+    );
+    let r = row(&restored.render(NOW + 3 * MIN), "openai:oauth").clone();
+    assert_eq!(samples(&r.windows).len(), 3);
+
+    // A snapshot written before `history` existed.
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for p in json["providers"].as_array_mut().unwrap() {
+        for w in p["windows"].as_array_mut().unwrap() {
+            w.as_object_mut().unwrap().remove("history");
+        }
+    }
+    std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+    let old = load(&path).expect("old snapshot loads");
+    let w = &row(&old, "openai:oauth").windows[0];
+    assert_eq!((w.used_fraction, w.history.is_empty()), (0.2, true));
+}
+
+// endregion
 
 #[test]
 fn hub_api_observe_then_snapshot_and_kick_without_pollers() {
