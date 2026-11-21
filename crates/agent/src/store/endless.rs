@@ -806,6 +806,24 @@ impl Store {
             .collect()
     }
 
+    /// 201 R1-3b: the seqs of `messages` rows removed whole from the context
+    /// (the pump replaces their units' lines).
+    pub async fn endless_excluded_seqs(&self, id: SessionId) -> anyhow::Result<Vec<i64>> {
+        let rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT seq, excluded FROM messages WHERE session_id = ? AND excluded IS NOT NULL",
+        )
+        .bind(id.to_string())
+        .fetch_all(&self.read)
+        .await?;
+        let mut out = Vec::new();
+        for (seq, mask) in rows {
+            if Mask::decode(Some(&mask))?.whole {
+                out.push(seq);
+            }
+        }
+        Ok(out)
+    }
+
     /// Rebuild the FTS mirror when it drifted from level 0 (a replica applied
     /// changesets without triggers).
     pub async fn endless_fts_sync(&self) -> anyhow::Result<()> {

@@ -2987,6 +2987,14 @@ impl Session {
             // Already-removed targets: nothing written, nothing to install or announce.
             return Ok(removal);
         }
+        // 201 R1-3b: "remove from context" removes from memory too — the
+        // removed rows' lines leave the tree and the next turn opens a new
+        // generation (a meeting tree is untouched inside).
+        if let Some(e) = self.shared.endless.clone()
+            && let Err(err) = e.rows_excluded(self.shared.id).await
+        {
+            tracing::warn!(session = %self.shared.id, "endless: removed rows: {err:#}");
+        }
         self.install(epoch, head, history).await;
         self.context_changed(removal.revision.clone(), "context_edit")
             .await;
@@ -5195,7 +5203,10 @@ impl Turn {
             cold || asked,
         );
         let mut trimmed = fresh;
-        if cut.is_some() || forced {
+        // 201 R1-3b: rows removed from the context: a new generation now,
+        // so the frozen view no longer shows them.
+        let regen = !fresh && endless.take_regen_request(id);
+        if cut.is_some() || forced || regen {
             let keep_from = cut.map_or(0, |c| c.keep_from);
             let before = tail::bytes(&self.state.history);
             let first_seq = self.state.history.get(keep_from).map(|(s, _)| *s);

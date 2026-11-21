@@ -51,7 +51,12 @@ pub(crate) struct EvalCompactor {
 
 impl EvalCompactor {
     pub(crate) fn new(act: Act) -> Arc<Self> {
-        Self::with(act, false, None, super::pump::resolved_for_tests("fake/eval"))
+        Self::with(
+            act,
+            false,
+            None,
+            super::pump::resolved_for_tests("fake/eval"),
+        )
     }
 
     pub(crate) fn with(
@@ -283,7 +288,12 @@ async fn eval_s5_pre_201_unit_rows_load_without_index_shifts() {
         (seqs[1], 1, Kind::User, "[image]"),
         (seqs[2], 0, Kind::Echo, "shot taken"),
         (seqs[3], 0, Kind::User, note),
-        (seqs[4], 0, Kind::Talk, "after the images, the deploy went fine"),
+        (
+            seqs[4],
+            0,
+            Kind::Talk,
+            "after the images, the deploy went fine",
+        ),
     ];
     let stored: Vec<UnitRow> = old
         .iter()
@@ -406,11 +416,7 @@ async fn zoomed_across_real_merges(age_by_use: bool) -> (bool, bool, String) {
         .await
         .unwrap();
     endless.detach(id);
-    (
-        alone(&g2.render.text(), i),
-        alone(&g3.render.text(), i),
-        t1,
-    )
+    (alone(&g2.render.text(), i), alone(&g3.render.text(), i), t1)
 }
 
 /// S7: 201 §10 — a line zoomed in generation N stays unmerged at the trim
@@ -419,9 +425,17 @@ async fn zoomed_across_real_merges(age_by_use: bool) -> (bool, bool, String) {
 #[tokio::test]
 async fn eval_s7_a_zoomed_line_gets_exactly_one_generation_of_grace() {
     let (g2, g3, t1) = zoomed_across_real_merges(true).await;
-    assert_eq!((g2, g3), (true, false), "age_by_use on; generation 1:\n{t1}");
+    assert_eq!(
+        (g2, g3),
+        (true, false),
+        "age_by_use on; generation 1:\n{t1}"
+    );
     let (g2, g3, t1) = zoomed_across_real_merges(false).await;
-    assert_eq!((g2, g3), (false, false), "age_by_use off; generation 1:\n{t1}");
+    assert_eq!(
+        (g2, g3),
+        (false, false),
+        "age_by_use off; generation 1:\n{t1}"
+    );
 }
 
 // endregion: --- S7
@@ -464,7 +478,10 @@ async fn eval_s8_small_profile_requests_stay_small_and_keep_drafts_on_a_trip() {
         "BAD message: the cache warmer {}",
         "restarted the frontend pods ".repeat(22)
     );
-    store.append(id, &ChatMessage::assistant(bad)).await.unwrap();
+    store
+        .append(id, &ChatMessage::assistant(bad))
+        .await
+        .unwrap();
     let huge: String = (0..240)
         .map(|j| format!("huge part {j}: the migration of table t{j} copied rows."))
         .collect::<Vec<_>>()
@@ -474,11 +491,27 @@ async fn eval_s8_small_profile_requests_stay_small_and_keep_drafts_on_a_trip() {
         .append(id, &ChatMessage::assistant(huge.clone()))
         .await
         .unwrap();
+    // 201-FIX R2-2: a unit under the 16-chunk cap is reduced in stages.
+    let mid: String = (0..110)
+        .map(|j| format!("mid part {j}: table m{j} moved."))
+        .collect::<Vec<_>>()
+        .join(" ");
+    store
+        .append(id, &ChatMessage::assistant(mid.clone()))
+        .await
+        .unwrap();
     endless.attach(id, attached()).await.unwrap();
 
     let mem = endless.memory(id).await.unwrap();
     assert_eq!(mem.profile, super::Profile::Small, "{}", mem.profile_reason);
-    // Units 0–4 and the huge unit 6 refined; unit 5 (BAD) tried.
+    // 201-FIX R2-2: the huge unit is over `SMALL_MAX_CHUNKS` chunks here.
+    let mid_chunks = super::compactor::chunks(&mid, chunk);
+    assert!(
+        super::compactor::chunks(&huge, chunk).len() > super::compactor::SMALL_MAX_CHUNKS,
+        "chunk {chunk}"
+    );
+    assert!((3..=super::compactor::SMALL_MAX_CHUNKS).contains(&mid_chunks.len()));
+    // Units 0–4 and the mid unit 7 refined; unit 5 (BAD) tried.
     eventually("the good units refined, the bad one tried", 30, || async {
         let nodes = store.endless_nodes(id).await.unwrap();
         let refined = |i: u64| {
@@ -486,7 +519,7 @@ async fn eval_s8_small_profile_requests_stay_small_and_keep_drafts_on_a_trip() {
                 .iter()
                 .any(|n| n.l == 0 && n.i == i && n.quality() == Quality::Model)
         };
-        [0, 1, 2, 3, 4, 6].iter().all(|i| refined(*i))
+        [0, 1, 2, 3, 4, 7].iter().all(|i| refined(*i))
             && c.small.lock().iter().any(|(_, s)| s.contains("BAD"))
     })
     .await;
@@ -494,6 +527,7 @@ async fn eval_s8_small_profile_requests_stay_small_and_keep_drafts_on_a_trip() {
     let calls = c.small.lock().clone();
     assert!(!calls.is_empty());
     let mut huge_calls = 0;
+    let mut mid_calls = 0;
     for (ctx, step) in &calls {
         assert!(
             ctx.len() <= super::compactor::SMALL_CTX_BYTES,
@@ -519,15 +553,47 @@ async fn eval_s8_small_profile_requests_stay_small_and_keep_drafts_on_a_trip() {
         if step.contains("huge part") {
             huge_calls += 1;
         }
+        if step.contains("mid part") {
+            mid_calls += 1;
+        }
     }
+    // 201-FIX R2-2 (was: the huge unit went in window-sized chunks): over
+    // the cap no call is sent for it, its draft stays, it is not retried.
+    assert_eq!(huge_calls, 0, "no call for a unit over the chunk cap");
     assert!(
-        huge_calls > huge.len() / chunk,
-        "the huge unit went in window-sized chunks: {huge_calls} calls, chunk {chunk}"
+        super::pump::failed_for_tests(&endless.inner, id)
+            .iter()
+            .all(|(k, ..)| *k != (0, 6)),
+        "not a failure, not retried"
+    );
+    // The mid unit: one call per chunk, then more than one reduce call
+    // (stages), and a reduce input carries the last chunk's line.
+    assert!(
+        mid_calls >= mid_chunks.len() + 2,
+        "{mid_calls} calls for {} chunks",
+        mid_chunks.len()
+    );
+    let last = mid_chunks.last().unwrap();
+    let tag = &last[last.find("mid part ").unwrap()..];
+    let tag = &tag[..tag.find(':').unwrap()];
+    assert!(
+        calls.iter().any(|(_, s)| {
+            let body = s.split_once('\n').map_or("", |(_, b)| b);
+            body.lines().count() > 1 && body.contains(tag)
+        }),
+        "the last chunk ({tag}) reaches a reduce call"
     );
     let nodes = store.endless_nodes(id).await.unwrap();
     let bad = nodes.iter().find(|n| n.l == 0 && n.i == 5).unwrap();
-    assert_eq!(bad.quality(), Quality::Draft, "the draft stays: {}", bad.text);
+    assert_eq!(
+        bad.quality(),
+        Quality::Draft,
+        "the draft stays: {}",
+        bad.text
+    );
     assert!(!bad.text.contains("zebra"), "{}", bad.text);
+    let huge_node = nodes.iter().find(|n| n.l == 0 && n.i == 6).unwrap();
+    assert_eq!(huge_node.quality(), Quality::Draft, "{}", huge_node.text);
     assert!(
         nodes.iter().all(|n| !n.text.contains("zebra crossing")),
         "a guard-failing line is never stored"

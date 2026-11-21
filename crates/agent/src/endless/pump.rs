@@ -658,6 +658,15 @@ impl Live {
             .tree
             .iter()
             .filter(|n| n.l == 0 && n.quality() == Quality::Draft)
+            // R2-8: a migrated 137G mechanical node of a kind that never
+            // needs the model (tool, user, note, short echo) is not refined.
+            .filter(|n| {
+                !self.drafting()
+                    || self
+                        .units
+                        .get(n.i as usize)
+                        .is_none_or(super::lines::needs_model)
+            })
             .map(|n| n.i)
             .collect();
         let q = |l: u8, i: u64| self.tree.get(l, i).map(Node::quality);
@@ -1261,6 +1270,9 @@ async fn load(state: &State) -> anyhow::Result<()> {
     let mut turns = HashMap::new();
     let mut last_seq = -1;
     let mut max_turn = 0;
+    // 201 R1-3b: a row removed from the context after ingest keeps its unit
+    // (indices never shift) but not its text — in a drafting session.
+    let drafting = state.live.lock().drafting();
     for r in &rows {
         let text = by_seq.get(&r.seq).and_then(|m| {
             units::derive(m.seq, m.at, &m.message, state.cfg.read().cap_chars, 0)
@@ -1273,7 +1285,10 @@ async fn load(state: &State) -> anyhow::Result<()> {
             seq: r.seq,
             part: r.part,
             kind: r.kind,
-            text: text.map(|u| u.text).unwrap_or_default(),
+            text: match by_seq.get(&r.seq) {
+                Some(m) if drafting && m.excluded => REMOVED.to_owned(),
+                _ => text.map(|u| u.text).unwrap_or_default(),
+            },
             size: r.size,
             at,
         });
@@ -1778,6 +1793,16 @@ fn schedule(state: &Arc<State>) {
     };
     // 201 §7.2 (P3): the small profile sends one unit per call.
     let small = profile_of(state, &live).0 == Profile::Small;
+    // R2-2: the small chunk (as `call` sizes it), to leave a unit over
+    // `SMALL_MAX_CHUNKS` on its draft without sending or retrying it.
+    let small_chunk = small.then(|| {
+        let c = state.compactor();
+        let m = c.model();
+        compactor::small_chunk_bytes(crate::tokens::bytes_of(
+            &m.id,
+            crate::tokens::memory_window(m),
+        ))
+    });
     let batch_units = if small { 1 } else { batch_units };
     let local = state.compactor().local().is_some();
     live.parallel = if local { 1 } else { jobs as u32 };
@@ -1853,6 +1878,12 @@ fn schedule(state: &Arc<State>) {
                 _ => {}
             }
             let u = &live.units[i as usize];
+            if let Some(chunk) = small_chunk
+                && u.text.len() > chunk * compactor::SMALL_MAX_CHUNKS / 2
+                && compactor::chunks(&u.text, chunk).len() > compactor::SMALL_MAX_CHUNKS
+            {
+                continue;
+            }
             let mech = live
                 .failed
                 .get(&key)
@@ -2827,7 +2858,17 @@ async fn finish(
     counted: bool,
     fallback: Option<Node>,
 ) {
+    // 201 R1-3b: a unit removed from the context while its call ran keeps
+    // its removed line.
+    let removed = key.0 == 0
+        && state
+            .live
+            .lock()
+            .units
+            .get(key.1 as usize)
+            .is_some_and(|u| u.text == REMOVED);
     let outcome = match outcome {
+        Ok(Some(_)) if removed => Ok(None),
         Ok(Some(node)) => match state.store.endless_node_put(state.session, &node).await {
             Ok(()) => Ok(Some(node)),
             Err(e) => Err(format!("store: {e}")),
@@ -2893,7 +2934,23 @@ async fn finish_batch(
         Ok(Some(b)) => {
             let mut nodes = Vec::new();
             let mut solo = Vec::new();
+            // 201 R1-3b: a unit removed while the batch ran keeps its line.
+            let removed: HashSet<u64> = {
+                let live = state.live.lock();
+                units
+                    .iter()
+                    .copied()
+                    .filter(|i| {
+                        live.units
+                            .get(*i as usize)
+                            .is_some_and(|u| u.text == REMOVED)
+                    })
+                    .collect()
+            };
             for (i, line) in units.iter().zip(b.lines) {
+                if removed.contains(i) {
+                    continue;
+                }
                 match line {
                     Ok(text) => nodes.push(Node {
                         l: 0,
@@ -3813,6 +3870,107 @@ pub(crate) async fn zoom(
         .collect())
 }
 
+/// 201 R1-3b: what a unit removed from the context reads as (its line is
+/// `<kind>: (removed from context)`; `zoom` answers the same).
+pub(crate) const REMOVED: &str = "(removed from context)";
+
+/// 201 R1-3b: [`super::Endless::rows_excluded`] — units of rows now removed
+/// whole from the context lose their text: each level-0 node becomes the
+/// free line `<kind>: (removed from context)` (the FTS mirror follows), and
+/// every merge above is rebuilt at once as a draft merge marked for
+/// refinement. Unit indices do not shift. Returns whether anything changed
+/// (the caller then asks for a new generation). A meeting tree is untouched.
+pub(crate) async fn rows_excluded(inner: &Inner, session: SessionId) -> anyhow::Result<bool> {
+    let Some(state) = state_of(inner, session) else {
+        return Ok(false);
+    };
+    {
+        let live = state.live.lock();
+        if live.mode != MemoryMode::Endless || !live.drafting() {
+            return Ok(false);
+        }
+    }
+    let seqs: HashSet<i64> = state
+        .store
+        .endless_excluded_seqs(session)
+        .await?
+        .into_iter()
+        .collect();
+    let nodes = {
+        let mut live = state.live.lock();
+        let hit: Vec<u64> = live
+            .units
+            .iter()
+            .filter(|u| seqs.contains(&u.seq) && u.text != REMOVED)
+            .map(|u| u.i)
+            .collect();
+        if hit.is_empty() {
+            return Ok(false);
+        }
+        let node_bytes = state.cfg.read().node_bytes;
+        let t = live.t();
+        let mut out = Vec::new();
+        for &i in &hit {
+            let u = &mut live.units[i as usize];
+            u.text = REMOVED.to_owned();
+            let text = format!("{}: {REMOVED}", u.kind.as_str());
+            live.failed.remove(&(0, i));
+            live.tripped.remove(&i);
+            live.solo.remove(&i);
+            let node = Node {
+                l: 0,
+                i,
+                size: text.len() as u32,
+                text,
+                free: true,
+                model: None,
+                tries: 0,
+                mechanical: false,
+            };
+            live.put(node.clone());
+            out.push(node);
+        }
+        // Every built merge above, level by level, as a draft merge now.
+        let mut level: BTreeSet<u64> = hit.iter().copied().collect();
+        let mut l = 1u8;
+        while (1u64 << l) <= t && !level.is_empty() {
+            level = level.into_iter().map(|i| i / 2).collect();
+            for &i in &level {
+                if !live.tree.built(l, i) {
+                    continue;
+                }
+                let (Some(a), Some(b)) =
+                    (live.tree.get(l - 1, 2 * i), live.tree.get(l - 1, 2 * i + 1))
+                else {
+                    continue;
+                };
+                let text = tree::draft_merge(&a.text, &b.text, node_bytes);
+                let node = Node {
+                    l,
+                    i,
+                    size: text.len() as u32,
+                    text,
+                    free: false,
+                    model: None,
+                    tries: 0,
+                    mechanical: true,
+                };
+                live.failed.remove(&(l, i));
+                live.put(node.clone());
+                live.stale.insert((l, i));
+                out.push(node);
+            }
+            l += 1;
+        }
+        live.dirty = true;
+        out
+    };
+    state.store.endless_nodes_put(session, &nodes).await?;
+    state.built_tx.send_modify(|v| *v += 1);
+    state.wake.notify_one();
+    Ok(true)
+}
+
 pub(crate) async fn recall(
     inner: &Inner,
     session: SessionId,
@@ -3847,7 +4005,7 @@ pub(crate) async fn recall(
                 if out.iter().any(|v| v.id == i) || out.len() >= limit as usize {
                     continue;
                 }
-                let Some(u) = live.units.get(i as usize) else {
+                let Some(u) = live.units.get(i as usize).filter(|u| u.text != REMOVED) else {
                     continue;
                 };
                 let text = format!(

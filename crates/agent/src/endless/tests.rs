@@ -400,10 +400,9 @@ async fn history_backfills_then_activates_and_resumes_from_rows() {
         .await
         .unwrap();
     let mem = on.memory;
-    assert!(
-        mem.backfill.is_some_and(|b| b.total == 6) || endless.active(id),
-        "{mem:?}"
-    );
+    // 201 P1 (D5): every unit's draft is a line at ingest, so the backfill
+    // ends at once and the session is active right away.
+    assert!(mem.backfill.is_none() && endless.active(id), "{mem:?}");
     assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
     assert!(endless.active(id), "covered → active");
     // Settle waits for the view only; let the merges above finish (6 + 3 + 1 nodes).
@@ -1252,7 +1251,7 @@ async fn queued_merge_does_not_hold_back_the_frontier() {
 /// model call; folding adds nothing and leaves the drafts to refinement;
 /// recall still finds the rows; an epochs session is unchanged.
 #[tokio::test]
-async fn fold_turns_the_backlog_into_mechanical_nodes_at_once() {
+async fn fold_adds_nothing_when_every_unit_already_has_its_draft_line() {
     let p = Probe::new("fake/a", Act::Hang);
     let (_dir, endless, store, id) = harness_for(cfg_137f(None), p.clone()).await;
     endless_session(&endless, &store, id).await;
@@ -1621,7 +1620,8 @@ async fn batches_settle_200_units_in_parallel_and_retry_a_bad_line_alone() {
     .await;
     let m = endless.memory(id).await.unwrap();
     let bytes: usize = m.view.iter().map(|l| l.text.len()).sum();
-    assert!(bytes <= 2 * 16_000, "bounded view: {bytes} B");
+    // The fold fits the 16 KB view budget (plus one line of slack).
+    assert!(bytes <= 16_000 + 1_024, "bounded view: {bytes} B");
 
     endless.pause(id, false).await.unwrap();
     eventually("200 refined level-0 nodes", || async {
@@ -1663,6 +1663,8 @@ struct Picky {
     model: models::Resolved,
     error: &'static str,
     all: bool,
+    /// Calls whose step held `BAD`.
+    bad_calls: AtomicU32,
 }
 
 impl Picky {
@@ -1671,6 +1673,7 @@ impl Picky {
             model: super::pump::resolved_for_tests("fake/picky"),
             error,
             all,
+            bad_calls: AtomicU32::new(0),
         })
     }
 }
@@ -1682,6 +1685,9 @@ impl Compactor for Picky {
         convo: &'a [ChatMessage],
     ) -> BoxFuture<'a, Result<Reply, String>> {
         let step = step_text(convo);
+        if step.contains("BAD") && !step.contains("Merge these two lines") {
+            self.bad_calls.fetch_add(1, Ordering::SeqCst);
+        }
         let fail = !step.contains("Merge these two lines") && (self.all || step.contains("BAD"));
         let line = echo_line(convo);
         Box::pin(async move {
@@ -1743,8 +1749,8 @@ async fn mechanical(store: &Store, id: SessionId) -> Vec<u64> {
 /// unit built since, it is given up — its draft stays, no model line.
 #[tokio::test]
 async fn three_hard_failures_over_ten_minutes_fold_the_unit() {
-    let (_dir, endless, store, id) =
-        picky_session(Picky::new("compactor returned nothing", false), 2, &[1]).await;
+    let c = Picky::new("compactor returned nothing", false);
+    let (_dir, endless, store, id) = picky_session(c.clone(), 2, &[1]).await;
     until("three failures", || {
         super::pump::failed_for_tests(&endless.inner, id)
             .iter()
@@ -1773,6 +1779,14 @@ async fn three_hard_failures_over_ten_minutes_fold_the_unit() {
     assert!(
         endless.quiet_for_tests(id, Duration::from_secs(10)).await,
         "given up: nothing left to refine"
+    );
+    // Given up: no further call for the unit (retry_secs is 0 here).
+    let calls = c.bad_calls.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        c.bad_calls.load(Ordering::SeqCst),
+        calls,
+        "no call after giving up"
     );
     let bad = level0(&store, id)
         .await
@@ -1875,31 +1889,57 @@ async fn unbuilt_session(
     (dir, endless, store, id)
 }
 
+/// [`unbuilt_session`] as a paused meeting-filtered tree (no drafts at
+/// ingest, no merges): the state where a folded run still occurs.
+async fn unbuilt_meeting(
+    ks: std::ops::Range<usize>,
+) -> (crate::TestDir, Endless, Store, SessionId) {
+    let (dir, endless, store, id) = harness_for(cfg_137f(None), Script::new(Duration::ZERO)).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    store
+        .set_endless_paused(id, Some("user"), None)
+        .await
+        .unwrap();
+    store
+        .set_endless_meta(id, UnitFilter::Meeting, 0)
+        .await
+        .unwrap();
+    for k in ks {
+        let text = format!(
+            "[meeting batch {k}] alice: message {k}: deploy step {k} touched /srv/app/config_{k}.yaml and {}",
+            "the rollout notes repeat here ".repeat(19)
+        );
+        store.append(id, &ChatMessage::user(text)).await.unwrap();
+    }
+    endless.attach(id, attached()).await.unwrap();
+    (dir, endless, store, id)
+}
+
 /// R2-6: a folded-run line whose range happens to be a tree address
 /// (`0+512`: id % n == 0, n = 2^k) refuses zoom like an unaligned one.
 /// R2-10: a run of one unit (`0+1`) still zooms to the unit's raw text.
-/// 201 P1: every unit has its draft at ingest, so with merges paused the
-/// folded run is the hard-cap prefix, not an unsummarized run.
+/// 201-FIX R2-1: a drafting session never shows a folded run while lines
+/// exist (`paused_long_user_messages_render_merged_lines`); a paused
+/// meeting tree (unchanged by 201) still does, so the zoom rules are
+/// proved there.
 #[tokio::test]
 async fn zoom_refuses_an_aligned_folded_run_but_opens_a_lone_unit() {
-    let (_d, endless, _s, id) = unbuilt_session(100..400).await;
+    let (_d, endless, _s, id) = unbuilt_meeting(100..400).await;
     let shown = 300 - endless.memory(id).await.unwrap().view[0].n as usize;
 
-    let (_d, endless, _s, id) = unbuilt_session(100..100 + 512 + shown).await;
+    let (_d, endless, _s, id) = unbuilt_meeting(100..100 + 512 + shown).await;
     let run = endless.memory(id).await.unwrap().view[0].clone();
     assert_eq!((run.id, run.n, run.built), (0, 512, false), "{}", run.text);
     assert!(super::tree::addr(0, 512).is_some(), "aligned");
     let e = endless.zoom(id, 0, 512).await.unwrap_err();
     assert!(e.contains("recall"), "{e}");
 
-    let (_d, endless, _s, id) = unbuilt_session(100..100 + 1 + shown).await;
+    let (_d, endless, _s, id) = unbuilt_meeting(100..100 + 1 + shown).await;
     let run = endless.memory(id).await.unwrap().view[0].clone();
     assert_eq!((run.id, run.n, run.built), (0, 1, false), "{}", run.text);
-    assert!(
-        run.text.contains("older lines folded to fit the view"),
-        "a folded run: {}",
-        run.text
-    );
     let lines = endless.zoom(id, 0, 1).await.unwrap();
     assert!(lines[0].text.contains("message 100:"), "{}", lines[0].text);
 }
@@ -2118,6 +2158,7 @@ async fn spend_after_failing_with(error: &'static str) -> (f64, Vec<String>) {
         },
         error,
         all: true,
+        bad_calls: AtomicU32::new(0),
     });
     let (_dir, endless, store, id) = harness_for(
         EndlessConfig {
@@ -3907,4 +3948,99 @@ async fn a_batch_refused_for_one_unit_runs_its_units_alone() {
         .find(|n| n.i == 3)
         .unwrap();
     assert!(bad.model.is_none(), "{bad:?}");
+}
+
+/// 201 R1-3b: rows removed from the context after ingest leave memory —
+/// no view line, node, zoom or recall result shows their text; the other
+/// units keep their indices; the next turn boundary opens a new generation.
+#[tokio::test]
+async fn removed_rows_leave_memory_and_indices_stay() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    let mut seqs = Vec::new();
+    for k in 0..6 {
+        let secret = if k == 2 { " zebrafish42" } else { "" };
+        let q = format!("question {k}: where is config_{k}.yaml{secret}?");
+        let a = format!(
+            "answer {k}: it is under /srv/app{secret} and {}",
+            "the rollout notes repeat here ".repeat(10)
+        );
+        let qs = store.append(id, &ChatMessage::user(q)).await.unwrap();
+        let as_ = store.append(id, &ChatMessage::assistant(a)).await.unwrap();
+        seqs.push((qs, as_));
+    }
+    endless.attach(id, attached()).await.unwrap();
+    let units = endless.memory(id).await.unwrap().units;
+    let before: Vec<String> = {
+        let mut v = Vec::new();
+        for i in 0..units as u64 {
+            v.push(endless.zoom(id, i, 1).await.unwrap()[0].text.clone());
+        }
+        v
+    };
+    let removed: Vec<u64> = (0..units as u64)
+        .filter(|i| before[*i as usize].contains("zebrafish42"))
+        .collect();
+    assert!(!removed.is_empty());
+    eventually("a merge shows the secret", || async {
+        store
+            .endless_nodes(id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|n| n.l > 0 && n.text.contains("zebrafish42"))
+    })
+    .await;
+
+    let rev = store.context_revision(id).await.unwrap();
+    let (q, a) = seqs[2];
+    store
+        .remove_context(
+            id,
+            &rev,
+            &[
+                crate::context::ContextTarget::Message { seq: q },
+                crate::context::ContextTarget::Message { seq: a },
+            ],
+        )
+        .await
+        .unwrap();
+    endless.rows_excluded(id).await.unwrap();
+    assert!(endless.take_regen_request(id), "a new generation is due");
+
+    for n in store.endless_nodes(id).await.unwrap() {
+        assert!(
+            !n.text.contains("zebrafish42"),
+            "node {:?}: {}",
+            (n.l, n.i),
+            n.text
+        );
+    }
+    let view = endless.memory(id).await.unwrap().view;
+    assert!(view.iter().all(|l| !l.text.contains("zebrafish42")));
+    let hits = endless.recall(id, "zebrafish42", 8).await.unwrap();
+    assert!(
+        hits.iter().all(|l| !l.text.contains("zebrafish42")),
+        "{hits:?}"
+    );
+    assert_eq!(endless.memory(id).await.unwrap().units, units, "no shift");
+    for i in 0..units as u64 {
+        let text = endless.zoom(id, i, 1).await.unwrap()[0].text.clone();
+        if removed.contains(&i) {
+            assert!(text.ends_with("(removed from context)"), "{text}");
+        } else {
+            assert_eq!(text, before[i as usize], "unit {i} unchanged");
+        }
+    }
+    // A restart reads the removal back from the rows.
+    endless.detach(id);
+    endless.attach(id, attached()).await.unwrap();
+    for &i in &removed {
+        let text = endless.zoom(id, i, 1).await.unwrap()[0].text.clone();
+        assert!(text.ends_with("(removed from context)"), "{text}");
+    }
 }

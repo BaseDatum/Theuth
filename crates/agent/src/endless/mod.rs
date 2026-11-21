@@ -17,17 +17,17 @@ use serde::{Deserialize, Serialize};
 use crate::store::Store;
 
 pub mod compactor;
+#[cfg(test)]
+pub(crate) mod eval_tests;
 pub mod fold;
 pub mod guards;
 pub mod ledger;
 pub mod lines;
 pub mod pump;
 pub mod tail;
-pub mod tool_pin;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-pub(crate) mod eval_tests;
+pub mod tool_pin;
 pub mod tree;
 pub mod units;
 
@@ -976,6 +976,9 @@ pub(crate) struct Inner {
     /// 201 (P5): chats whose next turn boundary trims down to the low mark
     /// (`endless_fold` / `/compact` while a turn ran).
     pub(crate) trim_asked: Mutex<std::collections::HashSet<SessionId>>,
+    /// 201 R1-3b: chats whose next turn boundary opens a new generation
+    /// (rows were removed from the context; the frozen view still shows them).
+    pub(crate) regen_asked: Mutex<std::collections::HashSet<SessionId>>,
     /// 201 §11 (P6b): each endless chat's tool part of the request prefix,
     /// frozen per generation (process-local; a restart rebuilds it cold).
     pub(crate) tool_pins: Mutex<HashMap<SessionId, tool_pin::ToolPin>>,
@@ -1014,6 +1017,7 @@ impl Endless {
                 compactor_for_tests: None,
                 agent_tails: Mutex::new(HashMap::new()),
                 trim_asked: Mutex::new(std::collections::HashSet::new()),
+                regen_asked: Mutex::new(std::collections::HashSet::new()),
                 tool_pins: Mutex::new(HashMap::new()),
             }),
         }
@@ -1350,6 +1354,23 @@ impl Endless {
     /// 201 (P5): take the [`Endless::request_trim`] mark (once).
     pub fn take_trim_request(&self, session: SessionId) -> bool {
         self.inner.trim_asked.lock().remove(&session)
+    }
+
+    /// 201 R1-3b: rows of `session` were removed from the context
+    /// (`remove_context`): their units' lines become
+    /// `<kind>: (removed from context)`, the merges above are rebuilt, the
+    /// recall index follows, and the next turn boundary opens a new
+    /// generation. A meeting tree is untouched.
+    pub async fn rows_excluded(&self, session: SessionId) -> anyhow::Result<()> {
+        if pump::rows_excluded(&self.inner, session).await? {
+            self.inner.regen_asked.lock().insert(session);
+        }
+        Ok(())
+    }
+
+    /// 201 R1-3b: take the [`Endless::rows_excluded`] mark (once).
+    pub fn take_regen_request(&self, session: SessionId) -> bool {
+        self.inner.regen_asked.lock().remove(&session)
     }
 
     /// 201 §11 (P6b): the session's frozen tool part (a copy).
