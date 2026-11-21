@@ -101,19 +101,23 @@ helper:
     build_helper
     echo "built $HELPER_SRC ($HELPER)"
 
-# The in-process OpenUI check/merge bundle: packages/apps/src/inproc.ts → crates/app-js/js/theuth-apps-inproc.js
-# (scripts/build-inproc.ts), its golden transcript (scripts/record-inproc-golden.ts) and the inputs' hash in
-# crates/app-js/js/BUNDLE.sha256. Needs bun; a cargo build never does (the bundle is committed).
+# The in-process bundles (crates/app-js): the OpenUI check/merge validator (packages/apps/src/inproc.ts →
+# js/theuth-apps-inproc.js, scripts/build-inproc.ts, golden transcript scripts/record-inproc-golden.ts) and the
+# parse-only mermaid check (src/inproc-mermaid.ts → js/theuth-mermaid-inproc.js, scripts/build-inproc-mermaid.ts),
+# with their inputs' hashes in crates/app-js/js/BUNDLE.sha256. Needs bun; a cargo build never does (both are
+# committed). The mermaid parity golden file is recorded separately from the jsdom reference
+# (`bun run test-inproc/mermaid-corpus/reference.ts`).
 apps-bundle:
     #!/usr/bin/env bash
     set -euo pipefail
-    (cd packages/apps && bun install --frozen-lockfile && bun run scripts/build-inproc.ts && bun run scripts/record-inproc-golden.ts)
+    (cd packages/apps && bun install --frozen-lockfile && bun run scripts/build-inproc.ts && bun run scripts/record-inproc-golden.ts && bun run scripts/build-inproc-mermaid.ts)
     cp packages/apps/dist/theuth-apps-inproc.js crates/app-js/js/theuth-apps-inproc.js
+    cp packages/apps/dist/theuth-mermaid-inproc.js crates/app-js/js/theuth-mermaid-inproc.js
     {{just_executable()}} _apps-bundle-hash > crates/app-js/js/BUNDLE.sha256
     cat crates/app-js/js/BUNDLE.sha256
 
-# Fails when packages/apps changed since the committed bundle was built (run `just apps-bundle`),
-# or when the committed bundle is not the one recorded.
+# Fails when packages/apps changed since the committed bundles were built (run `just apps-bundle`),
+# or when a committed bundle is not the one recorded.
 apps-bundle-check:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -122,16 +126,19 @@ apps-bundle-check:
         exit 1
     fi
 
-# `inputs <sha256>`: over packages/apps/src/**, generated/*, package.json, bun.lock, tsconfig.json, patches/*,
-# scripts/build-inproc.ts (sorted per-file sha256 lines, hashed); `bundle <sha256>`: the committed bundle.
-# Shared by `apps-bundle` and `apps-bundle-check`.
+# `inputs` / `mermaid-inputs <sha256>`: sorted per-file sha256 lines, hashed, over packages/apps/src/**, patches/*,
+# package.json, bun.lock, tsconfig.json and the bundle's build script (+ generated/* for the OpenUI bundle);
+# `bundle` / `mermaid-bundle <sha256>`: the committed bundles. Shared by `apps-bundle` and `apps-bundle-check`.
 _apps-bundle-hash:
     #!/usr/bin/env bash
     set -euo pipefail
     cd packages/apps
-    inputs=$({ find src generated patches -type f | LC_ALL=C sort; printf '%s\n' package.json bun.lock tsconfig.json scripts/build-inproc.ts; } | while read -r f; do shasum -a 256 "$f"; done | shasum -a 256 | cut -d' ' -f1)
+    hash_of() { while read -r f; do shasum -a 256 "$f"; done | shasum -a 256 | cut -d' ' -f1; }
+    inputs=$({ find src generated patches -type f | LC_ALL=C sort; printf '%s\n' package.json bun.lock tsconfig.json scripts/build-inproc.ts; } | hash_of)
     bundle=$(shasum -a 256 ../../crates/app-js/js/theuth-apps-inproc.js | cut -d' ' -f1)
-    printf 'inputs %s\nbundle %s\n' "$inputs" "$bundle"
+    minputs=$({ find src patches -type f | LC_ALL=C sort; printf '%s\n' package.json bun.lock tsconfig.json scripts/build-inproc-mermaid.ts; } | hash_of)
+    mbundle=$(shasum -a 256 ../../crates/app-js/js/theuth-mermaid-inproc.js | cut -d' ' -f1)
+    printf 'inputs %s\nbundle %s\nmermaid-inputs %s\nmermaid-bundle %s\n' "$inputs" "$bundle" "$minputs" "$mbundle"
 
 # Standalone documents helper (bun build --compile) → packages/documents/dist/theuth-documents (59 §3.2);
 # `--version` must print the PROTOCOL_VERSION of packages/documents/src/protocol.ts. Debug builds of `t`

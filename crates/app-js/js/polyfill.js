@@ -1,12 +1,15 @@
-// The web globals in-process bundles may need that a bare deno_core runtime does not have (crates/app-js).
+// The web globals in-process bundles need that a bare deno_core runtime does not have (crates/app-js).
 // Copied from crates/document-js/js/polyfill.js (crypto, atob/btoa, timers) plus TextEncoder/TextDecoder,
-// structuredClone and console.
+// structuredClone, URL and console (the latter four from the mermaid spike's polyfill, docs/design/apps-mermaid-inproc-spike.md).
 //
-// What the apps bundle (theuth-apps-inproc.js) needs, measured by running packages/apps/test/inproc-vm.test.ts
-// (a node:vm context with only ECMAScript built-ins + this file): `TextEncoder` (check.ts's UTF-8 byte cap and
-// inproc.ts's line cap). `console.warn`/`console.error` (lang-core diagnostics paths) are provided too. Its opt-in
-// telemetry needs `fetch` + `process.env`, which do not exist here, so it stays off (probed with `typeof`).
-// Everything else it touches is ECMAScript. The rest of this file serves later bundles (mermaid).
+// APPS (theuth-apps-inproc.js), measured by packages/apps/test/inproc.test.ts (a node:vm context with only
+// ECMAScript built-ins + this file): `TextEncoder` only (check.ts's UTF-8 byte cap, inproc.ts's line cap). Its
+// opt-in telemetry needs `fetch` + `process.env`, which do not exist here, so it stays off.
+// MERMAID (theuth-mermaid-inproc.js), measured by the spike's bare-context corpus run and replayed by
+// packages/apps/test/inproc-mermaid.test.ts: `TextEncoder`/`TextDecoder` (vscode-jsonrpc in every langium-based
+// diagram chunk), `structuredClone` (pie/radar/usecase dbs, mermaid's config), `URL` (only
+// @braintree/sanitize-url on `click X "http…"`, behind `URL.canParse`: answering false makes the href
+// about:blank, the parse answer is unchanged; constructing one throws), timers (referenced, not called).
 ((core) => {
   const ops = core.ops;
 
@@ -160,7 +163,9 @@
 
   // Structured clone of plain data (primitives, plain objects, arrays, Date, RegExp, Map, Set, typed arrays,
   // ArrayBuffer), cycles preserved; functions and symbols throw like the spec's DataCloneError.
-  globalThis.structuredClone = (value) => {
+  // deno_core's `core.structuredClone` (V8's serializer, this realm) when present; the JS fallback (plain data)
+  // serves the bun node:vm tests, whose host clone would hand back host-realm Maps.
+  globalThis.structuredClone = core.structuredClone ? (value) => core.structuredClone(value) : (value) => {
     const seen = new Map();
     const clone = (v) => {
       if (typeof v === "function" || typeof v === "symbol") throw new TypeError(`structuredClone: ${typeof v} cannot be cloned`);
@@ -197,6 +202,16 @@
     };
     return clone(value);
   };
+
+  class URL {
+    constructor(url) {
+      throw new TypeError(`URL is not available in the in-process runtime: ${String(url).slice(0, 80)}`);
+    }
+    static canParse() {
+      return false;
+    }
+  }
+  globalThis.URL = URL;
 
   // deno_core's bare runtime may or may not install a console; keep one that writes to stderr.
   if (typeof globalThis.console === "undefined") {

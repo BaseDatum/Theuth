@@ -146,4 +146,24 @@ mod tests {
         );
         assert!(dynamic_statements("root = Stack([a])\na = TextContent(\"q\")").is_empty());
     }
+
+    /// The `mermaid` fence checker against the real in-process bundle: a valid
+    /// diagram passes, a broken one is located by line.
+    #[tokio::test]
+    async fn mermaid_fences_are_checked_by_the_in_process_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let helper = Arc::new(crate::helper::Helper::new(rt.shutdown.clone()));
+        let checker = Mermaid(Arc::new(Core::new(rt, helper)));
+        assert_eq!(
+            checker.check("sequenceDiagram\n  A->>B: hi").await,
+            Ok(vec![])
+        );
+        let errs = checker
+            .check("sequenceDiagram\n  A->>B: hi\n}}} ]]] ((( @@@ !!! <<<")
+            .await
+            .unwrap();
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].path, "line:3", "{errs:?}");
+    }
 }

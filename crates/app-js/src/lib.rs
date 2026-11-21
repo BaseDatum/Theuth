@@ -1,15 +1,17 @@
 //! In-process JS bundles for the app plugin, run in a bare deno_core `JsRuntime` — the same V8 the `theuth`
-//! binary already links through obscura-js. Phase 1 serves one bundle, [`APPS`]: the OpenUI Lang check/merge
-//! validator (`packages/apps/src/inproc.ts`, `@openuidev/lang-core` + the generated library schema) that used
-//! to be the `theuth-app-parser` Bun binary. As built: docs/design/apps-inproc-as-built-P1.md.
+//! binary already links through obscura-js. Two bundles, each in its own isolate on its own lazily started
+//! thread with its own [`Limits`]: [`APPS`], the OpenUI Lang check/merge validator (`packages/apps/src/inproc.ts`,
+//! `@openuidev/lang-core` + the generated library schema) that used to be the `theuth-app-parser` Bun binary,
+//! and [`MERMAID`], the parse-only mermaid check (`packages/apps/src/inproc-mermaid.ts`, mermaid 12 with
+//! DOMPurify aliased to an identity shim). As built: docs/design/apps-inproc-as-built-P1.md (phase 1 and 2).
 //!
-//! The runtime is generic over a [`Bundle`] (script + entry global + thread name), so a second bundle
-//! (mermaid, later) runs in its own isolate on its own thread with its own [`Limits`]. The code is a copy of
-//! `crates/document-js` (feat/documents-inproc 0ca80bbf3) with that one parameter added; once both branches
-//! are merged the two crates collapse into one (see the as-built note).
+//! The runtime is generic over a [`Bundle`] (script + entry global + thread name). The code is a copy of
+//! `crates/document-js` (feat/documents-inproc 0ca80bbf3) with that parameter and [`Limits::first_deadline`]
+//! added; once both branches are merged the two crates collapse into one (see the as-built note).
 //!
 //! Wire: the bundle's own protocol, unchanged. One request line in; the bundle's output lines for it out
-//! (for [`APPS`]: exactly one `protocol.ts` response line).
+//! (for [`APPS`] and [`MERMAID`]: exactly one `protocol.ts` response line). The entry's `call` may answer
+//! synchronously ([`APPS`]) or with a promise ([`MERMAID`]): the runtime drives the event loop until the reply.
 //!
 //! - [`BundleJs`] owns one runtime (`!Send`); [`BundleJs::call`] serves one request.
 //! - [`BundleThread`] is the `Send + Clone` handle: one lazily started OS thread owns the runtime, requests
@@ -70,6 +72,16 @@ pub static APPS: Bundle = Bundle {
     thread: "app-js",
 };
 
+/// The parse-only mermaid check: `just apps-bundle` rebuilds `js/theuth-mermaid-inproc.js` from `packages/apps`
+/// (`scripts/build-inproc-mermaid.ts`, render-only libraries stubbed) and records its inputs' hash in
+/// `js/BUNDLE.sha256`. `call` answers with a promise.
+pub static MERMAID: Bundle = Bundle {
+    name: "<theuth:mermaid>",
+    source: include_str!("../js/theuth-mermaid-inproc.js"),
+    global: "theuthMermaid",
+    thread: "mermaid-js",
+};
+
 /// Default [`Limits::deadline`].
 pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(30);
 /// Floor of the deadline for building a runtime (polyfill + bundle load): construction is not a request, and
@@ -83,8 +95,11 @@ pub const DEFAULT_MAX_LINE: usize = 16 * 1024 * 1024;
 /// Per-runtime guards.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Limits {
-    /// Longest one request (or raw script) may run, event loop included.
+    /// Longest one warm request (or raw script) may run, event loop included.
     pub deadline: Duration,
+    /// Longest the first request of each runtime may run (it pays for lazily evaluated chunks, e.g. a mermaid
+    /// diagram type's parser); the effective value is never below [`Self::deadline`].
+    pub first_deadline: Duration,
     /// V8 heap ceiling in bytes (`v8::CreateParams::heap_limits` max).
     pub heap_limit: usize,
     /// Largest request line in bytes; longer ones are rejected before they reach JS.
@@ -95,6 +110,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             deadline: DEFAULT_DEADLINE,
+            first_deadline: DEFAULT_DEADLINE,
             heap_limit: DEFAULT_HEAP_LIMIT,
             max_line: DEFAULT_MAX_LINE,
         }

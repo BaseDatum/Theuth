@@ -147,6 +147,9 @@ pub struct BundleJs {
     heap_tripped: Arc<AtomicBool>,
     limits: Limits,
     failure: Option<Error>,
+    /// A request has been served on this runtime: later ones get [`Limits::deadline`], the first
+    /// [`Limits::first_deadline`].
+    warm: bool,
 }
 
 impl BundleJs {
@@ -202,6 +205,7 @@ impl BundleJs {
                 ..limits
             },
             failure: None,
+            warm: false,
         };
         this.run(
             "<theuth:polyfill>",
@@ -254,11 +258,17 @@ impl BundleJs {
             });
         }
         self.exchange(|x| x.request = Some(line));
+        let warm_deadline = self.limits.deadline;
+        if !self.warm {
+            self.limits.deadline = self.limits.first_deadline.max(warm_deadline);
+            self.warm = true;
+        }
         let out = self.run(
             "<theuth:call>",
             ModuleCodeString::from_static("globalThis.__theuthPump()"),
             true,
         );
+        self.limits.deadline = warm_deadline;
         // The slot is per request: a pump that never took its line must not hand it to the next one.
         self.exchange(|x| x.request = None);
         let Some(out) = out? else {

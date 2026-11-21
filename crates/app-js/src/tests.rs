@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::{APPS, BundleJs, BundleThread, Error, Limits, Reply};
+use crate::{APPS, BundleJs, BundleThread, Error, Limits, MERMAID, Reply};
 
 const PROTOTYPE: &str = "root = Stack([title, status, controls])\n$stage = \"idle\"\ntitle = TextContent(\"## Drill\")\nstatus = TextContent(\"Stage: \" + $stage)\ncontrols = Stack([begin, reset], \"row\")\nbegin = Button(\"Begin\", Action([@Set($stage, \"cutover\")]))\nreset = Button(\"Reset\", Action([@Reset($stage)]))";
 
@@ -478,4 +478,88 @@ async fn two_handles_run_two_isolates() {
 async fn init_platform_is_safe_inside_an_async_context() {
     crate::init_platform();
     crate::init_platform();
+}
+
+/// The mermaid spike's ordering bug: the jobs queued behind a fatal failure must be failed before the failing
+/// job's reply is observable, so a request the client sends after seeing that reply runs on the fresh runtime.
+/// Here the epoch moves on before the reply is sent: the queued-before jobs fail without running, the
+/// sent-after one is served by generation 2 even though the old ones are still in the queue ahead of it.
+#[tokio::test]
+async fn a_request_sent_after_a_fatal_reply_runs_fresh_and_the_ones_queued_before_fail() {
+    let t = thread(limits());
+    round_trip(&t, "before").await;
+    // Marks the runtime so we can tell which one served a request.
+    t.eval_raw("globalThis.__mark = 'old';".into())
+        .await
+        .expect("mark");
+    let spin = t.eval_raw("for (;;) {}".into());
+    let queued: Vec<_> = (0..3)
+        .map(|i| t.eval_raw(format!("if (globalThis.__mark !== undefined) throw new Error('ran on the old runtime {i}');")))
+        .collect();
+    assert_eq!(spin.await, Err(Error::Timeout));
+    // After seeing the failure: this job must run on the fresh runtime (no mark there).
+    let after = t.eval_raw(
+        "if (globalThis.__mark !== undefined) throw new Error('after: old runtime');".into(),
+    );
+    for q in queued {
+        assert_eq!(
+            q.await,
+            Err(Error::Timeout),
+            "queued before the failure: failed, not run"
+        );
+    }
+    assert_eq!(
+        after.await,
+        Ok(Reply {
+            events: Vec::new(),
+            reply: String::new()
+        })
+    );
+    assert_eq!(t.generation(), 2);
+    round_trip(&t, "after").await;
+}
+
+fn mermaid_line(id: &str, source: &str) -> String {
+    json!({ "id": id, "op": "check_mermaid", "source": source }).to_string()
+}
+
+/// The mermaid bundle answers through a promise; the runtime drives the event loop until the reply op fires.
+#[tokio::test]
+async fn mermaid_bundle_answers_asynchronously_on_its_own_lazy_thread() {
+    let m = BundleThread::new(
+        &MERMAID,
+        Limits {
+            deadline: Duration::from_secs(5),
+            first_deadline: Duration::from_secs(10),
+            heap_limit: 256 * 1024 * 1024,
+            max_line: 4 * 1024 * 1024,
+        },
+        CancellationToken::new(),
+    );
+    assert!(!m.is_running());
+    let ok = m
+        .request(mermaid_line("m1", "flowchart TD\n  A --> B"))
+        .await
+        .expect("parse");
+    assert_eq!(ok.reply, r#"{"id":"m1","ok":true}"#);
+    assert!(m.is_running());
+    let bad = parse(
+        &m.request(mermaid_line(
+            "m2",
+            "flowchart TD\n  A --> B\n}}} ]]] ((( @@@ !!! <<<",
+        ))
+        .await
+        .expect("parse")
+        .reply,
+    );
+    assert_eq!(bad["ok"], false);
+    assert_eq!(bad["errors"][0]["line"], 3, "{bad}");
+    let v = std::thread::spawn(|| {
+        BundleJs::new(&MERMAID, Limits::default())
+            .and_then(|mut js| js.version())
+            .expect("version")
+    })
+    .join()
+    .expect("version thread");
+    assert_eq!(v, "theuth-mermaid 1");
 }

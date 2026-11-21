@@ -1,16 +1,16 @@
-//! The headless parser (46 §2.1), in-process: the OpenUI check/merge validator
-//! (`packages/apps/src/inproc.ts`) runs in a deno_core isolate on its own
-//! lazily started thread ([`app_js::BundleThread`] serving [`app_js::APPS`]);
-//! no executable, no child process (apps-inproc-as-built-P1.md). This side
-//! owns admission ([`PENDING`] queued requests behind the one being served,
-//! more → [`Error::Busy`]) and the wire (`protocol.ts`, unchanged); the
-//! runtime owns the [`DEADLINE`] (a watchdog terminates the script), the
-//! heap ceiling and panic containment, and rebuilds itself after any of
-//! them: the request fails, the next one runs on a fresh isolate. A reply
-//! whose id is not the request's is treated the same way. Shutdown stops
-//! the thread.
-//!
-//! `check_mermaid` is not served in-process yet: see [`MermaidBackend`].
+//! The headless parser (46 §2.1), in-process: two bundles in two deno_core
+//! isolates, each on its own lazily started thread ([`app_js::BundleThread`]):
+//! the OpenUI check/merge validator (`packages/apps/src/inproc.ts`,
+//! [`app_js::APPS`]) and the parse-only mermaid check
+//! (`packages/apps/src/inproc-mermaid.ts`, [`app_js::MERMAID`]); no
+//! executable, no child process (apps-inproc-as-built-P1.md). This side owns
+//! admission — each isolate has its own lane of one request being served plus
+//! [`PENDING`] queued, more → [`Error::Busy`], so queued mermaid work never
+//! takes a `check` slot — and the wire (`protocol.ts`, unchanged); the runtime
+//! owns the deadlines (a watchdog terminates the script), the heap ceiling
+//! and panic containment, and rebuilds itself after any of them: the request
+//! fails, the next one runs on a fresh isolate. A reply whose id is not the
+//! request's is treated the same way. Shutdown stops both threads.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,18 +23,22 @@ use crate::{AppBinding, AppDiagnostic};
 
 /// Requests queued behind the one being served (46 §7 "parser admission").
 pub const PENDING: usize = 8;
-/// Per request: how long the validator may run (event loop included) before
-/// it is terminated and rebuilt. Building the isolate (bundle load, first
-/// request after start or a rebuild) is not counted (`app_js::LOAD_DEADLINE`).
+/// Per OpenUI request: how long the validator may run (event loop included)
+/// before it is terminated and rebuilt. Building the isolate (bundle load,
+/// after start or a rebuild) is not counted (`app_js::LOAD_DEADLINE`).
 pub const DEADLINE: Duration = Duration::from_secs(2);
-/// The first `check_mermaid` once a mermaid backend is plugged in (mermaid +
-/// jsdom load lazily and take seconds under load, 30 §5); later ones get
-/// [`DEADLINE`]. Unused while [`MERMAID`] is [`MermaidBackend::FailOpen`].
-pub const MERMAID_FIRST_DEADLINE: Duration = Duration::from_secs(15);
-/// Largest request line accepted; the validator refuses longer lines too
+/// Per warm `check_mermaid`: V8 runs mermaid's super-linear class-diagram
+/// parser ~1.6× slower than the old helper's JSC, so a 32 KB fence needs ~3 s
+/// (docs/design/apps-mermaid-inproc-spike.md §4). Own thread: it never delays
+/// `check`.
+pub const MERMAID_DEADLINE: Duration = Duration::from_secs(5);
+/// The first `check_mermaid` on each mermaid runtime (its first diagram
+/// chunk evaluates; measured ≤ 35 ms, the rest is headroom for a loaded box).
+pub const MERMAID_FIRST_DEADLINE: Duration = Duration::from_secs(10);
+/// Largest request line accepted; the bundles refuse longer lines too
 /// (`inproc.ts` `MAX_LINE_BYTES`).
 pub const MAX_LINE: usize = 4 * 1024 * 1024;
-/// V8 heap ceiling of the validator's isolate.
+/// V8 heap ceiling of each isolate (OpenUI and mermaid).
 const HEAP_LIMIT: usize = 256 * 1024 * 1024;
 
 /// One visible tool as the validator binds it (`protocol.ts` `ToolSnapshot`).
@@ -126,21 +130,27 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// THE MERMAID SEAM (apps-inproc-as-built-P1.md § "Mermaid seam"): what
-/// [`Helper::check_mermaid`] runs on. Phase 1 has no in-process mermaid
-/// parser, so it answers "no errors" — exactly what `fence.rs` already does
-/// when the checker fails (fail-open). The mermaid phase adds a variant
-/// (e.g. `Js` over a second [`app_js::BundleThread`] with its own bundle,
-/// limits and [`MERMAID_FIRST_DEADLINE`]), sets [`MERMAID`] to it and fills
-/// in its arm in [`Helper::check_mermaid`]; nothing else changes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MermaidBackend {
-    /// No mermaid parser: every diagram passes.
-    FailOpen,
+/// `check_mermaid` request line (`protocol.ts` `MermaidRequest`).
+#[derive(Serialize)]
+struct MermaidRequest<'a> {
+    id: &'a str,
+    op: &'static str,
+    source: &'a str,
 }
 
-/// The backend [`Helper::check_mermaid`] uses.
-pub const MERMAID: MermaidBackend = MermaidBackend::FailOpen;
+/// `check_mermaid` response body (`protocol.ts` `MermaidResponse`).
+#[derive(Deserialize)]
+struct MermaidResponse {
+    ok: bool,
+    #[serde(default)]
+    errors: Vec<MermaidError>,
+}
+
+#[derive(Deserialize)]
+struct MermaidError {
+    line: Option<u32>,
+    message: String,
+}
 
 /// A canned responder for other crates' tests: request line → response line.
 #[doc(hidden)]
@@ -149,6 +159,22 @@ pub type Responder = Arc<dyn Fn(&str) -> String + Send + Sync>;
 enum Backend {
     Js(app_js::BundleThread),
     Canned(Responder),
+}
+
+/// One isolate (or canned responder) and its admission: the request being
+/// served plus [`PENDING`] queued.
+struct Lane {
+    backend: Backend,
+    admission: Arc<Semaphore>,
+}
+
+impl Lane {
+    fn new(backend: Backend) -> Self {
+        Self {
+            backend,
+            admission: Arc::new(Semaphore::new(PENDING + 1)),
+        }
+    }
 }
 
 /// Runtime input (a test's closure), so `OnceLock`, not `LazyLock`.
@@ -162,38 +188,51 @@ pub fn install_canned(respond: Responder) -> bool {
     CANNED.set(respond).is_ok()
 }
 
-/// Handle to the validator. Cheap to share behind an `Arc`; its thread and
-/// isolate start on the first request.
+/// Handle to the parsers. Cheap to share behind an `Arc`; each thread and
+/// isolate starts on its first request (no mermaid fence → no mermaid isolate).
 pub struct Helper {
-    backend: Backend,
-    /// [`PENDING`] + the one being served.
-    admission: Arc<Semaphore>,
+    openui: Lane,
+    mermaid: Lane,
     next: std::sync::atomic::AtomicU64,
 }
 
 impl Helper {
-    /// The in-process validator; `shutdown` stops its thread.
+    /// The in-process parsers; `shutdown` stops their threads.
     pub fn new(shutdown: CancellationToken) -> Self {
-        let limits = app_js::Limits {
+        let openui = app_js::Limits {
             deadline: DEADLINE,
+            first_deadline: DEADLINE,
             heap_limit: HEAP_LIMIT,
             max_line: MAX_LINE,
         };
-        Self::with(Backend::Js(app_js::BundleThread::new(
-            &app_js::APPS,
-            limits,
-            shutdown,
-        )))
+        let mermaid = app_js::Limits {
+            deadline: MERMAID_DEADLINE,
+            first_deadline: MERMAID_FIRST_DEADLINE,
+            heap_limit: HEAP_LIMIT,
+            max_line: MAX_LINE,
+        };
+        Self::with(
+            Backend::Js(app_js::BundleThread::new(
+                &app_js::APPS,
+                openui,
+                shutdown.clone(),
+            )),
+            Backend::Js(app_js::BundleThread::new(
+                &app_js::MERMAID,
+                mermaid,
+                shutdown,
+            )),
+        )
     }
 
-    /// A helper answering every request line with `respond`'s line (tests of
-    /// crates that need a parser verdict without the real validator).
+    /// A helper answering every request line (both ops) with `respond`'s
+    /// line (tests of crates that need a parser verdict without the real one).
     #[doc(hidden)]
     pub fn canned(respond: Responder) -> Self {
-        Self::with(Backend::Canned(respond))
+        Self::with(Backend::Canned(respond.clone()), Backend::Canned(respond))
     }
 
-    /// What [`crate::AppPlugin`] starts: the in-process validator, or the
+    /// What [`crate::AppPlugin`] starts: the in-process parsers, or the
     /// responder a test installed with [`install_canned`].
     pub(crate) fn for_plugin(shutdown: CancellationToken) -> Self {
         match CANNED.get() {
@@ -202,10 +241,10 @@ impl Helper {
         }
     }
 
-    fn with(backend: Backend) -> Self {
+    fn with(openui: Backend, mermaid: Backend) -> Self {
         Self {
-            backend,
-            admission: Arc::new(Semaphore::new(PENDING + 1)),
+            openui: Lane::new(openui),
+            mermaid: Lane::new(mermaid),
             next: std::sync::atomic::AtomicU64::new(1),
         }
     }
@@ -225,12 +264,36 @@ impl Helper {
         self.request("merge_check", patch, Some(base), tools).await
     }
 
-    /// Syntax-check one mermaid diagram (30 §5): `path` is `line:N` when the
-    /// parser located the error, else `""`. Runs on [`MERMAID`].
-    pub async fn check_mermaid(&self, _source: &str) -> Result<Vec<tools::FenceError>, Error> {
-        match MERMAID {
-            MermaidBackend::FailOpen => Ok(Vec::new()),
-        }
+    /// Syntax-check one mermaid diagram (30 §5) on the mermaid isolate: `path`
+    /// is `line:N` when the parser located the error, else `""`.
+    pub async fn check_mermaid(&self, source: &str) -> Result<Vec<tools::FenceError>, Error> {
+        let id = self.next_id();
+        let line = serde_json::to_string(&MermaidRequest {
+            id: &id,
+            op: "check_mermaid",
+            source,
+        })
+        .map_err(|e| Error::Protocol(format!("serialize request: {e}")))?;
+        let v = send(&self.mermaid, line, &id).await?;
+        let r: MermaidResponse = serde_json::from_value(v)
+            .map_err(|e| Error::Protocol(format!("response body: {e}")))?;
+        Ok(if r.ok {
+            Vec::new()
+        } else {
+            r.errors
+                .into_iter()
+                .map(|e| tools::FenceError {
+                    path: e.line.map(|l| format!("line:{l}")).unwrap_or_default(),
+                    message: e.message,
+                })
+                .collect()
+        })
+    }
+
+    fn next_id(&self) -> String {
+        self.next
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .to_string()
     }
 
     async fn request(
@@ -240,10 +303,7 @@ impl Helper {
         base: Option<&str>,
         tools: &[ToolSnapshot],
     ) -> Result<CheckResult, Error> {
-        let id = self
-            .next
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            .to_string();
+        let id = self.next_id();
         let line = serde_json::to_string(&Request {
             id: id.clone(),
             op,
@@ -252,54 +312,54 @@ impl Helper {
             tools,
         })
         .map_err(|e| Error::Protocol(format!("serialize request: {e}")))?;
-        let v = self.send(line, &id).await?;
+        let v = send(&self.openui, line, &id).await?;
         serde_json::from_value(v).map_err(|e| Error::Protocol(format!("response body: {e}")))
     }
+}
 
-    /// Admit, run, match the reply to `id`.
-    async fn send(&self, line: String, id: &str) -> Result<serde_json::Value, Error> {
-        if line.len() > MAX_LINE {
-            return Err(Error::Protocol(format!(
-                "request is {} bytes; the helper accepts {MAX_LINE}",
-                line.len()
-            )));
-        }
-        let _permit = self
-            .admission
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| Error::Busy)?;
-        let reply = match &self.backend {
-            Backend::Canned(respond) => respond(&line),
-            Backend::Js(js) => match js.enqueue(line).await {
-                Ok(r) => r.reply,
-                Err(app_js::Error::Timeout) => return Err(Error::Timeout),
-                Err(app_js::Error::TooLarge { len, max }) => {
-                    return Err(Error::Protocol(format!(
-                        "request is {len} bytes; the helper accepts {max}"
-                    )));
-                }
-                Err(e) => return Err(Error::Crashed(e.to_string())),
-            },
-        };
-        let v: serde_json::Value =
-            serde_json::from_str(&reply).map_err(|e| Error::Protocol(format!("response: {e}")))?;
-        if v.get("id").and_then(|i| i.as_str()) != Some(id) {
-            // Output that answers another request cannot be trusted, nor can the
-            // runtime that produced it: give it up; the next request runs fresh.
-            if let Backend::Js(js) = &self.backend {
-                js.restart();
-            }
-            return Err(Error::Crashed(format!(
-                "response id {} for request {id}; the parser runtime is rebuilt",
-                v.get("id").unwrap_or(&serde_json::Value::Null)
-            )));
-        }
-        if let Some(e) = v.get("error").and_then(|e| e.as_str()) {
-            return Err(Error::Protocol(e.to_owned()));
-        }
-        Ok(v)
+/// Admit on `lane`, run, match the reply to `id`.
+async fn send(lane: &Lane, line: String, id: &str) -> Result<serde_json::Value, Error> {
+    if line.len() > MAX_LINE {
+        return Err(Error::Protocol(format!(
+            "request is {} bytes; the helper accepts {MAX_LINE}",
+            line.len()
+        )));
     }
+    let _permit = lane
+        .admission
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| Error::Busy)?;
+    let reply = match &lane.backend {
+        Backend::Canned(respond) => respond(&line),
+        Backend::Js(js) => match js.enqueue(line).await {
+            Ok(r) => r.reply,
+            Err(app_js::Error::Timeout) => return Err(Error::Timeout),
+            Err(app_js::Error::TooLarge { len, max }) => {
+                return Err(Error::Protocol(format!(
+                    "request is {len} bytes; the helper accepts {max}"
+                )));
+            }
+            Err(e) => return Err(Error::Crashed(e.to_string())),
+        },
+    };
+    let v: serde_json::Value =
+        serde_json::from_str(&reply).map_err(|e| Error::Protocol(format!("response: {e}")))?;
+    if v.get("id").and_then(|i| i.as_str()) != Some(id) {
+        // Output that answers another request cannot be trusted, nor can the
+        // runtime that produced it: give it up; the next request runs fresh.
+        if let Backend::Js(js) = &lane.backend {
+            js.restart();
+        }
+        return Err(Error::Crashed(format!(
+            "response id {} for request {id}; the parser runtime is rebuilt",
+            v.get("id").unwrap_or(&serde_json::Value::Null)
+        )));
+    }
+    if let Some(e) = v.get("error").and_then(|e| e.as_str()) {
+        return Err(Error::Protocol(e.to_owned()));
+    }
+    Ok(v)
 }
 
 #[cfg(test)]
@@ -372,7 +432,7 @@ mod tests {
     async fn a_hang_is_terminated_at_the_deadline_and_the_next_request_is_served() {
         let h = helper();
         assert!(h.check("root = Stack([])", &[]).await.is_ok());
-        let Backend::Js(js) = &h.backend else {
+        let Backend::Js(js) = &h.openui.backend else {
             unreachable!()
         };
         js.eval_raw("globalThis.theuthApps.call = () => { for (;;) {} };".into())
@@ -398,7 +458,7 @@ mod tests {
     async fn a_reply_for_another_request_fails_it_and_the_runtime_is_rebuilt() {
         let h = helper();
         assert!(h.check("root = Stack([])", &[]).await.is_ok());
-        let Backend::Js(js) = &h.backend else {
+        let Backend::Js(js) = &h.openui.backend else {
             unreachable!()
         };
         js.eval_raw(
@@ -434,7 +494,7 @@ mod tests {
     async fn more_than_pending_queued_requests_are_busy_not_queued() {
         let h = Arc::new(helper());
         assert!(h.check("root = Stack([])", &[]).await.is_ok());
-        let Backend::Js(js) = &h.backend else {
+        let Backend::Js(js) = &h.openui.backend else {
             unreachable!()
         };
         // Occupy the runtime thread (no admission permit), then admit PENDING + 1.
@@ -447,7 +507,7 @@ mod tests {
             })
             .collect();
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while h.admission.available_permits() > 0 {
+        while h.openui.admission.available_permits() > 0 {
             assert!(
                 std::time::Instant::now() < deadline,
                 "admission never filled"
@@ -471,7 +531,7 @@ mod tests {
         let h = Helper::new(token.clone());
         assert!(h.check("root = Stack([])", &[]).await.is_ok());
         token.cancel();
-        let Backend::Js(js) = &h.backend else {
+        let Backend::Js(js) = &h.openui.backend else {
             unreachable!()
         };
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -482,12 +542,149 @@ mod tests {
         assert!(matches!(h.check("x", &[]).await, Err(Error::Crashed(_))));
     }
 
-    #[tokio::test]
-    async fn check_mermaid_fails_open_in_phase_1() {
-        assert_eq!(MERMAID, MermaidBackend::FailOpen);
+    fn js(lane: &Lane) -> &app_js::BundleThread {
+        match &lane.backend {
+            Backend::Js(js) => js,
+            Backend::Canned(_) => unreachable!("real helper"),
+        }
+    }
+
+    const FLOW: &str = "flowchart TD\n  A --> B";
+    const FLOW_BAD: &str = "flowchart TD\n  A --> B\n}}} ]]] ((( @@@ !!! <<<";
+
+    /// A valid diagram passes, an invalid one is located, and `check` still serves.
+    async fn both_serve(h: &Helper, what: &str) {
         assert_eq!(
-            helper().check_mermaid("graph TD\nA-->B[").await.unwrap(),
-            vec![]
+            h.check_mermaid(FLOW).await,
+            Ok(vec![]),
+            "mermaid after {what}"
         );
+        assert!(
+            h.check("root = Stack([])", &[]).await.is_ok(),
+            "check after {what}"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_mermaid_runs_on_its_own_lazily_started_isolate() {
+        let h = helper();
+        assert!(h.check("root = Stack([])", &[]).await.is_ok());
+        assert!(js(&h.openui).is_running());
+        assert!(
+            !js(&h.mermaid).is_running(),
+            "no mermaid fence, no mermaid isolate"
+        );
+        assert_eq!(h.check_mermaid(FLOW).await, Ok(vec![]));
+        assert!(js(&h.mermaid).is_running());
+        let errs = h.check_mermaid(FLOW_BAD).await.unwrap();
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].path, "line:3");
+        assert!(errs[0].message.contains("line 3"), "{}", errs[0].message);
+        assert_eq!(js(&h.openui).generation(), 1);
+        assert_eq!(js(&h.mermaid).generation(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_busy_mermaid_isolate_never_delays_check() {
+        let h = Arc::new(helper());
+        assert!(h.check("root = Stack([])", &[]).await.is_ok());
+        assert_eq!(h.check_mermaid(FLOW).await, Ok(vec![]));
+        // Block the mermaid thread for 3 s (under its 5 s deadline) and fill its lane.
+        let blocked = js(&h.mermaid)
+            .eval_raw("{ const t0 = Date.now(); while (Date.now() - t0 < 3000) {} }".into());
+        let queued: Vec<_> = (0..=PENDING)
+            .map(|_| {
+                let h = h.clone();
+                tokio::spawn(async move { h.check_mermaid(FLOW).await })
+            })
+            .collect();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while h.mermaid.admission.available_permits() > 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "mermaid lane never filled"
+            );
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(h.check_mermaid(FLOW).await, Err(Error::Busy));
+        // Meanwhile `check` has its own lane and isolate: answered at once, several times.
+        let started = std::time::Instant::now();
+        for _ in 0..5 {
+            assert!(h.check("root = Stack([])", &[]).await.is_ok());
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "check waited on mermaid: {:?}",
+            started.elapsed()
+        );
+        blocked.await.unwrap();
+        for q in queued {
+            assert_eq!(q.await.unwrap(), Ok(vec![]));
+        }
+    }
+
+    /// Containment on the mermaid isolate; after each, a parse AND a `check`
+    /// on the other isolate succeed, and the OpenUI isolate was never rebuilt.
+    #[tokio::test]
+    async fn mermaid_failures_are_contained_on_their_own_isolate() {
+        let h = helper();
+        both_serve(&h, "start").await;
+        let m = js(&h.mermaid);
+        // Runaway script: terminated at the 5 s mermaid deadline.
+        assert_eq!(
+            m.eval_raw("for (;;) {}".into()).await,
+            Err(app_js::Error::Timeout)
+        );
+        both_serve(&h, "runaway").await;
+        // Heap growth: stopped at the 256 MB ceiling.
+        assert_eq!(
+            m.eval_raw("const keep = []; for (;;) keep.push(new Array(100000).fill(0.5));".into())
+                .await,
+            Err(app_js::Error::OutOfMemory)
+        );
+        both_serve(&h, "heap").await;
+        // Hostile diagrams from the spike: each ends as an answer or a contained error.
+        let nest =
+            |open: &str, close: &str, n: usize| format!("{}{}", open.repeat(n), close.repeat(n));
+        let mut sequence = String::from("sequenceDiagram\n");
+        for i in 0..100_000 {
+            sequence.push_str(&format!("  A{} ->> B: m\n", i % 50));
+        }
+        let hostile = [
+            (
+                "init-json-nested-200k",
+                format!(
+                    "%%{{init: {}}}%%\nflowchart LR\n A-->B",
+                    nest("[", "]", 200_000)
+                ),
+            ),
+            (
+                "frontmatter-yaml-nested-100k",
+                format!(
+                    "---\nconfig: {}\n---\nflowchart LR\n A-->B",
+                    nest("[", "]", 100_000)
+                ),
+            ),
+            (
+                "flowchart-parens-1M",
+                format!("flowchart LR\n A{}", "(".repeat(1_000_000)),
+            ),
+            ("sequence-100k-messages", sequence),
+            ("pie-1M-quotes", format!("pie\n{}", "\"".repeat(1_000_000))),
+        ];
+        for (name, source) in hostile {
+            let out = h.check_mermaid(&source).await;
+            assert!(
+                matches!(&out, Ok(_) | Err(Error::Timeout)),
+                "{name}: {out:?}"
+            );
+            both_serve(&h, name).await;
+        }
+        assert_eq!(
+            js(&h.openui).generation(),
+            1,
+            "the OpenUI isolate never noticed"
+        );
+        assert!(js(&h.mermaid).generation() >= 3);
     }
 }
