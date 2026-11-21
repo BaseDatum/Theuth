@@ -117,6 +117,8 @@ Script `/tmp/theuth-208-e-gate.sh` (no `cargo fmt`; `rustfmt --edition 2024` on 
 | h2 | test `-p roster -p tasks` | 0 | 254 passed |
 | h2 | `just wire-schema` (export_bindings) | 0 | |
 | h2 | classifier `wire_schema_snapshot` | 0 | 1 passed: no difference from the accepted fixture |
+| h3 (22:40) | test `-p agent --lib graph` | 0 | 24 passed: B's 14 and the 10 review tests (`exchanges_since_bound_matches_the_writer_format` included, after its fix) |
+| h3 | clippy `-p agent --all-targets -D warnings` | 0 | |
 
 Rule breaches: hold 2 started 22 s after hold 1's release (short of the 50 s spacing), hold 3 was launched 46 s after hold 2's release (it queued behind another session's hold).
 
