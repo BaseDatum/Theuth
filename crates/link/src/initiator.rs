@@ -110,7 +110,7 @@ mod tests {
         let (mut dev, hello) = finish(hs, &msg2).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&hello).unwrap();
         assert_eq!(v["name"], "Studio");
-        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(v["version"], platform::version::get());
         // First record both ways under the negotiated keys.
         let mut buf = vec![0u8; MAX_MSG];
         let n = dev.write_message(b"\x01{}", &mut buf).unwrap();

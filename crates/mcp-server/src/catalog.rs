@@ -1070,7 +1070,7 @@ impl From<McpCallResult> for CallToolResult {
 /// The `ServerConfig` both transports announce.
 pub fn server_info() -> ServerConfig {
     ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-        .with_server_info(Implementation::new("theuth", env!("CARGO_PKG_VERSION")))
+        .with_server_info(Implementation::new("theuth", platform::version::get()))
         .with_instructions(INSTRUCTIONS)
 }
 

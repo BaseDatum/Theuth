@@ -491,7 +491,7 @@ impl runtime::Plugin for RoutesPlugin {
         }
         let web_cfg: web::WebConfig = rt.section("web").unwrap_or_default();
         let fetcher = Fetcher::new_with_timeouts(
-            web::engines::USER_AGENT,
+            web::engines::user_agent(),
             cfg.max_body_bytes,
             web::WebConfig::default().max_redirects,
             Duration::from_millis(cfg.call_timeout_ms.max(1)),

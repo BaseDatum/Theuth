@@ -62,11 +62,15 @@ pub const KEYLESS_GENERAL: &[&str] = &["google", "bing", "brave", "qwant", "duck
 
 /// Identifiable user agent for APIs that require one (Wikimedia, GitHub) and
 /// the honest page-fetch identity under `impersonate: never` (122 D4).
-pub const USER_AGENT: &str = concat!(
-    "theuth/",
-    env!("CARGO_PKG_VERSION"),
-    " (+https://github.com/skymoore/theuth)"
-);
+pub fn user_agent() -> &'static str {
+    static UA: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        format!(
+            "theuth/{} (+https://github.com/skymoore/theuth)",
+            platform::version::get()
+        )
+    });
+    &UA
+}
 
 /// Construct a built-in engine by name; `github` reads the optional
 /// `github` credential. `None` for an unknown name.

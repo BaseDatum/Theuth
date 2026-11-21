@@ -350,7 +350,7 @@ async fn wikipedia_results_and_summary_panel() {
         .and(query_param("list", "search"))
         .and(query_param("srsearch", "rust programming language"))
         .and(query_param("srlimit", "8"))
-        .and(header("user-agent", engines::USER_AGENT))
+        .and(header("user-agent", engines::user_agent()))
         .respond_with(ok(WIKI_SEARCH))
         .expect(1)
         .mount(&server)
@@ -359,7 +359,7 @@ async fn wikipedia_results_and_summary_panel() {
         .and(path(
             "/api/rest_v1/page/summary/Rust_(programming_language)",
         ))
-        .and(header("user-agent", engines::USER_AGENT))
+        .and(header("user-agent", engines::user_agent()))
         .respond_with(ok(WIKI_SUMMARY))
         .expect(1)
         .mount(&server)

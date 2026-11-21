@@ -62,7 +62,7 @@ impl Provider for Github {
         let per_page = q.limit.to_string();
         let mut request = client
             .get(format!("{}/search/repositories", self.base))
-            .header(USER_AGENT, super::USER_AGENT)
+            .header(USER_AGENT, super::user_agent())
             .header(ACCEPT, "application/vnd.github+json")
             .query(&[("q", q.text.as_str()), ("per_page", per_page.as_str())]);
         if let Some(token) = &self.token {

@@ -34,6 +34,9 @@ mod update;
 /// plugins; everything else is one `cfg` side or the other.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The library crates that read the product version link on desktop only.
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    platform::version::set(env!("CARGO_PKG_VERSION"));
     tracing_subscriber::fmt::init();
     #[cfg(target_os = "linux")]
     desktop::webkit_no_gpu_workaround();

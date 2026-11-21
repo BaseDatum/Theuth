@@ -153,7 +153,7 @@ impl CompositionApiServer for Server {
                 .unwrap_or(1800),
         };
         Ok(Info {
-            version: env!("CARGO_PKG_VERSION").into(),
+            version: platform::version::get().into(),
             platform: std::env::consts::OS.into(),
             data_dir: self.rt.data_dir.display().to_string(),
             default_model,

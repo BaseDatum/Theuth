@@ -1,6 +1,6 @@
 [package]
 name = "voice-mlx"
-version.workspace = true
+version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
 description = "Parakeet TDT 0.6B v3 (mlx-community weights) in-process on the Apple GPU through MLX: a Rust port of parakeet-mlx's inference path"

@@ -218,7 +218,7 @@ pub async fn download(
 /// timeout only — no whole-request timeout. No cookie store, no credentials.
 fn client(opts: &DownloadOpts) -> Result<reqwest::Client, DownloadError> {
     let mut builder = reqwest::Client::builder()
-        .user_agent(crate::engines::USER_AGENT)
+        .user_agent(crate::engines::user_agent())
         .connect_timeout(opts.connect_timeout)
         .redirect(reqwest::redirect::Policy::none())
         .dns_resolver(GuardedResolver { private: false })
