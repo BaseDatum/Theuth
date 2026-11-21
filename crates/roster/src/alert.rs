@@ -52,7 +52,10 @@ pub fn class_of(item: &AttentionItem) -> Option<AlertClass> {
         K::Approval => own("approval:"),
         K::Decision => own("decision:"),
         K::Hire => own("hire:"),
-        K::Blocked => own("blocked:") || own("autoresearch:"),
+        // 207 E3: a decision left to the agent is a quiet notice, not a need.
+        K::Blocked => {
+            (own("blocked:") && !crate::score::left_decision(item)) || own("autoresearch:")
+        }
         K::Review => own("review:") || own("autoresearch:"),
         K::Handoff => own("handoff:"),
         K::Secret => own("secret:"),

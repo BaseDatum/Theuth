@@ -1163,6 +1163,22 @@ impl Message<AwaitDecision> for Tasks {
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
+        // 207 E3: the user left the decision between `Escalate` and this wait
+        // (recorded as parked): the escalate is live after all — answer now.
+        let left = self
+            .ledger
+            .take_left_decision(&m.decision)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(decision = %m.decision, "take_left_decision: {e}");
+                false
+            });
+        if left {
+            if let Some(tx) = tx {
+                tx.send(Some(LEFT_ANSWER.to_owned()));
+            }
+            return reply;
+        }
         let rx = self.escalations.subscribe(&m.decision);
         tokio::spawn(async move {
             let answer = escalate::wait(rx, m.wait).await;
@@ -2007,9 +2023,30 @@ mod tests {
             .unwrap();
         assert!(!left.live);
         assert_eq!(
-            actor.ask(GetTask(parked_task.id)).await.unwrap().blockers,
+            actor
+                .ask(GetTask(parked_task.id.clone()))
+                .await
+                .unwrap()
+                .blockers,
             vec![format!("{LEFT_PREFIX}{parked}")]
         );
+        // 207 E3: the escalate's live wait only arrives now (the leave landed
+        // between Escalate and AwaitDecision): it gets the left answer at
+        // once, and the task is unblocked as by a live leave.
+        let late = tokio::time::timeout(
+            Duration::from_secs(5),
+            actor.ask(AwaitDecision {
+                decision: parked.clone(),
+                wait: Duration::from_secs(30),
+            }),
+        )
+        .await
+        .expect("answered at once, not after the wait")
+        .unwrap();
+        assert_eq!(late, Some(LEFT_ANSWER.to_owned()));
+        let t = actor.ask(GetTask(parked_task.id.clone())).await.unwrap();
+        assert!(t.blockers.is_empty(), "{:?}", t.blockers);
+        assert_ne!(t.state, TaskState::Blocked);
 
         let err = actor
             .ask(LeaveDecision {

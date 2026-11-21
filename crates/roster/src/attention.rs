@@ -32,6 +32,11 @@ pub const ATTENTION_ACTOR: &str = "attention";
 /// Budget share that lands an agent in the inbox (67 §6.4 warning line).
 pub const BUDGET_WARN: f64 = 0.8;
 
+/// 207 E3: the detail of a `blocked:<task>` item whose only blockers are
+/// `left:` ones — a parked decision the user left to the agent. Visible, low
+/// (base class Notice), no alert; dismiss hides it, Unblock still works.
+pub const LEFT_DECISION: &str = "Decision left to the agent; it will act when it next runs";
+
 /// What kind of decision an item wants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -1085,6 +1090,25 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                             AttentionKind::Blocked,
                             format!("\u{201c}{}\u{201d} is blocked", t.title),
                             Some(format!("on {}", t.blockers.join(", "))),
+                            t.updated_ms,
+                        )
+                    });
+                } else if !t.blockers.is_empty()
+                    && t.blockers.iter().all(|b| b.starts_with(tasks::LEFT_PREFIX))
+                {
+                    // 207 E3: a parked decision left to the agent wakes no one;
+                    // it stays visible as a low notice until the agent runs.
+                    out.push(AttentionItem {
+                        task: Some(t.id.clone()),
+                        agent: owner_agent.clone(),
+                        session: session.clone(),
+                        priority,
+                        rank,
+                        ..item(
+                            format!("blocked:{}", t.id),
+                            AttentionKind::Blocked,
+                            format!("\u{201c}{}\u{201d}: decision left to the agent", t.title),
+                            Some(LEFT_DECISION.to_owned()),
                             t.updated_ms,
                         )
                     });
@@ -5192,12 +5216,15 @@ mod tests {
         assert!(items[0].path.is_empty());
     }
 
-    /// 207 §5.2 / D7: a blocker the user left to the agent makes no item.
+    /// 207 §5.2 / D7, E3: a task blocked only by decisions the user left to
+    /// the agent stays visible as a low notice (base class Notice, no alert);
+    /// with any other blocker it is the ordinary blocked item.
     #[test]
-    fn left_blocker_makes_no_item() {
+    fn left_blocker_is_a_quiet_notice() {
+        use crate::score::{BaseClass, base_class};
         let ops = tasks::Owner::Agent("ops".into());
         let left = task(
-            "t",
+            "ship it",
             tasks::TaskState::Blocked,
             ops.clone(),
             &["left:decision:d1"],
@@ -5213,14 +5240,28 @@ mod tests {
             40,
         );
         let inputs = Inputs {
-            tasks: vec![left, both.clone()],
+            tasks: vec![left.clone(), both.clone()],
             ..Default::default()
         };
-        let ids: Vec<String> = derive(&inputs, &HashMap::new(), 100)
-            .into_iter()
-            .map(|i| i.id)
-            .collect();
-        assert_eq!(ids, [format!("blocked:{}", both.id)]);
+        let items = derive(&inputs, &HashMap::new(), 100);
+        let quiet = items
+            .iter()
+            .find(|i| i.id == format!("blocked:{}", left.id))
+            .expect("the left decision stays visible");
+        assert_eq!(quiet.kind, AttentionKind::Blocked);
+        assert_eq!(
+            quiet.title,
+            "\u{201c}ship it\u{201d}: decision left to the agent"
+        );
+        assert_eq!(quiet.detail.as_deref(), Some(LEFT_DECISION));
+        assert_eq!(base_class(quiet), BaseClass::Notice);
+        assert_eq!(crate::alert::class_of(quiet), None);
+        let loud = items
+            .iter()
+            .find(|i| i.id == format!("blocked:{}", both.id))
+            .expect("ordinary blocked item");
+        assert_eq!(base_class(loud), BaseClass::Yours);
+        assert!(crate::alert::class_of(loud).is_some());
     }
 
     /// 207 §8: a Source item without a priority borrows its session's checkout task.

@@ -68,6 +68,8 @@ pub fn base_class(item: &AttentionItem) -> BaseClass {
         K::Blocked => {
             if id.starts_with("autoresearch:launch:") {
                 StopsAgent
+            } else if left_decision(item) {
+                Notice
             } else {
                 Yours
             }
@@ -93,6 +95,14 @@ fn paused_budget(item: &AttentionItem) -> bool {
     item.detail
         .as_deref()
         .is_some_and(|d| d.starts_with("paused"))
+}
+
+/// 207 E3: a `blocked:<task>` item whose only blockers were left to the agent.
+#[must_use]
+pub fn left_decision(item: &AttentionItem) -> bool {
+    item.kind == AttentionKind::Blocked
+        && item.id.starts_with("blocked:")
+        && item.detail.as_deref() == Some(crate::attention::LEFT_DECISION)
 }
 
 /// 207 §3.2: the `base` reason's text; the first matching row wins.
@@ -134,6 +144,7 @@ pub fn base_text(item: &AttentionItem) -> &'static str {
         K::Node => "engine unreachable",
         K::Review => "review",
         K::Hire => "hire",
+        K::Blocked if left_decision(item) => "decision left to the agent",
         K::Blocked => "blocked task",
         K::Show => "shown to you",
         K::Double => "answered by your double",

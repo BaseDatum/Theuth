@@ -2434,6 +2434,41 @@ impl Ledger {
         Ok(())
     }
 
+    /// 207 E3: `decision` was left to the agent while it looked parked, but its
+    /// `escalate` is only now waiting (the leave landed between `Escalate` and
+    /// `AwaitDecision`): drop `left:<decision>` and, when no blocker is left,
+    /// resume as a live leave does. `false` when no task carries it. Never wakes.
+    pub async fn take_left_decision(&mut self, decision: &str) -> R<bool> {
+        let left = format!("{}{decision}", crate::LEFT_PREFIX);
+        let Some(mut t) = self
+            .store
+            .blocked_on(&left)
+            .await
+            .map_err(db)?
+            .into_iter()
+            .next()
+        else {
+            return Ok(false);
+        };
+        let before = t.blockers.join(", ");
+        t.blockers.retain(|b| *b != left);
+        t.updated_ms = self.now();
+        self.save(&t).await?;
+        self.event(
+            &t,
+            "system",
+            None,
+            "blockers",
+            Some(before),
+            Some(t.blockers.join(", ")),
+        )
+        .await;
+        if t.state == TaskState::Blocked && t.blockers.is_empty() {
+            self.resume(&mut t, "system").await?;
+        }
+        Ok(true)
+    }
+
     // ---- wakes: dispatch, completion, back-off -------------------------------------
 
     /// One dispatch pass (67 §7.3): per agent with nothing claimed, one
