@@ -120,13 +120,14 @@ documents-bundle-check:
         exit 1
     fi
 
-# `inputs <sha256>`: over packages/documents/src/**, package.json, bun.lock, scripts/build-inproc.ts (sorted
-# per-file sha256 lines, hashed); `bundle <sha256>`: the committed bundle.
+# `inputs <sha256>`: over packages/documents/src/**, package.json, bun.lock, tsconfig.json, scripts/build-inproc.ts
+# (sorted per-file sha256 lines, hashed); `bundle <sha256>`: the committed bundle. Shared by `documents-bundle`
+# and `documents-bundle-check`.
 _documents-bundle-hash:
     #!/usr/bin/env bash
     set -euo pipefail
     cd packages/documents
-    inputs=$({ find src -type f | LC_ALL=C sort; printf '%s\n' package.json bun.lock scripts/build-inproc.ts; } | while read -r f; do shasum -a 256 "$f"; done | shasum -a 256 | cut -d' ' -f1)
+    inputs=$({ find src -type f | LC_ALL=C sort; printf '%s\n' package.json bun.lock tsconfig.json scripts/build-inproc.ts; } | while read -r f; do shasum -a 256 "$f"; done | shasum -a 256 | cut -d' ' -f1)
     bundle=$(shasum -a 256 ../../crates/document-js/js/theuth-documents-inproc.js | cut -d' ' -f1)
     printf 'inputs %s\nbundle %s\n' "$inputs" "$bundle"
 
