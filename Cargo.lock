@@ -5304,6 +5304,7 @@ dependencies = [
  "chrono",
  "codeindex",
  "decision",
+ "document-js",
  "figment",
  "futures",
  "hmac 0.13.0",

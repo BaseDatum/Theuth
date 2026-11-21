@@ -80,36 +80,41 @@ pub fn helper_path() -> PathBuf {
     beside
 }
 
-/// Whether the helper is there and whether it runs (surfaced by `documents_status`, shown in Settings;
-/// a missing or crashed helper disables notes, knowledge editing and meeting notes).
+// The doc comments of `HelperStatus`/`HelperProcess` are part of the OpenRPC wire snapshot
+// (crates/theuth/tests/fixtures/wire/openrpc-v1.json): kept verbatim from the child-process era until
+// the wire is revised. In-process meaning: `path` = `helper_path()` (unused), `found` = always true
+// (compiled in), `Starting` = no request served yet, `Crashed` = last fatal runtime error until the
+// rebuilt runtime serves, `Missing` = never produced.
+/// Whether the helper `t` would spawn is there and whether it runs (surfaced by `documents_status`,
+/// shown in Settings; a missing or crashed helper disables notes, knowledge editing and meeting notes).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct HelperStatus {
-    /// Where the helper lives (`in-process` since it runs inside `t`).
+    /// Where [`helper_path`] points.
     pub path: String,
-    /// The helper is available (always, since it is compiled in).
+    /// The file exists there.
     pub found: bool,
-    /// The protocol version this `t` speaks (`theuth-documents-<version>`).
+    /// The protocol version this `t` wants (`theuth-documents-<version>`).
     pub version: String,
-    /// The runtime right now.
+    /// The child process right now.
     pub process: HelperProcess,
 }
 
-/// The helper runtime as the client last saw it.
+/// The helper process as the worker last saw it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "state", rename_all = "lowercase")]
 pub enum HelperProcess {
-    /// Has not served a request yet.
+    /// Not spawned yet (documents off, or the first spawn is in flight).
     Starting,
     /// Serving.
     Running,
-    /// Failed fatally (deadline, heap limit, panic); `stderr` is the error; a fresh runtime is being built.
+    /// Exited, failed its handshake or was killed; `stderr` is what it said (or the error), respawn pending.
     Crashed {
-        /// The fatal error.
+        /// Its stderr, or the spawn error.
         stderr: String,
     },
-    /// Never produced since the helper runs in-process (kept for the wire shape).
+    /// No executable at `path`.
     Missing,
 }
 
@@ -120,10 +125,10 @@ fn set_process(p: HelperProcess) {
     *PROCESS.lock().unwrap_or_else(|e| e.into_inner()) = p;
 }
 
-/// The current [`HelperStatus`].
+/// The current [`HelperStatus`]. `found` is always true: the helper is compiled into `t`.
 pub fn helper_status() -> HelperStatus {
     HelperStatus {
-        path: "in-process".to_owned(),
+        path: helper_path().display().to_string(),
         found: true,
         version: protocol_version().to_owned(),
         process: PROCESS.lock().unwrap_or_else(|e| e.into_inner()).clone(),
