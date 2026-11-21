@@ -62,6 +62,11 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     desc: 'MCP servers: on/off (this session or always), risk lines',
   },
   {
+    name: '/builtins',
+    hint: '',
+    desc: 'Built-in tools: on/off for this chat or always',
+  },
+  {
     name: '/acp',
     hint: '[add <registry-id>|remove <name>]',
     desc: 'External harnesses (ACP) and the registry',
@@ -483,10 +488,14 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       )
       return
     }
-    // Both an open chat and the draft have their own pending "Off here" switches.
+    // Both an open chat and the draft have their own pending "Off here" switches. /mcp opens the MCP tab, /tools the
+    // tab last shown, /builtins the Builtins tab.
+    case '/builtins':
+      if (arg) throw new Error('usage: /builtins')
+      return useToolsSheet.getState().show(session ?? '', 'builtins')
     case '/mcp':
     case '/tools':
-      if (!arg) return useToolsSheet.getState().show(session ?? '')
+      if (!arg) return useToolsSheet.getState().show(session ?? '', cmd === '/mcp' ? 'mcp' : undefined)
       if (sub === 'sync') return synced(await api.sync_mcp())
       if (sub === 'add' && rest) {
         if (gitUrl(rest)) {
