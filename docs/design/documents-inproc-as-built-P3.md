@@ -164,3 +164,54 @@ Rust: each command in its own hold of `/tmp/theuth-build.lock`, `CARGO_TARGET_DI
 - Shell scripts were checked with `bash -n` only. The PowerShell script was checked by reading only.
 - No real `t` run, desktop UI run or UI check.
 - The updater (`crates/update`) still accepts `theuth-documents-*` names beside `t` (its tests name them); older installs keep their now-unused helper file. Pruning it is a follow-up.
+
+## Review fixes
+
+Code: `0ca80bbf3`. Docs: `f2b02d52d`. Bundle inputs: `107e1a233`.
+
+| finding | outcome | proof |
+|---|---|---|
+| **M1** reply not matched to its request | **fixed, both sides.** (a) document-js: an event-loop error (`poll_event_loop` Err) is now `Error::Crashed` (fatal). So is a request that ends with an idle loop and no reply. The runtime is dropped and rebuilt and the generation bumps. `serve` clears the request slot after every request; the reply slot was already cleared per `drive`. A rebuilt runtime has fresh JS globals (`sink`, `current`), so nothing crosses a rebuild. (b) helper.rs: `parse_reply(line, id)` checks `reply.id == pending id`. On a mismatch the forwarder calls the new `DocumentsThread::restart()` (epoch bump: queued and in-flight requests of the old runtime fail as `Crashed`, the next one runs fresh), answers `Crashed`, drops that reply's events and emits `Restarted` | document-js `an_event_loop_error_mid_request_is_fatal_and_the_next_request_gets_its_own_reply` (a hidden hook rejects an unrelated promise and schedules a late reply 100 ms on; the next two requests, 200 ms apart, get their own ids). It **failed** with the old `Error::Js` mapping (`tests.rs:460`) and passes with the fix. Also `a_request_that_ends_without_its_reply_is_fatal`, `restart_fails_the_queued_requests_and_the_next_one_runs_fresh`, document `helper::tests::a_reply_for_another_request_is_fatal_and_rebuilds` |
+| **M2** `Restarted` can overtake `Update`s | **fixed.** The separate `restarts` task (generation watch) is deleted; the forwarder is the only writer to the events channel. Tickets resolve to `Settled { result, rebuilt }`. `rebuilt` is true on exactly one job per lost runtime: the job whose failure was fatal, or the first job of a respawned thread. The jobs queued behind it fail with the same error and `rebuilt: false`. The forwarder sends `Restarted` right after answering that ticket, so every earlier ticket's updates come first. A mismatch-driven restart is reported by the forwarder itself. Nothing reports a rebuild twice: the thread's build-after-failure does not report. The `watch` generation channel and `subscribe()` are removed; `generation()` is an atomic | document `helper::tests::restarted_follows_the_updates_of_earlier_requests` (A import → B runaway → C queued: A's `Update`s, then `Restarted`, then nothing for 300 ms); document-js `only_the_failing_request_reports_the_rebuild`; the existing timeout and panic restart tests now also assert that only one `Restarted` arrives |
+| **m1** requests after a fatal failure served before the reopen | **partly closed, rest documented.** Jobs carry the epoch they were enqueued under. The thread bumps the epoch *before* sending the fatal job's reply, and a job from an older epoch fails with the epoch-ending error instead of running on the fresh runtime. Still open: a request enqueued *after* the failure but before the actor handles `Restarted` runs on the fresh runtime before the reopen and fails with `document X is not open`. Closing it would need the actor to gate requests on its reopen; that is left. It is documented in the helper.rs module docs | covered by the epoch tests above |
+| **m3** dead runtime thread never restarted | **fixed.** When `send` fails (closed queue) and shutdown is not cancelled, `send` clears `tx`, spawns a new thread and resends once. The new thread's first job reports `rebuilt` (its mirrors are gone). `alive` is now a counter, because the old and new threads can overlap | document-js `a_dead_runtime_thread_is_respawned`: a test-only `Work::Exit` makes `serve` return; the next request reports `rebuilt` and "not open", a round trip works, generation 2 |
+| **m5** V8 init fragility | **fixed, and it was a real bug.** The old `init_platform` built and dropped a current-thread tokio runtime. tokio panics when one is dropped inside an async context ("Cannot drop a runtime in a context where blocking is not allowed"), and `t` calls it inside `run()`, which `main`'s `block_on` drives. It is now `JsRuntime::init_platform(None)`: the same `init_v8(None, false, false)` that `JsRuntime::try_new` performs, without an isolate or a tokio runtime. It is a no-op after `browser::warmup` (process-wide `Once`), so no throwaway runtime is built any more. Comments at `init_platform` and the `main.rs` call site explain why the call must sit synchronously in the startup future before `Runtime::new` and not in a spawned task. No debug assertion was added: deno_core exposes no cheap, reliable "already initialised" or "main thread" probe | document-js `init_platform_is_safe_inside_an_async_context` (a `#[tokio::test]`). It **panicked** in tokio `blocking/shutdown.rs:51` with the old body and passes now |
+| **m6** test timing | **fixed.** `DocumentsJs::new` loads polyfill, bundle and pump under `max(deadline, DEFAULT_DEADLINE)` and only then applies the configured deadline. The 1.5 s deadline therefore covers requests only, and the runaway tests still prove termination at that deadline. `wait_until` now waits 60 s instead of 10 s, and the elapsed-time bound is 20 s instead of 10 s. The deadline test polls `generation()` instead of the removed watch | document-js 19/19 |
+| **m7** broken intra-doc link `helper_path` | **fixed without changing text.** The sentence "Where [`helper_path`] points." is in `openrpc-v1.json` (lines 77996, 79739), so it stays verbatim. An `#[allow(rustdoc::broken_intra_doc_links)]` on the field silences the link; schemars reads only doc comments, so the snapshot text is unchanged [INFERENCE: not run; the orchestrator runs the wire snapshot] | clippy clean |
+| **m8** user-facing helper-binary text | **fixed:** `site/.../desktop.mdx` (troubleshooting), `site/.../meetings.mdx` ("no note"), `docs/plugins.md` (`document` paragraph), `scripts/package-windows.ps1` comment | text only |
+| **m9** bundle hash inputs | **fixed.** `_documents-bundle-hash` (shared by `documents-bundle` and `documents-bundle-check`) hashes `tsconfig.json` too. `inputs` changed `c879e3cd…` → `8583ad75…`; `bundle` is unchanged (`a9ae5753…`) and the bundle file has no diff | `just documents-bundle`, `just documents-bundle-check` ok |
+| crate docs: uncontainable cases | **done** (`document-js/src/lib.rs`): a V8 internal fatal error, a single allocation larger than the 64 MB headroom, memory outside the V8 heap (ArrayBuffer backing stores), a panic in a deno_core builtin op | — |
+
+### Commands and results (after the fixes)
+
+Each cargo command ran in its own hold of `/tmp/theuth-build.lock`, with `CARGO_TARGET_DIR=<worktree>/target CARGO_BUILD_JOBS=6 --offline` and commit signing off.
+
+- `bun test` (packages/documents): `84 pass, 0 fail`.
+- `just documents-bundle`, then `just documents-bundle-check`: ok.
+- `cargo test --offline -p document-js` (20:31): unit `ok. 19 passed; 0 failed`, golden `ok. 1 passed; 0 failed`, doc-tests `ok. 0 passed`.
+- `cargo clippy --offline -p document -p document-js --all-targets -- -A clippy::chunks_exact_to_as_chunks` (20:35): `Finished`, no warnings. An earlier run flagged a `while let` in a new test, which was fixed.
+- `cargo test --offline -p document` (20:36–20:37, at `0ca80bbf3`):
+  - unit `ok. 116 passed`
+  - `actor` `ok. 12 passed`
+  - `cite_check_links` `ok. 4 passed`
+  - `index_search` `ok. 3 passed`
+  - `ingest_audio` `ok. 1 passed`
+  - `ingest_job` `ok. 5 passed`
+  - `insights` `ok. 2 passed`
+  - `replicate` `ok. 3 passed`
+  - doc-tests `ok. 0 passed`
+  - all 0 failed
+- The two red runs were taken against a temporary revert of the old code: `cargo test -p document-js --lib -- an_event_loop_error init_platform` gave `FAILED. 0 passed; 2 failed`.
+- A first `cargo test -p document` failed before compiling our code: `mlx-sys` `out/bindings.rs` was missing, because 181 of 359 `target/debug/build/*/out` directories were empty (wiped outside these commands). `cargo clean -p mlx-sys` fixed it.
+
+Not run here: `-p theuth` (check and the wire snapshot), the `artifact`, `tasks` and `meeting` tests.
+
+### Follow-ups
+
+- UI strings over the vestigial status (a later wire + UI change):
+  - `crates/desktop/ui/src/components/settings/App.tsx:97-98` (`Helper: theuth-documents …` / `Helper missing at …`).
+  - `crates/desktop/ui/src/components/meeting/ControlCenter.tsx:95` (`no meeting note: the documents helper is missing`, quoted verbatim in meetings.mdx).
+  - The Document.tsx strings.
+- Vestigial wire fields (see above): `HelperStatus.path/found`, `HelperProcess::Missing`, `Crashed.stderr`, and the frozen doc sentences (including "Where [`helper_path`] points").
+- Updater: prune old `theuth-documents-*` files beside `t` and stop accepting them in payloads.
+- m1 remainder: gate requests in the actor until its reopen after `Restarted`.
