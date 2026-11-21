@@ -1,12 +1,8 @@
 /**
- * SPIKE: the documents helper as an embeddable, runtime-neutral module (no Node, Bun or Deno APIs), for a
- * bare deno_core JsRuntime inside the `theuth` binary. Same wire as `helper.ts` (protocol.ts), minus the
- * stdio transport: `call(line)` takes one request line and resolves to the lines the stdio helper would
- * have written for it — any `{"ev":"update"}` lines first, then the reply — joined by "\n".
- *
- * `parseRequest`/`handle` mirror helper.ts verbatim except for the base64 codec and the event sink; the real
- * integration would split helper.ts into this transport-agnostic core and a thin stdio main instead of
- * keeping two copies.
+ * The documents helper (design 59 §3.2) as an embeddable, runtime-neutral module (no Node, Bun or Deno APIs),
+ * run by the deno_core runtime inside `t` (crates/document-js). Wire: protocol.ts. `call(line)` takes one
+ * request line and resolves to the helper's output for it — any `{"ev":"update"}` lines first, then the
+ * reply — joined by "\n".
  */
 import * as Y from "yjs";
 import { EditFailure, edit, importMarkdown, isOurs, markdown, open, outline, type Open } from "./convert.ts";
@@ -170,6 +166,6 @@ export async function call(line: string): Promise<string> {
 
 export const version = `theuth-documents ${PROTOCOL_VERSION}`;
 
-// The embedder (crates/document-js-spike) reaches the module through this one global; a classic script has no exports.
+// The embedder (crates/document-js) reaches the module through this one global; a classic script has no exports.
 const host = globalThis as { theuthDocuments?: { call: typeof call; version: string } };
 host.theuthDocuments = { call, version };

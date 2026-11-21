@@ -1,22 +1,22 @@
 /**
- * Golden transcripts for crates/document-js (tests/golden.rs): the synthetic parity corpus run through a stdio
- * peer — by default the shipped jsdom helper source (`bun src/helper.ts`) — with a fixed request script.
- * Each output line is canonicalised (the `update` bytes of `ev:update` lines dropped, object keys sorted, block
- * ids renamed ID0, ID1, … in order of appearance per input), so the Rust test can replay the same script in
- * deno_core and compare byte-for-byte.
+ * Golden transcripts for crates/document-js (tests/golden.rs): the synthetic parity corpus run through the
+ * documents helper (`src/inproc.ts`, in this process) with a fixed request script. Each output line is
+ * canonicalised (the `update` bytes of `ev:update` lines dropped, object keys sorted, block ids renamed
+ * ID0, ID1, … in order of appearance per input).
  *
- *   bun run scripts/golden-inproc.ts [--peer "<cmd>"]   → ../../crates/document-js/tests/golden.json
+ *   bun run scripts/golden-inproc.ts            verify: replay and compare with tests/golden.json (exit 1 on a diff)
+ *   bun run scripts/golden-inproc.ts --write    re-record tests/golden.json from the current helper
  *
- * Keep `script` in step with `run_script` in crates/document-js/tests/golden.rs.
+ * The committed file was recorded from the earlier standalone helper and is the regression baseline:
+ * re-record only for an intended output change. Keep `script` in step with `run_script` in
+ * crates/document-js/tests/golden.rs.
  */
-import type { FileSink } from "bun";
 import { join } from "node:path";
+import { call } from "../src/inproc.ts";
 import { syntheticCorpus, type Input } from "./parity-corpus.ts";
 
-const pkgDir = join(import.meta.dir, "..");
-const peerIdx = process.argv.indexOf("--peer");
-const peerCmd = peerIdx !== -1 ? process.argv[peerIdx + 1]!.split(" ") : ["bun", join(pkgDir, "src", "helper.ts")];
-const outfile = join(pkgDir, "..", "..", "crates", "document-js", "tests", "golden.json");
+const goldenFile = join(import.meta.dir, "..", "..", "..", "crates", "document-js", "tests", "golden.json");
+const write = process.argv.includes("--write");
 
 /** `Y.encodeStateAsUpdate(new Y.Doc())`. */
 const EMPTY_STATE = "AAA=";
@@ -25,36 +25,7 @@ const REPLACED = "## Replaced `heading`";
 const APPENDED = "\n\nAppended paragraph with *emphasis*.\n";
 
 type Line = Record<string, unknown> & { id?: number; ev?: string };
-
-const proc = Bun.spawn(peerCmd, { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
-const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
-const dec = new TextDecoder();
-let buf = "";
-const lines: string[] = [];
-
-async function send(req: Record<string, unknown>): Promise<string[]> {
-  const sink = proc.stdin as FileSink;
-  sink.write(`${JSON.stringify(req)}\n`);
-  await sink.flush();
-  const out: string[] = [];
-  for (;;) {
-    while (lines.length) {
-      const l = lines.shift()!;
-      out.push(l);
-      const v = JSON.parse(l) as Line;
-      if (v.ev === undefined && v.id === req.id) return out;
-    }
-    const { value, done } = await reader.read();
-    if (done) throw new Error("peer closed stdout");
-    buf += dec.decode(value, { stream: true });
-    let nl: number;
-    while ((nl = buf.indexOf("\n")) !== -1) {
-      const l = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (l) lines.push(l);
-    }
-  }
-}
+type Case = Input & { transcript: string[] };
 
 function canon(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(canon).join(",")}]`;
@@ -77,7 +48,7 @@ async function script(input: Input): Promise<string[]> {
   const transcript: string[] = [];
   let id = 0;
   const r = async (op: string, extra: Record<string, unknown> = {}): Promise<Line> => {
-    const out = await send({ id: ++id, op, doc: "d", ...extra });
+    const out = (await call(JSON.stringify({ id: ++id, op, doc: "d", ...extra }))).split("\n");
     for (const l of out) {
       const v = JSON.parse(l) as Line;
       if (v.ev !== undefined) delete v.update;
@@ -110,9 +81,16 @@ async function script(input: Input): Promise<string[]> {
   return transcript;
 }
 
-const cases = [];
+const cases: Case[] = [];
 for (const input of syntheticCorpus()) cases.push({ ...input, transcript: await script(input) });
-(proc.stdin as FileSink).end();
-await proc.exited;
-await Bun.write(outfile, `${JSON.stringify({ peer: peerCmd.join(" ").replace(pkgDir, "packages/documents"), cases }, null, 1)}\n`);
-console.error(`wrote ${outfile}: ${cases.length} cases`);
+
+if (write) {
+  await Bun.write(goldenFile, `${JSON.stringify({ peer: "packages/documents/src/inproc.ts", cases }, null, 1)}\n`);
+  console.error(`wrote ${goldenFile}: ${cases.length} cases`);
+} else {
+  const golden = (await Bun.file(goldenFile).json()) as { cases: Case[] };
+  const differ = cases.filter((c, i) => JSON.stringify(c.transcript) !== JSON.stringify(golden.cases[i]?.transcript));
+  for (const c of differ) console.error(`differs: ${c.name}`);
+  console.error(`${cases.length} cases, ${cases.length - differ.length} match ${goldenFile}`);
+  if (differ.length || cases.length !== golden.cases.length) process.exit(1);
+}

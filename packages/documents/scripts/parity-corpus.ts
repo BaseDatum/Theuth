@@ -1,6 +1,5 @@
 /**
- * The synthetic part of the parity corpus (no files read): `parity-inproc.ts` adds design-doc and knowledge
- * inputs on top; `golden-inproc.ts` turns these into crates/document-js/tests/golden.json.
+ * The synthetic corpus (no files read) that `golden-inproc.ts` replays against crates/document-js/tests/golden.json.
  */
 export type Input = { name: string; text: string; frontmatter: boolean };
 

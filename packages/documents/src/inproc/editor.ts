@@ -1,9 +1,7 @@
 /**
- * SPIKE (in-process documents helper): a drop-in for `@blocknote/server-util`'s `ServerBlockNoteEditor`
- * restricted to the four calls `convert.ts` makes, with the DOM pluggable instead of jsdom and without
- * React (server-util only needs React for `withReactContext`, which the helper never calls). Swapped in
- * by module aliasing — `test-inproc/preload.ts` under `bun test`, the resolver plugin in
- * `scripts/build-inproc.ts` for the embedded bundle — so `convert.ts` stays byte-identical.
+ * The headless editor the documents helper converts with: the four `ServerBlockNoteEditor` calls `convert.ts`
+ * makes, built on `@blocknote/core` directly with linkedom (`dom.ts`) as the DOM and without React (the
+ * conversions never need a React context). Runtime-neutral, so it bundles into `t` (scripts/build-inproc.ts).
  */
 import {
   type Block,
@@ -31,10 +29,11 @@ export class ServerBlockNoteEditor<B extends BlockSchema, I extends InlineConten
   }
 
   protected constructor(options: Partial<BlockNoteEditorOptions<B, I, S>>) {
-    this.editor = BlockNoteEditor.create(options);
+    // `create`'s overloads infer the default schema from a `Partial` options object; the options carry B/I/S.
+    this.editor = BlockNoteEditor.create(options) as unknown as BlockNoteEditor<B, I, S>;
   }
 
-  /** Same contract as server-util's `_withJSDOM`: `document`/`window` are the DOM's only while `fn` runs. */
+  /** `document`/`window` are this DOM's only while `fn` runs (BlockNote's HTML code reads the globals). */
   private async withDom<T>(fn: () => T | Promise<T>): Promise<T> {
     const g = globalThis as DomGlobals;
     const prevWindow = g.window;

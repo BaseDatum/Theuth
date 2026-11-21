@@ -3,7 +3,7 @@
  * defaults minus the media blocks (image/video/audio/file — attachments live elsewhere)
  * plus the custom `frontmatter` block a knowledge document carries first.
  *
- * Imported by the helper (`helper.ts`, headless) and by the desktop UI, so this file
+ * Imported by the helper (`inproc.ts`, headless, embedded in `t`) and by the desktop UI, so this file
  * must stay free of Node-only and React imports. The frontmatter block's *config*
  * (type, props, content) is shared; its *render* is not: the helper renders a bare
  * `<div>`, the UI a React form (`createReactBlockSpec(frontmatterConfig, …)`). Both

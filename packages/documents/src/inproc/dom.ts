@@ -1,5 +1,5 @@
 /**
- * SPIKE: the DOM the in-process helper renders and parses through — linkedom (pure JS, no Node built-ins),
+ * The DOM the documents helper renders and parses through — linkedom (pure JS, no Node built-ins),
  * plus the three gaps BlockNote 0.54.2 hits on the helper's paths, each patched here and nowhere else:
  *
  * 1. `document.implementation.createHTMLDocument` (parsers/html/util/nestedLists.ts: detached parse root);
