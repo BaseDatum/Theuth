@@ -133,7 +133,8 @@ Script `/tmp/theuth-208-f-gate.sh <steps>`, log `/tmp/theuth-208-f-gate.log`, ea
 | 3 (22:08) | clippy agent, rpc-compose, sessionsync | 0 | |
 | 3 | test agent `--lib graph` | 0 | 16 passed |
 | 3 | `bun run check` / `test` / `build` | 0 / 0 / 0 | 390 files, 2790 tests; Canvas chunk as above |
-| 4 (queued 22:17) | classifier with main's `fab7d5f7a` fixture, then the accepted one restored | — | waiting on the machine lock (another session's cargo) when this was committed |
+| 4 (22:35) | classifier against main's `fab7d5f7a` fixture | 101 (expected: it differs) | 8 `Additive`, 0 `Nonbreaking` / `ReviewRequired` / `Breaking`: `/methods/agent_graph`, `/x-theuth/events/agent.graph@1`, `agent.peer-message@1` `from` / `to` / `result` in `schema` and `receiverSchema` |
+| 4 | classifier against the accepted fixture (restored, tree clean) | 0 | 1 passed |
 
 ## Reds (all predate the branch)
 
