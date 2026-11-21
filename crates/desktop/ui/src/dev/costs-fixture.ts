@@ -217,9 +217,12 @@ export function limitsFixture(now: number): UsageLimits {
       {
         id: 'anthropic:oauth', provider: 'anthropic', label: 'Claude subscription', auth: 'oauth', account: 'user@…', plan: 'max', status: 'warn', message: null, source: 'usage endpoint', observed_at_ms: at(-2),
         windows: [
-          { id: 'five_hour', label: '5-hour', used_fraction: 0.62, resets_at_ms: at(140), window_secs: 18_000 },
-          { id: 'seven_day', label: 'Weekly', used_fraction: 0.41, resets_at_ms: at(3 * 1440 + 200), window_secs: 604_800 },
-          { id: 'seven_day_opus', label: 'Weekly · Opus', used_fraction: 0.78, resets_at_ms: at(3 * 1440 + 200), window_secs: 604_800 },
+          {
+            id: 'five_hour', label: '5-hour', used_fraction: 0.62, resets_at_ms: at(140), window_secs: 18_000,
+            history: [[-160, 0], [-130, 0.08], [-100, 0.15], [-70, 0.24], [-40, 0.4], [-20, 0.52], [-2, 0.62]].map(([m, f]) => ({ at_ms: at(m!), used_fraction: f! })),
+          },
+          { id: 'seven_day', label: 'Weekly', used_fraction: 0.41, resets_at_ms: at(3 * 1440 + 200), window_secs: 604_800, history: [] },
+          { id: 'seven_day_opus', label: 'Weekly · Opus', used_fraction: 0.78, resets_at_ms: at(3 * 1440 + 200), window_secs: 604_800, history: [] },
         ],
         rates: [], balance: null,
       },
@@ -236,8 +239,8 @@ export function limitsFixture(now: number): UsageLimits {
       {
         id: 'openai:oauth', provider: 'openai', label: 'ChatGPT · Codex', auth: 'oauth', account: 'acct-…4f2', plan: 'pro', status: 'limited', message: '5-hour window exhausted', source: 'headers + usage endpoint', observed_at_ms: at(-4),
         windows: [
-          { id: 'primary', label: '5-hour', used_fraction: 1, resets_at_ms: at(38), window_secs: 18_000 },
-          { id: 'secondary', label: 'Weekly', used_fraction: 0.33, resets_at_ms: at(5 * 1440), window_secs: 604_800 },
+          { id: 'primary', label: '5-hour', used_fraction: 1, resets_at_ms: at(38), window_secs: 18_000, history: [] },
+          { id: 'secondary', label: 'Weekly', used_fraction: 0.33, resets_at_ms: at(5 * 1440), window_secs: 604_800, history: [] },
         ],
         rates: [], balance: { label: 'Credits', currency: 'credits', remaining: 0, limit: null, used: null },
       },
