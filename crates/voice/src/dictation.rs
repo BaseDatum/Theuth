@@ -213,6 +213,8 @@ pub enum DictionaryReply {
 pub enum Setting {
     /// `voice.shape.<surface>`.
     Shape(Surface, Preset),
+    /// `voice.shape.enabled` (201): `false` bypasses the shaper on every surface.
+    ShapeEnabled(bool),
     /// `voice.end_commands`.
     EndPhrases(EndPhrases),
     /// `voice.input_devices`; a standby capture is dropped so the next open walks the new list.
@@ -921,7 +923,9 @@ impl Message<Correction> for Dictation {
     type Reply = Result<(), String>;
     async fn handle(&mut self, m: Correction, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.open_stores(ctx.actor_ref().clone()).await;
-        let Some(store) = self.store.clone().filter(|_| self.cfg.history.learn) else {
+        // 201: with the shaper off nothing is learned into the dictionary from corrections.
+        let learn = self.cfg.history.learn && self.cfg.shape.enabled;
+        let Some(store) = self.store.clone().filter(|_| learn) else {
             return Ok(());
         };
         let due = store
@@ -1014,6 +1018,7 @@ impl Message<Setting> for Dictation {
                 Surface::Phone => self.cfg.shape.phone = preset,
                 Surface::AnyApp => self.cfg.shape.any_app = preset,
             },
+            Setting::ShapeEnabled(on) => self.cfg.shape.enabled = on,
             Setting::EndPhrases(p) => self.cfg.phrases = p,
             Setting::InputDevices(names) => {
                 self.cfg.input_devices = names;

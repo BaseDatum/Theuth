@@ -116,6 +116,9 @@ pub trait SpeechApi {
     /// 153 §4.5: persist `voice.shape.<surface>`.
     #[method(name = "set_shape")]
     async fn set_shape(&self, surface: voice::Surface, preset: voice::Preset) -> RpcResult<()>;
+    /// 201: persist `voice.shape.enabled`; `false` bypasses the shaper on every surface.
+    #[method(name = "set_shape_enabled")]
+    async fn set_shape_enabled(&self, enabled: bool) -> RpcResult<()>;
     /// 153 §7.2: persist `voice.end_commands`.
     #[method(name = "set_end_phrases")]
     async fn set_end_phrases(&self, phrases: voice::EndPhrases) -> RpcResult<()>;
@@ -394,6 +397,11 @@ impl SpeechApiServer for Server {
             .ok_or_else(|| failed("bad preset"))?;
         self.write_voice_config(&["shape", &key], &value)?;
         send(&dictation()?, voice::Setting::Shape(surface, preset)).await
+    }
+
+    async fn set_shape_enabled(&self, enabled: bool) -> RpcResult<()> {
+        self.write_voice_config(&["shape", "enabled"], if enabled { "true" } else { "false" })?;
+        send(&dictation()?, voice::Setting::ShapeEnabled(enabled)).await
     }
 
     async fn set_end_phrases(&self, phrases: voice::EndPhrases) -> RpcResult<()> {

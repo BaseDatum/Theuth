@@ -154,13 +154,14 @@ impl From<Preset> for ShapeConfig {
     }
 }
 
-/// `voice.shape` (§4.5): one preset per surface.
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
-)]
+/// `voice.shape` (§4.5): one preset per surface, behind the global `enabled` switch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(default)]
 pub struct ShapePresets {
+    /// `false` bypasses the shaper on every surface (201): the model's text verbatim, no end
+    /// commands, nothing learned into the dictionary. Wins over the presets below.
+    pub enabled: bool,
     /// Desktop Composer and per-field mics.
     pub composer: Preset,
     /// Terminal UI.
@@ -173,9 +174,25 @@ pub struct ShapePresets {
     pub any_app: Preset,
 }
 
+impl Default for ShapePresets {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            composer: Preset::default(),
+            tui: Preset::default(),
+            companion: Preset::default(),
+            phone: Preset::default(),
+            any_app: Preset::default(),
+        }
+    }
+}
+
 impl ShapePresets {
-    /// The preset for `surface`.
+    /// The preset for `surface`; [`Preset::Off`] whenever the shaper is disabled.
     pub fn get(&self, surface: Surface) -> Preset {
+        if !self.enabled {
+            return Preset::Off;
+        }
         match surface {
             Surface::Composer => self.composer,
             Surface::Tui => self.tui,
@@ -344,6 +361,16 @@ impl Ctx<'_> {
         is_final: bool,
     ) -> Shaped {
         let cfg = self.cfg;
+        // `Preset::Off` / `voice.shape.enabled: false` (201): the model's text, byte for byte —
+        // the tokenize/render round trip alone respaces and recases at piece boundaries.
+        if cfg == Preset::Off.into() {
+            return Shaped {
+                text: raw.to_owned(),
+                command: None,
+                actions: Vec::new(),
+                replaced: Vec::new(),
+            };
+        }
         let mut toks = tokens::tokenize(raw);
         if cfg.punctuation || cfg.literals || cfg.end_commands {
             punctuation::literal_escape(&mut toks, self);

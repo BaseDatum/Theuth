@@ -142,22 +142,27 @@ export function Dictation() {
   const polishEffort = useQuery({ enabled: canQuery2_4, queryKey: keys.polishEffort, queryFn: () => api.polish_effort() })
 
   const setShape = useAction(({ surface, preset }: { surface: Surface; preset: Preset }) => api.set_shape(surface, preset), { keys: [keys.settings] })
+  const setShapeEnabled = useAction((enabled: boolean) => api.set_shape_enabled(enabled), { keys: [keys.settings] })
   const setEnd = useAction((p: EndPhrases) => api.set_end_phrases(p), { keys: [keys.settings] })
   const setPolishModel = useAction((id: string | null) => api.set_polish_model(id), { keys: [keys.polishModel, keys.polishEffort, keys.settings] })
   const setPolishEffort = useAction((level: string | null) => api.set_polish_effort(level), { keys: [keys.polishEffort] })
   const polish = models.data?.find((m) => m.id === polishModel.data?.id)
 
   const shape = settings.data?.shape
+  const shaping = shape?.enabled ?? true
   const end = settings.data?.end_commands ?? END_DEFAULTS
 
   return (
     <>
       <Section title="Shaping">
+        <Row label="Shape dictated text" description="Off delivers the speech model's text exactly as heard on every surface: no spoken punctuation, numbers, dictionary terms or end phrases.">
+          <Switch aria-label="Shape dictated text" checked={shaping} disabled={!settings.isSuccess || setShapeEnabled.isPending} onCheckedChange={(v) => setShapeEnabled.mutate(v)} />
+        </Row>
         {SURFACES.map(([surface, label, description]) => (
           <Row key={surface} label={label} description={`${description} Full writes punctuation, numbers, code words, dictionary terms and takes "send it" / "scratch that"; Plain skips the dictionary and the end phrases; Off keeps the model's words.`}>
             <Select
               value={shape?.[surface] ?? 'full'}
-              disabled={!settings.isSuccess || setShape.isPending}
+              disabled={!settings.isSuccess || setShape.isPending || !shaping}
               onValueChange={(v) => setShape.mutate({ surface, preset: v as Preset })}
             >
               <SelectTrigger className="w-32" aria-label={`${label} shaping`}>

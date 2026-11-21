@@ -585,3 +585,73 @@ fn shaper_builders_reach_the_stages() {
         Some(EndCommand::Send { near_miss: true })
     );
 }
+
+/// 201: the real packaged dictionary, Full preset, the owner's dictations (voice.db rows
+/// where shaped != raw were all damage): plain prose comes back unchanged.
+#[test]
+fn history_prose_is_unchanged_with_the_packaged_dictionary() {
+    let dict = crate::dictionary::Dictionary::packaged_only().unwrap();
+    let phrases = EndPhrases::default();
+    let s = Shaper::new(Preset::Full.into(), &phrases, &dict, None);
+    for raw in [
+        "Yo, what's up dog",
+        "occasionally a few one or two of them will go stream idle for 120 seconds, and that will just stop the sub agent",
+        "It's the main display right now. I want it to be an extended display",
+        "Send that to the other agent",
+        "Seems like there are a lot of bugs like this where the content just overruns this container",
+        "Provider syncing and task sinking Settings per node from a device",
+        "And you make sure that sleep is properly configured in this arch Linux system",
+        "He did go to my horse, but then he came right back to me",
+        "for one thing, the two of us agreed",
+    ] {
+        let out = s.shape("", raw, true);
+        assert_eq!((out.text.as_str(), out.command), (raw, None), "{raw:?}");
+    }
+    // Positive evidence still rewrites: a spoken name joined into its mixed-case form.
+    assert_eq!(s.shape("", "git hub actions", true).text, "GitHub actions");
+}
+
+/// 201: a lone number word stays a word unless a spoken symbol, "point", "percent" or
+/// "number" says it is a quantity.
+#[test]
+fn lone_number_words_stay_prose() {
+    let h = Harness::default();
+    assert_eq!(h.text("one or two of them"), "one or two of them");
+    assert_eq!(h.text("the two of us"), "the two of us");
+    assert_eq!(h.text("five percent"), "5%");
+    assert_eq!(h.text("number five"), "number 5");
+    assert_eq!(h.text("twenty three files"), "23 files");
+}
+
+/// 201: `voice.shape.enabled: false` wins over every preset; trigger words pass byte for byte.
+#[test]
+fn disabled_shaper_passes_the_model_text_through() {
+    let off = ShapePresets {
+        enabled: false,
+        ..ShapePresets::default()
+    };
+    let dict = crate::dictionary::Dictionary::packaged_only().unwrap();
+    let phrases = EndPhrases::default();
+    let raw = "period new line send it twenty three literal comma";
+    for surface in [
+        Surface::Composer,
+        Surface::Tui,
+        Surface::Companion,
+        Surface::Phone,
+        Surface::AnyApp,
+    ] {
+        assert_eq!(off.get(surface), Preset::Off);
+        let s = Shaper::new(off.get(surface).into(), &phrases, &dict, None).with_surface(surface);
+        let mut p = EndParser::new(&phrases);
+        let partial = s.shape_with(&mut p, "Earlier text.", raw, false);
+        let fin = s.shape_with(&mut p, "Earlier text.", "  Sent it. Scratch that ", true);
+        assert_eq!(partial.text, raw);
+        assert_eq!(fin.text, "  Sent it. Scratch that ");
+        assert!(partial.command.is_none() && fin.command.is_none());
+        assert!(partial.actions.is_empty() && partial.replaced.is_empty());
+    }
+    // Old configs (no `enabled` key) keep the shaper on.
+    let old: ShapePresets = serde_json::from_str(r#"{"tui":"plain"}"#).unwrap();
+    assert!(old.enabled);
+    assert_eq!(old.get(Surface::Tui), Preset::Plain);
+}
