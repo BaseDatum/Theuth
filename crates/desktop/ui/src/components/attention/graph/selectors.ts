@@ -74,9 +74,13 @@ export function stripCounts(view: VisibleGraph): { needYou: number; working: num
   return { needYou, working, finished }
 }
 
-/** '4 need you · 11 working · 14 finished' (all three parts always). */
-export function stripText(c: { needYou: number; working: number; finished: number }): string {
-  return `${c.needYou} need you · ${c.working} working · ${c.finished} finished`
+/** The strip's counts: `needYou` is the list's live item count; `working`/`finished` null until the graph loaded. */
+export type StripCounts = { needYou: number; working: number | null; finished: number | null }
+
+/** '34 need you · 11 working · 14 finished'; '34 need you' alone while the graph has not loaded. */
+export function stripText(c: StripCounts): string {
+  const need = `${c.needYou} need you`
+  return c.working === null || c.finished === null ? need : `${need} · ${c.working} working · ${c.finished} finished`
 }
 
 /** root/desk/peer: title; child/observed: name ?? title. */

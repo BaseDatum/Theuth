@@ -1,6 +1,6 @@
 // 208 §10.2: the stored graph preferences parse defensively.
 import { expect, test } from 'vitest'
-import { GRAPH_PREFS_DEFAULT, readGraphPrefs } from './prefs'
+import { defaultGraphHeight, GRAPH_PREFS_DEFAULT, readGraphPrefs } from './prefs'
 
 test('defaults on null and garbage', () => {
   expect(readGraphPrefs(null)).toEqual(GRAPH_PREFS_DEFAULT)
@@ -21,4 +21,13 @@ test('partial objects keep the rest of the defaults', () => {
   const p = readGraphPrefs('{"expanded":false,"ttl":{"edge_min":7}}')
   expect(p).toEqual({ ...GRAPH_PREFS_DEFAULT, expanded: false, ttl: { ...GRAPH_PREFS_DEFAULT.ttl, edge_min: 7 } })
   expect(readGraphPrefs('{"follow":true,"height":400}')).toEqual({ ...GRAPH_PREFS_DEFAULT, follow: true, height: 400 })
+})
+
+test('an unset height follows the viewport: 40 %, at least 280, at most 60 %', () => {
+  expect(GRAPH_PREFS_DEFAULT.height).toBeNull()
+  expect(readGraphPrefs('{"height":null}').height).toBeNull()
+  expect(defaultGraphHeight(900)).toBe(360)
+  expect(defaultGraphHeight(600)).toBe(280)
+  expect(defaultGraphHeight(400)).toBe(240)
+  expect(defaultGraphHeight(1600)).toBe(640)
 })

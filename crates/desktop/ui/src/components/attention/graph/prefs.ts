@@ -4,8 +4,14 @@ import { create } from 'zustand'
 import { TTL_DEFAULTS, type TtlPrefs } from './ttl'
 
 export const GRAPH_PREFS_KEY = 'attention.graph'
-export type GraphPrefs = { expanded: boolean; height: number; follow: boolean; ttl: TtlPrefs }
-export const GRAPH_PREFS_DEFAULT: GraphPrefs = { expanded: true, height: 320, follow: false, ttl: TTL_DEFAULTS }
+/** `height` null = the viewport default (`defaultGraphHeight`) until the user resizes the region. */
+export type GraphPrefs = { expanded: boolean; height: number | null; follow: boolean; ttl: TtlPrefs }
+export const GRAPH_PREFS_DEFAULT: GraphPrefs = { expanded: true, height: null, follow: false, ttl: TTL_DEFAULTS }
+
+/** The expanded region's default height: 40 % of the viewport, at least 280 px, at most 60 % of the viewport. */
+export function defaultGraphHeight(viewport: number): number {
+  return Math.round(Math.min(0.6 * viewport, Math.max(280, 0.4 * viewport)))
+}
 
 const clampInt = (v: unknown, lo: number, hi: number, fallback: number): number =>
   typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v))) : fallback
@@ -24,7 +30,7 @@ export function readGraphPrefs(raw: string | null): GraphPrefs {
   const d = GRAPH_PREFS_DEFAULT
   return {
     expanded: typeof o.expanded === 'boolean' ? o.expanded : d.expanded,
-    height: clampInt(o.height, 160, 2000, d.height),
+    height: typeof o.height === 'number' && Number.isFinite(o.height) ? clampInt(o.height, 160, 2000, 160) : null,
     follow: typeof o.follow === 'boolean' ? o.follow : d.follow,
     ttl: {
       child_min: clampInt(t.child_min, 1, 1440, d.ttl.child_min),

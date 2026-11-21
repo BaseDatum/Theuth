@@ -17,10 +17,11 @@ import {
   type Viewport,
 } from '@xyflow/react'
 import { createContext, memo, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import type { GraphPulse } from '@/rpc/bindings/method.agent.output'
+import type { GraphPulse } from '@/rpc/bindings/event.agent_2egraph.output'
 import { canvasElements, lodOf } from './elements'
 import { MessageEdge, type Pulse, TreeEdge } from './edges'
 import { BOX, layoutCache } from './layout'
+import { pathToRoot } from './selectors'
 import { type Lod, NodeBody } from './NodeBody'
 import type { GraphState } from './reducer'
 import type { NodeView, VisibleGraph } from './ttl'
@@ -50,6 +51,11 @@ const LodContext = createContext<Lod>('full')
 const HANDLE = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0, pointerEvents: 'none' } as const
 /** How long after mount the first `fitView` may still move the viewport (a "Show in graph" centring waits for it). */
 const FIT_SETTLE_MS = 350
+/** Room kept above the top row by every fit, so no node sits under the region's top edge. */
+const TOP_ROOM = 48
+const FIT_PADDING = { top: `${TOP_ROOM}px`, bottom: '24px', x: '24px' } as const
+/** Opacity of nodes off the highlighted path: dimmed, labels still readable in both themes. */
+const DIM = 0.5
 
 function Handles() {
   return (
@@ -129,7 +135,7 @@ function Flow(p: CanvasProps) {
   useEffect(() => {
     if (fitSeen.current === p.fitNonce) return
     fitSeen.current = p.fitNonce
-    requestAnimationFrame(() => void rf.fitView({ duration: reduced ? 0 : 300 }))
+    requestAnimationFrame(() => void rf.fitView({ padding: FIT_PADDING, duration: reduced ? 0 : 300 }))
   }, [p.fitNonce, rf, reduced])
 
   // Pulses: each new one runs once along its edge (a result up the tree edge when it joins child and parent).
@@ -172,20 +178,37 @@ function Flow(p: CanvasProps) {
     if (at) void rf.setCenter(at.x + BOX.w / 2, at.y + BOX.h / 2, { zoom: rf.getZoom(), duration: reduced ? 0 : 400 })
   }, [p.state, p.follow, els.pos, rf, reduced, running])
 
-  // Show in graph: centre, keep the zoom — once per nonce. A canvas that mounts because of the click (the region was
-  // collapsed) runs its first fit in its first frames; the centring waits until FIT_SETTLE_MS after mount so the fit
-  // does not override it. Positions are read at that moment (a ref), so later moves do not re-centre.
+  // The first fit is clamped to the compact zoom, so a tall forest can overflow: once it settled, pull the top row
+  // below the region's top edge (never under the strip). Only moves when the top is cut.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const ns = rf.getNodes()
+      if (ns.length === 0) return
+      const b = rf.getNodesBounds(ns)
+      const vp = rf.getViewport()
+      if (b.y * vp.zoom + vp.y < TOP_ROOM) void rf.setViewport({ ...vp, y: TOP_ROOM - b.y * vp.zoom })
+    }, FIT_SETTLE_MS)
+    return () => clearTimeout(t)
+  }, [rf])
+
+  // Show in graph: fit the whole path root → node, never zooming in — once per nonce. A highlight alone never moves
+  // the viewport. A canvas that mounts because of the click (the region was collapsed) runs its first fit in its first
+  // frames; the centring waits until FIT_SETTLE_MS after mount so the fit does not override it. Positions are read at
+  // that moment (refs), so later moves do not re-centre.
   const mountedAt = useRef(performance.now())
   const posRef = useRef(els.pos)
   posRef.current = els.pos
+  const nodesRef = useRef(p.state.nodes)
+  nodesRef.current = p.state.nodes
   const nonce = p.focus?.nonce
   useEffect(() => {
     const f = p.focus
     if (!f) return
     const wait = Math.max(0, FIT_SETTLE_MS - (performance.now() - mountedAt.current))
     const t = setTimeout(() => {
-      const at = posRef.current.get(f.session)
-      if (at) void rf.setCenter(at.x + BOX.w / 2, at.y + BOX.h / 2, { zoom: rf.getZoom(), duration: reduced ? 0 : 300 })
+      const path = pathToRoot(nodesRef.current, f.session).filter((id) => posRef.current.has(id))
+      if (path.length === 0) return
+      void rf.fitView({ nodes: path.map((id) => ({ id })), padding: FIT_PADDING, maxZoom: rf.getZoom(), minZoom: 0.1, duration: reduced ? 0 : 300 })
     }, wait)
     return () => clearTimeout(t)
     // Only a new nonce re-centres.
@@ -195,7 +218,7 @@ function Flow(p: CanvasProps) {
     () =>
       els.nodes.map((n) =>
         n.type === 'fold'
-          ? { id: n.id, type: 'fold', position: n.pos, data: { count: n.count, parent: n.parent }, draggable: false, selectable: true, style: { opacity: n.dim ? 0.6 : 1 } }
+          ? { id: n.id, type: 'fold', position: n.pos, data: { count: n.count, parent: n.parent }, draggable: false, selectable: true, style: { opacity: n.dim ? DIM : 1 } }
           : {
               id: n.id,
               type: 'session',
@@ -203,7 +226,9 @@ function Flow(p: CanvasProps) {
               data: { view: n.view, highlighted: n.highlighted, selected: n.id === p.selected, now: p.now },
               draggable: false,
               selectable: true,
-              style: { opacity: n.view.opacity * (n.dim ? 0.6 : 1) },
+              // Off the highlighted path: dimmed but readable, never compounding a TTL fade; a node that needs you
+              // (red ring) is never dimmed.
+              style: { opacity: n.dim && n.view.attention === 0 ? Math.min(n.view.opacity, DIM) : n.view.opacity },
             },
       ),
     [els.nodes, p.selected, p.now],
@@ -248,7 +273,7 @@ function Flow(p: CanvasProps) {
         maxZoom={2}
         fitView
         // The first fit never zooms out past the compact level: a wide forest opens readable and pans, not as specks.
-        fitViewOptions={{ padding: 0.15, maxZoom: 1, minZoom: 0.4 }}
+        fitViewOptions={{ padding: FIT_PADDING, maxZoom: 1, minZoom: 0.4 }}
         forceColorMode={dark ? 'dark' : 'light'}
         onMove={onMove}
         onMoveStart={(e) => {
@@ -271,7 +296,7 @@ function Flow(p: CanvasProps) {
         className="bg-background"
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="color-mix(in oklab, var(--color-fg-tertiary) 45%, transparent)" />
-        <Controls showInteractive={false} fitViewOptions={{ duration: reduced ? 0 : 300 }} />
+        <Controls showInteractive={false} fitViewOptions={{ padding: FIT_PADDING, duration: reduced ? 0 : 300 }} />
         <MiniMap
           pannable
           zoomable

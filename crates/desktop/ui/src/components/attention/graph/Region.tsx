@@ -12,7 +12,7 @@ import { cn } from '@/lib/utils'
 import type { AttentionItem } from '@/rpc/bindings/method.roster.output'
 import { EdgePopover } from './EdgePopover'
 import { NodeBar } from './NodeBar'
-import { useGraphPrefs } from './prefs'
+import { defaultGraphHeight, useGraphPrefs } from './prefs'
 import { graphNow, useAgentGraph } from './queries'
 import { attentionBySession, includeSessions, nodeLabel, stripCounts, stripText, subtreeIds } from './selectors'
 import { Strip } from './Strip'
@@ -24,6 +24,8 @@ const Canvas = lazy(() => import('./Canvas'))
 export type GraphRegionProps = {
   /** The 207 cache, for attention counts and `include`. */
   items: readonly AttentionItem[] | undefined
+  /** The list header's count of live (unexpired) items: the strip's "need you". */
+  live: number
   /** Session of the focused entry's head, else of the open item. */
   highlight: string | null
   /** "Show in graph": expand, centre (no zoom change), highlight. */
@@ -35,11 +37,10 @@ export type GraphRegionProps = {
 }
 
 const MIN_H = 160
-const DEFAULT_H = 320
 const sameIds = (a: ReadonlySet<string>, b: ReadonlySet<string>) => a.size === b.size && [...a].every((x) => b.has(x))
 const editable = (t: EventTarget | null) => t instanceof HTMLElement && (t.isContentEditable || t.closest(CONTROL) !== null)
 
-export function GraphRegion({ items, highlight, focus, subtree, onSubtree }: GraphRegionProps) {
+export function GraphRegion({ items, live, highlight, focus, subtree, onSubtree }: GraphRegionProps) {
   const prefs = useGraphPrefs()
   const mobile = useIsMobile()
   // Under md the region starts collapsed and opens as a full-screen pane; full screen is never stored.
@@ -50,7 +51,8 @@ export function GraphRegion({ items, highlight, focus, subtree, onSubtree }: Gra
   const [fitNonce, setFitNonce] = useState(0)
   const realNow = Date.now()
   const include = useMemo(() => includeSessions(items ?? [], realNow), [items, Math.floor(realNow / 60_000)])
-  const { state, supported, error } = useAgentGraph(prefs.ttl, include)
+  // The stream and the lease run only while the canvas shows; collapsed, the engine's graph goes dormant.
+  const { state, supported, error } = useAgentGraph(prefs.ttl, include, open || full)
   const attention = useMemo(() => attentionBySession(items ?? [], Date.now()), [items])
 
   // The TTL clock: re-derived on every graph change and at the next visible change (nextTtlTick), never per second.
@@ -131,7 +133,10 @@ export function GraphRegion({ items, highlight, focus, subtree, onSubtree }: Gra
 
   // Legacy discovery counts every method as present: an engine that then rejects `agent_graph` shows no region either.
   if (!supported || (error !== null && state === null)) return null
-  const counts = view ? stripCounts(view) : { needYou: 0, working: 0, finished: 0 }
+  // "need you" is the list's own count (the header's number); working / finished come from the graph, once loaded.
+  const graphCounts = view ? stripCounts(view) : null
+  const counts = { needYou: live, working: graphCounts?.working ?? null, finished: graphCounts?.finished ?? null }
+  const height = prefs.height ?? defaultGraphHeight(globalThis.innerHeight ?? 900)
   const selectedNode = selected && state ? state.nodes.get(selected) : undefined
   const edge = edgeAt && state ? state.edges.get(edgeAt.id) : undefined
   const subtreeNode = subtree !== null ? state?.nodes.get(subtree) : undefined
@@ -211,7 +216,7 @@ export function GraphRegion({ items, highlight, focus, subtree, onSubtree }: Gra
     )
 
   return (
-    <div ref={regionRef} className="relative flex shrink-0 flex-col border-b border-border-subtle" style={open ? { height: prefs.height } : undefined} role="region" aria-label="Agent graph">
+    <div ref={regionRef} className="relative flex shrink-0 flex-col border-b border-border-subtle" style={open ? { height } : undefined} role="region" aria-label="Agent graph">
       <Strip counts={counts} older={state?.older ?? null} subtree={subtreeLabel} expanded={open} onToggle={toggle} onClearSubtree={() => onSubtree(null)}>
         {open && controls}
       </Strip>
@@ -222,13 +227,13 @@ export function GraphRegion({ items, highlight, focus, subtree, onSubtree }: Gra
           placement="center"
           className="absolute right-0 bottom-0 left-0 z-10"
           aria-label="Resize the agent graph"
-          value={{ now: prefs.height, min: MIN_H, max: Math.round(maxH()) }}
+          value={{ now: height, min: MIN_H, max: Math.round(maxH()) }}
           onStart={() => {
             top.current = regionRef.current?.getBoundingClientRect().top ?? 0
           }}
           onMove={(_x, y) => setHeight(y - top.current)}
-          onNudge={(d) => setHeight(prefs.height + d * 16)}
-          onReset={() => setHeight(DEFAULT_H)}
+          onNudge={(d) => setHeight(height + d * 16)}
+          onReset={() => prefs.set({ height: null })}
         />
       )}
     </div>

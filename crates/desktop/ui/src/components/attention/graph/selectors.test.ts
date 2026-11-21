@@ -24,6 +24,7 @@ test('stripCounts at T0 and its text', () => {
   expect(c).toEqual({ needYou: 4, working: 11, finished: 14 })
   expect(stripText(c)).toBe('4 need you · 11 working · 14 finished')
   expect(stripText({ needYou: 0, working: 0, finished: 0 })).toBe('0 need you · 0 working · 0 finished')
+  expect(stripText({ needYou: 34, working: null, finished: null })).toBe('34 need you')
 })
 
 test('attentionBySession skips expired items and items without a session; includeSessions unique, sorted, capped', () => {

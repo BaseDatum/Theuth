@@ -4,10 +4,10 @@ import { ChevronDown, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import type { GraphOlder } from '@/rpc/bindings/method.agent.output'
-import { stripText } from './selectors'
+import { type StripCounts, stripText } from './selectors'
 
 export type StripProps = {
-  counts: { needYou: number; working: number; finished: number }
+  counts: StripCounts
   older: GraphOlder | null
   /** The list's subtree filter label, mirrored here. */
   subtree: string | null

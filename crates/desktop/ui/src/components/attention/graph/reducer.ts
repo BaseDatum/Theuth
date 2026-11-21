@@ -1,7 +1,8 @@
 // 208 §8.4: the client's copy of the engine graph — a snapshot (`agent_graph`) plus ordered deltas (`agent.graph@1`).
 // Untouched nodes and edges keep object identity so memoised node components skip re-rendering.
-import type { AgentGraphChanged } from '@/rpc/bindings/event.agent_2egraph.output'
-import type { AgentGraph, GraphCursor, GraphEdge, GraphNode, GraphOlder, GraphPulse } from '@/rpc/bindings/method.agent.output'
+import type { AgentGraphChanged, GraphPulse } from '@/rpc/bindings/event.agent_2egraph.output'
+import type { GraphCursor } from '@/rpc/bindings/method.agent.input'
+import type { AgentGraph, GraphEdge, GraphNode, GraphOlder } from '@/rpc/bindings/method.agent.output'
 
 export type GraphState = {
   epoch: number

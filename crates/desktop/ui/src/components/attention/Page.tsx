@@ -302,7 +302,7 @@ export function Page() {
           </h2>
         </header>
         <div className={cn(active ? 'hidden md:contents' : 'contents')}>
-          <GraphRegion items={items} highlight={graphHighlight} focus={graphFocus} subtree={filter.subtree?.session ?? null} onSubtree={onSubtree} />
+          <GraphRegion items={items} live={live.length} highlight={graphHighlight} focus={graphFocus} subtree={filter.subtree?.session ?? null} onSubtree={onSubtree} />
         </div>
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <aside className={cn('w-full shrink-0 flex-col border-r border-border-subtle md:flex md:w-[440px]', active ? 'hidden' : 'flex')}>
