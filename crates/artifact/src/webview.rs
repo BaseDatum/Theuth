@@ -63,8 +63,9 @@ impl Tool for ShowWebTool {
          beside the chat that the user can click, scroll and pop out into its own window. \
          `url` is http(s) only (a bare `localhost:3000` gets `http://`); `title` names the tile \
          (default host[:port]). Showing the same origin again in this session reuses its tile \
-         and navigates it. You do not see the page: to read or drive it use browser_* or \
-         read_url. Not for files — `show` hands those over."
+         and navigates it. Use it for a page the user should see or use themselves; for web work you do on \
+         their behalf use browser_* instead. You do not see the page: to read or drive it use \
+         browser_* or read_url. Not for files — `show` hands those over."
             .into()
     }
 
