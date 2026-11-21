@@ -27,6 +27,7 @@ const api = {
   polish_effort: vi.fn(async (): Promise<string | null> => 'low'),
   set_polish_model: vi.fn(async () => null),
   set_polish_effort: vi.fn(async (e: string | null) => e),
+  voice_mlx_status: vi.fn(async () => ({ engine: 'onnx', available: false, state: { state: 'unavailable', reason: 'test' } })),
 }
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
